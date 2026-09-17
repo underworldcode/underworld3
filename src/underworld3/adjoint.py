@@ -127,7 +127,7 @@ class _Scratch:
 _shared_scratch = _Scratch()
 
 
-def dual_on(variable, value, grad=None, scratch=None):
+def dual_on(variable, value, grad=None, scratch=None, boundary=None):
     r"""The dual of a load on ``variable``'s space, held as a field.
 
     :math:`b_j = \int v\,\phi_j + \mathbf g\cdot\nabla\phi_j` for every basis
@@ -139,18 +139,40 @@ def dual_on(variable, value, grad=None, scratch=None):
     solve and no integration by parts. The returned field comes from
     ``scratch`` (a :class:`_Scratch` pool; the module's shared one by
     default) — give it back with ``scratch.give(field)`` when done.
+
+    With ``boundary`` (a mesh boundary label), the load is the facet
+    integral :math:`b_j = \int_\Gamma v\,\phi_j` instead — a misfit on
+    surface observations — assembled as a natural condition of the same
+    generic solver with zero volume templates. A gradient part on a boundary
+    is not assembled yet and raises.
     """
     scratch = _shared_scratch if scratch is None else scratch
     mesh = variable.mesh
     n = getattr(variable, "num_components", 1)
     dim, cdim = mesh.dim, mesh.cdim
     asm = scratch.assembler(variable)
-    if grad is None:
-        grad = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
-    asm._g0 = value
-    asm._g1 = sympy.Matrix(grad)
-    asm._needs_function_rewire = True          # the templates re-evaluate
-    asm._build(False, False, None)
+    if boundary is not None:
+        if grad is not None and not sympy.Matrix(grad).is_zero_matrix:
+            raise NotImplementedError(
+                "dual_on: a load read through the gradient on a boundary is "
+                "not assembled yet; only the value part is")
+        # zero volume templates; the natural condition IS the load
+        asm._g0 = sympy.zeros(1, 1) if n == 1 else sympy.zeros(1, dim)
+        asm._g1 = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
+        asm.natural_bcs.clear()
+        asm.add_natural_bc(value, boundary)
+        asm.is_setup = False                        # the facet kernels are registered on build
+        asm._build(False, False, None)
+    else:
+        if grad is None:
+            grad = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
+        if asm.natural_bcs:
+            asm.natural_bcs.clear()
+            asm.is_setup = False
+        asm._g0 = value
+        asm._g1 = sympy.Matrix(grad)
+        asm._needs_function_rewire = True          # the templates re-evaluate
+        asm._build(False, False, None)
     out_var = scratch.take(variable)
     gvec = asm.dm.getGlobalVec()
     gvec.set(0.0)
@@ -211,16 +233,17 @@ def _token_of(var):
     return text
 
 
-def misfit_duals(misfit, variables, scratch=None):
+def misfit_duals(misfit, variables, scratch=None, boundary=None):
     r"""``dJ/df`` as a dual field on each field the misfit reads.
 
-    ``J = \int misfit`` over the mesh; a field enters through its value and,
-    for a misfit on a stress or a strain rate, through its gradient. Both
-    parts are differentiated symbolically and assembled as one load
-    (:func:`dual_on`), so a misfit written in terms of :math:`\nabla u` needs
-    no integration by parts by the caller. Returns ``{variable: dual}`` for
-    the variables that appear; give each dual back to the scratch pool when
-    done.
+    ``J = \int misfit`` over the mesh — or over the boundary ``boundary``
+    when one is named, for a misfit on surface observations. A field enters
+    through its value and, for a misfit on a stress or a strain rate,
+    through its gradient. Both parts are differentiated symbolically and
+    assembled as one load (:func:`dual_on`), so a misfit written in terms of
+    :math:`\nabla u` needs no integration by parts by the caller. Returns
+    ``{variable: dual}`` for the variables that appear; give each dual back
+    to the scratch pool when done.
     """
     scratch = _shared_scratch if scratch is None else scratch
     peeled = _peel(misfit)
@@ -245,8 +268,15 @@ def misfit_duals(misfit, variables, scratch=None):
             g1[i, int(m.group(2))] = sympy.diff(peeled, atom)
         if all(v == 0 for v in value) and (g1 is None or g1.is_zero_matrix):
             continue
-        out[var] = dual_on(var, _as_expression(value), g1, scratch)
+        out[var] = dual_on(var, _as_expression(value), g1, scratch, boundary=boundary)
     return out
+
+
+def integral(mesh, expression, boundary=None):
+    """``float(∫ expression)`` over the mesh, or over ``boundary`` if named."""
+    if boundary is None:
+        return float(uw.maths.Integral(mesh, expression).evaluate())
+    return float(uw.maths.BdIntegral(mesh, expression, boundary).evaluate())
 
 
 def _reads_of(solver, unknown, tokens):
@@ -303,7 +333,7 @@ def field_duals(solver, mu, variables, scratch=None):
     return out
 
 
-def gradient(solver, misfit, parameters=(), fields=(), scratch=None):
+def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=None):
     r"""``dJ/dm`` and the duals on fields, by the adjoint of ONE solve.
 
     For :math:`J = \int` ``misfit`` over the mesh, evaluated in the state the
@@ -316,6 +346,9 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None):
     — the derivative through a field the residual reads, an initial
     condition or a coefficient field.
 
+    ``boundary`` names a mesh boundary label over which the misfit is
+    integrated instead of the volume: surface observations.
+
     Returns ``{"J": float, "parameters": {expr: float}, "fields": {var: dual}}``;
     the duals are NumPy copies, safe to keep.
     """
@@ -323,12 +356,13 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None):
     parameters, fields = list(parameters), list(fields)
     u = solver.u
     mesh = u.mesh
-    J = float(uw.maths.Integral(mesh, misfit).evaluate())
-    duals = misfit_duals(misfit, [u] + [f for f in fields if f is not u], scratch)
+    J = integral(mesh, misfit, boundary)
+    duals = misfit_duals(misfit, [u] + [f for f in fields if f is not u], scratch,
+                         boundary=boundary)
     grad = {}
     for p in parameters:
         explicit = sympy.diff(_peel_except(misfit, p), p)
-        grad[p] = 0.0 if explicit == 0 else float(uw.maths.Integral(mesh, explicit).evaluate())
+        grad[p] = 0.0 if explicit == 0 else integral(mesh, explicit, boundary)
     # The explicit part on a field the misfit reads directly — never on the
     # unknown, whose misfit dual is the adjoint's right-hand side.
     out_fields = {var: (np.array(duals[var].array, copy=True) if (var in duals and var is not u)

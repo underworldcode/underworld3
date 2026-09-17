@@ -1788,7 +1788,7 @@ class SolverBaseClass(uw_object):
             out = out + d0[i] * mu_sym[i]
         return out + uw.maths.tensor.rank2_inner_product(d1, grad_mu)
 
-    def gradient(self, misfit, parameters=(), fields=()):
+    def gradient(self, misfit, parameters=(), fields=(), boundary=None):
         r"""``dJ/dm`` for each parameter, and the dual on each field, by the
         adjoint of this solve.
 
@@ -1799,7 +1799,8 @@ class SolverBaseClass(uw_object):
         Returns ``{"J", "parameters": {expr: dJ/dm}, "fields": {var: dual}}``.
         """
         from underworld3.adjoint import gradient as _gradient
-        return _gradient(self, misfit, parameters=parameters, fields=fields)
+        return _gradient(self, misfit, parameters=parameters, fields=fields,
+                         boundary=boundary)
 
     def adjoint_kernels(self):
         """The pointwise kernels of the adjoint operator, as SymPy matrices.
@@ -2066,7 +2067,23 @@ class SolverBaseClass(uw_object):
         implicit part of the gradient; add :math:`\partial J/\partial m` if
         the misfit depends on the parameter directly.
         """
-        return float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        # A parameter that enters through a natural condition — a prescribed
+        # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
+        import sympy
+        mu_sym = mu.sym
+        for bc in (getattr(self, "natural_bcs", None) or []):
+            fn = getattr(bc, "fn_f", None)
+            if fn is None:
+                continue
+            d = sympy.diff(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+            if d.is_zero_matrix:
+                continue
+            values = list(d)
+            comps = getattr(mu, "num_components", 1)
+            integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
+            total += float(uw.maths.BdIntegral(self.mesh, integrand, bc.boundary).evaluate())
+        return total
 
     def _constraint_mechanisms(self):
         """Every way a constraint can have been put on this solver.
