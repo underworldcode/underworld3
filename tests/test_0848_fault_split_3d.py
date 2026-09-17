@@ -268,6 +268,42 @@ def test_coulomb_slide_stick_3d(split_box):
     assert results[0.4] < 5e-3                 # stuck at ~V0 creep
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
+@pytest.mark.parametrize("state", ["uniform", "linear"])
+def test_normal_traction_is_pointwise_3d(split_box, state):
+    """The recovered normal traction matches an exact Stokes state at EVERY
+    pair node, vertices and edge midpoints alike.
+
+    On the P2 triangle the consistent load vanishes at the vertex nodes, so
+    dividing the reaction by a lumped nodal area read 0 at vertices and 4/3
+    of the traction at midpoints — right as an integral, wrong pointwise,
+    and hidden by a median over the patch. The x-normal patch sees
+      uniform: v = (-(x-c), (y-c), 0)                       sigma_nn = -2
+      linear:  v = (-(x-c)(1+(y-c)), (y-c)+(y-c)^2/2, 0)    sigma_nn = -2 - 3(y-c)
+    both exact Stokes solutions with a zero-mean pressure.
+    """
+    from underworld3.utilities import fault_contact
+
+    x, y, z = split_box.X
+    if state == "uniform":
+        drive = (-(x - 0.5), (y - 0.5), 0.0)
+        exact = lambda P: np.full(len(P), -2.0)
+        tolerance = 1e-3
+    else:
+        drive = (-(x - 0.5) * (1 + (y - 0.5)), (y - 0.5) + (y - 0.5) ** 2 / 2, 0.0)
+        exact = lambda P: -2.0 - 3.0 * (P[:, 1] - 0.5)
+        tolerance = 0.06
+
+    stokes = _stokes_on(split_box, drive, f"nt_{state}")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.add_fault_bc(500.0, boundary="FltA")
+    fault_contact.solve_with_fault(stokes)
+    crds, sig = fault_contact.fault_normal_traction(
+        stokes, "FltA", stokes._rotated_freeslip_info)
+    assert np.abs(sig - exact(crds)).max() < tolerance
+
+
 @pytest.mark.level_1
 @pytest.mark.tier_b
 def test_daylighting_patch_refused():
@@ -314,3 +350,66 @@ def test_fault_surface_route():
     fs2.triangulate()
     with pytest.raises(NotImplementedError, match="planar"):
         fs2.rim_polygon()
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_split_sheet_keeps_the_multigrid_tail():
+    """Splitting a sheet placed on an adapt child keeps geometric multigrid.
+
+    The adapt-on-top 3-D fault pipeline is ``adapt`` -> ``add_conforming_sheet``
+    -> ``split_fault``. The split re-represents the same grid (only the fault
+    vertices are duplicated), so the coarse tail the placed mesh owns serves
+    the split mesh unchanged. Without it the fault solve silently fell back
+    to GAMG.
+    """
+    from underworld3.utilities import fault_contact
+
+    centre, radius, h = np.array([0.5, 0.5, 0.5]), 0.3, 0.1
+    normal = np.array([0.3, 0.5, 0.81])
+    normal /= np.linalg.norm(normal)
+
+    def metric(pts):
+        rel = pts - centre
+        dn = rel @ normal
+        r = np.linalg.norm(rel - dn[:, None] * normal, axis=1)
+        d = np.hypot(dn, np.maximum(r - radius, 0.0))
+        return 1.0 / np.minimum(h + d, 0.2) ** 2
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0,) * 3, maxCoords=(1.0,) * 3, cellSize=0.2,
+        regular=False, qdegree=2, refinement=1)
+    child = base.adapt(metric, max_levels=1)
+    e1 = np.cross(normal, [1.0, 0.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(normal, e1)
+    n_rim = int(np.ceil(2.0 * np.pi * radius / h))
+    a = np.linspace(0.0, 2.0 * np.pi, n_rim, endpoint=False)
+    pts = np.vstack([centre, centre + radius * (np.outer(np.cos(a), e1)
+                                                + np.outer(np.sin(a), e2))])
+    tris = np.array([(0, 1 + i, 1 + (i + 1) % n_rim) for i in range(n_rim)])
+    placed = child.add_conforming_sheet(pts, tris, "Fault", size=h)
+    split = split_fault(placed, "Fault")
+
+    assert split._custom_mg_coarse_meshes is not None, (
+        "split_fault dropped the placed mesh's multigrid tail")
+    assert split._custom_mg_coarse_meshes == placed._custom_mg_coarse_meshes
+    assert split._custom_mg_builder == placed._custom_mg_builder
+
+    v = uw.discretisation.MeshVariable("v_tail", split, 3, degree=2)
+    p = uw.discretisation.MeshVariable("p_tail", split, 1, degree=0,
+                                       continuous=False)
+    stokes = uw.systems.Stokes(split, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.bodyforce = [0.0, 0.0, 0.0]
+    drive = (-(split.X[0] - 0.5), split.X[1] - 0.5, 0.0)
+    for wall in ("Bottom", "Top", "Right", "Left", "Front", "Back"):
+        stokes.add_dirichlet_bc(drive, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1e-6
+    stokes.add_fault_bc(200.0, boundary="Fault")
+    fault_contact.solve_with_fault(stokes)
+    info = stokes._rotated_freeslip_info
+    assert info["velocity_pc"] == "custom-FMG", info["velocity_pc"]
+    assert info["converged"]
