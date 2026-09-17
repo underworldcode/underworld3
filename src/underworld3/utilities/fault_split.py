@@ -1500,5 +1500,17 @@ def split_fault(mesh, name, orientation=None, verbose=False):
         int(q_minus): int(point_map[old_pt - pStart])
         for q_minus, old_pt in clone_map.items()
         if point_map[old_pt - pStart] >= 0}
+    # The split re-represents the same grid (only the fault vertices are
+    # duplicated), so a mesh-owned geometric-MG tail serves it unchanged —
+    # the rule add_fault and split_faults already applied to their results.
+    # Here too, or the direct 3-D pipeline (adapt -> add_conforming_sheet ->
+    # split_fault) silently solved on GAMG. The FAC zone is not inherited:
+    # a split fault needs no patch.
+    own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is not None:
+        child._custom_mg_coarse_meshes = list(own_tail)
+        child._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                           "barycentric")
+        child._custom_mg_fac_zone = None
     mesh._registered_children.add(child)
     return child
