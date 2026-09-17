@@ -11,9 +11,11 @@ the top surface and the shear stress in the bulk near a handful of points,
 taken from a run at the true coefficients.
 
 The residual is nonlinear in the velocity and the pressure, so the forward
-solve is Newton, and the adjoint is a transpose of the consistent tangent
-the solver assembled. The gradient with respect to each coefficient is the
-symbolic derivative of that residual. Nothing here is differenced.
+solve is Newton. The gradient with respect to each coefficient comes from
+one call, stokes.gradient(misfit, parameters=...): the solver assembles the
+adjoint operator from its own Jacobian kernels with trial and test
+exchanged, solves it, and differentiates its residual symbolically with
+respect to each named coefficient. Nothing here is differenced.
 
 Run it:
 
@@ -26,7 +28,6 @@ import numpy as np
 import sympy
 
 import underworld3 as uw
-from underworld3.adjoint import misfit_duals, inner
 
 params = uw.Params(
     cell_size=uw.Param(1 / 12, "base mesh cell size (box is 2 x 1); refined once, so half this"),
@@ -171,15 +172,10 @@ def J_and_gradient(label=None):
     evaluations[0] += 1
     with model.step(0.0, label=label or f"eval {evaluations[0]}"):
         stokes.solve(zero_init_guess=True)
-        J = float(uw.maths.Integral(mesh, misfit).evaluate())
-        dJ_dv = misfit_duals(misfit, [v])[v]
-        mu = uw.discretisation.MeshVariable(f"mu_{uw.adjoint._counter()}", mesh, mesh.dim, degree=2)
-        lam = uw.discretisation.MeshVariable(f"lam_{uw.adjoint._counter()}", mesh, 1, degree=1)
-        dJ_dv.array[...] = -np.asarray(dJ_dv.array)
-        _, reason = stokes.adjoint_solve((dJ_dv, None), target=(mu, lam))
-        assert reason > 0, reason
-        grad = np.array([stokes.sensitivity(mu, expr) * float(expr.sym) for expr in strengths])
-    return J, grad
+        out = stokes.gradient(misfit, parameters=strengths)
+    # d/d(log mu) = mu d/d(mu)
+    grad = np.array([out["parameters"][expr] * float(expr.sym) for expr in strengths])
+    return out["J"], grad
 
 def forward(label):
     with model.step(0.0, label=label):

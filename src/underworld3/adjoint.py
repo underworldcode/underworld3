@@ -249,6 +249,130 @@ def misfit_duals(misfit, variables, scratch=None):
     return out
 
 
+def _reads_of(solver, unknown, tokens):
+    """What a solver's residual reads, other than its unknown.
+
+    ``(variable, value symbols, {(component, direction): derivative atom})``
+    per variable. A component prints as ``{v}_{ 0 }``; a derivative carries
+    a comma — ``{v}_{ 0,1}`` for a vector, ``{T}_{,1}`` for a scalar — and
+    is read through the gradient part of the load.
+    """
+    f0 = _peel(solver.F0.sym)
+    f1 = _peel(solver.F1.sym)
+    text = str(f0) + str(f1)
+    atoms = set(f0.atoms(sympy.Function)) | set(f1.atoms(sympy.Function))
+    found = []
+    for token, var in tokens.items():
+        if var is unknown or token not in text:
+            continue
+        derivatives = {}
+        pattern = re.compile(re.escape(token) + r"_\{ ?(\d*),(\d+)\}\(")
+        for atom in atoms:
+            m = pattern.match(str(atom))
+            if m:
+                i = int(m.group(1)) if m.group(1) else 0
+                derivatives[(i, int(m.group(2)))] = atom
+        found.append((var, _symbols_of(var), derivatives))
+    return found
+
+
+def _tokens_of(variables):
+    return {_token_of(var): var for var in variables if hasattr(var, "sym")}
+
+
+def field_duals(solver, mu, variables, scratch=None):
+    r"""``(\partial R/\partial f)^T \mu`` as a dual on each field ``f`` the
+    solver's residual reads, among ``variables``.
+
+    A field read through its value gives the value part of the load; one
+    read through its gradient (a Crank–Nicolson step reads the old flux)
+    gives the gradient part. Both come from :meth:`adjoint_integrand`, the
+    symbolic derivative of the residual, and are assembled as one load.
+    """
+    scratch = _shared_scratch if scratch is None else scratch
+    out = {}
+    for var, symbols, derivatives in _reads_of(solver, solver.u, _tokens_of(variables)):
+        value = [solver.adjoint_integrand(mu, s) for s in symbols]
+        g1 = None
+        if derivatives:
+            cdim = var.mesh.cdim
+            g1 = sympy.zeros(len(symbols), cdim)
+            for (i, k), atom in derivatives.items():
+                g1[i, k] = solver.adjoint_integrand(mu, atom)
+        out[var] = dual_on(var, _as_expression(value), g1, scratch)
+    return out
+
+
+def gradient(solver, misfit, parameters=(), fields=(), scratch=None):
+    r"""``dJ/dm`` and the duals on fields, by the adjoint of ONE solve.
+
+    For :math:`J = \int` ``misfit`` over the mesh, evaluated in the state the
+    solver ended in: the dual of :math:`J` on the unknown is assembled
+    (:func:`misfit_duals`), the adjoint system :math:`K^T\mu = -\partial J/
+    \partial u` is solved (:meth:`adjoint_solve`), and each parameter gets
+    :math:`\partial J/\partial m + \mu^T\partial R/\partial m`
+    (:meth:`sensitivity`). Each requested field gets :math:`\partial J/
+    \partial f + (\partial R/\partial f)^T\mu` as a dual on its own space
+    — the derivative through a field the residual reads, an initial
+    condition or a coefficient field.
+
+    Returns ``{"J": float, "parameters": {expr: float}, "fields": {var: dual}}``;
+    the duals are NumPy copies, safe to keep.
+    """
+    scratch = _shared_scratch if scratch is None else scratch
+    parameters, fields = list(parameters), list(fields)
+    u = solver.u
+    mesh = u.mesh
+    J = float(uw.maths.Integral(mesh, misfit).evaluate())
+    duals = misfit_duals(misfit, [u] + [f for f in fields if f is not u], scratch)
+    grad = {}
+    for p in parameters:
+        explicit = sympy.diff(_peel_except(misfit, p), p)
+        grad[p] = 0.0 if explicit == 0 else float(uw.maths.Integral(mesh, explicit).evaluate())
+    # The explicit part on a field the misfit reads directly — never on the
+    # unknown, whose misfit dual is the adjoint's right-hand side.
+    out_fields = {var: (np.array(duals[var].array, copy=True) if (var in duals and var is not u)
+                        else np.zeros_like(np.asarray(var.array))) for var in fields}
+    # A history slot the residual reads (psi_star[0]) holds the tracked field
+    # at the solve's input, so its dual is the derivative with respect to
+    # that field: read the slot, route the dual to the field.
+    route = {}
+    for history in (getattr(solver, "DuDt", None), getattr(solver, "DFDt", None)):
+        if history is None or not getattr(history, "psi_star", None):
+            continue
+        text = str(history.psi_fn)
+        for field in fields:
+            # the unknown itself is a control through its INPUT level, which
+            # is what the slot holds
+            if _token_of(field) in text:
+                route[history.psi_star[0]] = field
+    read_vars = [f for f in fields if f is not u] + list(route)
+    if u in duals:
+        rhs = duals.pop(u)
+        rhs.array[...] = -np.asarray(rhs.array)
+        mu = scratch.take(u)
+        if getattr(solver, "p", None) is not None and hasattr(solver, "_subdict"):
+            lam = scratch.take(solver.p)
+            _, reason = solver.adjoint_solve((rhs, None), target=(mu, lam))
+            scratch.give(lam)
+        else:
+            _, reason = solver.adjoint_solve(rhs, target=mu)
+        scratch.give(rhs)
+        if reason <= 0:
+            raise RuntimeError(f"gradient: the adjoint of {type(solver).__name__}({u.name}) "
+                               f"did not converge ({reason})")
+        for p in parameters:
+            grad[p] += solver.sensitivity(mu, p)
+        for var, dual in field_duals(solver, mu, read_vars, scratch).items():
+            target = route.get(var, var)
+            out_fields[target] = out_fields[target] + np.asarray(dual.array)
+            scratch.give(dual)
+        scratch.give(mu)
+    for dual in duals.values():
+        scratch.give(dual)
+    return {"J": J, "parameters": grad, "fields": out_fields}
+
+
 _n = [0]
 
 
@@ -386,30 +510,7 @@ class TranscriptAdjoint:
                 if hasattr(var, "sym")}
 
     def _reads(self, solver, unknown):
-        """What a solver's residual reads, other than its unknown.
-
-        ``(variable, value symbols, {(component, direction): derivative atom})``
-        per variable. A component prints as ``{v}_{ 0 }``; a derivative
-        carries a comma — ``{v}_{ 0,1}`` for a vector, ``{T}_{,1}`` for a
-        scalar — and is read through the gradient part of the load.
-        """
-        f0 = _peel(solver.F0.sym)
-        f1 = _peel(solver.F1.sym)
-        text = str(f0) + str(f1)
-        atoms = set(f0.atoms(sympy.Function)) | set(f1.atoms(sympy.Function))
-        found = []
-        for token, var in self._tokens().items():
-            if var is unknown or token not in text:
-                continue
-            derivatives = {}
-            pattern = re.compile(re.escape(token) + r"_\{ ?(\d*),(\d+)\}\(")
-            for atom in atoms:
-                m = pattern.match(str(atom))
-                if m:
-                    i = int(m.group(1)) if m.group(1) else 0
-                    derivatives[(i, int(m.group(2)))] = atom
-            found.append((var, _symbols_of(var), derivatives))
-        return found
+        return _reads_of(solver, unknown, self._tokens())
 
     def _linearise_at(self, step, solves, j):
         """Restore the step's snapshot, replay solves 0..j, and put each

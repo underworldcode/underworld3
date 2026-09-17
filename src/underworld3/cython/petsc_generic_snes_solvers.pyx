@@ -1788,6 +1788,111 @@ class SolverBaseClass(uw_object):
             out = out + d0[i] * mu_sym[i]
         return out + uw.maths.tensor.rank2_inner_product(d1, grad_mu)
 
+    def gradient(self, misfit, parameters=(), fields=()):
+        r"""``dJ/dm`` for each parameter, and the dual on each field, by the
+        adjoint of this solve.
+
+        ``misfit`` is :math:`J` as an integrand over the mesh in the state
+        the solve ended in. The three steps — the dual of :math:`J` on the
+        unknown, the transposed solve, the sensitivities — are
+        :func:`underworld3.adjoint.gradient`; this is the method form of it.
+        Returns ``{"J", "parameters": {expr: dJ/dm}, "fields": {var: dual}}``.
+        """
+        from underworld3.adjoint import gradient as _gradient
+        return _gradient(self, misfit, parameters=parameters, fields=fields)
+
+    def adjoint_kernels(self):
+        """The pointwise kernels of the adjoint operator, as SymPy matrices.
+
+        ``{"F0_u", "F0_grad_u", "F1_u", "F1_grad_u"}`` per block, in
+        PETSc's flat layout: the forward Jacobian kernels with trial and
+        test exchanged (:func:`_transpose_kernels`), which is what
+        :meth:`adjoint_solve` assembles. Read-only; the solver must have
+        been built.
+        """
+        if getattr(self, "_G0", None) is None and getattr(self, "_uu_G0", None) is None:
+            self._build(False, False, None)
+        dim = self.mesh.cdim
+        if getattr(self, "_uu_G0", None) is not None:
+            uu = _transpose_kernels(self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3, dim, dim, dim)
+            up = _transpose_kernels(self._pu_G0, self._pu_G1, None, None, 1, dim, dim)
+            pu = _transpose_kernels(self._up_G0, self._up_G1, self._up_G2, self._up_G3, dim, 1, dim)
+            names = ("F0_u", "F0_grad_u", "F1_u", "F1_grad_u")
+            return {"uu": dict(zip(names, uu)), "up": dict(zip(names, up)), "pu": dict(zip(names, pu))}
+        nc = int(self._G0.shape[0])
+        H = _transpose_kernels(self._G0, self._G1, self._G2, self._G3, nc, nc, dim)
+        return dict(zip(("F0_u", "F0_grad_u", "F1_u", "F1_grad_u"), H))
+
+    def adjoint_templates(self):
+        r"""The adjoint problem in the residual template form.
+
+        :math:`K^T\mu = b` is linear in :math:`\mu`, so it is a solver in
+        the same language as the forward one:
+
+        .. math::
+
+            f_0^{\rm adj} = g_0^T\mu + g_2^T\!:\!\nabla\mu, \qquad
+            \mathbf f_1^{\rm adj} = g_1^T\mu + g_3^T\nabla\mu,
+
+        the forward Jacobian kernels with trial and test exchanged, applied
+        to the adjoint variable. Returns ``(F0_adj, F1_adj)`` as SymPy
+        expressions in :math:`\mu` (a scalar or a row vector of the
+        unknown's size) for a single-field solver, and the same per block
+        for a saddle point, which :meth:`adjoint_view` typesets.
+        """
+        import sympy
+        kernels = self.adjoint_kernels()
+        dim = self.mesh.cdim
+
+        def apply(block, nc, mu, grad_mu):
+            H0, H1, H2, H3 = (block["F0_u"], block["F0_grad_u"], block["F1_u"], block["F1_grad_u"])
+            nt = int(H0.shape[0])            # test components of the adjoint block
+            f0 = sympy.zeros(nt, 1)
+            f1 = sympy.zeros(nt, dim)
+            for a in range(nt):
+                for c in range(nc):
+                    f0[a] += H0[a, c] * mu[c]
+                    for d in range(dim):
+                        f0[a] += H1[a * nc + c, d] * grad_mu[c, d]
+                        f1[a, d] += H2[a * nc + c, d] * mu[c]
+                        for e in range(dim):
+                            f1[a, d] += H3[a * nc + c, d * dim + e] * grad_mu[c, e]
+            return f0, f1
+
+        if "uu" in kernels:
+            mu = sympy.Matrix([sympy.Symbol(f"\\mu_{{{i}}}") for i in range(dim)])
+            gmu = sympy.Matrix(dim, dim, lambda i, j: sympy.Symbol(f"\\mu_{{{i},{j}}}"))
+            lam = sympy.Matrix([sympy.Symbol(r"\lambda")])
+            glam = sympy.Matrix(1, dim, lambda i, j: sympy.Symbol(f"\\lambda_{{,{j}}}"))
+            f0_uu, f1_uu = apply(kernels["uu"], dim, mu, gmu)
+            f0_up, f1_up = apply(kernels["up"], 1, lam, glam)
+            f0_pu, f1_pu = apply(kernels["pu"], dim, mu, gmu)
+            return {"u": (f0_uu + f0_up, f1_uu + f1_up), "p": (f0_pu, f1_pu)}
+        nc = int(kernels["F0_u"].shape[0])
+        if nc == 1:
+            mu = sympy.Matrix([sympy.Symbol(r"\mu")])
+            gmu = sympy.Matrix(1, dim, lambda i, j: sympy.Symbol(f"\\mu_{{,{j}}}"))
+        else:
+            mu = sympy.Matrix([sympy.Symbol(f"\\mu_{{{i}}}") for i in range(nc)])
+            gmu = sympy.Matrix(nc, dim, lambda i, j: sympy.Symbol(f"\\mu_{{{i},{j}}}"))
+        return apply(kernels, nc, mu, gmu)
+
+    def adjoint_view(self):
+        """Typeset the adjoint problem this solver assembles, in a notebook."""
+        from IPython.display import Latex, Markdown, display
+        import sympy
+        templates = self.adjoint_templates()
+        display(Markdown("### Adjoint problem, as assembled"))
+        display(Markdown(r"$\int \phi\, f_0^{\rm adj}(\mu,\nabla\mu) + \nabla\phi\cdot\mathbf f_1^{\rm adj}(\mu,\nabla\mu) = b(\phi)$ with"))
+        if isinstance(templates, dict):
+            for block, (f0, f1) in templates.items():
+                display(Latex(f"$f_0^{{\\rm adj}}[{block}] = {sympy.latex(f0)}$"))
+                display(Latex(f"$\\mathbf f_1^{{\\rm adj}}[{block}] = {sympy.latex(f1)}$"))
+        else:
+            f0, f1 = templates
+            display(Latex(f"$f_0^{{\\rm adj}} = {sympy.latex(f0)}$"))
+            display(Latex(f"$\\mathbf f_1^{{\\rm adj}} = {sympy.latex(f1)}$"))
+
     def _adjoint_by_kernels(self):
         """Whether the adjoint operator is ASSEMBLED from the transposed
         kernels rather than obtained by transposing the assembled matrix.
