@@ -43,6 +43,8 @@ params = uw.Params(
 # Refined once from the base size: the refinement gives the velocity block a
 # multigrid hierarchy. Without one it falls back to gamg, which hits its
 # iteration cap on this problem, and an inexact Newton step converges linearly.
+# Every solve starts cold: six Newton iterations, and a misfit that does not
+# depend on the previous evaluation, which the finite-difference check needs.
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0),
                                          cellSize=params.cell_size, qdegree=3, refinement=1)
 x, y = mesh.X
@@ -122,7 +124,7 @@ def set_strengths(values):
 
 def J_and_gradient():
     """The misfit and dJ/d(log strength) for each segment, by the adjoint."""
-    stokes.solve(zero_init_guess=False)
+    stokes.solve(zero_init_guess=True)
     J = float(uw.maths.Integral(mesh, misfit).evaluate())
     dJ_dv = misfit_duals(misfit, [v])[v]
     mu = uw.discretisation.MeshVariable(f"mu_{uw.adjoint._counter()}", mesh, mesh.dim, degree=2)
@@ -136,7 +138,7 @@ def J_and_gradient():
 # --- the truth, and the twin -------------------------------------------------
 true_values = [float(t) for t in str(params.true_strengths).split(",")][:n_seg]
 set_strengths(true_values)
-stokes.solve(zero_init_guess=False)
+stokes.solve(zero_init_guess=True)
 v_obs.array[...] = np.asarray(v.array)
 uw.pprint(f"true strengths {true_values}")
 
@@ -153,7 +155,7 @@ for k in range(n_seg):
         vals = [params.initial_strength] * n_seg
         vals[k] = math.exp(base + sign * h)
         set_strengths(vals)
-        stokes.solve(zero_init_guess=False)
+        stokes.solve(zero_init_guess=True)
         fd.append(float(uw.maths.Integral(mesh, misfit).evaluate()))
     fd = (fd[0] - fd[1]) / (2 * h)
     uw.pprint(f"{names[k]:>13}: adjoint {g0[k]: .6e}   finite difference {fd: .6e}   "
@@ -189,10 +191,10 @@ profiles = {}
 for label, values in (("true", true_values), ("initial", [params.initial_strength] * n_seg),
                       ("recovered", list(np.exp(result.x)))):
     set_strengths(values)
-    stokes.solve(zero_init_guess=False)
+    stokes.solve(zero_init_guess=True)
     profiles[label] = np.asarray(uw.function.evaluate(v.sym[1], top)).ravel()
 set_strengths(true_values)
-stokes.solve(zero_init_guess=False)          # the field on the grid is the truth's
+stokes.solve(zero_init_guess=True)          # the field on the grid is the truth's
 gx, gy = np.meshgrid(np.linspace(0, 2, 201), np.linspace(0, 1, 101))
 grid = np.column_stack([gx.ravel(), gy.ravel()])
 eta_1_grid = np.asarray(uw.function.evaluate(eta_1, grid)).reshape(gx.shape)

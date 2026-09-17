@@ -50,6 +50,8 @@ params = uw.Params(
 # Refined once from the base size: the refinement gives the velocity block a
 # multigrid hierarchy. Without one it falls back to gamg, which hits its
 # iteration cap on this problem, and an inexact Newton step converges linearly.
+# Every solve starts cold: six Newton iterations, and a misfit that does not
+# depend on the previous evaluation, which the finite-difference check needs.
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0),
                                          cellSize=params.cell_size, qdegree=3, refinement=1)
 x, y = mesh.X
@@ -168,7 +170,7 @@ def J_and_gradient(label=None):
     """
     evaluations[0] += 1
     with model.step(0.0, label=label or f"eval {evaluations[0]}"):
-        stokes.solve(zero_init_guess=False)
+        stokes.solve(zero_init_guess=True)
         J = float(uw.maths.Integral(mesh, misfit).evaluate())
         dJ_dv = misfit_duals(misfit, [v])[v]
         mu = uw.discretisation.MeshVariable(f"mu_{uw.adjoint._counter()}", mesh, mesh.dim, degree=2)
@@ -181,7 +183,7 @@ def J_and_gradient(label=None):
 
 def forward(label):
     with model.step(0.0, label=label):
-        stokes.solve(zero_init_guess=False)
+        stokes.solve(zero_init_guess=True)
 
 # --- the truth, and the twin -------------------------------------------------
 true_values = [float(t) for t in str(params.true_strengths).split(",")][:n_seg]

@@ -53,6 +53,38 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
+def _solve_transposed(ksp, J, P, b, x):
+    """Solve :math:`J^T x = b` with the solver's OWN KSP and preconditioner.
+
+    ``KSP.solveTranspose`` applies the transpose of the preconditioner, which
+    PETSc refuses for a multigrid whose smoother is a one-sided SOR sweep —
+    the velocity block of every Stokes solve with a mesh hierarchy. So the
+    matrices are transposed explicitly and the same KSP solves the
+    transposed system forwards: every preconditioner the forward solve can
+    use, the adjoint can use, set up on :math:`J^T` exactly as it was on
+    :math:`J`. The forward operators are put back afterwards. A null space
+    attached to ``J`` (the pressure constant on an enclosed domain) is the
+    transpose null space of ``J^T``, and is carried across.
+    """
+    Jt = J.transpose()
+    Pt = Jt if P.handle == J.handle else P.transpose()
+    for source, put in ((J.getNullSpace(), Jt.setTransposeNullSpace),
+                        (J.getTransposeNullSpace(), Jt.setNullSpace),
+                        (J.getNearNullSpace(), Jt.setNearNullSpace)):
+        if source is not None and source.handle != 0:
+            put(source)
+    ksp.setOperators(Jt, Pt)
+    try:
+        ksp.solve(b, x)
+        reason = int(ksp.getConvergedReason())
+    finally:
+        ksp.setOperators(J, P)
+        if Pt is not Jt:
+            Pt.destroy()
+        Jt.destroy()
+    return reason
+
+
 def _jacobian_unwrap(expr):
     """Expand UWexpressions down to (but NOT including) constant atoms, for use
     as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
@@ -1551,10 +1583,7 @@ class SolverBaseClass(uw_object):
         x = gvec.duplicate()
         x.set(0.0)
 
-        ksp = self.snes.getKSP()
-        ksp.setOperators(J, P)
-        ksp.solveTranspose(b, x)
-        reason = int(ksp.getConvergedReason())
+        reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
         self._restore_tangent(tangent)
 
         if target is not None:
@@ -10170,10 +10199,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         x = gvec.duplicate()
         x.set(0.0)
 
-        ksp = self.snes.getKSP()
-        ksp.setOperators(J, P)
-        ksp.solveTranspose(b, x)
-        reason = int(ksp.getConvergedReason())
+        reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
         self._restore_tangent(tangent)
 
         if target is not None:
