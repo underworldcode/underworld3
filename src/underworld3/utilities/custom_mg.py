@@ -1447,6 +1447,29 @@ class CustomMGHierarchy:
                     if (self.cross_partition == "auto"
                             and _count_zero_columns_parallel(P, comm) > 0):
                         P = _build_crosspart_transfer(*args)
+                # TODO(BUG): a 2-D adapt child carrying a SPLIT FAULT fails at
+                # np=2 in the rotated fault solve, in PCMG setup, right after
+                # this repair fires: PETSc error 63 "New nonzero at (454,454)
+                # caused a malloc" from vel_pc.setUp(), i.e. the Galerkin
+                # coarse operator was not preallocated for the entries the
+                # repair adds to P. A second orientation instead reached
+                # setUp() and returned vel_its 0 / converged False. A 3-D
+                # FRICTIONAL fault at np=2 gives a third mode: a permanent
+                # HANG in the same Galerkin setup. Stacks after 5.4 h (py-spy
+                # --native, both ranks):
+                #   rank 0  PetscGarbageCleanup -> GarbageKeyAllReduceIntersect
+                #           -> MPI_Allreduce   (petsc4py _pre_finalize)
+                #   rank 1  PCSetUp_MG -> MatGalerkin -> MatPtAP
+                #           -> MatProductSymbolic_PtAP_MPIAIJ
+                #           -> MatGetBrowsOfAoCols_MPIAIJ -> MPI_Waitall
+                # i.e. one rank had left the solve entirely while the other was
+                # still inside the PtAP — a mismatched collective that never
+                # completes. A 3-D WELDED fault at np=2 solves correctly, so it
+                # is case-dependent, consistent with the repair adding entries
+                # in a rank-dependent pattern. Measured 2026-09-17; reproducer
+                # in the session scratchpad as repro_2d_fault_np2.py (2-D box,
+                # adapt max_levels=2, add_fault, add_fault_bc,
+                # solve_with_fault at np=1 vs np=2).
                 # the same orphan repair the serial path has: a coarse DOF no
                 # fine node reaches gets its nearest fine DOF as an injection
                 if _count_zero_columns_parallel(P, comm) > 0:

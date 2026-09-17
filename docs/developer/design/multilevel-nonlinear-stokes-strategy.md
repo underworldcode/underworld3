@@ -116,6 +116,32 @@ resolution/tolerance-sensitive. Trust the iteration counts.)
   that FMG's coarse grid and the LU paths lean on scale ~O(N²) in 3-D and MUMPS gets
   unreliable at high core counts, while Vanka's local solves scale ~O(N) and
   parallelise. Re-measure there.
+- **A grad-div-robust smoother for the VELOCITY block, so the augmented-Lagrangian
+  penalty becomes usable.** This is a different target from the prototypes above, and
+  cheaper: they use Vanka as the *solver* (Vanka MG on the full saddle,
+  `vanka_mg.py`; FAS level smoothers, `fas_vanka.py`), whereas what is wanted here is
+  Vanka — or any patch smoother — as the *smoother of the velocity block inside the
+  existing Schur fieldsplit*, leaving the fieldsplit + custom-P FMG structure alone.
+  The motivation: `stokes.penalty` (the viscosity-weighted grad-div term
+  $\lambda\int\mu(\nabla\cdot u)(\nabla\cdot v)$) makes the velocity operator nearly
+  singular on the divergence-free subspace, and both smoother variants UW3 offers are
+  point smoothers on SOR (`multigrid_options`: "robust" gmres/4, "fast"
+  richardson/3), which cannot damp that mode. Measured 2026-09-16 on the 3-D tumbling
+  welded fault (21k cells, constant $\eta$, FMG velocity block, one core;
+  `scripts/sessions/fault_mohr_tumble.py -uw_penalty`): velocity iterations rise with
+  $\lambda$ (3 → 4 → 9 for $\lambda$ = 0 → 10 → 100), so the penalty pays only where
+  the pressure solve is the bottleneck. At solve tolerance 1e-6 it clearly does —
+  pressure iterations 200 (which is `fieldsplit_pres_ksp_max_it`, i.e. the inner
+  solve was exhausting its cap every outer iteration while the outer still reported
+  convergence) → 69, and 27% faster — while at 1e-3 it is pure cost (17 → 31). With a
+  grad-div-robust smoother the win should extend to the ordinary regime instead of
+  only rescuing a capped pressure solve. Two things measured along the way that save
+  a repeat: rescaling `saddle_preconditioner` to $1/(\eta(1+\lambda))$ is a **no-op**
+  ($\lambda$ is already $\eta$-scaled, so it is a constant factor and the Krylov
+  spectrum's shape is unchanged — runs were bit-identical), and the penalty perturbs
+  pointwise recovered tractions by ~3% of the stress scale at $\lambda=10$
+  ($p_\text{mech} = p - \lambda\mu\nabla\cdot u$), which matters wherever a reaction
+  is read as a traction.
 - **A concrete problem where FMG genuinely fails at production resolution** — e.g. a
   notched/localising plasticity benchmark whose cold fine solve collapses. The spike
   could not tune a *simplified* version into the "easy-coarse / hard-fine" knife-edge
