@@ -270,6 +270,40 @@ class Constitutive_Model(uw_object):
     _class_instance_counts = {}
 
     @timing.routine_timer_decorator
+    def _declared_terms(self):
+        """The parameters this model was given, by the name they were set under.
+
+        Enumerated from ``Parameters`` so every constitutive model satisfies
+        the contract without writing it out; a model whose terms need a better
+        account overrides this.
+        """
+        import types
+
+        parameters = getattr(self, "Parameters", None)
+        if parameters is None:
+            return []
+
+        terms, seen = [], set()
+        for name in sorted(a for a in dir(parameters) if not a.startswith("_")):
+            try:
+                value = getattr(parameters, name)
+            except Exception:
+                continue
+            # `dir()` sees anything bound into the namespace, including the
+            # module imports that leak into it.
+            if isinstance(value, types.ModuleType) or callable(value):
+                continue
+            key = str(value)
+            if key in seen:
+                continue            # `viscosity` and `shear_viscosity_0` alias
+            seen.add(key)
+            terms.append({
+                "name": f"{type(self).__name__}.{name}",
+                "value": getattr(value, "sym", value),
+                "description": "constitutive parameter",
+            })
+        return terms
+
     def __init__(self, unknowns, material_name: str = None):
         """
         Initialize a constitutive model.

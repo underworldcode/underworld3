@@ -5719,6 +5719,11 @@ class Swarm(Stateful, uw_object):
         for hook in list(getattr(self, "_pre_advection_hooks", ())):
             hook()
 
+        # The particle count before the move. advection() is collective, so
+        # the reduction is safe here; the count after the migrate at the end
+        # is what decides whether this step kept the particle set fixed.
+        n_before = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
         # during timestepping. Probably not needed - use global evaluation instead
@@ -5879,6 +5884,7 @@ class Swarm(Stateful, uw_object):
         if self.population_control is not None:
             self.repopulate(**self.population_control)
 
+        self._note_advection(delta_t_model, substeps, order, n_before)
         return
 
     def _characteristics_for(self, V_fn):
@@ -5891,6 +5897,25 @@ class Swarm(Stateful, uw_object):
             tr = CharacteristicTrace(self.mesh, V_fn, midtime_velocity=True)
             self._characteristics = tr
         return tr
+
+    def _note_advection(self, dt, substeps, order, n_before):
+        """Tell the model's open step that this swarm moved.
+
+        Recorded with the particle count before and after: a swarm that
+        quietly lost forty particles to the boundary is the kind of thing a
+        run should say.
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            n_after = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+            uw.get_default_model()._record_step_event(
+                "swarm_advect", f"{type(self).__name__}#{self.instance_number}",
+                part=f"{type(self).__name__}#{self.instance_number}",
+                dt=float(dt), substeps=int(substeps), order=int(order),
+                n_before=int(n_before), n_after=int(n_after),
+            )
+        except Exception:
+            pass
 
     @timing.routine_timer_decorator
     def estimate_dt(self, V_fn):

@@ -103,6 +103,14 @@ they are about (`mesh-adaptation-architecture.md`), never whimsical ones.
 
 ## Rulings a session needs in hand
 
+**Adversarial review before the PR opens.** Every branch gets one before it
+becomes a PR, and again after any substantial post-review commit. The checklist —
+parallel rank asymmetry, frame and unit boundaries, determinism, tests that cannot
+fail, CI reach, and the solver/transcript contracts — is in
+[`guides/adversarial-review.md`](docs/developer/guides/adversarial-review.md).
+Post the findings on the PR.
+
+
 **Free-slip: prefer rotated strong free-slip.**
 `solver.add_rotated_freeslip_bc(conds, boundary, normal=None)`, value first
 (`conds=0` is free-slip). It enforces `v·n̂ = 0` to machine precision where

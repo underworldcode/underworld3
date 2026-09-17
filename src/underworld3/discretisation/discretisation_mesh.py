@@ -1385,13 +1385,16 @@ class Mesh(Stateful, uw_object):
         self._Gamma.y._ccodestr = "petsc_n[1]"
         self._Gamma.z._ccodestr = "petsc_n[2]"
 
-        # Time coordinate — PETSc passes this as petsc_t to all pointwise
-        # functions. Solvers set dm.time before each solve via solve(time=t).
-        # Users reference it as mesh.t in expressions (e.g. V0 * sympy.sin(omega * mesh.t))
-        from ..utilities.unit_aware_coordinates import TimeSymbol
-
-        self._t = TimeSymbol("t")
-        self._t._units = None  # patched below by _patch_time_units
+        # Time coordinate. This is a live-rampable ``constants[]`` atom, NOT
+        # PETSc's ``petsc_t``: the high-level solve() wrappers never set
+        # petsc_t, so an expression built on it evaluated to zero inside every
+        # solve (silently — a time-dependent BC was identically zero). Time is
+        # owned by the orchestration model; ``mesh.t`` reads that clock.
+        # ``_sync_time_from_model`` repacks it before each solve, from the
+        # solver's ``_update_constants``, so no kernel is recompiled per step.
+        self._t = uw.expression(
+            r"t", 0.0, "model time — the clock on uw.get_default_model().tracker"
+        )
 
         # Add unit awareness to coordinate symbols if mesh has units or model has scales
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
@@ -4516,29 +4519,59 @@ class Mesh(Stateful, uw_object):
 
     @property
     def t(self):
-        r"""Symbolic time coordinate.
+        r"""Symbolic model time.
 
-        PETSc passes a time value (``petsc_t``) to all pointwise residual
-        and Jacobian functions. Use ``mesh.t`` in expressions to reference
-        this time without forcing JIT recompilation each timestep.
+        A live-rampable ``constants[]`` atom carrying the clock owned by the
+        orchestration model, ``uw.get_default_model().tracker.time``. Every
+        solver repacks it from that clock immediately before solving, so an
+        expression built on ``mesh.t`` follows time with no JIT recompilation
+        per step.
 
-        The low-level PETSc solver accepts ``time=t`` to set the value
-        of ``petsc_t`` for pointwise functions. If not provided, ``petsc_t``
-        defaults to 0. Note: the high-level Python ``solve()`` wrappers
-        do not yet pass ``time=`` through — set it directly via
-        ``UW_DMSetTime`` at the Cython level if needed.
+        Maintain the clock as part of the timestepping loop (see
+        ``docs/developer/guides/HOW-TO-WRITE-UW3-SCRIPTS.md``). A script that
+        never advances it leaves ``mesh.t`` at zero.
 
-        When the scaling system is active, ``mesh.t`` carries time units
-        (derived from the model's time scale) so that dimensional analysis
-        works correctly in expressions.
+        A dimensional clock is non-dimensionalised on the way in, so the value
+        the kernels see is always in solver units.
+
+        .. note::
+            Assign it as part of an expression rather than bare. A boundary
+            condition takes a Matrix / array form, and a bare atom handed to a
+            scalar setter is stored by value.
 
         Examples
         --------
         >>> omega = 2 * np.pi / period
         >>> stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
-        >>> stokes.solve(time=current_time)   # sets petsc_t before SNES
+        >>> model.tracker.time = 1.5 * uw.quantity(1, "Myr")
+        >>> stokes.solve()                    # mesh.t picks the clock up
         """
         return self._t
+
+    def _sync_time_from_model(self):
+        """Repack ``mesh.t`` from the model clock. Called by every solver's
+        ``_update_constants`` immediately before a solve, so an expression
+        containing ``mesh.t`` sees the current time without a rebuild.
+
+        Silent no-op when the model has no clock: ``mesh.t`` then stays at
+        whatever it was last set to (0.0 for a fresh mesh), which is the
+        behaviour a script that never advances a clock already expects.
+        """
+        try:
+            model = uw.get_default_model()
+            time = model.tracker.time
+        except Exception:
+            return
+        if time is None:
+            return
+        try:
+            if hasattr(time, "magnitude") or hasattr(time, "_pint_qty"):
+                time = float(uw.non_dimensionalise(time))
+            self._t.sym = sympy.sympify(float(time))
+        except Exception:
+            # A clock we cannot reduce to a number is not worth failing a
+            # solve over; leave mesh.t as it stands.
+            return
 
     @property
     def nullspace_rotations(self):
@@ -5208,7 +5241,12 @@ class Mesh(Stateful, uw_object):
 
         - ``name``: stable string identifier for the mesh.
         - ``mesh_version``: current ``_mesh_version`` integer.
-        - ``coords``: deformed mesh coordinates (numpy array).
+        - ``coords``: deformed mesh coordinates, in MODEL UNITS — the
+          representation :meth:`_deform_mesh` writes back. ``mesh.X.coords``
+          is the unit-aware view and returns metres when a model declares a
+          length scale; capturing that and restoring it through
+          ``_deform_mesh`` would multiply the mesh by the length scale on
+          every restore, silently and without changing any array's shape.
         - ``vars``: ``{var.clean_name: gvec_array.copy()}`` for every
           mesh variable on this mesh.
 
@@ -5216,7 +5254,7 @@ class Mesh(Stateful, uw_object):
         section / DM-topology data sufficient to rebuild the DM on
         restore.
         """
-        coords = numpy.asarray(self.X.coords).copy()
+        coords = numpy.asarray(self._coords).copy()
         var_arrays: dict[str, numpy.ndarray] = {}
         for var in self.vars.values():
             var._sync_lvec_to_gvec()
@@ -5261,7 +5299,7 @@ class Mesh(Stateful, uw_object):
             )
 
         coords = numpy.asarray(payload["coords"])
-        expected_shape = numpy.asarray(self.X.coords).shape
+        expected_shape = numpy.asarray(self._coords).shape
         if coords.shape != expected_shape:
             raise SnapshotInvalidatedError(
                 f"mesh {self.name!r}: coordinate shape changed "

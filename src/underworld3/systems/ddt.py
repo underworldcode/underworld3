@@ -370,6 +370,10 @@ def _bdf_coefficients(order, dt_current, dt_history):
 from underworld3.function.expressions import UWexpression as _UWexpression
 
 
+_SCHEME_NAMES = {"c^{BDF}": "BDF", r"c^{\mathrm{BDF}}": "BDF",
+                 "a^{AM}": "Adams-Moulton", r"a^{\mathrm{AM}}": "Adams-Moulton"}
+
+
 def _create_coefficients(order, prefix, instance_id):
     """Create UWexpression objects for BDF or AM coefficients.
 
@@ -392,7 +396,8 @@ def _create_coefficients(order, prefix, instance_id):
         c = _UWexpression(
             rf"{prefix}_{{{i},{instance_id}}}",
             sym=0.0,
-            description=f"{prefix} coefficient {i} (DDt instance {instance_id})",
+            description=(f"{_SCHEME_NAMES.get(prefix, prefix)} coefficient {i} "
+                         f"of history {instance_id}"),
             _unique_name_generation=True,
         )
         coeffs.append(c)
@@ -420,19 +425,24 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
     - Order 2: [5/12, 8/12, -1/12]
     - Order 3: [9/24, 19/24, -5/24, 1/24]
     """
+    # Exact, so the scheme's form prints as it is written: a^AM = 1/2, not
+    # 0.5, and 5/12 rather than 0.41666. The JIT sees the same double.
+    one = sympy.Integer(1)
     if effective_order <= 0:
-        values = [1.0]
+        values = [one]
     elif effective_order == 1:
-        values = [float(theta), 1.0 - float(theta)]
+        theta = sympy.nsimplify(theta, rational=True)
+        values = [theta, one - theta]
     elif effective_order == 2:
-        values = [5.0 / 12, 8.0 / 12, -1.0 / 12]
+        values = [sympy.Rational(5, 12), sympy.Rational(8, 12), sympy.Rational(-1, 12)]
     elif effective_order >= 3:
-        values = [9.0 / 24, 19.0 / 24, -5.0 / 24, 1.0 / 24]
+        values = [sympy.Rational(9, 24), sympy.Rational(19, 24),
+                  sympy.Rational(-5, 24), sympy.Rational(1, 24)]
 
     for i, v in enumerate(values):
         coeffs[i].sym = v
     for i in range(len(values), len(coeffs)):
-        coeffs[i].sym = 0.0
+        coeffs[i].sym = sympy.Integer(0)
 
 
 def _create_exp_coefficients(instance_id):
@@ -554,7 +564,7 @@ class _DDtBase(uw_object):
         # composes its residual from :meth:`time_derivative` never recompiles
         # when the step changes.
         self._delta_t = _UWexpression(
-            rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep",
+            rf"\Delta t_{{{self.instance_number}}}", 1.0, "timestep of this history",
             _unique_name_generation=True)
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
@@ -618,6 +628,86 @@ class _DDtBase(uw_object):
         _update_am_values(self._am_coeffs, 1, theta)
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
+
+    def _note_history_shift(self, dt, **detail):
+        """Tell the model's open step that this history advanced.
+
+        ``detail`` is whatever the scheme knows about the shift that a reader
+        of the record would want — for a semi-Lagrangian history, which
+        velocity levels the trace-back read, because that is the tie from
+        this step to the last one.
+
+        A history manager should shift EXACTLY ONCE per model step. Shifting
+        twice means the step was taken twice — a Picard iteration, a corrector
+        or a retry that called the solver again — and the field advances twice
+        while ``n_solves_completed`` (capped at ``order``) and ``dt_history``
+        look identical. Recording the shift lets ``model.step`` say so; without
+        it the mistake is invisible.
+
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            import underworld3 as uw
+
+            part = f"{type(self).__name__}#{self.instance_number}"
+            uw.get_default_model()._part_objects[part] = self
+            uw.get_default_model()._record_step_event(
+                "history_shift", self._history_label(), dt=float(dt),
+                part=part,
+                tracks=self._tracked_expression(),
+                **detail,
+            )
+        except Exception:
+            pass
+
+    def _tracked_expression(self):
+        """What this history holds, as text, for the record."""
+        try:
+            return str(self.psi_fn)
+        except Exception:
+            return None
+
+    def _history_label(self):
+        """Name this history by what it TRACKS, for the step record.
+
+        Not by its ``psi_star`` slot, whose name is generated from the instance
+        number and tells a reader nothing.
+
+        A solver can carry two histories on one field: the field itself
+        (``DuDt``) and its flux (``DFDt``, the Crank–Nicolson midpoint's
+        :math:`\kappa \nabla T`). Both are semi-Lagrangian, both follow the
+        same characteristics, and only the first is the history of ``T``. They
+        are distinct parts in the record — different instance numbers — but
+        they must also READ as distinct, so a history of an expression in the
+        field is labelled ``F[T]`` rather than ``T``.
+        """
+        import re
+
+        tracked, bare = None, False
+        try:
+            psi = self.psi_fn
+            tracked = getattr(psi, "name", None)
+            if tracked is not None:
+                bare = True
+            else:
+                # a MeshVariable's .sym prints as "{name}(N.x, N.y)", possibly
+                # wrapped in a Matrix for a vector or tensor unknown; a
+                # derivative prints as "{name}_{,0}(N.x, N.y)"
+                text = str(psi)
+                match = re.search(r"\{([^{}]+)\}", text)
+                if match:
+                    tracked = match.group(1)
+                    bare = re.fullmatch(
+                        r"(Matrix\(\[\[)?\{" + re.escape(tracked)
+                        + r"\}\(N\.x(?:, N\.y)?(?:, N\.z)?\)(\]\]\))?",
+                        text) is not None
+        except Exception:
+            pass
+        if tracked is None:
+            tracked = getattr(self, "instance_number", "?")
+        elif not bare:
+            tracked = f"F[{tracked}]"
+        return f"{type(self).__name__}({tracked})"
 
     def _register_with_default_model(self):
         """Register with the active default model as a snapshot state-bearer.
@@ -963,6 +1053,7 @@ class Symbolic(_DDtBase):
     Lagrangian : Swarm-based material tracking.
     """
 
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -1133,6 +1224,7 @@ class Symbolic(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         # Shift history: copy each element down the chain.
         for i in range(self.order - 1, 0, -1):
@@ -1224,6 +1316,7 @@ class Eulerian(_DDtBase):
     Lagrangian : For full Lagrangian tracking on swarms.
     Symbolic : For purely symbolic history (no mesh storage).
     """
+
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1576,6 +1669,7 @@ class Eulerian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         ### copy values down the chain
         for i in range(self.order - 1, 0, -1):
@@ -1701,7 +1795,8 @@ class EulerianSUPG(Eulerian):
         self.V_fn_history = None
         self.diffusivity = diffusivity
         self._tau_shape = str(tau_shape)
-        self._peclet_weight = float(peclet_weight)
+        # Exact, so 4 Pe_c^2 prints and cancels as 64, not 64.0.
+        self._peclet_weight = sympy.nsimplify(peclet_weight, rational=True)
 
         # The stabilisation knobs are runtime constants.
         tag = self.instance_number
@@ -1743,7 +1838,7 @@ class EulerianSUPG(Eulerian):
 
     @property
     def peclet_weight(self) -> float:
-        return self._peclet_weight
+        return float(self._peclet_weight)
 
     @property
     def supg_weight(self) -> float:
@@ -1800,23 +1895,26 @@ class EulerianSUPG(Eulerian):
         ct, cu, cv = self._tau_weights
         transient = (ct * c0 / self._delta_t) ** 2
         weight = self._supg_weight
+        # The regulariser that keeps every denominator finite is the library's
+        # named vanishing value, so the form prints it as a symbol.
+        eps = uw.maths.functions.vanishing
         if self._peclet_weight > 0.0:
             # Pe^2 / (Pe^2 + Pe_c^2) written without dividing by nu (1 for nu = 0).
             ah2 = a_mag2 * h ** 2
-            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + 1.0e-30)
+            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + eps)
         if self._tau_shape == "inverse_sum":
             advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
             viscous = (cv * nu / h ** 2) ** 2
-            return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+            return weight / sympy.sqrt(transient + advective + viscous + eps)
         # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
-        a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
-        Pe = a_mag * h / (2 * nu + 1.0e-30)      # finite at zero diffusivity (the default)
+        a_mag = sympy.sqrt(a_mag2 + eps)
+        Pe = a_mag * h / (2 * nu + eps)      # finite at zero diffusivity (the default)
         if self._tau_shape == "brooks_hughes":
             xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
         else:
             xi = sympy.Min(Pe / 3, 1)
         tau_steady = h / (2 * a_mag) * xi
-        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
+        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + eps))
 
     def stabilisation_flux(self, R):
         r"""The SUPG flux :math:`\tau\,R\otimes\mathbf{a}`, one row per component of ``R``.
@@ -2224,6 +2322,7 @@ class SemiLagrangian(_DDtBase):
     Eulerian : For fixed-mesh time derivatives without advection.
     Lagrangian : For full particle-following Lagrangian tracking.
     """
+
 
     @timing.routine_timer_decorator
     def __init__(
@@ -3027,6 +3126,17 @@ class SemiLagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        # The tie to the previous step: the trace-back read the velocity at
+        # this step and, for the midpoint, at the last one. That dependence
+        # on v and its history is what the record has to carry for a reader
+        # asking what this shift was computed FROM.
+        trace = getattr(self, "characteristics", None)
+        self._note_history_shift(
+            dt,
+            velocity=str(getattr(trace, "V_fn", self.V_fn))[:80],
+            past_velocity_levels=int(getattr(trace, "_levels_valid", 0)),
+            midtime_velocity=bool(getattr(trace, "midtime_velocity", False)),
+        )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
@@ -3636,6 +3746,7 @@ class Lagrangian(_DDtBase):
     Lagrangian_Swarm : For user-provided swarms.
     """
 
+
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
     )
@@ -3826,6 +3937,7 @@ class Lagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
@@ -3960,6 +4072,7 @@ class Lagrangian_Swarm(_DDtBase):
     SemiLagrangian : Nodal-swarm approach for advection-dominated problems.
     Eulerian : Pure mesh-based history (no particle tracking).
     """
+
 
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
@@ -4223,6 +4336,7 @@ class Lagrangian_Swarm(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
@@ -4331,6 +4445,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
     velocity history caches it by evaluation at each time level.
     """
+
 
     def __init__(
         self,
@@ -4672,5 +4787,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
