@@ -131,7 +131,7 @@ class SolverBaseClass(uw_object):
 
         # Jacobian tangent selection — validated property, see the
         # consistent_jacobian docstring below for the mode semantics.
-        self.consistent_jacobian = False
+        self.consistent_jacobian = True
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
         # Created LAZILY (see _get_newton_alpha) only when continuation is used,
@@ -394,15 +394,23 @@ class SolverBaseClass(uw_object):
         dispatch; the residual is never affected, so the converged solution
         always satisfies the exact constitutive law.
 
-        ``False`` (default)
+        ``True`` (default)
+            Unwrap the flux before differentiation so the tangent captures
+            :math:`\partial\eta/\partial(\nabla v)` (full Newton). The
+            residual is symbolic, so this tangent is exact and cheap, and it
+            is the tangent the adjoint transposes. On the saddle-point
+            solvers' standard path only (not the scalar/vector solvers, not
+            the rotated or fault-contact path), a cold start first takes one
+            ``nrichardson`` residual sweep (``solve(picard=-1)`` turns it
+            off); see the note at that line for what it is and is not.
+        ``False``
             Differentiate the residual flux *as wrapped* — the effective
             viscosity is frozen, giving a Picard / defect-correction tangent.
-            Bit-identical to the long-standing behaviour. Globally robust;
-            load-bearing for the tuned hard-yield viscoplastic paths.
-        ``True``
-            Unwrap the flux before differentiation so the tangent captures
-            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
-            the solution; its yield kink can stall the line search far from it.
+            Linearly convergent, and the SNES then holds a Jacobian that is
+            not :math:`\partial R/\partial u`. Opt in where the hard-yield
+            viscoplastic solves need it (the notch class), where Picard is an
+            entry requirement rather than an accelerator. Was the default
+            until 2026-09.
         ``"continuation"``
             Picard :math:`\rightarrow` Newton. Blend
             :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
@@ -1130,6 +1138,7 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = False
             self._needs_bc_reregister = False
             self._needs_function_rewire = False
+            self._adjoint_kernel_installed = False
         else:
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
@@ -1391,6 +1400,431 @@ class SolverBaseClass(uw_object):
             model._record_solve_outcome(part, report)
         except Exception:
             pass
+
+    def _adjoint_support(self):
+        """Whether this solve, as configured, admits a discrete adjoint.
+
+        ``(supported, reason)``. The verdict is STRUCTURAL — about the
+        operator, not about whether a driver exists yet — and it is written
+        into the transcript when the solve is recorded, so a run says where
+        its adjoint breaks while it runs, not three hours into an inversion.
+
+        An implicit step is a residual, so its adjoint is the Jacobian
+        transpose for the state and the symbolic derivative of the residual
+        for a parameter. What removes that:
+
+        * a rotated constraint — free-slip or fault contact — solves on a
+          rotated operator inside its own Krylov loop (``rotated_bc.py``),
+          and there is no transpose path through it;
+        * an unconverged solve, which is caught after the fact by
+          :meth:`_record_solve_outcome`: a linearisation about a state the
+          solve never reached is not the adjoint of anything.
+
+        A subclass whose operator is not a residual overrides this and says
+        why. The contract is enforced by
+        ``tests/test_0018_adjoint_support_record.py``.
+        """
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        if rotated:
+            return (False,
+                    f"{len(rotated)} rotated constraint(s): the solve runs on a "
+                    f"rotated operator with its own Krylov loop, and there is "
+                    f"no transpose path through it")
+        if not self.consistent_jacobian and not self._residual_is_linear_in_unknown():
+            return (True,
+                    "implicit residual: Jacobian transpose for the state, symbolic "
+                    "derivative of the residual for a parameter. The forward solve "
+                    "used the Picard tangent, so the consistent tangent is assembled "
+                    "for the adjoint (a rebuild of the Jacobian kernel)")
+        return (True,
+                "implicit residual: Jacobian transpose for the state, symbolic "
+                "derivative of the residual for a parameter")
+
+    # ------------------------------------------------------------------
+    # The discrete adjoint of one solve
+    # ------------------------------------------------------------------
+
+    def adjoint_support(self):
+        """``(supported, reason)``: whether this solve admits a discrete adjoint.
+
+        The same verdict the transcript records on the solve event. See
+        :meth:`_adjoint_support` for what refuses and why.
+        """
+        return self._adjoint_support()
+
+    def adjoint_solve(self, rhs, target=None):
+        r"""Solve the adjoint of the LAST solve: :math:`K^T \mu = b`.
+
+        An implicit step is a residual :math:`R(u; m) = 0`, and the SNES
+        already assembles its Jacobian :math:`K = \partial R / \partial u`.
+        The adjoint state is the transpose solve against that same matrix,
+        taken at the state the forward solve ended in — so call this after
+        ``solve()``, on the solver that did the solving, before anything
+        moves the fields.
+
+        The essential boundary conditions come out homogenised for free:
+        PETSc's global vector holds only the unconstrained degrees of freedom,
+        so :math:`K` is the operator on those, and the multiplier written back
+        to ``target`` is zero on every Dirichlet node.
+
+        **The state matters, and ``solve()`` moves it.** A time step's
+        residual is :math:`F(u_{n+1}; u_n, v, \\Delta t)`: the step's OUTPUT in
+        the unknown and its INPUT in the history slot. The history manager
+        shifts that slot forward in its post-solve hook, so straight after
+        ``solve()`` the slot holds :math:`u_{n+1}`, and a sensitivity read
+        there is 5% wrong on a SUPG step (measured, ``test_0019``). Put the
+        step's input back — ``solver.DuDt.psi_star[0].array[...] = u_n`` —
+        before calling this and :meth:`sensitivity`. A driver that walks the
+        transcript restores the step's snapshot, replays the solve, and does
+        exactly that; see ``docs/examples/adjoint``.
+
+        Parameters
+        ----------
+        rhs : numpy.ndarray or petsc4py.PETSc.Vec
+            The right-hand side :math:`b`, in the global ordering of this
+            solver's DM — a DUAL vector, an integral against the basis, not a
+            field. :meth:`dual_of` builds one from an expression.
+        target : MeshVariable, optional
+            A variable on the same space as the unknown to receive
+            :math:`\mu` as a field. Constrained nodes are set to zero.
+
+        Returns
+        -------
+        (numpy.ndarray, int)
+            :math:`\mu` in the global ordering, and the KSP converged reason
+            (positive means converged).
+
+        Raises
+        ------
+        RuntimeError
+            If this solve refuses an adjoint (:meth:`adjoint_support` says
+            why), or no solve has run.
+        """
+        supported, why = self._adjoint_support()
+        if not supported:
+            raise RuntimeError(f"adjoint_solve: this solve refuses an adjoint — {why}")
+        if self.snes is None or (not self.is_setup
+                                 and not getattr(self, "_adjoint_kernel_installed", False)):
+            raise RuntimeError(
+                "adjoint_solve: no forward solve to take the adjoint of. Call "
+                "solve() first; the adjoint is taken about the state it ended in.")
+        import numpy as np
+
+        cdef DM dm
+        cdef Vec cmesh_lvec
+
+        # The kernel first: if the forward ran Picard, the rebuild below may
+        # replace the DS the SNES assembles with, so every handle taken from
+        # the DM must be taken AFTER it.
+        tangent = self._consistent_tangent_for_adjoint()
+        dm = self.dm
+
+        # The Jacobian at the state the forward solve ended in.
+        gvec = self.dm.getGlobalVec()
+        self.dm.localToGlobal(self.u.vec, gvec)
+        self.mesh.update_lvec()
+        cmesh_lvec = self.mesh.lvec
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        jacobian = self.snes.getJacobian()        # (J, P, callback, args)
+        J, P = jacobian[0], jacobian[1]
+        alpha_before = self._newton_alpha_for_adjoint()
+        self.snes.computeJacobian(gvec, J, P)
+        self._restore_newton_alpha(alpha_before)
+
+        b = gvec.duplicate()
+        if isinstance(rhs, PETSc.Vec):
+            rhs.copy(b)
+        elif hasattr(rhs, "vec") and hasattr(rhs, "array"):
+            # A dual held as a FIELD on the unknown's space: one coefficient
+            # per node. localToGlobal keeps the unconstrained ones, which is
+            # the restriction to this solver's rows.
+            self.dm.localToGlobal(rhs.vec, b)
+        else:
+            values = np.asarray(rhs, dtype=float).ravel()
+            bad = uw.mpi.comm.allreduce(int(values.size != b.getLocalSize()), op=uw.MPI.MAX)
+            if bad:
+                raise ValueError(
+                    f"adjoint_solve: rhs has {values.size} entries; this solver's "
+                    f"global vector has {b.getLocalSize()} on rank {uw.mpi.rank}")
+            b.array[:] = values
+        x = gvec.duplicate()
+        x.set(0.0)
+
+        ksp = self.snes.getKSP()
+        ksp.setOperators(J, P)
+        ksp.solveTranspose(b, x)
+        reason = int(ksp.getConvergedReason())
+        self._restore_tangent(tangent)
+
+        if target is not None:
+            # Homogeneous constraints: the local vector is zeroed before the
+            # scatter, so every constrained node reads zero rather than the
+            # forward Dirichlet value that ComputeBoundaryFEM would insert.
+            lvec = self.dm.getLocalVec()
+            lvec.set(0.0)
+            self.dm.globalToLocal(x, lvec)
+            target.vec.array[:] = lvec.array[:]
+            self.mesh._stale_lvec = True
+            try:
+                target._sync_lvec_to_gvec()
+            except AttributeError:
+                pass
+            self.dm.restoreLocalVec(lvec)
+
+        out = np.array(x.array, copy=True)
+        self.dm.restoreGlobalVec(gvec)
+        b.destroy(); x.destroy()
+
+        try:
+            model = uw.get_default_model()
+            part, label = self._transcript_identity()
+            model._record_step_event(
+                "adjoint_solve", label, part=part,
+                converged=reason > 0, ksp_reason=reason)
+        except Exception:
+            pass
+        return out, reason
+
+    def dual_of(self, expression):
+        r"""The dual of an expression on this solver's unknown space.
+
+        :math:`b_j = \int e \, \phi_j` for every basis function of the
+        unknown — the form :meth:`adjoint_solve` wants its right-hand side in.
+        A misfit :math:`J = \tfrac12 \int (u - u^*)^2` has
+        :math:`\partial J/\partial u` dual ``dual_of(u - u_target)``.
+
+        Assembled as the residual of a projection at zero: the projection's
+        residual is :math:`\int (0 - e)\phi_j`, so no linear solve is taken.
+        """
+        import numpy as np
+
+        proj = self._dual_projection()
+        proj.uw_function = expression
+        proj._build(False, False, None)
+        gvec = proj.dm.getGlobalVec()
+        gvec.set(0.0)
+        proj.mesh.update_lvec()
+        cdef DM dm = proj.dm
+        cdef Vec cmesh_lvec = proj.mesh.lvec
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        F = gvec.duplicate()
+        proj.snes.computeFunction(gvec, F)
+        out = -np.array(F.array, copy=True)
+        expected = self.dm.getGlobalVec()
+        n_solver = expected.getLocalSize()
+        self.dm.restoreGlobalVec(expected)
+        bad = uw.mpi.comm.allreduce(int(out.size != n_solver), op=uw.MPI.MAX)
+        if bad:
+            raise RuntimeError(
+                f"dual_of: the dual has {out.size} entries and the solver's "
+                f"global vector {n_solver} on rank {uw.mpi.rank}; the two spaces "
+                f"constrain different nodes. Essential conditions added through "
+                f"a route other than add_dirichlet_bc are not mirrored onto the "
+                f"dual space.")
+        F.destroy()
+        proj.dm.restoreGlobalVec(gvec)
+        return out
+
+    def _dual_projection(self):
+        """One projection onto the unknown's space, built on first use.
+
+        It carries the solver's essential conditions, homogenised: PETSc's
+        global vector holds only unconstrained degrees of freedom, so the
+        projection's global ordering agrees with the solver's only if the two
+        constrain the same nodes. Rebuilt if the solver's conditions change.
+        """
+        import sympy
+
+        u = self.u
+        n = getattr(u, "num_components", 1)
+        signature = tuple(
+            (str(bc.boundary), tuple(int(c) for c in bc.components))
+            for bc in self.essential_bcs)
+        proj = getattr(self, "_dual_projection_solver", None)
+        if proj is None or getattr(self, "_dual_projection_signature", None) != signature:
+            scratch = uw.discretisation.MeshVariable(
+                f"_dual_{type(self).__name__}_{self.instance_number}_"
+                f"{abs(hash(signature)) % 100000}",
+                self.mesh, num_components=n, vtype=u.vtype, degree=u.degree,
+                continuous=getattr(u, "continuous", True))
+            if n == 1:
+                proj = uw.systems.Projection(self.mesh, scratch)
+            else:
+                proj = uw.systems.Vector_Projection(self.mesh, scratch)
+            proj.smoothing = 0.0
+            proj.petsc_options.delValue("ksp_monitor")
+            for boundary, components in signature:
+                if n == 1:
+                    proj.add_dirichlet_bc(0.0, boundary)
+                else:
+                    conds = [0.0 if i in components else sympy.oo for i in range(n)]
+                    proj.add_dirichlet_bc(tuple(conds), boundary)
+            self._dual_projection_solver = proj
+            self._dual_projection_signature = signature
+        return proj
+
+    def adjoint_integrand(self, mu, wrt):
+        r"""The integrand whose integral is :math:`\mu^T \partial R/\partial m`.
+
+        :math:`(\partial F_0/\partial m)\,\mu + (\partial F_1/\partial m)\cdot\nabla\mu`,
+        with :math:`F_0`, :math:`F_1` the residual templates AS IMPLEMENTED —
+        read after the solve, because they are live — and the derivatives
+        taken symbolically. For a scalar parameter its integral is the
+        sensitivity; for a field, project it to get the dual on that field.
+        """
+        F0 = self._peel_except(self.F0.sym, wrt)
+        F1 = self._peel_except(self.F1.sym, wrt)
+        import sympy
+
+        d0 = sympy.diff(F0, wrt)
+        d1 = sympy.diff(F1, wrt)
+        mu_sym = mu.sym
+        if getattr(mu, "num_components", 1) == 1:
+            grad_mu = self.mesh.vector.gradient(mu_sym[0])
+            out = d0[0] * mu_sym[0] if hasattr(d0, "shape") else d0 * mu_sym[0]
+            for i in range(self.mesh.dim):
+                out = out + d1[i] * grad_mu[i]
+            return out
+        grad_mu = self.mesh.vector.jacobian(mu_sym)
+        out = 0
+        for i in range(self.mesh.dim):
+            out = out + d0[i] * mu_sym[i]
+        return out + uw.maths.tensor.rank2_inner_product(d1, grad_mu)
+
+    def _consistent_tangent_for_adjoint(self):
+        """Make sure the Jacobian kernel the adjoint assembles is dR/du.
+
+        The converged state is the same whichever tangent the forward
+        iteration used, and dR/du is a function of that state alone — so
+        Picard iterations spoil nothing. What they leave behind is a SNES
+        whose Jacobian KERNEL is the frozen-coefficient one, and assembling
+        that at the converged state gives the wrong matrix to transpose. If
+        the forward ran Picard on a nonlinear residual, switch the kernel to
+        the consistent tangent here (a JIT rebuild of the pointwise
+        functions; the DM, SNES and KSP are kept) and return a token so
+        :meth:`_restore_tangent` can put the Picard kernel back for the next
+        forward solve. Returns None when nothing had to change.
+        """
+        if self.consistent_jacobian is not False:
+            return None
+        if self._residual_is_linear_in_unknown():
+            return None                       # the two tangents coincide
+        if getattr(self, "_adjoint_kernel_installed", False):
+            return "picard"                   # still there from the last adjoint
+        self._consistent_jacobian = True
+        self._needs_function_rewire = True
+        self._build(False, False, None)
+        # The rewire hands back a new DM and SNES on the saddle-point class.
+        # snes.solve() would set them up itself; a direct computeJacobian
+        # will not, and segfaults on the unset-up SNES (measured).
+        self.snes.setUp()
+        return "picard"
+
+    def _restore_tangent(self, token):
+        """Put the Picard setting back, but LEAVE the consistent kernel
+        installed: a second adjoint (a second misfit on the same forward)
+        reuses it, and the next forward solve's own build rewires to Picard.
+        Tearing it down here made a second adjoint_solve refuse with "no
+        forward solve" (found in review)."""
+        if token is None:
+            return
+        self._consistent_jacobian = False
+        self._adjoint_kernel_installed = True
+        self._needs_function_rewire = True    # the next forward solve rewires
+
+    def _newton_alpha_for_adjoint(self):
+        """Under ``"continuation"``, put the tangent at full Newton for the
+        adjoint's Jacobian assembly; return what alpha was so it can be put back.
+
+        The forward solve ramps alpha from 0 towards 1 as the residual drops
+        and may converge before it arrives, leaving the SNES holding a blend.
+        The blend is a fine tangent to converge on and the wrong matrix to
+        transpose: the adjoint wants dR/du, which is alpha = 1. Returns None
+        when continuation is not in use, and nothing is touched.
+        """
+        if self.consistent_jacobian != "continuation":
+            return None
+        import sympy
+
+        before = self._get_newton_alpha().sym
+        self._set_newton_alpha(1.0)
+        return before
+
+    def _restore_newton_alpha(self, before):
+        if before is None:
+            return
+        self._get_newton_alpha().sym = before
+        try:
+            self._update_constants(record=False)
+        except Exception:
+            pass
+
+    def _residual_is_linear_in_unknown(self):
+        """Whether the residual templates are linear in the unknown.
+
+        Scale every occurrence of the unknown (and its derivatives) by ``s``
+        and ask whether the second derivative in ``s`` vanishes. A viscosity
+        that depends on the strain rate fails this; a constant one passes. The
+        adjoint cares because a nonlinear residual solved with the Picard
+        tangent leaves the SNES holding a Jacobian that is NOT
+        :math:`\\partial R/\\partial u`.
+        """
+        import sympy
+
+        try:
+            name = self.u.name
+            s = sympy.Symbol("s_scale_adjoint")
+            for template in ("F0", "F1", "PF0"):
+                form = getattr(self, template, None)
+                if form is None:
+                    continue
+                expression = self._peel_except(form.sym, None)
+                atoms = [a for a in expression.atoms(sympy.Function)
+                         if str(a).startswith("{" + name)]
+                if not atoms:
+                    continue
+                scaled = expression.subs({a: s * a for a in atoms})
+                second = sympy.diff(scaled, s, 2)
+                if isinstance(second, sympy.MatrixBase):
+                    if any(x != 0 for x in second):
+                        return False
+                elif second != 0:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _peel_except(expression, wrt, depth=8):
+        """Expand every named expression in ``expression`` except ``wrt``.
+
+        A parameter reaches the residual through the constitutive model's own
+        named symbol — ``Parameters.diffusivity = kappa`` puts ``\\upkappa`` in
+        ``F1`` with ``kappa`` as its value — so differentiating the residual
+        as written with respect to ``kappa`` gives zero. ``fn_unwrap`` will not
+        do either: it substitutes every constant's VALUE, and the derivative
+        of a number is zero too. This substitutes each named expression by its
+        definition, one level at a time, and stops at ``wrt`` so the chain
+        rule has something to hold on to.
+        """
+        for _ in range(depth):
+            named = [e for e in uw.function.fn_extract_expressions(expression)
+                     if e is not wrt and e != wrt]
+            if not named:
+                break
+            expression = expression.subs({e: e.sym for e in named})
+        return expression
+
+    def sensitivity(self, mu, wrt):
+        r"""``d J / d m`` for a scalar parameter ``wrt``, given the adjoint state.
+
+        :math:`\int` of :meth:`adjoint_integrand` — with :math:`\mu` the
+        solution of :math:`K^T \mu = -\partial J/\partial u`, this is the
+        implicit part of the gradient; add :math:`\partial J/\partial m` if
+        the misfit depends on the parameter directly.
+        """
+        return float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
 
     def _constraint_mechanisms(self):
         """Every way a constraint can have been put on this solver.
@@ -2570,7 +3004,10 @@ class SolverBaseClass(uw_object):
                 # SymPy, so the weak form can be written into the transcript
                 # exactly as implemented.
                 model._describe_part(self, part, label)
-                model._record_step_event("solve", label, part=part)
+                supported, why = self._adjoint_support()
+                model._record_step_event(
+                    "solve", label, part=part,
+                    adjoint={"supported": bool(supported), "reason": why})
             except Exception:
                 pass
 
@@ -9632,6 +10069,190 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.restoreLocalVec(xlocal)
             self.dm.restoreGlobalVec(gvec)
 
+    def _adjoint_support(self):
+        """The base verdict, plus the tangent the forward solve used.
+
+        A nonlinear rheology solved with the default Picard tangent leaves
+        the SNES holding the frozen-viscosity operator, not
+        :math:`\\partial R/\\partial u`. The forward solve converges either way
+        (defect correction), so nothing complains — and the transposed adjoint
+        would be silently wrong. Refused here, with the fix in the reason.
+        """
+        supported, why = SolverBaseClass._adjoint_support(self)
+        if not supported:
+            return supported, why
+        # The verdict is written on EVERY solve inside a step, so it must be
+        # cheap: the symbolic test, cached until the residual can change. The
+        # numerical probe (two assemblies) belongs in adjoint_solve, where an
+        # adjoint is actually being taken and the cost is paid once.
+        key = (self.consistent_jacobian, id(getattr(self, "_constitutive_model", None)),
+               self.is_setup, self._needs_function_rewire)
+        cached = getattr(self, "_adjoint_linearity_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, self._residual_is_linear_in_unknown())
+            self._adjoint_linearity_cache = cached
+        nonlinear = not cached[1]
+        if not self.consistent_jacobian and nonlinear:
+            return (True,
+                    why + ". The forward solve used the Picard tangent, so the "
+                    "consistent tangent is assembled for the adjoint (a rebuild "
+                    "of the Jacobian kernel)")
+        return supported, why
+
+    def adjoint_solve(self, rhs, target=None):
+        r"""Solve :math:`K^T (\\mu, \\lambda) = b` on the composite (u, p) system.
+
+        The same transpose the scalar solvers take, on the two-field DM.
+        With a linear viscosity :math:`K` is symmetric and this reproduces
+        the second-solver construction of ``docs/examples/adjoint``; with a
+        strain-rate- or pressure-dependent viscosity it is the transpose of
+        the consistent tangent, which that construction cannot build.
+
+        Parameters
+        ----------
+        rhs : numpy.ndarray or petsc4py.PETSc.Vec
+            The dual on the composite global vector; :meth:`dual_of` builds
+            one from a velocity-space expression.
+        target : (MeshVariable, MeshVariable), optional
+            ``(u_adj, p_adj)`` on the velocity and pressure spaces, to receive
+            the multipliers as fields. Constrained nodes are set to zero.
+
+        Returns
+        -------
+        (numpy.ndarray, int)
+        """
+        supported, why = self._adjoint_support()
+        if not supported:
+            raise RuntimeError(f"adjoint_solve: this solve refuses an adjoint — {why}")
+        if self.snes is None or (not self.is_setup
+                                 and not getattr(self, "_adjoint_kernel_installed", False)):
+            raise RuntimeError(
+                "adjoint_solve: no forward solve to take the adjoint of. Call "
+                "solve() first; the adjoint is taken about the state it ended in.")
+
+        import numpy as np
+
+        tangent = self._consistent_tangent_for_adjoint()   # before any DM vector
+        gvec = self.dm.getGlobalVec()
+        gvec.setArray(0.0)
+        self._gather_fields_to_global(gvec)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        jacobian = self.snes.getJacobian()
+        J, P = jacobian[0], jacobian[1]
+        alpha_before = self._newton_alpha_for_adjoint()
+        self.snes.computeJacobian(gvec, J, P)
+        self._restore_newton_alpha(alpha_before)
+
+        b = gvec.duplicate()
+        if isinstance(rhs, PETSc.Vec):
+            rhs.copy(b)
+        elif isinstance(rhs, (tuple, list)) and len(rhs) == 2 \
+                and hasattr(rhs[0], "vec"):
+            # (u_dual, p_dual) held as fields: restrict each to its block.
+            b.setArray(0.0)
+            for name, var in zip(("velocity", "pressure"), rhs):
+                if var is None or name not in self._subdict:
+                    continue
+                gis, subdm = self._subdict[name]
+                sub = b.getSubVector(gis)
+                subdm.localToGlobal(var.vec, sub)
+                b.restoreSubVector(gis, sub)
+        else:
+            values = np.asarray(rhs, dtype=float).ravel()
+            bad = uw.mpi.comm.allreduce(int(values.size != b.getLocalSize()), op=uw.MPI.MAX)
+            if bad:
+                raise ValueError(
+                    f"adjoint_solve: rhs has {values.size} entries; this solver's "
+                    f"composite global vector has {b.getLocalSize()} on rank "
+                    f"{uw.mpi.rank}")
+            b.array[:] = values
+        x = gvec.duplicate()
+        x.set(0.0)
+
+        ksp = self.snes.getKSP()
+        ksp.setOperators(J, P)
+        ksp.solveTranspose(b, x)
+        reason = int(ksp.getConvergedReason())
+        self._restore_tangent(tangent)
+
+        if target is not None:
+            u_adj, p_adj = target
+            lvec = self.dm.getLocalVec()
+            lvec.set(0.0)
+            self.dm.globalToLocal(x, lvec)
+            self._ensure_local_field_index_sets(lvec, self.dm.getLocalSection())
+            sub = lvec.getSubVector(self._velocity_is)
+            u_adj.vec.array[:] = sub.array[:]
+            lvec.restoreSubVector(self._velocity_is, sub)
+            sub = lvec.getSubVector(self._pressure_is)
+            p_adj.vec.array[:] = sub.array[:]
+            lvec.restoreSubVector(self._pressure_is, sub)
+            self.dm.restoreLocalVec(lvec)
+            self.mesh._stale_lvec = True
+            for var in (u_adj, p_adj):
+                try:
+                    var._sync_lvec_to_gvec()
+                except AttributeError:
+                    pass
+
+        out = np.array(x.array, copy=True)
+        self.dm.restoreGlobalVec(gvec)
+        b.destroy(); x.destroy()
+
+        try:
+            model = uw.get_default_model()
+            part, label = self._transcript_identity()
+            model._record_step_event(
+                "adjoint_solve", label, part=part,
+                converged=reason > 0, ksp_reason=reason)
+        except Exception:
+            pass
+        return out, reason
+
+    def dual_of(self, expression):
+        r"""The dual of a VELOCITY-space expression on the composite vector.
+
+        :math:`\\int \\mathbf e \\cdot \\boldsymbol\\phi_j` on the velocity
+        degrees of freedom, zero on the pressure ones — the form
+        :meth:`adjoint_solve` wants for a misfit in the velocity.
+        """
+        import numpy as np
+
+        proj = self._dual_projection()
+        proj.uw_function = expression
+        proj._build(False, False, None)
+        pg = proj.dm.getGlobalVec()
+        pg.set(0.0)
+        proj.mesh.update_lvec()
+        cdef DM pdm = proj.dm
+        cdef Vec pmesh_lvec = proj.mesh.lvec
+        ierr = DMSetAuxiliaryVec_UW(pdm.dm, NULL, 0, 0, pmesh_lvec.vec); CHKERRQ(ierr)
+        F = pg.duplicate()
+        proj.snes.computeFunction(pg, F)
+        velocity_dual = -np.array(F.array, copy=True)
+        F.destroy()
+        proj.dm.restoreGlobalVec(pg)
+
+        gvec = self.dm.getGlobalVec()
+        gvec.setArray(0.0)
+        gis, _subdm = self._subdict["velocity"]
+        sub = gvec.getSubVector(gis)
+        n = sub.getLocalSize()
+        bad = uw.mpi.comm.allreduce(int(n != velocity_dual.size), op=uw.MPI.MAX)
+        if bad:
+            gvec.restoreSubVector(gis, sub)
+            self.dm.restoreGlobalVec(gvec)
+            raise RuntimeError(
+                f"dual_of: the velocity dual has {velocity_dual.size} entries and "
+                f"the composite velocity block {n}; the two spaces constrain "
+                f"different nodes.")
+        sub.array[:] = velocity_dual
+        gvec.restoreSubVector(gis, sub)
+        out = np.array(gvec.array, copy=True)
+        self.dm.restoreGlobalVec(gvec)
+        return out
+
     def _ensure_local_field_index_sets(self, clvec, local_section):
         """Build (once) and cache the LOCAL index sets that decompose a parent-DM
         local vector into the per-field MeshVariable storage: velocity, pressure
@@ -10028,9 +10649,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # still evaluates the Newton branch pointwise, and IEEE 0*NaN = NaN);
         # with the guard in place both tangents are finite everywhere. See
         # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        # Not for a linear solve. ``ksponly`` is the user's declaration that
+        # the problem is linear, and a sweep before it is not merely
+        # redundant: under Eisenstat-Walker the real solve then starts from a
+        # reduced residual and is handed a loose tolerance — measured 12%
+        # error against 2% on the spherical-shell Nitsche response
+        # (test_1064) when this ran before ksponly. Read the DECLARATION:
+        # ``snes.getType()`` is whatever the previous solve's setFromOptions
+        # left, so a type set between solves was missed (found in review).
+        #
+        # What this sweep IS: one ``nrichardson`` step, x <- x - lambda F(x),
+        # with no linear solve and no frozen tangent. It is not a Picard step
+        # and it is nearly inert (1-12% residual reduction on a linear Stokes,
+        # measured); whether it earns its place on a nonlinear cold start is
+        # a benchmark item. ``picard=-1`` switches it off explicitly.
+        declared = self.petsc_options.getString("snes_type", snes_type) or snes_type
         if (picard == 0 and self.consistent_jacobian is True
+                and declared != "ksponly"
                 and (zero_init_guess or self._solution_is_trivially_zero())):
             picard = 1
+        if picard < 0:
+            picard = 0
 
         if verbose and uw.mpi.rank == 0:
             print(f"SNES solve - picard = {picard}", flush=True)

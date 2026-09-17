@@ -243,6 +243,8 @@ def _operator_text(event):
         return name
     if kind == "history_shift":
         return f"shift {name}"
+    if kind == "adjoint_solve":
+        return f"adjoint {name}"
     return f"{kind}:{name}"
 
 
@@ -449,6 +451,7 @@ class Model(PintNativeModelMixin, BaseModel):
     _transcript_dir: Any = PrivateAttr(default=None)
     _transcript_fh: Any = PrivateAttr(default=None)
     _transcript_format: Any = PrivateAttr(default=None)
+    _transcript_last_refusals: Any = PrivateAttr(default=None)
     _transcript_columns: Any = PrivateAttr(default=None)
     _announced_transcript: Any = PrivateAttr(default=None)
     # The automatic run directory carries BOTH renderings: the text one is for
@@ -1304,6 +1307,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # Column names are written lazily, with the first step, because the
             # time unit is not known until a step carries one.
             self._transcript_columns = None
+            self._transcript_last_refusals = None
             return "\n".join(lines)
 
         if kind == "step":
@@ -1348,7 +1352,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
                 _operator_text(e) for e in events
-                if e.get("kind") in ("solve", "history_shift")
+                if e.get("kind") in ("solve", "history_shift", "adjoint_solve")
             ) or "(nothing)"
 
             notes = []
@@ -1381,6 +1385,29 @@ class Model(PintNativeModelMixin, BaseModel):
             if len(order) > 8:
                 notes.append(f"  ~~ ... and {len(order) - 8} more distinct warning(s) "
                              f"in the record")
+
+            # Where the adjoint breaks. Written when the set of refusals
+            # CHANGES from the previous step, not on every step — a
+            # semi-Lagrangian run refuses identically three hundred times, and
+            # a note that repeats is a note nobody reads.
+            refusals = tuple(sorted({
+                (e.get("name", "?"), e["adjoint"].get("reason", ""))
+                for e in events
+                if isinstance(e.get("adjoint"), dict)
+                and e["adjoint"].get("supported") is False
+            }))
+            previous = self._transcript_last_refusals or ()
+            if refusals != previous:
+                self._transcript_last_refusals = refusals
+                if refusals:
+                    for name, why in refusals:
+                        notes.append(f"  -- no adjoint through {name}: {why}")
+                else:
+                    # Only after a refusal has cleared. A run whose every step
+                    # admits an adjoint says nothing about it — one aligned
+                    # line per step is the format's promise.
+                    notes.append("  -- adjoint: every operator in this step "
+                                 "admits one again")
 
             return "\n".join([
                 f"{prefix}"
@@ -1679,6 +1706,25 @@ class Model(PintNativeModelMixin, BaseModel):
                 event["deadline_expired"] = True
             if getattr(report, "bounded", False):
                 event["bounded"] = True
+
+            # The structural verdict was written before the solve. A solve
+            # that did not converge is linearised about a state it never
+            # reached, and that is not the adjoint of anything — so the
+            # outcome overrides it, and says why.
+            if not event["converged"]:
+                event["adjoint"] = {
+                    "supported": False,
+                    "reason": f"the solve did not converge ({event['reason']}); "
+                              f"a linearisation about an unreached state is "
+                              f"not an adjoint",
+                }
+            elif event.get("capped") and event.get("adjoint", {}).get("supported"):
+                event["adjoint"] = {
+                    "supported": True,
+                    "reason": event["adjoint"]["reason"]
+                              + "; the forward solve was inexact (a block hit "
+                                "its cap) and the adjoint inherits that",
+                }
             return
 
     def _record_warning(self, message, category, filename, lineno) -> None:

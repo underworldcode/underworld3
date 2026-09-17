@@ -272,9 +272,14 @@ def test_homotopy_rescues_a_solve_the_cold_start_cannot_do():
     """
     import numpy as np
 
-    # (a) the direct cold solve of the sharp law FAILS
+    # (a) the direct cold solve of the sharp law FAILS — under the Picard
+    # tangent, which is what the hard-yield entry problem is about. With the
+    # consistent tangent (the default since 2026-09) this cold solve
+    # CONVERGES on its own, so Picard is set explicitly here: the rescue
+    # being demonstrated is of the Picard solve that homotopy was built for.
     mesh, cold, cm_cold = _yielding_box("c", 0.30)
     cm_cold.yield_mode = "min"
+    cold.consistent_jacobian = False
     cold.solve()
     cold_reason = int(cold.snes.getConvergedReason())
 
