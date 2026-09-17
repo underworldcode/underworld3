@@ -67,6 +67,30 @@ whose END reaches the domain wall carries the end-settling machinery
 refused with the reason; interior surfaces, the fault case, run at any
 rank count.
 
+TODO(BUG): the sheet's cavity shell fails to close at fine resolution in an
+orientation- and grading-dependent way, and raising ``clearance`` does not
+help. Measured 2026-09-17 (3-D disc, base 0.2, h_near 0.0125, three adapt
+levels): with the refinement band reaching 0.4 from the fault, a 60-orientation
+sweep placed 60/60; with the band tightened to 0.1, 20 of 24 shards died on
+their first sample with "the sheet's cavity shell did not close in 20 growth
+rounds; raise `clearance`". On one fixed orientation, band 0.1 SUCCEEDS at the
+default clearance 0.6 (and at 0.9 and 1.2) while band 0.2 FAILS at 0.6 — so it
+is not monotonic in either tightness or clearance, and the growth-round cap is
+being hit for reasons that depend on the particular adapted mesh. A wide band
+is the working configuration at this resolution.
+
+TODO(BUG): the gather is never undone, so placement leaves the mesh badly
+IMBALANCED and every solve on it is effectively serial. Measured 2026-09-17
+(3-D sheet on a box, base 0.2 / h_near 0.05 / one adapt level, np=4): cells
+per rank are [5177, 6137, 5191, 5254] (max/mean 1.13) after ``adapt``, and
+[1399, 17348, 1132, 1284] (max/mean 3.28) after ``add_conforming_sheet`` —
+82% of the mesh on the surgery rank. ``split_fault`` leaves that untouched
+(its own redistribute is bounded by the fault star, as documented), so the
+cost is here and not in the contact stream. Consequence: an MPI fault solve
+is SLOWER than serial — a 48k-cell 3-D sample solves in 202 s at np=1 and
+281 s at np=2. A rebalancing redistribute after the collective rebuild is
+what is missing.
+
 Both dimensions, one fill. The 2-D curve (:func:`place_along_lines`) and the
 3-D sheet (:func:`place_sheet`) both delegate their cavity fill to gmsh —
 constrained triangulation with Steiner insertion is exactly what a mesh
@@ -1664,7 +1688,7 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
 
 def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
                      held_cells, h_vertex, on_wall, shared_chart,
-                     open_deletable=None, open_near=None):
+                     open_deletable=None, open_near=None, extra_victims=None):
     """Victims, dropped tets and the closed cavity shell around the sheet.
 
     The same two-part rule as 2-D — vertices within the clearance go, and any
@@ -1698,6 +1722,9 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
             held_vertex[cells[c]] = True
     victim = ((d_sheet < clearance * h_vertex)
               & (~on_wall | on_open) & ~held_vertex)
+    if extra_victims is not None:
+        # vertices a previous fill of this cavity left flat cells on
+        victim |= extra_victims & ~on_wall & ~held_vertex
 
     drop = victim[cells].any(axis=1)
     cen = X[cells].mean(axis=1)
@@ -2337,6 +2364,15 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
     original mesh did not). Growing the drop at every non-manifold edge
     merges the wedges; dropping more cells only enlarges the fill.
 
+    An edge-manifold shell can still be one of two shapes gmsh fills wrongly,
+    both measured on newest-vertex-bisection children at the default
+    clearance: a KEPT cell wholly enclosed by the cavity, whose faces close a
+    separate shell component that gmsh fills too (the fill overlaps the kept
+    cell and the domain volume grows by exactly its volume); and a PINCHED
+    vertex, where the shell faces around the vertex form more than one fan
+    (gmsh returns zero-volume tets there). Both are grown out the same way:
+    the enclosed cells join the drop, and so does every pinched vertex's star.
+
     ``open_vertex`` (a vertex mask) lets the cavity OPEN onto the boundary
     near an outcrop — the bowl. A dropped cell's wall face whose vertices
     all carry the mask becomes a CAP face (returned separately; the caller
@@ -2398,16 +2434,22 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
             for e in ((a, b), (a, c), (b, c)):
                 edge_count[e] += 1
         bad = [e for e, k in edge_count.items() if k != 2]
-        if not bad:
-            break
-        for a, b in bad:
-            grow = (cells == a).any(axis=1) & (cells == b).any(axis=1)
-            if (grow & held).any():
-                raise RuntimeError(
-                    f"closing the {noun}'s cavity shell needs a cell held "
-                    "for a surface already embedded; move the object away "
-                    "or raise `clearance`.")
-            drop |= grow
+        grow = np.zeros(len(cells), dtype=bool)
+        if bad:
+            for a, b in bad:
+                grow |= (cells == a).any(axis=1) & (cells == b).any(axis=1)
+        else:
+            grow |= _enclosed_kept_cells(face_support, drop)
+            for v in _pinched_shell_vertices(shell + cap_faces):
+                grow |= (cells == v).any(axis=1)
+            if not grow.any():
+                break
+        if (grow & held).any():
+            raise RuntimeError(
+                f"closing the {noun}'s cavity shell needs a cell held "
+                "for a surface already embedded; move the object away "
+                "or raise `clearance`.")
+        drop |= grow
     else:
         raise RuntimeError(
             f"the {noun}'s cavity shell did not close in 20 growth rounds; "
@@ -2417,6 +2459,72 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
     if victim[shell_verts].any():
         raise RuntimeError("a deleted vertex is on the cavity shell")
     return shell, cap_faces, drop
+
+
+def _enclosed_kept_cells(face_support, drop):
+    """Kept cells that cannot reach an open face without crossing the cavity.
+
+    An open face has one cell on this rank: the domain wall, or a partition
+    seam on a distributed mesh. Kept cells are flooded from those faces
+    through faces shared with other kept cells; whatever the flood misses is
+    wholly enclosed by dropped cells. Returns a cell mask.
+    """
+    neighbours = [[] for _ in range(len(drop))]
+    reached = np.zeros(len(drop), dtype=bool)
+    stack = []
+    for support in face_support.values():
+        if len(support) == 1:
+            c = support[0]
+            if not drop[c] and not reached[c]:
+                reached[c] = True
+                stack.append(c)
+        elif not drop[support[0]] and not drop[support[1]]:
+            neighbours[support[0]].append(support[1])
+            neighbours[support[1]].append(support[0])
+    while stack:
+        c = stack.pop()
+        for j in neighbours[c]:
+            if not reached[j]:
+                reached[j] = True
+                stack.append(j)
+    return ~drop & ~reached
+
+
+def _pinched_shell_vertices(faces):
+    """Shell vertices whose incident faces form more than one fan.
+
+    ``faces`` is a list of ``(face, vertices)``. Around a manifold vertex the
+    incident faces are connected through the edges they share at that
+    vertex; a vertex where two parts of the shell merely touch has two or
+    more such fans.
+    """
+    from collections import defaultdict
+
+    around = defaultdict(list)
+    for k, (_f, verts) in enumerate(faces):
+        for v in verts:
+            around[v].append(k)
+    pinched = []
+    for v, incident in around.items():
+        through = defaultdict(list)
+        for k in incident:
+            for w in faces[k][1]:
+                if w != v:
+                    through[w].append(k)
+        fan = {incident[0]}
+        frontier = [incident[0]]
+        while frontier:
+            k = frontier.pop()
+            for w in faces[k][1]:
+                if w == v:
+                    continue
+                for j in through[w]:
+                    if j not in fan:
+                        fan.add(j)
+                        frontier.append(j)
+        if len(fan) != len(incident):
+            pinched.append(v)
+    return pinched
 
 
 def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h, cap=None):
@@ -2528,6 +2636,40 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h, cap=None):
         return points, tets, sheet_out, moved, n_shell, cap_out
     finally:
         gmsh.finalize()
+
+
+# Refills place_sheet will try before refusing. One is measured to clear
+# every flat cell seen; the rest are margin, each deleting a few more shell
+# vertices.
+_SHEET_FILL_ATTEMPTS = 5
+
+
+def _flat_fill_shell_nodes(fill_pts, fill_tets, n_shell, h, rel_tol=1e-8):
+    """Shell nodes of the fill's flat tets, as fill-local indices.
+
+    A tet is flat when its volume is below ``rel_tol * h**3``: the genuine
+    cells of a fill sit near ``1e-3 h**3`` at worst, the flat ones near
+    ``1e-17 h**3``, so the threshold separates them by orders of magnitude on
+    either side. Nodes ``< n_shell`` are shell vertices, which the carve can
+    delete; a flat tet with no shell vertex is built from sheet points alone
+    and no refill of the cavity can remove it, so that refuses.
+    """
+    tets = np.asarray(fill_tets)
+    P = fill_pts[tets]
+    volume = np.abs(np.einsum("ij,ij->i",
+                              np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                              P[:, 3] - P[:, 0])) / 6.0
+    flat = tets[volume < rel_tol * h**3]
+    if not len(flat):
+        return np.zeros(0, dtype=np.int64)
+    nodes = np.unique(flat.ravel())
+    nodes = nodes[nodes < n_shell]
+    if not len(nodes):
+        raise RuntimeError(
+            "the cavity fill made a flat cell from sheet points alone; the "
+            "sheet is finer than the mesh can take — re-triangulate it with "
+            "`size=`.")
+    return nodes
 
 
 def _attach_uninterp_vertex_sf(new, dm, v_old_to_compact, nc_new, nroots):
@@ -3035,95 +3177,122 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                 deletable, near, _regions = _outcrop_frame_3d(
                     X, on_wall, dom_verts, dom_tris, dom_region,
                     sheet_pts, chain_edges)
-            victims, drop_ids, shell, cap_faces = _carve_cavity_3d(
-                dm_work, X, cells, sheet_pts, sheet_tris, clearance,
-                held_cells, h_vertex, on_wall, shared,
-                open_deletable=deletable, open_near=near)
-            # The gather's contract, asserted: nothing the surgery touches is
-            # shared. A violation is a marking defect and must be loud.
-            touched = set()
-            for c in drop_ids:
-                for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
-                    touched.add(int(q))
-            if any(shared[q - pStart] for q in touched):
-                raise RuntimeError(
-                    "place_sheet internal: the gathered region touches a "
-                    "shared point; the gather mask under-reached.")
-
-            shell_vert_ids = sorted(
-                {v for _f, verts in shell for v in verts}
-                | {v for _f, verts in cap_faces for v in verts})
-            local = {v: i for i, v in enumerate(shell_vert_ids)}
-            shell_xyz = X[shell_vert_ids]
-            shell_tris = np.array([[local[v] for v in verts]
-                                   for _f, verts in shell], dtype=np.int64)
-
-            cap_payload = None
-            removed_wall = []
-            if cap_faces:
-                # Labels each removed wall face carried, read PER FACE
-                # before the rebuild forgets them — the bowl can span
-                # several walls (a curved boundary's facets), so each new
-                # wall triangle takes the labels of the old face it lies
-                # on, not a set common to the whole bowl (the volume
-                # path's rule).
-                names = [dm_work.getLabelName(i)
-                         for i in range(dm_work.getNumLabels())
-                         if dm_work.getLabelName(i)
-                         not in reconnect._TOPOLOGY_LABELS]
-                for f, verts in cap_faces:
-                    pairs_f = []
-                    for name in names:
-                        val = dm_work.getLabel(name).getValue(int(f))
-                        if val >= 0:
-                            pairs_f.append((name, int(val)))
-                    removed_wall.append((X[np.asarray(verts)].copy(),
-                                         pairs_f))
-
-                cap_tris_mesh = np.array([verts for _f, verts in cap_faces],
-                                         dtype=np.int64)
-                d_cap, at_cap = _nearest_facet(
-                    X[cap_tris_mesh].mean(axis=1), dom_verts, dom_tris)
-                if (d_cap > 1e-9).any():
+            extra_victims = np.zeros(len(X), dtype=bool)
+            for _attempt in range(_SHEET_FILL_ATTEMPTS):
+                victims, drop_ids, shell, cap_faces = _carve_cavity_3d(
+                    dm_work, X, cells, sheet_pts, sheet_tris, clearance,
+                    held_cells, h_vertex, on_wall, shared,
+                    open_deletable=deletable, open_near=near,
+                    extra_victims=extra_victims)
+                # The gather's contract, asserted: nothing the surgery
+                # touches is shared. A violation is a marking defect and
+                # must be loud.
+                touched = set()
+                for c in drop_ids:
+                    for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
+                        touched.add(int(q))
+                if any(shared[q - pStart] for q in touched):
                     raise RuntimeError(
-                        "an outcrop bowl wall face lies off the gathered "
-                        "boundary complex; the wall mask and the complex "
-                        "disagree")
-                alive = np.ones(len(X), dtype=bool)
-                alive[np.asarray(victims, dtype=np.int64)] = False
-                cap_nodes, chain_nodes, cap_extra, cap_tris = \
-                    _outcrop_collar_3d(
-                        X, alive, cap_tris_mesh, dom_region[at_cap],
-                        dom_planes, sheet_pts,
-                        np.zeros((0, 3), dtype=np.int64),
-                        np.zeros(0, dtype=np.int64), None, chain=chain)
-                cap_payload = {
-                    "rim_shell_local": [local[v] for v in cap_nodes],
-                    "chain_sheet_local": list(chain_nodes),
-                    "tris": cap_tris,
-                    "extra_xyz": cap_extra,
-                }
+                        "place_sheet internal: the gathered region touches a "
+                        "shared point; the gather mask under-reached.")
 
-            fill = _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts,
-                                 sheet_tris, h, cap=cap_payload)
-            (fill_pts, fill_tets, sheet_out, moved_nodes, n_shell,
-             cap_out) = fill
-            if moved_nodes:
+                shell_vert_ids = sorted(
+                    {v for _f, verts in shell for v in verts}
+                    | {v for _f, verts in cap_faces for v in verts})
+                local = {v: i for i, v in enumerate(shell_vert_ids)}
+                shell_xyz = X[shell_vert_ids]
+                shell_tris = np.array([[local[v] for v in verts]
+                                       for _f, verts in shell],
+                                      dtype=np.int64)
+
+                cap_payload = None
+                removed_wall = []
+                if cap_faces:
+                    # Labels each removed wall face carried, read PER FACE
+                    # before the rebuild forgets them — the bowl can span
+                    # several walls (a curved boundary's facets), so each
+                    # new wall triangle takes the labels of the old face it
+                    # lies on, not a set common to the whole bowl (the
+                    # volume path's rule).
+                    names = [dm_work.getLabelName(i)
+                             for i in range(dm_work.getNumLabels())
+                             if dm_work.getLabelName(i)
+                             not in reconnect._TOPOLOGY_LABELS]
+                    for f, verts in cap_faces:
+                        pairs_f = []
+                        for name in names:
+                            val = dm_work.getLabel(name).getValue(int(f))
+                            if val >= 0:
+                                pairs_f.append((name, int(val)))
+                        removed_wall.append((X[np.asarray(verts)].copy(),
+                                             pairs_f))
+
+                    cap_tris_mesh = np.array(
+                        [verts for _f, verts in cap_faces], dtype=np.int64)
+                    d_cap, at_cap = _nearest_facet(
+                        X[cap_tris_mesh].mean(axis=1), dom_verts, dom_tris)
+                    if (d_cap > 1e-9).any():
+                        raise RuntimeError(
+                            "an outcrop bowl wall face lies off the gathered "
+                            "boundary complex; the wall mask and the complex "
+                            "disagree")
+                    alive = np.ones(len(X), dtype=bool)
+                    alive[np.asarray(victims, dtype=np.int64)] = False
+                    cap_nodes, chain_nodes, cap_extra, cap_tris = \
+                        _outcrop_collar_3d(
+                            X, alive, cap_tris_mesh, dom_region[at_cap],
+                            dom_planes, sheet_pts,
+                            np.zeros((0, 3), dtype=np.int64),
+                            np.zeros(0, dtype=np.int64), None, chain=chain)
+                    cap_payload = {
+                        "rim_shell_local": [local[v] for v in cap_nodes],
+                        "chain_sheet_local": list(chain_nodes),
+                        "tris": cap_tris,
+                        "extra_xyz": cap_extra,
+                    }
+
+                fill = _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts,
+                                     sheet_tris, h, cap=cap_payload)
+                (fill_pts, fill_tets, sheet_out, moved_nodes, n_shell,
+                 cap_out) = fill
+                if moved_nodes:
+                    raise RuntimeError(
+                        f"the fill moved {moved_nodes} constrained node(s); "
+                        "the cavity cannot be sewn back. A defect, not a "
+                        "tolerance.")
+                if sheet_out is None or len(sheet_out) != len(sheet_tris):
+                    raise RuntimeError(
+                        "the fill remeshed the sheet "
+                        f"({0 if sheet_out is None else len(sheet_out)} "
+                        f"triangles for {len(sheet_tris)} given).")
+                if cap_payload is not None and (
+                        cap_out is None
+                        or len(cap_out) != len(cap_payload["tris"])):
+                    raise RuntimeError(
+                        "the fill remeshed the outcrop cap "
+                        f"({0 if cap_out is None else len(cap_out)} "
+                        f"triangles for {len(cap_payload['tris'])} given).")
+
+                # A fill can span nearly coplanar shell nodes with a flat
+                # cell (measured ~1e-20 on bisection children, from gmsh's
+                # Delaunay and HXT algorithms alike) that none of the gates
+                # sees. Deleting those shell vertices and refilling the
+                # larger cavity removes it, measured in one round.
+                flat_nodes = _flat_fill_shell_nodes(fill_pts, fill_tets,
+                                                    n_shell, h)
+                if not len(flat_nodes):
+                    break
+                grow = np.asarray(shell_vert_ids, dtype=np.int64)[flat_nodes]
+                if on_wall[grow].any():
+                    raise RuntimeError(
+                        "the cavity fill left a flat cell against the domain "
+                        "wall; move the sheet further from the wall or raise "
+                        "`clearance`.")
+                extra_victims[grow] = True
+            else:
                 raise RuntimeError(
-                    f"the fill moved {moved_nodes} constrained node(s); the "
-                    "cavity cannot be sewn back. A defect, not a tolerance.")
-            if sheet_out is None or len(sheet_out) != len(sheet_tris):
-                raise RuntimeError(
-                    "the fill remeshed the sheet "
-                    f"({0 if sheet_out is None else len(sheet_out)} "
-                    f"triangles for {len(sheet_tris)} given).")
-            if cap_payload is not None and (
-                    cap_out is None
-                    or len(cap_out) != len(cap_payload["tris"])):
-                raise RuntimeError(
-                    "the fill remeshed the outcrop cap "
-                    f"({0 if cap_out is None else len(cap_out)} triangles "
-                    f"for {len(cap_payload['tris'])} given).")
+                    f"the cavity fill still held flat cells after "
+                    f"{_SHEET_FILL_ATTEMPTS} refills; raise `clearance`.")
         # Exception, not just RuntimeError/ValueError: a raw gmsh error
         # (e.g. a PLC intersection) is a plain Exception, and an
         # uncaught raise on the surgery rank is a HANG for its peers —
@@ -7080,6 +7249,13 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                     "extra_xyz": cap_extra,
                 }
 
+            # TODO(BUG): no flat-cell gate on this fill. place_sheet's fill
+            # was measured leaving ~1e-20 cells across nearly coplanar shell
+            # nodes on bisection children (both gmsh Delaunay and HXT); this
+            # annulus fill shares the shell and gmsh, so it is likely exposed
+            # too. place_sheet deletes those shell vertices and refills
+            # (_flat_fill_shell_nodes); the same loop belongs here.
+            # Found 2026-09-15 building the tumbling-fault Mohr sweep.
             fill = _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz,
                                          skin_tris_fill, size_out=h,
                                          size_in=size, cap=cap_payload)
