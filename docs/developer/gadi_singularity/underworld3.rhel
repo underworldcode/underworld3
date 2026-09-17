@@ -60,7 +60,10 @@ ENV NB_USER jovyan
 ENV NB_HOME /home/$NB_USER
 RUN useradd -m -s /bin/bash -N $NB_USER
 
-# runtime packages - [vim, git] are optional
+# runtime packages - [vim, git] are optional.
+# gcc-c++ looks out of place in a runtime image but is deliberate: it lets a
+# developer rebuild UW3 in place on an HPC system. underworld3.ckdtree is a C++
+# extension, and gcc alone (pulled in by python-devel) cannot build it.
 RUN yum update -y \
 &&  yum install -y \
         ca-certificates \
@@ -70,6 +73,7 @@ RUN yum update -y \
         openmpi \
         python${PYVER}-pip \
         python${PYVER}-devel \
+        gcc-c++ \
         zlib \
         mesa-libGL \
         mesa-libGLU \
