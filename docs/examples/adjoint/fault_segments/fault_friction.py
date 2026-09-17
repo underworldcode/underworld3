@@ -42,9 +42,9 @@ params = uw.Params(
     rho_g=uw.Param(10.0, "body force, so the pressure grows with depth"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
     observations=uw.Param("uplift+stress",
-                          "uplift+stress | orientation (principal-stress orientation at the "
-                          "points and along the surface) | orientation_surface (along the "
-                          "surface only)"),
+                          "uplift+stress | orientation_points (principal-stress orientation "
+                          "at the five interior points only) | surface_strain (the surface "
+                          "strain rate d v_x / d x along the top only)"),
 )
 
 # --- the model ---------------------------------------------------------------
@@ -148,16 +148,21 @@ def orientation(field):
 # The misfit has a term on the top surface — a true boundary integral of
 # the uplift rate, or of the stress orientation — and a term in the volume
 # around the stress points. gradient() takes them as {domain: integrand}.
+# On a traction-free surface the shear strain rate vanishes, so a stress
+# orientation read there is only a sign; orientation is an interior
+# observable (boreholes, focal mechanisms), and the surface gives velocities
+# and their tangential derivative — the geodetic strain rate.
 what = str(params.observations)
 dq = orientation(v) - orientation(v_obs)
 if what == "uplift+stress":
     misfit = {"Top": (v.sym[1] - v_obs.sym[1]) ** 2 / 2,
               None: w_points * (shear_stress(v) - shear_stress(v_obs)) ** 2 / 2}
-elif what == "orientation":
-    misfit = {"Top": (dq[0] ** 2 + dq[1] ** 2) / 2,
-              None: w_points * (dq[0] ** 2 + dq[1] ** 2) / 2}
+elif what == "orientation_points":
+    misfit = {None: w_points * (dq[0] ** 2 + dq[1] ** 2) / 2}
+elif what == "surface_strain":
+    misfit = {"Top": (v.sym[0].diff(x) - v_obs.sym[0].diff(x)) ** 2 / 2}
 else:
-    misfit = {"Top": (dq[0] ** 2 + dq[1] ** 2) / 2}
+    raise ValueError(f"observations: {what!r}")
 
 def misfit_value():
     return sum(uw.adjoint.integral(mesh, term, where) for where, term in misfit.items())

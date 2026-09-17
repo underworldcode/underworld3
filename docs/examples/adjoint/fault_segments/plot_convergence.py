@@ -5,8 +5,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 cases = [("uplift + stress", "fault_friction_uplift+stress_data.npz"),
-         ("orientation, points + surface", "fault_friction_orientation_data.npz"),
-         ("orientation, surface only", "fault_friction_orientation_surface_data.npz")]
+         ("stress orientation at five interior points", "fault_friction_orientation_points_data.npz"),
+         ("surface strain rate only", "fault_friction_surface_strain_data.npz")]
 names = ["flat", "lower ramp", "upper ramp", "near surface"]
 
 fig, axes = plt.subplots(2, 3, figsize=(11, 5.6), sharex="col",
