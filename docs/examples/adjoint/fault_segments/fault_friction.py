@@ -223,12 +223,17 @@ from scipy.optimize import minimize
 
 history = []
 
+# The optimiser sees the misfit relative to its starting value: L-BFGS-B stops
+# on the absolute decrease of its objective, and a surface integral of a
+# velocity misfit is a small number.
+J_scale = J0
+
 def objective(log_eta):
     set_strengths(np.exp(log_eta))
     J, grad = J_and_gradient()
     history.append((J, np.exp(log_eta).copy()))
     uw.pprint(f"  J = {J:.6e}   strengths = {np.exp(log_eta)}")
-    return J, grad
+    return J / J_scale, grad / J_scale
 
 result = minimize(objective, np.log([params.initial_strength] * n_seg), jac=True,
                   method="L-BFGS-B", options={"maxiter": 40, "gtol": 1e-10})
