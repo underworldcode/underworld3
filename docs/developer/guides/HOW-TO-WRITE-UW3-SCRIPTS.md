@@ -570,7 +570,7 @@ def test_descriptive_name():
 # Tier markers (reliability/trust)
 @pytest.mark.tier_a   # Production-ready - trusted for TDD, CI
 @pytest.mark.tier_b   # Validated - use with caution, needs more testing
-@pytest.mark.tier_c   # Experimental - development only, not for automation
+@pytest.mark.tier_c   # Does not gate - a failure demands an explanation, not a revert
 
 # Expected failures
 @pytest.mark.xfail(reason="Clear explanation of why this fails")

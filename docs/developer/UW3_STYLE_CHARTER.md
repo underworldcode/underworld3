@@ -112,8 +112,51 @@ temperature.data[:, 0] = values          # BAD  — compatibility layer in new c
   first, shown to fail, then fixed.
 - Test files follow `tests/test_NNNN_description.py` numbering and carry both markers:
   a level (`level_1`/`level_2`/`level_3`) and a tier (`tier_a`/`tier_b`/`tier_c`).
+  The number sets a broad sequence, nothing more — selection is by marker, and a
+  shared number is not a conflict.
 - Validate a new test's own correctness before changing library code to satisfy it.
-- NOTE: test tiers A,B,C ... A are the hardened tests that have been explicitly reviewed. You can build code around tier A tests, but tier C are tests that are not mature enough to drive coding.  
+- **Every test asserts against a HARD BASELINE.** An analytic solution, a published
+  value, a closed-form geometric quantity, a conservation identity, an exactness
+  property. If a failure cannot name what is broken, it is not a test — it is a
+  drift detector, and it belongs in a benchmark rather than the suite.
+- **A baseline must be tight enough to fail the moment a default changes.** This is
+  the point of the rule. A loose test does not fail when behaviour moves: it absorbs
+  the change, drifts inside its own margin, and fails later somewhere else for
+  reasons that are hard to trace back. #692 redefined `mesh.cell_size()`, nothing
+  failed, the Nitsche penalty moved 43%, and a spherical-shell benchmark slid from
+  0.2% to 2.4% — still inside its 5% tolerance — before breaking months later on one
+  platform's triangulation (#734). The test that would have caught it on the day is
+  `cell_size` pinned to its closed form on a known simplex.
+- **Never assert that one method beats another.** A ratio between two errors moves
+  when either moves, so it cannot say which; it is strictly less informative than the
+  numbers it was computed from, and it encodes a preference rather than a contract.
+  Assert each method against the baseline instead. Convergence ORDER and mathematical
+  exactness are contracts and may be asserted freely.
+- **Prefer a relative bound to an absolute one** where the scale is set elsewhere. An
+  absolute threshold silently tracks whatever sets that scale — a free-slip test
+  asserting `|v_n| < 1e-4` was really asserting 5.7e-3 relative, and tracked the
+  buoyancy forcing rather than the method under test.
+
+### The tiers
+
+| Tier | Meaning |
+|---|---|
+| `tier_a` | Hardened and reviewed. Safe to build code around, and safe to gate a merge on. |
+| `tier_b` | Validated; trustworthy but not yet hardened. |
+| `tier_c` | Validates that the code works, but MUST NOT block a change. A failure demands an EXPLANATION, not a revert. |
+
+Tier C is where a characterisation lives: a comparison between methods, a recorded
+measurement, a relationship that holds today and may legitimately stop holding when
+something improves. Give such a test a failure message that says so, and record the
+measured numbers and their configuration in the docstring, dated. Do not revert code
+to make a tier C test pass — re-characterise it and say why.
+
+**A test carries exactly one tier, and it goes on the test, not the module.**
+pytest MERGES a module-level `pytestmark` with a function's own marks rather than
+overriding them, so a `tier_c` test inside a `tier_a` module carries BOTH and is
+still selected by `tier_a or tier_b` — which is what `scripts/release_gate.py`
+asks for. Where the tests in a file do not share a tier, put the level on the
+module and the tier on each test.
 
 ## 9. Scope Discipline for AI Sessions
 

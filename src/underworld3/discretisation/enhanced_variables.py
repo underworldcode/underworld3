@@ -957,6 +957,14 @@ class IntegrationPointVariable(EnhancedMeshVariable):
     >>> eta_q.cell_data[...] = 1.0          # (ncells, Nq, 1)
     >>> eta_q.coords                         # the physical integration points
     >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_q.sym
+    
+    Gradients: this variable has none of its own (it stores a value at each
+    integration point and nothing between them, so its tabulated derivative is
+    identically zero). A derivative of its symbol in a WEAK FORM is refused
+    rather than answered with that zero; use a discontinuous mesh variable, or
+    ``SwarmVariable(proxy_location="cells")``, when a solve needs the gradient.
+    ``uw.function.evaluate`` of the same derivative does answer, by fitting the
+    values per cell first: a recovered gradient, for inspection.
     """
 
     _base_variable_class = _BaseIntegrationPointVariable

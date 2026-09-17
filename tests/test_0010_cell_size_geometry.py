@@ -100,3 +100,81 @@ def test_the_global_minimum_agrees_with_the_field():
     assert mesh.get_min_radius() == pytest.approx(0.25, rel=1.0e-12)
     assert float(np.asarray(mesh._cell_size_variable.array).max()) == pytest.approx(
         0.25, rel=1.0e-12)
+
+
+@pytest.mark.parametrize("h", [0.5, 0.25])
+def test_regular_simplex_cell_size_is_the_closed_form(h):
+    """cell_size on congruent right-isosceles cells is h/sqrt(2), exactly.
+
+    `test_cell_size_matches_own_vertices_and_tracks_deform` above checks the
+    implementation against an independent reading of the same DEFINITION, so it
+    stays true if the definition itself is changed on both sides. This pins the
+    VALUE against geometry instead: `regular=True` tiles the box with congruent
+    right-isosceles triangles of legs h, whose area is h^2/2, and #694 defines
+    the characteristic length as PETSc's volume**(1/dim):
+
+        cell_size = (h^2 / 2)^(1/2) = h / sqrt(2)
+
+    A redefinition of `cell_size` fails here immediately, at the quantity that
+    changed. #692 changed it for simplices and nothing failed, so the Nitsche
+    penalty (gamma*mu/h) moved 43% unnoticed and surfaced months later as a
+    5.67% miss on a spherical-shell benchmark (#734) - on one platform's
+    triangulation only, which is the hardest kind of failure to read backwards.
+    That is why this is written as geometry rather than as whatever the code
+    returns: the previous vertex-RMS definition gave 2h/3 here, and the number
+    moving from 2h/3 to h/sqrt(2) is exactly the event this test announces.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=h, regular=True, qdegree=2,
+    )
+    mesh.cell_size()
+    radii = np.asarray(mesh._cell_size_variable.array[:, 0, 0])
+
+    expected = h / np.sqrt(2.0)
+    error = float(np.abs(radii - expected).max(initial=0.0))
+    assert max(uw.mpi.comm.allgather(error)) < 1e-12, (
+        f"cell_size on congruent legs-{h} right-isosceles cells is "
+        f"{radii.min():.12g}..{radii.max():.12g}, expected exactly {expected:.12g}"
+    )
+
+
+def test_cell_size_and_min_radius_are_now_one_measure():
+    """``cell_size()`` and ``get_min_radius()`` read the SAME quantity (#694).
+
+    ``add_nitsche_bc`` offers ``local_h=False`` to fall back from
+    ``mesh.cell_size()`` to the global ``mesh.get_min_radius()``. Before #694
+    those were different DEFINITIONS - vertex-RMS about the centroid versus
+    PETSc's face-distance radius - so the switch silently rescaled the penalty
+    ``gamma*mu/h`` by a factor that depended on the cell type: 1 on tensor cells
+    and sqrt(2) on simplices. That is how #734 happened.
+
+    #694 makes both read ``volume**(1/dim)``, so ``local_h`` is now a choice
+    between the LOCAL cell and the GLOBAL minimum and nothing else. On a uniform
+    mesh, where those two coincide, the measures must therefore agree EXACTLY -
+    on simplices as well as on tensor cells, which is the half that used not to
+    hold. Pinning both means neither can drift back apart silently.
+    """
+    quad = uw.meshing.StructuredQuadBox(elementRes=(4, 4), qdegree=2)
+    quad.cell_size()
+    quad_local = np.asarray(quad._cell_size_variable.array[:, 0, 0])
+    quad_ratio = float(quad_local.min()) / quad.get_min_radius()
+    assert quad_ratio == pytest.approx(1.0, rel=1e-12), (
+        f"on tensor cells the two measures must coincide; ratio {quad_ratio:.12g}")
+
+    h = 0.25
+    simplex = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=h, regular=True, qdegree=2,
+    )
+    simplex.cell_size()
+    simplex_local = np.asarray(simplex._cell_size_variable.array[:, 0, 0])
+
+    # both sides against the closed form, so a common drift cannot cancel
+    assert simplex.get_min_radius() == pytest.approx(h / np.sqrt(2.0), rel=1e-12)
+    ratio = float(simplex_local.min()) / simplex.get_min_radius()
+    assert ratio == pytest.approx(1.0, rel=1e-12), (
+        f"cell_size/get_min_radius on uniform simplices is {ratio:.12g}, "
+        "expected 1 - before #694 this was sqrt(2), and the Nitsche penalty "
+        "gamma*mu/h scaled with it"
+    )

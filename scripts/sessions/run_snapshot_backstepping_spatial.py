@@ -21,7 +21,7 @@ drawn as context. The diagonal pairs tell two stories:
     over-stretched, CFL violated) vs. ten substeps at sub-CFL Δt.
 
 Run:
-    pixi run -e amr-dev python tests/run_snapshot_backstepping_spatial.py
+    pixi run -e amr-dev python scripts/sessions/run_snapshot_backstepping_spatial.py
 
 Output:
     snapshot_backstepping_spatial.png in the current working directory.
