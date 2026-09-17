@@ -128,7 +128,6 @@ stokes.add_essential_bc((0.5, None), "Left")
 stokes.add_essential_bc((-0.5, None), "Right")
 
 # --- the observations ------------------------------------------------------
-w_top = sympy.exp(-((1 - y) / params.band) ** 2)
 points = [(0.3, 0.65), (0.75, 0.12), (1.25, 0.3), (0.9, 0.6), (1.55, 0.85)]
 w_points = sum(sympy.exp(-((x - px) ** 2 + (y - py) ** 2) / (2 * params.band) ** 2)
                for px, py in points)
@@ -146,14 +145,22 @@ def orientation(field):
     norm = sympy.sqrt(a ** 2 + b ** 2 + uw.maths.functions.vanishing)
     return sympy.Matrix([[a / norm, b / norm]])
 
+# The misfit has a term on the top surface — a true boundary integral of
+# the uplift rate, or of the stress orientation — and a term in the volume
+# around the stress points. gradient() takes them as {domain: integrand}.
 what = str(params.observations)
+dq = orientation(v) - orientation(v_obs)
 if what == "uplift+stress":
-    misfit = (w_top * (v.sym[1] - v_obs.sym[1]) ** 2
-              + w_points * (shear_stress(v) - shear_stress(v_obs)) ** 2) / 2
+    misfit = {"Top": (v.sym[1] - v_obs.sym[1]) ** 2 / 2,
+              None: w_points * (shear_stress(v) - shear_stress(v_obs)) ** 2 / 2}
+elif what == "orientation":
+    misfit = {"Top": (dq[0] ** 2 + dq[1] ** 2) / 2,
+              None: w_points * (dq[0] ** 2 + dq[1] ** 2) / 2}
 else:
-    dq = orientation(v) - orientation(v_obs)
-    weight = w_top if what == "orientation_surface" else w_top + w_points
-    misfit = weight * (dq[0] ** 2 + dq[1] ** 2) / 2
+    misfit = {"Top": (dq[0] ** 2 + dq[1] ** 2) / 2}
+
+def misfit_value():
+    return sum(uw.adjoint.integral(mesh, term, where) for where, term in misfit.items())
 
 model = uw.get_default_model()
 
@@ -202,7 +209,7 @@ for k in range(n_seg):
         vals[k] = math.exp(base + sign * h)
         set_strengths(vals)
         forward(f"fd {names[k]} {'+' if sign > 0 else '-'}h")
-        fd.append(float(uw.maths.Integral(mesh, misfit).evaluate()))
+        fd.append(misfit_value())
     fd = (fd[0] - fd[1]) / (2 * h)
     uw.pprint(f"{names[k]:>13}: adjoint {g0[k]: .6e}   finite difference {fd: .6e}   "
               f"ratio {fd / g0[k]:.5f}")

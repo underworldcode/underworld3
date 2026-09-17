@@ -152,15 +152,22 @@ def dual_on(variable, value, grad=None, scratch=None, boundary=None):
     dim, cdim = mesh.dim, mesh.cdim
     asm = scratch.assembler(variable)
     if boundary is not None:
-        if grad is not None and not sympy.Matrix(grad).is_zero_matrix:
+        has_grad = grad is not None and not sympy.Matrix(grad).is_zero_matrix
+        if has_grad and n == 1:
             raise NotImplementedError(
-                "dual_on: a load read through the gradient on a boundary is "
-                "not assembled yet; only the value part is")
+                "dual_on: a scalar load read through the gradient on a boundary "
+                "is not assembled yet (the scalar assembler has no facet flux "
+                "term); a vector one is")
         # zero volume templates; the natural condition IS the load
         asm._g0 = sympy.zeros(1, 1) if n == 1 else sympy.zeros(1, dim)
         asm._g1 = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
         asm.natural_bcs.clear()
         asm.add_natural_bc(value, boundary)
+        if has_grad:
+            # the facet flux part int_Gamma g . grad(phi_j): the same slot a
+            # Nitsche condition uses for its symmetry term
+            bc = asm.natural_bcs[-1]
+            asm.natural_bcs[-1] = bc._replace(fn_F=sympy.Matrix(grad).as_immutable())
         asm.is_setup = False                        # the facet kernels are registered on build
         asm._build(False, False, None)
     else:
@@ -347,7 +354,9 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     condition or a coefficient field.
 
     ``boundary`` names a mesh boundary label over which the misfit is
-    integrated instead of the volume: surface observations.
+    integrated instead of the volume: surface observations. A misfit with
+    terms on several domains is a dict ``{None: volume integrand, "Top":
+    surface integrand}``; then ``boundary`` is ignored.
 
     Returns ``{"J": float, "parameters": {expr: float}, "fields": {var: dual}}``;
     the duals are NumPy copies, safe to keep.
@@ -356,13 +365,25 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     parameters, fields = list(parameters), list(fields)
     u = solver.u
     mesh = u.mesh
-    J = integral(mesh, misfit, boundary)
-    duals = misfit_duals(misfit, [u] + [f for f in fields if f is not u], scratch,
-                         boundary=boundary)
-    grad = {}
-    for p in parameters:
-        explicit = sympy.diff(_peel_except(misfit, p), p)
-        grad[p] = 0.0 if explicit == 0 else integral(mesh, explicit, boundary)
+    # One misfit, or several terms on different domains: {None: volume
+    # integrand, "Top": surface integrand, ...}. J and every dual are sums.
+    terms = dict(misfit) if isinstance(misfit, dict) else {boundary: misfit}
+    J = 0.0
+    duals = {}
+    grad = {p: 0.0 for p in parameters}
+    read = [u] + [f for f in fields if f is not u]
+    for where, term in terms.items():
+        J += integral(mesh, term, where)
+        for var, dual in misfit_duals(term, read, scratch, boundary=where).items():
+            if var in duals:
+                duals[var].array[...] = np.asarray(duals[var].array) + np.asarray(dual.array)
+                scratch.give(dual)
+            else:
+                duals[var] = dual
+        for p in parameters:
+            explicit = sympy.diff(_peel_except(term, p), p)
+            if explicit != 0:
+                grad[p] += integral(mesh, explicit, where)
     # The explicit part on a field the misfit reads directly — never on the
     # unknown, whose misfit dual is the adjoint's right-hand side.
     out_fields = {var: (np.array(duals[var].array, copy=True) if (var in duals and var is not u)
