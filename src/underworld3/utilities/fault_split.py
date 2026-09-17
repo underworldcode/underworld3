@@ -774,6 +774,26 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
     redistributes the star onto one rank so the managed path never sees
     the refusal, exactly as in 2-D.
 
+    **What the patch needs from the mesh around it.** Both consequences
+    below follow from the interior-vertex rule, and both are cheaper to
+    design for than to discover:
+
+    * *Every face needs an interior vertex*, so a patch must be at least
+      about four cells across in each direction. Budgeting a vertical
+      fault in a box: a blind top setback of two cells or more, four
+      cells or more of fault depth, and three cells or more of base
+      clearance for the carve's cavity to clear the wall — so a box
+      shallower than about **nine cells** cannot hold a splittable
+      vertical fault at all, whatever the fault's own resolution.
+
+    * *A structured extrusion makes all-rim corner faces.* At a corner
+      of a rectangular patch the quad's diagonal can cut off a triangle
+      whose three vertices are all on the rim; that face has no interior
+      vertex and the split refuses it. It is a choice of DIAGONAL, not a
+      call for refinement: a patch builder that triangulates its own
+      quads should pick the other diagonal for any quad whose
+      triangulation would be all-rim.
+
     Parameters and returns match :func:`split_along_label`, with
     ``orientation`` a reference NORMAL vector (Plus is the side it points
     into) rather than a chain direction.
@@ -867,8 +887,14 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
             problem = (ValueError,
                        "fault_split: a fault face has no interior vertex, "
                        "so its two copies would carry the same vertex "
-                       "triple. The patch is too coarse to split — refine "
-                       "it until every face reaches inside the rim.")
+                       "triple. Either the patch is too coarse — it needs "
+                       "to be about four cells across in each direction, "
+                       "and a vertical fault also needs a top setback, a "
+                       "depth and a base clearance the box may be too "
+                       "shallow for — or a corner quad was triangulated "
+                       "on the diagonal that cuts off an all-rim triangle, "
+                       "which is fixed by flipping that one diagonal "
+                       "rather than by refining anything.")
 
         if problem is None:
             oriented, problem = _orient_patch(face_verts, edge_faces, X, vS,
