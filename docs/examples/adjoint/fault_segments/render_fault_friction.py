@@ -16,11 +16,11 @@ import underworld3.visualisation as vis
 pv.OFF_SCREEN = True
 OUT = os.path.expanduser("~/+Simulations/adjoint_fault_example")
 
-cell_size, surface_dip, flat_depth, surface_x, band_w = 1 / 24, 60.0, 0.3, 1.9, 0.08
+cell_size, surface_dip, flat_depth, surface_x, band_w = 1 / 12, 60.0, 0.3, 1.9, 0.08
 true_mu, cohesion, rho_g = [0.05, 0.15, 0.25, 0.4], 0.05, 10.0
 
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0),
-                                         cellSize=cell_size, qdegree=3)
+                                         cellSize=cell_size, qdegree=3, refinement=1)
 x, y = mesh.X
 v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
 p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True)
@@ -78,7 +78,19 @@ pv_v.point_data["|v|"] = np.linalg.norm(vdata, axis=1)
 pv_v.point_data["v"] = np.column_stack([vdata, np.zeros(len(vdata))])
 pv_v.point_data["v_y"] = vdata[:, 1]
 
-def frame(name, obj, scalars, cmap, clim, title, arrows=False):
+points = [(0.3, 0.65), (0.75, 0.12), (1.25, 0.3), (0.9, 0.6), (1.55, 0.85)]
+
+def observations(pl):
+    """Where the observations are read: the five points, and the band under the
+    surface (two band widths deep, where its Gaussian weight is above 2%)."""
+    strip = pv.Rectangle([[0.0, 1 - 2 * band_w, 0.001], [2.0, 1 - 2 * band_w, 0.001], [2.0, 1.0, 0.001]])
+    pl.add_mesh(strip, color="white", opacity=0.45, lighting=False)
+    pl.add_mesh(pv.Line([0, 1 - 2 * band_w, 0.002], [2, 1 - 2 * band_w, 0.002]), color="white", line_width=2, lighting=False)
+    for px, py in points:
+        pl.add_mesh(pv.Disc(center=(px, py, 0.003), inner=0.0, outer=0.022, normal=(0, 0, 1)), color="white", lighting=False)
+        pl.add_mesh(pv.Disc(center=(px, py, 0.004), inner=0.0, outer=0.013, normal=(0, 0, 1)), color="black", lighting=False)
+
+def frame(name, obj, scalars, cmap, clim, title, arrows=False, observed=False):
     pl = pv.Plotter(off_screen=True, window_size=(1600, 820))
     pl.set_background("white")
     pl.add_mesh(obj, scalars=scalars, cmap=cmap, clim=clim, show_edges=False, lighting=False,
@@ -95,6 +107,8 @@ def frame(name, obj, scalars, cmap, clim, title, arrows=False):
         cloud["v"] = np.column_stack([vals, np.zeros(len(vals))])
         cloud["|v|"] = np.linalg.norm(vals, axis=1)
         pl.add_mesh(cloud.glyph(orient="v", scale="|v|", factor=0.09), color="black", lighting=False)
+    if observed:
+        observations(pl)
     pl.view_xy()
     pl.camera.parallel_projection = True
     pl.camera.focal_point = (1.0, 0.42, 0.0)
@@ -102,7 +116,7 @@ def frame(name, obj, scalars, cmap, clim, title, arrows=False):
     pl.screenshot(os.path.join(OUT, name))
     pl.close()
 
-frame("fault_eta1.png", pv_mesh, "log10 eta_1", "viridis", (-2.5, 0.0), "log10 plane viscosity")
+frame("fault_eta1.png", pv_mesh, "log10 eta_1", "viridis", (-2.5, 0.0), "log10 plane viscosity", observed=True)
 frame("fault_slip.png", pv_mesh, "slip rate", "magma_r", (0.0, 1.0), "shear strain rate on the plane")
 frame("fault_vy.png", pv_v, "v_y", "viridis", (0.0, 0.7), "vertical velocity (uplift rate)", arrows=True)
 frame("fault_p.png", pv_mesh, "p", "RdBu_r", (-8.0, 8.0), "pressure")

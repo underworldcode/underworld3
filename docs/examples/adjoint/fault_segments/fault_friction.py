@@ -29,7 +29,7 @@ import underworld3 as uw
 from underworld3.adjoint import misfit_duals, inner
 
 params = uw.Params(
-    cell_size=uw.Param(1 / 24, "mesh cell size (box is 2 x 1)"),
+    cell_size=uw.Param(1 / 12, "base mesh cell size (box is 2 x 1); refined once, so half this"),
     surface_dip=uw.Param(60.0, "dip of the ramp where it reaches the surface, degrees"),
     flat_depth=uw.Param(0.3, "height of the decollement above the base"),
     surface_x=uw.Param(1.9, "where the fault reaches the surface"),
@@ -47,8 +47,11 @@ params = uw.Params(
 )
 
 # --- the model ---------------------------------------------------------------
+# Refined once from the base size: the refinement gives the velocity block a
+# multigrid hierarchy. Without one it falls back to gamg, which hits its
+# iteration cap on this problem, and an inexact Newton step converges linearly.
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0),
-                                         cellSize=params.cell_size, qdegree=3)
+                                         cellSize=params.cell_size, qdegree=3, refinement=1)
 x, y = mesh.X
 
 v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
@@ -149,32 +152,46 @@ else:
     weight = w_top if what == "orientation_surface" else w_top + w_points
     misfit = weight * (dq[0] ** 2 + dq[1] ** 2) / 2
 
+model = uw.get_default_model()
+
 def set_strengths(values):
     for expr, value in zip(strengths, values):
         expr.sym = float(value)
 
-def J_and_gradient():
-    """The misfit and dJ/d(log strength) for each segment, by the adjoint."""
-    stokes.solve(zero_init_guess=True)
-    J = float(uw.maths.Integral(mesh, misfit).evaluate())
-    dJ_dv = misfit_duals(misfit, [v])[v]
-    mu = uw.discretisation.MeshVariable(f"mu_{uw.adjoint._counter()}", mesh, mesh.dim, degree=2)
-    lam = uw.discretisation.MeshVariable(f"lam_{uw.adjoint._counter()}", mesh, 1, degree=1)
-    dJ_dv.array[...] = -np.asarray(dJ_dv.array)
-    _, reason = stokes.adjoint_solve((dJ_dv, None), target=(mu, lam))
-    assert reason > 0, reason
-    grad = np.array([stokes.sensitivity(mu, expr) * float(expr.sym) for expr in strengths])
+evaluations = [0]
+
+def J_and_gradient(label=None):
+    """The misfit and dJ/d(log strength) for each segment, by the adjoint.
+
+    Each evaluation is one step of zero length in the model's record, so the
+    run's transcript lists the forward solve and the adjoint solve it made.
+    """
+    evaluations[0] += 1
+    with model.step(0.0, label=label or f"eval {evaluations[0]}"):
+        stokes.solve(zero_init_guess=False)
+        J = float(uw.maths.Integral(mesh, misfit).evaluate())
+        dJ_dv = misfit_duals(misfit, [v])[v]
+        mu = uw.discretisation.MeshVariable(f"mu_{uw.adjoint._counter()}", mesh, mesh.dim, degree=2)
+        lam = uw.discretisation.MeshVariable(f"lam_{uw.adjoint._counter()}", mesh, 1, degree=1)
+        dJ_dv.array[...] = -np.asarray(dJ_dv.array)
+        _, reason = stokes.adjoint_solve((dJ_dv, None), target=(mu, lam))
+        assert reason > 0, reason
+        grad = np.array([stokes.sensitivity(mu, expr) * float(expr.sym) for expr in strengths])
     return J, grad
+
+def forward(label):
+    with model.step(0.0, label=label):
+        stokes.solve(zero_init_guess=False)
 
 # --- the truth, and the twin -------------------------------------------------
 true_values = [float(t) for t in str(params.true_strengths).split(",")][:n_seg]
 set_strengths(true_values)
-stokes.solve(zero_init_guess=True)
+forward("truth")
 v_obs.array[...] = np.asarray(v.array)
 uw.pprint(f"true strengths {true_values}")
 
 set_strengths([params.initial_strength] * n_seg)
-J0, g0 = J_and_gradient()
+J0, g0 = J_and_gradient("start")
 uw.pprint(f"initial J = {J0:.6e}   dJ/dlog eta = {g0}")
 
 # Gradient check: central differences in each log-strength.
@@ -186,7 +203,7 @@ for k in range(n_seg):
         vals = [params.initial_strength] * n_seg
         vals[k] = math.exp(base + sign * h)
         set_strengths(vals)
-        stokes.solve(zero_init_guess=True)
+        forward(f"fd {names[k]} {'+' if sign > 0 else '-'}h")
         fd.append(float(uw.maths.Integral(mesh, misfit).evaluate()))
     fd = (fd[0] - fd[1]) / (2 * h)
     uw.pprint(f"{names[k]:>13}: adjoint {g0[k]: .6e}   finite difference {fd: .6e}   "
@@ -222,14 +239,14 @@ profiles = {}
 for label, values in (("true", true_values), ("initial", [params.initial_strength] * n_seg),
                       ("recovered", list(np.exp(result.x)))):
     set_strengths(values)
-    stokes.solve(zero_init_guess=True)
+    forward(f"profile {label}")
     profiles[label] = np.asarray(uw.function.evaluate(v.sym[1], top)).ravel()
 set_strengths(true_values)
-stokes.solve(zero_init_guess=True)          # the field on the grid is the truth's
+forward("truth again")                       # the field on the grid is the truth's
 gx, gy = np.meshgrid(np.linspace(0, 2, 201), np.linspace(0, 1, 101))
 grid = np.column_stack([gx.ravel(), gy.ravel()])
 eta_1_grid = np.asarray(uw.function.evaluate(eta_1, grid)).reshape(gx.shape)
 np.savez(f"fault_friction_{what}_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
-         points=np.array(points), true=np.array(true_values),
+         points=np.array(points), true=np.array(true_values), band=params.band,
          history=np.array([[J, *vals] for J, vals in history]),
          **{f"uplift_{k}": val for k, val in profiles.items()})

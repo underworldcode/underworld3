@@ -243,6 +243,8 @@ def _operator_text(event):
         return name
     if kind == "history_shift":
         return f"shift {name}"
+    if kind == "adjoint_solve":
+        return f"adjoint {name}"
     return f"{kind}:{name}"
 
 
@@ -1350,7 +1352,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
                 _operator_text(e) for e in events
-                if e.get("kind") in ("solve", "history_shift")
+                if e.get("kind") in ("solve", "history_shift", "adjoint_solve")
             ) or "(nothing)"
 
             notes = []

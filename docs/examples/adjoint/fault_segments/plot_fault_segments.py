@@ -23,11 +23,14 @@ ax = axes[0]
 # little below it and "extend" gives the bulk one flat colour.
 ax.contourf(d["gx"], d["gy"], np.log10(d["eta_1"]), levels=np.linspace(-2.4, -0.1, 12),
             cmap="viridis", extend="both")
+band = float(d["band"]) if "band" in d else 0.08
+# the surface band under the top, where the uplift rate (or the orientation) is read
+ax.axhspan(1 - 2 * band, 1.0, color="white", alpha=0.35, lw=0)
 ax.plot(d["points"][:, 0], d["points"][:, 1], "wx", ms=7, mew=1.5)
 ax.set_aspect("equal")
 ax.set_xlim(0, 2); ax.set_ylim(0, 1)
 ax.set_xlabel("$x$"); ax.set_ylabel("$y$")
-ax.set_title(r"$\log_{10}\eta_1$ at the truth; $\times$ stress points", fontsize=10)
+ax.set_title(r"$\log_{10}\eta_1$ at the truth; $\times$ points, white band: surface observations", fontsize=10)
 
 ax = axes[1]
 for label, style in (("true", "k-"), ("initial", "C3--"), ("recovered", "C0:")):
