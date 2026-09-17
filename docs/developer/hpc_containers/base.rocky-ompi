@@ -1,0 +1,91 @@
+#####################################################################
+# Platform base for the Rocky Linux + OpenMPI family (NCI Gadi, ANU Kaiju).
+#
+# Everything OS- and MPI-specific lives in a base file like this one; the
+# recipes stacked on it (petsc.hpc, underworld3.hpc) build against whatever
+# mpicc is on PATH and never call a package manager. Two stages, published as
+# two tags of one image:
+#   :runtime  what the final images stand on — no toolchain except g++, which
+#             lets a developer rebuild UW3 in place on the HPC system
+#             (underworld3.ckdtree is a C++ extension)
+#   :builder  runtime + compilers and build tools
+#
+#   podman build . --platform linux/amd64 --format docker \
+#       --target builder -t ghcr.io/<owner>/uw3-base-rocky-ompi:builder \
+#       -f docs/developer/hpc_containers/base.rocky-ompi
+#####################################################################
+
+ARG PYTHON_VERSION="3.12"
+ARG OS_IMAGE="quay.io/rockylinux/rockylinux:8.10"
+
+FROM ${OS_IMAGE} AS runtime
+LABEL maintainer="https://github.com/underworldcode/"
+
+# Repeat the DEFAULT, not just the name: bare `ARG PYTHON_VERSION` relies on
+# inheriting the pre-FROM default, which some buildah/podman versions don't.
+ARG PYTHON_VERSION="3.12"
+
+ENV LANG=C.UTF-8
+ENV PYVER=${PYTHON_VERSION}
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMPI_MCA_io=ompio
+
+ENV NB_USER=jovyan
+ENV NB_HOME=/home/$NB_USER
+RUN useradd -m -s /bin/bash -N $NB_USER
+
+# mesa/X11: vtk-osmesa and pyvista. gcc-c++: in-place UW3 rebuilds (see header).
+RUN yum update -y \
+&&  yum install -y \
+        ca-certificates \
+        bash-completion \
+        openssh \
+        openblas \
+        openmpi \
+        findutils \
+        python${PYVER}-pip \
+        python${PYVER}-devel \
+        gcc-c++ \
+        zlib \
+        mesa-libGL \
+        mesa-libGLU \
+        mesa-libOSMesa \
+        libX11 \
+        libXrender \
+        libXext \
+        libXfixes \
+        libXcursor \
+        libXinerama \
+        libXrandr \
+        libXft \
+        fontconfig \
+&&  yum clean all \
+&&  rm -rf /var/cache/yum
+
+ENV PATH=/usr/lib64/openmpi/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+# One venv shared by every stage above; prepending its bin/ means a bare
+# `pip install` lands there.
+ENV PYOPT=/opt/venv
+RUN python${PYVER} -m venv $PYOPT \
+&&  chmod ugo+rwx $PYOPT
+ENV PATH=$PYOPT/bin:$PATH
+ENV PYTHONPATH=$PYTHONPATH:$PYOPT/lib/python${PYVER}/site-packages
+
+FROM runtime AS builder
+# flex/bison: PETSc's --download-ptscotch needs them.
+RUN yum install -y \
+        wget \
+        make \
+        cmake \
+        patch \
+        git \
+        gcc \
+        gcc-gfortran \
+        flex \
+        bison \
+        zlib-devel \
+        openmpi-devel \
+&&  yum clean all \
+&&  rm -rf /var/cache/yum

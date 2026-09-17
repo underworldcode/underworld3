@@ -1,0 +1,118 @@
+#####################################################################
+# Underworld3 image — platform-neutral.
+#
+# Builds UW3 and its Python stack on top of a petsc.hpc image, using the
+# matching platform :builder base for the compile. No package manager is
+# called here; see base.rocky-ompi for the contract.
+#
+# Stages:
+#   builder  BASE_BUILDER + PETSc (copied from PETSC_IMAGE) + UW3 stack in /opt/venv
+#   final    PETSC_IMAGE (which is already the :runtime base + PETSc) + /opt, /usr/local from builder
+#
+#   podman build . --platform linux/amd64 --format docker \
+#       --build-arg PETSC_IMAGE=ghcr.io/<owner>/petsc-gadi:3.25.0-ompi \
+#       --build-arg BASE_BUILDER=ghcr.io/<owner>/uw3-base-rocky-ompi:builder \
+#       --build-arg UW3_BRANCH=development \
+#       -t ghcr.io/<owner>/underworld3-gadi:development \
+#       -f docs/developer/hpc_containers/underworld3.hpc
+#####################################################################
+
+ARG PETSC_IMAGE="ghcr.io/underworldcode/petsc-gadi:3.25.0-ompi"
+ARG BASE_BUILDER="ghcr.io/underworldcode/uw3-base-rocky-ompi:builder"
+ARG UW3_BRANCH="development"
+# Overridden by CI to the repository being built, so a fork builds its own
+# branches rather than looking for them upstream.
+ARG UW3_REPO="https://github.com/underworldcode/underworld3.git"
+
+FROM ${PETSC_IMAGE} AS petsc-image
+
+FROM ${BASE_BUILDER} AS builder
+# defaults repeated deliberately — see the note in base.rocky-ompi
+ARG UW3_BRANCH="development"
+ARG UW3_REPO="https://github.com/underworldcode/underworld3.git"
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
+
+# PETSc and its venv (petsc4py, mpi4py, numpy) come from the PETSc image; the
+# compilers from the base. Both venvs were created identically by the base,
+# so the copy is a superset, not a conflict.
+COPY --from=petsc-image /opt /opt
+COPY --from=petsc-image /usr/local /usr/local
+ENV PETSC_DIR=/usr/local
+ENV PYTHONPATH=$PYTHONPATH:$PETSC_DIR/lib
+
+RUN pip install --no-cache-dir \
+        "setuptools>=75" \
+        "setuptools-scm>=8" \
+        "cython>=3.1" \
+        "scipy>=1.15" \
+        "numpy<2" \
+        matplotlib \
+        pint \
+        pytest \
+        jupytext \
+        sympy   \
+        "pydantic>=2" \
+        pyyaml \
+        psutil \
+        typing_extensions \
+        xxhash \
+        requests \
+        trimesh \
+        ipython \
+        "jupyterlab>=4.3,<5" \
+        "ipywidgets<9.0.0" \
+        jupyter-server-proxy \
+        "trame>=2.5.2" \
+        "trame-vtk>=2.5.8" \
+        "trame-vuetify>=2.3.1" \
+        cmocean \
+        colorcet \
+        imageio \
+        imageio-ffmpeg \
+        "rich<14" \
+        meshio \
+        pyvista
+# gmsh wheels are x86_64-only; skip gracefully on aarch64 (local Apple Silicon builds)
+RUN pip install --no-cache-dir gmsh pygmsh || echo "gmsh/pygmsh not available on this platform, skipping"
+
+# Parallel h5py against PETSc's HDF5 — match the pixi version constraint.
+RUN CC=mpicc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} \
+    pip install --no-binary=h5py --no-cache-dir "h5py>=3.12"
+
+# Separate layer so a failure here does not redo everything above.
+RUN pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osmesa \
+    || echo "vtk-osmesa not available on this platform, skipping"
+
+RUN git clone --depth 1 --branch ${UW3_BRANCH} ${UW3_REPO} /tmp/underworld3
+WORKDIR /tmp/underworld3
+# The clone above is shallow and forks carry no tags, so setuptools-scm has
+# nothing to derive from and would stamp the build 0.0.0. CI passes the real
+# version; unset when empty so a local build keeps setuptools-scm's own logic.
+RUN [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ] || unset SETUPTOOLS_SCM_PRETEND_VERSION; \
+    pip install --no-build-isolation --no-cache-dir .
+
+RUN pip freeze > /opt/requirements.txt
+
+#####################################################################
+FROM ${PETSC_IMAGE} AS final
+USER root
+
+COPY --from=builder --chown=$NB_USER:users /opt /opt
+COPY --from=builder --chown=$NB_USER:users /usr/local /usr/local
+
+# jupytext default viewer: text notebooks open as notebooks on double-click.
+RUN mkdir -p $NB_HOME/workspace $NB_HOME/Underworld3/ \
+&&  chown $NB_USER:users -R $NB_HOME \
+&&  jupyter-server extension enable --sys-prefix jupyter_server_proxy \
+&&  jupytext-config set-default-viewer
+
+COPY --chown=$NB_USER:users ./docs/examples  $NB_HOME/Underworld3/examples
+COPY --chown=$NB_USER:users ./docs/beginner  $NB_HOME/Underworld3/beginner
+COPY --chown=$NB_USER:users ./docs/advanced  $NB_HOME/Underworld3/advanced
+
+EXPOSE 8888
+WORKDIR $NB_HOME
+USER $NB_USER
+VOLUME $NB_HOME/workspace
+
+CMD ["jupyter-lab", "--no-browser", "--ip='0.0.0.0'"]

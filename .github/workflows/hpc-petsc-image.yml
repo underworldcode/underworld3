@@ -1,0 +1,161 @@
+name: "GHCR: HPC PETSc images"
+
+# Builds docs/developer/hpc_containers/petsc.hpc once per platform base — the
+# from-source PETSc that hpc-uw3-image.yml layers on.
+#
+# Triggers are deliberately narrow: this compiles PETSc with mumps, hypre,
+# superlu_dist, mmg/parmmg, ptscotch and slepc (~25 min each), and only
+# petsc.hpc, its patches and the bases can change the result.
+
+on:
+  push:
+    branches:
+      - main
+      - development
+      - ci/gadi-container          # TESTING ONLY — remove before the upstream PR
+    paths:
+      - 'docs/developer/hpc_containers/petsc.hpc'
+      - 'petsc-custom/patches/**'
+      - '.github/workflows/hpc-petsc-image.yml'
+  workflow_dispatch:
+    inputs:
+      petsc_version:
+        description: 'PETSc version to build'
+        type: string
+        default: '3.25.0'
+      make_np:
+        description: 'PETSc build parallelism (--with-make-np)'
+        type: string
+        default: '4'
+      force_rebuild:
+        description: 'Force full rebuild (no cache)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: hpc-petsc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Measured at ~25 min with ~25% run-to-run variance; ~5x headroom.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: gadi
+            base: rocky-ompi
+            mpi: ompi
+            mpi_name: "Open MPI"
+          - platform: setonix
+            base: ubuntu-mpich
+            mpi: mpich
+            mpi_name: "MPICH"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Report disk headroom
+        run: df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve names and tags
+        id: meta
+        run: |
+          set -euo pipefail
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/petsc-${{ matrix.platform }}"
+          BASE="ghcr.io/${OWNER}/uw3-base-${{ matrix.base }}"
+
+          PETSC_VERSION="${{ inputs.petsc_version }}"
+          PETSC_VERSION="${PETSC_VERSION:-3.25.0}"
+          MAKE_NP="${{ inputs.make_np }}"
+          MAKE_NP="${MAKE_NP:-4}"
+
+          {
+            echo "image=${IMAGE}:${PETSC_VERSION}-${{ matrix.mpi }}"
+            echo "tags=${IMAGE}:${PETSC_VERSION}-${{ matrix.mpi }},${IMAGE}:latest"
+            echo "base=${BASE}"
+            echo "petsc_version=${PETSC_VERSION}"
+            echo "make_np=${MAKE_NP}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${PETSC_VERSION}-${{ matrix.mpi }} on ${BASE} with --with-make-np=${MAKE_NP}"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docs/developer/hpc_containers/petsc.hpc
+          # Docker v2 media types, no attestations — see hpc-uw3-image.yml.
+          outputs: type=image,push=true,oci-mediatypes=false
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            BASE_BUILDER=${{ steps.meta.outputs.base }}:builder
+            BASE_RUNTIME=${{ steps.meta.outputs.base }}:runtime
+            PETSC_VERSION=${{ steps.meta.outputs.petsc_version }}
+            PETSC_MAKE_NP=${{ steps.meta.outputs.make_np }}
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Report build size
+        run: |
+          docker image ls ${{ steps.meta.outputs.image }} || true
+          df -h /
+
+      - name: Pull image
+        run: docker pull ${{ steps.meta.outputs.image }}
+
+      # petsc4py importing is what actually breaks when the build goes subtly
+      # wrong (shared libraries, PYTHONPATH, the meson petsc4py step).
+      - name: Import petsc4py and slepc4py
+        run: |
+          docker run --rm ${{ steps.meta.outputs.image }} python -c "
+          import petsc4py, slepc4py
+          petsc4py.init()
+          from petsc4py import PETSc
+          print('petsc4py', petsc4py.__version__)
+          print('slepc4py', slepc4py.__version__)
+          print('PETSc', PETSc.Sys.getVersion())
+          "
+
+      # Assert the MPI flavour: a silently wrong libmpi is exactly the failure
+      # that would otherwise only surface on a compute node.
+      - name: MPI sanity (2 ranks, expect ${{ matrix.mpi_name }})
+        run: |
+          docker run --rm ${{ steps.meta.outputs.image }} \
+            mpiexec -n 2 python -c "
+          from mpi4py import MPI
+          c = MPI.COMM_WORLD
+          v = MPI.Get_library_version().splitlines()[0]
+          print(f'rank {c.rank} of {c.size}: {v}')
+          assert c.size == 2
+          assert '${{ matrix.mpi_name }}' in v, v
+          "
+
+      # Housekeeping only; the action 404s partway through on user-owned
+      # packages, having already deleted what it could.
+      - name: Delete old untagged image versions
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: petsc-${{ matrix.platform }}
+          package-type: container
+          min-versions-to-keep: 2
+          delete-only-untagged-versions: true
