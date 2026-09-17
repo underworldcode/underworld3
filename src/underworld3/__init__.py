@@ -230,7 +230,12 @@ from .utilities.transcript_report import (
     transcript_key,
 )
 from .parameters import ParameterRegistry, ParameterType
-from .materials import MaterialRegistry, MaterialProperty
+from .materials import (
+    MaterialRegistry,
+    MaterialProperty,
+    MaterialDefinition,
+    MaterialRegions,
+)
 from .constitutive_models import MultiMaterialConstitutiveModel
 # uw.quantity is THE quantity factory (returns UWQuantity, exposed alongside
 # for isinstance checks); uw.create_quantity is deprecated (see units.py).

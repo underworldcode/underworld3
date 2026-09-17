@@ -2577,6 +2577,15 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
+                # A symmetric tensor is (dim, dim) here and stores only its
+                # independent components, so both entries of an off-diagonal
+                # pair map to ONE column. The pack loop below writes every
+                # (i, j), which means the pair's second visit overwrites the
+                # first: setting array[:, 0, 1] alone was silently discarded
+                # (the stale [1, 0] won), while array[:, 1, 0] alone worked.
+                # Mirror whichever half the caller actually changed.
+                self._mirror_symmetric_pairs(unpacked, modified_data)
+
                 # Route the write through the canonical array (see
                 # SimpleMeshArrayView.__setitem__: a direct pack is a
                 # per-write collective). _data_layout maps the structured
@@ -2591,6 +2600,39 @@ class _BaseMeshVariable(Stateful, uw_object):
                     for j in range(var_shape[1]):
                         flat_data[:, self.parent._data_layout(i, j)] = modified_data[:, i, j]
                 self.parent.data[...] = flat_data
+
+            def _mirror_symmetric_pairs(self, before, after):
+                """Carry an off-diagonal write across to its mirror entry.
+
+                Only for a symmetric variable, whose (i, j) and (j, i) share a
+                stored column. Writing one half and leaving the other stale is
+                how the write got lost, so the half that changed is copied onto
+                the half that did not. Changing BOTH halves to different values
+                asks for something the storage cannot hold, and is refused
+                rather than resolved by the loop order.
+                """
+                import underworld3 as uw
+
+                if self.parent.vtype != uw.VarType.SYM_TENSOR:
+                    return
+                rows, cols = self.parent.shape
+                for i in range(rows):
+                    for j in range(i + 1, cols):
+                        upper_moved = not numpy.array_equal(after[:, i, j], before[:, i, j])
+                        lower_moved = not numpy.array_equal(after[:, j, i], before[:, j, i])
+                        if upper_moved and not lower_moved:
+                            after[:, j, i] = after[:, i, j]
+                        elif lower_moved and not upper_moved:
+                            after[:, i, j] = after[:, j, i]
+                        elif upper_moved and lower_moved and not numpy.array_equal(
+                            after[:, i, j], after[:, j, i]
+                        ):
+                            raise ValueError(
+                                f"'{self.parent.name}' is a symmetric tensor: "
+                                f"components [{i}, {j}] and [{j}, {i}] share one "
+                                "stored value and cannot be set to different "
+                                "values in a single assignment."
+                            )
 
             @property
             def shape(self):

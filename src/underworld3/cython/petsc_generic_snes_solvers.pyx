@@ -160,6 +160,7 @@ class SolverBaseClass(uw_object):
 
         self._order = 0
         self._constitutive_model = None
+        self._materials = None
         self._rebuild_after_mesh_update = self._build
 
         self.name = "Solver_{}_".format(self.instance_number)
@@ -2349,6 +2350,8 @@ class SolverBaseClass(uw_object):
                     ):
 
         self._check_expression_meshes()
+        if self._materials is not None:
+            self._materials.check()
 
         if self.is_setup:
             return
@@ -3036,6 +3039,50 @@ class SolverBaseClass(uw_object):
 
 
     @property
+    def materials(self):
+        """The materials this solver's coefficients come from.
+
+        Assigning a :class:`~underworld3.swarm.MaterialSwarm` sets every
+        constitutive-model parameter the materials declare *and* the model
+        recognises, by name — so a model script names its materials and their
+        properties, and never writes a level set or a mask::
+
+            materials = uw.swarm.MaterialSwarm(mesh, fill_param=3)
+            materials.add("mantle", shear_viscosity_0=1.0)
+            materials.add("slab",   shear_viscosity_0=1.0e3, density=3400)
+            materials["slab"] = mesh.X[1] > 0.53
+
+            stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+            stokes.materials = materials          # sets shear_viscosity_0
+
+        A declared property the model does not recognise (``density`` here) is
+        not pushed anywhere; it is available as a blended symbol,
+        ``materials.density``, for the model script to use where it belongs.
+        One that is neither recognised nor read is reported at solve time,
+        because a misspelled viscosity is silently the default one.
+
+        Properties may be changed, and materials repainted, after assignment:
+        the blend is symbolic and the push repeats on every change.
+        """
+        return self._materials
+
+    @materials.setter
+    def materials(self, material_swarm):
+        if material_swarm is None:
+            previous = self._materials
+            self._materials = None
+            if previous is not None:
+                previous._detach(self)     # or it keeps pushing to this solver
+            return
+        if not hasattr(material_swarm, "_attach"):
+            raise TypeError(
+                "solver.materials expects a MaterialSwarm (uw.swarm.MaterialSwarm), "
+                f"not {type(material_swarm).__name__}"
+            )
+        self._materials = material_swarm
+        material_swarm._attach(self)
+
+    @property
     def constitutive_model(self):
         """
         Constitutive model defining the material behavior.
@@ -3052,6 +3099,11 @@ class SolverBaseClass(uw_object):
 
     @constitutive_model.setter
     def constitutive_model(self, model_or_class):
+
+        # A stress history supplied by the user fixes the viscoelastic order
+        # (the solver's own _order is set only when it builds the history).
+        if self.Unknowns.DFDt is not None and self._order == 0:
+            self._order = getattr(self.Unknowns.DFDt, "order", 0) or 0
 
         ### checking if it's an instance - it will need to be reset
         if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
@@ -3087,6 +3139,11 @@ class SolverBaseClass(uw_object):
         # Stokes and VE_Stokes — the solver adapts to the constitutive model.
         if self._constitutive_model.requires_stress_history and self.Unknowns.DFDt is None:
             self._create_stress_history_ddt(order=self._constitutive_model.order)
+
+        # Materials assigned before the constitutive model still have to
+        # reach it: the push is a no-op while there is no model to push to.
+        if getattr(self, "_materials", None) is not None:
+            self._materials._push_to(self)
 
         # May not work due to flux being incomplete
         if self.Unknowns.DFDt is not None:
@@ -6897,8 +6954,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             adaptation-tracking) rather than the single **global** minimum
             cell size (:meth:`Mesh.get_min_radius`). On a non-uniform or
             adaptive mesh the local size scales the stabilisation correctly
-            on every facet; on a uniform mesh the two coincide. Set ``False``
-            to restore the legacy global-h behaviour exactly.
+            on every facet. Set ``False`` to restore the legacy global-h
+            behaviour exactly.
+
+            The two coincide on **tensor** cells only. On a uniform **simplex**
+            mesh they differ by exactly :math:`\sqrt{2}` — for congruent
+            right-isosceles cells of legs :math:`h`, :meth:`Mesh.cell_size` is
+            :math:`2h/3` while :meth:`Mesh.get_min_radius` is
+            :math:`\sqrt{2}h/3` — so the penalty :math:`\gamma\mu/h` differs
+            between the two settings on the simplex meshes the free-slip and
+            fault models use. See ``tests/test_0010_cell_size_geometry.py``.
         g : sympy expression or float, optional
             Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
@@ -6995,7 +7060,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # or adaptively-refined mesh — the boundary kernel sees the adjacent
         # cell's size. The field tracks mesh deformation/adaptation. Set
         # local_h=False to restore the legacy single global-minimum scalar
-        # (mesh.get_min_radius()); on a uniform mesh the two coincide.
+        # (mesh.get_min_radius()).
+        #
+        # The two coincide on TENSOR cells only. On a uniform SIMPLEX mesh --
+        # which is what the free-slip and fault models are built on -- they
+        # differ by exactly sqrt(2): on congruent right-isosceles cells of legs
+        # h, cell_size is 2h/3 and get_min_radius is sqrt(2)h/3. The penalty
+        # gamma*mu/h moves with that, so the two settings are NOT interchangeable
+        # there (see #734 and tests/test_0010_cell_size_geometry.py).
         if local_h:
             h_sym = mesh.cell_size()
         else:
