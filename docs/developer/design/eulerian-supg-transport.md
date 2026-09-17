@@ -141,6 +141,50 @@ Three facts follow.
 The new class reproduces the prototype's Crank-Nicolson numbers to four digits
 (0.5993% and 9.777% at Courant 0.5 and 2 on the uniform mesh).
 
+### The predictor-corrector manager (#689), measured against the implicit scheme
+
+gthyagi's `EulerianSUPGPC` (PR #689) is the Brooks-Hughes predictor-multicorrector as
+carried through ConMan and CitcomS: a persistent rate field, a predictor
+$\tilde T = T^n + (1-\gamma)\Delta t\,\dot T^n$, and corrector passes that assemble the SUPG
+residual and apply a lumped-mass update $\Delta\dot T = -M_L^{-1} R$, $T \mathrel{+}= \gamma\Delta t\,\Delta\dot T$.
+The `citcoms` preset is two fixed passes, so the implicit $\gamma$-method it targets is never
+converged and the scheme carries the explicit stability limit (its own step, $0.9\times$ the
+directional cell-crossing time); `pc_converged` iterates the passes to a residual tolerance and
+is the implicit Crank-Nicolson step solved by lumped-mass Richardson iteration instead of
+GMRES-ILU. Its $\tau$ is the steady CitcomS one (directional element length, no transient
+term). It is P1 only and wraps into the solver through one execution hook (`_solve_transport`);
+it cannot be given to the Navier-Stokes solver or used as a stress history.
+
+Same case as the table above (one revolution of the Gaussian, $\sigma = 0.12$, 32 cells across,
+serial), the predictor-corrector at its own stability step and the implicit P1 solver at that
+same step for the like-for-like cost (`~/+Simulations/supg_vs_slcn_657/rotation_pc/`):
+
+| scheme | field | $\Delta t$ (Courant) | steps | round-trip error | peak (of 1) | s per step | s per revolution |
+|---|---|---|---|---|---|---|---|
+| predictor-corrector, `citcoms` (2 passes) | P1 | 0.0130 (0.60) | 485 | 51% | 0.59 | 0.030 | 16 |
+| predictor-corrector, `pc_converged` | P1 | 0.0130 (0.60) | 485 | 18% | 0.77 | 0.63 | 306 |
+| `EulerianSUPG`, Crank-Nicolson | P1 | 0.0130 (0.60) | 485 | 6.7% | 0.94 | 0.030 | 18 |
+| `EulerianSUPG`, Crank-Nicolson | P1 | 0.0108 (0.5) | 580 | 6.3% | 0.95 | 0.029 | 18 |
+| `EulerianSUPG`, Crank-Nicolson | P2 | 0.0108 (0.5) | 580 | 0.60% | 0.99 | 0.036 | 22 |
+| `EulerianSUPG`, Crank-Nicolson | P2 | 0.0433 (2) | 145 | 9.8% | 0.99 | 0.036 | 6.5 |
+| SLCN | P2 | 0.0108 (0.5) | 580 | 21% | 0.84 | 0.29 | 170 |
+| SLCN | P2 | 0.0433 (2) | 145 | 7.7% | 0.93 | 0.27 | 40 |
+| SLCN | P1 | 0.0108 (0.5) | 580 | 84% | 0.15 | 0.15 | 89 |
+
+What the numbers say. A two-pass step costs exactly what the implicit P1 step costs here
+(one assembled residual against one GMRES-ILU solve of a P1 system, 0.030 s each), and it is
+eight times less accurate; it also has no choice of step. The converged mode reaches the same
+implicit system as `EulerianSUPG` on P1 at twenty times the cost per step, and lands three
+times less accurate than it because its steady $\tau$ (no transient cap, the directional length)
+puts more streamline diffusion into the same equation: the peak drops to 0.77 against 0.94. The
+P2 implicit rows are the ones in the table above (0.60% and 9.8%), reproduced. The semi-Lagrangian
+scheme on P1 is unusable at this Courant number (84%, one interpolation per step through linear
+elements). None of this is a mesh-refinement study: one mesh, one flow, serial.
+
+The case for the predictor-corrector is therefore fidelity to CitcomS results, not cost or
+accuracy, and the manager is the right home for it: the same residual, a different time
+marcher behind one hook, and a preset that names the settings it reproduces.
+
 ### BDF against Adams-Moulton
 
 `time_integrator_study.py`: the same rotating Gaussian, res 32, every scheme
