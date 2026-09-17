@@ -53,6 +53,57 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
+def _transpose_kernels(G0, G1, G2, G3, nc_test, nc_trial, dim):
+    """The pointwise Jacobian kernels of the TRANSPOSED bilinear form.
+
+    PETSc reads a Jacobian block (test field with ``nc_test`` components,
+    trial field with ``nc_trial``) from four flat buffers laid out
+    ``g0[fc, gc]``, ``g1[fc, gc, d]``, ``g2[fc, gc, d]``, ``g3[fc, gc, d, e]``
+    — ``fc`` the test component, ``gc`` the trial component, ``d`` the
+    test-side derivative direction in g2/g3 and the trial-side one in g1,
+    ``e`` the trial-side direction in g3. The form is
+
+        phi_fc g0 u_gc + phi_fc g1 d_d u_gc + d_d phi_fc g2 u_gc + d_d phi_fc g3 d_e u_gc.
+
+    Swapping trial and test gives the block of K^T with the roles of the
+    two fields exchanged: h0 is g0 transposed, h1 and h2 are g2 and g1 with
+    the components exchanged, and h3 is g3 with both index pairs exchanged.
+    Nothing is differentiated again; the derivatives are the forward ones,
+    evaluated at the same state. Matrices are returned whose row-major
+    flattening is PETSc's layout for the transposed block. A ``None``
+    kernel is an absent (zero) one.
+    """
+    import sympy
+
+    def flat(G, n):
+        if G is None:
+            return [sympy.Integer(0)] * n
+        values = list(G)
+        if len(values) != n:
+            raise ValueError(f"kernel has {len(values)} entries, expected {n}")
+        return values
+
+    nt, nu = nc_test, nc_trial
+    g0 = flat(G0, nt * nu)
+    g1 = flat(G1, nt * nu * dim)
+    g2 = flat(G2, nt * nu * dim)
+    g3 = flat(G3, nt * nu * dim * dim)
+    H0 = sympy.zeros(nu, nt)
+    H1 = sympy.zeros(nu * nt, dim)
+    H2 = sympy.zeros(nu * nt, dim)
+    H3 = sympy.zeros(nu * nt, dim * dim)
+    for fc in range(nt):
+        for gc in range(nu):
+            H0[gc, fc] = g0[fc * nu + gc]
+            for d in range(dim):
+                H1[gc * nt + fc, d] = g2[(fc * nu + gc) * dim + d]
+                H2[gc * nt + fc, d] = g1[(fc * nu + gc) * dim + d]
+                for e in range(dim):
+                    H3[gc * nt + fc, e * dim + d] = g3[((fc * nu + gc) * dim + d) * dim + e]
+    return (sympy.ImmutableMatrix(H0), sympy.ImmutableMatrix(H1),
+            sympy.ImmutableMatrix(H2), sympy.ImmutableMatrix(H3))
+
+
 def _solve_transposed(ksp, J, P, b, x):
     """Solve :math:`J^T x = b` with the solver's OWN KSP and preconditioner.
 
@@ -66,8 +117,14 @@ def _solve_transposed(ksp, J, P, b, x):
     attached to ``J`` (the pressure constant on an enclosed domain) is the
     transpose null space of ``J^T``, and is carried across.
     """
-    Jt = J.transpose()
-    Pt = Jt if P.handle == J.handle else P.transpose()
+    # Mat.transpose() with no target transposes IN PLACE; give it a new Mat.
+    Jt = PETSc.Mat()
+    J.transpose(Jt)
+    if P.handle == J.handle:
+        Pt = Jt
+    else:
+        Pt = PETSc.Mat()
+        P.transpose(Pt)
     for source, put in ((J.getNullSpace(), Jt.setTransposeNullSpace),
                         (J.getTransposeNullSpace(), Jt.setNullSpace),
                         (J.getNearNullSpace(), Jt.setNearNullSpace)):
@@ -1549,7 +1606,9 @@ class SolverBaseClass(uw_object):
         # The kernel first: if the forward ran Picard, the rebuild below may
         # replace the DS the SNES assembles with, so every handle taken from
         # the DM must be taken AFTER it.
-        tangent = self._consistent_tangent_for_adjoint()
+        by_kernels = self._adjoint_by_kernels()
+        tangent = (self._install_adjoint_kernels() if by_kernels
+                   else self._consistent_tangent_for_adjoint())
         dm = self.dm
 
         # The Jacobian at the state the forward solve ended in.
@@ -1583,8 +1642,16 @@ class SolverBaseClass(uw_object):
         x = gvec.duplicate()
         x.set(0.0)
 
-        reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
-        self._restore_tangent(tangent)
+        if by_kernels:
+            # J IS K^T: assembled from the transposed kernels. Solve forwards.
+            ksp = self.snes.getKSP()
+            ksp.setOperators(J, P)
+            ksp.solve(b, x)
+            reason = int(ksp.getConvergedReason())
+            self._uninstall_adjoint_kernels(tangent)
+        else:
+            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+            self._restore_tangent(tangent)
 
         if target is not None:
             # Homogeneous constraints: the local vector is zeroed before the
@@ -1720,6 +1787,41 @@ class SolverBaseClass(uw_object):
         for i in range(self.mesh.dim):
             out = out + d0[i] * mu_sym[i]
         return out + uw.maths.tensor.rank2_inner_product(d1, grad_mu)
+
+    def _adjoint_by_kernels(self):
+        """Whether the adjoint operator is ASSEMBLED from the transposed
+        kernels rather than obtained by transposing the assembled matrix.
+        The kernel route covers the volume terms; a boundary Jacobian (a
+        natural or Nitsche condition with a tangent) is not swapped yet, so
+        such a solver takes the matrix route."""
+        return not (getattr(self, "natural_bcs", None) or [])
+
+    def _install_adjoint_kernels(self):
+        """Rewire the solver to the kernels of the transposed form.
+
+        The Jacobian the SNES then assembles IS K^T at the state the forward
+        solve ended in: the consistent tangent's derivatives with trial and
+        test exchanged (:func:`_transpose_kernels`), compiled and cached like
+        any other kernel set. Returns what to hand back to
+        :meth:`_uninstall_adjoint_kernels`.
+        """
+        previous = self._consistent_jacobian
+        if self.consistent_jacobian is False and not self._residual_is_linear_in_unknown():
+            self._consistent_jacobian = True          # transpose dR/du, not the Picard kernel
+        self._adjoint_kernels = True
+        self._needs_function_rewire = True
+        self._build(False, False, None)
+        self.snes.setUp()                             # a direct computeJacobian needs it
+        return previous
+
+    def _uninstall_adjoint_kernels(self, previous):
+        """Mark the forward kernels as wanted again. The next forward solve's
+        own build rewires; nothing is torn down here, so a second adjoint on
+        the same forward state reuses the installed set."""
+        self._consistent_jacobian = previous
+        self._adjoint_kernels = False
+        self._adjoint_kernel_installed = True
+        self._needs_function_rewire = True
 
     def _consistent_tangent_for_adjoint(self):
         """Make sure the Jacobian kernel the adjoint assembles is dR/du.
@@ -4520,6 +4622,12 @@ class SNES_Scalar(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        if getattr(self, "_adjoint_kernels", False):
+            # The adjoint's operator: the same derivatives, trial and test
+            # exchanged. Compiled as its own kernel set and cached.
+            _nc = int(self._G0.shape[0])
+            self._G0, self._G1, self._G2, self._G3 = _transpose_kernels(
+                self._G0, self._G1, self._G2, self._G3, _nc, _nc, self.mesh.cdim)
 
         ##################
 
@@ -5521,6 +5629,12 @@ class SNES_Vector(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        if getattr(self, "_adjoint_kernels", False):
+            # The adjoint's operator: the same derivatives, trial and test
+            # exchanged. Compiled as its own kernel set and cached.
+            _nc = int(self._G0.shape[0])
+            self._G0, self._G1, self._G2, self._G3 = _transpose_kernels(
+                self._G0, self._G1, self._G2, self._G3, _nc, _nc, self.mesh.cdim)
 
         ##################
 
@@ -6319,6 +6433,12 @@ class SNES_MultiComponent(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        if getattr(self, "_adjoint_kernels", False):
+            # The adjoint's operator: the same derivatives, trial and test
+            # exchanged. Compiled as its own kernel set and cached.
+            _nc = int(self._G0.shape[0])
+            self._G0, self._G1, self._G2, self._G3 = _transpose_kernels(
+                self._G0, self._G1, self._G2, self._G3, _nc, _nc, self.mesh.cdim)
 
         fns_jacobian = (self._G0, self._G1, self._G2, self._G3)
 
@@ -8767,6 +8887,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         fns_jacobian.append(self._pp_G0)
 
+        if getattr(self, "_adjoint_kernels", False):
+            # K^T block by block: uu transposed in place; the (u,p) block of
+            # K^T is the transpose of K's (p,u) block and vice versa; pp is a
+            # scalar. Same derivatives, trial and test exchanged.
+            forward = [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3,
+                       self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                       self._pu_G0, self._pu_G1]
+            up_from_pu = _transpose_kernels(self._pu_G0, self._pu_G1, None, None, 1, dim, dim)
+            pu_from_up = _transpose_kernels(self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                                            dim, 1, dim)
+            self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3 = _transpose_kernels(
+                self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3, dim, dim, dim)
+            self._up_G0, self._up_G1, self._up_G2, self._up_G3 = up_from_pu
+            self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3 = pu_from_up
+            fns_jacobian = [f for f in fns_jacobian if not any(f is g for g in forward)]
+            fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3,
+                             self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                             self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
+
         ## Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
         ## for ordinary Stokes. Each multiplier h_k contributes an interior
         ## screening residual  f0 = eps_k * h_k  and a diagonal mass Jacobian
@@ -9442,10 +9581,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
         PetscDSSetJacobian(              ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        if getattr(self, "_adjoint_kernels", False):
+            # the transposed (p,u) block carries the flux derivatives of K's (u,p) block
+            PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]], ext.fns_jacobian[i_jac[self._pu_G2]], ext.fns_jacobian[i_jac[self._pu_G3]])
+        else:
+            PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        if getattr(self, "_adjoint_kernels", False):
+            PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]], ext.fns_jacobian[i_jac[self._pu_G2]], ext.fns_jacobian[i_jac[self._pu_G3]])
+        else:
+            PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
 
         # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
@@ -10167,7 +10313,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         import numpy as np
 
-        tangent = self._consistent_tangent_for_adjoint()   # before any DM vector
+        by_kernels = self._adjoint_by_kernels()            # before any DM vector
+        tangent = (self._install_adjoint_kernels() if by_kernels
+                   else self._consistent_tangent_for_adjoint())
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
         self._gather_fields_to_global(gvec)
@@ -10205,8 +10353,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         x = gvec.duplicate()
         x.set(0.0)
 
-        reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
-        self._restore_tangent(tangent)
+        if by_kernels:
+            # J IS K^T: assembled from the transposed kernels. Solve forwards.
+            ksp = self.snes.getKSP()
+            ksp.setOperators(J, P)
+            ksp.solve(b, x)
+            reason = int(ksp.getConvergedReason())
+            self._uninstall_adjoint_kernels(tangent)
+        else:
+            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+            self._restore_tangent(tangent)
 
         if target is not None:
             u_adj, p_adj = target
