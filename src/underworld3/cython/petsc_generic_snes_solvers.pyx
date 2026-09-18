@@ -365,10 +365,14 @@ class SolverBaseClass(uw_object):
         """Which measured smoother regime this solver's strategy asks for.
 
         ``solver.strategy`` is the named intent ("I want speed" / "I want this to
-        converge"); the values live in ``utilities.multigrid_options``. Solvers with
-        no strategy axis get the robust default. See
-        :func:`multigrid_options.geometric_mg_bundle` for the measurements."""
-        return "fast" if getattr(self, "_strategy", "default") == "fast" else "robust"
+        converge" / "I need the solver off the list of suspects"); the values live in
+        ``utilities.multigrid_options``. Solvers with no strategy axis get the robust
+        default. See :func:`multigrid_options.geometric_mg_bundle` for the
+        measurements."""
+        strategy = getattr(self, "_strategy", "default")
+        if strategy in ("fast", "bulletproof"):
+            return strategy
+        return "robust"
 
     def _push_managed_option(self, key, value):
         """Write a PETSc option UW3 owns, recording that we wrote it.
@@ -7043,7 +7047,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def strategy(self):
         """
         What this solve should optimise for — the named intent over the
-        multigrid smoother's two measured regimes.
+        multigrid smoother's measured regimes.
 
         - ``"default"``, ``"robust"``: ``gmres``/4 smoothing. Survives an operator a
           stationary smoother stalls on: Spiegelman notch (:math:`\eta` contrast
@@ -7056,6 +7060,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
           hierarchy depth tested (x1.16, x1.30, x1.82 at 2, 3, 4 levels) while taking
           more iterations. It gives up the regime ``"robust"`` exists for, so it is
           an opt-in.
+        - ``"bulletproof"``: ``gmres``/8 smoothing preconditioned by **additive
+          Schwarz**, whose subdomain solves invert the local coupling directly rather
+          than relying on the operator being close to symmetric or elliptic. Slower
+          per sweep, and it exists to take the linear solve OFF the list of suspects.
+          When a run misbehaves and the solver, the transport scheme and the mesh
+          resolution are all candidates, run it again under ``"bulletproof"``: if the
+          answer is unchanged, the fault is not in the linear algebra. Measured on
+          creeping Oldroyd-B past a confined cylinder (Wi 0.4, three levels), where
+          ``"robust"`` spent 26947 s on one step and reached a drag of -4642 while
+          ``"bulletproof"`` took 115 s and stayed finite — and produced the same
+          wrong drag as every other smoother, which is what identified the real fault
+          as the under-resolved elastic layer rather than the solve.
 
         ``"default"`` is ``"robust"``: the failure it avoids is worse than the cost it
         carries, and it carries that cost exactly where the problem is easy.
@@ -7100,10 +7116,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @strategy.setter
     def strategy(self, value):
-        if value not in ("default", "robust", "fast"):
+        if value not in ("default", "robust", "fast", "bulletproof"):
             raise ValueError(
                 f"Unknown solver strategy {value!r}: "
-                "expected 'default', 'robust', or 'fast'."
+                "expected 'default', 'robust', 'fast', or 'bulletproof'."
             )
         # 'fast' and 'robust' now select a real smoother variant, via
         # `_mg_smoother_variant` -> `multigrid_options.geometric_mg_bundle`. They were
