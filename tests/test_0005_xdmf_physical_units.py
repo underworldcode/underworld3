@@ -27,10 +27,19 @@ def test_xdmf_uses_declared_physical_units(tmp_path):
     _set_reference_scales()
 
     mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
-    velocity = uw.discretisation.MeshVariable("velocity", mesh, mesh.dim, degree=2, units="mm/year")
+    velocity = uw.discretisation.MeshVariable(
+        "velocity", mesh, mesh.dim, degree=2, units="mm/year"
+    )
     pressure = uw.discretisation.MeshVariable(
         "pressure", mesh, 1, degree=0, continuous=False, units="MPa"
     )
+    surface = uw.meshing.Surface(
+        "unit_test",
+        mesh,
+        control_points=uw.quantity([[0.0, 0.0], [10.0, 0.0]], "km"),
+    )
+    surface.discretize()
+    distance = surface.abs_distance
     velocity.data[:, 0] = 2.0
     velocity.data[:, 1] = 3.0
     pressure.data[:, 0] = 4.0
@@ -40,7 +49,7 @@ def test_xdmf_uses_declared_physical_units(tmp_path):
         "physical",
         index=0,
         outputPath=str(directory),
-        meshVars=[velocity, pressure],
+        meshVars=[velocity, pressure, distance],
         petsc_reload=True,
     )
 
@@ -51,6 +60,7 @@ def test_xdmf_uses_declared_physical_units(tmp_path):
     mesh_file = directory / "physical.mesh.00000.h5"
     velocity_file = directory / "physical.mesh.velocity.00000.h5"
     pressure_file = directory / "physical.mesh.pressure.00000.h5"
+    distance_file = directory / "physical.mesh.surf_unit_test_absdistance.00000.h5"
 
     with h5py.File(mesh_file, "r") as handle:
         native_coordinates = handle["geometry/vertices"][:]
@@ -69,7 +79,10 @@ def test_xdmf_uses_declared_physical_units(tmp_path):
             native_coordinates * 10.0,
         )
         assert handle["fields/velocity"].attrs["units"] == "nondimensional"
-        assert handle["vertex_fields/velocity_velocity"].attrs["units"] == "millimeter / year"
+        assert (
+            handle["vertex_fields/velocity_velocity"].attrs["units"]
+            == "millimeter / year"
+        )
         assert handle["vertex_fields/coordinates"].attrs["units"] == "kilometer"
         np.testing.assert_allclose(
             handle["uw_checkpoint/velocity"][:].reshape(-1, mesh.dim), native
@@ -81,6 +94,20 @@ def test_xdmf_uses_declared_physical_units(tmp_path):
         np.testing.assert_allclose(native, 4.0)
         np.testing.assert_allclose(physical, 8.0)
         assert handle["cell_fields/pressure_pressure"].attrs["units"] == "megapascal"
+
+    with h5py.File(distance_file, "r") as handle:
+        native = handle["fields/surf_unit_test_absdistance"][:].reshape(-1)
+        physical = handle[
+            "vertex_fields/surf_unit_test_absdistance_surf_unit_test_absdistance"
+        ][:].reshape(-1)
+        np.testing.assert_allclose(physical, native * 10.0)
+        assert distance.units == uw.units("km").units
+        assert (
+            handle[
+                "vertex_fields/surf_unit_test_absdistance_surf_unit_test_absdistance"
+            ].attrs["units"]
+            == "kilometer"
+        )
 
     xdmf = (directory / "physical.mesh.00000.xdmf").read_text()
     assert "&MeshData;:/viz/geometry/vertices" in xdmf
