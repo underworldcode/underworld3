@@ -41,7 +41,7 @@ params = uw.Params(
     cohesion=uw.Param(0.05, "cohesion C in tau_y = C + mu p"),
     rho_g=uw.Param(10.0, "body force, so the pressure grows with depth"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
-    optimiser=uw.Param("tao", "tao (PETSc, limited-memory quasi-Newton) | scipy (L-BFGS-B)"),
+    optimiser=uw.Param("scipy", "scipy (L-BFGS-B; the figures in the note are from it) | tao (PETSc, limited-memory quasi-Newton)"),
     observations=uw.Param("uplift+stress",
                           "uplift+stress | orientation_points (principal-stress orientation "
                           "at the five interior points only) | surface_strain (the surface "
