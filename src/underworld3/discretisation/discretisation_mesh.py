@@ -4841,7 +4841,7 @@ class Mesh(Stateful, uw_object):
           fields receive one compact P1 visualization dataset; discontinuous
           DG2+ fields receive DG0.
         - ``petsc_reload=True`` writes native nondimensional PETSc DMPlex
-          section/global-vector data under ``/uw_checkpoint``.
+          section/global-vector data under ``/restart/petsc``.
           Load that optional payload with ``MeshVariable.read_checkpoint()``
           for an exact solver restart. When XDMF is disabled, this is the only
           variable payload; no duplicate ``/fields`` values are written.
@@ -5060,7 +5060,7 @@ class Mesh(Stateful, uw_object):
             checkpoint_file, mode, comm=PETSc.COMM_WORLD
         )
         viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-        viewer.pushGroup("/uw_checkpoint")
+        viewer.pushGroup("/restart/petsc")
         try:
             # PETSc needs the complete source section to construct the
             # migration SF when the checkpoint is read with a different MPI
@@ -9666,7 +9666,7 @@ def _write_xdmf_field(mesh, var, var_h5_path):
         by ``var.write()`` (so ``var._gvec`` is up-to-date).
     var_h5_path : str
         Path to the HDF5 file. Native restart data, when requested, has already
-        been written under ``/uw_checkpoint``.
+        been written under ``/restart/petsc``.
     """
     import h5py
     import underworld3 as uw

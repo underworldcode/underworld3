@@ -1499,13 +1499,26 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         if uw.mpi.rank == 0:
             with h5py.File(filename, "r") as checkpoint_h5:
-                grouped_checkpoint = "uw_checkpoint/topologies" in checkpoint_h5
-                legacy_direct_vector = f"uw_checkpoint/{data_name}" in checkpoint_h5
+                if "restart/petsc/topologies" in checkpoint_h5:
+                    checkpoint_group = "/restart/petsc"
+                elif "uw_checkpoint/topologies" in checkpoint_h5:
+                    checkpoint_group = "/uw_checkpoint"
+                else:
+                    checkpoint_group = None
+
+                if f"restart/petsc/{data_name}" in checkpoint_h5:
+                    direct_vector_group = "/restart/petsc"
+                elif f"uw_checkpoint/{data_name}" in checkpoint_h5:
+                    direct_vector_group = "/uw_checkpoint"
+                else:
+                    direct_vector_group = None
         else:
-            grouped_checkpoint = None
-            legacy_direct_vector = None
-        grouped_checkpoint = uw.mpi.comm.bcast(grouped_checkpoint, root=0)
-        legacy_direct_vector = uw.mpi.comm.bcast(legacy_direct_vector, root=0)
+            checkpoint_group = None
+            direct_vector_group = None
+        checkpoint_group = uw.mpi.comm.bcast(checkpoint_group, root=0)
+        direct_vector_group = uw.mpi.comm.bcast(direct_vector_group, root=0)
+        grouped_checkpoint = checkpoint_group is not None
+        legacy_direct_vector = direct_vector_group is not None
 
         if same_layout and not (grouped_checkpoint or legacy_direct_vector):
             raise RuntimeError(
@@ -1518,7 +1531,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
         viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
         if grouped_checkpoint and not same_layout:
-            viewer.pushGroup("/uw_checkpoint")
+            viewer.pushGroup(checkpoint_group)
 
         old_mesh_name = self.mesh.dm.getName()
         old_lvec_name = self._lvec.getName()
@@ -1533,14 +1546,14 @@ class _BaseMeshVariable(Stateful, uw_object):
 
             if same_layout:
                 vector_group = (
-                    f"/uw_checkpoint/topologies/uw_mesh/dms/{data_name}/"
+                    f"{checkpoint_group}/topologies/uw_mesh/dms/{data_name}/"
                     f"vecs/{data_name}"
                     if grouped_checkpoint
-                    else "/uw_checkpoint"
+                    else direct_vector_group
                 )
                 # A DM-associated Vec ignores the viewer group and redirects
                 # HDF5 I/O through /fields. A plain Vec reads the requested
-                # /uw_checkpoint dataset when /fields is intentionally absent.
+                # restart dataset when /fields is intentionally absent.
                 checkpoint_vec = PETSc.Vec().createMPI(
                     (self._gvec.getLocalSize(), PETSc.DECIDE),
                     comm=PETSc.COMM_WORLD,

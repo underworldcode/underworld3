@@ -173,8 +173,8 @@ def test_timestep_with_petsc_reload_roundtrip(tmp_path):
             assert "fields/x" in h5f
             assert "fields/coordinates" in h5f
             assert "vertex_fields" not in h5f
-            assert "uw_checkpoint/topologies/uw_mesh/dms/x/section" in h5f
-            assert "uw_checkpoint/topologies/uw_mesh/dms/x/vecs/x" in h5f
+            assert "restart/petsc/topologies/uw_mesh/dms/x/section" in h5f
+            assert "restart/petsc/topologies/uw_mesh/dms/x/vecs/x" in h5f
     uw.mpi.barrier()
 
     mesh_reloaded = uw.discretisation.Mesh(f"{tmp_path}/unified.mesh.00000.h5")
@@ -206,7 +206,7 @@ def test_timestep_with_petsc_reload_roundtrip(tmp_path):
         with h5py.File(checkpoint_var_file, "r") as h5f:
             assert "fields/x" in h5f
             assert "vertex_fields" not in h5f
-            assert "uw_checkpoint/topologies/uw_mesh/dms/x/section" in h5f
+            assert "restart/petsc/topologies/uw_mesh/dms/x/section" in h5f
     uw.mpi.barrier()
 
     mesh_reloaded = uw.discretisation.Mesh(

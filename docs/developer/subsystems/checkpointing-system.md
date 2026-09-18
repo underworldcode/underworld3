@@ -36,7 +36,7 @@ to the mesh and variable units declared in the model. HDF5 attributes and XDMF
 physical values directly, without maintaining their own conversion table.
 
 Set `petsc_reload=True` only when an exact restart is needed. It adds the native
-nondimensional PETSc payload under `/uw_checkpoint`; the visualization and
+nondimensional PETSc payload under `/restart/petsc`; the visualization and
 analysis arrays remain dimensional.
 
 ### Visualisation and Coordinate Remap
@@ -58,7 +58,7 @@ point fields are not supported by this writer.
 DG1 therefore has two representations because their coordinate sets serve
 different purposes: native `/fields` for analysis and coordinate reload, and an
 exact disconnected-corner `/visualization` representation for XDMF. Add
-`/uw_checkpoint` when PETSc-native restart is also required.
+`/restart/petsc` when PETSc-native restart is also required.
 
 ```python
 mesh.write_timestep(
@@ -126,10 +126,13 @@ output/restart.mesh.pressure.00100.h5
 ```
 
 The variable files contain PETSc reload metadata and one native global vector
-under `/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()`
+under `/restart/petsc/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()`
 uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata. It does not
 use dimensional `/fields` values or KDTree remapping. Restart-only output does
 not write `/fields`, so the native values are stored only once.
+
+The reader also accepts the former `/uw_checkpoint` group for compatibility
+with existing restart files.
 
 ### Unified Visualisation and PETSc Reload
 

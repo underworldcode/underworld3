@@ -80,7 +80,7 @@ def test_fields_are_dimensional_and_checkpoint_is_native(tmp_path):
         assert handle["fields/coordinates"].attrs["units"] == "kilometer"
         assert "visualization" not in handle
         assert "vertex_fields" not in handle
-        assert "uw_checkpoint/topologies/uw_mesh/dms/velocity/vecs/velocity/velocity" in handle
+        assert "restart/petsc/topologies/uw_mesh/dms/velocity/vecs/velocity/velocity" in handle
 
     with h5py.File(pressure_file, "r") as handle:
         np.testing.assert_allclose(handle["fields/pressure"][:], 8.0)

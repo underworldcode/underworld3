@@ -22,7 +22,7 @@ The two optional payloads are selected with explicit flags:
 | Flag | Output payload | Reader/use case |
 | --- | --- | --- |
 | `create_xdmf=True` | Dimensional `/fields`, compact high-order reductions when needed, and a companion `.xdmf` file | Analysis and ParaView/XDMF visualisation |
-| `petsc_reload=True` | Native PETSc DMPlex section/global-vector data under `/uw_checkpoint` | `MeshVariable.read_checkpoint()` exact reload |
+| `petsc_reload=True` | Native PETSc DMPlex section/global-vector data under `/restart/petsc` | `MeshVariable.read_checkpoint()` exact reload |
 
 The XDMF storage choice follows the finite-element layout:
 
@@ -95,7 +95,7 @@ velocity.read_checkpoint(
 ```
 
 With both flags enabled, the same variable file contains dimensional `/fields`
-for analysis, XDMF, and coordinate remapping plus native `/uw_checkpoint` data
+for analysis, XDMF, and coordinate remapping plus native `/restart/petsc` data
 for exact PETSc reload.
 
 ### PETSc Reload Without XDMF
@@ -125,7 +125,10 @@ restart.mesh.Pressure.00000.h5
 ```
 
 Each variable file contains only PETSc reload metadata and one native global
-vector under `/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`.
+vector under `/restart/petsc/topologies/uw_mesh/dms/<variable>/`.
+
+`read_checkpoint()` also recognizes the former `/uw_checkpoint` group so
+existing restart files remain readable.
 
 ### Advantages
 

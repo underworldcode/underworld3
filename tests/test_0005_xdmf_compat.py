@@ -211,7 +211,7 @@ def test_compact_tensor_keeps_native_component_count(tmp_path):
 @pytest.mark.level_1
 @pytest.mark.tier_b
 def test_timestep_and_optional_checkpoint_roundtrip(tmp_path):
-    """Dimensional fields support remap; /uw_checkpoint supports exact reload."""
+    """Dimensional fields support remap; /restart/petsc supports exact reload."""
     directory = _shared_path(tmp_path)
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.4, regular=True)
     source = uw.discretisation.MeshVariable("source", mesh, 1, degree=2)
@@ -239,9 +239,9 @@ def test_timestep_and_optional_checkpoint_roundtrip(tmp_path):
 
     if uw.mpi.rank == 0:
         with h5py.File(field_file, "r") as handle:
-            assert set(handle) == {"fields", "uw_checkpoint"}
-            assert "uw_checkpoint/topologies/uw_mesh/dms/source/vecs/source/source" in handle
-            assert set(handle["uw_checkpoint/topologies/uw_mesh/dms"]) == {
+            assert set(handle) == {"fields", "restart"}
+            assert "restart/petsc/topologies/uw_mesh/dms/source/vecs/source/source" in handle
+            assert set(handle["restart/petsc/topologies/uw_mesh/dms"]) == {
                 "source",
                 "uw_mesh",
             }
@@ -292,7 +292,22 @@ def test_petsc_reload_only_omits_duplicate_fields(tmp_path):
     if uw.mpi.rank == 0:
         assert not (directory / "restart.mesh.00000.xdmf").exists()
         with h5py.File(directory / "restart.mesh.field.00000.h5", "r") as handle:
-            assert set(handle) == {"uw_checkpoint"}
+            assert set(handle) == {"restart"}
+            assert set(handle["restart"]) == {"petsc"}
+
+        # Existing files that used the former group name remain readable.
+        with h5py.File(directory / "restart.mesh.field.00000.h5", "a") as handle:
+            handle.move("restart/petsc", "uw_checkpoint")
+            del handle["restart"]
+    uw.mpi.barrier()
+
+    field.array[...] = 0.0
+    field.read_checkpoint(
+        str(directory / "restart.mesh.field.00000.h5"),
+        data_name="field",
+        same_layout=True,
+    )
+    np.testing.assert_allclose(field.array, expected)
 
 
 @pytest.mark.level_1
