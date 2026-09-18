@@ -226,6 +226,45 @@ def _write_vec_to_group(viewer, data_array, name, group, comm):
     vec.destroy()
 
 
+def _physical_visualisation_enabled(units):
+    """Return whether declared units require a physical XDMF copy."""
+    import underworld3 as uw
+
+    return (
+        units is not None
+        and uw.get_default_model().has_units_active()
+        and uw.is_nondimensional_scaling_active()
+    )
+
+
+def _physical_visualisation_values(data, units):
+    """Return output values and their declared unit label.
+
+    Solver and checkpoint vectors use model magnitudes.  XDMF arrays are a
+    user-facing boundary, so an active nondimensional model is converted to
+    the units declared by the mesh or variable before those arrays are written.
+    """
+    import underworld3 as uw
+
+    if units is None:
+        return data, None
+
+    target_units = uw.units(units).units if isinstance(units, str) else units
+    unit_label = str(target_units)
+    if not _physical_visualisation_enabled(units):
+        return data, unit_label
+
+    dimensionality = dict(target_units.dimensionality)
+    if not dimensionality:
+        return data, unit_label
+
+    physical = uw.dimensionalise(
+        np.asarray(data),
+        target_dimensionality=dimensionality,
+    ).to(target_units)
+    return np.asarray(physical), unit_label
+
+
 def write_vertices_to_viewer(
     mesh_var: "MeshVariable",
     viewer: "PETSc.ViewerHDF5",
@@ -293,6 +332,8 @@ def write_vertices_to_viewer(
     if is_tensor:
         data = _repack_tensor_to_paraview(data, mesh_var.vtype, mesh.dim)
 
+    data, _ = _physical_visualisation_values(data, mesh_var.units)
+
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
 
 
@@ -316,7 +357,8 @@ def write_coordinates_to_viewer(
         Dataset name (default ``coordinates``).
     """
     coord_gvec = mesh.dm.getCoordinates()
-    coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
+    coords = coord_gvec.array.reshape(-1, mesh.cdim).copy()
+    coords, _ = _physical_visualisation_values(coords, mesh.units)
     _write_vec_to_group(viewer, coords, name, group, PETSc.COMM_WORLD)
 
 
@@ -349,16 +391,17 @@ def write_cell_field_to_viewer(
     nc = mesh_var.num_components
     mesh_var._sync_lvec_to_gvec()
     data = mesh_var._gvec.array.reshape(-1, nc).copy()
+    data, _ = _physical_visualisation_values(data, mesh_var.units)
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
 
 
 def _write_dg1_to_viewer(mesh_var, viewer):
-    """Write owned simplex cells with independent physical vertices and DG1 traces.
+    """Write owned simplex cells with independent vertices and DG1 traces.
 
     Coordinate-section cell maps preserve element ownership and node ordering;
     no point location, coordinate matching, or inter-element averaging is used.
     Interior DG interpolation nodes define an affine polynomial, evaluated at
-    that same cell's physical vertices. Native checkpoint vectors are untouched.
+    that same cell's vertices. Native checkpoint vectors are untouched.
     """
     mesh = mesh_var.mesh
     if (
@@ -381,12 +424,14 @@ def _write_dg1_to_viewer(mesh_var, viewer):
     # Closure order is arbitrary; give VTK positively oriented simplices.
     negative = np.linalg.det((corners[:, 1:] - corners[:, :1]).transpose(0, 2, 1)) < 0
     corners[negative] = corners[negative][:, [0, 2, 1] if mesh.dim == 2 else [0, 2, 1, 3]]
-    nodes = mesh_var.coords[rows]
+    nodes = mesh_var.coords_nd[rows]
     coefficients = mesh_var._lvec.array.reshape(-1, mesh_var.num_components)[rows]
     matrix = (nodes[:, 1:] - nodes[:, :1]).transpose(0, 2, 1)
     local = np.linalg.solve(matrix, (corners - nodes[:, :1]).transpose(0, 2, 1))
     weights = np.concatenate((1 - local.sum(axis=1, keepdims=True), local), axis=1)
     values = np.einsum("cij,cik->cjk", weights, coefficients).reshape(-1, mesh_var.num_components)
     values = _repack_tensor_to_paraview(values, mesh_var.vtype, mesh.dim)
+    corners, _ = _physical_visualisation_values(corners, mesh.units)
+    values, _ = _physical_visualisation_values(values, mesh_var.units)
     _write_vec_to_group(viewer, corners.reshape(-1, mesh.cdim), "vertices", "/dg1", PETSc.COMM_WORLD)
     _write_vec_to_group(viewer, values, "values", "/dg1", PETSc.COMM_WORLD)

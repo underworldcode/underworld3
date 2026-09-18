@@ -4839,7 +4839,10 @@ class Mesh(Stateful, uw_object):
 
         - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
           receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
-          and rank 0 writes the companion ``.xdmf`` file.
+          and rank 0 writes the companion ``.xdmf`` file. With active
+          nondimensional scaling, these visualisation datasets use the mesh and
+          variable units while native ``/geometry`` and ``/fields`` datasets
+          remain nondimensional for reload.
         - ``petsc_reload=True`` writes PETSc DMPlex section/local-vector
           metadata and an in-place global-vector payload into the same
           per-variable HDF5 files. These files can then be loaded with
@@ -4929,6 +4932,9 @@ class Mesh(Stateful, uw_object):
         else:
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
             self.write(mesh_file)
+
+        if create_xdmf:
+            _write_visualisation_geometry(self, mesh_file)
 
         variables = []
         if meshVars is not None:
@@ -9688,7 +9694,9 @@ def _write_compat_groups(mesh, var, var_h5_path):
     uw.mpi.barrier()
 
     viewer = PETSc.ViewerHDF5().create(
-        var_h5_path, "a", comm=PETSc.COMM_WORLD,
+        var_h5_path,
+        "a",
+        comm=PETSc.COMM_WORLD,
     )
 
     if is_dg1:
@@ -9714,6 +9722,94 @@ def _write_compat_groups(mesh, var, var_h5_path):
                 )
         uw.mpi.barrier()
 
+    _write_visualisation_metadata(mesh, var, var_h5_path, group)
+
+
+def _write_visualisation_geometry(mesh, mesh_h5_path):
+    """Write physical mesh coordinates without changing restart geometry."""
+    import h5py
+    import underworld3 as uw
+    from underworld3.function.field_projection import (
+        _physical_visualisation_enabled,
+        _physical_visualisation_values,
+    )
+
+    if not _physical_visualisation_enabled(mesh.units):
+        return
+
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            with h5py.File(mesh_h5_path, "a") as handle:
+                if "viz/geometry" in handle:
+                    del handle["viz/geometry"]
+    uw.mpi.barrier()
+
+    viewer = PETSc.ViewerHDF5().create(mesh_h5_path, "a", comm=PETSc.COMM_WORLD)
+    uw.function.write_coordinates_to_viewer(
+        mesh,
+        viewer,
+        group="/viz/geometry",
+        name="vertices",
+    )
+    viewer.destroy()
+
+    _, unit_label = _physical_visualisation_values(numpy.ones(1), mesh.units)
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            with h5py.File(mesh_h5_path, "a") as handle:
+                handle.attrs["checkpoint_units"] = "nondimensional"
+                handle.attrs["visualisation_units"] = unit_label
+                handle["geometry/vertices"].attrs["units"] = "nondimensional"
+                physical = handle["viz/geometry/vertices"]
+                physical.attrs["units"] = unit_label
+    uw.mpi.barrier()
+
+
+def _write_visualisation_metadata(mesh, var, var_h5_path, group):
+    """Describe native and physical datasets after collective output closes."""
+    import h5py
+    import underworld3 as uw
+    from underworld3.function.field_projection import (
+        _physical_visualisation_enabled,
+        _physical_visualisation_values,
+    )
+
+    field_enabled = _physical_visualisation_enabled(var.units)
+    coordinates_enabled = _physical_visualisation_enabled(mesh.units)
+    if not (field_enabled or coordinates_enabled):
+        return
+
+    _, field_units = _physical_visualisation_values(numpy.ones(1), var.units)
+    _, coordinate_units = _physical_visualisation_values(
+        numpy.ones(1), mesh.units
+    )
+    if group == "dg1":
+        field_path = "dg1/values"
+        coordinate_path = "dg1/vertices"
+    else:
+        field_path = f"{group}/{var.clean_name}_{var.clean_name}"
+        coordinate_path = f"{group}/coordinates"
+
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            with h5py.File(var_h5_path, "a") as handle:
+                handle.attrs["checkpoint_units"] = "nondimensional"
+                if field_enabled:
+                    handle.attrs["visualisation_units"] = field_units
+                    native = handle[f"fields/{var.clean_name}"]
+                    native.attrs["units"] = "nondimensional"
+                    native.attrs["physical_units"] = field_units
+                    physical = handle[field_path]
+                    physical.attrs["units"] = field_units
+
+                if coordinates_enabled:
+                    handle["fields/coordinates"].attrs["units"] = "nondimensional"
+
+                if coordinate_path in handle and coordinate_units is not None:
+                    coordinates = handle[coordinate_path]
+                    coordinates.attrs["units"] = coordinate_units
+    uw.mpi.barrier()
+
 
 def checkpoint_xdmf(
     filename: str,
@@ -9725,6 +9821,7 @@ def checkpoint_xdmf(
     import h5py
     import os
     import warnings
+    from xml.sax.saxutils import escape
 
     """Create xdmf file for checkpoints"""
 
@@ -9760,6 +9857,7 @@ def checkpoint_xdmf(
         )
 
     vertices = geom["vertices"]
+    geometry_units = vertices.attrs.get("units")
     numVertices = vertices.shape[0]
     spaceDim = vertices.shape[1]
     cells = topo["cells"]
@@ -9800,6 +9898,17 @@ def checkpoint_xdmf(
             )
 
     h5.close()
+
+    def units_information(units, indent):
+        """Return an XDMF Information element for an optional unit label."""
+        if units is None:
+            return ""
+        if isinstance(units, bytes):
+            units = units.decode()
+        value = escape(str(units), {'"': "&quot;"})
+        return f'\n{indent}<Information Name="Units" Value="{value}"/>'
+
+    geometry_information = units_information(geometry_units, "          ")
 
     # We only use a subset of the possible cell types
     if spaceDim == 2:
@@ -9875,7 +9984,7 @@ def checkpoint_xdmf(
         <Geometry GeometryType="{geomType}">
           <DataItem Reference="XML">
             /Xdmf/Domain/DataItem[@Name="vertices"]
-          </DataItem>
+          </DataItem>{geometry_information}
         </Geometry>
 """
 
@@ -9883,7 +9992,7 @@ def checkpoint_xdmf(
 
     def get_field_info(h5_filename, mesh_var, center):
         """
-        Return (num_items, num_components, dataset_path) for a mesh variable.
+        Return shape, path, and units for a mesh variable.
         Prefers vertex/cell compatibility groups, falls back to /fields layout.
         """
         compat_name = f"{mesh_var.clean_name}_{mesh_var.clean_name}"
@@ -9898,9 +10007,10 @@ def checkpoint_xdmf(
             for path in candidates:
                 if path in f:
                     shp = f[path].shape
+                    units = f[path].attrs.get("units")
                     if len(shp) == 1:
-                        return shp[0], 1, path
-                    return shp[0], shp[1], path
+                        return shp[0], 1, path, units
+                    return shp[0], shp[1], path, units
 
         raise RuntimeError(
             f"Could not locate data for variable '{mesh_var.clean_name}' in {h5_filename}"
@@ -9917,7 +10027,9 @@ def checkpoint_xdmf(
             center = "Cell"
         else:
             center = "Node"
-        numItems, numComponents, dataset_path = get_field_info(var_filename, var, center)
+        numItems, numComponents, dataset_path, field_units = get_field_info(
+            var_filename, var, center
+        )
 
         if center == "Node" and numItems != numVertices:
             warnings.warn(
@@ -9955,7 +10067,7 @@ def checkpoint_xdmf(
              Dimensions="{data_dimensions}"
              Format="HDF">
             &{var.clean_name+"_Data"};:/{dataset_path}
-          </DataItem>
+          </DataItem>{units_information(field_units, "          ")}
         </Attribute>
         """
         attributes += var_attribute
@@ -10001,6 +10113,7 @@ def checkpoint_xdmf(
         with h5py.File(first_filename, "r") as f:
             dg_cells = f["dg1/cells"].shape
             dg_points = f["dg1/vertices"].shape
+            dg_geometry_units = f["dg1/vertices"].attrs.get("units")
         if dg_cells != (numCells, numCorners) or dg_points != (numCells * numCorners, spaceDim):
             raise ValueError("DG1 visualization topology does not match the checkpoint mesh")
         dg_grid = f"""
@@ -10013,13 +10126,14 @@ def checkpoint_xdmf(
       <Geometry GeometryType="{geomType}">
         <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dg_points[0]} {spaceDim}">
           &{first.clean_name}_Data;:/dg1/vertices
-        </DataItem>
+        </DataItem>{units_information(dg_geometry_units, "        ")}
       </Geometry>
 """
         for var in dg_vars:
             var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
             with h5py.File(var_filename, "r") as f:
                 shape = f["dg1/values"].shape
+                field_units = f["dg1/values"].attrs.get("units")
             if shape[0] != dg_points[0]:
                 raise ValueError(f"DG1 visualization size mismatch for {var.clean_name}")
             components = shape[1] if len(shape) == 2 else 1
@@ -10034,7 +10148,7 @@ def checkpoint_xdmf(
       <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
         <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
           &{var.clean_name}_Data;:/dg1/values
-        </DataItem>
+        </DataItem>{units_information(field_units, "        ")}
       </Attribute>
 """
         dg_grid += "    </Grid>"

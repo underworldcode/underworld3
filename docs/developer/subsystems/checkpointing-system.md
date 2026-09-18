@@ -28,6 +28,15 @@ Optional payloads are controlled by explicit flags:
 | `create_xdmf=True` | XDMF-compatible visualisation datasets and a companion `.xdmf` file | ParaView and other XDMF tools |
 | `petsc_reload=True` | PETSc DMPlex section/vector metadata | `MeshVariable.read_checkpoint()` |
 
+When nondimensional scaling is active, one output family contains both numeric
+frames. Native datasets under `/geometry`, `/fields`, and `/uw_checkpoint`
+remain nondimensional for remapping, exact reload, and numerical comparisons.
+The XDMF datasets under `/viz/geometry`, `/vertex_fields`, `/cell_fields`, and
+`/dg1` are converted during the write to the mesh and variable units declared
+in the model. HDF5 dataset attributes and XDMF `Information` elements record
+those units. A model script does not need a field-to-unit mapping or an HDF5
+postprocessing pass.
+
 ### Visualisation and Coordinate Remap
 
 Continuous fields use the standard mesh vertices, and DG0 fields use cell data.
