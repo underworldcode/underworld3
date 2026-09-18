@@ -538,20 +538,14 @@ def write_cell_field_to_viewer(
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
 
 
-def _write_dg1_to_viewer(
-    mesh_var,
-    viewer,
-    group="/dg1",
-    coordinate_name="vertices",
-    value_name="values",
-    repack_tensors=True,
-):
-    """Write owned simplex cells with independent vertices and DG1 traces.
+def _dg1_corner_data(mesh_var, repack_tensors=False):
+    """Return owned disconnected-cell geometry and exact DG1 corner values.
 
     Coordinate-section cell maps preserve element ownership and node ordering;
     no point location, coordinate matching, or inter-element averaging is used.
     Interior DG interpolation nodes define an affine polynomial, evaluated at
-    that same cell's vertices. Native checkpoint vectors are untouched.
+    that same cell's vertices. The corner values are an exact alternative basis
+    for the element-local linear polynomial, not a lower-order projection.
     """
     mesh = mesh_var.mesh
     if (
@@ -585,10 +579,6 @@ def _write_dg1_to_viewer(
     corners, _ = _physical_visualisation_values(corners, mesh.units)
     values, _ = _physical_visualisation_values(values, mesh_var.units)
     corner_rows = corners.reshape(-1, mesh.cdim)
-    _write_vec_to_group(
-        viewer, corner_rows, coordinate_name, group, PETSc.COMM_WORLD
-    )
-    _write_vec_to_group(viewer, values, value_name, group, PETSc.COMM_WORLD)
     local_count = len(corner_rows)
     offset = mesh.dm.comm.tompi4py().exscan(local_count)
     if offset is None:
@@ -596,4 +586,23 @@ def _write_dg1_to_viewer(
     cells = np.arange(offset, offset + local_count, dtype=PETSc.IntType).reshape(
         -1, mesh.dim + 1
     )
+    return corner_rows, values, cells
+
+
+def _write_dg1_to_viewer(
+    mesh_var,
+    viewer,
+    group="/dg1",
+    coordinate_name="vertices",
+    value_name="values",
+    repack_tensors=True,
+):
+    """Write owned simplex cells with independent vertices and DG1 traces."""
+    corner_rows, values, cells = _dg1_corner_data(
+        mesh_var, repack_tensors=repack_tensors
+    )
+    _write_vec_to_group(
+        viewer, corner_rows, coordinate_name, group, PETSc.COMM_WORLD
+    )
+    _write_vec_to_group(viewer, values, value_name, group, PETSc.COMM_WORLD)
     _write_index_array_to_group(viewer, cells, "cells", group, PETSc.COMM_WORLD)

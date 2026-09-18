@@ -4836,10 +4836,11 @@ class Mesh(Stateful, uw_object):
 
         - ``create_xdmf=True`` writes a companion XDMF file that reads the
           dimensional ``/fields`` datasets directly for P1, P2 triangles and
-          tetrahedra, and DG0. DG1 retains native ``/fields`` values for reload
-          and adds an exact disconnected-corner visualization. Continuous P3+
-          fields receive one compact P1 visualization dataset; discontinuous
-          DG2+ fields receive DG0.
+          tetrahedra, DG0, and simplex DG1. All simplex DG1 variables share one
+          disconnected-corner geometry in the mesh file; each variable stores
+          one exact corner-nodal value array. Continuous P3+ fields receive one
+          compact P1 visualization dataset; discontinuous DG2+ fields receive
+          DG0.
         - ``petsc_reload=True`` writes native nondimensional PETSc DMPlex
           section/global-vector data under ``/restart/petsc``.
           Load that optional payload with ``MeshVariable.read_checkpoint()``
@@ -4937,7 +4938,7 @@ class Mesh(Stateful, uw_object):
                     var.write(save_location)
                     if petsc_reload:
                         self._write_petsc_reload_file(save_location, [var], mode="a")
-                    _write_xdmf_field(self, var, save_location)
+                    _write_xdmf_field(self, var, save_location, mesh_file)
                 elif petsc_reload:
                     # Exact-restart-only output needs the PETSc section/vector
                     # payload, not a second native /fields copy of the values.
@@ -9646,16 +9647,15 @@ class Mesh(Stateful, uw_object):
         return
 
 
-def _write_xdmf_field(mesh, var, var_h5_path):
+def _write_xdmf_field(mesh, var, var_h5_path, mesh_h5_path):
     """Replace native remap arrays with dimensional field output for XDMF.
 
-    P1, P2 triangles/tetrahedra, and DG0 are represented directly under ``/fields``.
-    DG1 keeps its native interpolation values under ``/fields`` for exact
-    coordinate reload and receives an exact disconnected-corner representation
-    under ``/visualization``. Unsupported higher-order layouts retain their
-    exact physical values under ``/fields`` and receive one compact
-    visualization reduction: continuous fields use P1 and discontinuous fields
-    use DG0.
+    P1, P2 triangles/tetrahedra, DG0, and simplex DG1 are represented directly
+    under ``/fields``. DG1 uses exact element-corner values and shares one
+    disconnected geometry under ``/viz/dg1`` in the mesh file. Unsupported
+    higher-order layouts retain exact physical values under ``/fields`` and
+    receive one compact visualization reduction: continuous fields use P1 and
+    discontinuous fields use DG0.
 
     Parameters
     ----------
@@ -9667,12 +9667,16 @@ def _write_xdmf_field(mesh, var, var_h5_path):
     var_h5_path : str
         Path to the HDF5 file. Native restart data, when requested, has already
         been written under ``/restart/petsc``.
+    mesh_h5_path : str
+        Path to the shared mesh HDF5 file that owns DG1 visualization geometry.
     """
     import h5py
     import underworld3 as uw
     from underworld3.function.field_projection import (
+        _dg1_corner_data,
         _physical_visualisation_values,
-        _write_dg1_to_viewer,
+        _write_index_array_to_group,
+        _write_vec_to_group,
         write_field_coordinates_to_viewer,
         write_field_to_viewer,
         write_p2_simplex_topology_to_viewer,
@@ -9710,18 +9714,16 @@ def _write_xdmf_field(mesh, var, var_h5_path):
         comm=PETSc.COMM_WORLD,
     )
 
-    write_field_to_viewer(var, viewer, "/fields", var.clean_name)
-    write_field_coordinates_to_viewer(var, viewer, "/fields")
     if direct_dg1:
-        _write_dg1_to_viewer(
-            var,
-            viewer,
-            group="/visualization",
-            coordinate_name="coordinates",
-            value_name=var.clean_name,
-            repack_tensors=False,
+        corner_rows, corner_values, corner_cells = _dg1_corner_data(
+            var, repack_tensors=False
+        )
+        _write_vec_to_group(
+            viewer, corner_values, var.clean_name, "/fields", PETSc.COMM_WORLD
         )
     else:
+        write_field_to_viewer(var, viewer, "/fields", var.clean_name)
+        write_field_coordinates_to_viewer(var, viewer, "/fields")
         if direct_p2:
             write_p2_simplex_topology_to_viewer(var, viewer, group="/fields")
         elif needs_projection:
@@ -9736,6 +9738,36 @@ def _write_xdmf_field(mesh, var, var_h5_path):
             )
 
     viewer.destroy()
+
+    if direct_dg1:
+        if uw.mpi.rank == 0:
+            with h5py.File(mesh_h5_path, "r") as mesh_handle:
+                has_dg1_geometry = "viz/dg1/coordinates" in mesh_handle
+        else:
+            has_dg1_geometry = None
+        has_dg1_geometry = uw.mpi.comm.bcast(has_dg1_geometry, root=0)
+        if not has_dg1_geometry:
+            mesh_viewer = PETSc.ViewerHDF5().create(
+                mesh_h5_path,
+                "a",
+                comm=PETSc.COMM_WORLD,
+            )
+            _write_vec_to_group(
+                mesh_viewer,
+                corner_rows,
+                "coordinates",
+                "/viz/dg1",
+                PETSc.COMM_WORLD,
+            )
+            _write_index_array_to_group(
+                mesh_viewer,
+                corner_cells,
+                "cells",
+                "/viz/dg1",
+                PETSc.COMM_WORLD,
+            )
+            mesh_viewer.destroy()
+
     _, field_units = _physical_visualisation_values(numpy.ones(1), var.units)
     _, coordinate_units = _physical_visualisation_values(numpy.ones(1), mesh.units)
     with uw.selective_ranks(0) as should_execute:
@@ -9747,26 +9779,30 @@ def _write_xdmf_field(mesh, var, var_h5_path):
                 field.attrs["storage_frame"] = "physical"
                 field.attrs["degree"] = var.degree
                 field.attrs["continuous"] = var.continuous
-                field.attrs["representation"] = "exact"
-                coordinates = handle["fields/coordinates"]
-                coordinates.attrs["units"] = coordinate_units or "dimensionless"
-                coordinates.attrs["storage_frame"] = "physical"
-                if direct_dg1 or needs_projection:
+                field.attrs["representation"] = (
+                    "dg1_corner_nodal" if direct_dg1 else "exact"
+                )
+                if direct_dg1:
+                    handle.attrs["dg1_mesh_file"] = os.path.basename(mesh_h5_path)
+                    handle.attrs["dg1_geometry_path"] = "/viz/dg1"
+                else:
+                    coordinates = handle["fields/coordinates"]
+                    coordinates.attrs["units"] = coordinate_units or "dimensionless"
+                    coordinates.attrs["storage_frame"] = "physical"
+                if needs_projection:
                     projected = handle[f"visualization/{var.clean_name}"]
                     projected.attrs["units"] = field_units or "dimensionless"
                     projected.attrs["source_degree"] = var.degree
-                    projected.attrs["visualization_degree"] = (
-                        1 if var.continuous or direct_dg1 else 0
+                    projected.attrs["visualization_degree"] = 1 if var.continuous else 0
+                    projected.attrs["representation"] = "projection"
+            if direct_dg1:
+                with h5py.File(mesh_h5_path, "a") as mesh_handle:
+                    coordinates = mesh_handle["viz/dg1/coordinates"]
+                    coordinates.attrs["units"] = coordinate_units or "dimensionless"
+                    coordinates.attrs["storage_frame"] = "physical"
+                    mesh_handle["viz/dg1/cells"].attrs["representation"] = (
+                        "disconnected_simplex"
                     )
-                    projected.attrs["representation"] = (
-                        "basis_conversion" if direct_dg1 else "projection"
-                    )
-                if direct_dg1:
-                    visual_coordinates = handle["visualization/coordinates"]
-                    visual_coordinates.attrs["units"] = (
-                        coordinate_units or "dimensionless"
-                    )
-                    visual_coordinates.attrs["storage_frame"] = "physical"
     uw.mpi.barrier()
 
 
@@ -9966,7 +10002,9 @@ def checkpoint_xdmf(
             and var.mesh.cdim == var.mesh.dim
         )
 
-    special_vars = [var for var in meshVars if direct_p2(var) or direct_dg1(var)]
+    p2_vars = [var for var in meshVars if direct_p2(var)]
+    dg1_vars = [var for var in meshVars if direct_dg1(var)]
+    special_vars = p2_vars + dg1_vars
     collection_start = (
         '<Grid Name="fields" GridType="Collection" CollectionType="Spatial">'
         f'<Time Value="{index}"/>'
@@ -10111,9 +10149,9 @@ def checkpoint_xdmf(
         attributes += var_attribute
 
     special_grids = ""
-    for var in special_vars:
+    for var in p2_vars:
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
-        storage_group = "fields" if direct_p2(var) else "visualization"
+        storage_group = "fields"
         with h5py.File(var_filename, "r") as f:
             cells_shape = f[f"{storage_group}/cells"].shape
             points_shape = f[f"{storage_group}/coordinates"].shape
@@ -10122,10 +10160,7 @@ def checkpoint_xdmf(
                 "units"
             )
             field_units = f[f"{storage_group}/{var.clean_name}"].attrs.get("units")
-        if direct_p2(var):
-            special_topology = "Triangle_6" if var.mesh.dim == 2 else "Tetrahedron_10"
-        else:
-            special_topology = topology_type
+        special_topology = "Triangle_6" if var.mesh.dim == 2 else "Tetrahedron_10"
         components = values_shape[1] if len(values_shape) == 2 else 1
         kind = attribute_kind(var, components)
         dimensions = " ".join(str(value) for value in values_shape)
@@ -10149,6 +10184,50 @@ def checkpoint_xdmf(
           &{var.clean_name}_Data;:/{storage_group}/{var.clean_name}
         </DataItem>{units_information(field_units, "        ")}
       </Attribute>
+    </Grid>"""
+
+    if dg1_vars:
+        with h5py.File(mesh_filename, "r") as mesh_handle:
+            dg1_cells = mesh_handle["viz/dg1/cells"]
+            dg1_coordinates = mesh_handle["viz/dg1/coordinates"]
+            dg1_cells_shape = dg1_cells.shape
+            dg1_points_shape = dg1_coordinates.shape
+            dg1_topology_precision = dg1_cells.dtype.itemsize
+            dg1_geometry_units = dg1_coordinates.attrs.get("units")
+
+        dg1_attributes = ""
+        for var in dg1_vars:
+            var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+            with h5py.File(var_filename, "r") as field_handle:
+                values = field_handle[f"fields/{var.clean_name}"]
+                values_shape = values.shape
+                field_units = values.attrs.get("units")
+            components = values_shape[1] if len(values_shape) == 2 else 1
+            kind = attribute_kind(var, components)
+            dimensions = " ".join(str(value) for value in values_shape)
+            dg1_attributes += f"""
+      <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
+          &{var.clean_name}_Data;:/fields/{var.clean_name}
+        </DataItem>{units_information(field_units, "        ")}
+      </Attribute>"""
+
+        special_grids += f"""
+    <Grid Name="DG1" GridType="Uniform">
+      <Topology TopologyType="{topology_type}" NumberOfElements="{dg1_cells_shape[0]}">
+        <DataItem Format="HDF" NumberType="Int"
+                  Precision="{dg1_topology_precision}"
+                  Dimensions="{dg1_cells_shape[0]} {dg1_cells_shape[1]}">
+          &MeshData;:/viz/dg1/cells
+        </DataItem>
+      </Topology>
+      <Geometry GeometryType="{geomType}">
+        <DataItem Format="HDF" NumberType="Float" Precision="8"
+                  Dimensions="{dg1_points_shape[0]} {dg1_points_shape[1]}">
+          &MeshData;:/viz/dg1/coordinates
+        </DataItem>{units_information(dg1_geometry_units, "        ")}
+      </Geometry>
+{dg1_attributes}
     </Grid>"""
     xdmf_end = f"""
     </Grid>

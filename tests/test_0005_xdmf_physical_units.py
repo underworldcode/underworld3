@@ -98,7 +98,7 @@ def test_fields_are_dimensional_and_checkpoint_is_native(tmp_path):
 @pytest.mark.level_1
 @pytest.mark.tier_b
 def test_dg1_fields_are_physical_at_element_corners(tmp_path):
-    """DG1 native reload data and corner visualization use physical units."""
+    """DG1 uses one physical corner field and shared mesh geometry."""
     _set_reference_scales()
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, regular=True)
     pressure = uw.discretisation.MeshVariable(
@@ -122,10 +122,15 @@ def test_dg1_fields_are_physical_at_element_corners(tmp_path):
     if uw.mpi.rank == 0:
         with h5py.File(directory / "dg.mesh.dg_pressure.00000.h5", "r") as handle:
             np.testing.assert_allclose(handle["fields/dg_pressure"][:], 8.0)
-            np.testing.assert_allclose(handle["visualization/dg_pressure"][:], 8.0)
-            assert np.isclose(handle["visualization/coordinates"][:].max(), 10.0)
             assert handle["fields/dg_pressure"].attrs["units"] == "megapascal"
-            assert handle["fields/coordinates"].attrs["units"] == "kilometer"
-            assert handle["visualization/dg_pressure"].attrs["units"] == "megapascal"
-            assert handle["visualization/coordinates"].attrs["units"] == "kilometer"
+            assert (
+                handle["fields/dg_pressure"].attrs["representation"]
+                == "dg1_corner_nodal"
+            )
+            assert set(handle["fields"]) == {"dg_pressure"}
+            assert "visualization" not in handle
             assert "dg1" not in handle
+            assert "restart" not in handle
+        with h5py.File(directory / "dg.mesh.00000.h5", "r") as handle:
+            assert np.isclose(handle["viz/dg1/coordinates"][:].max(), 10.0)
+            assert handle["viz/dg1/coordinates"].attrs["units"] == "kilometer"

@@ -74,19 +74,18 @@ def test_dg1_simplex_output(tmp_path, dim):
     if uw.mpi.rank != 0:
         return
     with h5py.File(directory / "fields.mesh.dg_scalar.00000.h5", "r") as handle:
-        native_points = handle["fields/coordinates"][:]
-        native_values = handle["fields/dg_scalar"][:].reshape(-1)
-        points = handle["visualization/coordinates"][:]
-        cells = handle["visualization/cells"][:]
-        values = handle["visualization/dg_scalar"][:].reshape(-1)
-        assert handle["fields/dg_scalar"].attrs["representation"] == "exact"
-        assert handle["visualization/dg_scalar"].attrs["representation"] == "basis_conversion"
-        assert len(native_points) == len(native_values)
-        assert len(points) == len(cells) * (dim + 1)
-        assert len(np.unique(cells)) == len(points)
+        values = handle["fields/dg_scalar"][:].reshape(-1)
+        assert handle["fields/dg_scalar"].attrs["representation"] == "dg1_corner_nodal"
+        assert set(handle["fields"]) == {"dg_scalar"}
+        assert "visualization" not in handle
         assert "dg1" not in handle
     with h5py.File(directory / "fields.mesh.00000.h5", "r") as handle:
+        points = handle["viz/dg1/coordinates"][:]
+        cells = handle["viz/dg1/cells"][:]
         assert len(cells) == len(handle["viz/topology/cells"])
+        assert len(points) == len(cells) * (dim + 1)
+        assert len(values) == len(points)
+        assert len(np.unique(cells)) == len(points)
 
     corners = points[cells]
     determinants = np.linalg.det((corners[:, 1:] - corners[:, :1]).transpose(0, 2, 1))
@@ -104,7 +103,7 @@ def test_dg1_simplex_output(tmp_path, dim):
     assert np.max(high - low) >= 1
 
     with h5py.File(directory / "fields.mesh.dg_tensor.00000.h5", "r") as handle:
-        tensor_values = handle["visualization/dg_tensor"][:]
+        tensor_values = handle["fields/dg_tensor"][:]
         assert tensor_values.shape == (len(points), dim * dim)
         np.testing.assert_allclose(tensor_values[:, 0], expected)
         np.testing.assert_allclose(tensor_values[:, 1], 3 + points[:, 0])
@@ -113,13 +112,15 @@ def test_dg1_simplex_output(tmp_path, dim):
 
     tree = ET.parse(directory / "fields.mesh.00000.xdmf")
     grids = tree.findall(".//Grid[@GridType='Uniform']")
-    assert {grid.get("Name") for grid in grids} == {"domain", "dg_scalar", "dg_tensor"}
-    for name in ("dg_scalar", "dg_tensor"):
-        grid = next(grid for grid in grids if grid.get("Name") == name)
-        attribute = grid.find("Attribute")
-        assert attribute.get("Name") == name
+    assert {grid.get("Name") for grid in grids} == {"domain", "DG1"}
+    grid = next(grid for grid in grids if grid.get("Name") == "DG1")
+    assert grid.find("Topology/DataItem").text.strip().endswith("/viz/dg1/cells")
+    assert grid.find("Geometry/DataItem").text.strip().endswith("/viz/dg1/coordinates")
+    attributes = {attribute.get("Name"): attribute for attribute in grid.findall("Attribute")}
+    assert set(attributes) == {"dg_scalar", "dg_tensor"}
+    for name, attribute in attributes.items():
         assert attribute.get("Center") == "Node"
-        assert f"/visualization/{name}" in attribute.find("DataItem").text
+        assert f"/fields/{name}" in attribute.find("DataItem").text
 
 
 @pytest.mark.level_1
