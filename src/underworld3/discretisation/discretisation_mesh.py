@@ -9994,13 +9994,16 @@ def checkpoint_xdmf(
         <Topology
            TopologyType="{topology_type}"
            NumberOfElements="{numCells}">
-          <DataItem Reference="XML">
-            /Xdmf/Domain/DataItem[@Name="cells"]
+          <DataItem Format="HDF" NumberType="Int"
+                    Precision="{topology_precision}"
+                    Dimensions="{numCells} {numCorners}">
+            &MeshData;:/{topoPath}/cells
           </DataItem>
         </Topology>
         <Geometry GeometryType="{geomType}">
-          <DataItem Reference="XML">
-            /Xdmf/Domain/DataItem[@Name="vertices"]
+          <DataItem Format="HDF" NumberType="Float" Precision="8"
+                    Dimensions="{numVertices} {spaceDim}">
+            &MeshData;:/{geomPath}/vertices
           </DataItem>{geometry_information}
         </Geometry>
 """

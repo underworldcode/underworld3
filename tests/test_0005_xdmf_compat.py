@@ -85,6 +85,10 @@ def test_direct_p1_p2_and_dg0_use_fields_only(tmp_path):
 
         xdmf = directory / "compact.mesh.00000.xdmf"
         text = xdmf.read_text()
+        # ParaView's XDMF3 reader does not accept XML-reference DataItems
+        # without a Format attribute. Inline the two mesh HDF references so
+        # both its XDMF3 reader and the legacy XDMF reader can open the file.
+        assert 'Reference="XML"' not in text
         assert 'TopologyType="Triangle_6"' in text
         assert "&p1_Data;:/fields/p1" in text
         assert "&p2_Data;:/fields/p2" in text
