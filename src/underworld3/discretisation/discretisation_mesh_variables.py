@@ -1244,6 +1244,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             varsymbol=r"\cal{S}",
         )
 
+        field_representation = None
         if uw.mpi.rank == 0:
             if verbose:
                 print(
@@ -1257,13 +1258,46 @@ class _BaseMeshVariable(Stateful, uw_object):
                 D_src = D_src.reshape(-1, n_components)
             else:
                 with h5py.File(data_file, "r") as h5f:
-                    X_src = h5f["fields"]["coordinates"][()].reshape(-1, dim)
-                    D_src = h5f["fields"][data_name][()].reshape(
-                        -1, n_components
+                    coordinate_dataset = h5f["fields"]["coordinates"]
+                    field_dataset = h5f["fields"][data_name]
+                    field_representation = field_dataset.attrs.get("representation")
+                    if isinstance(field_representation, bytes):
+                        field_representation = field_representation.decode()
+                    X_src = coordinate_dataset[()].reshape(-1, dim)
+                    D_src = field_dataset[()].reshape(-1, n_components)
+                    storage_frame = field_dataset.attrs.get(
+                        "storage_frame", h5f.attrs.get("storage_frame")
                     )
+                    if isinstance(storage_frame, bytes):
+                        storage_frame = storage_frame.decode()
+                    if storage_frame == "physical":
+                        coordinate_units = coordinate_dataset.attrs.get("units")
+                        field_units = field_dataset.attrs.get("units")
+                        if isinstance(coordinate_units, bytes):
+                            coordinate_units = coordinate_units.decode()
+                        if isinstance(field_units, bytes):
+                            field_units = field_units.decode()
+                        if coordinate_units and coordinate_units != "dimensionless":
+                            X_src = np.asarray(
+                                uw.non_dimensionalise(
+                                    uw.quantity(X_src, coordinate_units)
+                                )
+                            )
+                        if field_units and field_units != "dimensionless":
+                            D_src = np.asarray(
+                                uw.non_dimensionalise(uw.quantity(D_src, field_units))
+                            )
         else:
             X_src = np.empty((0, dim), dtype=np.float64)
             D_src = np.empty((0, n_components), dtype=np.float64)
+
+        field_representation = uw.mpi.comm.bcast(field_representation, root=0)
+        if field_representation == "basis_conversion":
+            raise RuntimeError(
+                "read_timestep cannot invert the element-local DG1 corner "
+                "basis conversion. Write with petsc_reload=True and use "
+                "read_checkpoint() for an exact DG1 solver restart."
+            )
 
         src_size_before = max(source_swarm.dm.getLocalSize(), 0)
         source_swarm.add_particles_with_global_coordinates(X_src, migrate=False)
@@ -1453,11 +1487,12 @@ class _BaseMeshVariable(Stateful, uw_object):
     ):
         """Load this mesh variable from PETSc reload output.
 
-        The default path restores DMPlex section/local-vector data through the
+        By default, DMPlex section/local-vector data are restored through the
         topology migration SF, so a mesh reconstructed from its checkpoint may
-        have a different parallel DOF ordering. Set ``same_layout=True`` only
-        for an in-place restore onto the exact mesh object that wrote the file;
-        that path reloads the saved global vector directly.
+        have a different parallel DOF ordering. With ``same_layout=True``, the
+        existing PETSc variable vector is loaded directly into the original
+        layout. Both paths read the same stored values; no duplicate checkpoint
+        vector is required.
 
         This method does not use the coordinate/KDTree remapping provided by
         ``read_timestep()``. New output should be written with
@@ -1472,31 +1507,30 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
-        if same_layout:
-            import h5py
+        import h5py
 
-            if uw.mpi.rank == 0:
-                with h5py.File(filename, "r") as checkpoint_h5:
-                    has_direct_vector = (
-                        "uw_checkpoint" in checkpoint_h5
-                        and data_name in checkpoint_h5["uw_checkpoint"]
-                    )
-            else:
-                has_direct_vector = None
-            has_direct_vector = uw.mpi.comm.bcast(
-                has_direct_vector,
-                root=0,
+        if uw.mpi.rank == 0:
+            with h5py.File(filename, "r") as checkpoint_h5:
+                grouped_checkpoint = "uw_checkpoint/topologies" in checkpoint_h5
+                legacy_direct_vector = f"uw_checkpoint/{data_name}" in checkpoint_h5
+        else:
+            grouped_checkpoint = None
+            legacy_direct_vector = None
+        grouped_checkpoint = uw.mpi.comm.bcast(grouped_checkpoint, root=0)
+        legacy_direct_vector = uw.mpi.comm.bcast(legacy_direct_vector, root=0)
+
+        if same_layout and not (grouped_checkpoint or legacy_direct_vector):
+            raise RuntimeError(
+                f"{filename} has no direct checkpoint vector for {data_name!r}. "
+                "Reload it with same_layout=False."
             )
-            if not has_direct_vector:
-                raise RuntimeError(
-                    f"{filename} has no in-place checkpoint vector for "
-                    f"{data_name!r}. Reload it with same_layout=False."
-                )
 
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         sectiondm = self.mesh.dm.clone()
         viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
         viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        if grouped_checkpoint and not same_layout:
+            viewer.pushGroup("/uw_checkpoint")
 
         old_mesh_name = self.mesh.dm.getName()
         old_lvec_name = self._lvec.getName()
@@ -1510,16 +1544,15 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._gvec.setName(data_name)
 
             if same_layout:
-                checkpoint_vec = PETSc.Vec().createMPI(
-                    (self._gvec.getLocalSize(), self._gvec.getSize()),
-                    comm=PETSc.COMM_WORLD,
+                vector_group = (
+                    f"/uw_checkpoint/topologies/uw_mesh/dms/{data_name}/"
+                    f"vecs/{data_name}"
+                    if grouped_checkpoint
+                    else "/uw_checkpoint"
                 )
-                checkpoint_vec.setName(data_name)
-                viewer.pushGroup("/uw_checkpoint")
-                checkpoint_vec.load(viewer)
+                viewer.pushGroup(vector_group)
+                self._gvec.load(viewer)
                 viewer.popGroup()
-                self._gvec.array[...] = checkpoint_vec.array_r
-                checkpoint_vec.destroy()
                 subdm.globalToLocal(self._gvec, self._lvec, addv=False)
             else:
                 from underworld3.cython.petsc_discretisation import (
@@ -1561,6 +1594,8 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._gvec.setName(old_vec_name)
             if old_mesh_name is not None:
                 self.mesh.dm.setName(old_mesh_name)
+            if grouped_checkpoint and not same_layout:
+                viewer.popGroup()
             viewer.popFormat()
             viewer.destroy()
             sectiondm.destroy()

@@ -1,4 +1,4 @@
-"""Physical XDMF output keeps native checkpoint arrays nondimensional."""
+"""Dimensional /fields output and optional native PETSc checkpoints."""
 
 from pathlib import Path
 
@@ -10,10 +10,9 @@ import underworld3 as uw
 
 
 def _set_reference_scales():
-    """Use exact scales with easy-to-check physical conversions."""
-    orchestration_model = uw.get_default_model()
-    orchestration_model.set_scaling_mode("exact")
-    orchestration_model.set_reference_quantities(
+    model = uw.get_default_model()
+    model.set_scaling_mode("exact")
+    model.set_reference_quantities(
         length=uw.quantity(10, "km"),
         velocity=uw.quantity(5, "mm/year"),
         pressure=uw.quantity(2, "MPa"),
@@ -22,132 +21,96 @@ def _set_reference_scales():
 
 @pytest.mark.level_1
 @pytest.mark.tier_b
-def test_xdmf_uses_declared_physical_units(tmp_path):
-    """Visualisation copies are physical while restart data stays native."""
+def test_fields_are_dimensional_and_checkpoint_is_native(tmp_path):
+    """Analysis sees physical values while exact reload restores solver values."""
     _set_reference_scales()
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
-    velocity = uw.discretisation.MeshVariable(
-        "velocity", mesh, mesh.dim, degree=2, units="mm/year"
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, regular=True)
+    velocity = uw.discretisation.MeshVariable("velocity", mesh, mesh.dim, degree=2, units="mm/year")
     pressure = uw.discretisation.MeshVariable(
         "pressure", mesh, 1, degree=0, continuous=False, units="MPa"
     )
-    surface = uw.meshing.Surface(
-        "unit_test",
-        mesh,
-        control_points=uw.quantity([[0.0, 0.0], [10.0, 0.0]], "km"),
-    )
-    surface.discretize()
-    distance = surface.abs_distance
-    velocity.data[:, 0] = 2.0
-    velocity.data[:, 1] = 3.0
-    pressure.data[:, 0] = 4.0
+    velocity.array[:, 0, 0] = uw.quantity(10.0, "mm/year")
+    velocity.array[:, 0, 1] = uw.quantity(15.0, "mm/year")
+    pressure.array[:, 0, 0] = uw.quantity(8.0, "MPa")
+    expected_velocity = np.array(velocity.array)
+    expected_pressure = np.array(pressure.array)
 
     directory = Path(uw.mpi.comm.bcast(str(tmp_path), root=0))
     mesh.write_timestep(
         "physical",
-        index=0,
+        0,
         outputPath=str(directory),
-        meshVars=[velocity, pressure, distance],
+        meshVars=[velocity, pressure],
         petsc_reload=True,
     )
 
-    with uw.selective_ranks(0) as should_execute:
-        if not should_execute:
-            return
-
-    mesh_file = directory / "physical.mesh.00000.h5"
     velocity_file = directory / "physical.mesh.velocity.00000.h5"
     pressure_file = directory / "physical.mesh.pressure.00000.h5"
-    distance_file = directory / "physical.mesh.surf_unit_test_absdistance.00000.h5"
+    velocity_restart = uw.discretisation.MeshVariable(
+        "velocity_restart", mesh, mesh.dim, degree=2, units="mm/year"
+    )
+    pressure_restart = uw.discretisation.MeshVariable(
+        "pressure_restart", mesh, 1, degree=0, continuous=False, units="MPa"
+    )
+    velocity_restart.read_checkpoint(str(velocity_file), data_name="velocity")
+    pressure_restart.read_checkpoint(str(pressure_file), data_name="pressure")
+    np.testing.assert_allclose(np.array(velocity_restart.array), expected_velocity)
+    np.testing.assert_allclose(np.array(pressure_restart.array), expected_pressure)
 
-    with h5py.File(mesh_file, "r") as handle:
+    velocity_remap = uw.discretisation.MeshVariable(
+        "velocity_remap", mesh, mesh.dim, degree=2, units="mm/year"
+    )
+    velocity_remap.read_timestep("physical", "velocity", 0, outputPath=str(directory))
+    np.testing.assert_allclose(np.array(velocity_remap.array), expected_velocity)
+
+    if uw.mpi.rank != 0:
+        return
+    with h5py.File(directory / "physical.mesh.00000.h5", "r") as handle:
         native_coordinates = handle["geometry/vertices"][:]
         physical_coordinates = handle["viz/geometry/vertices"][:]
         np.testing.assert_allclose(physical_coordinates, native_coordinates * 10.0)
-        assert handle["geometry/vertices"].attrs["units"] == "nondimensional"
         assert handle["viz/geometry/vertices"].attrs["units"] == "kilometer"
 
     with h5py.File(velocity_file, "r") as handle:
-        native = handle["fields/velocity"][:].reshape(-1, mesh.dim)
-        physical = handle["vertex_fields/velocity_velocity"][:].reshape(-1, mesh.dim)
-        np.testing.assert_allclose(native, [[2.0, 3.0]] * len(native))
-        np.testing.assert_allclose(physical, [[10.0, 15.0]] * len(physical))
-        np.testing.assert_allclose(
-            handle["vertex_fields/coordinates"][:].reshape(-1, mesh.dim),
-            native_coordinates * 10.0,
-        )
-        assert handle["fields/velocity"].attrs["units"] == "nondimensional"
-        assert (
-            handle["vertex_fields/velocity_velocity"].attrs["units"]
-            == "millimeter / year"
-        )
-        assert handle["vertex_fields/coordinates"].attrs["units"] == "kilometer"
-        np.testing.assert_allclose(
-            handle["uw_checkpoint/velocity"][:].reshape(-1, mesh.dim), native
-        )
+        physical_velocity = handle["fields/velocity"][:]
+        np.testing.assert_allclose(physical_velocity[:, 0], 10.0)
+        np.testing.assert_allclose(physical_velocity[:, 1], 15.0)
+        assert np.isclose(handle["fields/coordinates"][:].max(), 10.0)
+        assert handle["fields/velocity"].attrs["units"] == "millimeter / year"
+        assert handle["fields/coordinates"].attrs["units"] == "kilometer"
+        assert "visualization" not in handle
+        assert "vertex_fields" not in handle
+        assert "uw_checkpoint/topologies/uw_mesh/dms/velocity/vecs/velocity/velocity" in handle
 
     with h5py.File(pressure_file, "r") as handle:
-        native = handle["fields/pressure"][:].reshape(-1)
-        physical = handle["cell_fields/pressure_pressure"][:].reshape(-1)
-        np.testing.assert_allclose(native, 4.0)
-        np.testing.assert_allclose(physical, 8.0)
-        assert handle["cell_fields/pressure_pressure"].attrs["units"] == "megapascal"
+        np.testing.assert_allclose(handle["fields/pressure"][:], 8.0)
+        assert handle["fields/pressure"].attrs["units"] == "megapascal"
+        assert "cell_fields" not in handle
 
-    with h5py.File(distance_file, "r") as handle:
-        native = handle["fields/surf_unit_test_absdistance"][:].reshape(-1)
-        physical = handle[
-            "vertex_fields/surf_unit_test_absdistance_surf_unit_test_absdistance"
-        ][:].reshape(-1)
-        np.testing.assert_allclose(physical, native * 10.0)
-        assert distance.units == uw.units("km").units
-        assert (
-            handle[
-                "vertex_fields/surf_unit_test_absdistance_surf_unit_test_absdistance"
-            ].attrs["units"]
-            == "kilometer"
-        )
-
-    xdmf = (directory / "physical.mesh.00000.xdmf").read_text()
-    assert "&MeshData;:/viz/geometry/vertices" in xdmf
-    assert 'Name="velocity"' in xdmf
-    assert 'Information Name="Units" Value="millimeter / year"' in xdmf
-    assert 'Information Name="Units" Value="kilometer"' in xdmf
+    text = (directory / "physical.mesh.00000.xdmf").read_text()
+    assert "&velocity_Data;:/fields/velocity" in text
+    assert "&pressure_Data;:/fields/pressure" in text
+    assert 'Information Name="Units" Value="millimeter / year"' in text
+    assert 'Information Name="Units" Value="megapascal"' in text
+    assert 'Information Name="Units" Value="kilometer"' in text
 
 
 @pytest.mark.level_1
 @pytest.mark.tier_b
-def test_dg1_xdmf_uses_native_interpolation_and_physical_output(tmp_path):
-    """DG1 interpolation stays native before its disconnected grid is scaled."""
+def test_dg1_fields_are_physical_at_element_corners(tmp_path):
+    """DG1 basis conversion and units are stored once under /fields."""
     _set_reference_scales()
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, regular=True)
     pressure = uw.discretisation.MeshVariable(
         "dg_pressure", mesh, 1, degree=1, continuous=False, units="MPa"
     )
-    pressure.data[:, 0] = 4.0
-
+    pressure.array[:, 0, 0] = uw.quantity(8.0, "MPa")
     directory = Path(uw.mpi.comm.bcast(str(tmp_path), root=0))
-    mesh.write_timestep(
-        "dg_physical",
-        index=0,
-        outputPath=str(directory),
-        meshVars=[pressure],
-        petsc_reload=True,
-    )
-
-    with uw.selective_ranks(0) as should_execute:
-        if not should_execute:
-            return
-
-    field_file = directory / "dg_physical.mesh.dg_pressure.00000.h5"
-    with h5py.File(field_file, "r") as handle:
-        np.testing.assert_allclose(handle["fields/dg_pressure"][:], 4.0)
-        np.testing.assert_allclose(handle["dg1/values"][:], 8.0)
-        assert np.isclose(handle["dg1/vertices"][:].max(), 10.0)
-        assert handle["dg1/vertices"].attrs["units"] == "kilometer"
-        assert handle["dg1/values"].attrs["units"] == "megapascal"
-
-    xdmf = (directory / "dg_physical.mesh.00000.xdmf").read_text()
-    assert 'Information Name="Units" Value="megapascal"' in xdmf
-    assert 'Information Name="Units" Value="kilometer"' in xdmf
+    mesh.write_timestep("dg", 0, outputPath=str(directory), meshVars=[pressure])
+    if uw.mpi.rank == 0:
+        with h5py.File(directory / "dg.mesh.dg_pressure.00000.h5", "r") as handle:
+            np.testing.assert_allclose(handle["fields/dg_pressure"][:], 8.0)
+            assert np.isclose(handle["fields/coordinates"][:].max(), 10.0)
+            assert handle["fields/dg_pressure"].attrs["units"] == "megapascal"
+            assert handle["fields/coordinates"].attrs["units"] == "kilometer"
+            assert "dg1" not in handle

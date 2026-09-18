@@ -18,7 +18,9 @@ including registered meshes, variables, swarms, and Python-side state bearers.
 
 `Mesh.write_timestep()` is the standard mesh and mesh-variable output method.
 It writes one mesh HDF5 file and one HDF5 file per requested mesh variable.
-Each variable file always contains `/fields` coordinate/value datasets used by
+With `create_xdmf=True`, each variable file contains dimensional
+`/fields/coordinates` and `/fields/<name>` datasets. These arrays are the
+authoritative analysis output and are also used by
 `MeshVariable.read_timestep()`.
 
 Optional payloads are controlled by explicit flags:
@@ -28,35 +30,35 @@ Optional payloads are controlled by explicit flags:
 | `create_xdmf=True` | XDMF-compatible visualisation datasets and a companion `.xdmf` file | ParaView and other XDMF tools |
 | `petsc_reload=True` | PETSc DMPlex section/vector metadata | `MeshVariable.read_checkpoint()` |
 
-When nondimensional scaling is active, one output family contains both numeric
-frames. Native datasets under `/geometry`, `/fields`, and `/uw_checkpoint`
-remain nondimensional for remapping, exact reload, and numerical comparisons.
-The XDMF datasets under `/viz/geometry`, `/vertex_fields`, `/cell_fields`, and
-`/dg1` are converted during the write to the mesh and variable units declared
-in the model. HDF5 dataset attributes and XDMF `Information` elements record
-those units. A model script does not need a field-to-unit mapping or an HDF5
-postprocessing pass.
+When nondimensional scaling is active, `/fields` is converted during the write
+to the mesh and variable units declared in the model. HDF5 attributes and XDMF
+`Information` elements record those units. Analysis scripts can therefore read
+physical values directly, without maintaining their own conversion table.
+
+Set `petsc_reload=True` only when an exact restart is needed. It adds the native
+nondimensional PETSc payload under `/uw_checkpoint`; the visualization and
+analysis arrays remain dimensional.
 
 ### Visualisation and Coordinate Remap
 
-Continuous fields use the standard mesh vertices, and DG0 fields use cell data.
-DG1 fields on full-dimensional triangular and tetrahedral meshes use a second
-grid named `DG1` in the same XDMF file. Each simplex has its own three or four
-physical vertices: the saved linear polynomial is evaluated within that cell,
-without averaging traces across shared edges or faces. Interior DG interpolation
-nodes are not mistaken for the physical mesh vertices.
+XDMF reads P1 and DG0 values directly from `/fields`. Continuous P2 fields on
+triangles use XDMF `Triangle_6` connectivity, including the three edge nodes,
+so no P1 projection is stored. DG1 fields on full-dimensional triangular and
+tetrahedral meshes use disconnected element corners. The element polynomial is
+evaluated at each cell's corners, preserving jumps without averaging traces
+across shared edges or faces.
 
-The DG1 visualization arrays (`vertices`, `cells`, `values`) live under `/dg1`
-in each variable HDF5 file. Tensor visualization uses a nine-component 3-by-3
-layout (zero-padded in 2D); `/fields` and PETSc reload data retain their native
-layout and precision. Open the one `.xdmf` file in ParaView and select the
-`domain` or `DG1` block for the corresponding fields. Do not merge coincident
-points or apply point-averaging filters if discontinuities must be preserved.
+XDMF cannot represent every UW3 finite-element layout directly. Continuous P3+
+fields and unsupported P2 layouts receive one compact P1 dataset under
+`/visualization`. DG2+ fields and unsupported DG1 layouts receive one compact
+DG0 dataset. Their exact dimensional values remain under `/fields`. Integration
+point fields are not supported by this writer.
 
-Higher-degree discontinuous fields, tensor-product DG cells, embedded manifolds,
-and integration-point fields are not supported by this DG1 exporter. They raise
-an explicit error when visualization is requested; `create_xdmf=False` still
-allows native checkpoint output. Parallel export uses owned cells only.
+Direct DG1 output stores an exact basis conversion at disconnected element
+corners. This preserves the field for analysis and visualization, but those
+corner coordinates differ from UW3's interior DG1 interpolation nodes. Use the
+optional `/uw_checkpoint` payload and `read_checkpoint()` for exact DG1 solver
+restart; nearest-neighbour `read_timestep()` is not an inverse basis conversion.
 
 ```python
 mesh.write_timestep(
@@ -123,10 +125,10 @@ output/restart.mesh.velocity.00100.h5
 output/restart.mesh.pressure.00100.h5
 ```
 
-The variable files contain `/fields` datasets and PETSc reload metadata under
-`/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()` uses PETSc DMPlex
-topology, section, vector, and `PetscSF` metadata. It does not use KDTree
-remapping.
+The variable files contain PETSc reload metadata and native values under
+`/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()` uses
+PETSc DMPlex topology, section, vector, and `PetscSF` metadata. It does not use
+the dimensional `/fields` values or KDTree remapping.
 
 ### Unified Visualisation and PETSc Reload
 
