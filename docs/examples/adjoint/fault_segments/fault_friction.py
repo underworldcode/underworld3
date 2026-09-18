@@ -44,7 +44,7 @@ params = uw.Params(
     optimiser=uw.Param("tao", "tao (PETSc, limited-memory quasi-Newton; blmvm when bounds are set) | scipy (L-BFGS-B)"),
     noise=uw.Param(0.0, "Gaussian noise on the observed velocity, as a fraction of its rms, per component"),
     seed=uw.Param(7, "seed for the noise"),
-    regularisation=uw.Param(0.0, "Tikhonov weight on (log mu - log mu_start)^2, relative to the starting misfit"),
+    prior_sigma=uw.Param(0.0, "width of a Gaussian prior on log mu about the start, in log units; 0 for none"),
     bounds=uw.Param("", "friction bounds lo,hi for TAO's blmvm; empty for none"),
     observations=uw.Param("uplift+stress",
                           "uplift+stress | orientation_points (principal-stress orientation "
@@ -213,7 +213,9 @@ if float(params.noise) > 0:
     v_obs.array[...] = obs + float(params.noise) * rms * rng.standard_normal(obs.shape)
     uw.pprint(f"noise: {float(params.noise):.3f} of the rms per component, seed {int(params.seed)}")
 uw.pprint(f"true strengths {true_values}")
+J_truth = None
 
+J_truth = misfit_value()                     # v still holds the truth's velocity
 set_strengths([params.initial_strength] * n_seg)
 J0, g0 = J_and_gradient("start")
 uw.pprint(f"initial J = {J0:.6e}   dJ/dlog eta = {g0}")
@@ -247,17 +249,39 @@ history = []
 # velocity misfit is a small number.
 J_scale = J0
 
-alpha = float(params.regularisation)
+# The objective as a negative log posterior. The data term is chi-squared/2:
+# the misfit scaled by its expected value at the truth under the noise, which
+# a twin experiment can read directly, times the number of independent data —
+# the surface nodes and the nodes under the point weights. The prior term is
+# (log mu - log mu_start)^2 / (2 sigma_m^2) with sigma_m in log units. The
+# weight between them is then a statement about the noise and the prior, not
+# a number to tune, and which coefficients the data move is decided by their
+# sensitivities against that.
+sigma_m = float(params.prior_sigma)
 log_prior = np.log([params.initial_strength] * n_seg)
+X = np.asarray(v.coords)
+on_surface = X[:, 1] > 1.0 - 1e-6
+near_points = np.zeros(len(X), dtype=bool)
+for px, py in points:
+    near_points |= (X[:, 0] - px) ** 2 + (X[:, 1] - py) ** 2 < (2 * params.band) ** 2
+N_eff = {"uplift+stress": on_surface.sum() + near_points.sum(),
+         "orientation_points": near_points.sum(),
+         "surface_strain": on_surface.sum()}[what]
+J_floor = J_truth if float(params.noise) > 0 else J0
+chi2_scale = N_eff / J_floor                    # chi^2 = J * chi2_scale
+uw.pprint(f"N_eff = {N_eff}, misfit floor at the truth = {J_floor:.4e}")
 
 def objective(log_eta):
-    """The misfit relative to its start, plus a Tikhonov term on the log-strengths."""
     set_strengths(np.exp(log_eta))
     J, grad = J_and_gradient()
     history.append((J, np.exp(log_eta).copy()))
-    uw.pprint(f"  J = {J:.6e}   strengths = {np.exp(log_eta)}")
-    penalty = alpha * np.sum((log_eta - log_prior) ** 2)
-    return J / J_scale + penalty, grad / J_scale + 2 * alpha * (log_eta - log_prior)
+    uw.pprint(f"  J = {J:.6e}   chi2/N = {J * chi2_scale / N_eff:.4f}   strengths = {np.exp(log_eta)}")
+    value = J * chi2_scale / 2
+    g = grad * chi2_scale / 2
+    if sigma_m > 0:
+        value += np.sum((log_eta - log_prior) ** 2) / (2 * sigma_m ** 2)
+        g = g + (log_eta - log_prior) / sigma_m ** 2
+    return value, g
 
 x0 = np.log([params.initial_strength] * n_seg)
 if str(params.optimiser) == "tao":
@@ -293,7 +317,7 @@ forward("truth again")                       # the field on the grid is the trut
 gx, gy = np.meshgrid(np.linspace(0, 2, 201), np.linspace(0, 1, 101))
 grid = np.column_stack([gx.ravel(), gy.ravel()])
 eta_1_grid = np.asarray(uw.function.evaluate(eta_1, grid)).reshape(gx.shape)
-tag = f"{what}" + (f"_noise{float(params.noise):g}" if float(params.noise) > 0 else "") + (f"_reg{alpha:g}" if alpha > 0 else "")
+tag = f"{what}" + (f"_noise{float(params.noise):g}" if float(params.noise) > 0 else "") + (f"_prior{sigma_m:g}" if sigma_m > 0 else "")
 np.savez(f"fault_friction_{tag}_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
          points=np.array(points), true=np.array(true_values), band=params.band,
          history=np.array([[J, *vals] for J, vals in history]),
