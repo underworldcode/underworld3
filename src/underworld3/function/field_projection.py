@@ -226,6 +226,59 @@ def _write_vec_to_group(viewer, data_array, name, group, comm):
     vec.destroy()
 
 
+def _write_index_array_to_group(viewer, data_array, name, group, comm):
+    """Write a distributed integer connectivity array to an HDF5 group."""
+    indices = PETSc.IS().createGeneral(
+        np.asarray(data_array, dtype=PETSc.IntType).reshape(-1), comm=comm
+    )
+    if data_array.ndim == 2:
+        indices.setBlockSize(data_array.shape[1])
+    indices.setName(name)
+    viewer.pushGroup(group)
+    viewer(indices)
+    viewer.popGroup()
+    indices.destroy()
+
+
+def _physical_visualisation_enabled(units):
+    """Return whether declared units require a physical XDMF copy."""
+    import underworld3 as uw
+
+    return (
+        units is not None
+        and uw.get_default_model().has_units_active()
+        and uw.is_nondimensional_scaling_active()
+    )
+
+
+def _physical_visualisation_values(data, units):
+    """Return output values and their declared unit label.
+
+    Solver and checkpoint vectors use model magnitudes.  XDMF arrays are a
+    user-facing boundary, so an active nondimensional model is converted to
+    the units declared by the mesh or variable before those arrays are written.
+    """
+    import underworld3 as uw
+
+    if units is None:
+        return data, None
+
+    target_units = uw.units(units).units if isinstance(units, str) else units
+    unit_label = str(target_units)
+    if not _physical_visualisation_enabled(units):
+        return data, unit_label
+
+    dimensionality = dict(target_units.dimensionality)
+    if not dimensionality:
+        return data, unit_label
+
+    physical = uw.dimensionalise(
+        np.asarray(data),
+        target_dimensionality=dimensionality,
+    ).to(target_units)
+    return np.asarray(physical), unit_label
+
+
 def write_vertices_to_viewer(
     mesh_var: "MeshVariable",
     viewer: "PETSc.ViewerHDF5",
@@ -293,7 +346,138 @@ def write_vertices_to_viewer(
     if is_tensor:
         data = _repack_tensor_to_paraview(data, mesh_var.vtype, mesh.dim)
 
+    data, _ = _physical_visualisation_values(data, mesh_var.units)
+
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
+
+
+def write_field_to_viewer(
+    mesh_var: "MeshVariable",
+    viewer: "PETSc.ViewerHDF5",
+    group: str,
+    name: str,
+) -> None:
+    """Write a variable's owned values in physical units without projection."""
+    mesh_var._sync_lvec_to_gvec()
+    data = mesh_var._gvec.array.reshape(-1, mesh_var.num_components).copy()
+    data, _ = _physical_visualisation_values(data, mesh_var.units)
+    _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
+
+
+def write_field_coordinates_to_viewer(
+    mesh_var: "MeshVariable",
+    viewer: "PETSc.ViewerHDF5",
+    group: str,
+    name: str = "coordinates",
+) -> None:
+    """Write owned coordinates for a variable's exact finite-element layout."""
+    mesh = mesh_var.mesh
+    coordinate_dm = mesh._basis_coordinate_dm(mesh_var.degree, mesh_var.continuous)
+    local = coordinate_dm.getLocalVec()
+    global_vector = coordinate_dm.getGlobalVec()
+    local.array[...] = np.asarray(mesh_var.coords_nd).reshape(-1)
+    coordinate_dm.localToGlobal(local, global_vector, addv=False)
+    coordinates = global_vector.array.reshape(-1, mesh.cdim).copy()
+    coordinates, _ = _physical_visualisation_values(coordinates, mesh.units)
+    _write_vec_to_group(viewer, coordinates, name, group, PETSc.COMM_WORLD)
+    coordinate_dm.restoreGlobalVec(global_vector)
+    coordinate_dm.restoreLocalVec(local)
+    coordinate_dm.destroy()
+
+
+def write_projected_field_to_viewer(
+    mesh_var: "MeshVariable",
+    viewer: "PETSc.ViewerHDF5",
+    target_degree: int,
+    continuous: bool,
+    group: str,
+    name: str,
+) -> None:
+    """Write a compact visualization projection for an unsupported layout."""
+    data = project_to_degree(
+        mesh_var,
+        target_degree=target_degree,
+        continuous=continuous,
+        include_ghosts=False,
+    )
+    data, _ = _physical_visualisation_values(data, mesh_var.units)
+    _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
+
+
+def write_p2_simplex_topology_to_viewer(mesh_var, viewer, group="/fields"):
+    """Write VTK-ordered quadratic triangle or tetrahedron connectivity."""
+    mesh = mesh_var.mesh
+    if not (
+        mesh_var.continuous
+        and mesh_var.degree == 2
+        and mesh.isSimplex
+        and mesh.dim in (2, 3)
+        and mesh.cdim == mesh.dim
+    ):
+        raise NotImplementedError(
+            "direct P2 XDMF requires a full-dimensional triangle or tetrahedron mesh"
+        )
+
+    coordinate_dm = mesh._basis_coordinate_dm(2, True)
+    local_section = coordinate_dm.getLocalSection()
+    global_section = coordinate_dm.getGlobalSection()
+    local_to_global = np.full(len(mesh_var.coords_nd), -1, dtype=PETSc.IntType)
+    point_start, point_end = local_section.getChart()
+    for point in range(point_start, point_end):
+        node_count = local_section.getDof(point) // mesh.cdim
+        if node_count == 0:
+            continue
+        local_offset = local_section.getOffset(point) // mesh.cdim
+        global_offset = global_section.getOffset(point)
+        if global_offset < 0:
+            global_offset = -(global_offset + 1)
+        global_offset //= mesh.cdim
+        local_to_global[local_offset : local_offset + node_count] = np.arange(
+            global_offset, global_offset + node_count, dtype=PETSc.IntType
+        )
+    coordinate_dm.destroy()
+
+    cell_start, cell_end = mesh.dm.getHeightStratum(0)
+    owned = np.ones(cell_end - cell_start, dtype=bool)
+    if mesh.dm.comm.getSize() > 1:
+        _, leaves, remote = mesh.dm.getPointSF().getGraph()
+        if leaves is None:
+            leaves = np.arange(len(remote))
+        leaves = np.asarray(leaves)
+        owned[leaves[(leaves >= cell_start) & (leaves < cell_end)] - cell_start] = False
+
+    corner_count = mesh.dim + 1
+    node_count = 6 if mesh.dim == 2 else 10
+    p2_rows = mesh._cell_node_indices(2, True).reshape(-1, node_count)[owned]
+    vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, corner_count)[owned]
+    p2_coordinates = mesh_var.coords_nd[p2_rows]
+    corners = mesh._get_coords_for_basis(1, True)[vertex_rows]
+    negative = np.linalg.det((corners[:, 1:] - corners[:, :1]).transpose(0, 2, 1)) < 0
+    if mesh.dim == 2:
+        corners[negative] = corners[negative][:, [0, 2, 1]]
+        edge_pairs = ((0, 1), (1, 2), (2, 0))
+        topology_name = "Triangle_6"
+    else:
+        corners[negative] = corners[negative][:, [0, 2, 1, 3]]
+        edge_pairs = ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3))
+        topology_name = "Tetrahedron_10"
+
+    connectivity = np.empty_like(p2_rows, dtype=PETSc.IntType)
+    for cell_index, (row, nodes, vertices) in enumerate(
+        zip(p2_rows, p2_coordinates, corners, strict=True)
+    ):
+        targets = np.vstack(
+            (vertices, *(0.5 * (vertices[a] + vertices[b]) for a, b in edge_pairs))
+        )
+        order = [np.argmin(np.linalg.norm(nodes - target, axis=1)) for target in targets]
+        if len(set(order)) != node_count:
+            raise RuntimeError(f"could not map UW3 P2 nodes to {topology_name} ordering")
+        connectivity[cell_index] = local_to_global[row[order]]
+    if np.any(connectivity < 0):
+        raise RuntimeError("P2 XDMF connectivity contains an unmapped global node")
+    _write_index_array_to_group(
+        viewer, connectivity, "cells", group, PETSc.COMM_WORLD
+    )
 
 
 def write_coordinates_to_viewer(
@@ -316,7 +500,8 @@ def write_coordinates_to_viewer(
         Dataset name (default ``coordinates``).
     """
     coord_gvec = mesh.dm.getCoordinates()
-    coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
+    coords = coord_gvec.array.reshape(-1, mesh.cdim).copy()
+    coords, _ = _physical_visualisation_values(coords, mesh.units)
     _write_vec_to_group(viewer, coords, name, group, PETSc.COMM_WORLD)
 
 
@@ -349,4 +534,75 @@ def write_cell_field_to_viewer(
     nc = mesh_var.num_components
     mesh_var._sync_lvec_to_gvec()
     data = mesh_var._gvec.array.reshape(-1, nc).copy()
+    data, _ = _physical_visualisation_values(data, mesh_var.units)
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
+
+
+def _dg1_corner_data(mesh_var, repack_tensors=False):
+    """Return owned disconnected-cell geometry and exact DG1 corner values.
+
+    Coordinate-section cell maps preserve element ownership and node ordering;
+    no point location, coordinate matching, or inter-element averaging is used.
+    Interior DG interpolation nodes define an affine polynomial, evaluated at
+    that same cell's vertices. The corner values are an exact alternative basis
+    for the element-local linear polynomial, not a lower-order projection.
+    """
+    mesh = mesh_var.mesh
+    if (
+        mesh_var.continuous or mesh_var.degree != 1 or not mesh.isSimplex
+        or mesh.dim not in (2, 3) or mesh.cdim != mesh.dim
+    ):
+        raise NotImplementedError("DG1 XDMF requires a full-dimensional triangle/tetrahedron mesh")
+    cstart, cend = mesh.dm.getHeightStratum(0)
+    owned = np.ones(cend - cstart, dtype=bool)
+    # Serial DMPlex may have an unset point SF; no cells are ghosts there.
+    if mesh.dm.comm.getSize() > 1:
+        _, leaves, remote = mesh.dm.getPointSF().getGraph()
+        if leaves is None:
+            leaves = np.arange(len(remote))
+        leaves = np.asarray(leaves)
+        owned[leaves[(leaves >= cstart) & (leaves < cend)] - cstart] = False
+    rows = mesh._cell_node_indices(1, False).reshape(-1, mesh.dim + 1)[owned]
+    vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, mesh.dim + 1)[owned]
+    corners = mesh._get_coords_for_basis(1, True)[vertex_rows]
+    # Closure order is arbitrary; give VTK positively oriented simplices.
+    negative = np.linalg.det((corners[:, 1:] - corners[:, :1]).transpose(0, 2, 1)) < 0
+    corners[negative] = corners[negative][:, [0, 2, 1] if mesh.dim == 2 else [0, 2, 1, 3]]
+    nodes = mesh_var.coords_nd[rows]
+    coefficients = mesh_var._lvec.array.reshape(-1, mesh_var.num_components)[rows]
+    matrix = (nodes[:, 1:] - nodes[:, :1]).transpose(0, 2, 1)
+    local = np.linalg.solve(matrix, (corners - nodes[:, :1]).transpose(0, 2, 1))
+    weights = np.concatenate((1 - local.sum(axis=1, keepdims=True), local), axis=1)
+    values = np.einsum("cij,cik->cjk", weights, coefficients).reshape(-1, mesh_var.num_components)
+    if repack_tensors:
+        values = _repack_tensor_to_paraview(values, mesh_var.vtype, mesh.dim)
+    corners, _ = _physical_visualisation_values(corners, mesh.units)
+    values, _ = _physical_visualisation_values(values, mesh_var.units)
+    corner_rows = corners.reshape(-1, mesh.cdim)
+    local_count = len(corner_rows)
+    offset = mesh.dm.comm.tompi4py().exscan(local_count)
+    if offset is None:
+        offset = 0
+    cells = np.arange(offset, offset + local_count, dtype=PETSc.IntType).reshape(
+        -1, mesh.dim + 1
+    )
+    return corner_rows, values, cells
+
+
+def _write_dg1_to_viewer(
+    mesh_var,
+    viewer,
+    group="/dg1",
+    coordinate_name="vertices",
+    value_name="values",
+    repack_tensors=True,
+):
+    """Write owned simplex cells with independent vertices and DG1 traces."""
+    corner_rows, values, cells = _dg1_corner_data(
+        mesh_var, repack_tensors=repack_tensors
+    )
+    _write_vec_to_group(
+        viewer, corner_rows, coordinate_name, group, PETSc.COMM_WORLD
+    )
+    _write_vec_to_group(viewer, values, value_name, group, PETSc.COMM_WORLD)
+    _write_index_array_to_group(viewer, cells, "cells", group, PETSc.COMM_WORLD)
