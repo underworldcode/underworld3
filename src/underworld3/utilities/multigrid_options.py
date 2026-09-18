@@ -83,11 +83,13 @@ def _user_owns(opts, name, owned):
 #: operator inherits a null space — see :func:`geometric_mg_bundle`.
 GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd")
 
-#: Smoother variants. These are the two measured regimes, not a taste setting:
+#: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
-#: stalls, ``"fast"`` is cheaper per cycle where the operator is benign. Selected by
-#: ``solver.strategy``; see :func:`geometric_mg_bundle` for the numbers.
-GEOMETRIC_MG_SMOOTHERS = ("robust", "fast")
+#: stalls, ``"fast"`` is cheaper per cycle where the operator is benign, and
+#: ``"bulletproof"`` exists to take the linear solve OFF the list of suspects when a
+#: run misbehaves and the cause could be the solver, the transport scheme or the
+#: resolution. Selected by ``solver.strategy``; see :func:`geometric_mg_bundle`.
+GEOMETRIC_MG_SMOOTHERS = ("robust", "fast", "bulletproof")
 
 
 class MGSettings(NamedTuple):
@@ -183,8 +185,10 @@ def describe(settings, levels=None, overridden=()):
 def _geometric_mg_settings(coarse, smoother="robust"):
     """The geometric-MG settings for one coarse-solve and smoother variant.
 
-    Both variants set the SAME keys — only values differ — so the derived stale-key
-    sets are variant-independent."""
+    Every variant sets the SAME keys — only values differ — so the derived stale-key
+    sets are variant-independent. A variant that needs a key the others do not have
+    must add it to all of them (with a default), or the invariant breaks: this is why
+    ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap."""
     settings = {
         # The KSP this preconditioner serves must be FLEXIBLE, for both
         # variants. The "robust" smoother is a Krylov solve, so the
@@ -253,6 +257,32 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # at the cost of the regime "robust" exists for. See the docstring.
         settings["mg_levels_ksp_type"] = "richardson"
         settings["mg_levels_ksp_max_it"] = 3
+    elif smoother == "bulletproof":
+        # Additive Schwarz under the Krylov smoother: each subdomain solve inverts
+        # the LOCAL coupling directly, so the smoother does not rely on the operator
+        # being close to symmetric or elliptic. SOR does, and has no purchase once it
+        # is neither.
+        #
+        # The measurement: creeping Oldroyd-B past a confined cylinder (Wi 0.4,
+        # beta 0.59, three levels), where the viscoelastic velocity block carries
+        # upper-convected stretching terms and a cell-scale stress layer. Same
+        # problem, one key changed:
+        #
+        #   sor  -> step 15 took 26947 s and the drag reached -4642
+        #   asm  -> step 15 took 115 s and the drag stayed finite
+        #
+        # 90% of the inner velocity solves hit their iteration cap under sor against
+        # 77% under asm. It is SLOWER per sweep on a benign operator, which is why
+        # this is a third named variant and not a change to "robust".
+        #
+        # Its purpose is diagnostic as much as numerical. When a run misbehaves and
+        # the linear solve, the transport scheme and the mesh resolution are all
+        # candidates, this variant removes the first from the list: the cylinder run
+        # above survived under asm and still produced the same wrong drag at the same
+        # step, which is how we learned the fault was not in the solver.
+        settings["mg_levels_ksp_type"] = "gmres"
+        settings["mg_levels_ksp_max_it"] = 8
+        settings["mg_levels_pc_type"] = "asm"
     else:
         raise ValueError(
             f"smoother must be one of {GEOMETRIC_MG_SMOOTHERS} (got {smoother!r})")
@@ -355,7 +385,7 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
 
     Parameters
     ----------
-    smoother : {"robust", "fast"}
+    smoother : {"robust", "fast", "bulletproof"}
         Which of the two MEASURED regimes to configure. ``"robust"`` is
         ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
         ``solver.strategy``, not usually here.
@@ -372,7 +402,7 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
 
     Notes
     -----
-    The two smoother variants are two measured regimes, and neither dominates.
+    The smoother variants are measured regimes, and none dominates.
 
     ``"robust"`` (``gmres``/4) survives an operator a stationary smoother stalls on.
     Spiegelman notch, :math:`\eta` contrast 1e26, nested 4-level hierarchy:
