@@ -1336,6 +1336,12 @@ def _penalty_value(penalty_expression):
 
 
 class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
+    #: DEVSS lag iterations on a plain Stokes solve: D is lagged data, so it has to
+    #: catch up with the strain rate before the added and subtracted terms cancel
+    #: (#754). Two passes suffice on a linear problem; the cap bounds a nonlinear one.
+    _DEVSS_MAX_LAG_ITERATIONS = 4
+    _DEVSS_LAG_TOLERANCE = 1.0e-8
+
     r"""
     Stokes equation solver for incompressible viscous flow.
 
@@ -1959,6 +1965,34 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 time=time,
                 divergence_retries=divergence_retries,
             )
+            # DEVSS adds 2 eta_a (E - D) and relies on D tracking E for the pair to
+            # cancel, leaving only the unrepresentable part of the strain rate. The
+            # catch-up lived ONLY in the stress-history post-solve, so a plain Stokes
+            # solve never refreshed D: the term stayed a bare 2 eta_a E and the run
+            # silently used eta + eta_a, forever (#754).
+            #
+            # Refreshing after the solve is not enough on its own: D starts at zero, so
+            # the FIRST solve is still wrong and only a second call would be right. A
+            # steady problem is solved once. So lag-iterate here — refresh D from the
+            # velocity just found and solve again — until the pair has settled. On a
+            # time-stepping viscoelastic run the same catch-up happens across steps and
+            # this loop exits after its check solve.
+            if self._devss_viscosity is not None:
+                for _ in range(self._DEVSS_MAX_LAG_ITERATIONS):
+                    before = np.array(self._devss_D.array, copy=True)
+                    self._devss_refresh(verbose=verbose)
+                    moved = np.abs(self._devss_D.array - before).max()
+                    scale = max(np.abs(self._devss_D.array).max(), 1.0e-30)
+                    super().solve(
+                        zero_init_guess=False,
+                        _force_setup=False,
+                        verbose=verbose,
+                        picard=picard,
+                        time=time,
+                        divergence_retries=divergence_retries,
+                    )
+                    if moved <= self._DEVSS_LAG_TOLERANCE * scale:
+                        break
             # Confirm the preconditioner the automatic penalty was chosen for.
             self._check_velocity_preconditioner()
 

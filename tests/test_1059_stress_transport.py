@@ -443,6 +443,44 @@ def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate():
     assert 1e-6 < moved < 5e-2, moved                        # live, and only projection-sized
 
 
+def test_devss_cancels_on_a_plain_stokes_solve_too():
+    """DEVSS must not change the rheology when there is NO stress history.
+
+    The pair 2 eta_a (edot - D) cancels only if D is refreshed to track edot. That
+    refresh lived solely in the stress-history post-solve, so a plain Stokes solve
+    never performed it: D stayed at its initial value and the term was a bare
+    2 eta_a edot -- the run silently used eta + eta_a, forever, and repeated solves
+    did not heal it (#754).
+
+    Pinned against the EXACT fully developed value rather than a comparison, so it
+    fails the moment the cancellation stops happening: plane Poiseuille between
+    plates at y = 0, h has dp/dx = -3 eta U / (h/2)^2 with U the mean speed."""
+    eta, eta_a, h, u_max = 1.0, 0.25, 1.0, 1.5
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(4.0, h), cellSize=0.2, qdegree=3)
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("U_devss", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_devss", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.devss_viscosity = eta_a
+    stokes.add_dirichlet_bc((u_max * (1.0 - ((y - h / 2) / (h / 2)) ** 2), 0.0), "Left")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-6
+
+    xs = np.linspace(1.5, 3.5, 60)
+    pts = np.column_stack([xs, np.full_like(xs, h / 2)])
+    exact = -3.0 * eta * (2.0 / 3.0 * u_max) / (h / 2) ** 2
+    for _ in range(2):          # the defect also survived repeated solves
+        stokes.solve(zero_init_guess=False)
+        pr = np.asarray(uw.function.evaluate(p.sym[0], pts)).reshape(-1)
+        grad = float(np.polyfit(xs, pr, 1)[0])
+        assert abs(grad - exact) / abs(exact) < 2.0e-3, (grad, exact)
+
+
 def test_the_exponential_integrator_runs_on_the_trace_back_navier_stokes():
     """The trace-back Navier-Stokes solver has its own history path. It must
     tell a viscoelastic model the step and refresh the integrator coefficients
