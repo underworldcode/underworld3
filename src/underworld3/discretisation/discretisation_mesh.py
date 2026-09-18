@@ -4839,9 +4839,11 @@ class Mesh(Stateful, uw_object):
         The optional payloads are controlled explicitly:
 
         - ``create_xdmf=True`` writes a companion XDMF file that reads the
-          dimensional ``/fields`` datasets directly for P1, P2 triangles,
-          DG0, and DG1 simplices. Continuous P3+ fields receive one compact P1
-          visualization dataset; discontinuous DG2+ fields receive DG0.
+          dimensional ``/fields`` datasets directly for P1, P2 triangles, and
+          DG0. DG1 retains native ``/fields`` values for reload and adds an
+          exact disconnected-corner visualization. Continuous P3+ fields
+          receive one compact P1 visualization dataset; discontinuous DG2+
+          fields receive DG0.
         - ``petsc_reload=True`` additionally writes native nondimensional
           PETSc DMPlex section/local-vector data under ``/uw_checkpoint``.
           Load that optional payload with ``MeshVariable.read_checkpoint()``
@@ -9635,10 +9637,13 @@ class Mesh(Stateful, uw_object):
 def _write_xdmf_field(mesh, var, var_h5_path):
     """Replace native remap arrays with dimensional field output for XDMF.
 
-    P1, P2 triangles, DG0, and DG1 simplices are represented directly under
-    ``/fields``. Unsupported higher-order layouts retain their exact physical
-    values under ``/fields`` and receive one compact visualization reduction:
-    continuous fields use P1 and discontinuous fields use DG0.
+    P1, P2 triangles, and DG0 are represented directly under ``/fields``.
+    DG1 keeps its native interpolation values under ``/fields`` for exact
+    coordinate reload and receives an exact disconnected-corner representation
+    under ``/visualization``. Unsupported higher-order layouts retain their
+    exact physical values under ``/fields`` and receive one compact
+    visualization reduction: continuous fields use P1 and discontinuous fields
+    use DG0.
 
     Parameters
     ----------
@@ -9693,18 +9698,18 @@ def _write_xdmf_field(mesh, var, var_h5_path):
         comm=PETSc.COMM_WORLD,
     )
 
+    write_field_to_viewer(var, viewer, "/fields", var.clean_name)
+    write_field_coordinates_to_viewer(var, viewer, "/fields")
     if direct_dg1:
         _write_dg1_to_viewer(
             var,
             viewer,
-            group="/fields",
+            group="/visualization",
             coordinate_name="coordinates",
             value_name=var.clean_name,
             repack_tensors=False,
         )
     else:
-        write_field_to_viewer(var, viewer, "/fields", var.clean_name)
-        write_field_coordinates_to_viewer(var, viewer, "/fields")
         if direct_p2:
             write_p2_triangle_topology_to_viewer(var, viewer, group="/fields")
         elif needs_projection:
@@ -9730,18 +9735,26 @@ def _write_xdmf_field(mesh, var, var_h5_path):
                 field.attrs["storage_frame"] = "physical"
                 field.attrs["degree"] = var.degree
                 field.attrs["continuous"] = var.continuous
-                field.attrs["representation"] = (
-                    "basis_conversion" if direct_dg1 else "exact"
-                )
+                field.attrs["representation"] = "exact"
                 coordinates = handle["fields/coordinates"]
                 coordinates.attrs["units"] = coordinate_units or "dimensionless"
                 coordinates.attrs["storage_frame"] = "physical"
-                if needs_projection:
+                if direct_dg1 or needs_projection:
                     projected = handle[f"visualization/{var.clean_name}"]
                     projected.attrs["units"] = field_units or "dimensionless"
                     projected.attrs["source_degree"] = var.degree
-                    projected.attrs["visualization_degree"] = 1 if var.continuous else 0
-                    projected.attrs["representation"] = "projection"
+                    projected.attrs["visualization_degree"] = (
+                        1 if var.continuous or direct_dg1 else 0
+                    )
+                    projected.attrs["representation"] = (
+                        "basis_conversion" if direct_dg1 else "projection"
+                    )
+                if direct_dg1:
+                    visual_coordinates = handle["visualization/coordinates"]
+                    visual_coordinates.attrs["units"] = (
+                        coordinate_units or "dimensionless"
+                    )
+                    visual_coordinates.attrs["storage_frame"] = "physical"
     uw.mpi.barrier()
 
 
@@ -10085,12 +10098,15 @@ def checkpoint_xdmf(
     special_grids = ""
     for var in special_vars:
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+        storage_group = "fields" if direct_p2(var) else "visualization"
         with h5py.File(var_filename, "r") as f:
-            cells_shape = f["fields/cells"].shape
-            points_shape = f["fields/coordinates"].shape
-            values_shape = f[f"fields/{var.clean_name}"].shape
-            special_geometry_units = f["fields/coordinates"].attrs.get("units")
-            field_units = f[f"fields/{var.clean_name}"].attrs.get("units")
+            cells_shape = f[f"{storage_group}/cells"].shape
+            points_shape = f[f"{storage_group}/coordinates"].shape
+            values_shape = f[f"{storage_group}/{var.clean_name}"].shape
+            special_geometry_units = f[f"{storage_group}/coordinates"].attrs.get(
+                "units"
+            )
+            field_units = f[f"{storage_group}/{var.clean_name}"].attrs.get("units")
         special_topology = "Triangle_6" if direct_p2(var) else topology_type
         components = values_shape[1] if len(values_shape) == 2 else 1
         kind = attribute_kind(var, components)
@@ -10101,18 +10117,18 @@ def checkpoint_xdmf(
         <DataItem Format="HDF" NumberType="Int"
                   Precision="{numpy.dtype(PETSc.IntType).itemsize}"
                   Dimensions="{cells_shape[0]} {cells_shape[1]}">
-          &{var.clean_name}_Data;:/fields/cells
+          &{var.clean_name}_Data;:/{storage_group}/cells
         </DataItem>
       </Topology>
       <Geometry GeometryType="{geomType}">
         <DataItem Format="HDF" NumberType="Float" Precision="8"
                   Dimensions="{points_shape[0]} {points_shape[1]}">
-          &{var.clean_name}_Data;:/fields/coordinates
+          &{var.clean_name}_Data;:/{storage_group}/coordinates
         </DataItem>{units_information(special_geometry_units, "        ")}
       </Geometry>
       <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
         <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
-          &{var.clean_name}_Data;:/fields/{var.clean_name}
+          &{var.clean_name}_Data;:/{storage_group}/{var.clean_name}
         </DataItem>{units_information(field_units, "        ")}
       </Attribute>
     </Grid>"""

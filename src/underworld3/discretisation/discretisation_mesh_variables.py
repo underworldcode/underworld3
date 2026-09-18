@@ -1244,7 +1244,6 @@ class _BaseMeshVariable(Stateful, uw_object):
             varsymbol=r"\cal{S}",
         )
 
-        field_representation = None
         if uw.mpi.rank == 0:
             if verbose:
                 print(
@@ -1260,9 +1259,6 @@ class _BaseMeshVariable(Stateful, uw_object):
                 with h5py.File(data_file, "r") as h5f:
                     coordinate_dataset = h5f["fields"]["coordinates"]
                     field_dataset = h5f["fields"][data_name]
-                    field_representation = field_dataset.attrs.get("representation")
-                    if isinstance(field_representation, bytes):
-                        field_representation = field_representation.decode()
                     X_src = coordinate_dataset[()].reshape(-1, dim)
                     D_src = field_dataset[()].reshape(-1, n_components)
                     storage_frame = field_dataset.attrs.get(
@@ -1290,14 +1286,6 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             X_src = np.empty((0, dim), dtype=np.float64)
             D_src = np.empty((0, n_components), dtype=np.float64)
-
-        field_representation = uw.mpi.comm.bcast(field_representation, root=0)
-        if field_representation == "basis_conversion":
-            raise RuntimeError(
-                "read_timestep cannot invert the element-local DG1 corner "
-                "basis conversion. Write with petsc_reload=True and use "
-                "read_checkpoint() for an exact DG1 solver restart."
-            )
 
         src_size_before = max(source_swarm.dm.getLocalSize(), 0)
         source_swarm.add_particles_with_global_coordinates(X_src, migrate=False)

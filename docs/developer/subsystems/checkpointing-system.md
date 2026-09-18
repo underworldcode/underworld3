@@ -43,10 +43,11 @@ analysis arrays remain dimensional.
 
 XDMF reads P1 and DG0 values directly from `/fields`. Continuous P2 fields on
 triangles use XDMF `Triangle_6` connectivity, including the three edge nodes,
-so no P1 projection is stored. DG1 fields on full-dimensional triangular and
-tetrahedral meshes use disconnected element corners. The element polynomial is
-evaluated at each cell's corners, preserving jumps without averaging traces
-across shared edges or faces.
+so no P1 projection is stored. DG1 keeps native interpolation coordinates and
+values under `/fields`, allowing `read_timestep()` to recover the solver field.
+For XDMF, the same element polynomial is evaluated at disconnected cell corners
+under `/visualization`, preserving jumps without averaging traces across shared
+edges or faces.
 
 XDMF cannot represent every UW3 finite-element layout directly. Continuous P3+
 fields and unsupported P2 layouts receive one compact P1 dataset under
@@ -54,11 +55,10 @@ fields and unsupported P2 layouts receive one compact P1 dataset under
 DG0 dataset. Their exact dimensional values remain under `/fields`. Integration
 point fields are not supported by this writer.
 
-Direct DG1 output stores an exact basis conversion at disconnected element
-corners. This preserves the field for analysis and visualization, but those
-corner coordinates differ from UW3's interior DG1 interpolation nodes. Use the
-optional `/uw_checkpoint` payload and `read_checkpoint()` for exact DG1 solver
-restart; nearest-neighbour `read_timestep()` is not an inverse basis conversion.
+DG1 therefore has two representations because their coordinate sets serve
+different purposes: native `/fields` for analysis and coordinate reload, and an
+exact disconnected-corner `/visualization` representation for XDMF. Add
+`/uw_checkpoint` when PETSc-native restart is also required.
 
 ```python
 mesh.write_timestep(

@@ -31,15 +31,14 @@ The XDMF storage choice follows the finite-element layout:
 | Continuous P1 | Direct `/fields` node values |
 | Continuous P2 triangles | Direct `/fields` values with `Triangle_6` connectivity |
 | DG0 | Direct `/fields` cell values |
-| DG1 triangles/tetrahedra | Exact element-local values at disconnected corners |
+| DG1 triangles/tetrahedra | Native `/fields` for reload plus exact disconnected-corner `/visualization` data |
 | Continuous P3+ or unsupported P2 | Compact P1 dataset under `/visualization` |
 | DG2+ or unsupported DG1 | Compact DG0 dataset under `/visualization` |
 
-Direct DG1 output is an exact basis conversion for analysis and visualization.
-Its disconnected corner coordinates differ from UW3's interior DG1
-interpolation nodes, so use `/uw_checkpoint` with `read_checkpoint()` for exact
-DG1 restart. `read_timestep()` performs nearest-neighbour remapping and does not
-invert that basis conversion.
+DG1 retains native interpolation coordinates and values under `/fields`, so
+`read_timestep()` can reload the solver field. XDMF reads an additional exact
+basis conversion at disconnected element corners from `/visualization` because
+the native interior DG1 points do not describe the full element geometry.
 
 ### Visualisation And Remap
 
@@ -67,11 +66,12 @@ output.mesh.00000.xdmf
 ```
 
 The field files contain `/fields/<name>` and `/fields/coordinates`. P1, P2
-triangles, DG0, and DG1 simplices are visualized directly from those datasets.
-Continuous P3+ fields use one compact P1 visualization reduction, and DG2+
-fields use DG0. Reloading with `read_timestep()` compares target coordinates to
-the dimensional source coordinates and converts the saved values back to the
-active model's nondimensional solver frame.
+triangles, and DG0 are visualized directly from those datasets. DG1 uses its
+additional exact disconnected-corner representation. Continuous P3+ fields use
+one compact P1 visualization reduction, and DG2+ fields use DG0. Reloading with
+`read_timestep()` compares target coordinates to the dimensional source
+coordinates and converts the saved values back to the active model's
+nondimensional solver frame.
 
 ### Unified Visualisation And PETSc Reload
 

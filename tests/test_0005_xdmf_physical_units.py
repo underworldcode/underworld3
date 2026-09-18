@@ -98,7 +98,7 @@ def test_fields_are_dimensional_and_checkpoint_is_native(tmp_path):
 @pytest.mark.level_1
 @pytest.mark.tier_b
 def test_dg1_fields_are_physical_at_element_corners(tmp_path):
-    """DG1 basis conversion and units are stored once under /fields."""
+    """DG1 native reload data and corner visualization use physical units."""
     _set_reference_scales()
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, regular=True)
     pressure = uw.discretisation.MeshVariable(
@@ -107,10 +107,25 @@ def test_dg1_fields_are_physical_at_element_corners(tmp_path):
     pressure.array[:, 0, 0] = uw.quantity(8.0, "MPa")
     directory = Path(uw.mpi.comm.bcast(str(tmp_path), root=0))
     mesh.write_timestep("dg", 0, outputPath=str(directory), meshVars=[pressure])
+
+    remapped = uw.discretisation.MeshVariable(
+        "dg_pressure_remapped",
+        mesh,
+        1,
+        degree=1,
+        continuous=False,
+        units="MPa",
+    )
+    remapped.read_timestep("dg", "dg_pressure", 0, outputPath=str(directory))
+    np.testing.assert_allclose(np.array(remapped.array), np.array(pressure.array))
+
     if uw.mpi.rank == 0:
         with h5py.File(directory / "dg.mesh.dg_pressure.00000.h5", "r") as handle:
             np.testing.assert_allclose(handle["fields/dg_pressure"][:], 8.0)
-            assert np.isclose(handle["fields/coordinates"][:].max(), 10.0)
+            np.testing.assert_allclose(handle["visualization/dg_pressure"][:], 8.0)
+            assert np.isclose(handle["visualization/coordinates"][:].max(), 10.0)
             assert handle["fields/dg_pressure"].attrs["units"] == "megapascal"
             assert handle["fields/coordinates"].attrs["units"] == "kilometer"
+            assert handle["visualization/dg_pressure"].attrs["units"] == "megapascal"
+            assert handle["visualization/coordinates"].attrs["units"] == "kilometer"
             assert "dg1" not in handle
