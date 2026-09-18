@@ -41,6 +41,7 @@ params = uw.Params(
     cohesion=uw.Param(0.05, "cohesion C in tau_y = C + mu p"),
     rho_g=uw.Param(10.0, "body force, so the pressure grows with depth"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
+    optimiser=uw.Param("tao", "tao (PETSc, limited-memory quasi-Newton) | scipy (L-BFGS-B)"),
     observations=uw.Param("uplift+stress",
                           "uplift+stress | orientation_points (principal-stress orientation "
                           "at the five interior points only) | surface_strain (the surface "
@@ -240,9 +241,17 @@ def objective(log_eta):
     uw.pprint(f"  J = {J:.6e}   strengths = {np.exp(log_eta)}")
     return J / J_scale, grad / J_scale
 
-result = minimize(objective, np.log([params.initial_strength] * n_seg), jac=True,
-                  method="L-BFGS-B", options={"maxiter": 40, "gtol": 1e-10})
-uw.pprint(f"recovered {np.exp(result.x)}   true {true_values}   "
+x0 = np.log([params.initial_strength] * n_seg)
+if str(params.optimiser) == "tao":
+    # PETSc's own driver: the same objective and gradient, TAO's quasi-Newton
+    # update and line search.
+    x_best, info = uw.adjoint.minimise(objective, x0, max_evaluations=60,
+                                       gradient_tolerance=1e-10)
+else:
+    result = minimize(objective, x0, jac=True, method="L-BFGS-B",
+                      options={"maxiter": 40, "gtol": 1e-10})
+    x_best = result.x
+uw.pprint(f"recovered {np.exp(x_best)}   true {true_values}   "
           f"after {len(history)} evaluations")
 
 # --- what the figure needs -----------------------------------------------------
@@ -252,7 +261,7 @@ xs = np.linspace(0.0, 2.0, 161)
 top = np.column_stack([xs, np.full_like(xs, 1.0 - 1e-6)])
 profiles = {}
 for label, values in (("true", true_values), ("initial", [params.initial_strength] * n_seg),
-                      ("recovered", list(np.exp(result.x)))):
+                      ("recovered", list(np.exp(x_best)))):
     set_strengths(values)
     forward(f"profile {label}")
     profiles[label] = np.asarray(uw.function.evaluate(v.sym[1], top)).ravel()

@@ -428,6 +428,57 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     return {"J": J, "parameters": grad, "fields": out_fields}
 
 
+def minimise(objective, x0, bounds=None, method="lmvm", options=None, max_evaluations=100,
+             gradient_tolerance=1e-8, callback=None):
+    r"""Minimise ``objective(x) -> (J, dJ/dx)`` with PETSc TAO.
+
+    The driver for an inversion: the misfit and its gradient come from the
+    adjoint, the step along the gradient is the line search's, and the
+    quasi-Newton update is TAO's limited-memory one (``"lmvm"``; ``"blmvm"``
+    honours ``bounds``, a pair of arrays). ``x0`` is a NumPy array; a few
+    scalar controls are replicated on every rank, each rank's TAO doing the
+    same arithmetic on the same numbers, and the objective's own collective
+    solves keep the ranks in step. Returns ``(x, info)`` with the iterations,
+    the converged reason and the history of ``(J, x)`` per evaluation.
+    """
+    from petsc4py import PETSc
+    x0 = np.asarray(x0, dtype=float).ravel()
+    x = PETSc.Vec().createSeq(x0.size, comm=PETSc.COMM_SELF)
+    x.setArray(x0)
+    history = []
+
+    def fg(tao, xv, g):
+        values = np.array(xv.getArray(readonly=True), copy=True)
+        J, grad = objective(values)
+        g.setArray(np.asarray(grad, dtype=float).ravel())
+        history.append((float(J), values))
+        if callback is not None:
+            callback(J, values)
+        return float(J)
+
+    tao = PETSc.TAO().create(comm=PETSc.COMM_SELF)
+    tao.setType(method)
+    tao.setObjectiveGradient(fg, None)
+    if bounds is not None:
+        lo, hi = bounds
+        lower = x.duplicate(); lower.setArray(np.asarray(lo, dtype=float).ravel())
+        upper = x.duplicate(); upper.setArray(np.asarray(hi, dtype=float).ravel())
+        tao.setVariableBounds(lower, upper)
+    tao.setMaximumFunctionEvaluations(int(max_evaluations))
+    tao.setTolerances(gatol=gradient_tolerance)
+    for key, value in (options or {}).items():
+        PETSc.Options().setValue(key, value)
+    tao.setFromOptions()
+    tao.setSolution(x)
+    tao.solve()
+    info = {"iterations": int(tao.getIterationNumber()),
+            "reason": int(tao.getConvergedReason()),
+            "history": history}
+    out = np.array(x.getArray(readonly=True), copy=True)
+    tao.destroy()
+    return out, info
+
+
 _n = [0]
 
 
