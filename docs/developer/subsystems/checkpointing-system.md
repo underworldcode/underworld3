@@ -28,7 +28,7 @@ Optional payloads are controlled by explicit flags:
 | Flag | Payload | Reader / use |
 | --- | --- | --- |
 | `create_xdmf=True` | XDMF-compatible visualisation datasets and a companion `.xdmf` file | ParaView and other XDMF tools |
-| `petsc_reload=True` | PETSc DMPlex section/vector metadata | `MeshVariable.read_checkpoint()` |
+| `petsc_reload=True` | PETSc DMPlex section/global-vector metadata | `MeshVariable.read_checkpoint()` |
 
 When nondimensional scaling is active, `/fields` is converted during the write
 to the mesh and variable units declared in the model. HDF5 attributes and XDMF
@@ -42,12 +42,12 @@ analysis arrays remain dimensional.
 ### Visualisation and Coordinate Remap
 
 XDMF reads P1 and DG0 values directly from `/fields`. Continuous P2 fields on
-triangles use XDMF `Triangle_6` connectivity, including the three edge nodes,
-so no P1 projection is stored. DG1 keeps native interpolation coordinates and
-values under `/fields`, allowing `read_timestep()` to recover the solver field.
-For XDMF, the same element polynomial is evaluated at disconnected cell corners
-under `/visualization`, preserving jumps without averaging traces across shared
-edges or faces.
+triangles and tetrahedra use XDMF `Triangle_6` and `Tetrahedron_10`
+connectivity, including their edge nodes, so no P1 projection is stored. DG1
+keeps native interpolation coordinates and values under `/fields`, allowing
+`read_timestep()` to recover the solver field. For XDMF, the same element
+polynomial is evaluated at disconnected cell corners under `/visualization`,
+preserving jumps without averaging traces across shared edges or faces.
 
 XDMF cannot represent every UW3 finite-element layout directly. Continuous P3+
 fields and unsupported P2 layouts receive one compact P1 dataset under
@@ -125,10 +125,11 @@ output/restart.mesh.velocity.00100.h5
 output/restart.mesh.pressure.00100.h5
 ```
 
-The variable files contain PETSc reload metadata and native values under
-`/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()` uses
-PETSc DMPlex topology, section, vector, and `PetscSF` metadata. It does not use
-the dimensional `/fields` values or KDTree remapping.
+The variable files contain PETSc reload metadata and one native global vector
+under `/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()`
+uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata. It does not
+use dimensional `/fields` values or KDTree remapping. Restart-only output does
+not write `/fields`, so the native values are stored only once.
 
 ### Unified Visualisation and PETSc Reload
 

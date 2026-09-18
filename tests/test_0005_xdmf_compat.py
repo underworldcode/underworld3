@@ -94,6 +94,50 @@ def test_direct_p1_p2_and_dg0_use_fields_only(tmp_path):
 
 @pytest.mark.level_1
 @pytest.mark.tier_b
+def test_direct_p2_tetrahedron_uses_exact_tetrahedron_10(tmp_path):
+    """A 3D continuous P2 field uses exact VTK-ordered tetrahedral data."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0),
+        maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.7,
+        regular=True,
+        qdegree=3,
+    )
+    p2 = uw.discretisation.MeshVariable("p2_tet", mesh, 3, degree=2)
+    p2.array[:, 0, :] = p2.coords
+    mesh.write_timestep("tet", 0, outputPath=str(directory), meshVars=[p2])
+
+    restored = uw.discretisation.MeshVariable("restored", mesh, 3, degree=2)
+    restored.read_timestep("tet", "p2_tet", 0, outputPath=str(directory))
+    np.testing.assert_allclose(restored.array, p2.array, atol=1.0e-12)
+
+    if uw.mpi.rank == 0:
+        field_file = directory / "tet.mesh.p2_tet.00000.h5"
+        with h5py.File(field_file, "r") as handle:
+            coordinates = handle["fields/coordinates"][:]
+            values = handle["fields/p2_tet"][:]
+            cells = handle["fields/cells"][:]
+            assert cells.shape[1] == 10
+            assert values.shape == coordinates.shape
+            np.testing.assert_allclose(values, coordinates, atol=1.0e-12)
+            points = coordinates[cells]
+            edge_pairs = ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3))
+            for local_node, (a, b) in enumerate(edge_pairs, start=4):
+                np.testing.assert_allclose(
+                    points[:, local_node], 0.5 * (points[:, a] + points[:, b])
+                )
+            assert "visualization" not in handle
+            _assert_no_compatibility_copies(handle)
+
+        xdmf = directory / "tet.mesh.00000.xdmf"
+        assert 'TopologyType="Tetrahedron_10"' in xdmf.read_text()
+        assert "&p2_tet_Data;:/fields/p2_tet" in xdmf.read_text()
+        _assert_xdmf_references_exist(xdmf)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
 def test_higher_order_fields_keep_exact_data_and_one_compact_reduction(tmp_path):
     """P3+ uses P1 and DG2+ uses DG0 only for the XDMF view."""
     directory = _shared_path(tmp_path)
@@ -217,6 +261,38 @@ def test_create_xdmf_false_preserves_native_writer(tmp_path):
         with h5py.File(directory / "native.mesh.field.00000.h5", "r") as handle:
             assert "fields/field" in handle
             assert "visualization" not in handle
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_petsc_reload_only_omits_duplicate_fields(tmp_path):
+    """Restart-only output stores the native PETSc payload exactly once."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    field = uw.discretisation.MeshVariable("field", mesh, 1, degree=2)
+    field.array[:, 0, 0] = field.coords[:, 0] + 2.0 * field.coords[:, 1]
+    expected = np.asarray(field.array).copy()
+    mesh.write_timestep(
+        "restart",
+        0,
+        outputPath=str(directory),
+        meshVars=[field],
+        create_xdmf=False,
+        petsc_reload=True,
+    )
+
+    field.array[...] = 0.0
+    field.read_checkpoint(
+        str(directory / "restart.mesh.field.00000.h5"),
+        data_name="field",
+        same_layout=True,
+    )
+    np.testing.assert_allclose(field.array, expected)
+
+    if uw.mpi.rank == 0:
+        assert not (directory / "restart.mesh.00000.xdmf").exists()
+        with h5py.File(directory / "restart.mesh.field.00000.h5", "r") as handle:
+            assert set(handle) == {"uw_checkpoint"}
 
 
 @pytest.mark.level_1

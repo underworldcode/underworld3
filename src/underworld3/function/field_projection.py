@@ -404,17 +404,19 @@ def write_projected_field_to_viewer(
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
 
 
-def write_p2_triangle_topology_to_viewer(mesh_var, viewer, group="/fields"):
-    """Write VTK-ordered Triangle_6 connectivity for a continuous P2 field."""
+def write_p2_simplex_topology_to_viewer(mesh_var, viewer, group="/fields"):
+    """Write VTK-ordered quadratic triangle or tetrahedron connectivity."""
     mesh = mesh_var.mesh
     if not (
         mesh_var.continuous
         and mesh_var.degree == 2
         and mesh.isSimplex
-        and mesh.dim == 2
-        and mesh.cdim == 2
+        and mesh.dim in (2, 3)
+        and mesh.cdim == mesh.dim
     ):
-        raise NotImplementedError("direct P2 XDMF currently requires a 2D triangle mesh")
+        raise NotImplementedError(
+            "direct P2 XDMF requires a full-dimensional triangle or tetrahedron mesh"
+        )
 
     coordinate_dm = mesh._basis_coordinate_dm(2, True)
     local_section = coordinate_dm.getLocalSection()
@@ -444,28 +446,32 @@ def write_p2_triangle_topology_to_viewer(mesh_var, viewer, group="/fields"):
         leaves = np.asarray(leaves)
         owned[leaves[(leaves >= cell_start) & (leaves < cell_end)] - cell_start] = False
 
-    p2_rows = mesh._cell_node_indices(2, True).reshape(-1, 6)[owned]
-    vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)[owned]
+    corner_count = mesh.dim + 1
+    node_count = 6 if mesh.dim == 2 else 10
+    p2_rows = mesh._cell_node_indices(2, True).reshape(-1, node_count)[owned]
+    vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, corner_count)[owned]
     p2_coordinates = mesh_var.coords_nd[p2_rows]
     corners = mesh._get_coords_for_basis(1, True)[vertex_rows]
     negative = np.linalg.det((corners[:, 1:] - corners[:, :1]).transpose(0, 2, 1)) < 0
-    corners[negative] = corners[negative][:, [0, 2, 1]]
+    if mesh.dim == 2:
+        corners[negative] = corners[negative][:, [0, 2, 1]]
+        edge_pairs = ((0, 1), (1, 2), (2, 0))
+        topology_name = "Triangle_6"
+    else:
+        corners[negative] = corners[negative][:, [0, 2, 1, 3]]
+        edge_pairs = ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3))
+        topology_name = "Tetrahedron_10"
 
     connectivity = np.empty_like(p2_rows, dtype=PETSc.IntType)
     for cell_index, (row, nodes, vertices) in enumerate(
         zip(p2_rows, p2_coordinates, corners, strict=True)
     ):
         targets = np.vstack(
-            (
-                vertices,
-                0.5 * (vertices[0] + vertices[1]),
-                0.5 * (vertices[1] + vertices[2]),
-                0.5 * (vertices[2] + vertices[0]),
-            )
+            (vertices, *(0.5 * (vertices[a] + vertices[b]) for a, b in edge_pairs))
         )
         order = [np.argmin(np.linalg.norm(nodes - target, axis=1)) for target in targets]
-        if len(set(order)) != 6:
-            raise RuntimeError("could not map UW3 P2 nodes to Triangle_6 ordering")
+        if len(set(order)) != node_count:
+            raise RuntimeError(f"could not map UW3 P2 nodes to {topology_name} ordering")
         connectivity[cell_index] = local_to_global[row[order]]
     if np.any(connectivity < 0):
         raise RuntimeError("P2 XDMF connectivity contains an unmapped global node")

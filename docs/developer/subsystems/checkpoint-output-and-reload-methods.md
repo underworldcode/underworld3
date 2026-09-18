@@ -11,8 +11,8 @@ but new code should use `write_timestep(..., petsc_reload=True)`.
 
 ## Standard API
 
-`write_timestep()` always writes the mesh file and one HDF5 file per mesh
-variable. With XDMF enabled, mesh-variable files contain dimensional
+`write_timestep()` writes the mesh file and one HDF5 file per mesh variable.
+With XDMF enabled, mesh-variable files contain dimensional
 coordinates and values under `/fields`. These are the authoritative arrays for
 analysis and the source data used by `MeshVariable.read_timestep()` for
 coordinate remapping.
@@ -22,17 +22,17 @@ The two optional payloads are selected with explicit flags:
 | Flag | Output payload | Reader/use case |
 | --- | --- | --- |
 | `create_xdmf=True` | Dimensional `/fields`, compact high-order reductions when needed, and a companion `.xdmf` file | Analysis and ParaView/XDMF visualisation |
-| `petsc_reload=True` | Native PETSc DMPlex section/vector data under `/uw_checkpoint` | `MeshVariable.read_checkpoint()` exact reload |
+| `petsc_reload=True` | Native PETSc DMPlex section/global-vector data under `/uw_checkpoint` | `MeshVariable.read_checkpoint()` exact reload |
 
 The XDMF storage choice follows the finite-element layout:
 
 | Field layout | XDMF representation |
 | --- | --- |
 | Continuous P1 | Direct `/fields` node values |
-| Continuous P2 triangles | Direct `/fields` values with `Triangle_6` connectivity |
+| Continuous P2 triangles/tetrahedra | Direct `/fields` values with `Triangle_6`/`Tetrahedron_10` connectivity |
 | DG0 | Direct `/fields` cell values |
 | DG1 triangles/tetrahedra | Native `/fields` for reload plus exact disconnected-corner `/visualization` data |
-| Continuous P3+ or unsupported P2 | Compact P1 dataset under `/visualization` |
+| Continuous P3+ or unsupported P2 layout | Compact P1 dataset under `/visualization` |
 | DG2+ or unsupported DG1 | Compact DG0 dataset under `/visualization` |
 
 DG1 retains native interpolation coordinates and values under `/fields`, so
@@ -66,11 +66,11 @@ output.mesh.00000.xdmf
 ```
 
 The field files contain `/fields/<name>` and `/fields/coordinates`. P1, P2
-triangles, and DG0 are visualized directly from those datasets. DG1 uses its
-additional exact disconnected-corner representation. Continuous P3+ fields use
-one compact P1 visualization reduction, and DG2+ fields use DG0. Reloading with
-`read_timestep()` compares target coordinates to the dimensional source
-coordinates and converts the saved values back to the active model's
+triangles/tetrahedra, and DG0 are visualized directly from those datasets. DG1
+uses its additional exact disconnected-corner representation. Continuous P3+
+fields use one compact P1 visualization reduction, and DG2+ fields use DG0.
+Reloading with `read_timestep()` compares target coordinates to the dimensional
+source coordinates and converts the saved values back to the active model's
 nondimensional solver frame.
 
 ### Unified Visualisation And PETSc Reload
@@ -113,8 +113,8 @@ mesh.write_timestep(
 )
 ```
 
-This uses the established native field writer and does not create a companion
-`.xdmf` file. The optional checkpoint data are added under `/uw_checkpoint`.
+This writes the native checkpoint directly and does not create a companion
+`.xdmf` file or duplicate `/fields` coordinate/value arrays.
 
 Typical PETSc-reload-only files still use the timestep naming convention:
 
@@ -124,8 +124,8 @@ restart.mesh.Velocity.00000.h5
 restart.mesh.Pressure.00000.h5
 ```
 
-The variable files contain native `/fields` datasets and PETSc reload metadata
-under `/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`.
+Each variable file contains only PETSc reload metadata and one native global
+vector under `/uw_checkpoint/topologies/uw_mesh/dms/<variable>/`.
 
 ### Advantages
 

@@ -4832,28 +4832,27 @@ class Mesh(Stateful, uw_object):
 
         - one mesh HDF5 file, shared across timesteps unless ``meshUpdates=True``
         - one HDF5 file per mesh variable
-        - dimensional coordinate/value datasets under ``/fields`` for
-          analysis and coordinate-based reload with
-          ``MeshVariable.read_timestep()``
-
-        The optional payloads are controlled explicitly:
+        The variable-file payloads are controlled explicitly:
 
         - ``create_xdmf=True`` writes a companion XDMF file that reads the
-          dimensional ``/fields`` datasets directly for P1, P2 triangles, and
-          DG0. DG1 retains native ``/fields`` values for reload and adds an
-          exact disconnected-corner visualization. Continuous P3+ fields
-          receive one compact P1 visualization dataset; discontinuous DG2+
-          fields receive DG0.
-        - ``petsc_reload=True`` additionally writes native nondimensional
-          PETSc DMPlex section/local-vector data under ``/uw_checkpoint``.
+          dimensional ``/fields`` datasets directly for P1, P2 triangles and
+          tetrahedra, and DG0. DG1 retains native ``/fields`` values for reload
+          and adds an exact disconnected-corner visualization. Continuous P3+
+          fields receive one compact P1 visualization dataset; discontinuous
+          DG2+ fields receive DG0.
+        - ``petsc_reload=True`` writes native nondimensional PETSc DMPlex
+          section/global-vector data under ``/uw_checkpoint``.
           Load that optional payload with ``MeshVariable.read_checkpoint()``
-          for an exact solver restart.
+          for an exact solver restart. When XDMF is disabled, this is the only
+          variable payload; no duplicate ``/fields`` values are written.
+        - With both flags disabled, the established low-level native
+          ``/fields`` output is retained for compatibility.
 
         Common choices are:
 
         - visualisation/remap only:
           ``create_xdmf=True, petsc_reload=False``
-        - PETSc-native reload only:
+        - PETSc-native reload only (no duplicate ``/fields`` values):
           ``create_xdmf=False, petsc_reload=True``
         - unified visualisation/remap and PETSc reload:
           ``create_xdmf=True, petsc_reload=True``
@@ -4883,9 +4882,10 @@ class Mesh(Stateful, uw_object):
             Write ParaView/XDMF-compatible dimensional datasets and the
             companion XDMF file. DG1 on full-dimensional triangles/tetrahedra
             uses independent vertices per cell, preserving jumps without
-            smoothing. Higher-order fields use compact P1 or DG0 visualization
-            reductions while their exact dimensional values remain in
-            ``/fields``.
+            smoothing. Continuous P2 triangles and tetrahedra use their exact
+            quadratic connectivity. Higher-order fields use compact P1 or DG0
+            visualization reductions while their exact dimensional values
+            remain in ``/fields``.
         petsc_reload
             Write PETSc DMPlex section/vector metadata for reload with
             ``MeshVariable.read_checkpoint()``.
@@ -4933,11 +4933,19 @@ class Mesh(Stateful, uw_object):
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
-                var.write(save_location)
-                if petsc_reload:
-                    self._write_petsc_reload_file(save_location, [var], mode="a")
                 if create_xdmf:
+                    var.write(save_location)
+                    if petsc_reload:
+                        self._write_petsc_reload_file(save_location, [var], mode="a")
                     _write_xdmf_field(self, var, save_location)
+                elif petsc_reload:
+                    # Exact-restart-only output needs the PETSc section/vector
+                    # payload, not a second native /fields copy of the values.
+                    self._write_petsc_reload_file(save_location, [var], mode="w")
+                else:
+                    # Preserve the established low-level native output when no
+                    # optional visualization or restart payload was requested.
+                    var.write(save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
@@ -5024,22 +5032,26 @@ class Mesh(Stateful, uw_object):
 
         if var._lvec is None:
             var._set_vec(available=True)
+        var._sync_lvec_to_gvec()
 
         iset, subdm = self.dm.createSubDM(var.field_id)
         subdm.setName(var.clean_name)
         old_lvec_name = var._lvec.getName()
+        old_gvec_name = var._gvec.getName()
 
         try:
             var._lvec.setName(var.clean_name)
+            var._gvec.setName(var.clean_name)
             self.dm.sectionView(viewer, subdm)
-            self.dm.localVectorView(viewer, subdm, var._lvec)
+            self.dm.globalVectorView(viewer, subdm, var._gvec)
         finally:
             var._lvec.setName(old_lvec_name)
+            var._gvec.setName(old_gvec_name)
             iset.destroy()
             subdm.destroy()
 
     def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
-        """Write compact DMPlex reload metadata and native local vectors."""
+        """Write compact DMPlex reload metadata and native global vectors."""
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
@@ -5052,8 +5064,8 @@ class Mesh(Stateful, uw_object):
         try:
             # PETSc needs the complete source section to construct the
             # migration SF when the checkpoint is read with a different MPI
-            # ownership ordering. This is metadata only; field values are
-            # still stored once in each variable's local-vector payload.
+            # ownership ordering. This is metadata only; owned field values are
+            # stored once in each variable's global-vector payload.
             self.dm.sectionView(viewer, self.dm)
 
             for var in variables:
@@ -9637,7 +9649,7 @@ class Mesh(Stateful, uw_object):
 def _write_xdmf_field(mesh, var, var_h5_path):
     """Replace native remap arrays with dimensional field output for XDMF.
 
-    P1, P2 triangles, and DG0 are represented directly under ``/fields``.
+    P1, P2 triangles/tetrahedra, and DG0 are represented directly under ``/fields``.
     DG1 keeps its native interpolation values under ``/fields`` for exact
     coordinate reload and receives an exact disconnected-corner representation
     under ``/visualization``. Unsupported higher-order layouts retain their
@@ -9663,7 +9675,7 @@ def _write_xdmf_field(mesh, var, var_h5_path):
         _write_dg1_to_viewer,
         write_field_coordinates_to_viewer,
         write_field_to_viewer,
-        write_p2_triangle_topology_to_viewer,
+        write_p2_simplex_topology_to_viewer,
         write_projected_field_to_viewer,
     )
 
@@ -9671,8 +9683,8 @@ def _write_xdmf_field(mesh, var, var_h5_path):
         var.continuous
         and var.degree == 2
         and mesh.isSimplex
-        and mesh.dim == 2
-        and mesh.cdim == 2
+        and mesh.dim in (2, 3)
+        and mesh.cdim == mesh.dim
     )
     direct_dg1 = (
         not var.continuous
@@ -9711,7 +9723,7 @@ def _write_xdmf_field(mesh, var, var_h5_path):
         )
     else:
         if direct_p2:
-            write_p2_triangle_topology_to_viewer(var, viewer, group="/fields")
+            write_p2_simplex_topology_to_viewer(var, viewer, group="/fields")
         elif needs_projection:
             target_degree = 1 if var.continuous else 0
             write_projected_field_to_viewer(
@@ -9941,8 +9953,8 @@ def checkpoint_xdmf(
             var.continuous
             and var.degree == 2
             and var.mesh.isSimplex
-            and var.mesh.dim == 2
-            and var.mesh.cdim == 2
+            and var.mesh.dim in (2, 3)
+            and var.mesh.cdim == var.mesh.dim
         )
 
     def direct_dg1(var):
@@ -10107,7 +10119,10 @@ def checkpoint_xdmf(
                 "units"
             )
             field_units = f[f"{storage_group}/{var.clean_name}"].attrs.get("units")
-        special_topology = "Triangle_6" if direct_p2(var) else topology_type
+        if direct_p2(var):
+            special_topology = "Triangle_6" if var.mesh.dim == 2 else "Tetrahedron_10"
+        else:
+            special_topology = topology_type
         components = values_shape[1] if len(values_shape) == 2 else 1
         kind = attribute_kind(var, components)
         dimensions = " ".join(str(value) for value in values_shape)

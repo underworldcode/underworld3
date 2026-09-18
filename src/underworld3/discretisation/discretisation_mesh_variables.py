@@ -1475,7 +1475,7 @@ class _BaseMeshVariable(Stateful, uw_object):
     ):
         """Load this mesh variable from PETSc reload output.
 
-        By default, DMPlex section/local-vector data are restored through the
+        By default, DMPlex section/global-vector data are restored through the
         topology migration SF, so a mesh reconstructed from its checkpoint may
         have a different parallel DOF ordering. With ``same_layout=True``, the
         existing PETSc variable vector is loaded directly into the original
@@ -1538,18 +1538,31 @@ class _BaseMeshVariable(Stateful, uw_object):
                     if grouped_checkpoint
                     else "/uw_checkpoint"
                 )
+                # A DM-associated Vec ignores the viewer group and redirects
+                # HDF5 I/O through /fields. A plain Vec reads the requested
+                # /uw_checkpoint dataset when /fields is intentionally absent.
+                checkpoint_vec = PETSc.Vec().createMPI(
+                    (self._gvec.getLocalSize(), PETSc.DECIDE),
+                    comm=PETSc.COMM_WORLD,
+                )
+                checkpoint_vec.setName(data_name)
                 viewer.pushGroup(vector_group)
-                self._gvec.load(viewer)
+                checkpoint_vec.load(viewer)
                 viewer.popGroup()
+                self._gvec.array[...] = checkpoint_vec.array_r
                 subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+                checkpoint_vec.destroy()
             else:
-                from underworld3.cython.petsc_discretisation import (
-                    petsc_dmplex_load_local_vector,
+                global_sf, local_sf = self.mesh.dm.sectionLoad(
+                    viewer, sectiondm, self.mesh.sf
                 )
-
-                loaded_lvec = petsc_dmplex_load_local_vector(
-                    self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
+                loaded_gvec = sectiondm.createGlobalVec()
+                loaded_gvec.setName(data_name)
+                self.mesh.dm.globalVectorLoad(
+                    viewer, sectiondm, global_sf, loaded_gvec
                 )
+                loaded_lvec = sectiondm.createLocalVec()
+                sectiondm.globalToLocal(loaded_gvec, loaded_lvec, addv=False)
 
                 source_section = sectiondm.getSection()
                 target_section = subdm.getSection()
@@ -1576,6 +1589,11 @@ class _BaseMeshVariable(Stateful, uw_object):
                     )
 
                 loaded_lvec.destroy()
+                loaded_gvec.destroy()
+                if global_sf is not None:
+                    global_sf.destroy()
+                if local_sf is not None:
+                    local_sf.destroy()
                 self._sync_lvec_to_gvec()
         finally:
             self._lvec.setName(old_lvec_name)
