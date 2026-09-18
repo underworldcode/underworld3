@@ -41,7 +41,11 @@ params = uw.Params(
     cohesion=uw.Param(0.05, "cohesion C in tau_y = C + mu p"),
     rho_g=uw.Param(10.0, "body force, so the pressure grows with depth"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
-    optimiser=uw.Param("scipy", "scipy (L-BFGS-B; the figures in the note are from it) | tao (PETSc, limited-memory quasi-Newton)"),
+    optimiser=uw.Param("tao", "tao (PETSc, limited-memory quasi-Newton; blmvm when bounds are set) | scipy (L-BFGS-B)"),
+    noise=uw.Param(0.0, "Gaussian noise on the observed velocity, as a fraction of its rms, per component"),
+    seed=uw.Param(7, "seed for the noise"),
+    regularisation=uw.Param(0.0, "Tikhonov weight on (log mu - log mu_start)^2, relative to the starting misfit"),
+    bounds=uw.Param("", "friction bounds lo,hi for TAO's blmvm; empty for none"),
     observations=uw.Param("uplift+stress",
                           "uplift+stress | orientation_points (principal-stress orientation "
                           "at the five interior points only) | surface_strain (the surface "
@@ -199,6 +203,15 @@ true_values = [float(t) for t in str(params.true_strengths).split(",")][:n_seg]
 set_strengths(true_values)
 forward("truth")
 v_obs.array[...] = np.asarray(v.array)
+if float(params.noise) > 0:
+    # Noise on the observed velocity field, drawn once, at a fraction of each
+    # component's rms. Every observation set reads v_obs, so the uplift, the
+    # stress and the strain rate all inherit it.
+    rng = np.random.default_rng(int(params.seed))
+    obs = np.asarray(v_obs.array)
+    rms = np.sqrt(np.mean(obs ** 2, axis=0, keepdims=True))
+    v_obs.array[...] = obs + float(params.noise) * rms * rng.standard_normal(obs.shape)
+    uw.pprint(f"noise: {float(params.noise):.3f} of the rms per component, seed {int(params.seed)}")
 uw.pprint(f"true strengths {true_values}")
 
 set_strengths([params.initial_strength] * n_seg)
@@ -234,19 +247,29 @@ history = []
 # velocity misfit is a small number.
 J_scale = J0
 
+alpha = float(params.regularisation)
+log_prior = np.log([params.initial_strength] * n_seg)
+
 def objective(log_eta):
+    """The misfit relative to its start, plus a Tikhonov term on the log-strengths."""
     set_strengths(np.exp(log_eta))
     J, grad = J_and_gradient()
     history.append((J, np.exp(log_eta).copy()))
     uw.pprint(f"  J = {J:.6e}   strengths = {np.exp(log_eta)}")
-    return J / J_scale, grad / J_scale
+    penalty = alpha * np.sum((log_eta - log_prior) ** 2)
+    return J / J_scale + penalty, grad / J_scale + 2 * alpha * (log_eta - log_prior)
 
 x0 = np.log([params.initial_strength] * n_seg)
 if str(params.optimiser) == "tao":
     # PETSc's own driver: the same objective and gradient, TAO's quasi-Newton
-    # update and line search.
+    # update and line search; the bounded variant when bounds are given.
+    bounds = None
+    if str(params.bounds).strip():
+        lo, hi = (float(b) for b in str(params.bounds).split(","))
+        bounds = (np.log([lo] * n_seg), np.log([hi] * n_seg))
     x_best, info = uw.adjoint.minimise(objective, x0, max_evaluations=60,
-                                       gradient_tolerance=1e-10)
+                                       gradient_tolerance=1e-10, bounds=bounds,
+                                       method="blmvm" if bounds else "lmvm")
 else:
     result = minimize(objective, x0, jac=True, method="L-BFGS-B",
                       options={"maxiter": 40, "gtol": 1e-10})
@@ -270,7 +293,8 @@ forward("truth again")                       # the field on the grid is the trut
 gx, gy = np.meshgrid(np.linspace(0, 2, 201), np.linspace(0, 1, 101))
 grid = np.column_stack([gx.ravel(), gy.ravel()])
 eta_1_grid = np.asarray(uw.function.evaluate(eta_1, grid)).reshape(gx.shape)
-np.savez(f"fault_friction_{what}_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
+tag = f"{what}" + (f"_noise{float(params.noise):g}" if float(params.noise) > 0 else "") + (f"_reg{alpha:g}" if alpha > 0 else "")
+np.savez(f"fault_friction_{tag}_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
          points=np.array(points), true=np.array(true_values), band=params.band,
          history=np.array([[J, *vals] for J, vals in history]),
          **{f"uplift_{k}": val for k, val in profiles.items()})
