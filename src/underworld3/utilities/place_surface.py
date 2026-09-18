@@ -79,6 +79,14 @@ is not monotonic in either tightness or clearance, and the growth-round cap is
 being hit for reasons that depend on the particular adapted mesh. A wide band
 is the working configuration at this resolution.
 
+The same tightening produces a SECOND refusal on the coarse mesh: a 360-sample
+welded sweep (base 0.2, h_near 0.05, one level, disc radius 0.2 centred in a
+unit box) places 360/360 with a band of 0.4, but at 0.1 ten of its twenty-four
+shards die with "the sheet's cavity reached the domain wall away from the
+outcrop", losing 67 samples. The geometry is identical in both runs — only the
+grading differs — so the cavity's reach is being set by the size field well
+beyond the sheet itself.
+
 TODO(BUG): the gather is never undone, so placement leaves the mesh badly
 IMBALANCED and every solve on it is effectively serial. Measured 2026-09-17
 (3-D sheet on a box, base 0.2 / h_near 0.05 / one adapt level, np=4): cells
