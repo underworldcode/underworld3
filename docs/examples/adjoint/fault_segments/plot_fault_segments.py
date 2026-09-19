@@ -13,6 +13,9 @@ source = sys.argv[1] if len(sys.argv) > 1 else "fault_segments_data.npz"
 friction = "friction" in source
 d = np.load(source)
 history, true = d["history"], d["true"]
+length_unit = str(d["length_unit"]) if "length_unit" in d else ""
+velocity_unit = str(d["velocity_unit"]) if "velocity_unit" in d else ""
+x_max, y_max = float(d["gx"].max()), float(d["gy"].max())
 names = ["flat", "lower ramp", "upper ramp", "near surface"]
 n_seg = len(true)
 
@@ -25,17 +28,19 @@ ax.contourf(d["gx"], d["gy"], np.log10(d["eta_1"]), levels=np.linspace(-2.4, -0.
             cmap="viridis", extend="both")
 band = float(d["band"]) if "band" in d else 0.08
 # the surface band under the top, where the uplift rate (or the orientation) is read
-ax.axhspan(1 - 2 * band, 1.0, color="white", alpha=0.35, lw=0)
+ax.axhspan(y_max - 2 * band, y_max, color="white", alpha=0.35, lw=0)
 ax.plot(d["points"][:, 0], d["points"][:, 1], "wx", ms=7, mew=1.5)
 ax.set_aspect("equal")
-ax.set_xlim(0, 2); ax.set_ylim(0, 1)
-ax.set_xlabel("$x$"); ax.set_ylabel("$y$")
+ax.set_xlim(0, x_max); ax.set_ylim(0, y_max)
+ax.set_xlabel(f"$x$ ({length_unit})" if length_unit else "$x$")
+ax.set_ylabel(f"$y$ ({length_unit})" if length_unit else "$y$")
 ax.set_title(r"$\log_{10}\eta_1$ at the truth; $\times$ points, white band: surface observations", fontsize=10)
 
 ax = axes[1]
 for label, style in (("true", "k-"), ("initial", "C3--"), ("recovered", "C0:")):
     ax.plot(d["xs"], d[f"uplift_{label}"], style, lw=1.6, label=label)
-ax.set_xlabel("$x$ along the surface"); ax.set_ylabel("uplift rate $v_y$")
+ax.set_xlabel(f"$x$ along the surface ({length_unit})" if length_unit else "$x$ along the surface")
+ax.set_ylabel(f"uplift rate $v_y$ ({velocity_unit})" if velocity_unit else "uplift rate $v_y$")
 ax.set_title("surface uplift rate", fontsize=10)
 ax.legend(fontsize=8, frameon=False)
 

@@ -1,7 +1,10 @@
 """PyVista renders of the friction example at the true coefficients.
 
-Writes log10 eta_1 (the plane's viscosity), the velocity, and the pressure
-to ~/+Simulations/adjoint_fault_example/, on the mesh's own triangulation.
+Writes log10 eta_1 (the plane's viscosity), the slip rate, the velocity and
+the pressure to ~/+Simulations/adjoint_fault_example/, on the mesh's own
+triangulation. The model is the notebook's in its own units: lengths in
+units of the depth (10 km), stresses in units of the viscous stress of the
+shortening (26 MPa), velocities in units of the convergence rate (8.4 mm/yr).
 """
 import math
 import os

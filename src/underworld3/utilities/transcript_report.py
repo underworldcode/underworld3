@@ -523,13 +523,19 @@ def _unit(value):
 
 
 def _short_unit(unit):
-    if unit is None:
-        return ""
-    return {
-        "second": "s", "minute": "min", "hour": "hr", "day": "d", "year": "yr",
-        "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
-        "meter": "m", "kilometer": "km", "kelvin": "K", "kilogram": "kg",
-    }.get(str(unit), str(unit))
+    """The unit symbol the log uses, so the figure and the log agree."""
+    from underworld3.model import _abbreviate_unit
+    return _abbreviate_unit(unit)
+
+
+def _scales_line(header, sep="   "):
+    """The run's scales as one line: the reference quantities as they were
+    declared, in their own units, or the fundamental scales for a run that
+    declared none. Empty for a nondimensional run."""
+    scales = header.get("reference") or header.get("scales") or {}
+    items = [f"{name} {value['magnitude']:.4g} {_short_unit(value['units'])}"
+             for name, value in scales.items() if isinstance(value, dict)]
+    return "scales: " + sep.join(items) if items else ""
 
 
 def _converted(value, unit):
@@ -870,12 +876,8 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
                 bits.append(f"{len(notes)} backtrack(s)")
             canvas.text(_MARGIN, y + 8, "  ·  ".join(bits), size=8.5, fill=_MUTED)
             y += 13
-            scales = header.get("scales") or {}
-            if scales:
-                canvas.text(_MARGIN, y + 8, "scales: " + "   ".join(
-                    f"{name} {value['magnitude']:.4g} {_short_unit(value['units'])}"
-                    for name, value in scales.items() if isinstance(value, dict)
-                ), size=8, fill=_MUTED)
+            if _scales_line(header):
+                canvas.text(_MARGIN, y + 8, _scales_line(header), size=8, fill=_MUTED)
                 y += 12
             y += 10
         # column captions
@@ -1790,7 +1792,11 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
         bits.append("no terminator: still running, or interrupted")
     bits.append(f"{len(parts)} parts")
     canvas.text(_MARGIN, y + 8, "  ·  ".join(bits), size=8.5, fill=_MUTED)
-    y += 22
+    y += 13
+    if _scales_line(header):
+        canvas.text(_MARGIN, y + 8, _scales_line(header), size=8, fill=_MUTED)
+        y += 12
+    y += 9
 
     # --- columns ---
     gutter = _MARGIN + 46.0
@@ -2099,6 +2105,8 @@ def transcript_table(source, run=-1, width=11, collapse=True):
     out.append(f"transcript · {_run_title(header, fallback='')}".rstrip(" ·"))
     if header.get("started"):
         out.append(f"started {header['started']}")
+    if _scales_line(header, sep=" | "):
+        out.append(_scales_line(header, sep=" | "))
     if ended:
         out.append(f"complete — {ended.get('steps', len(steps))} step(s)")
     elif entry.get("live"):
