@@ -568,3 +568,105 @@ def test_a_solvent_viscosity_adds_its_newtonian_stress():
     gdot = 1.0
     assert abs(polymer_xy - polymer_exact) / polymer_exact < 0.02, (polymer_xy, polymer_exact)
     assert abs(solvent_xy - eta_s * gdot) < 1e-6, solvent_xy
+
+
+# ----- Health of the carried stress and the store smoothing (#737, #768) -----
+
+def _one_shear_step(transport, dt=1.0, objective_rate="none"):
+    """One BDF-1 step of the Maxwell shear box from rest, returning the solver.
+
+    From rest there is no history and no stretching, so the first stress is
+    2 eta_eff D exactly, with eta_eff = eta G dt / (eta + G dt). With eta = G = 1
+    and dt = 1 that is D: the shear stress is gammadot / 2 = 0.5 and the
+    conformation tau/G + I has eigenvalues 1 +- 0.5.
+    """
+    eta = shear_modulus = 1.0
+    speed, height, width = 0.5, 1.0, 2.0
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 8), minCoords=(-width / 2, -height / 2),
+        maxCoords=(width / 2, height / 2))
+    v = uw.discretisation.MeshVariable(f"U_h_{transport}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_h_{transport}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    stokes.stress_transport = transport
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="bdf", objective_rate=objective_rate)
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.constitutive_model.Parameters.shear_modulus = shear_modulus
+    stokes.constitutive_model.Parameters.dt_elastic = dt
+    stokes.add_dirichlet_bc((speed, 0.0), "Top")
+    stokes.add_dirichlet_bc((-speed, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-8
+    stokes.solve(timestep=dt, zero_init_guess=False)
+    return stokes
+
+
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point"])
+def test_the_conformation_after_one_shear_step_is_one_minus_half_the_step(transport):
+    stokes = _one_shear_step(transport, dt=1.0)
+    health = stokes.constitutive_model.conformation_min_eigenvalue()
+    # eta_eff = 1/2 at dt = 1: tau_xy = 0.5, eigenvalues of tau/G + I are 0.5 and 1.5
+    assert abs(health["min"] - 0.5) < 1.0e-6
+    assert abs(health["max"] - 1.5) < 1.0e-6
+    assert health["fraction_negative"] == 0.0
+
+
+def test_the_conformation_check_sees_a_lost_conformation():
+    # dt = 3: eta_eff = 3/4, tau_xy = 0.75 ... still fine; the linear first step
+    # loses positivity when eta_eff gammadot / G exceeds 1, which needs gammadot > 1
+    # at any dt. Drive it with a faster wall: gammadot = 4 -> tau_xy = 2 eta_eff.
+    eta = shear_modulus = 1.0
+    speed, height, width = 2.0, 1.0, 2.0
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 8), minCoords=(-width / 2, -height / 2),
+        maxCoords=(width / 2, height / 2))
+    v = uw.discretisation.MeshVariable("U_lost", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_lost", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    stokes.stress_transport = "integration_point"
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="bdf")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.constitutive_model.Parameters.shear_modulus = shear_modulus
+    stokes.constitutive_model.Parameters.dt_elastic = 1.0
+    stokes.add_dirichlet_bc((speed, 0.0), "Top")
+    stokes.add_dirichlet_bc((-speed, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-8
+    stokes.solve(timestep=1.0, zero_init_guess=False)
+    health = stokes.constitutive_model.conformation_min_eigenvalue()
+    # gammadot = 4, eta_eff = 1/2: tau_xy = 2, eigenvalues 1 -+ 2 -> -1 and 3, everywhere
+    assert abs(health["min"] + 1.0) < 1.0e-6
+    assert health["fraction_negative"] == 1.0
+    assert health["where"] is not None
+
+
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point"])
+def test_the_elastic_timestep_is_the_safety_factor_over_the_shear_rate(transport):
+    stokes = _one_shear_step(transport, dt=1.0, objective_rate="upper_convected")
+    # gammadot = 2 speed / height = 1 everywhere: dt_max = safety / 1. The rate is
+    # read from a projection converged to 1e-6, hence the tolerance.
+    assert abs(stokes.constitutive_model.max_elastic_timestep(0.3) - 0.3) < 1.0e-5
+    assert abs(stokes.constitutive_model.max_elastic_timestep(1.0) - 1.0) < 1.0e-5
+    # nothing stretches without an objective rate, so there is no cap
+    assert _one_shear_step(transport, dt=1.0).constitutive_model.max_elastic_timestep() == float("inf")
+
+
+def test_the_store_smoothing_is_the_coefficient_times_the_local_cell_size_squared():
+    stokes = _one_shear_step("integration_point", dt=1.0)
+    history = stokes.DFDt
+    assert history.store_smoothing == 0.0
+    assert history._commit_projection.smoothing == 0.0
+    history.store_smoothing = 0.05
+    stokes.solve(timestep=1.0, zero_init_guess=False)
+    # the projection's smoothing is now a field: c times the cell-size field squared
+    alpha = history._commit_projection.smoothing
+    x0 = np.array([[0.1, 0.1]])
+    h = float(np.asarray(uw.function.evaluate(stokes.mesh.cell_size(), x0)).reshape(-1)[0])
+    a = float(np.asarray(uw.function.evaluate(alpha, x0)).reshape(-1)[0])
+    assert abs(a - 0.05 * h * h) < 1.0e-12 * max(1.0, h * h)
+    with pytest.raises(ValueError):
+        history.store_smoothing = -1.0

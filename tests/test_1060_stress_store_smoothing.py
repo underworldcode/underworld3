@@ -1,0 +1,89 @@
+"""The store smoothing of the integration-point stress history (#737).
+
+Waters and King start-up below Courant one on a pure Maxwell element: the case
+that rings. Minutes, so level 2.
+"""
+import numpy as np
+import pytest
+import sympy
+
+import underworld3 as uw
+
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]
+
+
+def _cell_scale_content(history, mesh):
+    """RMS of the part of the carried point values no per-cell P1 function
+    can represent, relative to the field: the mode the store cycle grows."""
+    values, pts = history.carried_tensors()
+    nq = int(history.psi_star[0].num_points_per_cell)
+    ncell = pts.shape[0] // nq
+    w = np.asarray(mesh.integration_rule.getData()[1]).reshape(-1); w = w / w.sum()
+    A = np.concatenate([np.ones((ncell, nq, 1)), pts.reshape(ncell, nq, mesh.cdim)], axis=2)
+    M = np.einsum("cqi,q,cqj->cij", A, w, A)
+    raw = values.reshape(values.shape[0], -1)
+    S = raw.reshape(ncell, nq, -1)
+    beta = np.linalg.solve(M, np.einsum("cqi,q,cqk->cik", A, w, S))
+    fit = np.einsum("cqi,cik->cqk", A, beta).reshape(raw.shape)
+    rms = lambda a: float(np.sqrt((a ** 2).mean()))
+    return rms(raw - fit) / max(rms(raw), 1.0e-300)
+
+
+def _waters_king_ip(store_smoothing, res=16, dt=0.0125, t_end=2.0):
+    """Waters and King start-up on the integration-point history, pure Maxwell,
+    below Courant one. Returns u at the centre at t 1 and the cell-scale content
+    of the carried stress at t 1 and at t_end."""
+    h, Lx, eta, lam, G = 1.0, 1.0, 1.0, 1.0, 1.0
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-Lx, -h), maxCoords=(Lx, h),
+                                             cellSize=h / res, qdegree=3, regular=True)
+    v = uw.discretisation.MeshVariable(f"U_wk{store_smoothing}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_wk{store_smoothing}", mesh, 1, degree=1)
+    ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)
+    ns.stress_transport = "integration_point"
+    ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        ns.Unknowns, order=1, integrator="bdf")
+    ns.constitutive_model.Parameters.shear_viscosity_0 = eta
+    ns.constitutive_model.Parameters.shear_modulus = eta / lam
+    ns.constitutive_model.Parameters.dt_elastic = dt
+    ns.add_dirichlet_bc((0.0, 0.0), "Top"); ns.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    ns.add_dirichlet_bc((sympy.oo, 0.0), "Left"); ns.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    ns.bodyforce = sympy.Matrix([[G, 0.0]]); ns.tolerance = 1e-6
+    ns.DFDt.store_smoothing = store_smoothing
+    # The content has to be read after the trace-back and before the solve: after
+    # the store the point values are a P1 field sampled at the points and the
+    # cell-scale part is zero by construction, whatever the run is doing.
+    latest = {}
+    carry = ns.DFDt.update_pre_solve
+    def carry_and_measure(*args, **kwargs):
+        out = carry(*args, **kwargs)
+        latest["content"] = _cell_scale_content(ns.DFDt, mesh)
+        return out
+    ns.DFDt.update_pre_solve = carry_and_measure
+    centre = np.array([[0.0, 0.0]])
+    content = {}
+    u1 = None
+    for step in range(int(round(t_end / dt))):
+        ns.solve(timestep=dt, zero_init_guess=False)
+        t = (step + 1) * dt
+        if abs(t - 1.0) < dt / 2:
+            u1 = float(np.asarray(uw.function.evaluate(v.sym[0], centre)).reshape(-1)[0])
+            content[1.0] = latest["content"]
+    content[t_end] = latest["content"]
+    return u1, content
+
+
+def test_the_store_smoothing_holds_the_cell_scale_mode_of_the_integration_point_history():
+    """Waters and King, 1/16, dt 0.0125 (Courant 0.2), pure Maxwell.
+
+    Measured without smoothing: the cell-scale content of the carried stress
+    grows from 5e-6 at t 1 to 4e-5 at t 2 and rings by t 5. With c = 0.07 in
+    the store it stays at its floor. The cost on the centre velocity at t 1
+    (0.9617 nodal) scales with h^2: half a percent at 1/32, a few percent here.
+    """
+    u_plain, plain = _waters_king_ip(0.0)
+    u_smooth, smooth = _waters_king_ip(0.07)
+    assert plain[2.0] / plain[1.0] > 4.0                # the mode is growing
+    assert smooth[2.0] < plain[1.0]                     # held below where the plain run started
+    assert smooth[2.0] < plain[2.0] / 4.0
+    assert abs(u_plain - 0.9617) < 0.005
+    assert abs(u_smooth - u_plain) < 0.03

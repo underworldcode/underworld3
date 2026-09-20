@@ -3379,6 +3379,15 @@ class SemiLagrangian(_DDtBase):
                 phi * self.psi_star[i - 1].array[...] + (1 - phi) * self.psi_star[i].array[...]
             )
 
+    def carried_tensors(self, level: int = 0):
+        """The carried history as one tensor per vertex, non-dimensional, with the
+        vertices: ``(values[n, d, d], coords[n, cdim])``."""
+        history = self.psi_star[level]
+        dim = self.mesh.dim
+        values = np.asarray(_to_nondim_ndarray(np.asarray(history.array), units=history.units)).reshape(-1, dim, dim)
+        points = _to_nondim_ndarray(history.coords).reshape(-1, self.mesh.cdim)
+        return values, points
+
     def _centroid_shifted_node_coords(self):
         r"""ND node coordinates of ``psi_star[0]``, nudged toward cell centroids.
 
@@ -4667,7 +4676,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 verbose=self.verbose)
         self._commit_projection.uw_function = sympy.Matrix(
             [[flux[i, j] for (i, j) in columns]])
-        self._commit_projection.smoothing = 0.0
+        self._commit_projection.smoothing = self._store_smoothing_alpha()
         self._commit_projection.solve(verbose=verbose)
 
         # Oldest first, so each level reads the one above before it is written.
@@ -4699,12 +4708,14 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         theta: float = 0.5,
         monotone_mode: Optional[str] = None,
         with_forcing_history: bool = False,
+        store_smoothing: float = 0.0,
         **_unsupported,
     ):
         super().__init__()
         self.vtype = vtype
         self.monotone_mode = monotone_mode
         self.with_forcing_history = bool(with_forcing_history)
+        self.store_smoothing = store_smoothing
         self.mesh = mesh
         self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
         self.verbose = verbose
@@ -4798,6 +4809,62 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 f"forcing_snap_ip_{inst}", mesh, vtype=vtype,
                 degree=degree, continuous=continuous,
                 varsymbol=rf"{{ \dot\varepsilon^{{ (n) }}_{{ [{inst}] }} }}", units=None)
+
+    @property
+    def store_smoothing(self) -> float:
+        r"""Coefficient :math:`c` of the Laplacian term in the store projection,
+        :math:`\alpha = c\,h(\mathbf{x})^2` with :math:`h` the local cell size.
+
+        Every step the new flux is L2-projected onto the continuous snapshot and
+        read back at the points. That cycle is a consistent-mass Galerkin
+        transport of the carried stress and has no dissipation at the cell
+        scale, so below Courant one a cell-scale mode of the stress grows from
+        round-off at a rate :math:`\gamma` set by the elastic feedback (about
+        2.4 per unit time on the Maxwell Waters-King start-up, 1.8 with a
+        solvent fraction of 0.2, and negligible at 0.59). The term
+        :math:`\alpha\nabla^2` in the projection multiplies wavenumber
+        :math:`k` by :math:`1/(1+\alpha k^2)` once per step, so the mode is held
+        when :math:`\alpha (\pi/h)^2 \gtrsim \gamma\,\Delta t`, i.e.
+        :math:`\alpha \approx \gamma\,\Delta t\,(h/\pi)^2`. Measured on the
+        1/32 mesh at :math:`\Delta t = 0.01`: 1e-5 holds it for eight time
+        units at 0.1% on the peak, 3e-5 holds it unconditionally at 0.5%,
+        1e-4 costs 3%. In units of the mesh cell-size field (RMS vertex-to-
+        centroid distance, about 2h/3 on triangles) that is :math:`c` between
+        0.03 and 0.07; the irregular mesh needs 0.07. Zero (the default) is
+        the plain projection. Only the stress store is smoothed; the forcing
+        history is not.
+        """
+        return self._store_smoothing
+
+    @store_smoothing.setter
+    def store_smoothing(self, value):
+        value = float(value)
+        if value < 0.0:
+            raise ValueError(f"store_smoothing must be >= 0, got {value}")
+        self._store_smoothing = value
+
+    def carried_tensors(self, level: int = 0):
+        """The carried history as one tensor per point, non-dimensional, with the
+        points: ``(values[n, d, d], coords[n, cdim])``. The integration-point
+        storage keeps the independent components in columns; this is the one
+        place that unpacks them."""
+        history = self.psi_star[level]
+        dim = self.mesh.dim
+        cols = _storage_components(self.vtype, (dim, dim))
+        data = np.asarray(history.data)
+        values = np.zeros((data.shape[0], dim, dim))
+        for k, (i, j) in enumerate(cols):
+            values[:, i, j] = data[:, k]
+            values[:, j, i] = data[:, k]
+        points = np.asarray(history.integration_points).reshape(-1, self.mesh.cdim)
+        return values, points
+
+    def _store_smoothing_alpha(self):
+        """The smoothing the store projection uses this step: a field, so the
+        dose follows the local cell on a graded mesh."""
+        if self._store_smoothing <= 0.0:
+            return 0.0
+        return self._store_smoothing * self.mesh.cell_size() ** 2
 
     def spatial_weights(self):
         """As the base class, except that at ``theta = 1`` the old-level

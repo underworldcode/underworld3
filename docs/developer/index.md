@@ -198,6 +198,7 @@ subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
 subsystems/constitutive-models-anisotropy
+subsystems/stress-transport
 subsystems/swarm-system
 subsystems/data-access
 subsystems/interpolation
