@@ -1811,18 +1811,24 @@ class SolverBaseClass(uw_object):
         :meth:`adjoint_solve` assembles. Read-only; the solver must have
         been built.
         """
-        if getattr(self, "_G0", None) is None and getattr(self, "_uu_G0", None) is None:
+        if getattr(self, "_forward_kernels", None) is None:
             self._build(False, False, None)
         dim = self.mesh.cdim
-        if getattr(self, "_uu_G0", None) is not None:
-            uu = _transpose_kernels(self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3, dim, dim, dim)
-            up = _transpose_kernels(self._pu_G0, self._pu_G1, None, None, 1, dim, dim)
-            pu = _transpose_kernels(self._up_G0, self._up_G1, self._up_G2, self._up_G3, dim, 1, dim)
-            names = ("F0_u", "F0_grad_u", "F1_u", "F1_grad_u")
+        # The forward derivatives, kept at build time: after an adjoint solve
+        # the installed set IS the transposed one, and transposing it again
+        # would hand back the forward operator.
+        forward = self._forward_kernels
+        names = ("F0_u", "F0_grad_u", "F1_u", "F1_grad_u")
+        if len(forward) == 10:
+            uu0, uu1, uu2, uu3, up0, up1, up2, up3, pu0, pu1 = forward
+            uu = _transpose_kernels(uu0, uu1, uu2, uu3, dim, dim, dim)
+            up = _transpose_kernels(pu0, pu1, None, None, 1, dim, dim)
+            pu = _transpose_kernels(up0, up1, up2, up3, dim, 1, dim)
             return {"uu": dict(zip(names, uu)), "up": dict(zip(names, up)), "pu": dict(zip(names, pu))}
-        nc = int(self._G0.shape[0])
-        H = _transpose_kernels(self._G0, self._G1, self._G2, self._G3, nc, nc, dim)
-        return dict(zip(("F0_u", "F0_grad_u", "F1_u", "F1_grad_u"), H))
+        G0, G1, G2, G3 = forward
+        nc = int(G0.shape[0])
+        H = _transpose_kernels(G0, G1, G2, G3, nc, nc, dim)
+        return dict(zip(names, H))
 
     def adjoint_templates(self):
         r"""The adjoint problem in the residual template form.
@@ -1877,6 +1883,181 @@ class SolverBaseClass(uw_object):
             mu = sympy.Matrix([sympy.Symbol(f"\\mu_{{{i}}}") for i in range(nc)])
             gmu = sympy.Matrix(nc, dim, lambda i, j: sympy.Symbol(f"\\mu_{{{i},{j}}}"))
         return apply(kernels, nc, mu, gmu)
+
+    def _adjoint_forms(self, mu, lam=None):
+        r"""``(f0, f1)`` of the adjoint operator applied to the fields ``mu``
+        (and ``lam``, the pressure adjoint of a saddle point), on the
+        unknown's rows: :meth:`adjoint_templates` with the fields in place of
+        the symbols. ``f0`` is a row of the unknown's size, ``f1`` that row
+        by the coordinate dimension."""
+        import sympy
+        kernels = self.adjoint_kernels()
+        dim = self.mesh.cdim
+
+        def apply(block, nc, mu_vec, grad_mu):
+            H0, H1, H2, H3 = (block["F0_u"], block["F0_grad_u"], block["F1_u"], block["F1_grad_u"])
+            nt = int(H0.shape[0])
+            f0 = sympy.zeros(1, nt)
+            f1 = sympy.zeros(nt, dim)
+            for a in range(nt):
+                for c in range(nc):
+                    f0[a] += H0[a, c] * mu_vec[c]
+                    for d in range(dim):
+                        f0[a] += H1[a * nc + c, d] * grad_mu[c, d]
+                        f1[a, d] += H2[a * nc + c, d] * mu_vec[c]
+                        for e in range(dim):
+                            f1[a, d] += H3[a * nc + c, d * dim + e] * grad_mu[c, e]
+            return f0, f1
+
+        n = getattr(mu, "num_components", 1)
+        mu_vec = sympy.Matrix([mu.sym[i] for i in range(n)])
+        grad_mu = (sympy.Matrix(self.mesh.vector.gradient(mu.sym[0])).reshape(1, dim) if n == 1
+                   else sympy.Matrix(self.mesh.vector.jacobian(mu.sym)))
+        if "uu" in kernels:
+            if lam is None:
+                raise ValueError("_adjoint_forms: a saddle-point adjoint needs the pressure adjoint too")
+            lam_vec = sympy.Matrix([lam.sym[0]])
+            grad_lam = sympy.Matrix(self.mesh.vector.gradient(lam.sym[0])).reshape(1, dim)
+            f0_uu, f1_uu = apply(kernels["uu"], dim, mu_vec, grad_mu)
+            f0_up, f1_up = apply(kernels["up"], 1, lam_vec, grad_lam)
+            return f0_uu + f0_up, f1_uu + f1_up
+        return apply(kernels, n, mu_vec, grad_mu)
+
+    def _essential_reaction(self, mu, lam=None):
+        r"""``K^T \mu`` on every node of the unknown's space, the constrained
+        ones included.
+
+        The global vector holds only the unconstrained degrees of freedom and
+        the local residual assembly skips the constrained rows, so neither
+        the assembled operator nor a residual evaluation carries the rows on
+        a Dirichlet boundary. They are assembled here as the load
+        :math:`\int \phi\, f_0^{\rm adj} + \nabla\phi \cdot \mathbf f_1^{\rm adj}`
+        of the adjoint templates on an unconstrained copy of the space. On
+        the constrained rows that is the reaction of the adjoint constraint,
+        which multiplies the derivative of the datum in the sensitivity.
+        Returns a scratch field; give it back to ``uw.adjoint._shared_scratch``.
+        """
+        import sympy
+        from underworld3.adjoint import dual_on
+        f0, f1 = self._adjoint_forms(mu, lam)
+        n = getattr(self.u, "num_components", 1)
+        if n == 1:
+            return dual_on(self.u, f0[0], sympy.Matrix(f1).reshape(1, self.mesh.cdim))
+        return dual_on(self.u, sympy.Matrix(f0).reshape(1, n), sympy.Matrix(f1))
+
+    def _unknown_dm(self):
+        """The DM whose local section lays out the unknown's own vector: the
+        velocity sub-DM of a saddle point, the solver's DM otherwise."""
+        sub = getattr(self, "_subdict", None)
+        if sub:
+            return list(sub.values())[0][1]
+        return self.dm
+
+    def _essential_datum_owner(self):
+        """``{(node, component): index into essential_bcs}`` for every
+        constrained degree of freedom of the unknown, on this rank's owned
+        points.
+
+        PETSc constrains the closure of each boundary's labelled points, the
+        corner vertices included, and inserts the data boundary by boundary
+        in the order they were registered, so where two boundaries meet the
+        later one's datum is the one applied. The map is built the same way.
+        """
+        dm = self._unknown_dm()
+        section = dm.getLocalSection()
+        label = dm.getLabel("UW_Boundaries")
+        n = getattr(self.u, "num_components", 1)
+        ghost = set()
+        try:
+            graph = dm.getPointSF().getGraph()
+            if graph[1] is not None:
+                ghost = set(int(q) for q in graph[1])
+        except Exception:
+            ghost = set()
+        owner = {}
+        for index, bc in enumerate(self.essential_bcs):
+            if int(bc.f_id) != 0:
+                continue
+            stratum = label.getStratumIS(int(bc.boundary_label_val))
+            if stratum is None:
+                continue
+            points = set()
+            for q in stratum.getIndices():
+                closure = dm.getTransitiveClosure(int(q))[0]
+                points.update(int(r) for r in closure)
+            for q in points:
+                if q in ghost or section.getFieldDof(q, 0) == 0:
+                    continue
+                node = section.getFieldOffset(q, 0) // n
+                for c in section.getFieldConstraintIndices(q, 0):
+                    if int(c) in [int(k) for k in bc.components]:
+                        owner[(int(node), int(c))] = index
+        return owner
+
+    def _essential_datum_sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
+        r"""The part of ``dJ/dm`` through the essential data:
+        :math:`\big[(K^T\mu)_\Gamma + (\partial J/\partial u)_\Gamma\big]
+        \cdot \partial g/\partial m` over the constrained degrees of freedom.
+        The second term is the misfit reading the prescribed values
+        directly; ``misfit_dual`` is :math:`\partial J/\partial u` on every
+        node of the unknown's space, the rows the adjoint solve leaves out.
+        Zero, at no cost, when no datum reads ``wrt``."""
+        import numpy as np
+        import sympy
+        from underworld3.adjoint import _shared_scratch
+        derivatives = {}
+        for index, bc in enumerate(self.essential_bcs):
+            d = sympy.diff(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
+            if not d.is_zero_matrix:
+                derivatives[index] = d
+        if not derivatives:
+            return 0.0
+        self._refuse_essential_datum_parameter(wrt)
+        reaction = self._essential_reaction(mu, lam)
+        try:
+            n = getattr(self.u, "num_components", 1)
+            rows = np.array(np.asarray(reaction.array), dtype=float).reshape(-1, n)
+            if misfit_dual is not None:
+                rows = rows + np.asarray(misfit_dual, dtype=float).reshape(-1, n)
+            X = np.asarray(self.u.coords_nd)
+            total = 0.0
+            for (node, comp), index in self._essential_datum_owner().items():
+                d = derivatives.get(index)
+                if d is None or d[comp] == 0:
+                    continue
+                expr = sympy.sympify(d[comp])
+                if expr.is_Number:
+                    value = float(expr)
+                else:
+                    value = float(np.asarray(uw.function.evaluate(expr, X[node:node + 1])).ravel()[0])
+                total += float(rows[node, comp]) * value
+        finally:
+            _shared_scratch.give(reaction)
+        return float(uw.mpi.comm.allreduce(total, op=uw.MPI.SUM))
+
+    def _refuse_essential_datum_parameter(self, wrt):
+        """A datum that reads a parameter is handled through the reaction of
+        the adjoint operator assembled from the volume kernels. That leaves
+        out a boundary tangent — a natural condition that reads the unknown,
+        a rotated constraint, a fault contact, a multiplier — so those refuse
+        rather than return a term that is missing a piece."""
+        mechanisms = self._constraint_mechanisms()
+        for kind in ("rotated_freeslip", "fault_contact", "multipliers"):
+            if mechanisms.get(kind):
+                raise NotImplementedError(
+                    f"sensitivity: {wrt} enters an essential datum, and this solver "
+                    f"also carries a {kind} constraint whose tangent the reaction "
+                    f"term does not include yet")
+        for bc in (getattr(self, "natural_bcs", None) or []):
+            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+                if fn is None:
+                    continue
+                import sympy
+                if sympy.Matrix(self._peel_except(sympy.Matrix(fn), wrt)).has(*list(self.u.sym)):
+                    raise NotImplementedError(
+                        f"sensitivity: {wrt} enters an essential datum, and the natural "
+                        f"condition on {bc.boundary} reads the unknown; its boundary "
+                        f"tangent is not in the reaction term yet")
 
     def adjoint_view(self):
         """Typeset the adjoint problem this solver assembles, in a notebook."""
@@ -2059,15 +2240,22 @@ class SolverBaseClass(uw_object):
             expression = expression.subs({e: e.sym for e in named})
         return expression
 
-    def sensitivity(self, mu, wrt):
+    def sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
         r"""``d J / d m`` for a scalar parameter ``wrt``, given the adjoint state.
 
         :math:`\int` of :meth:`adjoint_integrand` — with :math:`\mu` the
         solution of :math:`K^T \mu = -\partial J/\partial u`, this is the
         implicit part of the gradient; add :math:`\partial J/\partial m` if
-        the misfit depends on the parameter directly.
+        the misfit depends on the parameter directly. A parameter in a
+        natural condition adds a facet part; one in an essential datum adds
+        the reaction part :math:`(K^T\mu)_\Gamma \cdot \partial g/\partial m`
+        (:meth:`_essential_datum_sensitivity`), which for a saddle point
+        needs the pressure adjoint ``lam`` as well, and the misfit's own
+        dual on every node, ``misfit_dual``, where the misfit reads the
+        prescribed values.
         """
         total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
         # A parameter that enters through a natural condition — a prescribed
         # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
         import sympy
@@ -4744,6 +4932,7 @@ class SNES_Scalar(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        self._forward_kernels = (self._G0, self._G1, self._G2, self._G3)
         if getattr(self, "_adjoint_kernels", False):
             # The adjoint's operator: the same derivatives, trial and test
             # exchanged. Compiled as its own kernel set and cached.
@@ -5751,6 +5940,7 @@ class SNES_Vector(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        self._forward_kernels = (self._G0, self._G1, self._G2, self._G3)
         if getattr(self, "_adjoint_kernels", False):
             # The adjoint's operator: the same derivatives, trial and test
             # exchanged. Compiled as its own kernel set and cached.
@@ -6555,6 +6745,7 @@ class SNES_MultiComponent(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        self._forward_kernels = (self._G0, self._G1, self._G2, self._G3)
         if getattr(self, "_adjoint_kernels", False):
             # The adjoint's operator: the same derivatives, trial and test
             # exchanged. Compiled as its own kernel set and cached.
@@ -9009,13 +9200,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         fns_jacobian.append(self._pp_G0)
 
+        self._forward_kernels = (self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3,
+                                 self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                                 self._pu_G0, self._pu_G1)
         if getattr(self, "_adjoint_kernels", False):
             # K^T block by block: uu transposed in place; the (u,p) block of
             # K^T is the transpose of K's (p,u) block and vice versa; pp is a
             # scalar. Same derivatives, trial and test exchanged.
-            forward = [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3,
-                       self._up_G0, self._up_G1, self._up_G2, self._up_G3,
-                       self._pu_G0, self._pu_G1]
+            forward = list(self._forward_kernels)
             up_from_pu = _transpose_kernels(self._pu_G0, self._pu_G1, None, None, 1, dim, dim)
             pu_from_up = _transpose_kernels(self._up_G0, self._up_G1, self._up_G2, self._up_G3,
                                             dim, 1, dim)

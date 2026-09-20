@@ -404,20 +404,28 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     read_vars = [f for f in fields if f is not u] + list(route)
     if u in duals:
         rhs = duals.pop(u)
+        # dJ/du on every node, the constrained ones included: the rows the
+        # solve leaves out are the misfit reading the prescribed data, and
+        # a parameter in a datum needs them (#762)
+        misfit_dual = np.array(np.asarray(rhs.array), dtype=float, copy=True)
         rhs.array[...] = -np.asarray(rhs.array)
         mu = scratch.take(u)
+        lam = None
         if getattr(solver, "p", None) is not None and hasattr(solver, "_subdict"):
             lam = scratch.take(solver.p)
             _, reason = solver.adjoint_solve((rhs, None), target=(mu, lam))
-            scratch.give(lam)
         else:
             _, reason = solver.adjoint_solve(rhs, target=mu)
         scratch.give(rhs)
         if reason <= 0:
             raise RuntimeError(f"gradient: the adjoint of {type(solver).__name__}({u.name}) "
                                f"did not converge ({reason})")
+        # the pressure adjoint stays until the sensitivities are taken: a
+        # parameter in a velocity datum reads it through the divergence block
         for p in parameters:
-            grad[p] += solver.sensitivity(mu, p)
+            grad[p] += solver.sensitivity(mu, p, lam=lam, misfit_dual=misfit_dual)
+        if lam is not None:
+            scratch.give(lam)
         for var, dual in field_duals(solver, mu, read_vars, scratch).items():
             target = route.get(var, var)
             out_fields[target] = out_fields[target] + np.asarray(dual.array)
