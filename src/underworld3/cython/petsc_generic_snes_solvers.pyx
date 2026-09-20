@@ -2008,8 +2008,13 @@ class SolverBaseClass(uw_object):
         derivatives = {}
         for index, bc in enumerate(self.essential_bcs):
             d = sympy.diff(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
-            if not d.is_zero_matrix:
-                derivatives[index] = d
+            if d.is_zero_matrix:
+                continue
+            if int(bc.f_id) != 0:
+                raise NotImplementedError(
+                    f"sensitivity: {wrt} enters an essential datum on field {bc.f_id} "
+                    f"of this solver; only data on the unknown carry a reaction term yet")
+            derivatives[index] = d
         if not derivatives:
             return 0.0
         self._refuse_essential_datum_parameter(wrt)

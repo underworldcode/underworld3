@@ -579,11 +579,15 @@ class TranscriptAdjoint:
                 if not self._nonzero(rhs):
                     continue
                 inputs = self._linearise_at(step, solves, j)
-                mu = self._adjoint(solver, rhs)
+                mu, lam = self._adjoint(solver, rhs)
+                # the dual on every node of this level's output, the
+                # constrained rows included: what a parameter in a datum
+                # multiplies (#762)
+                dJdu = np.array(np.asarray(rhs.array), dtype=float, copy=True)
                 scratch.give(acc.pop(u.name))  # consumed: this level's output
 
                 for p in parameters:
-                    grad[p] += solver.sensitivity(mu, p)
+                    grad[p] += solver.sensitivity(mu, p, lam=lam, misfit_dual=dJdu)
 
                 for var, symbols, derivatives in self._reads(solver, u):
                     value = [solver.adjoint_integrand(mu, s) for s in symbols]
@@ -598,6 +602,8 @@ class TranscriptAdjoint:
                     self._accumulate(acc, target,
                                      dual_on(target, _as_expression(value), g1, scratch))
                 scratch.give(mu)
+                if lam is not None:
+                    scratch.give(lam)
 
         out_fields = {}
         for var in fields:
@@ -669,16 +675,16 @@ class TranscriptAdjoint:
         mu = scratch.take(u)
         neg = scratch.take(u)
         neg.array[...] = -np.asarray(rhs.array)
+        p_adj = None
         if getattr(solver, "p", None) is not None and hasattr(solver, "_subdict"):
             p_adj = scratch.take(solver.p)
             _, reason = solver.adjoint_solve((neg, None), target=(mu, p_adj))
-            scratch.give(p_adj)
         else:
             _, reason = solver.adjoint_solve(neg, target=mu)
         scratch.give(neg)
         if reason <= 0:
             raise RuntimeError(f"adjoint of {type(solver).__name__}({u.name}) did not converge ({reason})")
-        return mu
+        return mu, p_adj
 
     def _accumulate(self, acc, var, dual):
         held = acc.get(var.name)
