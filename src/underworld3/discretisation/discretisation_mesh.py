@@ -3540,7 +3540,8 @@ class Mesh(Stateful, uw_object):
         * **analytic** (default) — the closure installed by the mesh constructor
           (radial on an annulus/sphere, face clamps on a box). Cheap and exact **while
           the boundary keeps the shape it was written for**.
-        * **general facet restore** (once :meth:`deform` has moved the geometry) — the
+        * **general facet restore** (once :meth:`deform` has moved the geometry, and for
+          any mesh with no analytic closure at all — every mesh read from a file) — the
           nearest point on the mesh's CURRENT boundary facets, with an outward-normal
           side test (:meth:`_facet_return_coords_to_bounds`).
 
@@ -3555,7 +3556,14 @@ class Mesh(Stateful, uw_object):
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
         """
-        if getattr(self, "_geometry_deformed", False):
+        if (getattr(self, "_geometry_deformed", False)
+                or self._analytic_return_coords_to_bounds is None):
+            # No analytic closure means a mesh built from a file (every gmsh mesh), which
+            # is where the benchmark geometries live. Without this they returned None and
+            # a trace-back foot leaving through an inlet was never restored: it fell
+            # through to the evaluator's distance-weighted fallback, which is both slow
+            # and wrong. The general restore already handles that case, and returns
+            # interior points untouched, so it is the right fallback rather than nothing.
             return self._facet_return_coords_to_bounds
         return self._analytic_return_coords_to_bounds
 
