@@ -145,6 +145,26 @@ class DDtSemiLagrangianState(_DDtCoreState):
 
 
 @dataclass
+class DDtIntegrationPointState(_DDtCoreState):
+    """Snapshot of an :class:`IntegrationPointSemiLagrangian` instance: the
+    point-value slots and their nodal snapshots are mesh variables captured
+    by name; this carries the bookkeeping."""
+    psi_star_var_names: list[str] = field(default_factory=list)
+    psi_snap_var_names: list[str] = field(default_factory=list)
+    with_forcing_history: bool = False
+    history_committed: bool = False
+
+
+@dataclass
+class DDtForwardState(_DDtCoreState):
+    """Snapshot of a :class:`ForwardSemiLagrangian` instance: the fitted
+    field and the launch values are mesh variables captured by name."""
+    psi_star_var_names: list[str] = field(default_factory=list)
+    launch_var_name: str = ""
+    flux_smoothing: Any = 0.0
+
+
+@dataclass
 class DDtLagrangianState(_DDtCoreState):
     """Snapshot of a :class:`Lagrangian` DDt instance.
 
@@ -4791,6 +4811,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)          # velocity levels the segments read
         self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._register_with_default_model()
         # The forcing (strain-rate) history the second-order exponential
         # integrator reads. Unlike the nodal flavour, which re-evaluates the
         # strain rate at its nodes, this one is carried along the same
@@ -4811,6 +4832,27 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 f"forcing_snap_ip_{inst}", mesh, vtype=vtype,
                 degree=degree, continuous=continuous,
                 varsymbol=rf"{{ \dot\varepsilon^{{ (n) }}_{{ [{inst}] }} }}", units=None)
+
+    @property
+    def state(self) -> "DDtIntegrationPointState":
+        return DDtIntegrationPointState(
+            **self._core_state_kwargs(),
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+            psi_snap_var_names=[ps.clean_name for ps in self.psi_snap],
+            with_forcing_history=bool(self.with_forcing_history),
+            history_committed=bool(getattr(self, "_history_committed", False)),
+        )
+
+    @state.setter
+    def state(self, s: "DDtIntegrationPointState") -> None:
+        self._validate_state_schema(s, DDtIntegrationPointState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        if s.psi_snap_var_names != [ps.clean_name for ps in self.psi_snap]:
+            raise ValueError("psi_snap variable names changed since snapshot")
+        if s.with_forcing_history != bool(self.with_forcing_history):
+            raise ValueError("with_forcing_history differs between snapshot and instance")
+        self._restore_core_state(s, am_theta=self.theta)
+        self._history_committed = bool(s.history_committed)
 
     @property
     def store_smoothing(self) -> float:
@@ -5288,8 +5330,12 @@ class ForwardSemiLagrangian(_DDtBase):
         self.num_components = len(self._components)
         # The launch set: the integration points, cell-major in the rule's order,
         # with the rule's weights scaled by the cell measure (a share of area).
-        launch_var = uw.discretisation.IntegrationPointVariable(
-            f"launch_fwd_{inst}", mesh, vtype=VarType.SCALAR, varsymbol=rf"{{ \ell_{{ [{inst}] }} }}")
+        # The launch values live in an integration-point variable so a snapshot
+        # captures them with every other variable; the class reads them as columns.
+        self._launch_var = uw.discretisation.IntegrationPointVariable(
+            f"launch_fwd_{inst}", mesh, vtype=vtype,
+            varsymbol=rf"{{ {varsymbol}^{{ \ell }} }}", units=psi_units)
+        launch_var = self._launch_var
         self._launch = np.array(np.asarray(launch_var.coords_nd).reshape(-1, mesh.cdim))
         self._nq = int(launch_var.num_points_per_cell)
         if self._nq < mesh.dim + 1:
@@ -5299,7 +5345,6 @@ class ForwardSemiLagrangian(_DDtBase):
         self._cell_measure = self._cell_measures()
         self._launch_cell = np.repeat(np.arange(self._cell_measure.size), self._nq)
         self._launch_weights = np.tile(w_ref, self._cell_measure.size) * self._cell_measure[self._launch_cell] / w_ref.sum()
-        self._launch_values = np.zeros((self._launch.shape[0], self.num_components))
         self._n_relocated = 0          # arrivals that changed rank at the last carry
         self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
         # The flux read at the launch points, through a continuous P1 projection.
@@ -5314,6 +5359,36 @@ class ForwardSemiLagrangian(_DDtBase):
         self._flux_projection = None
         self._n_v = 2
         self._init_coefficient_expressions(1, self.theta, with_exp=True)
+        self._register_with_default_model()
+
+    @property
+    def _launch_values(self):
+        """The carried values at the launch points, one column per component."""
+        return np.asarray(self._launch_var.data)
+
+    @_launch_values.setter
+    def _launch_values(self, values):
+        values = np.asarray(values).reshape(self._launch.shape[0], self.num_components)
+        for k in range(self.num_components):
+            self._launch_var.data[:, k] = values[:, k]
+
+    @property
+    def state(self) -> "DDtForwardState":
+        return DDtForwardState(
+            **self._core_state_kwargs(),
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+            launch_var_name=self._launch_var.clean_name,
+            flux_smoothing=self.flux_smoothing,
+        )
+
+    @state.setter
+    def state(self, s: "DDtForwardState") -> None:
+        self._validate_state_schema(s, DDtForwardState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        if s.launch_var_name != self._launch_var.clean_name:
+            raise ValueError("launch variable name changed since snapshot")
+        self._restore_core_state(s, am_theta=self.theta)
+        self.flux_smoothing = s.flux_smoothing
 
     # ------------------------------------------------------------------
     def _cell_measures(self):
