@@ -13,6 +13,7 @@ on:
     branches:
       - main
       - development
+      - ci/gadi-container          # TESTING ONLY — remove before the upstream PR
     tags: ['v*']
     paths:
       - 'docs/developer/hpc_containers/underworld3.hpc'
@@ -176,6 +177,7 @@ jobs:
             UW3_REPO=${{ github.server_url }}/${{ github.repository }}.git
             PETSC_IMAGE=${{ steps.meta.outputs.petsc_image }}
             BASE_BUILDER=${{ steps.meta.outputs.base }}:builder
+            BASE_RUNTIME=${{ steps.meta.outputs.base }}:runtime
             SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.meta.outputs.uw3_version }}
           tags: ${{ steps.meta.outputs.tags }}
           # Cache lives in its own package: sharing one with the image put stale

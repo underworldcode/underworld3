@@ -7,11 +7,16 @@
 #
 # Stages:
 #   builder  BASE_BUILDER + PETSc (copied from PETSC_IMAGE) + UW3 stack in /opt/venv
-#   final    PETSC_IMAGE (which is already the :runtime base + PETSc) + /opt, /usr/local from builder
+#   final    BASE_RUNTIME + /opt, /usr/local from builder
+#
+# final stands on the bare runtime base, not on PETSC_IMAGE: the builder's /opt
+# and /usr/local already contain PETSc, so layering them over the PETSc image
+# would ship PETSc twice (~200 MB more to pull; the SIF is unaffected).
 #
 #   podman build . --platform linux/amd64 --format docker \
 #       --build-arg PETSC_IMAGE=ghcr.io/<owner>/petsc-gadi:3.25.0-ompi \
 #       --build-arg BASE_BUILDER=ghcr.io/<owner>/uw3-base-rocky-ompi:builder \
+#       --build-arg BASE_RUNTIME=ghcr.io/<owner>/uw3-base-rocky-ompi:runtime \
 #       --build-arg UW3_BRANCH=development \
 #       -t ghcr.io/<owner>/underworld3-gadi:development \
 #       -f docs/developer/hpc_containers/underworld3.hpc
@@ -19,6 +24,7 @@
 
 ARG PETSC_IMAGE="ghcr.io/underworldcode/petsc-gadi:3.25.0-ompi"
 ARG BASE_BUILDER="ghcr.io/underworldcode/uw3-base-rocky-ompi:builder"
+ARG BASE_RUNTIME="ghcr.io/underworldcode/uw3-base-rocky-ompi:runtime"
 ARG UW3_BRANCH="development"
 # Overridden by CI to the repository being built, so a fork builds its own
 # branches rather than looking for them upstream.
@@ -94,11 +100,15 @@ RUN [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ] || unset SETUPTOOLS_SCM_PRETEND_VER
 RUN pip freeze > /opt/requirements.txt
 
 #####################################################################
-FROM ${PETSC_IMAGE} AS final
-USER root
+FROM ${BASE_RUNTIME} AS final
 
 COPY --from=builder --chown=$NB_USER:users /opt /opt
 COPY --from=builder --chown=$NB_USER:users /usr/local /usr/local
+
+# Same as petsc.hpc's final stage — not inherited, since this stage does not
+# stand on that image.
+ENV PETSC_DIR=/usr/local
+ENV PYTHONPATH=$PYTHONPATH:$PETSC_DIR/lib
 
 # jupytext default viewer: text notebooks open as notebooks on double-click.
 RUN mkdir -p $NB_HOME/workspace $NB_HOME/Underworld3/ \
