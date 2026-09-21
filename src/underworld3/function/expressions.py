@@ -14,6 +14,7 @@ Design Principles (Simplified Architecture 2025-11, updated 2025-12):
    - UWexpression.to() simply calls uw.convert_units(self, target)
 """
 
+import weakref
 import sympy
 import numpy as np
 from sympy import Symbol, simplify, Number
@@ -602,6 +603,35 @@ def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
 # UWexpression Class - Simplified (no UWQuantity inheritance)
 # ============================================================================
 
+# Every live UWexpression, so a snapshot can capture what the parameters WERE.
+#
+# Field data rewinds and parameters did not: `snapshot()` captured meshes,
+# swarms and registered state-bearers, and an expression is none of those. A run
+# that ramps a parameter — `kappa.sym = 7.0` between steps, which is the ordinary
+# way to do it — could be rewound to an earlier step and come back with the
+# fields of that step and the PARAMETERS OF THE LATEST ONE, silently. Replaying
+# the step then solves a different problem from the one the transcript records.
+#
+# WeakSet so this registry never becomes the thing that keeps an expression
+# alive: transient expressions are made constantly (unit wrapping, template
+# substitution, derivative lowering). Note that it is NOT what bounds the set
+# today — expressions are already held strongly elsewhere in UW3 by a
+# name-keyed cache, so dropping the last user reference does not collect one.
+# The WeakSet is therefore defensive rather than load-bearing: it means capture
+# does not ADD a lifetime, and it starts working the day that cache is fixed.
+_LIVE_EXPRESSIONS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def live_expressions():
+    """Every UWexpression still alive, as a list with a stable order.
+
+    A list, not the WeakSet: entries can vanish mid-iteration as they are
+    collected, and capture needs a traversal that cannot change under it.
+    Sorted by instance number so a capture reads the same way twice.
+    """
+    return sorted(_LIVE_EXPRESSIONS, key=lambda e: getattr(e, "instance_number", 0))
+
+
 class UWexpression(MathematicalMixin, uw_object, Symbol):
     """
     A SymPy Symbol that wraps a value for lazy evaluation.
@@ -882,6 +912,15 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         # UW object tracking
         self._uw_id = uw_object._obj_count
         uw_object._obj_count += 1
+
+        # Visible to snapshot capture, so a rewind puts parameters back with the
+        # fields. Registered last: a half-built expression must never be
+        # captured. Failure here must not take out construction — an expression
+        # that cannot be registered is merely one a snapshot will not restore.
+        try:
+            _LIVE_EXPRESSIONS.add(self)
+        except TypeError:
+            pass
 
     # =========================================================================
     # Core Properties

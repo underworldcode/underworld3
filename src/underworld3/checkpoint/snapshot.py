@@ -134,6 +134,11 @@ class Snapshot:
     # state-bearers. List preserves capture order — informational only,
     # since lookup is by key.
     state_bearers: list = field(default_factory=list)
+    # Expression captures: list of (stable_key, _sym, _wrapped). A parameter is
+    # not a mesh, a swarm or a state-bearer, so before this it was not captured
+    # at all and a restore returned the fields of one step with the parameters of
+    # another, silently. See _capture_expressions.
+    expressions: list = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -194,6 +199,7 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
         _capture_swarm(snap, swarm)
     for obj in list(model._state_bearers):
         _capture_state_bearer(snap, obj)
+    _capture_expressions(snap)
     return snap
 
 
@@ -241,6 +247,69 @@ def _capture_state_bearer(snap: Snapshot, obj) -> None:
             f"got {type(state).__name__}"
         )
     snap.state_bearers.append((_state_bearer_key(obj), copy.deepcopy(state)))
+
+
+def _expression_key(expr) -> str:
+    """Stable per-process key for an expression, matching the state-bearer
+    convention: the class name and ``uw_object.instance_number``."""
+    return f"{type(expr).__name__}_{expr.instance_number}"
+
+
+def _capture_expressions(snap: Snapshot) -> None:
+    """Capture every live expression's contents.
+
+    A run that ramps a parameter (``kappa.sym = 7.0`` between steps) used to be
+    restorable in its FIELDS only: the mesh variables came back and the
+    parameters stayed wherever the run had left them, so a replayed step solved
+    a different problem from the one the transcript recorded — with no error, in
+    the one place a wrong answer is hardest to notice.
+
+    Contents are stored by REFERENCE, not deep-copied. ``_sym`` is a sympy
+    object and sympy objects are immutable, so the reference cannot go stale
+    under a later ``sym =`` assignment: that assignment REPLACES the object
+    rather than mutating it. Deep-copying instead would be actively wrong here —
+    an expression's ``_sym`` can carry mesh-variable symbols, and cloning that
+    graph would detach the restored parameter from the live mesh.
+    """
+    from underworld3.function.expressions import live_expressions
+
+    for expr in live_expressions():
+        try:
+            snap.expressions.append(
+                (_expression_key(expr), expr._sym, expr._wrapped)
+            )
+        except AttributeError:
+            # Not every expression subclass carries both slots; one that does
+            # not is one whose value is derived, and deriving it again is right.
+            continue
+
+
+def _restore_expressions(snap: Snapshot) -> None:
+    """Put captured expression contents back.
+
+    Matched by key against the expressions alive NOW. Two cases are deliberately
+    quiet rather than fatal, because neither means the restore is wrong:
+
+    * captured but no longer alive — the expression was dropped since; there is
+      nothing to write to;
+    * alive but not captured — it was created after the snapshot, so the
+      snapshot has no opinion about what it should hold.
+
+    Both differ from the state-bearer rule above, which raises: a missing
+    state-bearer means the snapshot came from a different Model, whereas
+    expressions are created and dropped freely throughout a normal run.
+    """
+    if not snap.expressions:
+        return
+    from underworld3.function.expressions import live_expressions
+
+    live = {_expression_key(e): e for e in live_expressions()}
+    for key, captured_sym, captured_wrapped in snap.expressions:
+        expr = live.get(key)
+        if expr is None:
+            continue
+        expr._sym = captured_sym
+        expr._wrapped = captured_wrapped
 
 
 def _capture_swarm(snap: Snapshot, swarm) -> None:
@@ -351,6 +420,8 @@ def restore(model, snap: Snapshot) -> None:
                     f"Model"
                 )
             obj.state = copy.deepcopy(captured_state)
+
+    _restore_expressions(snap)
 
 
 def _build_mesh_payload(snap: Snapshot, mesh_name: str) -> dict:

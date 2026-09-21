@@ -767,3 +767,98 @@ def test_continuation_bit_identical_across_stash_and_recover():
     _assert_bit_identical(ctrl, stash, "stash-and-recover")
 
 
+
+
+# --------------------------------------------------------------------------- #
+#  Expressions: parameters must rewind with the fields
+# --------------------------------------------------------------------------- #
+# A snapshot captured meshes, swarms and registered state-bearers. A parameter
+# is none of those, so it was not captured at all: restore returned the FIELDS
+# of the captured step and left every `uw.expression` wherever the run had since
+# moved it. A replayed step then solved a different problem from the one the
+# transcript recorded, with no error raised — and ramping a parameter between
+# steps (`kappa.sym = ...`) is the ordinary way to write such a run.
+
+
+def test_expression_contents_are_restored_with_the_fields():
+    """The contract. Scribble on a field AND a parameter; both come back.
+
+    The field half already held; it is asserted alongside so a regression that
+    breaks both cannot pass by breaking them symmetrically.
+    """
+    import sympy
+
+    uw, model, mesh = _fresh_model_and_mesh()
+    T = uw.discretisation.MeshVariable("T_expr_snap", mesh, 1, degree=2)
+    kappa = uw.expression(r"\kappa", 1.0, "diffusivity")
+
+    T.array[...] = 3.0
+    snap = model.save_state()
+
+    kappa.sym = sympy.Float(7.0)
+    T.array[...] = -42.0
+
+    model.load_state(snap)
+
+    assert float(kappa.sym) == pytest.approx(1.0), (
+        f"the parameter did not rewind with the field; kappa is {kappa.sym}")
+    assert np.allclose(np.asarray(T.array[...]), 3.0)
+
+
+def test_a_symbolic_expression_value_is_restored_not_just_a_number():
+    """A parameter's contents can be an expression, not only a float.
+
+    Restoring must put the whole symbolic value back. Stored by reference
+    rather than deep-copied, because `_sym` can carry mesh-variable symbols and
+    cloning that graph would detach the restored parameter from the live mesh —
+    so this also checks the reference has not gone stale.
+    """
+    import sympy
+
+    uw, model, mesh = _fresh_model_and_mesh()
+    x, y = mesh.X
+    eta = uw.expression(r"\eta", sympy.sympify(1), "viscosity")
+
+    eta.sym = 2 + x * y
+    captured = eta.sym
+    snap = model.save_state()
+
+    eta.sym = sympy.Float(99.0)
+    model.load_state(snap)
+
+    assert eta.sym == captured
+    assert eta.sym.free_symbols == captured.free_symbols, (
+        "the restored value lost its coordinate symbols — it was cloned rather "
+        "than referenced")
+
+
+def test_an_expression_created_after_the_snapshot_is_left_alone():
+    """A snapshot has no opinion about something that did not exist when it was
+    taken. Leaving it is right; raising would break the ordinary case of a run
+    that builds a new parameter after a restore point."""
+    uw, model, mesh = _fresh_model_and_mesh()
+    snap = model.save_state()
+
+    latecomer = uw.expression(r"\alpha", 5.0, "made after the snapshot")
+    model.load_state(snap)
+
+    assert float(latecomer.sym) == pytest.approx(5.0)
+
+
+def test_capture_covers_every_live_expression():
+    """Capture is driven by the registry, so the registry must see expressions
+    made anywhere — including the ones UW3 builds for itself (strain-rate
+    invariants, unit wrappers), not just the ones a user names."""
+    import sympy
+    from underworld3.function.expressions import live_expressions
+
+    uw, model, mesh = _fresh_model_and_mesh()
+    before = {e.instance_number for e in live_expressions()}
+    mine = uw.expression(r"\beta", 2.0, "made here")
+    after = {e.instance_number for e in live_expressions()}
+
+    assert mine.instance_number in after - before
+
+    snap = model.save_state()
+    captured = {key for key, _sym, _wrapped in snap.expressions}
+    assert f"{type(mine).__name__}_{mine.instance_number}" in captured
