@@ -5222,20 +5222,20 @@ class ForwardSemiLagrangian(_DDtBase):
     at the same dose as the integration-point store. See
     :doc:`/developer/subsystems/stress-transport`.
 
-    First order only. Serial only for now: an arrival that crosses a
-    partition seam would have to carry its value to the owning rank, which
-    is what particle migration does; the trace-back flavours avoid it by
-    evaluating collectively. A point that leaves the domain is dropped, so a
-    periodic seam is not crossed either. The launch set and the cell geometry
-    are taken once from the mesh, so the flavour does not follow a mesh that
-    moves. An inflow cell (a boundary cell whose boundary face has fluid
-    entering) that receives less than it launched has the missing share
+    First order only. In parallel the arrivals that left their rank travel
+    with their values and weights to every rank, and each rank keeps the ones
+    that landed in its own cells, so a point that crosses a seam is fitted by
+    the rank that owns its arrival cell. A point that leaves the domain is
+    dropped, so a periodic seam is not crossed. The launch set and the cell
+    geometry are taken once from the mesh, so the flavour does not follow a
+    mesh that moves. An inflow cell (a boundary cell whose boundary face has
+    fluid entering) that receives less than it launched has the missing share
     filled with :attr:`inflow_value` when one is set; a cell whose arrivals
     cannot determine a linear fit keeps its previous fit, the one piece of
     state carried between steps.
 
-    TODO(DESIGN): parallel (migrate launch values with their points), periodic
-    seams (wrap the end point), moving meshes (refresh on the topology version).
+    TODO(DESIGN): periodic seams (wrap the end point), moving meshes (refresh
+    on the topology version).
     """
 
     applies_inflow_value = True
@@ -5254,11 +5254,6 @@ class ForwardSemiLagrangian(_DDtBase):
         super().__init__()
         if order != 1:
             raise NotImplementedError("ForwardSemiLagrangian carries one level; order must be 1")
-        if uw.mpi.size > 1:
-            # TODO(DESIGN): forward carry across partition seams needs the launch
-            # values migrated with their points (DMSwarm does this); until then
-            # the class refuses rather than fit seam cells from the wrong side.
-            raise NotImplementedError("ForwardSemiLagrangian runs in serial for now")
         if mesh.cdim != mesh.dim:
             raise NotImplementedError("ForwardSemiLagrangian fits in the embedding coordinates; no manifolds")
         if _unsupported:
@@ -5305,7 +5300,8 @@ class ForwardSemiLagrangian(_DDtBase):
         self._launch_cell = np.repeat(np.arange(self._cell_measure.size), self._nq)
         self._launch_weights = np.tile(w_ref, self._cell_measure.size) * self._cell_measure[self._launch_cell] / w_ref.sum()
         self._launch_values = np.zeros((self._launch.shape[0], self.num_components))
-        self._boundary_cell, self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
+        self._n_relocated = 0          # arrivals that changed rank at the last carry
+        self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
         # The flux read at the launch points, through a continuous P1 projection.
         # `flux_smoothing` is the Laplacian coefficient of that projection, a
         # number or a field (length^2): c * mesh.cell_size()**2 with c between
@@ -5327,34 +5323,39 @@ class ForwardSemiLagrangian(_DDtBase):
         return np.array([dm.computeCellGeometryFVM(c)[0] for c in range(c0, c1)])
 
     def _boundary_faces(self):
-        """The cells with a face on the domain boundary, and for every such
-        face its owning cell, its centroid and its outward normal (centroid of
-        the face away from the centroid of the cell: outward on a convex cell).
-        The inflow test reads the velocity at these centroids."""
+        """For every face on the domain boundary: its owning cell, its centroid
+        and its outward normal (centroid of the face away from the centroid of
+        the cell: outward on a convex cell). The inflow test reads the velocity
+        at these centroids."""
         dm = self.mesh.dm
         d = self.mesh.dim
         c0, c1 = dm.getHeightStratum(0)
         f0, f1 = dm.getHeightStratum(1)
-        mask = np.zeros(c1 - c0, dtype=bool)
         cells, centroids, normals = [], [], []
+        # A face with one local cell is a domain boundary face OR a partition face;
+        # the mesh's own boundary label tells them apart.
+        label = dm.getLabel("All_Boundaries") if dm.hasLabel("All_Boundaries") else None
         for f in range(f0, f1):
             if dm.getSupportSize(f) != 1:
                 continue
+            if label is not None and label.getValue(f) == -1:
+                continue
             c = dm.getSupport(f)[0] - c0
-            mask[c] = True
             _, fc, _ = dm.computeCellGeometryFVM(f)
             _, cc, _ = dm.computeCellGeometryFVM(c + c0)
             n = np.asarray(fc[:d]) - np.asarray(cc[:d])
             cells.append(c); centroids.append(np.asarray(fc[:d])); normals.append(n / np.linalg.norm(n))
-        return (mask, np.array(cells, dtype=int),
+        return (np.array(cells, dtype=int),
                 np.array(centroids).reshape(-1, d), np.array(normals).reshape(-1, d))
 
     def _inflow_cells(self, trace, evalf):
-        """Boundary cells whose boundary face has fluid entering now."""
+        """Boundary cells whose boundary face has fluid entering now. The
+        velocity read is collective, so a rank with no boundary face still
+        takes part, with no points."""
         mask = np.zeros(self._cell_measure.size, dtype=bool)
+        v = trace.velocity_at(trace.V_matrix(), self._bface_centroid, use_global=True, evalf=evalf)
         if self._bface_cell.size == 0:
             return mask
-        v = trace.velocity_at(trace.V_matrix(), self._bface_centroid, use_global=True, evalf=evalf)
         entering = np.einsum("fi,fi->f", np.asarray(v).reshape(-1, self.mesh.dim), self._bface_normal) < 0.0
         mask[self._bface_cell[entering]] = True
         return mask
@@ -5411,8 +5412,10 @@ class ForwardSemiLagrangian(_DDtBase):
         arrival points, cell by cell, written into ``psi_star[0]``.
 
         ``cell`` is the owning cell of each arrival when it is known exactly
-        (the launch points themselves); otherwise the arrivals are located,
-        and a point outside the domain (it left through an outflow) is dropped.
+        (the launch points themselves). Otherwise the arrivals of every rank
+        are gathered with their values and weights, each rank keeps the ones
+        in its partition and locates them in its cells; a point outside the
+        domain (it left through an outflow) is dropped.
         A boundary cell that lost more points than it received has the
         missing share filled with the inflow value at its own dofs, weighted
         by that share: the state of the part of the cell nothing has reached
@@ -5423,12 +5426,29 @@ class ForwardSemiLagrangian(_DDtBase):
         d = mesh.dim
         npar = d + 1
         ncell = self._cell_measure.size
+        w = self._launch_weights
         if cell is None:
-            cell = np.asarray(mesh.get_closest_local_cells(X)).reshape(-1)
+            if uw.mpi.size > 1:
+                # Only the points that left this rank's partition travel: each rank
+                # offers its leavers to everyone and keeps the offered points that
+                # land in its own cells. At Courant one that is the seam layer, not
+                # the whole set. A rank with no cells owns nothing and keeps nothing.
+                X, values = np.asarray(X), np.asarray(values)
+                stay = (np.asarray(mesh.points_in_domain(X, strict_validation=True), dtype=bool).reshape(-1)
+                        if ncell else np.zeros(X.shape[0], dtype=bool))
+                comm = uw.mpi.comm
+                offered = np.concatenate(comm.allgather(X[~stay]), axis=0)
+                offered_values = np.concatenate(comm.allgather(values[~stay]), axis=0)
+                offered_w = np.concatenate(comm.allgather(w[~stay]), axis=0)
+                self._n_relocated = int(offered.shape[0])
+                take = (np.asarray(mesh.points_in_domain(offered, strict_validation=True), dtype=bool).reshape(-1)
+                        if ncell else np.zeros(offered.shape[0], dtype=bool))
+                X = np.concatenate([X[stay], offered[take]], axis=0)
+                values = np.concatenate([values[stay], offered_values[take]], axis=0)
+                w = np.concatenate([w[stay], offered_w[take]], axis=0)
+            cell = np.asarray(mesh._robust_owning_cells(X)).reshape(-1)
             inside = cell >= 0
-            X, values, w, cell = X[inside], values[inside], self._launch_weights[inside], cell[inside]
-        else:
-            w = self._launch_weights
+            X, values, w, cell = X[inside], values[inside], w[inside], cell[inside]
         centroid = np.asarray(mesh._centroids)[:, :d]
         h = np.sqrt(self._cell_measure) if d == 2 else np.cbrt(self._cell_measure)
         # centred on the cell and scaled by its size, so the constant is c0 and the
@@ -5446,15 +5466,19 @@ class ForwardSemiLagrangian(_DDtBase):
         if self._inflow_value is not None and inflow is not None:
             deficit = np.clip(self._cell_measure - received, 0.0, None) * inflow
             fed = deficit > 0.0
-            if fed.any():
-                inflow = np.column_stack([
-                    _to_nondim_ndarray(uw.function.evaluate(self._inflow_value[i, j],
-                                                            dofs[fed].reshape(-1, mesh.cdim))).reshape(-1)
-                    for (i, j) in self._components]).reshape(fed.sum(), ndof, self.num_components)
-                wi = (deficit[fed] / ndof)[:, None]                                        # per dof
-                Af = Adof[fed]
-                M[fed] += np.einsum("cq,cqi,cqj->cij", np.broadcast_to(wi, (fed.sum(), ndof)), Af, Af)
-                R[fed] += np.einsum("cq,cqi,cqk->cik", np.broadcast_to(wi, (fed.sum(), ndof)), Af, inflow)
+            # evaluate is collective: every rank reads the inflow value at every
+            # boundary-cell dof, whether or not any of its cells is short
+            bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
+            filled = np.column_stack([
+                _to_nondim_ndarray(uw.function.evaluate(self._inflow_value[i, j],
+                                                        dofs[bcells].reshape(-1, mesh.cdim))).reshape(-1)
+                for (i, j) in self._components]).reshape(bcells.size, ndof, self.num_components)
+            short = fed[bcells]
+            if short.any():
+                sel = bcells[short]
+                wi = np.broadcast_to((deficit[sel] / ndof)[:, None], (sel.size, ndof))       # per dof
+                M[sel] += np.einsum("cq,cqi,cqj->cij", wi, Adof[sel], Adof[sel])
+                R[sel] += np.einsum("cq,cqi,cqk->cik", wi, Adof[sel], filled[short])
         # with the columns scaled, the eigenvalue ratio of the moment matrix is a
         # conditioning number: 1e-6 rejects a cell whose arrivals sit on a line
         ev = np.linalg.eigvalsh(M)

@@ -1538,7 +1538,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         fits the arrivals per cell; the constitutive flux is read at the launch
         points through a continuous P1 projection. It holds the Maxwell
         start-up below Courant one where the integration-point history rings
-        (see :class:`~underworld3.systems.ddt.ForwardSemiLagrangian`). Serial only.
+        (see :class:`~underworld3.systems.ddt.ForwardSemiLagrangian`).
 
         The semi-Lagrangian history traces the stress back along characteristics
         and stores it on a nodal field, which the assembler then interpolates to
@@ -1563,8 +1563,6 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
                 "constitutive model that asks for one.")
-        if value == "forward" and uw.mpi.size > 1:
-            raise NotImplementedError("stress_transport='forward' runs in serial for now")
         self._stress_transport = value
 
     # ----- DEVSS: stabilising a discontinuous elastic stress -----
