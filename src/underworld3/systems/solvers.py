@@ -1531,7 +1531,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @property
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
-        (default), ``"integration_point"`` or ``"eulerian"``.
+        (default), ``"integration_point"``, ``"forward"`` or ``"eulerian"``.
+
+        ``"forward"`` carries the stress from a fixed set of launch points inside
+        the cells (the integration points), one forward trajectory a step, and
+        fits the arrivals per cell; the constitutive flux is read at the launch
+        points through a continuous P1 projection. It holds the Maxwell
+        start-up below Courant one where the integration-point history rings
+        (see :class:`~underworld3.systems.ddt.ForwardSemiLagrangian`). Serial only.
 
         The semi-Lagrangian history traces the stress back along characteristics
         and stores it on a nodal field, which the assembler then interpolates to
@@ -1548,14 +1555,16 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @stress_transport.setter
     def stress_transport(self, value):
         value = str(value)
-        if value not in ("semi_lagrangian", "integration_point", "eulerian"):
+        if value not in ("semi_lagrangian", "integration_point", "forward", "eulerian"):
             raise ValueError(
-                "stress_transport must be 'semi_lagrangian', 'integration_point' "
-                f"or 'eulerian', not {value!r}.")
+                "stress_transport must be 'semi_lagrangian', 'integration_point', "
+                f"'forward' or 'eulerian', not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
                 "constitutive model that asks for one.")
+        if value == "forward" and uw.mpi.size > 1:
+            raise NotImplementedError("stress_transport='forward' runs in serial for now")
         self._stress_transport = value
 
     # ----- DEVSS: stabilising a discontinuous elastic stress -----
@@ -1775,6 +1784,18 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 self.u.sym,
                 **ddt_kwargs,
                 **{k: v for k, v in common.items() if k != "smoothing"},
+            )
+        elif self.stress_transport == "forward":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which the forward flavour does not provide; "
+                    "use stress_transport='semi_lagrangian' for it.")
+            self.Unknowns.DFDt = uw.systems.ddt.ForwardSemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                vtype=common["vtype"], varsymbol=common["varsymbol"], order=order,
             )
         elif self.stress_transport == "eulerian":
             if ddt_kwargs:

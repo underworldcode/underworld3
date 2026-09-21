@@ -8,7 +8,7 @@ what limits it, and how to keep a run inside those limits.
 
 ```python
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.stress_transport = "integration_point"       # or "semi_lagrangian", "eulerian"
+stokes.stress_transport = "integration_point"       # or "semi_lagrangian", "forward", "eulerian"
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
     stokes.Unknowns, order=1, integrator="bdf", objective_rate="upper_convected")
 stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_p
@@ -17,12 +17,13 @@ stokes.constitutive_model.Parameters.solvent_viscosity = eta_s    # Oldroyd-B; o
 stokes.constitutive_model.Parameters.dt_elastic = dt
 ```
 
-## The three histories
+## The four histories
 
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
 | `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
 | `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
+| `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9715 / 0.4884 against nodal 0.9757 / 0.4869) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); serial only; first order only |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
 Both trace-back flavours store the stress after every solve by the same global
@@ -74,6 +75,18 @@ modes apart: a solve that has lost its preconditioner (the non-symmetric,
 co-rotational part of the tangent grows with $|W||\sigma^*|/G$ and is a solver
 setting) from a solve that has lost its problem (nothing recovers it). Print this
 line every step on a new problem.
+
+## The recommended configuration
+
+Integration-point history, the step set by the wall strain rate
+(`max_elastic_timestep`), store smoothing at c = 0.07 when the solvent viscosity
+is a small fraction of the total, DEVSS off. That combination is characterised on
+Waters and King (regular and irregular meshes) and on the confined cylinder to
+Wi 0.8. The forward flavour is the same scheme with a per-cell fit and interior
+launch points, measured at 17 s a step against 28 on the cylinder; it needs its
+read-back smoothing (`DFDt.flux_smoothing = 0.023 * mesh.cell_size()**2`). Neither transports its memory without a cell-scale mode below Courant
+one on a Maxwell element: a version that did not ring turned out not to be
+transporting the memory at all.
 
 ## Store smoothing for the integration-point history below Courant one
 

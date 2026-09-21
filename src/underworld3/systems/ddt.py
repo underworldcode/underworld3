@@ -1028,8 +1028,10 @@ class _DDtBase(uw_object):
         Set it to an expression of the unknown's shape -- for a stress history,
         the relaxed stress of the incoming flow.
 
-        Only :class:`EulerianSUPG` acts on the value, by compiling a boundary
-        term into its transport solve. The flavours that trace characteristics
+        :class:`EulerianSUPG` compiles the value into a boundary term of its
+        transport solve; :class:`IntegrationPointSemiLagrangian` gives it to a
+        departure point restored to the boundary; :class:`ForwardSemiLagrangian`
+        fills the uncovered share of an inflow cell with it. The flavours that trace characteristics
         back or carry particles are not unconstrained at an inflow, but they do
         not use this value either: a departure point or a particle that lands
         outside the domain is restored to the boundary and takes the
@@ -4709,7 +4711,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         monotone_mode: Optional[str] = None,
         with_forcing_history: bool = False,
         store_smoothing: float = 0.0,
-        **_unsupported,
+        **_unsupported,      # TODO(BUG): swallowed without a stated failure mode (Charter 5)
     ):
         super().__init__()
         self.vtype = vtype
@@ -5190,3 +5192,332 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self._dt_history[0] = dt
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
+
+
+class ForwardSemiLagrangian(_DDtBase):
+    r"""Semi-Lagrangian history carried forward from a fixed set of launch
+    points inside the cells, read by the weak form through a per-cell fit.
+
+    The carried field is known at the launch points, the mesh's integration
+    points with their quadrature weights scaled by the cell measure. Each step
+    every point is moved forward one step along the velocity, the arrivals in
+    each cell are fitted by weighted least squares to a linear polynomial, and
+    that discontinuous P1 field is ``psi_star[0]``, what the weak form reads.
+    After the solve the new flux is projected onto the continuous P1 space and
+    read at the launch points. Nothing persists at the arrivals: one fixed
+    point set, one velocity-dependent map, one fit, no particle state and no
+    repopulation.
+
+    Why this form. The launch points are inside the cells, so no point sits
+    on a no-slip wall with zero velocity (the nodal history's wall-layer
+    defect); the arrivals are fitted per cell (measured 17 s a step on the
+    confined cylinder against 28 for the integration-point history, which
+    samples its store at every foot); and the wall stress it carries is the
+    more self-consistent (the drag by stress integral and by reaction agree
+    to 1.4% where the integration-point history has them 12% apart).
+    It is, like the integration-point history, a consistently transported
+    scheme with no dissipation of its own at the cell scale: below Courant one
+    on a Maxwell element a cell-scale mode grows from round-off, and the
+    read-back projection needs :attr:`flux_smoothing` for the same reason and
+    at the same dose as the integration-point store. See
+    :doc:`/developer/subsystems/stress-transport`.
+
+    First order only. Serial only for now: an arrival that crosses a
+    partition seam would have to carry its value to the owning rank, which
+    is what particle migration does; the trace-back flavours avoid it by
+    evaluating collectively. A point that leaves the domain is dropped, so a
+    periodic seam is not crossed either. The launch set and the cell geometry
+    are taken once from the mesh, so the flavour does not follow a mesh that
+    moves. An inflow cell (a boundary cell whose boundary face has fluid
+    entering) that receives less than it launched has the missing share
+    filled with :attr:`inflow_value` when one is set; a cell whose arrivals
+    cannot determine a linear fit keeps its previous fit, the one piece of
+    state carried between steps.
+
+    TODO(DESIGN): parallel (migrate launch values with their points), periodic
+    seams (wrap the end point), moving meshes (refresh on the topology version).
+    """
+
+    applies_inflow_value = True
+
+    def __init__(
+        self,
+        mesh,
+        psi_fn,
+        V_fn,
+        vtype=VarType.SCALAR,
+        varsymbol: Optional[str] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        **_unsupported,
+    ):
+        super().__init__()
+        if order != 1:
+            raise NotImplementedError("ForwardSemiLagrangian carries one level; order must be 1")
+        if uw.mpi.size > 1:
+            # TODO(DESIGN): forward carry across partition seams needs the launch
+            # values migrated with their points (DMSwarm does this); until then
+            # the class refuses rather than fit seam cells from the wrong side.
+            raise NotImplementedError("ForwardSemiLagrangian runs in serial for now")
+        if mesh.cdim != mesh.dim:
+            raise NotImplementedError("ForwardSemiLagrangian fits in the embedding coordinates; no manifolds")
+        if _unsupported:
+            warnings.warn(f"ForwardSemiLagrangian ignores {sorted(_unsupported)}: it has one level, "
+                          "a linear fit per cell and no smoothing or monotone option", stacklevel=2)
+        self.vtype = vtype
+        self.mesh = mesh
+        self.degree = 1
+        self.continuous = False
+        self.order = 1
+        self.theta = float(theta)
+        self.V_fn = V_fn
+        self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
+        expected = _psi_shape_for(vtype, mesh.cdim)
+        if expected is not None and tuple(self._psi_fn.shape) != expected:
+            raise ValueError(f"ForwardSemiLagrangian: psi_fn has shape {tuple(self._psi_fn.shape)} "
+                             f"but vtype={vtype} on a cdim={mesh.cdim} mesh needs {expected}")
+        self._init_history_tracking(1)
+        if varsymbol is None:
+            varsymbol = rf"u_{{ [{self.instance_number}] }}"
+        inst = self.instance_number
+        psi_units = uw.get_units(self._psi_fn)
+        if psi_units is not None and not uw.get_default_model().has_units():
+            psi_units = None
+        self._psi_units = psi_units
+        self.psi_star = [
+            uw.discretisation.MeshVariable(
+                f"psi_star_fwd_{inst}", mesh, vtype=vtype, degree=1, continuous=False,
+                varsymbol=rf"{{ {varsymbol}^{{ * }} }}", units=psi_units)
+        ]
+        self._components = _storage_components(vtype, tuple(self.psi_star[0].sym.shape))
+        self.num_components = len(self._components)
+        # The launch set: the integration points, cell-major in the rule's order,
+        # with the rule's weights scaled by the cell measure (a share of area).
+        launch_var = uw.discretisation.IntegrationPointVariable(
+            f"launch_fwd_{inst}", mesh, vtype=VarType.SCALAR, varsymbol=rf"{{ \ell_{{ [{inst}] }} }}")
+        self._launch = np.array(np.asarray(launch_var.coords_nd).reshape(-1, mesh.cdim))
+        self._nq = int(launch_var.num_points_per_cell)
+        if self._nq < mesh.dim + 1:
+            raise ValueError(f"ForwardSemiLagrangian needs at least {mesh.dim + 1} integration points per "
+                             f"cell for a linear fit; this mesh's rule has {self._nq} (raise qdegree)")
+        w_ref = np.asarray(mesh.integration_rule.getData()[1]).reshape(-1)
+        self._cell_measure = self._cell_measures()
+        self._launch_cell = np.repeat(np.arange(self._cell_measure.size), self._nq)
+        self._launch_weights = np.tile(w_ref, self._cell_measure.size) * self._cell_measure[self._launch_cell] / w_ref.sum()
+        self._launch_values = np.zeros((self._launch.shape[0], self.num_components))
+        self._boundary_cell, self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
+        # The flux read at the launch points, through a continuous P1 projection.
+        # `flux_smoothing` is the Laplacian coefficient of that projection, a
+        # number or a field (length^2): c * mesh.cell_size()**2 with c between
+        # 0.03 and 0.07 is the dose the integration-point store needs below
+        # Courant one on a Maxwell element, and this cycle needs the same.
+        self.flux_smoothing = 0.0
+        self._flux_var = uw.discretisation.MeshVariable(
+            f"flux_fwd_{inst}", mesh, (1, self.num_components), vtype=VarType.MATRIX,
+            degree=1, continuous=True, varsymbol=rf"{{ F^{{\mathrm{{nodal}}}}_{{ [{inst}] }} }}")
+        self._flux_projection = None
+        self._n_v = 2
+        self._init_coefficient_expressions(1, self.theta, with_exp=True)
+
+    # ------------------------------------------------------------------
+    def _cell_measures(self):
+        """Area (2-D) or volume (3-D) of every cell, in cell order."""
+        dm = self.mesh.dm
+        c0, c1 = dm.getHeightStratum(0)
+        return np.array([dm.computeCellGeometryFVM(c)[0] for c in range(c0, c1)])
+
+    def _boundary_faces(self):
+        """The cells with a face on the domain boundary, and for every such
+        face its owning cell, its centroid and its outward normal (centroid of
+        the face away from the centroid of the cell: outward on a convex cell).
+        The inflow test reads the velocity at these centroids."""
+        dm = self.mesh.dm
+        d = self.mesh.dim
+        c0, c1 = dm.getHeightStratum(0)
+        f0, f1 = dm.getHeightStratum(1)
+        mask = np.zeros(c1 - c0, dtype=bool)
+        cells, centroids, normals = [], [], []
+        for f in range(f0, f1):
+            if dm.getSupportSize(f) != 1:
+                continue
+            c = dm.getSupport(f)[0] - c0
+            mask[c] = True
+            _, fc, _ = dm.computeCellGeometryFVM(f)
+            _, cc, _ = dm.computeCellGeometryFVM(c + c0)
+            n = np.asarray(fc[:d]) - np.asarray(cc[:d])
+            cells.append(c); centroids.append(np.asarray(fc[:d])); normals.append(n / np.linalg.norm(n))
+        return (mask, np.array(cells, dtype=int),
+                np.array(centroids).reshape(-1, d), np.array(normals).reshape(-1, d))
+
+    def _inflow_cells(self, trace, evalf):
+        """Boundary cells whose boundary face has fluid entering now."""
+        mask = np.zeros(self._cell_measure.size, dtype=bool)
+        if self._bface_cell.size == 0:
+            return mask
+        v = trace.velocity_at(trace.V_matrix(), self._bface_centroid, use_global=True, evalf=evalf)
+        entering = np.einsum("fi,fi->f", np.asarray(v).reshape(-1, self.mesh.dim), self._bface_normal) < 0.0
+        mask[self._bface_cell[entering]] = True
+        return mask
+
+    @property
+    def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        new_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        expected = _psi_shape_for(self.vtype, self.mesh.cdim)
+        if expected is not None and tuple(new_fn.shape) != expected:
+            raise ValueError(f"ForwardSemiLagrangian: psi_fn has shape {tuple(new_fn.shape)}, needs {expected}")
+        self._psi_fn = new_fn
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+        super()._object_viewer()
+        display(Latex(r"$\quad\psi = $ " + self.psi_fn._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{v} = $ " + sympy.Matrix(self.V_fn)._repr_latex_()))
+        display(Latex(r"$\quad$Carried forward from the integration points, fitted per cell"))
+
+    def _evaluate_at_launch(self, expr):
+        """Every stored component of ``expr`` at the launch points, as columns,
+        through the continuous P1 projection."""
+        expr = sympy.Matrix(expr)
+        if self._flux_projection is None:
+            self._flux_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=self._flux_var, n_components=self.num_components)
+        self._flux_projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in self._components]])
+        self._flux_projection.smoothing = self.flux_smoothing
+        self._flux_projection.solve()
+        out = np.empty_like(self._launch_values)
+        for k in range(self.num_components):
+            out[:, k] = _to_nondim_ndarray(uw.function.evaluate(self._flux_var.sym[0, k], self._launch)).reshape(-1)
+        return out
+
+    def carried_tensors(self, level: int = 0):
+        """The carried values as one tensor per launch point, non-dimensional,
+        with the points: ``(values[n, d, d], coords[n, cdim])``."""
+        dim = self.mesh.dim
+        values = np.zeros((self._launch.shape[0], dim, dim))
+        for k, (i, j) in enumerate(self._components):
+            values[:, i, j] = self._launch_values[:, k]
+            if self.vtype == VarType.SYM_TENSOR:
+                values[:, j, i] = self._launch_values[:, k]
+        return values, self._launch
+
+    # ------------------------------------------------------------------
+    def _fit_arrivals(self, X, values, cell=None, inflow=None):
+        """Weighted least-squares linear fit of the carried values at their
+        arrival points, cell by cell, written into ``psi_star[0]``.
+
+        ``cell`` is the owning cell of each arrival when it is known exactly
+        (the launch points themselves); otherwise the arrivals are located,
+        and a point outside the domain (it left through an outflow) is dropped.
+        A boundary cell that lost more points than it received has the
+        missing share filled with the inflow value at its own dofs, weighted
+        by that share: the state of the part of the cell nothing has reached
+        is the incoming fluid. A cell whose arrivals cannot determine a linear
+        fit keeps its previous one.
+        """
+        mesh = self.mesh
+        d = mesh.dim
+        npar = d + 1
+        ncell = self._cell_measure.size
+        if cell is None:
+            cell = np.asarray(mesh.get_closest_local_cells(X)).reshape(-1)
+            inside = cell >= 0
+            X, values, w, cell = X[inside], values[inside], self._launch_weights[inside], cell[inside]
+        else:
+            w = self._launch_weights
+        centroid = np.asarray(mesh._centroids)[:, :d]
+        h = np.sqrt(self._cell_measure) if d == 2 else np.cbrt(self._cell_measure)
+        # centred on the cell and scaled by its size, so the constant is c0 and the
+        # moment matrix is well conditioned exactly when the arrivals span the cell
+        A = np.concatenate([np.ones((X.shape[0], 1)), (X[:, :d] - centroid[cell]) / h[cell, None]], axis=1)
+        M = np.zeros((ncell, npar, npar))
+        np.add.at(M, cell, w[:, None, None] * A[:, :, None] * A[:, None, :])
+        R = np.zeros((ncell, npar, self.num_components))
+        np.add.at(R, cell, w[:, None, None] * A[:, :, None] * values[:, None, :])
+        received = np.bincount(cell, weights=w, minlength=ncell)
+        dofs = np.asarray(self.psi_star[0].coords_nd).reshape(-1, mesh.cdim)
+        ndof = dofs.shape[0] // ncell
+        dofs = dofs.reshape(ncell, ndof, mesh.cdim)
+        Adof = np.concatenate([np.ones((ncell, ndof, 1)), (dofs[:, :, :d] - centroid[:, None, :]) / h[:, None, None]], axis=2)
+        if self._inflow_value is not None and inflow is not None:
+            deficit = np.clip(self._cell_measure - received, 0.0, None) * inflow
+            fed = deficit > 0.0
+            if fed.any():
+                inflow = np.column_stack([
+                    _to_nondim_ndarray(uw.function.evaluate(self._inflow_value[i, j],
+                                                            dofs[fed].reshape(-1, mesh.cdim))).reshape(-1)
+                    for (i, j) in self._components]).reshape(fed.sum(), ndof, self.num_components)
+                wi = (deficit[fed] / ndof)[:, None]                                        # per dof
+                Af = Adof[fed]
+                M[fed] += np.einsum("cq,cqi,cqj->cij", np.broadcast_to(wi, (fed.sum(), ndof)), Af, Af)
+                R[fed] += np.einsum("cq,cqi,cqk->cik", np.broadcast_to(wi, (fed.sum(), ndof)), Af, inflow)
+        # with the columns scaled, the eigenvalue ratio of the moment matrix is a
+        # conditioning number: 1e-6 rejects a cell whose arrivals sit on a line
+        ev = np.linalg.eigvalsh(M)
+        fit_ok = ev[:, 0] > 1.0e-6 * np.maximum(ev[:, -1], 1.0e-300)
+        beta = np.zeros_like(R)
+        beta[fit_ok] = np.linalg.solve(M[fit_ok], R[fit_ok])
+        fitted = np.einsum("cqi,cik->cqk", Adof, beta).reshape(ncell * ndof, self.num_components)
+        rows_ok = np.repeat(fit_ok, ndof)
+        for k in range(self.num_components):
+            column = np.array(self.psi_star[0].data[:, k])
+            column[rows_ok] = fitted[rows_ok, k]
+            self.psi_star[0].data[:, k] = column
+
+    def initialise_history(self):
+        """Start from the current field: its values at the launch points, and
+        their fit, so ``bdf()`` is zero on the first step.
+
+        TODO(BUG): a history placed through commit_flux_to_history before the
+        first carry is overwritten here (the integration-point flavour has the
+        same defect): a restart seeded that way starts from psi_fn."""
+        self.characteristics.initialise_levels(self._n_v)
+        self._launch_values = self._evaluate_at_launch(self._psi_fn)
+        self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)
+        self._history_initialised = True
+
+    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True, **_ignored):
+        """Carry the launch values forward one step and fit the arrivals.
+
+        ``store_result=False`` says the launch values were placed by
+        :meth:`commit_flux_to_history` (the viscoelastic case); otherwise the
+        tracked field is read at the launch points first.
+        """
+        self._dt = dt
+        if not self._history_initialised:
+            self.initialise_history()
+        _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        trace = self.characteristics
+        if self._owns_characteristics:
+            trace.begin_step(dt)
+        if store_result:
+            self._launch_values = self._evaluate_at_launch(self._psi_fn)
+        # forward along the same characteristic the backward flavours trace, with
+        # the step reversed: start velocity v^n, mid-time velocity at n+1/2. The
+        # end point is not restored to the domain: a point that leaves has left.
+        key = (_basis_key_of(self.psi_star[0]), "launch")
+        X = trace.departure_points(key, self._launch, (("first", 0, -float(dt)),),
+                                   evalf=evalf, clamp_final=False)
+        self._fit_arrivals(np.asarray(X), self._launch_values, inflow=self._inflow_cells(trace, evalf))
+        if self._owns_characteristics:
+            trace.finish_step()
+
+    def update(self, dt, evalf=False, verbose=False, **kwargs):
+        self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
+
+    def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
+        self._dt = dt
+        self._dt_history[0] = dt
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
+
+    def commit_flux_to_history(self, flux, verbose=False):
+        """Read the new flux at the launch points, and leave its fit in the
+        slot until the next carry, as the other flavours do."""
+        self._launch_values = self._evaluate_at_launch(flux)
+        self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)

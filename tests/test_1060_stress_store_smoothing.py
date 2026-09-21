@@ -29,7 +29,7 @@ def _cell_scale_content(history, mesh):
     return rms(raw - fit) / max(rms(raw), 1.0e-300)
 
 
-def _waters_king_ip(store_smoothing, res=16, dt=0.0125, t_end=2.0):
+def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transport="integration_point"):
     """Waters and King start-up on the integration-point history, pure Maxwell,
     below Courant one. Returns u at the centre at t 1 and the cell-scale content
     of the carried stress at t 1 and at t_end."""
@@ -39,7 +39,7 @@ def _waters_king_ip(store_smoothing, res=16, dt=0.0125, t_end=2.0):
     v = uw.discretisation.MeshVariable(f"U_wk{store_smoothing}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P_wk{store_smoothing}", mesh, 1, degree=1)
     ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)
-    ns.stress_transport = "integration_point"
+    ns.stress_transport = transport
     ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         ns.Unknowns, order=1, integrator="bdf")
     ns.constitutive_model.Parameters.shear_viscosity_0 = eta
@@ -48,17 +48,21 @@ def _waters_king_ip(store_smoothing, res=16, dt=0.0125, t_end=2.0):
     ns.add_dirichlet_bc((0.0, 0.0), "Top"); ns.add_dirichlet_bc((0.0, 0.0), "Bottom")
     ns.add_dirichlet_bc((sympy.oo, 0.0), "Left"); ns.add_dirichlet_bc((sympy.oo, 0.0), "Right")
     ns.bodyforce = sympy.Matrix([[G, 0.0]]); ns.tolerance = 1e-6
-    ns.DFDt.store_smoothing = store_smoothing
+    if transport == "integration_point":
+        ns.DFDt.store_smoothing = store_smoothing
+    elif transport == "forward":
+        ns.DFDt.flux_smoothing = store_smoothing * mesh.cell_size() ** 2
     # The content has to be read after the trace-back and before the solve: after
     # the store the point values are a P1 field sampled at the points and the
     # cell-scale part is zero by construction, whatever the run is doing.
-    latest = {}
-    carry = ns.DFDt.update_pre_solve
-    def carry_and_measure(*args, **kwargs):
-        out = carry(*args, **kwargs)
-        latest["content"] = _cell_scale_content(ns.DFDt, mesh)
-        return out
-    ns.DFDt.update_pre_solve = carry_and_measure
+    latest = {"content": float("nan")}
+    if transport == "integration_point":
+        carry = ns.DFDt.update_pre_solve
+        def carry_and_measure(*args, **kwargs):
+            out = carry(*args, **kwargs)
+            latest["content"] = _cell_scale_content(ns.DFDt, mesh)
+            return out
+        ns.DFDt.update_pre_solve = carry_and_measure
     centre = np.array([[0.0, 0.0]])
     content = {}
     u1 = None
@@ -69,7 +73,8 @@ def _waters_king_ip(store_smoothing, res=16, dt=0.0125, t_end=2.0):
             u1 = float(np.asarray(uw.function.evaluate(v.sym[0], centre)).reshape(-1)[0])
             content[1.0] = latest["content"]
     content[t_end] = latest["content"]
-    return u1, content
+    u_end = float(np.asarray(uw.function.evaluate(v.sym[0], centre)).reshape(-1)[0])
+    return u1, content, u_end
 
 
 def test_the_store_smoothing_holds_the_cell_scale_mode_of_the_integration_point_history():
@@ -80,8 +85,8 @@ def test_the_store_smoothing_holds_the_cell_scale_mode_of_the_integration_point_
     the store it stays at its floor. The cost on the centre velocity at t 1
     (0.9617 nodal) scales with h^2: half a percent at 1/32, a few percent here.
     """
-    u_plain, plain = _waters_king_ip(0.0)
-    u_smooth, smooth = _waters_king_ip(0.07)
+    u_plain, plain, _ = waters_king_start_up(0.0)
+    u_smooth, smooth, _ = waters_king_start_up(0.07)
     assert plain[2.0] / plain[1.0] > 4.0                # the mode is growing
     assert smooth[2.0] < plain[1.0]                     # held below where the plain run started
     assert smooth[2.0] < plain[2.0] / 4.0
