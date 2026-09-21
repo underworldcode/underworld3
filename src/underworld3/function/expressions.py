@@ -700,9 +700,19 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         instance_no = UWexpression._expr_count
 
-        # If the expression already exists, return it
+        # If the expression already exists, return it — that IS the container
+        # contract: identity is the name, so the same name reaches the same
+        # object and a formula written against it keeps seeing later edits.
+        #
+        # Flagged so __init__ knows it is running on an object that already has
+        # contents. Construction must not silently overwrite them: changing what
+        # a container holds is what `.sym =` is for, and a second construction
+        # that quietly replaced the value would reach every formula already
+        # written against the name, from a line that reads like a declaration.
         if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
-            return UWexpression._expr_names[name]
+            existing = UWexpression._expr_names[name]
+            existing._reused_construction = True
+            return existing
 
         # Check both dicts for name collisions
         name_exists_persistent = name in UWexpression._expr_names
@@ -851,6 +861,27 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         """
         return self._display_name
 
+    def _holds_same_value(self, incoming) -> bool:
+        """Is a re-declaration asking for what this container already holds?
+
+        Declaring the same thing twice changes nothing and no formula written
+        against the name can tell — a factory that rebuilds an unmutated problem
+        in one process is doing exactly that, and refusing it would be noise.
+        Declaring something DIFFERENT is the case that must not pass silently.
+
+        Anything that cannot be compared counts as different, so the loud path
+        is the default: a container whose contents we cannot reason about is the
+        last one to overwrite quietly.
+        """
+        try:
+            if isinstance(incoming, UWexpression):
+                incoming = incoming._sym
+            if isinstance(incoming, (sympy.Basic, sympy.matrices.MatrixBase)):
+                return bool(incoming == self._sym)
+            return bool(sympy.sympify(incoming) == self._sym)
+        except Exception:
+            return False
+
     def __init__(
         self,
         name,
@@ -860,6 +891,27 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         units=None,  # Units for wrapping the value
         **kwargs,
     ):
+        # Running on a container that already exists (see __new__): its contents
+        # belong to whoever set them, so leave them alone and say so. Anything
+        # that wants to change them has `.sym =`.
+        if getattr(self, "_reused_construction", False):
+            self._reused_construction = False
+            incoming = sym if sym is not None else value
+            if incoming is not None and not self._holds_same_value(incoming):
+                raise ValueError(
+                    f"expression {name!r} already exists and holds "
+                    f"{self._sym!r}. A UW expression is a persistent container "
+                    f"whose identity is its NAME, so this call returns the "
+                    f"existing object rather than making a new one — and "
+                    f"overwriting its contents here would silently change every "
+                    f"formula already written against {name!r}, from a line "
+                    f"that reads like a declaration.\n"
+                    f"  to change what it holds:   {name}.sym = <value>\n"
+                    f"  to fetch it:               uw.expression({name!r})\n"
+                    f"  for an independent symbol: choose another name"
+                )
+            return
+
         # Handle legacy 'value' parameter
         if value is not None and sym is None:
             import warnings
