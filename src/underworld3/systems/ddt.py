@@ -161,7 +161,6 @@ class DDtForwardState(_DDtCoreState):
     field and the launch values are mesh variables captured by name."""
     psi_star_var_names: list[str] = field(default_factory=list)
     launch_var_name: str = ""
-    flux_smoothing: Any = 0.0
 
 
 @dataclass
@@ -4648,7 +4647,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     history needs.
 
     What is not here (yet): units-aware velocity reduction, ALE / old-frame
-    trace-back, forcing history, checkpoint state. Use
+    trace-back, forcing history. Use
     :class:`SemiLagrangian` for those, or :class:`Lagrangian_Swarm` when the
     history should ride on particles rather than on the rule.
 
@@ -5368,9 +5367,9 @@ class ForwardSemiLagrangian(_DDtBase):
 
     @_launch_values.setter
     def _launch_values(self, values):
-        values = np.asarray(values).reshape(self._launch.shape[0], self.num_components)
-        for k in range(self.num_components):
-            self._launch_var.data[:, k] = values[:, k]
+        # one write, one PETSc flush (a per-column write is a collective
+        # round trip per component)
+        self._launch_var.data[:, :] = np.asarray(values).reshape(self._launch.shape[0], self.num_components)
 
     @property
     def state(self) -> "DDtForwardState":
@@ -5378,7 +5377,6 @@ class ForwardSemiLagrangian(_DDtBase):
             **self._core_state_kwargs(),
             psi_star_var_names=[ps.clean_name for ps in self.psi_star],
             launch_var_name=self._launch_var.clean_name,
-            flux_smoothing=self.flux_smoothing,
         )
 
     @state.setter
@@ -5388,7 +5386,6 @@ class ForwardSemiLagrangian(_DDtBase):
         if s.launch_var_name != self._launch_var.clean_name:
             raise ValueError("launch variable name changed since snapshot")
         self._restore_core_state(s, am_theta=self.theta)
-        self.flux_smoothing = s.flux_smoothing
 
     # ------------------------------------------------------------------
     def _cell_measures(self):

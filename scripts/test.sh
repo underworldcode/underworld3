@@ -140,6 +140,12 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # unbatched file would have closed the issue without closing the gap.
   # level_2/tier_b, ~55s serial; passes at np=1 and np=2.
   $PYTEST tests/test_1072_free_surface_spherical.py || status=1
+  # test_1063 is pulled forward out of the same unbatched group for the same
+  # reason: it is the only guard on a viscoelastic stress history surviving
+  # save_state/load_state (level_1/tier_a, ~16 s). Its siblings stay out:
+  # test_1060 (store smoothing below Courant one, #737) runs 15 min and
+  # test_1061 (forward history on Waters-King) longer; both are level_2/3.
+  $PYTEST tests/test_1063_stress_history_restart.py || status=1
 
   # Diffusion / Advection tests
   $PYTEST tests/test_1100*py || status=1
