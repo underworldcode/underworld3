@@ -3583,7 +3583,13 @@ class Mesh(Stateful, uw_object):
             return cache[1], cache[2]
 
         cdim = self.cdim
-        facets, opp = _boundary_facets(self, cdim)
+        # The DM's boundary label separates domain faces from partition faces;
+        # the topological search (a facet in exactly one local cell) cannot, and
+        # on a distributed mesh would restore every foot crossing a rank seam to
+        # that seam. Only a mesh without the label falls back to the search.
+        facets, opp = self._labelled_boundary_facets()
+        if facets is None:
+            facets, opp = _boundary_facets(self, cdim)
         if facets is None:                      # non-simplicial: no general restore
             self._bnd_restore_cache = (stamp, None, None)
             return None, None
@@ -3600,6 +3606,31 @@ class Mesh(Stateful, uw_object):
         n[flip] *= -1.0
         self._bnd_restore_cache = (stamp, fpts, n)
         return fpts, n
+
+    def _labelled_boundary_facets(self):
+        """Boundary facets and the opposite cell vertex from the DM's own
+        ``All_Boundaries`` label: ``(facets, opp)`` as :func:`_boundary_facets`
+        returns them (vertex indices in point order), or ``(None, None)`` when
+        the label is absent or the mesh is not simplicial."""
+        dm = self.dm
+        if not dm.hasLabel("All_Boundaries"):
+            return None, None
+        label = dm.getLabel("All_Boundaries")
+        d = self.dim
+        f0, f1 = dm.getHeightStratum(1)
+        v0, v1 = dm.getDepthStratum(0)
+        facets, opp = [], []
+        for f in range(f0, f1):
+            if dm.getSupportSize(f) != 1 or label.getValue(f) == -1:
+                continue
+            fverts = [p for p in dm.getTransitiveClosure(f)[0] if v0 <= p < v1]
+            cverts = [p for p in dm.getTransitiveClosure(dm.getSupport(f)[0])[0] if v0 <= p < v1]
+            if len(fverts) != d or len(cverts) != d + 1:
+                return None, None
+            facets.append([p - v0 for p in fverts])
+            opp.append([p for p in cverts if p not in fverts][0] - v0)
+        return (numpy.array(facets, dtype=int).reshape(-1, d),
+                numpy.array(opp, dtype=int).reshape(-1))
 
     def _facet_return_coords_to_bounds(self, coords):
         """General restore: snap points lying OUTSIDE the current boundary to just inside
@@ -3624,8 +3655,10 @@ class Mesh(Stateful, uw_object):
         owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
         nvec = nrm[owner]
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
+        # get_min_radius is collective: read it on every rank, not only on the
+        # ranks that have a point to restore
+        eps = 1.0e-3 * float(self.get_min_radius())
         if numpy.any(outside):
-            eps = 1.0e-3 * float(self.get_min_radius())
             pts[outside] = closest[outside] - eps * nvec[outside]
         return pts
 

@@ -15,7 +15,15 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+import itertools
+
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]   # several hundred solves: minutes
+
+_uid = itertools.count()   # every helper names its variables uniquely: a name reused on a new mesh is a trap
+
+# BASELINES for the cases without a closed form, filled from the baseline run (see the ledger)
+VARYING_SL2, VARYING_EU2, VARYING_EU2_REFINED = 0.87325, 0.87206, 0.87563
+NS_ORDER2_XY, CN_ORDER1_XY = 0.70726, 0.64668
 
 COMPONENTS = ((0, 0), (0, 1), (1, 1))
 AMPLITUDES = (1.0, 0.5, -1.0)
@@ -163,8 +171,9 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(16, 8), minCoords=(-width / 2, -height / 2),
         maxCoords=(width / 2, height / 2))
-    v = uw.discretisation.MeshVariable(f"U_{transport}{order}", mesh, mesh.dim, degree=2)
-    p = uw.discretisation.MeshVariable(f"P_{transport}{order}", mesh, 1, degree=1)
+    tag = f"{transport[0]}{order}_{next(_uid)}"
+    v = uw.discretisation.MeshVariable(f"U_{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1)
     if solver == "stokes":
         stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
     else:
@@ -279,7 +288,7 @@ def _sheared_varying_modulus(transport, order, steps=10, dt=0.1, res=6):
         elementRes=(2 * res, res), minCoords=(-width / 2, -height / 2),
         maxCoords=(width / 2, height / 2))
     x, _y = mesh.X
-    tag = f"{transport[0]}{order}{steps}"
+    tag = f"{transport[0]}{order}{steps}_{next(_uid)}"
     v = uw.discretisation.MeshVariable(f"Uv_{tag}", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable(f"Pv_{tag}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
@@ -312,11 +321,16 @@ def test_the_two_stress_histories_agree_when_the_stress_moves_and_evolves():
     traced, traced_slope = _sheared_varying_modulus("semi_lagrangian", 2)
     grid, grid_slope = _sheared_varying_modulus("eulerian", 2)
     assert traced_slope > 0.1 and grid_slope > 0.1, "the stress must not be uniform"
+    # BASELINES (the L2 norm of the shear stress; see the ledger): each scheme
+    # is held to its own number, not only to the other
+    assert abs(traced - VARYING_SL2) < 1.0e-3 * VARYING_SL2, traced
+    assert abs(grid - VARYING_EU2) < 1.0e-3 * VARYING_EU2, grid
     assert abs(grid - traced) / traced < 5.0e-3, (grid, traced)
 
     # halving the step moves each scheme by no more than they differ from
     # each other: the gap between them is discretisation, not a defect
     refined, _ = _sheared_varying_modulus("eulerian", 2, steps=20, dt=0.05)
+    assert abs(refined - VARYING_EU2_REFINED) < 1.0e-3 * VARYING_EU2_REFINED, refined
     assert abs(refined - grid) / grid < 5.0e-3, (refined, grid)
 
 
@@ -351,7 +365,9 @@ def test_navier_stokes_carries_a_viscoelastic_stress_either_way():
     traced_kind, traced = run("semi_lagrangian")
     grid_kind, grid = run("eulerian")
     assert traced_kind == "SemiLagrangian" and grid_kind == "EulerianSUPG"
-    assert traced > 0.1 and abs(grid - traced) / traced < 1.0e-3, (grid, traced)
+    # BASELINE: the shear stress at the origin after ten steps (see the ledger)
+    assert abs(traced - NS_ORDER2_XY) < 1.0e-3 * NS_ORDER2_XY, traced
+    assert abs(grid - traced) / traced < 1.0e-3, (grid, traced)
 
 
 def test_the_theta_rule_takes_its_stored_flux_from_the_stress_history():
@@ -408,10 +424,12 @@ def test_crank_nicolson_carries_a_viscoelastic_stress_either_way():
             ns.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
 
     traced, grid = run("semi_lagrangian"), run("eulerian")
-    assert traced > 0.1 and abs(grid - traced) / traced < 1.0e-3, (grid, traced)
+    # BASELINE: the shear stress at the origin after ten steps (see the ledger)
+    assert abs(traced - CN_ORDER1_XY) < 1.0e-3 * CN_ORDER1_XY, traced
+    assert abs(grid - traced) / traced < 1.0e-3, (grid, traced)
 
 
-def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate():
+def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate(monkeypatch):
     """DEVSS adds 2 eta_a (edot - D) to the momentum flux with D the projected
     strain rate. On the uniform Maxwell shear box D equals edot exactly, so the
     term must vanish and the answer must not move for any eta_a; and it must be
@@ -428,11 +446,9 @@ def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate():
         def patched(self, *a, **k):
             original(self, *a, **k)
             self.devss_viscosity = 1.0
-        uw.systems.Stokes.__init__ = patched
-        try:
+        with monkeypatch.context() as m:
+            m.setattr(uw.systems.Stokes, "__init__", patched)
             return builder(*args, **kw)
-        finally:
-            uw.systems.Stokes.__init__ = original
 
     _kind, on, _ = with_devss(_maxwell_shear, "integration_point", 1)
     assert abs(on - off) < 1e-8 * abs(exact), (on, off)      # the pair cancelled
@@ -503,7 +519,13 @@ def test_a_preset_velocity_gives_both_integrators_the_same_first_stress():
     first-order integrators agree to O(dt / t_r)."""
     _, bdf, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="bdf", initial_velocity=True)
     _, etd, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="etd", initial_velocity=True)
-    assert abs(etd - bdf) < 0.05 * abs(bdf), (etd, bdf)
+    # gammadot = 1, eta = lambda = 1, dt = 0.1. The history's first level is the
+    # constitutive flux of the preset velocity (#740), so one step gives
+    # BDF-1:  eta_eff gdot (1 + eta_eff / (mu dt)) = (1/11)(1 + 10/11) = 21/121
+    # ETD-1:  eta gdot (1 - e^{-dt/lambda}) (1 + e^{-dt/lambda}) = 1 - e^{-0.2}
+    # The profile is linear, so P2 holds it exactly; only the solve tolerance is left.
+    assert abs(bdf - 21.0 / 121.0) < 1.0e-4, bdf
+    assert abs(etd - (1.0 - np.exp(-0.2))) < 1.0e-4, etd
 
 
 def test_the_integration_point_history_takes_the_inflow_value_at_an_inlet():
@@ -563,14 +585,50 @@ def test_the_upper_convected_element_builds_the_first_normal_stress_in_shear(tra
     assert abs(n1_passive) < 1e-6 * n1_exact
 
 
+def _oldroyd_channel_first_step(eta_s, dt=0.1):
+    """Plane Poiseuille flow of an Oldroyd-B fluid from rest, one BDF-1 step:
+    the stress history is zero, so the momentum equation sees the viscosity
+    eta_s + eta_p / (1 + lambda / dt) and the centreline speed is f H^2 / 8
+    over it. A P2 velocity holds the parabola exactly."""
+    eta_p, G, f, H = 1.0, 1.0, 1.0, 1.0
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8), minCoords=(-1.0, -H / 2), maxCoords=(1.0, H / 2))
+    tag = next(_uid)
+    v = uw.discretisation.MeshVariable(f"U_ch_{tag}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_ch_{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=1)
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_p
+    stokes.constitutive_model.Parameters.shear_modulus = G
+    stokes.constitutive_model.Parameters.solvent_viscosity = eta_s
+    stokes.constitutive_model.Parameters.dt_elastic = dt
+    stokes.add_dirichlet_bc((0.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.bodyforce = sympy.Matrix([[f, 0.0]])
+    stokes.tolerance = 1.0e-10
+    stokes.solve(timestep=dt, zero_init_guess=False)
+    u_c = float(np.asarray(uw.function.evaluate(v.sym[0], np.array([[0.0, 0.0]]))).reshape(-1)[0])
+    eta_eff = eta_p / (1.0 + (eta_p / G) / dt)
+    return u_c, f * H * H / (8.0 * (eta_s + eta_eff))
+
+
 def test_a_solvent_viscosity_adds_its_newtonian_stress():
     """Oldroyd-B in shear: the total shear stress is the solvent's eta_s gdot at
-    once plus the polymer's eta_p gdot (1 - e^{-t/lambda}) building up."""
+    once plus the polymer's eta_p gdot (1 - e^{-t/lambda}) building up; and the
+    solvent's stress has to be in the ASSEMBLED momentum flux, which a uniform
+    shear cannot tell (any uniform stress satisfies momentum): the channel
+    flow's speed is set by the total viscosity."""
     steps, dt, eta_s = 20, 0.1, 0.5
     _, polymer_xy, polymer_exact, _, solvent_xy = _maxwell_shear("semi_lagrangian", 1, steps=steps, dt=dt, solvent=eta_s)
     gdot = 1.0
     assert abs(polymer_xy - polymer_exact) / polymer_exact < 0.02, (polymer_xy, polymer_exact)
     assert abs(solvent_xy - eta_s * gdot) < 1e-6, solvent_xy
+    with_solvent, exact_with = _oldroyd_channel_first_step(eta_s)
+    without, exact_without = _oldroyd_channel_first_step(0.0)
+    assert abs(with_solvent - exact_with) < 1.0e-6 * exact_with, (with_solvent, exact_with)
+    assert abs(without - exact_without) < 1.0e-6 * exact_without, (without, exact_without)
+    assert without > 5.0 * with_solvent   # the solvent term is live in the assembly
 
 
 # ----- Health of the carried stress and the store smoothing (#737, #768) -----
@@ -588,8 +646,9 @@ def _one_shear_step(transport, dt=1.0, objective_rate="none"):
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(16, 8), minCoords=(-width / 2, -height / 2),
         maxCoords=(width / 2, height / 2))
-    v = uw.discretisation.MeshVariable(f"U_h_{transport}", mesh, mesh.dim, degree=2)
-    p = uw.discretisation.MeshVariable(f"P_h_{transport}", mesh, 1, degree=1)
+    tag = f"{transport[0]}_{next(_uid)}"
+    v = uw.discretisation.MeshVariable(f"U_h_{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_h_{tag}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
@@ -606,7 +665,7 @@ def _one_shear_step(transport, dt=1.0, objective_rate="none"):
     return stokes
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point"])
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward"])
 def test_the_conformation_after_one_shear_step_is_one_minus_half_the_step(transport):
     stokes = _one_shear_step(transport, dt=1.0)
     health = stokes.constitutive_model.conformation_min_eigenvalue()
@@ -647,7 +706,7 @@ def test_the_conformation_check_sees_a_lost_conformation():
     assert health["where"] is not None
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point"])
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward"])
 def test_the_elastic_timestep_is_the_safety_factor_over_the_shear_rate(transport):
     stokes = _one_shear_step(transport, dt=1.0, objective_rate="upper_convected")
     # gammadot = 2 speed / height = 1 everywhere: dt_max = safety / 1. The rate is

@@ -427,7 +427,11 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             if stress_history is None:
                 total = total + w * self._viscous_stress(u_k)
             elif level < len(stress_history.psi_star):
-                total = total + w * sympy.Matrix(stress_history.psi_star[level].sym)
+                # the history carries the memory part only; a solvent viscosity
+                # is rebuilt from the stored velocity, as the new level has it
+                eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
+                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
+                total = total + w * (sympy.Matrix(stress_history.psi_star[level].sym) + solvent)
             else:
                 raise ValueError(
                     f"the time scheme weights the flux at level {level + 1}, but the "

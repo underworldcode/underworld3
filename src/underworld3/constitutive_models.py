@@ -2112,6 +2112,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def E_eff(self):
         r"""Effective strain rate including elastic-history coupling.
 
+        With an objective rate the newest level also contributes the explicit
+        source :math:`S(\sigma^*)/(2\mu)` (see :meth:`_objective_term`).
+
         For BDF integration:
 
         .. math::
@@ -2165,10 +2168,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
         for i in range(DDt.order):
             E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
-        # objective rate on the newest level, with that level's weight: the
-        # flux gains c dt S(sigma*), c = eta_eff/(mu dt), so E_eff gains
-        # S/(2 mu) times the level-0 weight (-c1 = 1 for BDF-1).
-        E += -bdf_cs[0] * self._objective_term(DDt.psi_star[0].sym) / (2 * self.Parameters.shear_modulus)
+        # objective rate on the newest level, explicit and first order: the
+        # constitutive law is sigma + (eta/mu)(Dsigma/Dt - S) = 2 eta E, so the
+        # flux gains (eta/mu) S(sigma*) and E_eff gains S/(2 mu) with weight
+        # ONE whatever the BDF order (the BDF weights belong to the time
+        # derivative, not to the source; -c1 = 2 at order 2 would double it).
+        E += self._objective_term(DDt.psi_star[0].sym) / (2 * self.Parameters.shear_modulus)
         self._E_eff.sym = E
         return self._E_eff
 
@@ -2199,8 +2204,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if DDt is None:
             raise RuntimeError("the model has no stress history yet: assign it to a solver and solve once")
         if not hasattr(DDt, "carried_tensors"):
-            raise NotImplementedError(f"{type(DDt).__name__} carries the stress on particles; "
-                                      "the conformation check reads a per-point tensor history")
+            raise NotImplementedError(f"{type(DDt).__name__} does not expose the carried stress as "
+                                      "one tensor per point; the conformation check reads a "
+                                      "per-point tensor history (the trace-back flavours)")
         return DDt.carried_tensors()
 
     def max_elastic_timestep(self, safety: float = 0.3) -> float:
@@ -2216,15 +2222,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         far-field mesh, where the wall shear rate is ten times the far-field
         one), and no operator split recovers it. A run should take
         ``dt = min(courant_dt, model.max_elastic_timestep())``; 0.3 keeps the
-        conformation positive on the cylinder to Wi 0.6.
+        conformation positive on the cylinder to Wi 0.6. Like ``estimate_dt``,
+        the value is a physical time when reference scales are active and a
+        plain number otherwise, so the two can be compared directly.
 
         The strain-rate measure is :math:`\dot\gamma = \sqrt{2\,\mathbf{D}:\mathbf{D}}`,
         the shear rate in simple shear, read from the continuous projection of
         the strain rate (what ``evaluate`` returns for a gradient) at the points
         of the carried stress. That projection sits a little below the per-cell
-        gradient at a wall, which the safety factor covers. Non-dimensional,
-        reduced over ranks. ``inf`` when there is no objective rate (nothing
-        stretches) or no flow.
+        gradient at a wall, which the safety factor covers. Reduced over
+        ranks. ``inf`` when there is no objective rate (nothing stretches) or
+        no flow; a velocity that is not finite raises rather than returning
+        a silent ``nan``.
         """
         if self._objective_rate == "none":
             return float("inf")
@@ -2235,8 +2244,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         from underworld3.systems.ddt import _to_nondim_ndarray
         values = np.asarray(_to_nondim_ndarray(uw.function.evaluate(rate, points))).reshape(-1)
         local = float(np.abs(values).max()) if values.size else 0.0
+        finite = bool(np.all(np.isfinite(values))) if values.size else True
         peak = float(uw.mpi.comm.allreduce(local, op=uw.MPI.MAX))
-        return float("inf") if peak == 0.0 else float(safety) / peak
+        finite = bool(uw.mpi.comm.allreduce(finite, op=uw.MPI.LAND))
+        if not finite:
+            raise RuntimeError("max_elastic_timestep: the strain rate is not finite")
+        if peak == 0.0:
+            return float("inf")
+        dt = float(safety) / peak
+        try:
+            return uw.dimensionalise(dt, {"[time]": 1})
+        except Exception:
+            return dt
 
     def conformation_min_eigenvalue(self):
         r"""Smallest eigenvalue of the conformation :math:`c = \sigma^*/G + I` on

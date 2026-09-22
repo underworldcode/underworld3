@@ -85,6 +85,15 @@ def expression(*args, **kwargs):
     return public_expression(*args, _unique_name_generation=True, **kwargs)
 
 
+def _history_psi_fn(constitutive_model):
+    """The flux a stress history carries: the model's memory part when it
+    separates one out (a solvent viscosity is rebuilt each step), else the
+    whole flux. Transposed to the history's row layout."""
+    if hasattr(constitutive_model, "history_flux"):
+        return constitutive_model.history_flux.T
+    return constitutive_model.flux.T
+
+
 def _as_scalar(value):
     """Collapse a zero-dimensional array to a plain scalar, leave the rest.
 
@@ -1098,10 +1107,7 @@ class SNES_TransientDarcy(SNES_Darcy):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
-            # D starts from the velocity as it is now, so the DEVSS pair
-            # cancels on the first step as it does on every later one.
-            self._devss_refresh()
+            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
@@ -1336,12 +1342,6 @@ def _penalty_value(penalty_expression):
 
 
 class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
-    #: DEVSS lag iterations on a plain Stokes solve: D is lagged data, so it has to
-    #: catch up with the strain rate before the added and subtracted terms cancel
-    #: (#754). Two passes suffice on a linear problem; the cap bounds a nonlinear one.
-    _DEVSS_MAX_LAG_ITERATIONS = 4
-    _DEVSS_LAG_TOLERANCE = 1.0e-8
-
     r"""
     Stokes equation solver for incompressible viscous flow.
 
@@ -1424,6 +1424,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     >>> stokes.bodyforce = [0, -1]  # gravity
     >>> stokes.solve()
     """
+    #: DEVSS lag iterations on a plain Stokes solve: D is lagged data, so it has to
+    #: catch up with the strain rate before the added and subtracted terms cancel
+    #: (#754). Two passes suffice on a linear problem; the cap bounds a nonlinear one.
+    _DEVSS_MAX_LAG_ITERATIONS = 4
+    _DEVSS_LAG_TOLERANCE = 1.0e-8
+
 
     instances = 0
 
@@ -1547,8 +1553,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         there, so it carries one evaluation error and needs no projection. The
         Eulerian one transports the stress on the grid with the same
         streamline-upwind stabilisation the Eulerian solvers use, and gives the
-        same answer on any partition. Set before the constitutive model is
-        assigned, or before calling :meth:`_create_stress_history_ddt`.
+        same answer on any partition. The default is ``"semi_lagrangian"``. Set
+        it before the constitutive model is assigned: assigning the model
+        creates the history, and the choice cannot change after that.
         """
         return getattr(self, "_stress_transport", "semi_lagrangian")
 
@@ -1662,12 +1669,6 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         decided whether to set up leaves the managed multigrid block asking a
         preconditioner for sub-solvers it has not created (#727).
         """
-        if timestep is None:
-            raise ValueError(
-                "timestep is required for viscoelastic solve. "
-                "Call stokes.solve(timestep=dt)"
-            )
-
         # dt_elastic must always equal the solve timestep. The constitutive
         # model's VE formulas (eta_eff, stress history terms) all reference
         # Parameters.dt_elastic. If it differs from the actual timestep,
@@ -1694,7 +1695,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
+            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
+            # D starts from the velocity as it is now, so the DEVSS pair
+            # cancels on the first step as it does on every later one.
+            self._devss_refresh()
 
     def _stress_history_advance(self, timestep, verbose=False, evalf=False):
         """Carry the stress history to where the momentum solve will read it.
@@ -1996,12 +2000,20 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             # velocity just found and solve again — until the pair has settled. On a
             # time-stepping viscoelastic run the same catch-up happens across steps and
             # this loop exits after its check solve.
-            if self._devss_viscosity is not None:
+            # A composed solver (Navier-Stokes) makes several passes through here
+            # per step and refreshes D itself in its post-solve; the lag loop
+            # here is for the single-pass solve.
+            if self._devss_viscosity is not None and not _skip_stress_history:
                 for _ in range(self._DEVSS_MAX_LAG_ITERATIONS):
                     before = np.array(self._devss_D.array, copy=True)
                     self._devss_refresh(verbose=verbose)
-                    moved = np.abs(self._devss_D.array - before).max()
-                    scale = max(np.abs(self._devss_D.array).max(), 1.0e-30)
+                    # the exit test is collective: every rank must take the same
+                    # number of solves, and a rank may hold no dofs at all
+                    D = np.asarray(self._devss_D.array)
+                    moved = float(np.abs(D - before).max()) if D.size else 0.0
+                    scale = float(np.abs(D).max()) if D.size else 0.0
+                    moved = uw.mpi.comm.allreduce(moved, op=uw.MPI.MAX)
+                    scale = max(uw.mpi.comm.allreduce(scale, op=uw.MPI.MAX), 1.0e-30)
                     super().solve(
                         zero_init_guess=False,
                         _force_setup=False,
@@ -4757,7 +4769,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
+            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
@@ -5075,7 +5087,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
+            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
 
@@ -5498,7 +5510,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
+            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
 
         # A viscoelastic constitutive model integrates its stress over the
         # solve step: it has to be told the step, and its integrator

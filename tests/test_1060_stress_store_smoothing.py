@@ -9,7 +9,8 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+
 
 
 def _cell_scale_content(history, mesh):
@@ -29,10 +30,11 @@ def _cell_scale_content(history, mesh):
     return rms(raw - fit) / max(rms(raw), 1.0e-300)
 
 
-def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transport="integration_point"):
+def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transport="integration_point",
+                         return_kind=False):
     """Waters and King start-up on the integration-point history, pure Maxwell,
-    below Courant one. Returns u at the centre at t 1 and the cell-scale content
-    of the carried stress at t 1 and at t_end."""
+    below Courant one. Returns u at the centre at t 1, the cell-scale content
+    of the carried stress at t 1 and at t_end, and u at t_end."""
     h, Lx, eta, lam, G = 1.0, 1.0, 1.0, 1.0, 1.0
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-Lx, -h), maxCoords=(Lx, h),
                                              cellSize=h / res, qdegree=3, regular=True)
@@ -74,21 +76,29 @@ def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transpor
             content[1.0] = latest["content"]
     content[t_end] = latest["content"]
     u_end = float(np.asarray(uw.function.evaluate(v.sym[0], centre)).reshape(-1)[0])
+    if return_kind:
+        return u1, content, u_end, type(ns.DFDt).__name__
     return u1, content, u_end
 
 
 def test_the_store_smoothing_holds_the_cell_scale_mode_of_the_integration_point_history():
     """Waters and King, 1/16, dt 0.0125 (Courant 0.2), pure Maxwell.
 
-    Measured without smoothing: the cell-scale content of the carried stress
-    grows from 5e-6 at t 1 to 4e-5 at t 2 and rings by t 5. With c = 0.07 in
-    the store it stays at its floor. The cost on the centre velocity at t 1
-    (0.9617 nodal) scales with h^2: half a percent at 1/32, a few percent here.
+    The mode grows from round-off, so its AMPLITUDE is the platform's (a
+    checkerboard seeded into the store is projected away within a few steps
+    and does not set it); its GROWTH RATE is the scheme's, about 2.2 per unit
+    time here: measured without smoothing, the cell-scale content of the
+    carried stress goes from 5.8e-6 at t 1 to 5.1e-5 at t 2 (a factor 8.8)
+    and rings by t 5. With c = 0.07 in the store it decays instead
+    (1.3e-6 at t 1, 2.3e-7 at t 2). The cost on the centre velocity at t 1
+    (0.9617 plain) is two percent here and scales with h^2.
     """
-    u_plain, plain, _ = waters_king_start_up(0.0)
+    u_plain, plain, _, kind = waters_king_start_up(0.0, return_kind=True)
     u_smooth, smooth, _ = waters_king_start_up(0.07)
-    assert plain[2.0] / plain[1.0] > 4.0                # the mode is growing
-    assert smooth[2.0] < plain[1.0]                     # held below where the plain run started
-    assert smooth[2.0] < plain[2.0] / 4.0
-    assert abs(u_plain - 0.9617) < 0.005
-    assert abs(u_smooth - u_plain) < 0.03
+    assert kind == "IntegrationPointSemiLagrangian"
+    growth = plain[2.0] / plain[1.0]
+    assert 4.0 < growth < 20.0, growth                  # e^{gamma}, gamma between 1.4 and 3 per unit time
+    assert smooth[2.0] < smooth[1.0], smooth            # held: decaying, not growing
+    assert smooth[2.0] < 1.0e-6, smooth                 # and at the round-off floor
+    assert abs(u_plain - 0.9617) < 0.002, u_plain
+    assert abs(u_smooth - 0.9429) < 0.002, u_smooth

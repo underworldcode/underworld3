@@ -8,7 +8,7 @@ what limits it, and how to keep a run inside those limits.
 
 ```python
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.stress_transport = "integration_point"       # or "semi_lagrangian", "forward", "eulerian"
+stokes.stress_transport = "integration_point"       # or "semi_lagrangian" (the default), "forward", "eulerian"
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
     stokes.Unknowns, order=1, integrator="bdf", objective_rate="upper_convected")
 stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_p
@@ -23,14 +23,15 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 |---|---|---|---|---|
 | `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
 | `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
-| `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9715 / 0.4884 against nodal 0.9757 / 0.4869) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only |
+| `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
-Both trace-back flavours store the stress after every solve by the same global
-L2 projection onto the continuous space. The integration-point flavour differs
-only in where it samples that field: the quadrature points along their own
-characteristics, rather than the vertices. Nothing is carried at the points from
-one step to the next.
+The nodal and integration-point flavours store the stress after every solve by
+the same global L2 projection onto the continuous space. The integration-point
+flavour differs only in where it samples that field: the quadrature points along
+their own characteristics, rather than the vertices. Nothing is carried at the
+points from one step to the next. The forward flavour is the exception: its
+launch values persist, and a cell that receives no fit keeps its previous one.
 
 The momentum equation sees the stress only through $\int \sigma : \nabla v$, so
 only its per-cell P1 projection matters, and the viscous part is rebuilt from
@@ -50,15 +51,19 @@ the split recovers it. On the confined cylinder at Courant one on the far-field
 mesh the wall shear rate is ten times the far-field one: every history lost the
 conformation at the cylinder top in step one, the nodal history then ran away and
 the solve hung, and the integration-point history gave out at Wi 0.6. At a step
-ten times smaller the integration-point history is admissible everywhere to Wi 0.6.
+ten times smaller the integration-point history is admissible everywhere to Wi 0.6,
+and at Wi 0.8 the conformation is mildly indefinite on two percent of its points.
 
 ```python
 dt = min(courant_dt, stokes.constitutive_model.max_elastic_timestep(safety=0.3))
 ```
 
 `max_elastic_timestep` is the safety factor over the largest strain-rate magnitude
-$\sqrt{2\,\mathbf{D}:\mathbf{D}}$ anywhere (the shear rate in simple shear). A
-safety factor of 0.3 kept the conformation positive on the cylinder.
+$\sqrt{2\,\mathbf{D}:\mathbf{D}}$ (the shear rate in simple shear), read from the
+continuous projection of the strain rate at the points of the carried stress. That
+projection sits a little below the per-cell gradient at a wall, which the safety
+factor covers: 0.3 kept the conformation positive on the cylinder. The value is a
+physical time when reference scales are active, as `estimate_dt` is.
 
 ## Watching the conformation
 
@@ -81,8 +86,10 @@ line every step on a new problem.
 Integration-point history, the step set by the wall strain rate
 (`max_elastic_timestep`), store smoothing at c = 0.07 when the solvent viscosity
 is a small fraction of the total, DEVSS off. That combination is characterised on
-Waters and King (regular and irregular meshes) and on the confined cylinder to
-Wi 0.8. The forward flavour is the same scheme with a per-cell fit and interior
+Waters and King (regular and irregular meshes) and on the confined cylinder,
+admissible to Wi 0.6 and mildly indefinite at Wi 0.8. The coefficient 0.023 is
+the least that holds the mode on a regular mesh; 0.07 holds it on an irregular
+one as well and costs half a percent, so it is the recommended value. The forward flavour is the same scheme with a per-cell fit and interior
 launch points, measured at 17 s a step against 28 on the cylinder, parallel by
 handing the arrivals that cross a seam to the rank that owns them; it needs its read-back smoothing (`DFDt.flux_smoothing = 0.023 * mesh.cell_size()**2`). Neither transports its memory without a cell-scale mode below Courant
 one on a Maxwell element: a version that did not ring turned out not to be
@@ -110,8 +117,8 @@ stokes.DFDt.store_smoothing = 0.07        # alpha = 0.07 * mesh.cell_size()**2
 
 Measured on the Waters-King start-up at 1/32 and $\Delta t = 0.01$: $c = 0.023$
 ($\alpha = 10^{-5}$) holds the mode for eight time units at 0.1% on the peak,
-$c = 0.07$ holds it unconditionally at 0.5%, and ten times that costs 3%. The
-irregular mesh needs 0.07. Zero, the default, is the plain projection. When the
+$c = 0.07$ holds it unconditionally at 0.5%, and $c = 0.23$ (ten times 0.023)
+costs 3%. The irregular mesh needs 0.07. Zero, the default, is the plain projection. When the
 solvent viscosity is a fair fraction of the total, as on the cylinder benchmark,
 the smoothing is unnecessary and costs nothing if left on.
 
@@ -138,4 +145,8 @@ also the most demanding case for anything explicit in the stress.
 
 Related: [constitutive models](constitutive-models.md),
 [integration-point variables](integration-point-variables.md),
-[solvers](solvers.md). Tests: `tests/test_1059_stress_transport.py`.
+[solvers](solvers.md). Tests: `tests/test_1059_stress_transport.py` (the
+histories, the conformation check, the elastic timestep), `test_1060` (store
+smoothing below Courant one), `test_1061` (the forward flavour on Waters and
+King), `tests/parallel/test_1062` (the forward flavour at np 2), `test_1063`
+(save and restore).

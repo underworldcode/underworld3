@@ -561,9 +561,8 @@ class _DDtBase(uw_object):
     - **History symbols**: Symbolic stores raw sympy matrices in
       ``psi_star``; the storage-backed flavors store variables and
       contribute ``.sym`` (see :meth:`_history_syms`).
-    - **ETD-2 exp coefficients** exist only on the flavors used by the
-      Maxwell / viscoelastic relaxation path (``with_exp=True``:
-      Symbolic, Eulerian, SemiLagrangian).
+    - **ETD-2 exp coefficients** exist on every flavour that can carry a
+      viscoelastic stress (``with_exp=True``: all but the particle flavours).
     """
 
     def _init_history_tracking(self, order):
@@ -1050,15 +1049,12 @@ class _DDtBase(uw_object):
         :class:`EulerianSUPG` compiles the value into a boundary term of its
         transport solve; :class:`IntegrationPointSemiLagrangian` gives it to a
         departure point restored to the boundary; :class:`ForwardSemiLagrangian`
-        fills the uncovered share of an inflow cell with it. The flavours that trace characteristics
-        back or carry particles are not unconstrained at an inflow, but they do
-        not use this value either: a departure point or a particle that lands
-        outside the domain is restored to the boundary and takes the
-        transported field's value THERE. That is why the traced viscoelastic
-        cylinder is clean at the inlet where the grid one was not. Setting a
-        value on such a flavour says so once rather than dropping it in
-        silence (#733); wiring it in as a true out-of-bounds value is a
-        separate change.
+        fills the uncovered share of an inflow cell with it. The nodal
+        trace-back and the particle flavours do not use it: a departure point
+        or a particle that lands outside the domain is restored to the
+        boundary and takes the transported field's value THERE, which
+        constrains the inflow but is not the value set. Setting a value on
+        such a flavour says so once rather than dropping it in silence (#733).
         """
         return self._inflow_value
 
@@ -1075,8 +1071,9 @@ class _DDtBase(uw_object):
                     f"{type(self).__name__} does not apply inflow_value: it "
                     "restores an out-of-bounds departure point to the boundary "
                     "and reads the transported field there, which constrains "
-                    "the inflow but is not the value you set. Only EulerianSUPG "
-                    "uses it (#733).",
+                    "the inflow but is not the value you set. EulerianSUPG, "
+                    "IntegrationPointSemiLagrangian and ForwardSemiLagrangian "
+                    "apply it (#733).",
                     stacklevel=2)
         self._inflow_value = value
 
@@ -4613,10 +4610,6 @@ def _storage_components(vtype, shape):
 
 
 class IntegrationPointSemiLagrangian(_DDtBase):
-    #: Departure points restored to the boundary take :attr:`inflow_value`
-    #: there when one is set (#745); without one they sample the edge.
-    applies_inflow_value = True
-
     r"""Semi-Lagrangian history stored at the mesh integration points.
 
     The history slots ``psi_star[k]`` are
@@ -4647,7 +4640,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     history needs.
 
     What is not here (yet): units-aware velocity reduction, ALE / old-frame
-    trace-back, forcing history. Use
+    trace-back. Use
     :class:`SemiLagrangian` for those, or :class:`Lagrangian_Swarm` when the
     history should ride on particles rather than on the rule.
 
@@ -4660,6 +4653,10 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
     velocity history caches it by evaluation at each time level.
     """
+
+    #: Departure points restored to the boundary take :attr:`inflow_value`
+    #: there when one is set (#745); without one they sample the edge.
+    applies_inflow_value = True
 
     _commit_projection = None
     _commit_flat = None
@@ -4738,7 +4735,10 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self.with_forcing_history = bool(with_forcing_history)
         self.store_smoothing = store_smoothing
         self.mesh = mesh
-        self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
+        if bcs:
+            raise ValueError("IntegrationPointSemiLagrangian applies no boundary conditions to its "
+                             "store; an inflow is set through inflow_value")
+        self.bcs = []
         self.verbose = verbose
         self.degree = degree
         self.continuous = continuous
@@ -4820,7 +4820,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # :meth:`update_forcing_history` (the constitutive model's post-solve
         # hook), traced in :meth:`_fill_slots`.
         self.forcing_star = None
-        self._forcing_fn = None
         self._forcing_projection = None
         self._forcing_flat = None
         if self.with_forcing_history:
@@ -5094,12 +5093,14 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
     def _write_inflow(self, var, coords, rows):
         """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
-        ``coords`` (the restored boundary positions of those points)."""
+        ``coords`` (the restored positions of ALL the points, so that the
+        read, which is collective when the value holds a field, is made on
+        every rank; only ``rows`` are written)."""
         expr = sympy.Matrix(self._inflow_value)
         for column, (i, j) in enumerate(self._components):
             vals = uw.function.evaluate(expr[i, j], coords)
             var.data[rows, column] = np.asarray(
-                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)[rows]
 
     def _segment_dt(self, j, dt):
         """Length of segment ``j`` (0 = the current step)."""
@@ -5137,8 +5138,10 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 X_raw = trace.departure_points(key, X0, tuple(segments), evalf=evalf,
                                                clamp_final=False)
                 left = np.any(np.abs(np.asarray(X_raw) - np.asarray(X)) > 0.0, axis=1)
-                if left.any():
-                    self._write_inflow(self.psi_star[k], X[left], left)
+                # every rank decides together whether the (collective) read happens
+                any_left = uw.mpi.comm.allreduce(int(left.any()), op=uw.MPI.SUM) if uw.mpi.size > 1 else int(left.any())
+                if any_left:
+                    self._write_inflow(self.psi_star[k], X, left)
             if k == 0 and self.forcing_star is not None:
                 # the strain rate the parcel saw a step ago, at the same
                 # departure point as its stress
@@ -5153,11 +5156,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         as :meth:`commit_flux_to_history`, for the same reason -- the next
         trace-back samples the snapshot between its nodes. A no-op unless
         ``with_forcing_history`` was asked for."""
-        if self.forcing_star is None:
-            return
-        if forcing_fn is None:
-            forcing_fn = self._forcing_fn
-        if forcing_fn is None:
+        if self.forcing_star is None or forcing_fn is None:
             return
         forcing = sympy.Matrix(forcing_fn)
         columns = _storage_components(self.vtype, forcing.shape)
@@ -5182,7 +5181,12 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
     def initialise_history(self):
         """Start every snapshot and slot from the current field, so
-        ``bdf()`` is zero on the first step."""
+        ``bdf()`` is zero on the first step. A history already placed by
+        :meth:`commit_flux_to_history` is the start, and is kept."""
+        if self._history_committed:
+            self.characteristics.initialise_levels(self._n_v)
+            self._history_initialised = True
+            return
         self._record_current()
         for k in range(1, self.order):
             self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
@@ -5344,7 +5348,8 @@ class ForwardSemiLagrangian(_DDtBase):
         self._cell_measure = self._cell_measures()
         self._launch_cell = np.repeat(np.arange(self._cell_measure.size), self._nq)
         self._launch_weights = np.tile(w_ref, self._cell_measure.size) * self._cell_measure[self._launch_cell] / w_ref.sum()
-        self._n_relocated = 0          # arrivals that changed rank at the last carry
+        self._n_relocated = 0          # arrivals this rank took from other ranks at the last carry
+        self._launch_geometry = self._geometry_stamp()
         self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
         # The flux read at the launch points, through a continuous P1 projection.
         # `flux_smoothing` is the Laplacian coefficient of that projection, a
@@ -5388,6 +5393,13 @@ class ForwardSemiLagrangian(_DDtBase):
         self._restore_core_state(s, am_theta=self.theta)
 
     # ------------------------------------------------------------------
+    def _geometry_stamp(self):
+        """The mesh geometry the launch set was built for: the vertex count and
+        the coordinate sum (a moved or re-meshed mesh changes one of them; adding
+        a variable, which rebuilds the DM, changes neither)."""
+        coords = np.asarray(self.mesh.data)
+        return (coords.shape, float(coords.sum()))
+
     def _cell_measures(self):
         """Area (2-D) or volume (3-D) of every cell, in cell order."""
         dm = self.mesh.dm
@@ -5407,15 +5419,22 @@ class ForwardSemiLagrangian(_DDtBase):
         # A face with one local cell is a domain boundary face OR a partition face;
         # the mesh's own boundary label tells them apart.
         label = dm.getLabel("All_Boundaries") if dm.hasLabel("All_Boundaries") else None
+        if label is None and uw.mpi.size > 1:
+            raise RuntimeError("ForwardSemiLagrangian: the mesh has no All_Boundaries label, so "
+                               "partition faces cannot be told from domain faces in parallel")
         for f in range(f0, f1):
             if dm.getSupportSize(f) != 1:
                 continue
             if label is not None and label.getValue(f) == -1:
                 continue
             c = dm.getSupport(f)[0] - c0
-            _, fc, _ = dm.computeCellGeometryFVM(f)
+            _, fc, fn = dm.computeCellGeometryFVM(f)
             _, cc, _ = dm.computeCellGeometryFVM(c + c0)
-            n = np.asarray(fc[:d]) - np.asarray(cc[:d])
+            # the face's own normal (the centroid difference is the cell's median,
+            # normal to the face only on a right cell), pointing out of the cell
+            n = np.asarray(fn[:d], dtype=float)
+            if np.dot(n, np.asarray(fc[:d]) - np.asarray(cc[:d])) < 0.0:
+                n = -n
             cells.append(c); centroids.append(np.asarray(fc[:d])); normals.append(n / np.linalg.norm(n))
         return (np.array(cells, dtype=int),
                 np.array(centroids).reshape(-1, d), np.array(normals).reshape(-1, d))
@@ -5428,7 +5447,9 @@ class ForwardSemiLagrangian(_DDtBase):
         v = trace.velocity_at(trace.V_matrix(), self._bface_centroid, use_global=True, evalf=evalf)
         if self._bface_cell.size == 0:
             return mask
-        entering = np.einsum("fi,fi->f", np.asarray(v).reshape(-1, self.mesh.dim), self._bface_normal) < 0.0
+        v = np.asarray(v).reshape(-1, self.mesh.dim)
+        # a wall with u.n = 0 to round-off (free slip) must not flip in and out
+        entering = np.einsum("fi,fi->f", v, self._bface_normal) < -1.0e-10 * (np.abs(v).max() if v.size else 0.0)
         mask[self._bface_cell[entering]] = True
         return mask
 
@@ -5505,22 +5526,33 @@ class ForwardSemiLagrangian(_DDtBase):
                 # offers its leavers to everyone and keeps the offered points that
                 # land in its own cells. At Courant one that is the seam layer, not
                 # the whole set. A rank with no cells owns nothing and keeps nothing.
+                # Ownership is by strict containment (face tolerance zero), not the
+                # evaluation locator's slab: a point a hair across a seam face would
+                # otherwise be kept by the rank it left and fitted into the wrong
+                # cell. The locators are local; the exchange is the only collective
+                # and every rank makes it, a rank with no cells contributing and
+                # taking nothing. (comm.allgather rather than gather_data: the rows
+                # are vectors, and gather_data flattens.)
                 X, values = np.asarray(X), np.asarray(values)
-                stay = (np.asarray(mesh.points_in_domain(X, strict_validation=True), dtype=bool).reshape(-1)
-                        if ncell else np.zeros(X.shape[0], dtype=bool))
+                own = np.asarray(mesh._get_closest_local_cells_internal(X, tol=0.0), dtype=int).reshape(-1)
+                stay = own >= 0
                 comm = uw.mpi.comm
                 offered = np.concatenate(comm.allgather(X[~stay]), axis=0)
                 offered_values = np.concatenate(comm.allgather(values[~stay]), axis=0)
                 offered_w = np.concatenate(comm.allgather(w[~stay]), axis=0)
-                self._n_relocated = int(offered.shape[0])
-                take = (np.asarray(mesh.points_in_domain(offered, strict_validation=True), dtype=bool).reshape(-1)
-                        if ncell else np.zeros(offered.shape[0], dtype=bool))
+                taken = np.asarray(mesh._get_closest_local_cells_internal(offered, tol=0.0), dtype=int).reshape(-1)
+                take = taken >= 0
+                self._n_relocated = int(take.sum())
                 X = np.concatenate([X[stay], offered[take]], axis=0)
                 values = np.concatenate([values[stay], offered_values[take]], axis=0)
                 w = np.concatenate([w[stay], offered_w[take]], axis=0)
-            cell = np.asarray(mesh._robust_owning_cells(X)).reshape(-1)
-            inside = cell >= 0
-            X, values, w, cell = X[inside], values[inside], w[inside], cell[inside]
+                cell = np.concatenate([own[stay], taken[take]])
+            else:
+                # the same strict rule as the parallel path, so a partition does
+                # not change which cell a point on a face is fitted into
+                cell = np.asarray(mesh._get_closest_local_cells_internal(X, tol=0.0), dtype=int).reshape(-1)
+                inside = cell >= 0
+                X, values, w, cell = X[inside], values[inside], w[inside], cell[inside]
         centroid = np.asarray(mesh._centroids)[:, :d]
         h = np.sqrt(self._cell_measure) if d == 2 else np.cbrt(self._cell_measure)
         # centred on the cell and scaled by its size, so the constant is c0 and the
@@ -5532,7 +5564,7 @@ class ForwardSemiLagrangian(_DDtBase):
         np.add.at(R, cell, w[:, None, None] * A[:, :, None] * values[:, None, :])
         received = np.bincount(cell, weights=w, minlength=ncell)
         dofs = np.asarray(self.psi_star[0].coords_nd).reshape(-1, mesh.cdim)
-        ndof = dofs.shape[0] // ncell
+        ndof = dofs.shape[0] // ncell if ncell else 0
         dofs = dofs.reshape(ncell, ndof, mesh.cdim)
         Adof = np.concatenate([np.ones((ncell, ndof, 1)), (dofs[:, :, :d] - centroid[:, None, :]) / h[:, None, None]], axis=2)
         if self._inflow_value is not None and inflow is not None:
@@ -5543,7 +5575,8 @@ class ForwardSemiLagrangian(_DDtBase):
             bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
             filled = np.column_stack([
                 _to_nondim_ndarray(uw.function.evaluate(self._inflow_value[i, j],
-                                                        dofs[bcells].reshape(-1, mesh.cdim))).reshape(-1)
+                                                        dofs[bcells].reshape(-1, mesh.cdim)),
+                                   units=self._psi_units).reshape(-1)
                 for (i, j) in self._components]).reshape(bcells.size, ndof, self.num_components)
             short = fed[bcells]
             if short.any():
@@ -5566,12 +5599,12 @@ class ForwardSemiLagrangian(_DDtBase):
 
     def initialise_history(self):
         """Start from the current field: its values at the launch points, and
-        their fit, so ``bdf()`` is zero on the first step.
-
-        TODO(BUG): a history placed through commit_flux_to_history before the
-        first carry is overwritten here (the integration-point flavour has the
-        same defect): a restart seeded that way starts from psi_fn."""
+        their fit, so ``bdf()`` is zero on the first step. A history already
+        placed by :meth:`commit_flux_to_history` is the start, and is kept."""
         self.characteristics.initialise_levels(self._n_v)
+        if self._history_committed:
+            self._history_initialised = True
+            return
         self._launch_values = self._evaluate_at_launch(self._psi_fn)
         self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)
         self._history_initialised = True
@@ -5584,6 +5617,11 @@ class ForwardSemiLagrangian(_DDtBase):
         tracked field is read at the launch points first.
         """
         self._dt = dt
+        if self._geometry_stamp() != self._launch_geometry:
+            raise NotImplementedError(
+                "ForwardSemiLagrangian: the launch set, cell measures and boundary faces were "
+                "built for the mesh as it was, and the mesh has moved or been re-meshed since; "
+                "this flavour does not follow a changing mesh")
         if not self._history_initialised:
             self.initialise_history()
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
@@ -5617,3 +5655,4 @@ class ForwardSemiLagrangian(_DDtBase):
         slot until the next carry, as the other flavours do."""
         self._launch_values = self._evaluate_at_launch(flux)
         self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)
+        self._history_committed = True

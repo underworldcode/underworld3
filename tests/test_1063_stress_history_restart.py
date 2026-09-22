@@ -12,7 +12,7 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]   # solves: not level 1
 
 
 def _shear_box(transport):

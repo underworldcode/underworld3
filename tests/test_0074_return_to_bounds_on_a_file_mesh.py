@@ -30,4 +30,4 @@ def test_a_file_mesh_restores_outside_points_to_its_boundary(tmp_path):
     assert abs(out[0, 0] - 1.0) < 1.0e-3 and abs(out[0, 1] - 0.5) < 1.0e-9
     assert abs(out[2, 0] - 0.0) < 1.0e-3 and abs(out[2, 1] - 1.0) < 1.0e-3
     # an interior point is untouched
-    assert np.allclose(out[1], [0.5, 0.5], atol=0.0)
+    assert np.array_equal(out[1], [0.5, 0.5])
