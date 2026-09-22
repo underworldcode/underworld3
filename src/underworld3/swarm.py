@@ -5915,6 +5915,10 @@ class Swarm(Stateful, uw_object):
                 n_before=int(n_before), n_after=int(n_after),
             )
         except Exception:
+            # Charter S4 — sanctioned: the same rule as the history shift in
+            # systems/ddt.py. Noting that a swarm advected is a RECORD of work
+            # already done; failing to write it (no open model.step, no default
+            # model) must not undo the advection itself.
             pass
 
     @timing.routine_timer_decorator

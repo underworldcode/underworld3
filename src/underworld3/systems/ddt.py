@@ -658,6 +658,13 @@ class _DDtBase(uw_object):
                 **detail,
             )
         except Exception:
+            # Charter S4 — sanctioned: the transcript is a RECORD of the run,
+            # never a participant in it. Every failure here is a failure to
+            # describe a step that has already happened correctly (no open
+            # model.step, no default model, a detail that will not serialise),
+            # and none of them is a reason to take down the solve that the
+            # record exists to describe. A step that goes unrecorded shows up
+            # as a gap in the transcript, which is the visible symptom.
             pass
 
     def _tracked_expression(self):
@@ -702,6 +709,12 @@ class _DDtBase(uw_object):
                         + r"\}\(N\.x(?:, N\.y)?(?:, N\.z)?\)(\]\]\))?",
                         text) is not None
         except Exception:
+            # Charter S4 — sanctioned: this is a best-effort READ of what the
+            # history tracks, for the label a report prints. The patterns above
+            # are matched against sympy's own printing, which is not a contract;
+            # when it does not match, `tracked` stays None and the report says
+            # less rather than saying something wrong. Nothing downstream
+            # depends on the name.
             pass
         if tracked is None:
             tracked = getattr(self, "instance_number", "?")
