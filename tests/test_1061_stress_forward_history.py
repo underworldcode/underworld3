@@ -12,7 +12,7 @@ import pytest
 
 from test_1060_stress_store_smoothing import waters_king_start_up
 
-pytestmark = [pytest.mark.level_3, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_3, pytest.mark.tier_c]   # 20 min on Waters-King: reported not gated, as test_1064 is
 
 
 def test_the_forward_history_with_its_read_back_smoothing_holds_the_maxwell_start_up():

@@ -9,7 +9,7 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_c]   # 15 min: a slow characterisation with a hard baseline, reported not gated (as test_1064 is)
 
 
 
