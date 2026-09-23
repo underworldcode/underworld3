@@ -268,9 +268,14 @@ def _patch_time_units(mesh):
     except Exception:
         pass
 
-    mesh._t._units = time_units
-    if not hasattr(mesh._t, "get_units"):
-        mesh._t.get_units = lambda: mesh._t._units
+    # mesh._t is a UWexpression (a rampable constants[] atom), which manages
+    # its own units; only the legacy symbol flavour needs patching.
+    try:
+        mesh._t._units = time_units
+        if not hasattr(mesh._t, "get_units"):
+            mesh._t.get_units = lambda: mesh._t._units
+    except AttributeError:
+        pass
 
 
 def get_coordinate_units(coord):

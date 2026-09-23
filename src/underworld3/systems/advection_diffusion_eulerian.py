@@ -230,6 +230,11 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     option is overridable through ``petsc_options``.
     """
 
+    _solver_terms = (
+        ("f", "volumetric source term"),
+        ("V_fn", "advecting velocity"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
