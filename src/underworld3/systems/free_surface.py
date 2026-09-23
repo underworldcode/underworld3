@@ -121,7 +121,7 @@ class FreeSurface:
         driving_buoyancy=None,
         smooth_length=0.0,
         mass="lumped",
-        max_surface_cfl=0.5,
+        max_surface_cfl=0.437,
         tangent_advect=None,
         tangent_spectral_modes=0,
         surface_mask=None,
