@@ -1,6 +1,0 @@
-{"kind": "run", "model": "default", "script": "repro_snapback.py", "started": "2026-09-22T06:39:53+10:00", "scales": {}}
-{"kind": "step", "index": 0, "label": null, "t0": 0.0, "t1": 0.1, "dt": 0.1, "completed": true, "restorable": true, "wall": 2.39592045545578e-05, "events": []}
-{"kind": "step", "index": 1, "label": null, "t0": 0.1, "t1": 0.2, "dt": 0.1, "completed": true, "restorable": true, "wall": 1.7499551177024841e-06, "events": []}
-{"kind": "rewind", "message": "rewind to the start of step 1 (t = 0.1); 1 step(s) undone", "to_step": 1, "steps_undone": 1, "t": 0.1}
-{"kind": "rewind", "message": "rewind to the start of step 0 (t = 0); 1 step(s) undone", "to_step": 0, "steps_undone": 1, "t": 0.0}
-{"kind": "run_end", "message": "run ended after 0 recorded step(s)", "ended": "2026-09-22T06:39:53+10:00", "steps": 0}

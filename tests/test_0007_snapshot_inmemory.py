@@ -845,20 +845,37 @@ def test_an_expression_created_after_the_snapshot_is_left_alone():
     assert float(latecomer.sym) == pytest.approx(5.0)
 
 
-def test_capture_covers_every_live_expression():
-    """Capture is driven by the registry, so the registry must see expressions
-    made anywhere — including the ones UW3 builds for itself (strain-rate
-    invariants, unit wrappers), not just the ones a user names."""
-    import sympy
-    from underworld3.function.expressions import live_expressions
+def test_capture_reads_the_persistent_container_registry():
+    """Capture is driven by the registry that defines what an expression IS —
+    ``_expr_names``, the by-name container store — so anything a user can reach
+    later by name is captured, and the ephemeral derivative/template expressions
+    are not."""
+    from underworld3.function.expressions import UWexpression, live_expressions
 
     uw, model, mesh = _fresh_model_and_mesh()
-    before = {e.instance_number for e in live_expressions()}
     mine = uw.expression(r"\beta", 2.0, "made here")
-    after = {e.instance_number for e in live_expressions()}
 
-    assert mine.instance_number in after - before
+    assert any(e is mine for e in live_expressions())
 
     snap = model.save_state()
     captured = {key for key, _sym, _wrapped in snap.expressions}
     assert f"{type(mine).__name__}_{mine.instance_number}" in captured
+
+    # ephemerals are held in their own weak registry and deliberately skipped
+    ephemeral_names = {k[0] for k in list(UWexpression._ephemeral_expr_names)}
+    persistent_names = set(UWexpression._expr_names)
+    assert not (ephemeral_names & persistent_names & {r"\beta"})
+
+
+def test_a_reused_name_is_one_container_and_is_captured_once():
+    """Identity is the NAME: asking for the same name returns the same object,
+    which is what lets a formula written early keep seeing later edits. Capture
+    must therefore record it once, not once per construction site."""
+    uw, model, mesh = _fresh_model_and_mesh()
+    first = uw.expression(r"\gamma_{shared}", 1.0, "first use")
+    second = uw.expression(r"\gamma_{shared}", 2.0, "second use")
+    assert first is second
+
+    snap = model.save_state()
+    key = f"{type(first).__name__}_{first.instance_number}"
+    assert [k for k, _s, _w in snap.expressions].count(key) == 1

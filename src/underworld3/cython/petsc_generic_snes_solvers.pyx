@@ -4682,7 +4682,7 @@ class SNES_Vector(SolverBaseClass):
 
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
-                       normal=None, gamma=10.0, theta=1, mask=None,
+                       normal=None, gamma=12.5, theta=1, mask=None,
                        local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
@@ -4704,8 +4704,31 @@ class SNES_Vector(SolverBaseClass):
             terms — the same geometric-normal override as on the Stokes
             variant. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
-            Dimensionless stabilisation parameter.
+        gamma : float, default=12.5
+            Dimensionless stabilisation parameter. The penalty is
+            ``gamma*mu/h``, so this is calibrated against the definition of
+            ``h``. It was 10.0 while ``h`` came from a kd-tree of neighbouring
+            centroids; ``mesh.cell_size()`` is now PETSc's ``volume**(1/dim)``
+            (#694), and 12.5 is calibrated against THAT definition on the Zhong
+            spherical shell — the benchmark whose 0.2% response drifted to
+            2.4-5.7% when ``h`` was last redefined without recalibrating
+            (#734).
+
+            The shift in ``h`` is not one number: it changes sign with the
+            dimension. Measured as new/old per cell,
+
+              2-D simplex box (unstructured)   +12.2%
+              2-D simplex box (regular)         +6.1%   (closed form: 6.07%)
+              2-D annulus                      +10.0%
+              3-D simplex box                  -29.8%
+              3-D spherical shell              -33.3%
+
+            so ``h`` grows by about a tenth on 2-D triangles and SHRINKS by
+            about a third on tetrahedra. Since the penalty is ``gamma*mu/h``, no
+            single gamma can reproduce the old enforcement in both. 12.5 is the
+            3-D number; **a 2-D sweep against an independent benchmark has not
+            been done**, and if one is wanted it belongs with #734 rather than
+            in this docstring.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
         mask : sympy expression, optional
@@ -6898,7 +6921,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                      remove_mean=remove_mean)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
-                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
+                       gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -6935,9 +6958,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             Boundary unit normal used in the Nitsche consistency, symmetry,
             and pressure-coupling terms. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
+        gamma : float, default=12.5
             Dimensionless stabilisation parameter. Typical values 5--20
-            for P2 elements.
+            for P2 elements. The penalty is ``gamma*mu/h``, so this is
+            calibrated against the definition of ``h``: it was 10.0 while
+            ``h`` came from a kd-tree of neighbouring centroids, and moved
+            with ``mesh.cell_size()`` becoming PETSc's ``volume**(1/dim)``
+            (#694).
         theta : {-1, 0, 1}, default=1
             Symmetry parameter:
              1: symmetric (default — optimal convergence and solver efficiency)
@@ -6957,13 +6984,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             on every facet. Set ``False`` to restore the legacy global-h
             behaviour exactly.
 
-            The two coincide on **tensor** cells only. On a uniform **simplex**
-            mesh they differ by exactly :math:`\sqrt{2}` — for congruent
-            right-isosceles cells of legs :math:`h`, :meth:`Mesh.cell_size` is
-            :math:`2h/3` while :meth:`Mesh.get_min_radius` is
-            :math:`\sqrt{2}h/3` — so the penalty :math:`\gamma\mu/h` differs
-            between the two settings on the simplex meshes the free-slip and
-            fault models use. See ``tests/test_0010_cell_size_geometry.py``.
+            Since #694 both read the same quantity, PETSc's
+            :math:`\mathrm{volume}^{1/d}`, so this flag is now a choice between
+            the **local** cell and the **global minimum** and nothing else: on a
+            uniform mesh the two coincide exactly, for simplices as well as
+            tensor cells. They did not before — ``cell_size`` was a vertex-RMS
+            about the centroid and differed from ``get_min_radius`` by
+            :math:`\sqrt{2}` on simplices — so the flag silently rescaled the
+            penalty :math:`\gamma\mu/h` by cell type, which is how #734
+            happened. See ``tests/test_0010_cell_size_geometry.py``.
         g : sympy expression or float, optional
             Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
@@ -7062,12 +7091,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # local_h=False to restore the legacy single global-minimum scalar
         # (mesh.get_min_radius()).
         #
-        # The two coincide on TENSOR cells only. On a uniform SIMPLEX mesh --
-        # which is what the free-slip and fault models are built on -- they
-        # differ by exactly sqrt(2): on congruent right-isosceles cells of legs
-        # h, cell_size is 2h/3 and get_min_radius is sqrt(2)h/3. The penalty
-        # gamma*mu/h moves with that, so the two settings are NOT interchangeable
-        # there (see #734 and tests/test_0010_cell_size_geometry.py).
+        # Since #694 both read PETSc's volume**(1/dim), so this is a choice
+        # between the LOCAL cell and the GLOBAL minimum and nothing else -- on a
+        # uniform mesh they coincide exactly, simplices included. Before #694
+        # cell_size was a vertex-RMS about the centroid and differed from
+        # get_min_radius by sqrt(2) on simplices, so the flag silently rescaled
+        # gamma*mu/h by cell type (see #734 and
+        # tests/test_0010_cell_size_geometry.py).
         if local_h:
             h_sym = mesh.cell_size()
         else:

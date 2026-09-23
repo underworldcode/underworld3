@@ -603,33 +603,27 @@ def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
 # UWexpression Class - Simplified (no UWQuantity inheritance)
 # ============================================================================
 
-# Every live UWexpression, so a snapshot can capture what the parameters WERE.
-#
-# Field data rewinds and parameters did not: `snapshot()` captured meshes,
-# swarms and registered state-bearers, and an expression is none of those. A run
-# that ramps a parameter — `kappa.sym = 7.0` between steps, which is the ordinary
-# way to do it — could be rewound to an earlier step and come back with the
-# fields of that step and the PARAMETERS OF THE LATEST ONE, silently. Replaying
-# the step then solves a different problem from the one the transcript records.
-#
-# WeakSet so this registry never becomes the thing that keeps an expression
-# alive: transient expressions are made constantly (unit wrapping, template
-# substitution, derivative lowering). Note that it is NOT what bounds the set
-# today — expressions are already held strongly elsewhere in UW3 by a
-# name-keyed cache, so dropping the last user reference does not collect one.
-# The WeakSet is therefore defensive rather than load-bearing: it means capture
-# does not ADD a lifetime, and it starts working the day that cache is fixed.
-_LIVE_EXPRESSIONS: "weakref.WeakSet" = weakref.WeakSet()
-
-
 def live_expressions():
-    """Every UWexpression still alive, as a list with a stable order.
+    """The persistent expression containers, in a stable order.
 
-    A list, not the WeakSet: entries can vanish mid-iteration as they are
-    collected, and capture needs a traversal that cannot change under it.
-    Sorted by instance number so a capture reads the same way twice.
+    Reads ``UWexpression._expr_names``, which is the registry that already
+    defines what a UW expression IS: a container with identity by name, looked
+    up rather than rebuilt, so the same ``uw.expression(r"\\eta", ...)`` reaches
+    the same object and a formula written against it keeps seeing later edits to
+    its contents. That is exactly the set whose CONTENTS a snapshot has to
+    capture — the parameters of the run.
+
+    ``_ephemeral_expr_names`` is deliberately NOT included. Those are the
+    ``_unique_name_generation=True`` expressions made for derivative lowering
+    and template substitution: their contents are derived, they are held weakly,
+    and they are rebuilt from the persistent ones. Restoring them would write
+    over a value the machinery is about to recompute.
+
+    A list, not the live dict: capture must not iterate a mapping that other
+    construction can mutate underneath it. Sorted by name so two captures of the
+    same state read the same way.
     """
-    return sorted(_LIVE_EXPRESSIONS, key=lambda e: getattr(e, "instance_number", 0))
+    return [UWexpression._expr_names[k] for k in sorted(UWexpression._expr_names)]
 
 
 class UWexpression(MathematicalMixin, uw_object, Symbol):
@@ -912,15 +906,6 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         # UW object tracking
         self._uw_id = uw_object._obj_count
         uw_object._obj_count += 1
-
-        # Visible to snapshot capture, so a rewind puts parameters back with the
-        # fields. Registered last: a half-built expression must never be
-        # captured. Failure here must not take out construction — an expression
-        # that cannot be registered is merely one a snapshot will not restore.
-        try:
-            _LIVE_EXPRESSIONS.add(self)
-        except TypeError:
-            pass
 
     # =========================================================================
     # Core Properties
