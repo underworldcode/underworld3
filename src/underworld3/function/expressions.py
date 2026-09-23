@@ -603,6 +603,27 @@ def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
 # UWexpression Class - Simplified (no UWQuantity inheritance)
 # ============================================================================
 
+def reset_expression_registry():
+    """Drop the named expression containers, so a new model starts clean.
+
+    ``_expr_names`` is a CLASS attribute: it belongs to the process, not to a
+    Model. Without this, containers outlive the model that made them, and the
+    next model looking up a familiar name — ``\\eta``, ``t``, ``x`` — silently
+    inherits the previous one's contents. In a test session that is every
+    unrelated test sharing one ``\\eta``; in an interactive session it is the
+    previous run's viscosity turning up in the next.
+
+    Live objects are unaffected: a solver or a formula holds the container
+    itself, not its name, and keeps working. What resets is LOOKUP — the next
+    ``uw.expression(r"\\eta", ...)`` builds a fresh container instead of finding
+    the old one, which is what "a new model" should mean.
+
+    Called by :func:`~underworld3.model.reset_default_model`.
+    """
+    UWexpression._expr_names.clear()
+    UWexpression._ephemeral_expr_names.clear()
+
+
 def live_expressions():
     """The persistent expression containers, in a stable order.
 
