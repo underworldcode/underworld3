@@ -867,15 +867,33 @@ def test_capture_reads_the_persistent_container_registry():
     assert not (ephemeral_names & persistent_names & {r"\beta"})
 
 
-def test_a_reused_name_is_one_container_and_is_captured_once():
-    """Identity is the NAME: asking for the same name returns the same object,
+def test_a_name_fetched_twice_is_one_container_and_is_captured_once():
+    """Identity is the NAME: fetching the same name returns the same object,
     which is what lets a formula written early keep seeing later edits. Capture
-    must therefore record it once, not once per construction site."""
+    must therefore record it once, not once per reference."""
     uw, model, mesh = _fresh_model_and_mesh()
-    first = uw.expression(r"\gamma_{shared}", 1.0, "first use")
-    second = uw.expression(r"\gamma_{shared}", 2.0, "second use")
-    assert first is second
+    first = uw.expression(r"\gamma_{shared}", 1.0, "declared once")
+    again = uw.expression(r"\gamma_{shared}")          # fetch, do not redeclare
+    assert first is again
 
     snap = model.save_state()
     key = f"{type(first).__name__}_{first.instance_number}"
     assert [k for k, _s, _w in snap.expressions].count(key) == 1
+
+
+def test_redeclaring_a_name_with_a_value_is_refused():
+    """Changing what a container holds is what ``.sym =`` is for.
+
+    A second construction that quietly replaced the contents would reach every
+    formula already written against that name, from a line that reads like a
+    declaration — so it raises, and says which of the two things the caller
+    meant. The existing contents are left untouched.
+    """
+    uw, model, mesh = _fresh_model_and_mesh()
+    eta = uw.expression(r"\eta_{decl}", 1.0, "declared")
+    eta.sym = 42.0
+
+    with pytest.raises(ValueError, match="already exists"):
+        uw.expression(r"\eta_{decl}", 99.0, "redeclared")
+
+    assert float(eta.sym) == pytest.approx(42.0), "a refused call still wrote"

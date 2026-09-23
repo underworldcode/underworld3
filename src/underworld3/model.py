@@ -6112,6 +6112,14 @@ def reset_default_model():
     import underworld3 as uw
     uw.use_strict_units(True)
 
+    # The named expression containers belong to the PROCESS, not to a Model:
+    # UWexpression._expr_names is a class attribute. Leaving them behind is what
+    # made a fresh model inherit the previous one's parameters under familiar
+    # names, and what made unrelated tests in one pytest process share a single
+    # `\eta`. A reset that leaves that standing is not a reset.
+    from underworld3.function.expressions import reset_expression_registry
+    reset_expression_registry()
+
     return _default_model
 
 
