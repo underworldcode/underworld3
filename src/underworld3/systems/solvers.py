@@ -4869,13 +4869,14 @@ class SNES_AdvectionDiffusion_Swarm(SNES_AdvectionDiffusion):
     ``exp(-kappa dt pi^2 / h^2)`` to keep the sub-cell sharpness of a
     weakly-diffusing field while still diffusing it correctly.
 
-    Geometry note: a particle scheme needs every cell kept populated. A domain
-    whose cells rotate or flow OUT of it starves those cells — the corners of a
-    square under rigid rotation sit at radius > side/2 and leave the square, so a
-    rotating square box destabilises this solver (and any particle scheme) even
-    though the mesh schemes are unaffected. Use a domain the flow keeps filled (a
-    disc or annulus for rotation). On a disc the rotating diffusing Gaussian runs
-    stably over a full revolution, as accurate as the SLCN and SUPG solvers.
+    Geometry note: where the flow crosses the domain boundary, particles
+    advecting out are clamped against the wall and pile up in a thin layer, and a
+    high-degree per-cell projection of that layer overshoots (see ``proxy_degree``).
+    With the default degree-1 projection the solver holds a rotating square (which
+    the flow crosses on all four sides) as well as a disc, though a domain the flow
+    keeps well filled — a disc or annulus under rotation — is still the accurate
+    choice: there the rotating diffusing Gaussian matches the SLCN and SUPG solvers
+    over a full revolution.
 
     Parameters
     ----------
@@ -4897,6 +4898,18 @@ class SNES_AdvectionDiffusion_Swarm(SNES_AdvectionDiffusion):
         FLIP residual scale (1 = full FLIP, 0 = PIC).
     proxy_location : {"cells", "nodes", "integration_points"}, default "cells"
         Where the swarm history's proxy mesh variable lives.
+    proxy_degree : int, default 1
+        Polynomial degree of the per-cell fit that projects the particle history
+        onto the mesh. Kept LOW on purpose: a high-degree per-cell least-squares
+        fit needs its particles to span the cell in every direction, and where
+        the flow clamps particles into a thin layer against a wall (an outflow
+        boundary) they lie on a line, so a degree-2 fit is only mildly
+        ill-conditioned — under the projector's guard — and overshoots the nodal
+        value, which then feeds the solve and diverges. Degree 1 needs three
+        spanning points, is well conditioned on the clamped layer, and holds a
+        rotating square (where the flow crosses the boundary) that degree 2 blows
+        up. Raise it for extra accuracy only where the flow keeps every cell's
+        particles well spread (a disc under rotation).
     """
 
     @timing.routine_timer_decorator
@@ -4911,6 +4924,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_AdvectionDiffusion):
         step_averaging: int = 1,
         residual_retention: float = 1.0,
         proxy_location: str = "cells",
+        proxy_degree: int = 1,
         restore_points_func: Callable = None,
         verbose=False,
         theta: float = 0.5,
@@ -4931,7 +4945,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_AdvectionDiffusion):
             swarm=swarm,
             psi_fn=u_Field.sym,
             vtype=uw.VarType.SCALAR,
-            degree=u_Field.degree,
+            degree=proxy_degree,
             continuous=u_Field.continuous,
             varsymbol=u_Field.symbol,
             verbose=verbose,

@@ -7,11 +7,12 @@ semi-Lagrangian and streamline-upwind solvers over a half revolution, and it
 diffuses correctly: the trap of a particle scheme is to keep the particle's old,
 sharp value and under-diffuse, which shows as a peak above the exact one.
 
-A DISC is used, not a square box: under rigid rotation the corners of a square
-sit at radius > 1 and rotate out of the domain, so a square's corner cells
-continuously empty and refill, which destabilises any particle scheme (mesh
-schemes are unaffected). The disc has no corners to lose, matching the geometry
-of the SLCN and SUPG rotation demonstrators.
+The disc is the accurate geometry (its rotation keeps every cell well filled),
+but the solver must also hold a domain the flow crosses. On a square the flow
+crosses all four walls and clamps out-flowing particles into a thin boundary
+layer; a high-degree per-cell projection of that layer overshoots and diverges,
+which is why the history proxy defaults to degree 1 (well conditioned on the
+clamped layer). Both geometries are exercised here.
 
 The swarm is supplied by the caller and is NOT private to the solver; the solver
 declares its history variable, so it is built before the swarm is populated, and
@@ -73,10 +74,10 @@ def test_the_swarm_solver_is_as_accurate_as_the_mesh_solvers_over_a_half_revolut
     adv, err, peak = _run("swarm")
     assert type(adv.DuDt).__name__ == "Lagrangian_Swarm"
     assert adv.swarm is not None
-    # BASELINE: half revolution, kappa 0.01, dt 0.02, disc res 24 (see the ledger).
-    # SUPG and SLCN give 6.5e-2 and 6.4e-2 here; the swarm solver is at least as
-    # accurate, and it is held to a hard number, not a loose particle floor.
-    assert abs(err - 0.0173) < 0.004, err
+    # BASELINE: half revolution, kappa 0.01, dt 0.02, disc res 24, degree-1
+    # history proxy (the default; see the ledger). SUPG and SLCN give 1.7e-2 and
+    # 2.5e-2 here; the swarm solver sits between them, held to a hard number.
+    assert abs(err - 0.0204) < 0.004, err
     assert abs(peak - EXACT_PEAK) < 0.01, (peak, EXACT_PEAK)   # it diffuses to the exact peak
 
 
@@ -95,3 +96,38 @@ def test_it_will_not_run_without_a_swarm():
     T = uw.discretisation.MeshVariable("Tn", mesh, 1, degree=2)
     with pytest.raises(ValueError, match="needs a swarm"):
         uw.systems.AdvDiffusionSwarm(mesh, T, sympy.Matrix([[-y, x]]), swarm=None)
+
+
+def test_the_solver_holds_a_domain_the_flow_crosses_a_square_box():
+    """The degree-1 history proxy holds a rotating SQUARE, where the flow crosses
+    all four walls and clamps out-flowing particles into a thin boundary layer.
+    A degree-2 proxy overshoots the projection of that layer and diverges by a
+    half turn; degree 1 stays bounded and diffuses to the exact peak.
+    """
+    uw.reset_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0),
+                                             cellSize=2.0 / 24, qdegree=3, regular=False)
+    x, y = mesh.X
+    sol = uw.analytic.RotatingGaussian(mesh, sigma=SIGMA, centre_radius=0.5, omega=1.0, diffusivity=KAPPA)
+    T = uw.discretisation.MeshVariable("Tb", mesh, 1, degree=2)
+    T.array[:, 0, 0] = uw.function.evaluate(sol.at(0.0), T.coords).reshape(-1)
+    V = sympy.Matrix([[-y, x]])
+    swarm = uw.swarm.Swarm(mesh)
+    adv = uw.systems.AdvDiffusionSwarm(mesh, T, V, swarm=swarm, order=1)   # proxy_degree=1 default
+    swarm.populate(fill_param=4)
+    swarm.population_control = dict()
+    adv.constitutive_model = uw.constitutive_models.DiffusionModel
+    adv.constitutive_model.Parameters.diffusivity = KAPPA
+    for b in ("Left", "Right", "Top", "Bottom"):
+        adv.add_dirichlet_bc(0.0, b)
+    dt = 0.02
+    nsteps = int(round(T_END / dt)); dt = T_END / nsteps
+    for _ in range(nsteps):
+        swarm.advection(V, dt, order=2)
+        adv.solve(timestep=dt)
+    peak = float(np.asarray(T.data).max())
+    err = float(sol.error(sol.at(T_END), T, norm="integral"))
+    assert peak < 0.5, peak                                # bounded: degree 2 reaches ~13 here
+    assert abs(peak - EXACT_PEAK) < 0.02, (peak, EXACT_PEAK)   # and diffuses to the exact peak
+    # BASELINE: 6.7e-2 (the box is harder than the disc; the point is it holds)
+    assert abs(err - 0.067) < 0.02, err
