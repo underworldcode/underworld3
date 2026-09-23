@@ -448,6 +448,7 @@ def _invalidate_solution_cache(u):
 
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
+from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
 
@@ -4841,6 +4842,140 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.constitutive_model._solver_is_setup = True
 
         return
+
+
+class SNES_AdvectionDiffusion_Swarm(SNES_AdvectionDiffusion):
+    r"""Advection-diffusion with the value history carried on a swarm.
+
+    The particle counterpart of :class:`SNES_AdvectionDiffusion` (semi-Lagrangian,
+    ``AdvDiffusionSLCN``) and :class:`SNES_AdvectionDiffusion_Composed`
+    (streamline-upwind, ``AdvDiffusion``). The advected quantity's history rides
+    on a swarm of material points through a :class:`~underworld3.systems.ddt.Lagrangian_Swarm`
+    manager: after each solve the scalar is read at the particles and, on the next
+    advection, carried with them.
+
+    The swarm is **supplied by the caller and advected by its owner** — it is the
+    material swarm of a coupled model, not a private one created here (creating a
+    private swarm would defeat the purpose of a particle solver, which is to share
+    the one swarm every field rides on). This solver does not advect the swarm: in
+    a coupled model the flow solver advects it once a step; in a standalone run,
+    advect it yourself before each ``solve()``.
+
+    ``particle_update`` and ``step_averaging`` set how the mesh solution returns to
+    the particles. The default, PIC with ``step_averaging=1``, gives every particle
+    the full mesh solution each step, so the diffusion the mesh applied is captured
+    (a half-blend keeps the particle's old, sharper value and under-diffuses). Use
+    ``particle_update="flip"`` with ``residual_retention`` near
+    ``exp(-kappa dt pi^2 / h^2)`` to keep the sub-cell sharpness of a
+    weakly-diffusing field while still diffusing it correctly.
+
+    Geometry note: a particle scheme needs every cell kept populated. A domain
+    whose cells rotate or flow OUT of it starves those cells — the corners of a
+    square under rigid rotation sit at radius > side/2 and leave the square, so a
+    rotating square box destabilises this solver (and any particle scheme) even
+    though the mesh schemes are unaffected. Use a domain the flow keeps filled (a
+    disc or annulus for rotation). On a disc the rotating diffusing Gaussian runs
+    stably over a full revolution, as accurate as the SLCN and SUPG solvers.
+
+    Parameters
+    ----------
+    mesh, u_Field, V_fn, order, theta, restore_points_func, verbose
+        As for :class:`SNES_AdvectionDiffusion`.
+    swarm : underworld3.swarm.Swarm
+        The material swarm the history rides on. Required. Pass it EMPTY: the
+        solver declares its history variable on it, and swarm variables must be
+        declared before ``swarm.populate()``. Construct the solver, then populate
+        the swarm, then advect it each step (the flow solver does this in a
+        coupled model). The solver does NOT advect the swarm and does NOT diffuse
+        anything until a :class:`~underworld3.constitutive_models.DiffusionModel`
+        is assigned to ``constitutive_model`` (as for :class:`SNES_AdvectionDiffusion`).
+    particle_update : {"pic", "flip"}, default "pic"
+        How the mesh solution updates the particles after a solve.
+    step_averaging : int, default 1
+        PIC blend length; 1 takes the whole mesh solution each step.
+    residual_retention : float, default 1.0
+        FLIP residual scale (1 = full FLIP, 0 = PIC).
+    proxy_location : {"cells", "nodes", "integration_points"}, default "cells"
+        Where the swarm history's proxy mesh variable lives.
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable,
+        V_fn,
+        swarm: uw.swarm.Swarm,
+        order: int = 1,
+        particle_update: str = "pic",
+        step_averaging: int = 1,
+        residual_retention: float = 1.0,
+        proxy_location: str = "cells",
+        restore_points_func: Callable = None,
+        verbose=False,
+        theta: float = 0.5,
+    ):
+        if swarm is None:
+            raise ValueError(
+                "SNES_AdvectionDiffusion_Swarm needs a swarm to carry the history on; "
+                "pass the material swarm (this solver does not create a private one). "
+                "Use AdvDiffusionSLCN for the mesh-based semi-Lagrangian scheme.")
+        if int(step_averaging) < 1:
+            raise ValueError(f"step_averaging must be >= 1, not {step_averaging!r}")
+        if abs(float(theta) - 0.5) > 1e-12:
+            warnings.warn(
+                "theta only sets the diffusive-flux time integration here; the swarm "
+                "value history is fixed Crank-Nicolson (theta=0.5). The two will be "
+                "inconsistent for theta != 0.5.", stacklevel=2)
+        DuDt = Lagrangian_Swarm_DDt(
+            swarm=swarm,
+            psi_fn=u_Field.sym,
+            vtype=uw.VarType.SCALAR,
+            degree=u_Field.degree,
+            continuous=u_Field.continuous,
+            varsymbol=u_Field.symbol,
+            verbose=verbose,
+            order=order,
+            step_averaging=step_averaging,
+            proxy_location=proxy_location,
+            proxy_sampling="reconstruct",
+            particle_update=particle_update,
+            residual_retention=residual_retention,
+        )
+        super().__init__(
+            mesh,
+            u_Field,
+            V_fn,
+            order=order,
+            restore_points_func=restore_points_func,
+            verbose=verbose,
+            DuDt=DuDt,
+            theta=theta,
+        )
+        self.swarm = swarm
+        self._last_swarm_key = None
+        self._warned_static_swarm = False
+
+    def _swarm_position_key(self):
+        c = np.asarray(self.swarm._particle_coordinates.data)
+        return (c.shape, float(c.sum()), float((c * c).sum()))
+
+    @timing.routine_timer_decorator
+    def solve(self, *args, **kwargs):
+        # The solver does not advect the swarm (its owner does). If the swarm has
+        # not moved since the last solve, the material history is not being
+        # transported: warn once rather than return a plausible, un-advected field.
+        key = self._swarm_position_key()
+        if (self._last_swarm_key is not None and key == self._last_swarm_key
+                and not self._warned_static_swarm):
+            warnings.warn(
+                "AdvDiffusionSwarm: the swarm has not moved since the last solve, so the "
+                "material history is not being transported. Advect the swarm before each "
+                "solve() (swarm.advection(V, dt) in a standalone run; the flow solver in a "
+                "coupled model). This warning is issued once.", stacklevel=2)
+            self._warned_static_swarm = True
+        self._last_swarm_key = key
+        return super().solve(*args, **kwargs)
 
 
 class SNES_Diffusion(SNES_Scalar):
