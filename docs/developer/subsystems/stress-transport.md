@@ -17,21 +17,29 @@ stokes.constitutive_model.Parameters.solvent_viscosity = eta_s    # Oldroyd-B; o
 stokes.constitutive_model.Parameters.dt_elastic = dt
 ```
 
-## The four histories
+## The five histories
 
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
 | `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
 | `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
 | `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
+| `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
 The nodal and integration-point flavours store the stress after every solve by
 the same global L2 projection onto the continuous space. The integration-point
 flavour differs only in where it samples that field: the quadrature points along
 their own characteristics, rather than the vertices. Nothing is carried at the
-points from one step to the next. The forward flavour is the exception: its
-launch values persist, and a cell that receives no fit keeps its previous one.
+points from one step to the next. The forward flavour is the exception among the
+mesh-based ones: its launch values persist, and a cell that receives no fit keeps
+its previous one. The Lagrangian flavour is a swarm history, not a mesh one: the
+solver creates and advects a swarm, evaluates the constitutive flux at the
+particles after each solve, and reads it back through a discontinuous cells proxy;
+every tensor component is evaluated before any is written, so the proxy is never
+half-updated. The same scheme on a user-supplied swarm (a material swarm that
+already exists) is :class:`~underworld3.systems.ddt.Lagrangian_Swarm`, passed to
+the solver as ``DFDt=``.
 
 The momentum equation sees the stress only through $\int \sigma : \nabla v$, so
 only its per-cell P1 projection matters, and the viscous part is rebuilt from

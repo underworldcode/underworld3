@@ -3975,6 +3975,8 @@ class Lagrangian(_DDtBase):
         order=1,
         smoothing=0.0,
         fill_param=3,
+        proxy_location="cells",
+        proxy_sampling="reconstruct",
     ):
         super().__init__()
 
@@ -4001,6 +4003,8 @@ class Lagrangian(_DDtBase):
                     vtype=vtype,
                     proxy_degree=degree,
                     proxy_continuous=continuous,
+                    proxy_location=proxy_location,
+                    proxy_sampling=proxy_sampling,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
                 )
             )
@@ -4010,6 +4014,21 @@ class Lagrangian(_DDtBase):
         self._init_coefficient_expressions(order, 0.5, with_exp=False)
 
         dudt_swarm.populate(fill_param)
+        # The class owns this swarm and carries the stress on it, so it also
+        # keeps it populated: without refilling starved cells, a flow that
+        # carries particles out through an open boundary empties the downstream
+        # cells and the proxy has nothing to interpolate. The control both fills
+        # starved cells and caps over-full ones (a bare refill-only dict grows
+        # the swarm without bound where particles pile up against a wall): the
+        # bounds are set from the initial occupancy, with a floor at the linear
+        # fit minimum.
+        _npart = int(uw.mpi.comm.allreduce(np.asarray(dudt_swarm._particle_coordinates.data).shape[0], op=uw.MPI.SUM))
+        _ncell = int(uw.mpi.comm.allreduce(mesh._centroids.shape[0], op=uw.MPI.SUM))
+        _mean = _npart / max(_ncell, 1)
+        dudt_swarm.population_control = {
+            "min_per_cell": max(mesh.dim + 1, int(0.5 * _mean)),
+            "max_per_cell": max(2 * (mesh.dim + 1), int(3.0 * _mean)),
+        }
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -4076,20 +4095,21 @@ class Lagrangian(_DDtBase):
         be called manually after setting initial conditions.
         """
         psi_star_0 = self.psi_star[0]
-        # Component-wise write through the canonical (N, components) storage.
-        # Indexing the SwarmVariable itself (``psi_star_0[i, j]``) returns a
-        # *symbolic* component with no ``.data`` — the modern component
-        # address is ``.data[:, var._data_layout(i, j)]`` (audit SWARM-06).
+        # Every component evaluated before any is written (audit SWARM-06): a
+        # partial write marks the proxy stale and a later evaluation of a psi_fn
+        # that reads psi_star would see a half-updated history.
         coords = np.asarray(self.swarm._particle_coordinates.data)
+        updated = {}
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
-                updated_psi = uw.function.evaluate(
-                    self.psi_fn[i, j],
-                    coords,
-                )
-                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
-                    updated_psi
+                ij = psi_star_0._data_layout(i, j)
+                if ij in updated:
+                    continue
+                updated[ij] = np.asarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords)
                 ).reshape(-1)
+        for ij, vals in updated.items():
+            psi_star_0.data[:, ij] = vals
 
         # Copy to all other history slots
         for k in range(1, self.order):
@@ -4120,8 +4140,14 @@ class Lagrangian(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        store_result: bool = True,
+        **_ignored,
     ):
-        """Pre-solve: auto-initialise history on first call."""
+        """Pre-solve: auto-initialise history on first call.
+
+        ``store_result`` is accepted for a uniform hook signature and ignored:
+        this flavour records the stress at its particles in the post-solve.
+        """
         self._dt = dt
 
         if not self._history_initialised:
@@ -4138,6 +4164,7 @@ class Lagrangian(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
         """Shift history chain and advect swarm after solve."""
         self._dt = dt
@@ -4157,22 +4184,24 @@ class Lagrangian(_DDtBase):
 
             self.psi_star[i].array[...] = self.psi_star[i - 1].array[...]
 
-        # Now update the swarm variable
-
+        # Now update the swarm variable. psi_fn is the constitutive flux and
+        # reads psi_star[0] itself, so every component is evaluated BEFORE any is
+        # written: writing one marks the proxy stale, and a later evaluation
+        # would then read a history that is half new (audit SWARM-06, the reason
+        # Lagrangian_Swarm computes all its components first).
         psi_star_0 = self.psi_star[0]
-        # Grab the current psi values at the (pre-advection) particle
-        # positions via the canonical component storage (audit SWARM-06).
         coords = np.asarray(self.swarm._particle_coordinates.data)
+        updated = {}
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
-                updated_psi = uw.function.evaluate(
-                    self.psi_fn[i, j],
-                    coords,
-                    evalf=evalf,
-                )
-                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
-                    updated_psi
+                ij = psi_star_0._data_layout(i, j)
+                if ij in updated:
+                    continue
+                updated[ij] = np.asarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
                 ).reshape(-1)
+        for ij, vals in updated.items():
+            psi_star_0.data[:, ij] = vals
 
         # Now update the swarm locations
 

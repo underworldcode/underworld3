@@ -1537,7 +1537,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @property
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
-        (default), ``"integration_point"``, ``"forward"`` or ``"eulerian"``.
+        (default), ``"integration_point"``, ``"forward"``, ``"lagrangian"`` or
+        ``"eulerian"``.
 
         ``"forward"`` carries the stress from a fixed set of launch points inside
         the cells (the integration points), one forward trajectory a step, and
@@ -1553,7 +1554,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         there, so it carries one evaluation error and needs no projection. The
         Eulerian one transports the stress on the grid with the same
         streamline-upwind stabilisation the Eulerian solvers use, and gives the
-        same answer on any partition. The default is ``"semi_lagrangian"``. Set
+        same answer on any partition. ``"lagrangian"`` carries the stress on a
+        swarm of material points the solver creates and advects, reading the
+        constitutive flux at the particles each step and never projecting it
+        back to the mesh: no numerical diffusion of the history, at the cost of
+        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`). The default
+        is ``"semi_lagrangian"``. Set
         it before the constitutive model is assigned: assigning the model
         creates the history, and the choice cannot change after that.
         """
@@ -1562,10 +1568,11 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @stress_transport.setter
     def stress_transport(self, value):
         value = str(value)
-        if value not in ("semi_lagrangian", "integration_point", "forward", "eulerian"):
+        if value not in ("semi_lagrangian", "integration_point", "forward",
+                         "lagrangian", "eulerian"):
             raise ValueError(
                 "stress_transport must be 'semi_lagrangian', 'integration_point', "
-                f"'forward' or 'eulerian', not {value!r}.")
+                f"'forward', 'lagrangian' or 'eulerian', not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
@@ -1798,6 +1805,40 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
                 vtype=common["vtype"], varsymbol=common["varsymbol"], order=order,
+            )
+        elif self.stress_transport == "lagrangian":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
+                    "not provide; use stress_transport='semi_lagrangian' for it.")
+            # Order 1 BDF only for now: the particle flavour has no exponential
+            # coefficients (it is built with_exp=False), and order 2 is not yet
+            # validated. Refuse cleanly rather than crash inside the first solve.
+            if getattr(cm, "_integrator", "bdf") != "bdf":
+                raise NotImplementedError(
+                    "the particle Lagrangian stress history supports the BDF "
+                    "integrator only; use stress_transport='semi_lagrangian' for the "
+                    "exponential one.")
+            if order > 1:
+                raise NotImplementedError(
+                    "the particle Lagrangian stress history is first order for now; "
+                    "use stress_transport='semi_lagrangian' for order 2.")
+            # The solver owns the swarm: Lagrangian creates and populates it, and
+            # carries the stress on it. Lagrangian_Swarm (a user-supplied swarm)
+            # stays available by passing DFDt= to the constructor.
+            # A cells proxy (discontinuous, reconstructed from the particles in
+            # each cell) is what the particle history is validated on
+            # (test_0070); the continuous nodal store the mesh flavours use is
+            # not the right target for a swarm-carried field.
+            lag_common = {k: v for k, v in common.items() if k != "continuous"}
+            self.Unknowns.DFDt = uw.systems.ddt.Lagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                continuous=False,
+                proxy_location="cells",
+                **lag_common,
             )
         elif self.stress_transport == "eulerian":
             if ddt_kwargs:

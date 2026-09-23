@@ -226,6 +226,7 @@ KINDS = {
     "semi_lagrangian": "SemiLagrangian",
     "integration_point": "IntegrationPointSemiLagrangian",
     "forward": "ForwardSemiLagrangian",
+    "lagrangian": "Lagrangian",
     "eulerian": "EulerianSUPG",
 }
 
@@ -248,12 +249,17 @@ def test_every_stress_history_solves_the_maxwell_shear_box(order, integrator, to
             continue        # the grid flavour has no forcing-history slot yet
         if order == 2 and transport == "forward":
             continue        # the forward flavour carries one level
+        if transport == "lagrangian" and (order == 2 or integrator == "etd"):
+            continue        # order 1 BDF only for now (no exponential coefficients
+                            # on the particle flavour; order 2 deferred)
         kind, stress, exact = _maxwell_shear(transport, order, integrator=integrator)
         assert kind == expected_kind
         assert abs(stress - exact) / exact < tolerance, (transport, stress, exact)
         results[transport] = stress
     # Transport is a no-op on a uniform field, so the flavours differ only in
-    # how they carry it: the plumbing must not add anything of its own.
+    # how they carry it: the plumbing must not add anything of its own. The
+    # particle flavour reconstructs its history from a swarm and still agrees to
+    # 2e-8 on this field, so it is held to the same floor as the mesh flavours.
     spread = max(results.values()) - min(results.values())
     assert spread < 1e-6 * abs(exact), results
 
@@ -264,7 +270,7 @@ def test_stress_transport_is_validated_and_fixed_once_the_history_exists():
     p = uw.discretisation.MeshVariable("P_val", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     with pytest.raises(ValueError, match="stress_transport must be"):
-        stokes.stress_transport = "lagrangian"
+        stokes.stress_transport = "particles"
     stokes.stress_transport = "eulerian"
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         stokes.Unknowns, order=1)

@@ -42,7 +42,7 @@ def _stress_at_origin(stokes):
     return float(np.asarray(uw.function.evaluate(stokes.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward"])
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward", "lagrangian"])
 def test_a_restored_history_continues_where_it_left_off(transport):
     orchestration_model, stokes, dt = _shear_box(transport)
     for _ in range(6):
@@ -51,11 +51,16 @@ def test_a_restored_history_continues_where_it_left_off(transport):
     for _ in range(6):
         stokes.solve(timestep=dt, zero_init_guess=False)
     straight = _stress_at_origin(stokes)
-    straight_field = np.array(stokes.DFDt.psi_star[0].data)
+    # A swarm history carries its stress on particles whose count and order need
+    # not be reproduced identically across a restore (population control refills
+    # cells), so the raw per-particle array is compared only for the mesh
+    # flavours; the carried stress read at a point is compared for all.
+    straight_field = None if transport == "lagrangian" else np.array(stokes.DFDt.psi_star[0].data)
     orchestration_model.load_state(snap)
     for _ in range(6):
         stokes.solve(timestep=dt, zero_init_guess=False)
     assert abs(_stress_at_origin(stokes) - straight) < 1.0e-12
-    assert np.allclose(np.asarray(stokes.DFDt.psi_star[0].data), straight_field, rtol=0.0, atol=1.0e-12)
+    if straight_field is not None:
+        assert np.allclose(np.asarray(stokes.DFDt.psi_star[0].data), straight_field, rtol=0.0, atol=1.0e-12)
     # and it is a real twelve-step state, not a re-initialised six-step one
     assert abs(straight - (1.0 - 1.1 ** -12)) < 1.0e-6
