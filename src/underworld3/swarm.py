@@ -5465,7 +5465,9 @@ class Swarm(Stateful, uw_object):
 
         Returns
         -------
-        (added, removed) : the counts on this rank.
+        (added, removed) : the counts on this rank. New particles follow the
+            existing ones in storage order, so the last ``added`` rows of every
+            variable are the ones just created.
         """
         mesh = self.mesh
         dim = self.cdim
@@ -5512,12 +5514,22 @@ class Swarm(Stateful, uw_object):
                 surplus = int(npc[c] - max_per_cell)
                 drop.extend(idx[np.argsort(nearest_all[idx])[:surplus]].tolist())
             if drop:
+                # PETSc removes a point by copying the LAST point into its
+                # slot (DMSwarmDataBucketRemovePointAtIndex), so the survivors
+                # are reordered in storage. The reconstruction below reads
+                # values in storage order, and the tree it is built on must
+                # share it: the same moves are replayed on the local copies
+                # (#784). Descending order, so a moved point is never one
+                # still to be removed.
+                last = X.shape[0]
                 for index in sorted(drop, reverse=True):
                     self.dm.removePointAtIndex(int(index))
+                    last -= 1
+                    if index != last:
+                        X[index] = X[last]
+                        cells[index] = cells[last]
+                X, cells = X[:last], cells[:last]
                 removed = len(drop)
-                keep = np.ones(X.shape[0], dtype=bool)
-                keep[drop] = False
-                X, cells = X[keep], cells[keep]
                 npc = np.bincount(cells[cells >= 0], minlength=ncells)
                 self._invalidate_canonical_data()
 
