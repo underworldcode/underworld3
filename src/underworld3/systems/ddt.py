@@ -1049,12 +1049,16 @@ class _DDtBase(uw_object):
         :class:`EulerianSUPG` compiles the value into a boundary term of its
         transport solve; :class:`IntegrationPointSemiLagrangian` gives it to a
         departure point restored to the boundary; :class:`ForwardSemiLagrangian`
-        fills the uncovered share of an inflow cell with it. The nodal
-        trace-back and the particle flavours do not use it: a departure point
-        or a particle that lands outside the domain is restored to the
-        boundary and takes the transported field's value THERE, which
-        constrains the inflow but is not the value set. Setting a value on
-        such a flavour says so once rather than dropping it in silence (#733).
+        fills the uncovered share of an inflow cell with it;
+        :class:`Lagrangian` gives it to every particle that entered through
+        an inflow: one whose back-trace over the step, or over one cell for a
+        particle the refill created, leaves the domain there (#783). The nodal
+        trace-back and :class:`Lagrangian_Swarm` (a swarm the caller advects)
+        do not use it: a departure point or a particle that lands outside the
+        domain is restored to the boundary and takes the transported field's
+        value THERE, which constrains the inflow but is not the value set.
+        Setting a value on such a flavour says so once rather than dropping it
+        in silence (#733).
         """
         return self._inflow_value
 
@@ -1072,13 +1076,53 @@ class _DDtBase(uw_object):
                     "restores an out-of-bounds departure point to the boundary "
                     "and reads the transported field there, which constrains "
                     "the inflow but is not the value you set. EulerianSUPG, "
-                    "IntegrationPointSemiLagrangian and ForwardSemiLagrangian "
-                    "apply it (#733).",
+                    "IntegrationPointSemiLagrangian, ForwardSemiLagrangian and "
+                    "Lagrangian apply it (#733, #783).",
                     stacklevel=2)
         self._inflow_value = value
 
     #: Whether this flavour compiles :attr:`inflow_value` into its transport.
     applies_inflow_value = False
+
+    def _nondim_timestep(self, dt):
+        r"""Reduce ``dt`` to a plain non-dimensional model-time value.
+
+        The semi-Lagrangian trace-back is performed ENTIRELY in the mesh's
+        NON-DIMENSIONAL (DM) coordinate space: evaluate()/global_evaluate
+        treat plain arrays as DM coords and the DM point-location uses DM
+        values (0..L_model, NOT dimensional metres). So coords, velocity
+        AND dt are all reduced to non-dimensional values, whether or not
+        the model carries units. (Previously the has_units branch kept
+        dimensional coords/velocity and left dt unitless -> a 'meter' vs
+        'meter/second' subtraction crash and mislocation against the ND
+        DM; UW3 issue #267.)
+        """
+        if hasattr(dt, "magnitude") or hasattr(dt, "value"):
+            # dt carries units -> non-dimensionalise it
+            dt_nondim = uw.non_dimensionalise(dt, uw.get_default_model())
+            if hasattr(dt_nondim, "magnitude"):
+                return float(dt_nondim.magnitude)
+            elif hasattr(dt_nondim, "value"):
+                return float(dt_nondim.value)
+            else:
+                return float(dt_nondim)
+        else:
+            # already non-dimensional model-time
+            return dt
+
+
+    def _write_inflow(self, var, coords, rows):
+        """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
+        ``coords`` (the positions of ALL the points, so that the read, which
+        is collective when the value holds a field, is made on every rank;
+        only ``rows`` are written). Storage is non-dimensional, so the value
+        is reduced through the history's units. A flavour that calls this
+        sets ``_components`` (its stored columns) and ``_psi_units``."""
+        expr = self._inflow_value
+        for column, (i, j) in enumerate(self._components):
+            vals = uw.function.evaluate(expr[i, j], coords)
+            var.data[rows, column] = np.asarray(
+                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)[rows]
 
     def _unknown_shape(self):
         """Shape of the unknown as a matrix (``Symbolic`` stores ``_shape`` as data)."""
@@ -3513,32 +3557,6 @@ class SemiLagrangian(_DDtBase):
                     if i != j:
                         self.psi_star[0].array[:, j, i] = vals
 
-    def _nondim_timestep(self, dt):
-        r"""Reduce ``dt`` to a plain non-dimensional model-time value.
-
-        The semi-Lagrangian trace-back is performed ENTIRELY in the mesh's
-        NON-DIMENSIONAL (DM) coordinate space: evaluate()/global_evaluate
-        treat plain arrays as DM coords and the DM point-location uses DM
-        values (0..L_model, NOT dimensional metres). So coords, velocity
-        AND dt are all reduced to non-dimensional values, whether or not
-        the model carries units. (Previously the has_units branch kept
-        dimensional coords/velocity and left dt unitless -> a 'meter' vs
-        'meter/second' subtraction crash and mislocation against the ND
-        DM; UW3 issue #267.)
-        """
-        if hasattr(dt, "magnitude") or hasattr(dt, "value"):
-            # dt carries units -> non-dimensionalise it
-            dt_nondim = uw.non_dimensionalise(dt, uw.get_default_model())
-            if hasattr(dt_nondim, "magnitude"):
-                return float(dt_nondim.magnitude)
-            elif hasattr(dt_nondim, "value"):
-                return float(dt_nondim.value)
-            else:
-                return float(dt_nondim)
-        else:
-            # already non-dimensional model-time
-            return dt
-
     def _trace_departure_points(
         self, i, node_coords_nd, dt_for_calc, evalf, subtract_v_mesh, oldframe_active
     ):
@@ -3956,6 +3974,10 @@ class Lagrangian(_DDtBase):
 
     commits_flux_in_post_solve = True
 
+    #: A particle that entered through an inflow this step takes
+    #: :attr:`inflow_value` (see :meth:`_apply_inflow_value`).
+    applies_inflow_value = True
+
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
     )
@@ -3989,6 +4011,13 @@ class Lagrangian(_DDtBase):
         self.V_fn = V_fn
         self.verbose = verbose
         self.order = order
+        # Particle storage is non-dimensional; an inflow datum with units is
+        # reduced through these before it is written (#783).
+        psi_units = uw.get_units(psi_fn)
+        if psi_units is not None and not uw.get_default_model().has_units():
+            psi_units = None
+        self._psi_units = psi_units
+        self._components = _storage_components(vtype, tuple(sympy.Matrix(psi_fn).shape))
 
         self._init_history_tracking(order)
 
@@ -4022,10 +4051,13 @@ class Lagrangian(_DDtBase):
         # the swarm without bound where particles pile up against a wall): the
         # bounds are set from the initial occupancy, with a floor at the linear
         # fit minimum.
+        # The manager applies the control itself after each advection rather
+        # than leaving it on the swarm, so it knows which particles the refill
+        # created: those are the ones an inflow datum must reach (#783).
         _npart = int(uw.mpi.comm.allreduce(np.asarray(dudt_swarm._particle_coordinates.data).shape[0], op=uw.MPI.SUM))
         _ncell = int(uw.mpi.comm.allreduce(mesh._centroids.shape[0], op=uw.MPI.SUM))
         _mean = _npart / max(_ncell, 1)
-        dudt_swarm.population_control = {
+        self._population_control = {
             "min_per_cell": max(mesh.dim + 1, int(0.5 * _mean)),
             "max_per_cell": max(2 * (mesh.dim + 1), int(3.0 * _mean)),
         }
@@ -4159,6 +4191,70 @@ class Lagrangian(_DDtBase):
 
         return
 
+    def _apply_inflow_value(self, dt, created):
+        r"""Give every particle that entered this step the inflow datum.
+
+        No particle arrives from outside: the population control CREATES the
+        particles of an emptied inlet cell, at lattice points anywhere in the
+        cell, and gives them a reconstruction from the nearest old particles,
+        which is the wrong state for fluid that has just entered. The inlet
+        then carries a smear of whatever was upstream a step ago and hands it
+        downstream (#783).
+
+        A particle entered if its back-trace leaves the domain and the flow
+        comes in where it left. The trace is :math:`x - \hat{u}\,s` with
+        :math:`s = |u|\,\Delta t` for a particle that moved (the test the
+        integration-point flavour applies to a restored departure point,
+        #745) and :math:`s = 2\,r_{\rm cell}` for one created this step, the
+        last ``created`` rows in storage, whose position inside the cell says
+        nothing about when it entered; :math:`r_{\rm cell}` is the RMS
+        vertex-to-centroid distance, so :math:`2r` is the cell's own extent
+        (0.9 to 1.3 of the edge on triangles). The trace of a particle beside
+        a wall can leave through the wall, at a corner, along a curved wall,
+        or where the flow separates, so the boundary velocity decides: at the
+        point where the trace left, the flow must cross the boundary inward
+        at more than 30 degrees. A no-slip wall has no velocity there and a
+        free-slip wall only a tangential one. Collective: the velocities and
+        the datum are read on every rank.
+
+        TODO(DESIGN): a trace that wraps through a periodic seam also reads as
+        entered, as it does in the integration-point rule (#745).
+        """
+        if self._inflow_value is None:
+            return
+        swarm = self.swarm
+        dim = self.mesh.dim
+        dt = self._nondim_timestep(dt)
+        X = np.asarray(swarm._particle_coordinates.data).reshape(-1, dim)
+        U = np.asarray(_to_nondim_ndarray(uw.function.evaluate(self.V_fn, X))).reshape(X.shape[0], dim)
+        speed = np.linalg.norm(U, axis=1)
+        moving = speed > 0.0
+        direction = np.zeros_like(U)
+        direction[moving] = U[moving] / speed[moving, None]
+        distance = speed * dt
+        if created > 0:
+            cells = np.asarray(swarm._owning_cells())[-created:]
+            distance[-created:] = np.maximum(
+                distance[-created:], 2.0 * np.asarray(self.mesh._cell_radii)[cells])
+        departure = X - direction * distance[:, None]
+        restored = np.asarray(self.mesh.return_coords_to_bounds(departure.copy())).reshape(departure.shape)
+        outward = departure - restored
+        left = moving & np.any(outward != 0.0, axis=1)
+        # The boundary velocity where each trace left; read on every rank.
+        U_boundary = np.asarray(_to_nondim_ndarray(
+            uw.function.evaluate(self.V_fn, restored[left]))).reshape(-1, dim)
+        crossing = np.einsum("ij,ij->i", U_boundary, outward[left])
+        steep = crossing < -0.5 * np.linalg.norm(U_boundary, axis=1) * np.linalg.norm(outward[left], axis=1)
+        entered = np.zeros(X.shape[0], dtype=bool)
+        entered[np.nonzero(left)[0][steep]] = True
+        n_entered = int(entered.sum())
+        if uw.mpi.size > 1:
+            n_entered = uw.mpi.comm.allreduce(n_entered, op=uw.MPI.SUM)
+        if n_entered == 0:
+            return
+        for slot in self.psi_star:
+            self._write_inflow(slot, X, entered)
+
     def update_post_solve(
         self,
         dt: float,
@@ -4192,6 +4288,10 @@ class Lagrangian(_DDtBase):
         psi_star_0 = self.psi_star[0]
         coords = np.asarray(self.swarm._particle_coordinates.data)
         updated = {}
+        # TODO(BUG): the evaluated psi_fn is written into non-dimensional
+        # storage without reduction through _psi_units (see _write_inflow); a
+        # psi_fn carrying units lands at its physical magnitude. Same in
+        # initialise_history and in Lagrangian_Swarm.
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
                 ij = psi_star_0._data_layout(i, j)
@@ -4210,6 +4310,8 @@ class Lagrangian(_DDtBase):
             delta_t=dt,
             restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
         )
+        created, _ = self.swarm.repopulate(**self._population_control)
+        self._apply_inflow_value(dt, created)
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
@@ -5119,17 +5221,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             var.data[:, column] = np.asarray(
                 _to_nondim_ndarray(vals, units=self._psi_units)
             ).reshape(-1)
-
-    def _write_inflow(self, var, coords, rows):
-        """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
-        ``coords`` (the restored positions of ALL the points, so that the
-        read, which is collective when the value holds a field, is made on
-        every rank; only ``rows`` are written)."""
-        expr = sympy.Matrix(self._inflow_value)
-        for column, (i, j) in enumerate(self._components):
-            vals = uw.function.evaluate(expr[i, j], coords)
-            var.data[rows, column] = np.asarray(
-                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)[rows]
 
     def _segment_dt(self, j, dt):
         """Length of segment ``j`` (0 = the current step)."""
