@@ -82,6 +82,12 @@ silently understates the run. See
 [HOW-TO-WRITE-UW3-SCRIPTS](HOW-TO-WRITE-UW3-SCRIPTS.md) and
 `docs/developer/design/run-plan-and-transcript.md`.
 
+**Every operator gives an adjoint verdict.** A `solve`, `history_shift` or
+`swarm_advect` event carries `adjoint: {supported, reason}`, written when it
+ran. A new history scheme without `_adjoint_support()` fails
+`tests/test_0018_adjoint_support_record.py`; a new operation on model state
+that records no verdict lets a run claim invertibility it does not have.
+
 **Named quantities keep their names.** A coefficient written as
 `uw.expression(r"\rho_0 \alpha g", ...)` appears in the description under that
 name. An anonymous float collapses into the assembled product and the

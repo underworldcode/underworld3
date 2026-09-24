@@ -121,6 +121,13 @@ surface rather than the mesh. Reserve `add_nitsche_bc` for BCs that must *evolve
 time* — a hard rotated constraint cannot morph.
 Governing doc: [`subsystems/rotated-freeslip.md`](docs/developer/subsystems/rotated-freeslip.md).
 
+**Tangent policy.** `solver.consistent_jacobian`: `True` (consistent Newton, the
+default — the residual is symbolic, so the tangent is exact); `"continuation"`
+(staged Picard→Newton) for robustness far from the solution; `False` (Picard)
+only where a hard-yield viscoplastic solve needs it as an entry requirement. The
+rotated constraint is transparent to the tangent, and the rotated path takes no
+warm-up sweep before Newton.
+
 **Data access.** New code uses `.array` with three-index shapes — scalars
 `(N,1,1)`, vectors `(N,1,dim)`, tensors `(N,dim,dim)` — and `mesh.X.coords` for
 coordinates. `with mesh.access(...)`, `with swarm.access(...)`, `mesh.data` and
