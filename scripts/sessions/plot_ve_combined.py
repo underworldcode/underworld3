@@ -5,7 +5,7 @@ Two rows, each with:
   - Right axis: strain rate (filled grey)
 
 Reads from saved .npz data — run the benchmarks first:
-  python tests/plot_ve_oscillatory_validation.py
+  python scripts/sessions/plot_ve_oscillatory_validation.py
   python docs/advanced/benchmarks/run_ve_square_wave.py
 """
 

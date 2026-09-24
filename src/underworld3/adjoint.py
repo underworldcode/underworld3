@@ -127,7 +127,7 @@ class _Scratch:
 _shared_scratch = _Scratch()
 
 
-def dual_on(variable, value, grad=None, scratch=None):
+def dual_on(variable, value, grad=None, scratch=None, boundary=None):
     r"""The dual of a load on ``variable``'s space, held as a field.
 
     :math:`b_j = \int v\,\phi_j + \mathbf g\cdot\nabla\phi_j` for every basis
@@ -139,18 +139,47 @@ def dual_on(variable, value, grad=None, scratch=None):
     solve and no integration by parts. The returned field comes from
     ``scratch`` (a :class:`_Scratch` pool; the module's shared one by
     default) — give it back with ``scratch.give(field)`` when done.
+
+    With ``boundary`` (a mesh boundary label), the load is the facet
+    integral :math:`b_j = \int_\Gamma v\,\phi_j` instead — a misfit on
+    surface observations — assembled as a natural condition of the same
+    generic solver with zero volume templates. A gradient part on a boundary
+    is not assembled yet and raises.
     """
     scratch = _shared_scratch if scratch is None else scratch
     mesh = variable.mesh
     n = getattr(variable, "num_components", 1)
     dim, cdim = mesh.dim, mesh.cdim
     asm = scratch.assembler(variable)
-    if grad is None:
-        grad = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
-    asm._g0 = value
-    asm._g1 = sympy.Matrix(grad)
-    asm._needs_function_rewire = True          # the templates re-evaluate
-    asm._build(False, False, None)
+    if boundary is not None:
+        has_grad = grad is not None and not sympy.Matrix(grad).is_zero_matrix
+        if has_grad and n == 1:
+            raise NotImplementedError(
+                "dual_on: a scalar load read through the gradient on a boundary "
+                "is not assembled yet (the scalar assembler has no facet flux "
+                "term); a vector one is")
+        # zero volume templates; the natural condition IS the load
+        asm._g0 = sympy.zeros(1, 1) if n == 1 else sympy.zeros(1, dim)
+        asm._g1 = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
+        asm.natural_bcs.clear()
+        asm.add_natural_bc(value, boundary)
+        if has_grad:
+            # the facet flux part int_Gamma g . grad(phi_j): the same slot a
+            # Nitsche condition uses for its symmetry term
+            bc = asm.natural_bcs[-1]
+            asm.natural_bcs[-1] = bc._replace(fn_F=sympy.Matrix(grad).as_immutable())
+        asm.is_setup = False                        # the facet kernels are registered on build
+        asm._build(False, False, None)
+    else:
+        if grad is None:
+            grad = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
+        if asm.natural_bcs:
+            asm.natural_bcs.clear()
+            asm.is_setup = False
+        asm._g0 = value
+        asm._g1 = sympy.Matrix(grad)
+        asm._needs_function_rewire = True          # the templates re-evaluate
+        asm._build(False, False, None)
     out_var = scratch.take(variable)
     gvec = asm.dm.getGlobalVec()
     gvec.set(0.0)
@@ -169,6 +198,13 @@ def dual_on(variable, value, grad=None, scratch=None):
     try:
         out_var._sync_lvec_to_gvec()
     except AttributeError:
+        # Charter S4 — sanctioned: the sync is an optimisation, not the write.
+        # The values are already in out_var.vec above; _sync_lvec_to_gvec only
+        # pushes them to the global vector eagerly so a later read does not have
+        # to. A variable class that does not define it (an older MeshVariable,
+        # or a plain wrapper) syncs on demand instead, which is correct and
+        # merely later. AttributeError specifically, so a failure INSIDE the
+        # sync still propagates.
         pass
     return out_var
 
@@ -211,16 +247,17 @@ def _token_of(var):
     return text
 
 
-def misfit_duals(misfit, variables, scratch=None):
+def misfit_duals(misfit, variables, scratch=None, boundary=None):
     r"""``dJ/df`` as a dual field on each field the misfit reads.
 
-    ``J = \int misfit`` over the mesh; a field enters through its value and,
-    for a misfit on a stress or a strain rate, through its gradient. Both
-    parts are differentiated symbolically and assembled as one load
-    (:func:`dual_on`), so a misfit written in terms of :math:`\nabla u` needs
-    no integration by parts by the caller. Returns ``{variable: dual}`` for
-    the variables that appear; give each dual back to the scratch pool when
-    done.
+    ``J = \int misfit`` over the mesh — or over the boundary ``boundary``
+    when one is named, for a misfit on surface observations. A field enters
+    through its value and, for a misfit on a stress or a strain rate,
+    through its gradient. Both parts are differentiated symbolically and
+    assembled as one load (:func:`dual_on`), so a misfit written in terms of
+    :math:`\nabla u` needs no integration by parts by the caller. Returns
+    ``{variable: dual}`` for the variables that appear; give each dual back
+    to the scratch pool when done.
     """
     scratch = _shared_scratch if scratch is None else scratch
     peeled = _peel(misfit)
@@ -245,8 +282,216 @@ def misfit_duals(misfit, variables, scratch=None):
             g1[i, int(m.group(2))] = sympy.diff(peeled, atom)
         if all(v == 0 for v in value) and (g1 is None or g1.is_zero_matrix):
             continue
+        out[var] = dual_on(var, _as_expression(value), g1, scratch, boundary=boundary)
+    return out
+
+
+def integral(mesh, expression, boundary=None):
+    """``float(∫ expression)`` over the mesh, or over ``boundary`` if named."""
+    if boundary is None:
+        return float(uw.maths.Integral(mesh, expression).evaluate())
+    return float(uw.maths.BdIntegral(mesh, expression, boundary).evaluate())
+
+
+def _reads_of(solver, unknown, tokens):
+    """What a solver's residual reads, other than its unknown.
+
+    ``(variable, value symbols, {(component, direction): derivative atom})``
+    per variable. A component prints as ``{v}_{ 0 }``; a derivative carries
+    a comma — ``{v}_{ 0,1}`` for a vector, ``{T}_{,1}`` for a scalar — and
+    is read through the gradient part of the load.
+    """
+    f0 = _peel(solver.F0.sym)
+    f1 = _peel(solver.F1.sym)
+    text = str(f0) + str(f1)
+    atoms = set(f0.atoms(sympy.Function)) | set(f1.atoms(sympy.Function))
+    found = []
+    for token, var in tokens.items():
+        if var is unknown or token not in text:
+            continue
+        derivatives = {}
+        pattern = re.compile(re.escape(token) + r"_\{ ?(\d*),(\d+)\}\(")
+        for atom in atoms:
+            m = pattern.match(str(atom))
+            if m:
+                i = int(m.group(1)) if m.group(1) else 0
+                derivatives[(i, int(m.group(2)))] = atom
+        found.append((var, _symbols_of(var), derivatives))
+    return found
+
+
+def _tokens_of(variables):
+    return {_token_of(var): var for var in variables if hasattr(var, "sym")}
+
+
+def field_duals(solver, mu, variables, scratch=None):
+    r"""``(\partial R/\partial f)^T \mu`` as a dual on each field ``f`` the
+    solver's residual reads, among ``variables``.
+
+    A field read through its value gives the value part of the load; one
+    read through its gradient (a Crank–Nicolson step reads the old flux)
+    gives the gradient part. Both come from :meth:`adjoint_integrand`, the
+    symbolic derivative of the residual, and are assembled as one load.
+    """
+    scratch = _shared_scratch if scratch is None else scratch
+    out = {}
+    for var, symbols, derivatives in _reads_of(solver, solver.u, _tokens_of(variables)):
+        value = [solver.adjoint_integrand(mu, s) for s in symbols]
+        g1 = None
+        if derivatives:
+            cdim = var.mesh.cdim
+            g1 = sympy.zeros(len(symbols), cdim)
+            for (i, k), atom in derivatives.items():
+                g1[i, k] = solver.adjoint_integrand(mu, atom)
         out[var] = dual_on(var, _as_expression(value), g1, scratch)
     return out
+
+
+def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=None):
+    r"""``dJ/dm`` and the duals on fields, by the adjoint of ONE solve.
+
+    For :math:`J = \int` ``misfit`` over the mesh, evaluated in the state the
+    solver ended in: the dual of :math:`J` on the unknown is assembled
+    (:func:`misfit_duals`), the adjoint system :math:`K^T\mu = -\partial J/
+    \partial u` is solved (:meth:`adjoint_solve`), and each parameter gets
+    :math:`\partial J/\partial m + \mu^T\partial R/\partial m`
+    (:meth:`sensitivity`). Each requested field gets :math:`\partial J/
+    \partial f + (\partial R/\partial f)^T\mu` as a dual on its own space
+    — the derivative through a field the residual reads, an initial
+    condition or a coefficient field.
+
+    ``boundary`` names a mesh boundary label over which the misfit is
+    integrated instead of the volume: surface observations. A misfit with
+    terms on several domains is a dict ``{None: volume integrand, "Top":
+    surface integrand}``; then ``boundary`` is ignored.
+
+    Returns ``{"J": float, "parameters": {expr: float}, "fields": {var: dual}}``;
+    the duals are NumPy copies, safe to keep.
+    """
+    scratch = _shared_scratch if scratch is None else scratch
+    parameters, fields = list(parameters), list(fields)
+    u = solver.u
+    mesh = u.mesh
+    # One misfit, or several terms on different domains: {None: volume
+    # integrand, "Top": surface integrand, ...}. J and every dual are sums.
+    terms = dict(misfit) if isinstance(misfit, dict) else {boundary: misfit}
+    J = 0.0
+    duals = {}
+    grad = {p: 0.0 for p in parameters}
+    read = [u] + [f for f in fields if f is not u]
+    for where, term in terms.items():
+        J += integral(mesh, term, where)
+        for var, dual in misfit_duals(term, read, scratch, boundary=where).items():
+            if var in duals:
+                duals[var].array[...] = np.asarray(duals[var].array) + np.asarray(dual.array)
+                scratch.give(dual)
+            else:
+                duals[var] = dual
+        for p in parameters:
+            explicit = sympy.diff(_peel_except(term, p), p)
+            if explicit != 0:
+                grad[p] += integral(mesh, explicit, where)
+    # The explicit part on a field the misfit reads directly — never on the
+    # unknown, whose misfit dual is the adjoint's right-hand side.
+    out_fields = {var: (np.array(duals[var].array, copy=True) if (var in duals and var is not u)
+                        else np.zeros_like(np.asarray(var.array))) for var in fields}
+    # A history slot the residual reads (psi_star[0]) holds the tracked field
+    # at the solve's input, so its dual is the derivative with respect to
+    # that field: read the slot, route the dual to the field.
+    route = {}
+    for history in (getattr(solver, "DuDt", None), getattr(solver, "DFDt", None)):
+        if history is None or not getattr(history, "psi_star", None):
+            continue
+        text = str(history.psi_fn)
+        for field in fields:
+            # the unknown itself is a control through its INPUT level, which
+            # is what the slot holds
+            if _token_of(field) in text:
+                route[history.psi_star[0]] = field
+    read_vars = [f for f in fields if f is not u] + list(route)
+    if u in duals:
+        rhs = duals.pop(u)
+        # dJ/du on every node, the constrained ones included: the rows the
+        # solve leaves out are the misfit reading the prescribed data, and
+        # a parameter in a datum needs them (#762)
+        misfit_dual = np.array(np.asarray(rhs.array), dtype=float, copy=True)
+        rhs.array[...] = -np.asarray(rhs.array)
+        mu = scratch.take(u)
+        lam = None
+        if getattr(solver, "p", None) is not None and hasattr(solver, "_subdict"):
+            lam = scratch.take(solver.p)
+            _, reason = solver.adjoint_solve((rhs, None), target=(mu, lam))
+        else:
+            _, reason = solver.adjoint_solve(rhs, target=mu)
+        scratch.give(rhs)
+        if reason <= 0:
+            raise RuntimeError(f"gradient: the adjoint of {type(solver).__name__}({u.name}) "
+                               f"did not converge ({reason})")
+        # the pressure adjoint stays until the sensitivities are taken: a
+        # parameter in a velocity datum reads it through the divergence block
+        for p in parameters:
+            grad[p] += solver.sensitivity(mu, p, lam=lam, misfit_dual=misfit_dual)
+        if lam is not None:
+            scratch.give(lam)
+        for var, dual in field_duals(solver, mu, read_vars, scratch).items():
+            target = route.get(var, var)
+            out_fields[target] = out_fields[target] + np.asarray(dual.array)
+            scratch.give(dual)
+        scratch.give(mu)
+    for dual in duals.values():
+        scratch.give(dual)
+    return {"J": J, "parameters": grad, "fields": out_fields}
+
+
+def minimise(objective, x0, bounds=None, method="lmvm", options=None, max_evaluations=100,
+             gradient_tolerance=1e-8, callback=None):
+    r"""Minimise ``objective(x) -> (J, dJ/dx)`` with PETSc TAO.
+
+    The driver for an inversion: the misfit and its gradient come from the
+    adjoint, the step along the gradient is the line search's, and the
+    quasi-Newton update is TAO's limited-memory one (``"lmvm"``; ``"blmvm"``
+    honours ``bounds``, a pair of arrays). ``x0`` is a NumPy array; a few
+    scalar controls are replicated on every rank, each rank's TAO doing the
+    same arithmetic on the same numbers, and the objective's own collective
+    solves keep the ranks in step. Returns ``(x, info)`` with the iterations,
+    the converged reason and the history of ``(J, x)`` per evaluation.
+    """
+    from petsc4py import PETSc
+    x0 = np.asarray(x0, dtype=float).ravel()
+    x = PETSc.Vec().createSeq(x0.size, comm=PETSc.COMM_SELF)
+    x.setArray(x0)
+    history = []
+
+    def fg(tao, xv, g):
+        values = np.array(xv.getArray(readonly=True), copy=True)
+        J, grad = objective(values)
+        g.setArray(np.asarray(grad, dtype=float).ravel())
+        history.append((float(J), values))
+        if callback is not None:
+            callback(J, values)
+        return float(J)
+
+    tao = PETSc.TAO().create(comm=PETSc.COMM_SELF)
+    tao.setType(method)
+    tao.setObjectiveGradient(fg, None)
+    if bounds is not None:
+        lo, hi = bounds
+        lower = x.duplicate(); lower.setArray(np.asarray(lo, dtype=float).ravel())
+        upper = x.duplicate(); upper.setArray(np.asarray(hi, dtype=float).ravel())
+        tao.setVariableBounds(lower, upper)
+    tao.setMaximumFunctionEvaluations(int(max_evaluations))
+    tao.setTolerances(gatol=gradient_tolerance)
+    for key, value in (options or {}).items():
+        PETSc.Options().setValue(key, value)
+    tao.setFromOptions()
+    tao.setSolution(x)
+    tao.solve()
+    info = {"iterations": int(tao.getIterationNumber()),
+            "reason": int(tao.getConvergedReason()),
+            "history": history}
+    out = np.array(x.getArray(readonly=True), copy=True)
+    tao.destroy()
+    return out, info
 
 
 _n = [0]
@@ -341,11 +586,15 @@ class TranscriptAdjoint:
                 if not self._nonzero(rhs):
                     continue
                 inputs = self._linearise_at(step, solves, j)
-                mu = self._adjoint(solver, rhs)
+                mu, lam = self._adjoint(solver, rhs)
+                # the dual on every node of this level's output, the
+                # constrained rows included: what a parameter in a datum
+                # multiplies (#762)
+                dJdu = np.array(np.asarray(rhs.array), dtype=float, copy=True)
                 scratch.give(acc.pop(u.name))  # consumed: this level's output
 
                 for p in parameters:
-                    grad[p] += solver.sensitivity(mu, p)
+                    grad[p] += solver.sensitivity(mu, p, lam=lam, misfit_dual=dJdu)
 
                 for var, symbols, derivatives in self._reads(solver, u):
                     value = [solver.adjoint_integrand(mu, s) for s in symbols]
@@ -360,6 +609,8 @@ class TranscriptAdjoint:
                     self._accumulate(acc, target,
                                      dual_on(target, _as_expression(value), g1, scratch))
                 scratch.give(mu)
+                if lam is not None:
+                    scratch.give(lam)
 
         out_fields = {}
         for var in fields:
@@ -386,30 +637,7 @@ class TranscriptAdjoint:
                 if hasattr(var, "sym")}
 
     def _reads(self, solver, unknown):
-        """What a solver's residual reads, other than its unknown.
-
-        ``(variable, value symbols, {(component, direction): derivative atom})``
-        per variable. A component prints as ``{v}_{ 0 }``; a derivative
-        carries a comma — ``{v}_{ 0,1}`` for a vector, ``{T}_{,1}`` for a
-        scalar — and is read through the gradient part of the load.
-        """
-        f0 = _peel(solver.F0.sym)
-        f1 = _peel(solver.F1.sym)
-        text = str(f0) + str(f1)
-        atoms = set(f0.atoms(sympy.Function)) | set(f1.atoms(sympy.Function))
-        found = []
-        for token, var in self._tokens().items():
-            if var is unknown or token not in text:
-                continue
-            derivatives = {}
-            pattern = re.compile(re.escape(token) + r"_\{ ?(\d*),(\d+)\}\(")
-            for atom in atoms:
-                m = pattern.match(str(atom))
-                if m:
-                    i = int(m.group(1)) if m.group(1) else 0
-                    derivatives[(i, int(m.group(2)))] = atom
-            found.append((var, _symbols_of(var), derivatives))
-        return found
+        return _reads_of(solver, unknown, self._tokens())
 
     def _linearise_at(self, step, solves, j):
         """Restore the step's snapshot, replay solves 0..j, and put each
@@ -454,16 +682,16 @@ class TranscriptAdjoint:
         mu = scratch.take(u)
         neg = scratch.take(u)
         neg.array[...] = -np.asarray(rhs.array)
+        p_adj = None
         if getattr(solver, "p", None) is not None and hasattr(solver, "_subdict"):
             p_adj = scratch.take(solver.p)
             _, reason = solver.adjoint_solve((neg, None), target=(mu, p_adj))
-            scratch.give(p_adj)
         else:
             _, reason = solver.adjoint_solve(neg, target=mu)
         scratch.give(neg)
         if reason <= 0:
             raise RuntimeError(f"adjoint of {type(solver).__name__}({u.name}) did not converge ({reason})")
-        return mu
+        return mu, p_adj
 
     def _accumulate(self, acc, var, dual):
         held = acc.get(var.name)
@@ -502,7 +730,8 @@ def _peel_except(expression, wrt, depth=8):
     the derivative of a number is zero."""
     for _ in range(depth):
         named = [e for e in uw.function.fn_extract_expressions(expression)
-                 if e is not wrt and e != wrt]
+                 if e is not wrt and e != wrt
+                 and not getattr(getattr(e, "sym", None), "is_Number", False)]
         if not named:
             break
         expression = expression.subs({e: e.sym for e in named})

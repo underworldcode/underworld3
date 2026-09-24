@@ -69,6 +69,32 @@ symbol onto a `MeshVariable` explicitly with `SNES_Projection`; the
 projection of the field is an ordinary weak form and is exact for data that
 the target space can represent.
 
+
+### The derivative: refused in a weak form, recovered by `evaluate`
+
+An integration-point variable's tabulated gradient is identically zero, so a
+derivative of its symbol would be a silent zero. The two paths are handled
+differently on purpose:
+
+- **Code generation for a weak form** (`utilities/_jitextension.py`,
+  `_no_derivative`) raises. A hidden reconstruction inside a residual would be
+  a per-assembly cost and would decide a discretisation on the user's behalf.
+  The message names the remedy: `proxy_location="cells"`, whose level sets are
+  per-cell polynomials and differentiate directly.
+- **`uw.function.evaluate`** (`function/_function.pyx`,
+  `_integration_point_sources_to_cell_fit`) substitutes any integration-point
+  source appearing under a derivative by a per-cell least-squares fit of its
+  own values, then lets the ordinary derivative machinery run. The fit is
+  allowed to be exactly determined (`nmin = Nb`) because the rule is unisolvent
+  for that degree; the default `Nb + 2` would send every cell to the linear
+  patch and leave the recovered gradient first order.
+
+Measured on `x^2 + 2y` carried at the integration points, the recovered
+gradient converges: 2.4e-3, 6.1e-4, 2.6e-4 at cell sizes 1/5, 1/10, 1/20. The
+direct `"cells"` route (degree 2, fitted from particles) gives 2.4e-7 on the
+same field, because it is exact for a quadratic and nothing is projected
+afterwards.
+
 ## Guards
 
 The field has no gradient (its tabulated derivative is identically zero), so
@@ -86,7 +112,12 @@ raises if they differ. Boundary integrals evaluate the field on the face
 rule and see zeros; that is correct for a history term and worth knowing for
 anything else.
 
-Scalar components only for now; use one variable per component.
+Vector and tensor variables are supported: one dof per **independent**
+component per point, so a symmetric tensor in 2-D is `2x2` symbolically and
+three columns in storage. The column order is the diagonal first, then the
+off-diagonals in row-major upper-triangular order — `(0,0), (1,1), (0,1)` in
+2-D — and `tests/test_0066_integration_point_slcn.py` pins it against
+what the variable's own `.sym` reconstructs.
 
 ## Implementation
 
@@ -132,8 +163,8 @@ adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V_fn, DuDt=DuDt, order=1
 ```
 
 The diffusive flux history (`DFDt`) keeps its nodal projection, since it
-carries derivatives. Scalar histories only; no ALE or old-frame trace-back,
-no checkpoint state yet.
+carries derivatives. Scalar, vector and tensor histories are all carried (see
+below); no ALE or old-frame trace-back, no checkpoint state yet.
 
 It is the transport manager of either advection-diffusion solver. In the
 composed `uw.systems.AdvDiffusion` (#688) it runs at `order=2` (BDF2) and
@@ -143,6 +174,61 @@ Crank-Nicolson flux (`theta=0.5`) the composed solver differentiates the
 old level, which a delta field cannot supply, and the JIT guard refuses
 with a clear message; for that scheme use `AdvDiffusionSLCN`, whose
 diffusive history is a separate nodal `DFDt`.
+
+### Vector and tensor histories
+
+`vtype` selects the shape, and the slots hold one value per **independent**
+component per integration point:
+
+```python
+# a momentum history for Navier-Stokes
+DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    mesh, v, v.sym, vtype=uw.VarType.VECTOR, degree=2, order=2)
+
+# a viscoelastic stress history
+DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    mesh, stress, v.sym, vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
+
+DFDt.psi_star[0].sym          # a 2x2 symbolic matrix
+DFDt.psi_star[0].data.shape   # (npoints, 3) -- three stored columns
+DFDt.bdf()                    # 2x2, as psi_fn is
+```
+
+| `vtype` (2-D) | symbolic shape | stored columns |
+|---|---|---|
+| `SCALAR` | 1×1 | 1 |
+| `VECTOR` | 1×2 | 2 |
+| `SYM_TENSOR` | 2×2 | **3** |
+
+The trace-back, the characteristic cache and the weighted sums are all
+shape-agnostic — only the fills know the shape, and they write component by
+component (`_write_components`) because a symmetric tensor's symbolic form
+repeats its off-diagonals and only the independent columns exist in storage.
+The order is diagonal first, then the off-diagonals in row-major
+upper-triangular order: `(0,0), (1,1), (0,1)` in 2-D and
+`(0,0), (1,1), (2,2), (0,1), (0,2), (1,2)` in 3-D. Get that wrong and a
+stress transposes silently, so `_storage_components` is pinned by test against
+what the variable's own `.sym` reconstructs.
+
+Accuracy is the scalar property, per component: with a uniform velocity and a
+field in the P2 space, every slot holds the snapshot evaluated at the exact
+departure point to round-off (`< 1e-12`), for one segment and for two.
+
+For the same history carried on **particles** rather than at the rule, use
+`Lagrangian_Swarm`, which has been vector- and tensor-capable since the
+viscoelastic stress history (see below). The choice between them is where the
+state lives, not what shape it can take.
+
+A symmetric history stores the **upper** triangle, so an asymmetric `psi_fn`
+loses its lower entries — the manager warns rather than transporting half the
+field silently. Note the nodal `SemiLagrangian` keeps the *other* triangle in
+the same situation and does not warn; that divergence is marked with a
+`TODO(BUG)` on that class.
+
+`psi_fn` is re-checked on every assignment, not only at construction, because
+a solver reassigns it (`DFDt.psi_fn = flux.T`) on each setup.
+
+Tests: `tests/test_0066_integration_point_slcn.py`.
 
 ### The mid-point velocity is taken at the mid time
 
@@ -275,11 +361,19 @@ nodes and back.
 
 ```python
 swarm = uw.swarm.Swarm(mesh)
-M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="integration_points")
+tau = uw.swarm.SwarmVariable("tau", swarm, (2, 2),
+                             proxy_location="integration_points")
 swarm.populate(fill_param=3)
-M.data[:, 0] = ...                                   # per particle
-stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0 * M.sym[0] + eta_1 * (1 - M.sym[0])
+tau.data[...] = ...                                  # per particle
 ```
+
+For a **material**, this is not the entry point: use `uw.swarm.MaterialSwarm`,
+which owns an `IndexSwarmVariable` whose level sets live at the integration
+points by default and blends the declared properties by the resulting
+partition of unity. See
+{doc}`../../advanced/particle-population-and-materials` for why the direct
+route is not offered — sampling a property field hands the solver an answer
+where it needs a constitutive law.
 
 The reconstruction itself is unchanged (a linear-exact RBF over the nearest
 particles, `rbf_interpolate`); only its target moved. A particle-carried
@@ -289,6 +383,41 @@ the interface (`tests/test_0067_integration_point_proxy.py`).
 `proxy_degree` and `proxy_continuous` are ignored for this proxy; the proxy
 has no gradient, so a derivative of the swarm variable's symbol is refused.
 Vector and tensor swarm variables get a multi-component proxy.
+
+### `proxy_sampling`: what each point reads
+
+`proxy_location` is where; `proxy_sampling` is what.
+
+| | `"reconstruct"` (default) | `"share"` |
+|---|---|---|
+| gathers from | the `nnn` nearest particles, by distance | the particles whose nearest integration point *in their own cell* is this one |
+| respects cell walls | no | yes |
+| linear fields | exact | small averaging error |
+| bounded by the particle values | no (overshoots a jump) | yes, it is a mean of them |
+| particles used | the stencil's | all of them, each exactly once |
+
+`"share"` is the cell-restricted Voronoi share
+(`underworld3/utilities/particle_share.py`): `share_assignment` maps each
+particle to one flat index in the cell-major `(ncells, Nq)` layout,
+`share_average` reduces by `np.bincount`. A rule point whose share is empty
+falls back to the nearest particle anywhere on the rank, and the count of
+those is left on `var._share_empty` — persistently non-zero means the swarm is
+too thin for the rule, and `Swarm.repopulate` is the fix.
+
+The assignment needs each particle's owning cell. UW3 swarms are
+`DMSWARM_BASIC`, so PETSc holds no cell id and the locator has to run;
+`Swarm._owning_cells()` caches the result and drops it wherever `_kdtree` is
+dropped, so the share proxies, the population census and anything else
+cell-local pay for one location per step between them. On 32 912 particles /
+242 cells the location is 18.8 ms and the share itself 3.2 ms, against 8.1 ms
+for the `"reconstruct"` path (whose cached operator is geometry-only, so it is
+rebuilt every time the particles move).
+
+There is no `"nearest"` here. Sampling one particle's value whole is the
+material mapping, and materials go through `MaterialSwarm` / its
+`IndexSwarmVariable` (`proxy_sampling="nearest"` there, or `"share"` for
+fractional masks); asking for it on a plain `SwarmVariable` raises and names
+the alternative.
 
 `Lagrangian_Swarm(..., proxy_location="integration_points")` applies the
 same to the fully Lagrangian history: the slots carried on the particles
@@ -330,6 +459,117 @@ size are `nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
 ```python
 M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)
 ```
+
+### The swarm step at the mid time
+
+`swarm.advection(V_fn, dt, order=2, midtime_velocity=True)` evaluates the
+RK2 mid-point velocity at the mid time, $\tfrac32 v^n - \tfrac12 v^{n-1}$,
+from a `CharacteristicTrace` the swarm owns (the previous velocity is cached
+by evaluation at the nodes at the end of each call), or from a solver's
+shared trace passed as `characteristics=`. On a rotation whose rate ramps
+linearly, ten steps of the frozen-velocity step miss 0.05 rad and the
+mid-time step under 0.008 (`tests/test_0069_swarm_midtime_velocity.py`). A
+steady flow is unchanged; the option is off by default and ignored when the
+step is substepped.
+
+### Repopulation: keeping every cell fit-able
+
+A flow that empties cells starves the fit, and the two particle read-back
+schemes both diverged on emptied corner cells before repopulation existed.
+`Swarm.repopulate()` takes the per-cell census (owning cells from the strict
+locator) and refills a starved cell from its own lattice, the points
+`populate` uses, choosing the lattice points farthest from the particles
+present. A new particle takes, for every swarm variable, the bounded Shepard
+reconstruction from its nearest neighbours (`order=1` for the linear-exact
+reconstruction; a starved cell is where neighbours are far, and the linear
+tail extrapolated to values of 100 on a field bounded by 1), or a supplied
+value (`values={var: constant or callable}`, an inflow datum for instance).
+`swarm.population_control = dict(...)` makes every `advection()` end with a
+repopulation, which is what the cells proxy wants: the refill runs before
+the next fit.
+
+```python
+swarm.population_control = dict()             # refill to the populate() density
+swarm.population_control = dict(min_per_cell=8, values={T: 0.0})
+```
+
+Count is not the whole criterion. Particles the advection clamps back onto a
+wall (`mesh.return_coords_to_bounds`) slide along it as a line, and the P2
+fit of a collinear set is singular whatever its count (measured: condition
+number 1e300 at 92 particles in a wall cell, garbage that grew by 1e12 in
+ten steps through the read-back). The fit therefore routes a cell whose Gram
+matrix has condition number above `cond_max` (1e6) to the patch fit, and a
+patch that is itself flat keeps only its mean. With that guard and
+population control the untapered rotating box, where every wall has an
+inflow and an outflow segment, runs to the same answer whether exiting
+particles are clamped or deleted (`mesh.return_coords_to_bounds = None`,
+the right setting for a true outflow, which also keeps the particle count
+from growing).
+
+Measured on the rotating Gaussian (h = 0.1, C = 0.25, 10 particles per cell,
+PIC, one revolution): population control takes the L2 error from 1.6e-2 to
+8.8e-3, level with the integration-point history at 9.1e-3, because no cell
+is ever left to the linear patch fit. A cap (`max_per_cell`) thins over-full
+cells by removing the particles closest to a neighbour; measured it costs
+accuracy (6.8e-2) and is off by default.
+
+### Viscoelastic stress history on particles
+
+The stress history of a viscoelastic Stokes solve is state: the stress at
+the old time cannot be rebuilt from the present velocity gradient and the
+rheology, and Crank-Nicolson keeps the elastic response undamped. Carried on
+particles it is the Ellipsis / Underworld PIC-LIP arrangement: the particles
+carry the stress along the flow, the mesh reads it at the integration points
+through the cells proxy, and after each solve the new stress is evaluated at
+the particles. That last step is a local ODE (the Maxwell update), so there
+is no projection back to the mesh and no null space; the particle scheme's
+one weakness, the re-projection of a diffused field, does not arise.
+
+```python
+swarm = uw.swarm.Swarm(mesh)
+DFDt = uw.systems.ddt.Lagrangian_Swarm(
+    swarm=swarm, psi_fn=sympy.Matrix.zeros(2, 2), vtype=uw.VarType.SYM_TENSOR,
+    degree=1, continuous=False, order=2, step_averaging=1, proxy_location="cells")
+swarm.populate(fill_param=3)
+swarm.population_control = dict()
+stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, DFDt=DFDt)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=2)
+...
+swarm.advection(v.sym, dt, order=2)     # then
+stokes.solve(timestep=dt)
+```
+
+The constitutive model reads the history through `psi_star[i].sym` and the
+order bookkeeping only, so the swarm history slots in symbolically; the
+solver assigns the stress expression to it, takes the viscoelastic order
+from a supplied history, and leaves the nodal projection and shift to the
+nodal history. The swarm manager evaluates every component of the new
+stress at the particles before it shifts its chain, because the stress
+expression reads the history it is about to overwrite. `step_averaging=1`
+is required (the default 2 half-relaxes the stored stress). The ETD
+integrator is not available on the swarm history.
+
+Maxwell shear box (`tests/test_0070_ve_stress_history_on_particles.py`):
+order 1 within 5% of the analytic curve after 20 steps at dt = 0.1 t_r,
+order 2 within 1%, and the particle and nodal histories agree to 0.2% of
+the final stress. Uniform shear has a uniform stress, so this validates the
+plumbing and the time integration.
+
+**Open (2026-09-09): a localised stress patch under shear.** With a
+Gaussian patch in sigma_xy on the same shear box
+(`~/+Simulations/integration_point_proxy/scripts/ve_stress_patch.py`), the
+nodal and the particle histories each converge cleanly in h (4x per
+doubling at the finest step) and in dt (first order, the same rate), but
+to answers 1.2e-2 apart in L2 (peak 0.738 against 0.715), independent of
+resolution, time step, particle density, proxy degree, read-back (PIC,
+FLIP, an explicit P1 projection), mid-time velocity, and box width. Every
+component agrees in isolation: with the particles held fixed the two
+answers coincide (1.2e-3); transport alone against the exact sheared patch
+puts the particles at 2e-5 and a P2 nodal history at 4e-5 (the P1 nodal
+history is first order, 4e-3 at h/32), yet the coupled nodal answer does
+not move when its history goes from P1 to P2; the particle proxy is
+continuous across cells to 1e-8. Which limit is right is undecided and
+needs a manufactured solution or an equation-level audit of both paths.
 
 ### Why a least-squares fit and not a conservative transfer
 

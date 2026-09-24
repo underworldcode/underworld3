@@ -256,7 +256,7 @@ def _global_max_diffusivity(constitutive_K, mesh):
         diffusivity = K
 
     # If unit-aware (UnitAwareArray), nondimensionalise so the value is
-    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # consistent with mesh._cell_radii. Note: .magnitude alone would keep the
     # physical-units number, which would be wrong here.
     if hasattr(diffusivity, "units") and diffusivity.units is not None:
         diffusivity = uw.non_dimensionalise(diffusivity)
@@ -276,7 +276,7 @@ def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
 
     Shared by the ``estimate_dt`` implementations: the advective CFL limit
     needs per-element centroid velocities in the same (nondimensional)
-    scale as ``mesh._radii``.
+    scale as ``mesh._cell_radii``.
 
     Parameters
     ----------
@@ -303,7 +303,7 @@ def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
         vel = uw.function.evaluate(V_fn, mesh._centroids)
 
     # If unit-aware (UnitAwareArray), nondimensionalise so the values are
-    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # consistent with mesh._cell_radii. Note: .magnitude alone would keep the
     # physical-units numbers, which would be wrong here.
     if hasattr(vel, "units") and vel.units is not None:
         vel = uw.non_dimensionalise(vel)
@@ -361,7 +361,7 @@ def _advective_diffusive_dt(constitutive_K, V_fn, mesh, direction_aware=False,
     diffusivity_glob = _global_max_diffusivity(constitutive_K, mesh)
     vel = _centroid_velocities_nd(V_fn, mesh)
     vel_magnitudes = np.linalg.norm(vel, axis=1)
-    element_radii = mesh._radii
+    element_radii = mesh._cell_radii
 
     def _reduce_dt(per_elem):
         fin = per_elem[np.isfinite(per_elem)] if len(per_elem) else per_elem
@@ -1751,37 +1751,42 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             if uw.mpi.rank == 0 and verbose:
                 print(f"Stokes solver - store stress and shift history", flush=True)
 
-            _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
+            # A particle-carried history (Lagrangian_Swarm) evaluates the new
+            # stress at its particles and shifts its own chain in
+            # update_post_solve; the projection and shift below are the
+            # nodal semi-Lagrangian history's.
+            if isinstance(self.DFDt, SemiLagrangian_DDt):
+                _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
 
-            if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
-                # Multi-component projection of flux → psi_star[0].
-                #
-                # The DFDt's source-snapshot machinery (enabled once in
-                # _create_stress_history_ddt) intercepts psi_fn assignment
-                # to substitute psi_star[0] symbols with a frozen
-                # psi_snapshot variable, refreshed each step in
-                # update_pre_solve. So the projection's compiled source
-                # reads from psi_snapshot (not psi_star[0] itself) and is a
-                # true one-shot Galerkin projection — no implicit
-                # fixed-point iteration.
-                self.DFDt._psi_star_projection_solver.smoothing = 0.0
-                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
-                # Fan flat result back to psi_star[0] tensor variable
-                for k, (i, j) in enumerate(self.DFDt._psi_star_indep_indices):
-                    vals = self.DFDt._psi_star_flat_var.array[:, 0, k]
-                    self.DFDt.psi_star[0].array[:, i, j] = vals
-                    if i != j:
-                        self.DFDt.psi_star[0].array[:, j, i] = vals
-            else:
-                self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
-                self.DFDt._psi_star_projection_solver.smoothing = 0.0
-                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
-
-            for i in range(self.DFDt.order - 1, 0, -1):
-                if i == 1:
-                    self.DFDt.psi_star[i].array[...] = _advected_sigma_star
+                if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
+                    # Multi-component projection of flux → psi_star[0].
+                    #
+                    # The DFDt's source-snapshot machinery (enabled once in
+                    # _create_stress_history_ddt) intercepts psi_fn assignment
+                    # to substitute psi_star[0] symbols with a frozen
+                    # psi_snapshot variable, refreshed each step in
+                    # update_pre_solve. So the projection's compiled source
+                    # reads from psi_snapshot (not psi_star[0] itself) and is a
+                    # true one-shot Galerkin projection — no implicit
+                    # fixed-point iteration.
+                    self.DFDt._psi_star_projection_solver.smoothing = 0.0
+                    self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+                    # Fan flat result back to psi_star[0] tensor variable
+                    for k, (i, j) in enumerate(self.DFDt._psi_star_indep_indices):
+                        vals = self.DFDt._psi_star_flat_var.array[:, 0, k]
+                        self.DFDt.psi_star[0].array[:, i, j] = vals
+                        if i != j:
+                            self.DFDt.psi_star[0].array[:, j, i] = vals
                 else:
-                    self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
+                    self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
+                    self.DFDt._psi_star_projection_solver.smoothing = 0.0
+                    self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+
+                for i in range(self.DFDt.order - 1, 0, -1):
+                    if i == 1:
+                        self.DFDt.psi_star[i].array[...] = _advected_sigma_star
+                    else:
+                        self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
 
             self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 
@@ -2450,7 +2455,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         vel_magnitudes = np.linalg.norm(vel, axis=1)
 
         # Get per-element radii (characteristic element size)
-        element_radii = self.mesh._radii
+        element_radii = self.mesh._cell_radii
 
         # Compute per-element advective timestep: dt_i = h_i / |v_i|
         # Avoid division by zero for elements with zero velocity
@@ -4507,7 +4512,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             centroid) · v̂` over the cell vertices. This is the
             distance material actually traverses through the cell
             per unit ``|v|``, and is **always ≥ the isotropic
-            mesh._radii estimate**, by 1.5–3× for equant cells
+            mesh._cell_radii estimate**, by 1.5–3× for equant cells
             (geometric factor) and up to ~10× for cells that the
             mover has stretched along the flow direction. On
             adapted meshes the gain is substantial; on uniform

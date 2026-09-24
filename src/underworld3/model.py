@@ -31,6 +31,7 @@ import yaml
 
 # Import the Pint-native implementation
 import os
+import re
 import sys
 
 sys.path.append(os.path.dirname(__file__))
@@ -243,6 +244,8 @@ def _operator_text(event):
         return name
     if kind == "history_shift":
         return f"shift {name}"
+    if kind == "adjoint_solve":
+        return f"adjoint {name}"
     return f"{kind}:{name}"
 
 
@@ -259,15 +262,23 @@ def _quantity_parts(value):
         return None, None
 
 
+_UNIT_SYMBOLS = {
+    "second": "s", "minute": "min", "hour": "hr", "day": "d",
+    "year": "yr", "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
+    "meter": "m", "kilometer": "km", "centimeter": "cm", "millimeter": "mm",
+    "kelvin": "K", "kilogram": "kg", "pascal": "Pa", "newton": "N",
+    "joule": "J", "watt": "W",
+}
+
+
 def _abbreviate_unit(unit):
-    """A short unit name for a column header. Falls back to the full name."""
+    """A short unit name for a column header or a scale: each unit name in a
+    pint unit string by its symbol, "pascal * second" as "Pa s" and
+    "millimeter / year" as "mm/yr". Names without a symbol stay as they are."""
     if unit is None:
         return ""
-    return {
-        "second": "s", "minute": "min", "hour": "hr", "day": "d",
-        "year": "yr", "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
-        "meter": "m", "kilometer": "km", "kelvin": "K", "kilogram": "kg",
-    }.get(str(unit), str(unit))
+    text = re.sub(r"[A-Za-z_]+", lambda m: _UNIT_SYMBOLS.get(m.group(0), m.group(0)), str(unit))
+    return text.replace(" * ", " ").replace(" / ", "/")
 
 
 def _in_units_of(value, unit):
@@ -1254,12 +1265,31 @@ class Model(PintNativeModelMixin, BaseModel):
         """The record that opens a run in the log, so the file is self-describing."""
         from datetime import datetime, timezone
 
-        scales = {}
+        # The record keeps the fundamental scales, and beside them the
+        # reference quantities as they were declared, in the units they were
+        # quoted in. The readable header reports the declaration when there is
+        # one: "domain_depth 10 km", not the fundamental length in metres.
+        scales, reference = {}, {}
         try:
             for name, scale in (self.get_fundamental_scales() or {}).items():
                 scales[str(name)] = _jsonable_quantity(scale)
         except Exception:
             scales = {}
+        try:
+            from .scaling import units as ureg
+
+            for name, quantity in (self.get_reference_quantities() or {}).items():
+                if not (isinstance(quantity, dict) and "magnitude" in quantity):
+                    continue
+                magnitude, unit = float(quantity["magnitude"]), str(quantity.get("units"))
+                # A quantity declared as an expression of others carries the
+                # raw composite of their units; in SI base units it reads.
+                if "**" in unit or unit.count("/") > 1:
+                    base = ureg.Quantity(magnitude, unit).to_base_units()
+                    magnitude, unit = float(base.magnitude), str(base.units)
+                reference[str(name)] = {"magnitude": magnitude, "units": unit}
+        except Exception:
+            reference = {}
         script = None
         try:
             entry = sys.argv[0] if sys.argv else ""
@@ -1273,6 +1303,7 @@ class Model(PintNativeModelMixin, BaseModel):
             "script": script,
             "started": datetime.now().astimezone().isoformat(timespec="seconds"),
             "scales": scales,
+            "reference": reference,
         }
 
     # ------------------------------------------------------------------
@@ -1285,7 +1316,7 @@ class Model(PintNativeModelMixin, BaseModel):
         kind = payload.get("kind")
 
         if kind == "run":
-            scales = payload.get("scales") or {}
+            scales = payload.get("reference") or payload.get("scales") or {}
             summary = " | ".join(
                 f"{name} {value['magnitude']:.4g} {_abbreviate_unit(value['units'])}"
                 for name, value in scales.items()
@@ -1350,7 +1381,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
                 _operator_text(e) for e in events
-                if e.get("kind") in ("solve", "history_shift")
+                if e.get("kind") in ("solve", "history_shift", "adjoint_solve")
             ) or "(nothing)"
 
             notes = []
@@ -2218,12 +2249,12 @@ class Model(PintNativeModelMixin, BaseModel):
         # Enable/disable non-dimensionalization based on parameter
         import underworld3 as uw
 
-        if nondimensional_scaling:
-            uw.use_nondimensional_scaling(True)
-            uw.pprint("✓ Units system active with automatic non-dimensionalization", proc=0)
-        else:
-            uw.use_nondimensional_scaling(False)
-            uw.pprint("⚠ Expert mode: Units active WITHOUT non-dimensionalization", proc=0)
+        uw.use_nondimensional_scaling(bool(nondimensional_scaling))
+        if verbose:
+            if nondimensional_scaling:
+                uw.pprint("Units system active with automatic non-dimensionalization", proc=0)
+            else:
+                uw.pprint("Units active without non-dimensionalization", proc=0)
             uw.pprint("  (Warning: This mode may have numerical conditioning issues)", proc=0)
 
     def get_reference_quantities(self):
@@ -2533,9 +2564,9 @@ class Model(PintNativeModelMixin, BaseModel):
         import underworld3 as uw
 
         # Informational message about missing dimensions (not an error!)
-        if missing_dims:
-            uw.pprint(f"ℹ️  Dimensional coverage: {covered_dims}", proc=0)
-            uw.pprint(f"   (Not covered: {missing_dims} - will fail only if needed)", proc=0)
+        if missing_dims and getattr(self, "_verbose_units", False):
+            uw.pprint(f"Dimensional coverage: {covered_dims}", proc=0)
+            uw.pprint(f"   (not covered: {missing_dims}; needed only if a quantity uses them)", proc=0)
 
         # Extract sub-matrix for covered dimensions only
         sub_matrix = matrix[:, covered_indices]

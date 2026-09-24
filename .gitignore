@@ -156,6 +156,10 @@ uw_*.msh
 # Visualization outputs (exclude generated, allow curated assets)
 docs/examples/**/output/**
 docs/examples/**/transcripts/**
+# A run writes its transcript beside itself, so any working directory a script
+# is run from collects one. They are run OUTPUT, never source.
+transcripts/
+**/transcripts/
 docs/examples/**/*.png
 docs/examples/**/*.jpg
 docs/examples/**/*.gif

@@ -14,6 +14,7 @@ Design Principles (Simplified Architecture 2025-11, updated 2025-12):
    - UWexpression.to() simply calls uw.convert_units(self, target)
 """
 
+import weakref
 import sympy
 import numpy as np
 from sympy import Symbol, simplify, Number
@@ -601,6 +602,29 @@ def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
 # ============================================================================
 # UWexpression Class - Simplified (no UWQuantity inheritance)
 # ============================================================================
+
+def live_expressions():
+    """The persistent expression containers, in a stable order.
+
+    Reads ``UWexpression._expr_names``, which is the registry that already
+    defines what a UW expression IS: a container with identity by name, looked
+    up rather than rebuilt, so the same ``uw.expression(r"\\eta", ...)`` reaches
+    the same object and a formula written against it keeps seeing later edits to
+    its contents. That is exactly the set whose CONTENTS a snapshot has to
+    capture — the parameters of the run.
+
+    ``_ephemeral_expr_names`` is deliberately NOT included. Those are the
+    ``_unique_name_generation=True`` expressions made for derivative lowering
+    and template substitution: their contents are derived, they are held weakly,
+    and they are rebuilt from the persistent ones. Restoring them would write
+    over a value the machinery is about to recompute.
+
+    A list, not the live dict: capture must not iterate a mapping that other
+    construction can mutate underneath it. Sorted by name so two captures of the
+    same state read the same way.
+    """
+    return [UWexpression._expr_names[k] for k in sorted(UWexpression._expr_names)]
+
 
 class UWexpression(MathematicalMixin, uw_object, Symbol):
     """

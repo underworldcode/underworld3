@@ -163,6 +163,17 @@ def _magnitude_and_unit(value_text, units):
     m = re.match(r"^\s*Matrix\(\[\[([-+0-9.eE]+)\]\]\)\s*$", text)
     if m:
         return _compact_number(m.group(1)), _plain_unit(units)
+    # A vector of numbers, as a boundary condition often is: (0, 0), or
+    # (0.5, free) where a component is left unconstrained.
+    m = re.match(r"^\s*Matrix\(\[(\[.*\])\]\)\s*$", text)
+    if m and "(" not in m.group(1):
+        entries = re.findall(r"\[([^\[\]]*)\]", m.group(1))
+        parts = []
+        for e in entries:
+            e = e.strip()
+            parts.append("free" if e in ("oo", "zoo", "nan") else _compact_number(e))
+        if parts and all(re.match(r"^[-+0-9.eE]+$|^free$", q) for q in parts):
+            return "(" + ", ".join(parts) + ")", _plain_unit(units)
     if re.match(r"^\s*[-+0-9.eE]+\s*$", text):
         return _compact_number(text), _plain_unit(units)
     return text, _plain_unit(units)
@@ -185,7 +196,13 @@ def _latex_value(value_latex, value_text, units):
     if re.match(r"^[-+0-9.eE]+$", number or ""):
         latex = _number_latex(number)
         return latex + (rf"\ \mathrm{{{_plain_unit_latex(unit)}}}" if unit else "")
-    return str(value_latex) if value_latex not in (None, "") else str(value_text)
+    if number and number.startswith("("):
+        return number
+    text = str(value_latex) if value_latex not in (None, "") else str(value_text)
+    # A quantity whose value is itself an expression of the fields — a
+    # yield-limited viscosity, say — is not a number to print; the full
+    # expression is in the record.
+    return text if len(text) <= 60 else r"\text{(an expression; in the record)}"
 
 
 def _number_latex(number):
@@ -506,13 +523,19 @@ def _unit(value):
 
 
 def _short_unit(unit):
-    if unit is None:
-        return ""
-    return {
-        "second": "s", "minute": "min", "hour": "hr", "day": "d", "year": "yr",
-        "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
-        "meter": "m", "kilometer": "km", "kelvin": "K", "kilogram": "kg",
-    }.get(str(unit), str(unit))
+    """The unit symbol the log uses, so the figure and the log agree."""
+    from underworld3.model import _abbreviate_unit
+    return _abbreviate_unit(unit)
+
+
+def _scales_line(header, sep="   "):
+    """The run's scales as one line: the reference quantities as they were
+    declared, in their own units, or the fundamental scales for a run that
+    declared none. Empty for a nondimensional run."""
+    scales = header.get("reference") or header.get("scales") or {}
+    items = [f"{name} {value['magnitude']:.4g} {_short_unit(value['units'])}"
+             for name, value in scales.items() if isinstance(value, dict)]
+    return "scales: " + sep.join(items) if items else ""
 
 
 def _converted(value, unit):
@@ -555,6 +578,12 @@ def _public_aliases():
                 if len(attr) < len(own) and (current is None or len(attr) < len(current)):
                     aliases[obj.__name__] = attr
         except Exception:
+            # Charter S4 — sanctioned: these aliases only make a report read the
+            # way a user wrote their code (Stokes rather than SNES_Stokes).
+            # Introspecting uw.systems can fail on a partially-imported module;
+            # the fallback is the class's real name, which is correct if less
+            # familiar. A report that is slightly more verbose is not a reason
+            # to fail.
             pass
         _ALIASES = aliases
     return _ALIASES
@@ -595,18 +624,18 @@ def _signature(step):
     return tuple(
         (event["kind"], _short_operator(event["name"]))
         for event in step.get("events", [])
-        if event.get("kind") in ("solve", "history_shift")
+        if event.get("kind") in _OPERATOR_KINDS
     )
 
 
 def _describe(signature):
     return "  ".join(
-        name if kind == "solve" else f"shift {name}" for kind, name in signature
+        _kind_text(kind, name) for kind, name in signature
     ) or "(nothing)"
 
 
 def _sequence_text(signature):
-    parts = [name if kind == "solve" else f"shift {name}"
+    parts = [_kind_text(kind, name)
              for kind, name in signature]
     return "  >  ".join(parts) or "(nothing)"
 
@@ -853,12 +882,8 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
                 bits.append(f"{len(notes)} backtrack(s)")
             canvas.text(_MARGIN, y + 8, "  ·  ".join(bits), size=8.5, fill=_MUTED)
             y += 13
-            scales = header.get("scales") or {}
-            if scales:
-                canvas.text(_MARGIN, y + 8, "scales: " + "   ".join(
-                    f"{name} {value['magnitude']:.4g} {_short_unit(value['units'])}"
-                    for name, value in scales.items() if isinstance(value, dict)
-                ), size=8, fill=_MUTED)
+            if _scales_line(header):
+                canvas.text(_MARGIN, y + 8, _scales_line(header), size=8, fill=_MUTED)
                 y += 12
             y += 10
         # column captions
@@ -1532,6 +1557,33 @@ def transcript_flowchart(source, run=-1, out=None):
 # The transcript as a chart: parts across the page, steps down it
 # ---------------------------------------------------------------------------
 
+_OPERATOR_KINDS = ("solve", "history_shift", "adjoint_solve")
+
+
+def _kind_text(kind, name):
+    if kind == "history_shift":
+        return f"shift {name}"
+    if kind == "adjoint_solve":
+        return f"adjoint {name}"
+    return name
+
+
+def _part_key(event):
+    """Which column an event belongs to. An adjoint solve is the same solver
+    as its forward solve and a different operator, so it gets its own."""
+    key = event.get("part") or event.get("name")
+    return f"{key}/adjoint" if event.get("kind") == "adjoint_solve" else key
+
+
+def _part_label(event):
+    name = _short_operator(event.get("name", event.get("part", "?")))
+    if event.get("kind") == "history_shift":
+        return name
+    if event.get("kind") == "adjoint_solve":
+        return f"adjoint {name}"
+    return name
+
+
 def _parts_of(steps):
     """The roster, in a stable order, from what actually played.
 
@@ -1544,14 +1596,14 @@ def _parts_of(steps):
     order, labels = [], {}
     for step in steps:
         for event in step.get("events", []):
-            if event.get("kind") not in ("solve", "history_shift"):
+            if event.get("kind") not in _OPERATOR_KINDS:
                 continue
-            key = event.get("part") or event.get("name")
+            key = _part_key(event)
             if key not in labels:
                 order.append(key)
-                labels[key] = _short_operator(event.get("name", key))
+                labels[key] = _part_label(event)
             elif event.get("kind") == "history_shift":
-                labels[key] = _short_operator(event.get("name", key))
+                labels[key] = _part_label(event)
     # In the order they first ran. A step is drawn as a bar whose events
     # descend in the order they ran, so with the columns in that same order
     # the usual step reads as a staircase down and to the right, and any step
@@ -1573,7 +1625,7 @@ def _outcome(event):
     it is neither a clean convergence nor a failure, and reading it as either
     loses the thing worth seeing.
     """
-    if event.get("kind") != "solve" or "converged" not in event:
+    if event.get("kind") not in ("solve", "adjoint_solve") or "converged" not in event:
         return None
     if not event.get("converged"):
         return "diverged"
@@ -1592,9 +1644,8 @@ def _step_cells(step, parts):
     """
     played = []
     for event in step.get("events", []):
-        if event.get("kind") in ("solve", "history_shift"):
-            played.append((event.get("part") or event.get("name"),
-                           _outcome(event)))
+        if event.get("kind") in _OPERATOR_KINDS:
+            played.append((_part_key(event), _outcome(event)))
     cells = []
     for key, _ in parts:
         hits = tuple((i + 1, outcome) for i, (k, outcome) in enumerate(played)
@@ -1747,7 +1798,11 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
         bits.append("no terminator: still running, or interrupted")
     bits.append(f"{len(parts)} parts")
     canvas.text(_MARGIN, y + 8, "  ·  ".join(bits), size=8.5, fill=_MUTED)
-    y += 22
+    y += 13
+    if _scales_line(header):
+        canvas.text(_MARGIN, y + 8, _scales_line(header), size=8, fill=_MUTED)
+        y += 12
+    y += 9
 
     # --- columns ---
     gutter = _MARGIN + 46.0
@@ -2056,6 +2111,8 @@ def transcript_table(source, run=-1, width=11, collapse=True):
     out.append(f"transcript · {_run_title(header, fallback='')}".rstrip(" ·"))
     if header.get("started"):
         out.append(f"started {header['started']}")
+    if _scales_line(header, sep=" | "):
+        out.append(_scales_line(header, sep=" | "))
     if ended:
         out.append(f"complete — {ended.get('steps', len(steps))} step(s)")
     elif entry.get("live"):

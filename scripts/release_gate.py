@@ -108,7 +108,13 @@ def _run_feature(feature: dict, cli_levels: str | None) -> dict:
 
     val = feature.get("validation", {}) or {}
     paths = _expand_paths(val.get("paths", []) or [])
-    markers = val.get("markers", "tier_a or tier_b")
+    # Tier C never gates (Charter S8). The tiers are mutually exclusive by
+    # convention - the tier goes on the test, not the module, because pytest
+    # MERGES module and function marks - so "tier_a or tier_b" already excludes
+    # it. The exclusion is spelled out anyway: the convention is a convention,
+    # and if a module-level tier ever reappears alongside a per-test tier_c, the
+    # failure mode is a characterisation silently gating a release.
+    markers = val.get("markers", "(tier_a or tier_b) and not tier_c")
     select = val.get("select")
     # Per-feature levels override the CLI default; both are optional.
     levels = val.get("levels", cli_levels)

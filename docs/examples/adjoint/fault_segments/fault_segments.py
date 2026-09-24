@@ -28,7 +28,7 @@ import underworld3 as uw
 from underworld3.adjoint import misfit_duals, inner
 
 params = uw.Params(
-    cell_size=uw.Param(1 / 24, "mesh cell size (box is 2 x 1)"),
+    cell_size=uw.Param(1 / 12, "base mesh cell size (box is 2 x 1); refined once, so half this"),
     surface_dip=uw.Param(60.0, "dip of the ramp where it reaches the surface, degrees"),
     flat_depth=uw.Param(0.3, "height of the decollement above the base"),
     surface_x=uw.Param(1.9, "where the fault reaches the surface"),
@@ -40,8 +40,13 @@ params = uw.Params(
 )
 
 # --- the model ---------------------------------------------------------------
+# Refined once from the base size: the refinement gives the velocity block a
+# multigrid hierarchy. Without one it falls back to gamg, which hits its
+# iteration cap on this problem, and an inexact Newton step converges linearly.
+# Every solve starts cold: six Newton iterations, and a misfit that does not
+# depend on the previous evaluation, which the finite-difference check needs.
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0),
-                                         cellSize=params.cell_size, qdegree=3)
+                                         cellSize=params.cell_size, qdegree=3, refinement=1)
 x, y = mesh.X
 
 v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
