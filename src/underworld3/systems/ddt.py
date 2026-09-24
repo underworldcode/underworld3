@@ -5517,7 +5517,7 @@ class ForwardSemiLagrangian(_DDtBase):
         """The mesh geometry the launch set was built for: the vertex count and
         the coordinate sum (a moved or re-meshed mesh changes one of them; adding
         a variable, which rebuilds the DM, changes neither)."""
-        coords = np.asarray(self.mesh.data)
+        coords = np.asarray(self.mesh.X.coords)
         return (coords.shape, float(coords.sum()))
 
     def _cell_measures(self):
