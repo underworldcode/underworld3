@@ -1503,9 +1503,9 @@ class SolverBaseClass(uw_object):
         transpose for the state and the symbolic derivative of the residual
         for a parameter. What removes that:
 
-        * a rotated constraint — free-slip or fault contact — solves on a
-          rotated operator inside its own Krylov loop (``rotated_bc.py``),
-          and there is no transpose path through it;
+        * a fault contact, whose rotated operator carries an additive
+          interface tangent reassembled at every iterate — the transpose of
+          that term is not routed into the adjoint;
         * an unconverged solve, which is caught after the fact by
           :meth:`_record_solve_outcome`: a linearisation about a state the
           solve never reached is not the adjoint of anything.
@@ -1515,12 +1515,15 @@ class SolverBaseClass(uw_object):
         ``tests/test_0018_adjoint_support_record.py``.
         """
         mechanisms = self._constraint_mechanisms()
-        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
-        if rotated:
+        contact = mechanisms["fault_contact"]
+        if contact:
             return (False,
-                    f"{len(rotated)} rotated constraint(s): the solve runs on a "
-                    f"rotated operator with its own Krylov loop, and there is "
-                    f"no transpose path through it")
+                    f"{len(contact)} fault contact(s): the rotated operator "
+                    f"carries an additive interface tangent, reassembled at every "
+                    f"iterate, whose transpose is not routed into the adjoint")
+        # Rotated FREE-SLIP does admit one — the transpose of the rotated
+        # operator, taken in the boundary frame. The solver that owns that path
+        # says so in its own verdict; nothing is refused here.
         if not self.consistent_jacobian and not self._residual_is_linear_in_unknown():
             return (True,
                     "implicit residual: Jacobian transpose for the state, symbolic "
@@ -2086,7 +2089,12 @@ class SolverBaseClass(uw_object):
         kernels rather than obtained by transposing the assembled matrix.
         The kernel route covers the volume terms; a boundary Jacobian (a
         natural or Nitsche condition with a tangent) is not swapped yet, so
-        such a solver takes the matrix route."""
+        such a solver takes the matrix route. So does a rotated constraint: its
+        adjoint is the transpose of the ROTATED operator Q K Qᵀ, which
+        rotated_bc builds from the assembled FORWARD Jacobian — handing it K^T
+        would rotate the wrong matrix."""
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            return False
         return not (getattr(self, "natural_bcs", None) or [])
 
     def _install_adjoint_kernels(self):
@@ -10694,12 +10702,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             cached = (key, self._residual_is_linear_in_unknown())
             self._adjoint_linearity_cache = cached
         nonlinear = not cached[1]
-        if not self.consistent_jacobian and nonlinear:
-            return (True,
-                    why + ". The forward solve used the Picard tangent, so the "
-                    "consistent tangent is assembled for the adjoint (a rebuild "
-                    "of the Jacobian kernel)")
-        return supported, why
+        # The base reaches the same conclusion by its own (uncached) linearity
+        # test, so say it once: this override exists for the CACHE, not for a
+        # second opinion. Without the guard the sentence appears twice in the
+        # reason, which reads as two different findings about the same solve.
+        if not self.consistent_jacobian and nonlinear and "Picard tangent" not in why:
+            why = (why + ". The forward solve used the Picard tangent, so the "
+                   "consistent tangent is assembled for the adjoint (a rebuild "
+                   "of the Jacobian kernel)")
+        rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or [])
+        if rotated:
+            why = (why + f". {len(rotated)} rotated free-slip constraint(s): the "
+                   "forward solve inverted the ROTATED operator Q J Qᵀ, so the "
+                   "adjoint is the transpose of THAT, taken in the boundary frame "
+                   "and rotated back (rotated_bc.solve_rotated_adjoint). The "
+                   "multiplier comes back modulo the free-slip null space — the "
+                   "pressure level, and a rigid rotation on an annulus or shell")
+        return True, why
 
     def adjoint_solve(self, rhs, target=None):
         r"""Solve :math:`K^T (\\mu, \\lambda) = b` on the composite (u, p) system.
@@ -10710,6 +10729,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         strain-rate- or pressure-dependent viscosity it is the transpose of
         the consistent tangent, which that construction cannot build.
 
+        Under rotated free-slip the operator to transpose is not :math:`K` but
+        the rotated, constraint-eliminated one the forward solve actually
+        inverted, :math:`Q K Q^T` — see
+        :func:`~underworld3.utilities.rotated_bc.solve_rotated_adjoint`. The
+        multiplier is returned in the physical frame, exactly zero in the
+        wall-normal component, and modulo the free-slip null space.
+
         Parameters
         ----------
         rhs : numpy.ndarray or petsc4py.PETSc.Vec
@@ -10717,7 +10743,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             one from a velocity-space expression.
         target : (MeshVariable, MeshVariable), optional
             ``(u_adj, p_adj)`` on the velocity and pressure spaces, to receive
-            the multipliers as fields. Constrained nodes are set to zero.
+            the multipliers as fields. Essential (Dirichlet) nodes are set to
+            zero. A rotated free-slip node is NOT one of those: it is
+            constrained in one component only, and comes back carrying its
+            tangential multiplier.
 
         Returns
         -------
@@ -10774,16 +10803,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         x = gvec.duplicate()
         x.set(0.0)
 
-        if by_kernels:
-            # J IS K^T: assembled from the transposed kernels. Solve forwards.
-            ksp = self.snes.getKSP()
-            ksp.setOperators(J, P)
-            ksp.solve(b, x)
-            reason = int(ksp.getConvergedReason())
-            self._uninstall_adjoint_kernels(tangent)
-        else:
-            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
-            self._restore_tangent(tangent)
+        try:
+            if getattr(self, "_rotated_freeslip_bcs", None):
+                # The forward solve never ran self.snes: it inverted the ROTATED,
+                # constraint-eliminated operator in its own Krylov loop. The
+                # adjoint is the transpose of THAT operator, not of K, and
+                # rotated_bc owns the whole rotate / eliminate / solve /
+                # rotate-back sequence here as it does forward.
+                #
+                # This is the MATRIX route by construction: solve_rotated_adjoint
+                # forms Q K Qᵀ from the assembled forward Jacobian and transposes
+                # the result, so it needs K and not Kᵀ. _adjoint_by_kernels()
+                # returns False whenever a rotated constraint is present, which
+                # is what guarantees J is the forward operator here.
+                from underworld3.utilities.rotated_bc import solve_rotated_adjoint
+                mu, reason = solve_rotated_adjoint(self, J, b, verbose=False)
+                mu.copy(x)
+                mu.destroy()
+            elif by_kernels:
+                # J IS K^T: assembled from the transposed kernels. Solve forwards.
+                ksp = self.snes.getKSP()
+                ksp.setOperators(J, P)
+                ksp.solve(b, x)
+                reason = int(ksp.getConvergedReason())
+            else:
+                reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+        finally:
+            # Teardown belongs in `finally`: the rotated path refuses by design —
+            # a released rotation, a changed boundary set — and a refusal that
+            # left the solver switched to the Newton tangent would make the next
+            # FORWARD solve run Newton on a solver configured for Picard,
+            # silently and far from here.
+            if by_kernels:
+                self._uninstall_adjoint_kernels(tangent)
+            else:
+                self._restore_tangent(tangent)
 
         if target is not None:
             u_adj, p_adj = target
