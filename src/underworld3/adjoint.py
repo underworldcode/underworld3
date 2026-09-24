@@ -198,6 +198,13 @@ def dual_on(variable, value, grad=None, scratch=None, boundary=None):
     try:
         out_var._sync_lvec_to_gvec()
     except AttributeError:
+        # Charter S4 — sanctioned: the sync is an optimisation, not the write.
+        # The values are already in out_var.vec above; _sync_lvec_to_gvec only
+        # pushes them to the global vector eagerly so a later read does not have
+        # to. A variable class that does not define it (an older MeshVariable,
+        # or a plain wrapper) syncs on demand instead, which is correct and
+        # merely later. AttributeError specifically, so a failure INSIDE the
+        # sync still propagates.
         pass
     return out_var
 

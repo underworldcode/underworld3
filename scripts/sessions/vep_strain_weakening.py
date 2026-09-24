@@ -8,12 +8,13 @@ Plastic fraction computed directly from stored data:
 
 No evaluate, no projection — pure numpy on stored data.
 
-Run: pixi run -e amr-dev python tests/vep_strain_weakening.py
+Run: pixi run -e amr-dev python scripts/sessions/vep_strain_weakening.py
 """
 
 import time
 import numpy as np
 import sympy
+import os
 import underworld3 as uw
 
 ETA = 1.0
@@ -145,6 +146,6 @@ axes[2].legend(fontsize=9)
 axes[2].grid(True, alpha=0.3)
 
 fig.tight_layout()
-out_path = "/Users/lmoresi/+Underworld/underworld3-pixi/.claude/worktrees/solver-unification/vep_strain_weakening.png"
+out_path = os.path.join(os.path.dirname(__file__), "vep_strain_weakening.png")
 fig.savefig(out_path, dpi=150)
 print(f"Saved {out_path}")

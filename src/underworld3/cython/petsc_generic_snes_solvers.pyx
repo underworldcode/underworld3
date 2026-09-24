@@ -249,6 +249,7 @@ class SolverBaseClass(uw_object):
 
         self._order = 0
         self._constitutive_model = None
+        self._materials = None
         self._rebuild_after_mesh_update = self._build
 
         self.name = "Solver_{}_".format(self.instance_number)
@@ -3235,6 +3236,8 @@ class SolverBaseClass(uw_object):
                     ):
 
         self._check_expression_meshes()
+        if self._materials is not None:
+            self._materials.check()
 
         if self.is_setup:
             return
@@ -3925,6 +3928,50 @@ class SolverBaseClass(uw_object):
 
 
     @property
+    def materials(self):
+        """The materials this solver's coefficients come from.
+
+        Assigning a :class:`~underworld3.swarm.MaterialSwarm` sets every
+        constitutive-model parameter the materials declare *and* the model
+        recognises, by name — so a model script names its materials and their
+        properties, and never writes a level set or a mask::
+
+            materials = uw.swarm.MaterialSwarm(mesh, fill_param=3)
+            materials.add("mantle", shear_viscosity_0=1.0)
+            materials.add("slab",   shear_viscosity_0=1.0e3, density=3400)
+            materials["slab"] = mesh.X[1] > 0.53
+
+            stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+            stokes.materials = materials          # sets shear_viscosity_0
+
+        A declared property the model does not recognise (``density`` here) is
+        not pushed anywhere; it is available as a blended symbol,
+        ``materials.density``, for the model script to use where it belongs.
+        One that is neither recognised nor read is reported at solve time,
+        because a misspelled viscosity is silently the default one.
+
+        Properties may be changed, and materials repainted, after assignment:
+        the blend is symbolic and the push repeats on every change.
+        """
+        return self._materials
+
+    @materials.setter
+    def materials(self, material_swarm):
+        if material_swarm is None:
+            previous = self._materials
+            self._materials = None
+            if previous is not None:
+                previous._detach(self)     # or it keeps pushing to this solver
+            return
+        if not hasattr(material_swarm, "_attach"):
+            raise TypeError(
+                "solver.materials expects a MaterialSwarm (uw.swarm.MaterialSwarm), "
+                f"not {type(material_swarm).__name__}"
+            )
+        self._materials = material_swarm
+        material_swarm._attach(self)
+
+    @property
     def constitutive_model(self):
         """
         Constitutive model defining the material behavior.
@@ -3941,6 +3988,11 @@ class SolverBaseClass(uw_object):
 
     @constitutive_model.setter
     def constitutive_model(self, model_or_class):
+
+        # A stress history supplied by the user fixes the viscoelastic order
+        # (the solver's own _order is set only when it builds the history).
+        if self.Unknowns.DFDt is not None and self._order == 0:
+            self._order = getattr(self.Unknowns.DFDt, "order", 0) or 0
 
         ### checking if it's an instance - it will need to be reset
         if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
@@ -3976,6 +4028,11 @@ class SolverBaseClass(uw_object):
         # Stokes and VE_Stokes — the solver adapts to the constitutive model.
         if self._constitutive_model.requires_stress_history and self.Unknowns.DFDt is None:
             self._create_stress_history_ddt(order=self._constitutive_model.order)
+
+        # Materials assigned before the constitutive model still have to
+        # reach it: the push is a no-op while there is no model to push to.
+        if getattr(self, "_materials", None) is not None:
+            self._materials._push_to(self)
 
         # May not work due to flux being incomplete
         if self.Unknowns.DFDt is not None:
@@ -5521,7 +5578,7 @@ class SNES_Vector(SolverBaseClass):
 
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
-                       normal=None, gamma=10.0, theta=1, mask=None,
+                       normal=None, gamma=12.5, theta=1, mask=None,
                        local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
@@ -5543,8 +5600,31 @@ class SNES_Vector(SolverBaseClass):
             terms — the same geometric-normal override as on the Stokes
             variant. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
-            Dimensionless stabilisation parameter.
+        gamma : float, default=12.5
+            Dimensionless stabilisation parameter. The penalty is
+            ``gamma*mu/h``, so this is calibrated against the definition of
+            ``h``. It was 10.0 while ``h`` came from a kd-tree of neighbouring
+            centroids; ``mesh.cell_size()`` is now PETSc's ``volume**(1/dim)``
+            (#694), and 12.5 is calibrated against THAT definition on the Zhong
+            spherical shell — the benchmark whose 0.2% response drifted to
+            2.4-5.7% when ``h`` was last redefined without recalibrating
+            (#734).
+
+            The shift in ``h`` is not one number: it changes sign with the
+            dimension. Measured as new/old per cell,
+
+              2-D simplex box (unstructured)   +12.2%
+              2-D simplex box (regular)         +6.1%   (closed form: 6.07%)
+              2-D annulus                      +10.0%
+              3-D simplex box                  -29.8%
+              3-D spherical shell              -33.3%
+
+            so ``h`` grows by about a tenth on 2-D triangles and SHRINKS by
+            about a third on tetrahedra. Since the penalty is ``gamma*mu/h``, no
+            single gamma can reproduce the old enforcement in both. 12.5 is the
+            3-D number; **a 2-D sweep against an independent benchmark has not
+            been done**, and if one is wanted it belongs with #734 rather than
+            in this docstring.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
         mask : sympy expression, optional
@@ -7751,7 +7831,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                      remove_mean=remove_mean)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
-                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
+                       gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -7788,9 +7868,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             Boundary unit normal used in the Nitsche consistency, symmetry,
             and pressure-coupling terms. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
+        gamma : float, default=12.5
             Dimensionless stabilisation parameter. Typical values 5--20
-            for P2 elements.
+            for P2 elements. The penalty is ``gamma*mu/h``, so this is
+            calibrated against the definition of ``h``: it was 10.0 while
+            ``h`` came from a kd-tree of neighbouring centroids, and moved
+            with ``mesh.cell_size()`` becoming PETSc's ``volume**(1/dim)``
+            (#694).
         theta : {-1, 0, 1}, default=1
             Symmetry parameter:
              1: symmetric (default — optimal convergence and solver efficiency)
@@ -7807,8 +7891,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             adaptation-tracking) rather than the single **global** minimum
             cell size (:meth:`Mesh.get_min_radius`). On a non-uniform or
             adaptive mesh the local size scales the stabilisation correctly
-            on every facet; on a uniform mesh the two coincide. Set ``False``
-            to restore the legacy global-h behaviour exactly.
+            on every facet. Set ``False`` to restore the legacy global-h
+            behaviour exactly.
+
+            Since #694 both read the same quantity, PETSc's
+            :math:`\mathrm{volume}^{1/d}`, so this flag is now a choice between
+            the **local** cell and the **global minimum** and nothing else: on a
+            uniform mesh the two coincide exactly, for simplices as well as
+            tensor cells. They did not before — ``cell_size`` was a vertex-RMS
+            about the centroid and differed from ``get_min_radius`` by
+            :math:`\sqrt{2}` on simplices — so the flag silently rescaled the
+            penalty :math:`\gamma\mu/h` by cell type, which is how #734
+            happened. See ``tests/test_0010_cell_size_geometry.py``.
         g : sympy expression or float, optional
             Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
@@ -7905,7 +7999,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # or adaptively-refined mesh — the boundary kernel sees the adjacent
         # cell's size. The field tracks mesh deformation/adaptation. Set
         # local_h=False to restore the legacy single global-minimum scalar
-        # (mesh.get_min_radius()); on a uniform mesh the two coincide.
+        # (mesh.get_min_radius()).
+        #
+        # Since #694 both read PETSc's volume**(1/dim), so this is a choice
+        # between the LOCAL cell and the GLOBAL minimum and nothing else -- on a
+        # uniform mesh they coincide exactly, simplices included. Before #694
+        # cell_size was a vertex-RMS about the centroid and differed from
+        # get_min_radius by sqrt(2) on simplices, so the flag silently rescaled
+        # gamma*mu/h by cell type (see #734 and
+        # tests/test_0010_cell_size_geometry.py).
         if local_h:
             h_sym = mesh.cell_size()
         else:

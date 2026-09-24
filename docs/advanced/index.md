@@ -75,6 +75,13 @@ Dynamic remeshing and adaptive refinement strategies.
 
 **[→ Mesh Adaptation](mesh-adaptation.md)**
 
+### Particles: Population Control and Materials
+Keep every cell sampled as the flow deforms the swarm, and declare materials
+on a `MaterialSwarm` so an interface stays where the particles put it — read
+at the integration points, with no level sets in the model script.
+
+**[→ Particle Population and Materials](particle-population-and-materials.md)**
+
 ### Semi-Lagrangian Time Integration (SLCN / SL-BDF2)
 How `AdvDiffusionSLCN` discretizes advection–diffusion in time: the BDF
 time-derivative and Adams-Moulton/θ flux knobs, and how to pair them
@@ -138,6 +145,7 @@ stress-visualisation
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
+particle-population-and-materials
 semi-lagrangian-time-integration
 eulerian-advection-diffusion
 eulerian-navier-stokes

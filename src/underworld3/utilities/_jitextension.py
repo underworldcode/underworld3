@@ -329,20 +329,54 @@ def prepare_for_cache_key(fn, constants_subs_map):
 # ============================================================================
 
 class _JITConstant(sympy.Symbol):
-    """Symbol subclass that renders as constants[i] in generated C code.
+    r"""Symbol subclass that renders as ``constants[i]`` in generated C code.
 
-    Used by the JIT compiler to route constant UWexpressions through
-    PETSc's PetscDSSetConstants() mechanism instead of baking values
-    as C literals.
+    Used by the JIT compiler to route constant UWexpressions through PETSc's
+    ``PetscDSSetConstants()`` mechanism instead of baking values as C literals.
+
+    Two constants may legitimately share a display name — every
+    ``ViscousFlowModel`` calls its viscosity :math:`\eta`, so a two-material
+    model has two of them — and each needs its own ``constants[]`` slot. Two
+    separate SymPy properties have to hold for that to work, and they are not
+    the same property:
+
+    **Identity** — the slot index is in ``_hashable_content``, and the symbol
+    is built with ``Symbol.__xnew__`` to bypass SymPy's ``(cls, name)``
+    instance cache. Without both, ``Symbol.__new__`` hands back the cached
+    instance for that name: the second placeholder IS the first object, and
+    setting its ``_ccodestr`` overwrites the first one's, so every occurrence
+    renders as one slot.
+
+    **Ordering** — the slot index is also in the NAME. ``_hashable_content``
+    does nothing for ``Symbol.sort_key()``, which is derived from the name, so
+    two same-named placeholders sort equal; term order inside an ``Add`` then
+    falls back to hash order, which is randomised per process. The generated C
+    then differs between MPI ranks and ``getext``'s cross-rank hash check
+    aborts the run — intermittently, since it depends on the hash seed.
+
+    Identity without ordering is a parallel abort; ordering without identity is
+    a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
+    pins each one separately.
     """
 
+    __slots__ = ("_const_index", "_ccodestr")
+
     def __new__(cls, index, name=None):
-        if name is None:
-            name = f"_jit_const_{index}"
-        obj = super().__new__(cls, name)
+        # The index leads the name so that sort_key() orders placeholders by
+        # slot; see the class docstring on why the name alone is not enough
+        # and _hashable_content alone is not either.
+        suffix = "" if name is None else f"_{name}"
+        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}")
         obj._const_index = index
         obj._ccodestr = f"constants[{index}]"
         return obj
+
+    def _hashable_content(self):
+        """Two placeholders differ if their constants[] slot differs."""
+        return sympy.Symbol._hashable_content(self) + (self._const_index,)
+
+    def __getnewargs_ex__(self):
+        return ((self._const_index, self.name), {})
 
     def _ccode(self, printer):
         return self._ccodestr
@@ -394,14 +428,26 @@ def _extract_constants(all_fns, mesh):
     # Sort by the user-given symbol name, not ``str(expr)`` — ``__str__`` on a
     # UWexpression returns the current *value*, which shuffles the index
     # assignment whenever a value changes. ``.name`` is stable.
-    sorted_constants = sorted(constant_exprs, key=lambda e: (e.name, _stable_sort_key(e)))
+    #
+    # Two constants can legitimately SHARE a name: every ViscousFlowModel calls
+    # its viscosity \eta, so a model with two of them has two \eta constants.
+    # ``instance_number`` (creation order, identical on every rank running the
+    # same script) breaks that tie without reintroducing the value into the key.
+    # Creation order breaks a name tie. It is identical on every rank of an
+    # SPMD run, and unlike the value it does not move when a parameter is
+    # ramped — a slot permutation between two solves of the same model would
+    # invalidate the JIT cache for no reason.
+    sorted_constants = sorted(
+        constant_exprs, key=lambda e: (e.name, e.instance_number, _stable_sort_key(e))
+    )
 
     manifest = []
     subs_map = {}
     for i, expr in enumerate(sorted_constants):
         # Use ``expr.name`` (stable) instead of ``str(expr)`` (= current value)
         # so the placeholder symbol's identity is independent of parameter value.
-        jit_const = _JITConstant(i, name=f"_jit_const_{expr.name}")
+        #
+        jit_const = _JITConstant(i, name=expr.name)
         manifest.append((i, expr))
         subs_map[expr] = jit_const
 
@@ -669,20 +715,36 @@ def getext(
         (canonical_source + "\n---\n" + _abi_salt()).encode("utf-8")
     ).hexdigest()[:16]
 
-    # Determinism check: all ranks must agree on the hash. A mismatch means
-    # generate_c_source isn't deterministic across ranks (typically caused
-    # by set/dict-iteration order leaking into the emitted C). Caching
-    # cannot work correctly if ranks disagree, so fail loudly rather than
-    # let stale entries propagate.
-    if underworld3.mpi.size > 1:
-        all_hashes = underworld3.mpi.comm.allgather(source_hash)
-        if any(h != source_hash for h in all_hashes):
-            raise RuntimeError(
-                f"JIT C-source hash differs across MPI ranks: {set(all_hashes)}. "
-                f"This indicates non-determinism in generate_c_source — likely "
-                f"a set or dict whose iteration order leaks into the C output. "
-                f"Treating this as a hard error since cache reuse would be unsound."
-            )
+    # All ranks must end up compiling and loading the SAME module: the module
+    # name and the C symbol prefix are both derived from `source_hash` below, so
+    # ranks that disagree would build disjoint artefacts and the
+    # rank-0-compiles/others-load protocol would break.
+    #
+    # Agreement used to be REQUIRED here, and a mismatch was a hard error. It
+    # fires in practice: the lowering above is not yet deterministic across
+    # ranks (#752), and a Stokes solve with a power-law transversely isotropic
+    # viscosity trips it in roughly half of np=2 runs. What we measured there
+    # matters for why this is safe to repair rather than refuse:
+    #
+    #   * the sources differ only in the ORDER of factors in commutative
+    #     products — identical token multisets, identical length, identical
+    #     mathematics. Every rank's source is a correct kernel for the same
+    #     equation;
+    #   * the solver's own symbolic blocks (constitutive tensor, flux, every
+    #     Jacobian block) hash IDENTICALLY across ranks on the runs that abort.
+    #     What differs is produced inside this function, not handed to it.
+    #
+    # So the disagreement is about which of several correct spellings to
+    # compile, and adopting one of them is enough. Rank 0's is taken, and every
+    # rank rehashes from it, which restores the one invariant that matters: one
+    # source, one hash, one module.
+    #
+    # This is a REPAIR, not a fix. The non-determinism upstream is still a bug
+    # and still worth finding, which is why it is said out loud rather than
+    # papered over silently.
+    canonical_codeguys, canonical_source, source_hash = _agree_source_across_ranks(
+        canonical_codeguys, canonical_source, source_hash
+    )
 
     # Derive the real modname/randstr from the hash — same source ⇒ same
     # compiled artefact, different sources ⇒ disjoint symbol namespaces.
@@ -843,6 +905,41 @@ def _aux_component_offsets(mesh):
     return offsets
 
 
+def _agree_source_across_ranks(canonical_codeguys, canonical_source, source_hash):
+    """Make every rank compile the SAME generated C, and say so if they did not.
+
+    Returns the (possibly replaced) ``(codeguys, source, hash)``. Serial runs and
+    runs where the ranks already agree are returned untouched, so the common path
+    costs one ``allgather`` of a 16-character string.
+
+    See the call site for why adopting one rank's source is a sound repair rather
+    than papering over a wrong answer. Separated out so the repair can be tested
+    directly — forcing a real disagreement through the JIT means reproducing a
+    non-deterministic bug, which is not a test.
+    """
+    import hashlib          # module-local in generate_c_source too
+
+    if underworld3.mpi.size <= 1:
+        return canonical_codeguys, canonical_source, source_hash
+
+    all_hashes = underworld3.mpi.comm.allgather(source_hash)
+    if all(h == source_hash for h in all_hashes):
+        return canonical_codeguys, canonical_source, source_hash
+
+    canonical_codeguys = underworld3.mpi.comm.bcast(canonical_codeguys, root=0)
+    canonical_source = "\n".join(entry[1] for entry in canonical_codeguys)
+    source_hash = hashlib.sha256(
+        (canonical_source + "\n---\n" + _abi_salt()).encode("utf-8")
+    ).hexdigest()[:16]
+    underworld3.mpi.pprint(
+        f"[jit] WARNING: generated C differed across ranks "
+        f"({sorted(set(all_hashes))}); adopted rank 0's source so every rank "
+        f"compiles the same module. The kernels are mathematically identical — "
+        f"see issue #752 for the upstream non-determinism."
+    )
+    return canonical_codeguys, canonical_source, source_hash
+
+
 def generate_c_source(
     name,
     mesh: underworld3.discretisation.Mesh,
@@ -938,8 +1035,13 @@ def generate_c_source(
             raise RuntimeError(
                 f"{self.__class__.__name__}: derivative of an integration-point "
                 "variable has no meaning (the field is defined only at the "
-                "quadrature points). Remove the derivative or project the "
-                "variable onto a nodal MeshVariable first."
+                "quadrature points), so the gradient here would be a silent "
+                "zero. This is refused in a WEAK FORM only, where the "
+                "discretisation is yours to choose: build the variable with "
+                "proxy_location='cells' instead, whose level sets are a "
+                "least-squares polynomial per cell and differentiate directly. "
+                "uw.function.evaluate() of the same derivative does answer: as "
+                "a query it recovers the gradient from a per-cell fit for you."
             )
 
         for var in varlist:

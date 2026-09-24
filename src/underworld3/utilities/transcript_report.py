@@ -578,6 +578,12 @@ def _public_aliases():
                 if len(attr) < len(own) and (current is None or len(attr) < len(current)):
                     aliases[obj.__name__] = attr
         except Exception:
+            # Charter S4 — sanctioned: these aliases only make a report read the
+            # way a user wrote their code (Stokes rather than SNES_Stokes).
+            # Introspecting uw.systems can fail on a partially-imported module;
+            # the fallback is the class's real name, which is correct if less
+            # familiar. A report that is slightly more verbose is not a reason
+            # to fail.
             pass
         _ALIASES = aliases
     return _ALIASES

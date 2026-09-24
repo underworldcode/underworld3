@@ -18,7 +18,10 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 # block, Crank-Nicolson, dt 0.05, 6 steps, peclet_weight 4 (recorded with this file).
 # The GAMG fallback without a hierarchy gave a platform-dependent answer (7% on the
 # Linux CI), so the mesh carries a refinement hierarchy and the solve is tight.
-SERIAL_ERROR = 0.0013227881494769559
+# Re-recorded for #694 along with test_1077's: h is now volume**(1/dim), and
+# the SUPG stabilisation that reads it moved with it. Local and CI agree on the
+# new value to 5e-10 relative.
+SERIAL_ERROR = 0.0013766643011347715
 
 
 def _run(tolerance=1.0e-8):
