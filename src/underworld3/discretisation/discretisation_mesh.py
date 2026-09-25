@@ -1767,7 +1767,46 @@ class Mesh(Stateful, uw_object):
 
         uw.pprint("\n")
 
-    def view(self, level=0):
+    def describe(self, depth=4):
+        """What this mesh is, as data: dimension, coordinate system, size,
+        units and boundaries, with its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"dimension": self.dim, "coordinate dimension": self.cdim}
+        try:
+            facts["coordinate system"] = self.CoordinateSystem.coordinate_type.name
+        except Exception:
+            pass
+        try:
+            nstart, nend = self.dm.getHeightStratum(0)
+            facts["cells"] = int(nend - nstart)
+        except Exception:
+            pass
+        units = getattr(self, "units", None)
+        if units:
+            facts["coordinate units"] = str(units)
+        try:
+            facts["boundaries"] = [b.name for b in self.boundaries]
+        except Exception:
+            pass
+        try:
+            Q = self.quality()
+            if Q.get("element") == "2D-simplex":
+                facts["cell quality"] = (f"q_min {Q['q_min']:.3f}, mean {Q['q_mean']:.2f}, "
+                                         f"{Q['n_q_lt_0p3']} cells below 0.3")
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            for var in list(self.vars.values()):
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = f"{self.dim}-D mesh" + (f", {facts['cells']} cells" if "cells" in facts else "")
+        return record("mesh", getattr(self, "name", None), summary, facts=facts, children=children)
+
+    def view(self, level=0, format=None):
         """
         Displays mesh information at different levels.
 
@@ -1781,87 +1820,11 @@ class Mesh(Stateful, uw_object):
         import numpy as np
 
         if level == 0:
-            uw.pprint(f"\n")
-            uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
-
-            # Display coordinate units if set
-            if hasattr(self, "units") and self.units is not None:
-                uw.pprint(f"Coordinate units: {self.units}\n")
-                uw.pprint(f"  Access unit-aware coordinates via: mesh.X.coords\n")
-                uw.pprint(f"  Query units with: uw.get_units(mesh.X.coords)\n")
-
-            # Display length scale for non-dimensionalization
-            if hasattr(self, "_length_scale"):
-                if self._length_scale != 1.0:
-                    uw.pprint(
-                        f"Length scale (non-dimensionalization): {self._length_scale} {self._length_units}\n"
-                    )
-                else:
-                    uw.pprint(f"Length scale: 1.0 (no scaling)\n")
-
-            # Display coordinate system information
-            coord_sys = self.CoordinateSystem
-            coord_type = coord_sys.coordinate_type
-            uw.pprint(f"Coordinate system: {coord_type.name}\n")
-
-            # Show available coordinate accessors
-            accessors = ["mesh.X.coords (Cartesian)"]  # Always available
-            if coord_sys._spherical_accessor is not None:
-                if self.dim == 2:
-                    accessors.append("mesh.X.spherical (r, θ)")
-                else:
-                    accessors.append("mesh.X.spherical (r, θ, φ)")
-            if coord_sys._geo_accessor is not None:
-                accessors.append("mesh.X.geo (lon, lat, depth)")
-
-            uw.pprint(f"Coordinate access:\n")
-            for acc in accessors:
-                uw.pprint(f"  • {acc}\n")
-
-            # Only if notebook and serial
+            from underworld3.utilities.describe import view as _view
+            if uw.mpi.rank == 0:
+                _view(self, format=format)
             if uw.is_notebook and uw.mpi.size == 1:
                 uw.visualisation.plot_mesh(self, window_size=(600, 400))
-
-            # Total number of cells
-            nstart, nend = self.dm.getHeightStratum(0)
-            num_cells = nend - nstart
-
-            uw.pprint(f"Number of cells: {num_cells}\n")
-
-            # Cell-quality summary (the conditioning-relevant tail;
-            # full metrics + per-cell arrays via mesh.quality()).
-            try:
-                Q = self.quality()
-                if Q.get("element") == "2D-simplex":
-                    uw.pprint(
-                        f"Cell quality: q_min={Q['q_min']:.3f} "
-                        f"mean={Q['q_mean']:.2f} | poor(q<0.3): "
-                        f"{Q['n_q_lt_0p3']} | worst aspect "
-                        f"{Q['aspect_max']:.1f} | max size-jump "
-                        f"{Q['sizejump_max']:.1f}\n")
-                    if Q["n_q_lt_0p2"] > 0:
-                        uw.pprint(
-                            f"  ! {Q['n_q_lt_0p2']} cell(s) "
-                            f"q<0.2 (near-degenerate — solver "
-                            f"conditioning hazard)\n")
-                else:
-                    uw.pprint(
-                        f"Cell quality: vol_min/mean="
-                        f"{Q['vol_min_over_mean']:.3f} "
-                        f"(2-D triangle mesh needed for shape "
-                        f"metrics)\n")
-                uw.pprint("  (full metrics: mesh.quality())\n")
-            except Exception:
-                pass
-
-            self._print_variable_table()
-
-            ## Boundary information — sizes are omitted at level 0, so no
-            ## collective gathers are needed (they were dead results here).
-            self._print_boundary_table(with_sizes=False)
-
-            uw.pprint(f"Use view(1) to view detailed mesh information.\n")
-
         elif level == 1:
             if uw.mpi.rank == 0:
                 print(f"\n")

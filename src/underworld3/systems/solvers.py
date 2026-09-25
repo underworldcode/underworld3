@@ -4209,15 +4209,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ("V_fn", "advecting velocity"),
     )
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + self._V_fn._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
 
     @timing.routine_timer_decorator
     def __init__(
@@ -4665,14 +4656,6 @@ class SNES_Diffusion(SNES_Scalar):
         ("f", "volumetric source term"),
     )
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
 
     @timing.routine_timer_decorator
     def __init__(
@@ -5006,16 +4989,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         ("penalty", "augmented-Lagrangian grad-div penalty (0 = off)"),
     )
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{p} = $ " + self.p.sym._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
-        display(Latex(rf"$\quad\rho = $" + self.rho._repr_latex_()))
 
     @timing.routine_timer_decorator
     def __init__(

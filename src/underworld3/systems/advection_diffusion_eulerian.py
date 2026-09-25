@@ -411,18 +411,6 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         SNES_Scalar.preconditioner.fset(self, value)
         self._set_linear_solver(multigrid=self._preconditioner != "auto")
 
-    def _object_viewer(self):
-        from IPython.display import Latex, display
-
-        super()._object_viewer()
-        scheme = {("am", 1): f"Adams-Moulton order 1, theta = {self._theta}",
-                  ("bdf", 1): "backward Euler"}.get(
-            (self.integrator, self.order),
-            f"{self.integrator.upper()} order {self.order}")
-        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + self.V_fn._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
-        display(Latex(rf"$\quad$ time scheme: {scheme}"))
 
     # ------------------------------------------------------------------
     # Scheme description

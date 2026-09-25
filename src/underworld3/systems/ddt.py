@@ -557,6 +557,33 @@ class _DDtBase(uw_object):
       Symbolic, Eulerian, SemiLagrangian).
     """
 
+    def describe(self, depth=4):
+        """What this history is, as data: the scheme (the class), its order,
+        its weighting, the field it tracks and the history slots it keeps.
+        The method metadata a run record needs to say which time integrator
+        a part used."""
+        import sympy
+        from underworld3.utilities.describe import record, term
+
+        facts = {"scheme": type(self).__name__, "order": getattr(self, "order", None)}
+        theta = getattr(self, "theta", None)
+        if theta is not None:
+            facts["theta"] = theta
+        terms = []
+        psi = getattr(self, "_psi_fn", None)
+        if psi is not None:
+            terms.append(term(getattr(self, "_psi_fn_symbol", "psi"), psi,
+                              description="the quantity tracked",
+                              symbol=getattr(self, "_psi_fn_symbol", None)))
+        slots = getattr(self, "psi_star", None) or []
+        if slots:
+            terms.append({"name": "history", "symbol": getattr(self, "_psi_star_symbol", None),
+                          "latex": ", ".join(sympy.latex(s) for s in slots),
+                          "text": ", ".join(str(s) for s in slots), "units": None,
+                          "description": f"{len(slots)} history slot(s)", "where": []})
+        doc = (type(self).__doc__ or "").strip().split("\n")[0]
+        return record("history", type(self).__name__, doc, facts=facts, terms=terms)
+
     def _init_history_tracking(self, order):
         """Deferred-initialisation and variable-dt bookkeeping attributes."""
         # The timestep as a runtime constant of the compiled kernels: every
@@ -1165,15 +1192,7 @@ class Symbolic(_DDtBase):
         self._shape = new_fn.shape
         return
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, display
 
-        # Display the primary variable
-        display(Latex(rf"$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$"))
-        # Display the history variable using the different symbol.
-        history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
-        display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to the first history slot ``psi_star[0]``."""
@@ -1440,14 +1459,6 @@ class Eulerian(_DDtBase):
         # self._psi_star_projection_solver.uw_function = self.psi_fn
         return
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
         """Initialize projection solvers for history updates."""
@@ -1941,12 +1952,6 @@ class EulerianSUPG(Eulerian):
         column = R.reshape(len(R), 1)
         return self.tau() * (column * self.advecting_velocity(0))
 
-    def _object_viewer(self):
-        from IPython.display import Latex, display
-
-        super()._object_viewer()
-        display(Latex(r"$\quad\mathbf{a} = $ " + self.V_fn._repr_latex_()))
-        display(Latex(rf"$\quad$ integrator: {self.integrator}, tau shape: {self.tau_shape}"))
 
 
 class CharacteristicTrace:
@@ -2856,13 +2861,6 @@ class SemiLagrangian(_DDtBase):
         # currently-installed projection source.
         self.psi_fn = self._psi_fn
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -3861,17 +3859,6 @@ class Lagrangian(_DDtBase):
         # No theta parameter on this flavor — fixed Crank-Nicolson value.
         self._restore_core_state(s, am_theta=0.5)
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
-        # so the viewer reports the expression and history depth only.
-        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -4203,17 +4190,6 @@ class Lagrangian_Swarm(_DDtBase):
         # No theta parameter on this flavor — fixed Crank-Nicolson value.
         self._restore_core_state(s, am_theta=0.5)
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
-        # so the viewer reports the expression and history depth only.
-        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -4693,12 +4669,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                     stacklevel=3,
                 )
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-        super()._object_viewer()
-        display(Latex(r"$\quad\psi = $ " + self.psi_fn._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + sympy.Matrix(self.V_fn)._repr_latex_()))
-        display(Latex(rf"$\quad$History steps = {self.order} (at the integration points)"))
 
     # ------------------------------------------------------------------
     def _nudged_node_coords(self, var):

@@ -208,6 +208,7 @@ subsystems/expressions-functions
 subsystems/containers
 subsystems/checkpointing-system
 subsystems/model-orchestration
+subsystems/describe-and-view
 subsystems/jit-cache
 ```
 
