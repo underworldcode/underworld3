@@ -1164,10 +1164,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         verbose=False,
     ):
         """
-        Read a mesh variable from ``Mesh.write_timestep()`` output using the
-        coordinate-remap path. The saved mesh and the live mesh may have
-        different sizes or decompositions; values are matched to the live mesh
-        nodes by nearest-neighbour KDTree interpolation.
+        Read a mesh variable from ``Mesh.write_timestep()`` output. Standard
+        nodal fields use coordinate-remap interpolation. Compact simplex DG1
+        fields use their exact element-corner representation: complete cells
+        are matched by geometry and the local affine polynomial is evaluated
+        at the live DG1 nodes. The latter supports MPI repartitioning without
+        averaging the discontinuous traces at shared vertices.
 
         This is the flexible remap reader. It is distinct from
         ``read_checkpoint()``, which loads PETSc DMPlex section/vector metadata
@@ -1232,6 +1234,24 @@ class _BaseMeshVariable(Stateful, uw_object):
         n_components = self.num_components
         dim = self.mesh.dim
 
+        if not is_v1_1:
+            if uw.mpi.rank == 0:
+                with h5py.File(data_file, "r") as h5f:
+                    representation = h5f[f"fields/{data_name}"].attrs.get(
+                        "representation"
+                    )
+                    if isinstance(representation, bytes):
+                        representation = representation.decode()
+            else:
+                representation = None
+            representation = uw.mpi.comm.bcast(representation, root=0)
+            if representation == "dg1_corner_nodal":
+                return self._read_dg1_corner_timestep(
+                    data_file,
+                    data_name,
+                    verbose=verbose,
+                )
+
         # ---- Phase 1: source swarm carries saved (coord, value) pairs ----
         source_swarm = uw.swarm.Swarm(self.mesh)
         saved = uw.swarm.SwarmVariable(
@@ -1257,10 +1277,32 @@ class _BaseMeshVariable(Stateful, uw_object):
                 D_src = D_src.reshape(-1, n_components)
             else:
                 with h5py.File(data_file, "r") as h5f:
-                    X_src = h5f["fields"]["coordinates"][()].reshape(-1, dim)
-                    D_src = h5f["fields"][data_name][()].reshape(
-                        -1, n_components
+                    coordinate_dataset = h5f["fields"]["coordinates"]
+                    field_dataset = h5f["fields"][data_name]
+                    X_src = coordinate_dataset[()].reshape(-1, dim)
+                    D_src = field_dataset[()].reshape(-1, n_components)
+                    storage_frame = field_dataset.attrs.get(
+                        "storage_frame", h5f.attrs.get("storage_frame")
                     )
+                    if isinstance(storage_frame, bytes):
+                        storage_frame = storage_frame.decode()
+                    if storage_frame == "physical":
+                        coordinate_units = coordinate_dataset.attrs.get("units")
+                        field_units = field_dataset.attrs.get("units")
+                        if isinstance(coordinate_units, bytes):
+                            coordinate_units = coordinate_units.decode()
+                        if isinstance(field_units, bytes):
+                            field_units = field_units.decode()
+                        if coordinate_units and coordinate_units != "dimensionless":
+                            X_src = np.asarray(
+                                uw.non_dimensionalise(
+                                    uw.quantity(X_src, coordinate_units)
+                                )
+                            )
+                        if field_units and field_units != "dimensionless":
+                            D_src = np.asarray(
+                                uw.non_dimensionalise(uw.quantity(D_src, field_units))
+                            )
         else:
             X_src = np.empty((0, dim), dtype=np.float64)
             D_src = np.empty((0, n_components), dtype=np.float64)
@@ -1413,6 +1455,283 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         return
 
+    def _read_dg1_corner_timestep(self, data_file, data_name, verbose=False):
+        """Reload one exact simplex DG1 field from disconnected corner values.
+
+        A coordinate-only nearest-neighbour lookup cannot distinguish the
+        separate traces of cells meeting at one vertex. This reader routes
+        complete source and destination cells by centroid, matches their full
+        corner geometry, and evaluates each source cell's affine polynomial at
+        the live variable's native DG1 nodes. The cell match remains exact when
+        the same mesh is repartitioned across a different MPI rank count.
+        """
+        import h5py
+        import numpy as np
+        from mpi4py import MPI
+
+        mesh = self.mesh
+        dim = mesh.dim
+        corner_count = dim + 1
+        n_components = self.num_components
+        if (
+            self.continuous
+            or self.degree != 1
+            or not mesh.isSimplex
+            or dim not in (2, 3)
+            or mesh.cdim != dim
+        ):
+            raise RuntimeError(
+                "dg1_corner_nodal data require a discontinuous degree-one "
+                "variable on a full-dimensional triangle or tetrahedron mesh"
+            )
+
+        if uw.mpi.rank == 0:
+            with h5py.File(data_file, "r") as field_handle:
+                field = field_handle[f"fields/{data_name}"]
+                values = field[()].reshape(-1, n_components)
+                field_units = field.attrs.get("units")
+                mesh_file = field_handle.attrs.get("dg1_mesh_file")
+                geometry_path = field_handle.attrs.get(
+                    "dg1_geometry_path", "/viz/dg1"
+                )
+            for name, value in (
+                ("field units", field_units),
+                ("mesh file", mesh_file),
+                ("geometry path", geometry_path),
+            ):
+                if isinstance(value, bytes):
+                    if name == "field units":
+                        field_units = value.decode()
+                    elif name == "mesh file":
+                        mesh_file = value.decode()
+                    else:
+                        geometry_path = value.decode()
+            if not mesh_file:
+                raise RuntimeError(
+                    f"{data_file} does not identify its shared DG1 mesh geometry"
+                )
+            mesh_path = os.path.join(os.path.dirname(data_file), mesh_file)
+            with h5py.File(mesh_path, "r") as mesh_handle:
+                coordinates_dataset = mesh_handle[
+                    f"{geometry_path.strip('/')}/coordinates"
+                ]
+                coordinates = coordinates_dataset[()].reshape(-1, dim)
+                coordinate_units = coordinates_dataset.attrs.get("units")
+                cells = mesh_handle[f"{geometry_path.strip('/')}/cells"][()].reshape(
+                    -1, corner_count
+                )
+            if isinstance(coordinate_units, bytes):
+                coordinate_units = coordinate_units.decode()
+            if coordinate_units and coordinate_units != "dimensionless":
+                coordinates = np.asarray(
+                    uw.non_dimensionalise(uw.quantity(coordinates, coordinate_units))
+                )
+            if field_units and field_units != "dimensionless":
+                values = np.asarray(
+                    uw.non_dimensionalise(uw.quantity(values, field_units))
+                )
+            source_corners = coordinates[cells]
+            source_values = values[cells]
+            source_centroids = np.round(source_corners.mean(axis=1), decimals=12)
+        else:
+            source_corners = np.empty((0, corner_count, dim), dtype=np.float64)
+            source_values = np.empty(
+                (0, corner_count, n_components), dtype=np.float64
+            )
+            source_centroids = np.empty((0, dim), dtype=np.float64)
+
+        source_swarm = uw.swarm.Swarm(mesh)
+        saved_corners = uw.swarm.SwarmVariable(
+            "_dg1_source_corners",
+            source_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, corner_count * dim),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{C}_s",
+        )
+        saved_values = uw.swarm.SwarmVariable(
+            "_dg1_source_values",
+            source_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, corner_count * n_components),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{V}_s",
+        )
+        source_before = max(source_swarm.dm.getLocalSize(), 0)
+        source_swarm.add_particles_with_global_coordinates(
+            source_centroids, migrate=False
+        )
+        source_swarm._invalidate_canonical_data()
+        saved_corners.array[source_before:, 0, :] = source_corners.reshape(
+            -1, corner_count * dim
+        )
+        saved_values.array[source_before:, 0, :] = source_values.reshape(
+            -1, corner_count * n_components
+        )
+        source_swarm._route_by_nearest_centroid()
+
+        landed_corners = np.asarray(saved_corners.array)[:, 0, :].reshape(
+            -1, corner_count, dim
+        )
+        landed_values = np.asarray(saved_values.array)[:, 0, :].reshape(
+            -1, corner_count, n_components
+        )
+
+        cell_start, cell_end = mesh.dm.getHeightStratum(0)
+        owned = np.ones(cell_end - cell_start, dtype=bool)
+        if mesh.dm.comm.getSize() > 1:
+            _, leaves, remote = mesh.dm.getPointSF().getGraph()
+            if leaves is None:
+                leaves = np.arange(len(remote))
+            leaves = np.asarray(leaves)
+            owned[leaves[(leaves >= cell_start) & (leaves < cell_end)] - cell_start] = (
+                False
+            )
+        native_rows = mesh._cell_node_indices(1, False).reshape(-1, corner_count)[owned]
+        vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, corner_count)[owned]
+        target_nodes = np.asarray(self.coords_nd)[native_rows]
+        target_corners = mesh._get_coords_for_basis(1, True)[vertex_rows]
+        target_centroids = np.round(target_corners.mean(axis=1), decimals=12)
+        n_owned = len(native_rows)
+
+        query_swarm = uw.swarm.Swarm(mesh)
+        origin_rank = uw.swarm.SwarmVariable(
+            "_dg1_origin_rank",
+            query_swarm,
+            vtype=uw.VarType.SCALAR,
+            dtype=int,
+            _proxy=False,
+            varsymbol=r"\cal{R}_d",
+        )
+        origin_index = uw.swarm.SwarmVariable(
+            "_dg1_origin_index",
+            query_swarm,
+            vtype=uw.VarType.SCALAR,
+            dtype=int,
+            _proxy=False,
+            varsymbol=r"\cal{I}_d",
+        )
+        query_nodes = uw.swarm.SwarmVariable(
+            "_dg1_query_nodes",
+            query_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, corner_count * dim),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{X}_d",
+        )
+        query_corners = uw.swarm.SwarmVariable(
+            "_dg1_query_corners",
+            query_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, corner_count * dim),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{C}_d",
+        )
+        result = uw.swarm.SwarmVariable(
+            "_dg1_result",
+            query_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, corner_count * n_components),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{D}_d",
+        )
+        query_before = max(query_swarm.dm.getLocalSize(), 0)
+        query_swarm.add_particles_with_global_coordinates(
+            target_centroids, migrate=False
+        )
+        query_swarm._invalidate_canonical_data()
+        origin_rank.array[query_before:, 0, 0] = uw.mpi.rank
+        origin_index.array[query_before:, 0, 0] = np.arange(n_owned)
+        query_nodes.array[query_before:, 0, :] = target_nodes.reshape(
+            -1, corner_count * dim
+        )
+        query_corners.array[query_before:, 0, :] = target_corners.reshape(
+            -1, corner_count * dim
+        )
+        query_swarm._route_by_nearest_centroid()
+
+        def cell_key(corners):
+            rounded = np.round(np.asarray(corners), decimals=12)
+            order = np.lexsort(
+                tuple(rounded[:, axis] for axis in range(dim - 1, -1, -1))
+            )
+            return tuple(rounded[order].reshape(-1))
+
+        source_by_cell = {}
+        duplicate_source = 0
+        for source_index, corners in enumerate(landed_corners):
+            key = cell_key(corners)
+            if key in source_by_cell:
+                duplicate_source += 1
+            source_by_cell[key] = source_index
+
+        local_query_nodes = np.asarray(query_nodes.array)[:, 0, :].reshape(
+            -1, corner_count, dim
+        )
+        local_query_corners = np.asarray(query_corners.array)[:, 0, :].reshape(
+            -1, corner_count, dim
+        )
+        missing = 0
+        for query_index, (query_cell_corners, nodes) in enumerate(
+            zip(local_query_corners, local_query_nodes, strict=True)
+        ):
+            key = cell_key(query_cell_corners)
+            matched_index = source_by_cell.get(key)
+            if matched_index is None:
+                missing += 1
+                continue
+            corners = landed_corners[matched_index]
+            coefficients = landed_values[matched_index]
+            matrix = (corners[1:] - corners[:1]).T
+            local = np.linalg.solve(matrix, (nodes - corners[:1]).T).T
+            weights = np.column_stack((1.0 - local.sum(axis=1), local))
+            result.array[query_index, 0, :] = (weights @ coefficients).reshape(-1)
+
+        failures = uw.mpi.comm.allreduce(missing + duplicate_source, op=MPI.SUM)
+        if failures:
+            raise RuntimeError(
+                "DG1 corner reload could not match every destination cell to "
+                "one source cell. The cell-aware path supports identical mesh "
+                "geometry across arbitrary MPI repartitioning."
+            )
+
+        query_swarm._rank_var.array[...] = origin_rank.array[...]
+        query_swarm.dm.migrate(remove_sent_points=True)
+        uw.mpi.barrier()
+        query_swarm._invalidate_canonical_data()
+
+        returned_indices = origin_index.array[:, 0, 0].astype(int)
+        returned = np.asarray(result.array)[:, 0, :].reshape(
+            -1, corner_count, n_components
+        )
+        cell_values = np.empty((n_owned, corner_count, n_components))
+        cell_values[returned_indices] = returned
+        self.data[...] = 0.0
+        self.data[native_rows.reshape(-1), :] = cell_values.reshape(
+            -1, n_components
+        )
+
+        indexset, subdm = mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+        indexset.destroy()
+        subdm.destroy()
+        if mesh._lvec is not None:
+            mesh._lvec.destroy()
+            mesh._lvec = None
+        mesh._stale_lvec = True
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"Reloaded DG1 field {data_name!r} from exact corner-nodal data",
+                flush=True,
+            )
+        return
+
     @timing.routine_timer_decorator
     def load_from_h5_plex_vector(
         self,
@@ -1453,11 +1772,12 @@ class _BaseMeshVariable(Stateful, uw_object):
     ):
         """Load this mesh variable from PETSc reload output.
 
-        The default path restores DMPlex section/local-vector data through the
+        By default, DMPlex section/global-vector data are restored through the
         topology migration SF, so a mesh reconstructed from its checkpoint may
-        have a different parallel DOF ordering. Set ``same_layout=True`` only
-        for an in-place restore onto the exact mesh object that wrote the file;
-        that path reloads the saved global vector directly.
+        have a different parallel DOF ordering. With ``same_layout=True``, the
+        existing PETSc variable vector is loaded directly into the original
+        layout. Both paths read the same stored values; no duplicate checkpoint
+        vector is required.
 
         This method does not use the coordinate/KDTree remapping provided by
         ``read_timestep()``. New output should be written with
@@ -1472,31 +1792,43 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
-        if same_layout:
-            import h5py
+        import h5py
 
-            if uw.mpi.rank == 0:
-                with h5py.File(filename, "r") as checkpoint_h5:
-                    has_direct_vector = (
-                        "uw_checkpoint" in checkpoint_h5
-                        and data_name in checkpoint_h5["uw_checkpoint"]
-                    )
-            else:
-                has_direct_vector = None
-            has_direct_vector = uw.mpi.comm.bcast(
-                has_direct_vector,
-                root=0,
+        if uw.mpi.rank == 0:
+            with h5py.File(filename, "r") as checkpoint_h5:
+                if "restart/petsc/topologies" in checkpoint_h5:
+                    checkpoint_group = "/restart/petsc"
+                elif "uw_checkpoint/topologies" in checkpoint_h5:
+                    checkpoint_group = "/uw_checkpoint"
+                else:
+                    checkpoint_group = None
+
+                if f"restart/petsc/{data_name}" in checkpoint_h5:
+                    direct_vector_group = "/restart/petsc"
+                elif f"uw_checkpoint/{data_name}" in checkpoint_h5:
+                    direct_vector_group = "/uw_checkpoint"
+                else:
+                    direct_vector_group = None
+        else:
+            checkpoint_group = None
+            direct_vector_group = None
+        checkpoint_group = uw.mpi.comm.bcast(checkpoint_group, root=0)
+        direct_vector_group = uw.mpi.comm.bcast(direct_vector_group, root=0)
+        grouped_checkpoint = checkpoint_group is not None
+        legacy_direct_vector = direct_vector_group is not None
+
+        if same_layout and not (grouped_checkpoint or legacy_direct_vector):
+            raise RuntimeError(
+                f"{filename} has no direct checkpoint vector for {data_name!r}. "
+                "Reload it with same_layout=False."
             )
-            if not has_direct_vector:
-                raise RuntimeError(
-                    f"{filename} has no in-place checkpoint vector for "
-                    f"{data_name!r}. Reload it with same_layout=False."
-                )
 
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         sectiondm = self.mesh.dm.clone()
         viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
         viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        if grouped_checkpoint and not same_layout:
+            viewer.pushGroup(checkpoint_group)
 
         old_mesh_name = self.mesh.dm.getName()
         old_lvec_name = self._lvec.getName()
@@ -1510,25 +1842,37 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._gvec.setName(data_name)
 
             if same_layout:
+                vector_group = (
+                    f"{checkpoint_group}/topologies/uw_mesh/dms/{data_name}/"
+                    f"vecs/{data_name}"
+                    if grouped_checkpoint
+                    else direct_vector_group
+                )
+                # A DM-associated Vec ignores the viewer group and redirects
+                # HDF5 I/O through /fields. A plain Vec reads the requested
+                # restart dataset when /fields is intentionally absent.
                 checkpoint_vec = PETSc.Vec().createMPI(
-                    (self._gvec.getLocalSize(), self._gvec.getSize()),
+                    (self._gvec.getLocalSize(), PETSc.DECIDE),
                     comm=PETSc.COMM_WORLD,
                 )
                 checkpoint_vec.setName(data_name)
-                viewer.pushGroup("/uw_checkpoint")
+                viewer.pushGroup(vector_group)
                 checkpoint_vec.load(viewer)
                 viewer.popGroup()
                 self._gvec.array[...] = checkpoint_vec.array_r
-                checkpoint_vec.destroy()
                 subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+                checkpoint_vec.destroy()
             else:
-                from underworld3.cython.petsc_discretisation import (
-                    petsc_dmplex_load_local_vector,
+                global_sf, local_sf = self.mesh.dm.sectionLoad(
+                    viewer, sectiondm, self.mesh.sf
                 )
-
-                loaded_lvec = petsc_dmplex_load_local_vector(
-                    self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
+                loaded_gvec = sectiondm.createGlobalVec()
+                loaded_gvec.setName(data_name)
+                self.mesh.dm.globalVectorLoad(
+                    viewer, sectiondm, global_sf, loaded_gvec
                 )
+                loaded_lvec = sectiondm.createLocalVec()
+                sectiondm.globalToLocal(loaded_gvec, loaded_lvec, addv=False)
 
                 source_section = sectiondm.getSection()
                 target_section = subdm.getSection()
@@ -1555,12 +1899,19 @@ class _BaseMeshVariable(Stateful, uw_object):
                     )
 
                 loaded_lvec.destroy()
+                loaded_gvec.destroy()
+                if global_sf is not None:
+                    global_sf.destroy()
+                if local_sf is not None:
+                    local_sf.destroy()
                 self._sync_lvec_to_gvec()
         finally:
             self._lvec.setName(old_lvec_name)
             self._gvec.setName(old_vec_name)
             if old_mesh_name is not None:
                 self.mesh.dm.setName(old_mesh_name)
+            if grouped_checkpoint and not same_layout:
+                viewer.popGroup()
             viewer.popFormat()
             viewer.destroy()
             sectiondm.destroy()
