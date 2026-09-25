@@ -1608,7 +1608,10 @@ class Model(PintNativeModelMixin, BaseModel):
             "at_step": self._open_step.index,
             "fingerprint": fingerprint,
         }
-        record.update(described)
+        # the description's own kind and its contained objects stay out of
+        # the record: a part record IS a kind, and the children are recorded
+        # as parts of their own when they act
+        record.update({k: v for k, v in described.items() if k not in ("kind", "children")})
         self._parts[part] = record
         self._write_transcript_line(record)
 
@@ -5596,179 +5599,61 @@ class Model(PintNativeModelMixin, BaseModel):
         except ImportError:
             print("Warning: petsc4py not available, cannot set PETSc option")
 
-    def view(self, verbose: int = 0, show_materials: bool = True, show_petsc: bool = False):
-        """
-        Display a concise summary of the model contents.
-
-        Parameters
-        ----------
-        verbose : int, default 0
-            Verbosity level:
-            0 = Basic summary
-            1 = Include variable details and material properties
-            2 = Include solver information and metadata
-        show_materials : bool, default True
-            Whether to show materials summary
-        show_petsc : bool, default False
-            Whether to show PETSc options (can be lengthy)
-
-        Example
-        -------
-        >>> model.view()                    # Basic summary
-        >>> model.view(verbose=1)           # Detailed view
-        >>> model.view(verbose=2, show_petsc=True)  # Full details
-        """
-        import textwrap
-
-        # Build markdown content
-        lines = []
-        lines.append(f"# Model: {self.name}")
-        lines.append(f"**Status:** {self.state.value} (version {self.version})")
-        lines.append("")
-
-        # Mesh information
-        if self.mesh:
-            mesh_type = type(self.mesh).__name__
-            try:
-                mesh_desc = f"{mesh_type}"
-                if hasattr(self.mesh, "dm") and self.mesh.dm:
-                    # Try to get mesh statistics
-                    try:
-                        coords = self.mesh.dm.getCoordinates()
-                        if coords:
-                            node_count = coords.getSize()
-                            mesh_desc += f" ({node_count:,} nodes)"
-                    except:
-                        pass
-                lines.append(f"**Mesh:** {mesh_desc}")
-            except:
-                lines.append(f"**Mesh:** {mesh_type}")
-        else:
-            lines.append("**Mesh:** *No mesh assigned*")
-        lines.append("")
-
-        # Variables summary
-        var_count = len(self._variables)
-        lines.append(f"**Variables:** {var_count} registered")
-        if var_count > 0 and verbose >= 1:
-            for name, var in self._variables.items():
-                try:
-                    var_type = type(var).__name__
-                    if hasattr(var, "num_components"):
-                        components = var.num_components
-                        if components == 1:
-                            var_desc = f"scalar"
-                        elif components in [2, 3]:
-                            var_desc = f"vector ({components}D)"
-                        else:
-                            var_desc = f"tensor ({components} components)"
-                    else:
-                        var_desc = "unknown type"
-                    lines.append(f"  - `{name}`: {var_desc}")
-                except:
-                    lines.append(f"  - `{name}`: {type(var).__name__}")
-        elif var_count > 0:
-            var_names = list(self._variables.keys())
-            if len(var_names) <= 3:
-                lines.append(f"  - {', '.join(f'`{name}`' for name in var_names)}")
-            else:
-                lines.append(f"  - {', '.join(f'`{name}`' for name in var_names[:3])}, ...")
-        lines.append("")
-
-        # Swarms summary
-        swarm_count = len(self._swarms)
-        lines.append(f"**Swarms:** {swarm_count} registered")
-        if swarm_count > 0 and verbose >= 1:
-            for swarm_id, swarm in list(self._swarms.items()):
-                try:
-                    particle_count = swarm.local_size
-                    lines.append(f"  - Swarm {swarm_id}: {particle_count:,} particles")
-                except Exception:
-                    # Summary display only: a partially built swarm (no DM
-                    # yet) should not break the model overview.
-                    lines.append(f"  - Swarm {swarm_id}: {type(swarm).__name__}")
-        lines.append("")
-
-        # Materials summary
-        if show_materials and self.materials:
-            mat_count = len(self.materials)
-            lines.append(f"**Materials:** {mat_count} defined")
-            if verbose >= 1:
-                for mat_name, properties in self.materials.items():
-                    prop_count = len(properties)
-                    if prop_count <= 3:
-                        prop_names = list(properties.keys())
-                        lines.append(f"  - `{mat_name}`: {', '.join(prop_names)}")
-                    else:
-                        prop_names = list(properties.keys())[:3]
-                        lines.append(
-                            f"  - `{mat_name}`: {', '.join(prop_names)}, ... ({prop_count} total)"
-                        )
-            else:
-                mat_names = list(self.materials.keys())
-                if len(mat_names) <= 3:
-                    lines.append(f"  - {', '.join(f'`{name}`' for name in mat_names)}")
-                else:
-                    lines.append(f"  - {', '.join(f'`{name}`' for name in mat_names[:3])}, ...")
-            lines.append("")
-
-        # Solvers summary
-        if verbose >= 2:
-            solver_count = len(self._solvers)
-            lines.append(f"**Solvers:** {solver_count} registered")
-            if solver_count > 0:
-                for name, solver in self._solvers.items():
-                    lines.append(f"  - `{name}`: {type(solver).__name__}")
-            lines.append("")
-
-        # PETSc options
-        if show_petsc and self.petsc_state:
-            lines.append(f"**PETSc Options:** {len(self.petsc_state)} set")
-            if verbose >= 1:
-                for option, value in self.petsc_state.items():
-                    lines.append(f"  - `{option}`: {value}")
-            lines.append("")
-
-        # Metadata
-        if verbose >= 2 and self.metadata:
-            lines.append(f"**Metadata:** {len(self.metadata)} entries")
-            for key, value in self.metadata.items():
-                if isinstance(value, dict):
-                    lines.append(f"  - `{key}`: dict with {len(value)} items")
-                elif isinstance(value, (list, tuple)):
-                    lines.append(f"  - `{key}`: {type(value).__name__} with {len(value)} items")
-                else:
-                    value_str = str(value)
-                    if len(value_str) > 50:
-                        value_str = value_str[:47] + "..."
-                    lines.append(f"  - `{key}`: {value_str}")
-            lines.append("")
-
-        # Usage hints
-        lines.append("---")
-        lines.append("**Usage hints:**")
-        lines.append("- `model.view(verbose=1)` - Show variable and material details")
-        lines.append("- `model.view(verbose=2)` - Show all components including solvers")
-        lines.append("- `model.to_dict()` - Export complete configuration")
-        lines.append("- `model.to_yaml()` - Export as YAML file")
-        if self._variables:
-            lines.append("- `model.get_variable('name')` - Access specific variables")
-        if self.materials:
-            lines.append("- `model.get_material('name')` - Access material properties")
-
-        # Display as markdown
-        content = "\n".join(lines)
+    def describe(self, depth=2):
+        """What this model holds, as data: its name, its scales as they were
+        declared, its clock, and the meshes, swarms and solvers it
+        orchestrates as children, each describing itself one level down."""
+        from underworld3.utilities.describe import record
+        facts = {}
         try:
-            from IPython.display import Markdown, display
+            reference = self.get_reference_quantities() or {}
+            if reference:
+                facts["scales"] = {k: f"{v['magnitude']:.4g} {v['units']}" if isinstance(v, dict) else str(v)
+                                   for k, v in reference.items()}
+        except Exception:
+            pass
+        try:
+            facts["time"] = str(self.tracker.time)
+            facts["step"] = int(self.tracker.step)
+        except Exception:
+            pass
+        facts["meshes"] = len(self._meshes)
+        facts["variables"] = len(self._variables)
+        facts["swarms"] = len(self._swarms)
+        facts["solvers"] = len(self._solvers) + sum(
+            1 for obj in getattr(self, "_part_objects", {}).values()
+            if not any(obj is s for s in self._solvers.values()))
+        if self.materials:
+            facts["materials"] = list(self.materials.keys())
+        children = []
+        if depth > 0:
+            held = list(self._meshes.values()) + list(self._swarms.values()) + list(self._solvers.values())
+            for obj in getattr(self, "_part_objects", {}).values():
+                if not any(obj is h for h in held):
+                    held.append(obj)
+            for obj in held:
+                if hasattr(obj, "describe"):
+                    try:
+                        children.append(obj.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = (f"{facts['meshes']} mesh(es), {facts['variables']} variable(s), "
+                   f"{facts['swarms']} swarm(s), {facts['solvers']} solver(s)")
+        return record("model", getattr(self, "name", None), summary, facts=facts, children=children)
 
-            display(Markdown(content))
-        except (ImportError, NameError):
-            # Fallback to plain text if not in Jupyter
-            print("=" * 60)
-            # Convert markdown to plain text
-            plain_text = content.replace("# ", "").replace("**", "").replace("`", "'")
-            print(plain_text)
-            print("=" * 60)
+    def view(self, verbose: int = 0, show_materials: bool = True, show_petsc: bool = False,
+             format=None):
+        """Show what the model holds: :meth:`describe` rendered for a
+        notebook or a terminal, or in the ``format`` named. ``verbose``
+        adds a level of contained objects per unit."""
+        from underworld3.utilities.describe import view as _view
+        _view(self, format=format, depth=1 + int(verbose))
+        if show_petsc:
+            try:
+                self.mesh.dm.view()
+            except Exception:
+                pass
+
 
     def __repr__(self):
         """Override Pydantic's __repr__ for better user experience."""
@@ -5791,152 +5676,6 @@ class Model(PintNativeModelMixin, BaseModel):
         """String representation for print() calls."""
         return self.__repr__()
 
-    def view(self):
-        """
-        Display comprehensive model information following the established view() pattern.
-
-        Shows model configuration, units setup, registered components, and provides
-        guidance for setting up units if not configured.
-        """
-        try:
-            from IPython.display import Markdown, display
-
-            # Build markdown content
-            content = [f"## Model: {self.name}"]
-
-            # Model state and basic info
-            content.append(f"**State**: {self.state.value}")
-            content.append(f"**Version**: {self.version}")
-
-            # Mesh information
-            if self.mesh:
-                content.append(f"\n### Primary Mesh")
-                content.append(f"- **Type**: {type(self.mesh).__name__}")
-                content.append(
-                    f"- **Dimension**: {self.mesh.dim if hasattr(self.mesh, 'dim') else 'Unknown'}"
-                )
-
-            total_meshes = len(self._meshes)
-            if total_meshes > 1:
-                content.append(f"- **Total meshes**: {total_meshes}")
-            elif total_meshes == 0:
-                content.append(f"\n### Meshes")
-                content.append("⚠️ No meshes registered")
-
-            # Variables and swarms
-            var_count = len(self._variables)
-            swarm_count = len(self._swarms)
-
-            content.append(f"\n### Components")
-            content.append(f"- **Variables**: {var_count}")
-            content.append(f"- **Swarms**: {swarm_count}")
-            content.append(f"- **Solvers**: {len(self._solvers)}")
-
-            # Units information
-            ref_qty = self.get_reference_quantities()
-            content.append(f"\n### Units Configuration")
-
-            if ref_qty:
-                content.append(f"✅ **Reference quantities set** ({len(ref_qty)} quantities):")
-                for name, info in ref_qty.items():
-                    content.append(f"- **{name}**: `{info['value']}`")
-
-                # Show derived fundamental scalings
-                scalings = self.derive_fundamental_scalings()
-                if scalings:
-                    content.append(f"\n**Derived Fundamental Scalings:**")
-                    derivation_info = self.metadata.get("derived_scalings", {}).get(
-                        "derivation_info", {}
-                    )
-                    for dim in ["[length]", "[time]", "[mass]", "[temperature]"]:
-                        if dim in scalings:
-                            value = scalings[dim]
-                            source = derivation_info.get(dim, "direct")
-                            content.append(f"- **{dim.strip('[]').title()}**: `{value}` _{source}_")
-
-                    content.append(
-                        "\n💡 *Use `model.show_optimal_units()` to see recommended units for your problem*"
-                    )
-            else:
-                content.append("⚠️ **No reference quantities set**")
-                content.append("\nTo set up dimensional analysis:")
-                content.append("```python")
-                content.append("model.set_reference_quantities(")
-                content.append("    mantle_temperature=1500*uw.units.K,")
-                content.append("    mantle_viscosity=1e21*uw.units.Pa*uw.units.s,")
-                content.append("    plate_velocity=5*uw.units.cm/uw.units.year")
-                content.append(")")
-                content.append("```")
-
-            # Materials information
-            if self.materials:
-                content.append(f"\n### Materials ({len(self.materials)})")
-                for mat_name, properties in self.materials.items():
-                    content.append(f"- **{mat_name}**: {len(properties)} properties")
-
-            # Additional metadata
-            if self.metadata:
-                non_ref_metadata = {
-                    k: v for k, v in self.metadata.items() if k != "reference_quantities"
-                }
-                if non_ref_metadata:
-                    content.append(f"\n### Metadata")
-                    content.append(f"- **Entries**: {len(non_ref_metadata)}")
-
-            display(Markdown("\n".join(content)))
-
-        except ImportError:
-            # Fallback for non-Jupyter environments using uw.pprint
-            import underworld3 as uw
-
-            uw.pprint(f"Model: {self.name}")
-            uw.pprint("=" * 40)
-            uw.pprint(f"State: {self.state.value}")
-            uw.pprint(f"Version: {self.version}")
-
-            # Mesh info
-            if self.mesh:
-                uw.pprint(f"\nPrimary Mesh: {type(self.mesh).__name__}")
-                if hasattr(self.mesh, "dim"):
-                    uw.pprint(f"  Dimension: {self.mesh.dim}")
-
-            # Components
-            uw.pprint(f"\nComponents:")
-            uw.pprint(f"  Variables: {len(self._variables)}")
-            uw.pprint(f"  Swarms: {len(self._swarms)}")
-            uw.pprint(f"  Solvers: {len(self._solvers)}")
-
-            # Units
-            ref_qty = self.get_reference_quantities()
-            uw.pprint(f"\nUnits Configuration:")
-            if ref_qty:
-                uw.pprint(f"  Reference quantities: {len(ref_qty)} set")
-                for name, info in ref_qty.items():
-                    uw.pprint(f"    {name}: {info['value']}")
-
-                # Show derived fundamental scalings
-                scalings = self.derive_fundamental_scalings()
-                if scalings:
-                    uw.pprint(f"\n  Derived Fundamental Scalings:")
-                    derivation_info = self.metadata.get("derived_scalings", {}).get(
-                        "derivation_info", {}
-                    )
-                    for dim in ["[length]", "[time]", "[mass]", "[temperature]"]:
-                        if dim in scalings:
-                            value = scalings[dim]
-                            source = derivation_info.get(dim, "direct")
-                            uw.pprint(f"    {dim.strip('[]').title()}: {value} ({source})")
-
-                    uw.pprint(f"\n  Use model.show_optimal_units() for detailed recommendations")
-            else:
-                uw.pprint("  No reference quantities set")
-                uw.pprint("  To set up: model.set_reference_quantities(...)")
-
-            # Materials
-            if self.materials:
-                uw.pprint(f"\nMaterials: {len(self.materials)}")
-                for mat_name, properties in self.materials.items():
-                    uw.pprint(f"  {mat_name}: {len(properties)} properties")
 
 
 # Global default model for automatic registration

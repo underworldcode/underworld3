@@ -1842,28 +1842,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             return result
 
-    def _object_viewer(self):
-        """This will substitute specific information about this object"""
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        # feedback on this instance
-        #
-        display(
-            Markdown(
-                f"""**SwarmVariable:**
-  > symbol:  ${self.symbol}$\n
-  > shape:   ${self.shape}$\n
-  > proxy:   ${self._proxy}$\n
-  > proxy_location:  `{self._proxy_location}`\n
-  > proxy_degree:  ${self._proxy_degree}$\n
-  > proxy_continuous:  `{self._proxy_continuous}`\n
-  > type:    `{self.vtype.name}`"""
-            ),
-        )
-
-        display(self.data),
-        return
+    def describe(self, depth=4):
+        """What this swarm variable is, as data: its symbol, shape, type and
+        how it is proxied onto the mesh."""
+        from underworld3.utilities.describe import record
+        facts = {
+            "symbol": str(getattr(self, "symbol", "")),
+            "shape": str(getattr(self, "shape", "")),
+            "type": getattr(getattr(self, "vtype", None), "name", None),
+            "proxy": bool(getattr(self, "_proxy", False)),
+            "proxy location": str(getattr(self, "_proxy_location", "")),
+            "proxy degree": getattr(self, "_proxy_degree", None),
+            "proxy continuous": bool(getattr(self, "_proxy_continuous", True)),
+        }
+        return record("swarm_variable", getattr(self, "name", None),
+                      f"{facts['type'] or 'particle field'}, proxied at {facts['proxy location'] or 'nodes'}",
+                      facts=facts)
 
     def _resolve_stencil(self, nnn, order, n_particles):
         """Stencil size and reproduction order this rank can actually support.
@@ -3316,6 +3310,31 @@ class Swarm(Stateful, uw_object):
     instances = 0
 
     @timing.routine_timer_decorator
+    def describe(self, depth=4):
+        """What this swarm is, as data: its particle count and its mesh, with
+        its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"mesh": getattr(getattr(self, "mesh", None), "name", None)}
+        try:
+            facts["particles on this rank"] = int(self.local_size)
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            try:
+                variables = list(self.vars.values())
+            except Exception:
+                variables = []
+            for var in variables:
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = "particle swarm" + (f", {facts['particles on this rank']} particles on this rank"
+                                      if "particles on this rank" in facts else "")
+        return record("swarm", getattr(self, "name", None), summary, facts=facts, children=children)
+
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
         # Particle recycling (streak swarms) was excised in 2026-07: the
         # machinery had been broken (NameError) and untested for some time

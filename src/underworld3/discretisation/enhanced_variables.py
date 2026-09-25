@@ -245,6 +245,25 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
     # === CRITICAL: Direct property access for assignment operations ===
 
+    def describe(self, depth=4):
+        """What this variable is, as data: the base variable's description
+        with the units and persistence this wrapper adds."""
+        d = self._base_var.describe(depth=depth)
+        facts = d.setdefault("facts", {})
+        try:
+            facts["units"] = str(self.units) if self.has_units else "none (dimensionless)"
+            if self.has_units:
+                facts["dimensionality"] = str(self.dimensionality)
+        except Exception:
+            pass
+        facts["persistent"] = bool(getattr(self, "_persistent", False))
+        return d
+
+    def view(self, format=None, depth=None):
+        """Show what this variable is; see :func:`underworld3.utilities.describe.view`."""
+        from underworld3.utilities.describe import view as _view
+        _view(self, format=format, depth=depth)
+
     @property
     def data(self):
         """Direct access to data array (supports += and other assignment ops)."""
@@ -744,45 +763,6 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         """String representation."""
         return self.__repr__()
 
-    def view(self):
-        """
-        Display detailed information about the enhanced variable including units.
-
-        Shows variable name, dimensions, shape, units information, and sample data.
-        """
-        print(f"Enhanced MeshVariable: {self.name}")
-        print(f"  Components: {self.num_components}")
-        print(f"  Degree: {self.degree}")
-        print(f"  Array shape: {self.array.shape}")
-
-        # Units information
-        if self.has_units:
-            print(f"  Units: {self.units}")
-            print(f"  Dimensionality: {self.dimensionality}")
-            print(f"  Units backend: pint")
-        else:
-            print(f"  Units: None (dimensionless)")
-
-        # Persistence information
-        if self._persistent:
-            print(f"  Persistence: Enabled")
-        else:
-            print(f"  Persistence: Disabled")
-
-        # Sample data (first few elements)
-        try:
-            if len(self.array.shape) > 0 and self.array.shape[0] > 0:
-                print(f"  Data sample: {self.array[:3]}")
-            else:
-                print(f"  Data sample: No data")
-        except:
-            print(f"  Data sample: Unable to display")
-
-        # Mathematical capabilities
-        if hasattr(self, "sym"):
-            print(f"  Symbolic form: {self.sym}")
-
-        return self  # Allow chaining
 
 
 def create_enhanced_mesh_variable(

@@ -542,70 +542,70 @@ class uw_object:
 
     @class_or_instance_method
     def _ipython_display_(self_or_cls):
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
         import inspect
         from .docstring_utils import render_docstring, in_jupyter
-
-        ## Docstring (static / class documentation)
-
         if inspect.isclass(self_or_cls):
-            docstring = self_or_cls.__doc__
-            rendered = render_docstring(docstring, target="auto")
+            rendered = render_docstring(self_or_cls.__doc__, target="auto")
             if in_jupyter():
+                from IPython.display import Markdown, display
                 display(Markdown(rendered))
             else:
                 print(rendered)
-
-        else:
-            if in_jupyter():
-                display(
-                    Markdown(
-                        f"**Class**: {self_or_cls.__class__}",
-                    )
-                )
-            else:
-                print(f"Class: {self_or_cls.__class__}")
-            self_or_cls._object_viewer()
-
-        return
+            return
+        self_or_cls.view()
 
     # View is similar but we can give it arguments to force the
     # class documentation for an instance.
 
     @class_or_instance_method
-    def view(self_or_cls, class_documentation=False):
-        from IPython.display import Latex, Markdown, display
+    def view(self_or_cls, format=None, depth=None, class_documentation=False):
+        """Show what this object is.
+
+        An object that describes itself (:meth:`describe`) is rendered from
+        that description: Markdown with mathematics in a notebook, plain
+        text in a terminal, or the ``format`` named — ``"markdown"``,
+        ``"text"``, ``"latex"``, ``"yaml"`` or ``"json"``. ``depth`` limits
+        how many levels of contained objects are shown. On a class, or with
+        ``class_documentation=True``, the class documentation is shown too.
+        """
         import inspect
         from .docstring_utils import render_docstring, in_jupyter
-
-        ## Docstring (static / class documentation)
-
-        if inspect.isclass(self_or_cls) or class_documentation == True:
-            docstring = self_or_cls.__doc__
-            rendered = render_docstring(docstring, target="auto")
+        if inspect.isclass(self_or_cls) or class_documentation:
+            rendered = render_docstring(self_or_cls.__doc__, target="auto")
             if in_jupyter():
+                from IPython.display import Markdown, display
                 display(Markdown(rendered))
+                if class_documentation:
+                    display(Markdown("---"))
             else:
                 print(rendered)
-
-            if class_documentation:
-                if in_jupyter():
-                    display(Markdown("---"))
-                else:
+                if class_documentation:
                     print("---")
+        if inspect.isclass(self_or_cls):
+            return
+        if type(self_or_cls).describe is not uw_object.describe:
+            from .describe import view as _view
+            _view(self_or_cls, format=format, depth=depth)
+            return
+        # an object without a description of its own: the legacy viewer
+        if in_jupyter():
+            from IPython.display import Markdown, display
+            display(Markdown(f"**Class**: {self_or_cls.__class__}"))
+        else:
+            print(f"Class: {self_or_cls.__class__}")
+        self_or_cls._object_viewer()
 
-        if not inspect.isclass(self_or_cls):
-            if in_jupyter():
-                display(
-                    Markdown(
-                        f"**Class**: {self_or_cls.__class__}",
-                    ),
-                )
-            else:
-                print(f"Class: {self_or_cls.__class__}")
-
-            self_or_cls._object_viewer()
+    def describe(self, depth=4):
+        """What this object is, as data: a record with ``kind``, ``name`` and
+        ``summary``, and whatever else the object holds — ``facts``,
+        ``terms``, ``forms``, ``conditions``, ``children`` — as
+        :mod:`underworld3.utilities.describe` lays it out. Rendered by
+        :meth:`view`; serialised by the run transcript. Subclasses override
+        this; the base gives the class and its first line of documentation.
+        """
+        from .describe import record
+        doc = (type(self).__doc__ or "").strip().split("\n")[0]
+        return record(type(self).__name__.lower(), getattr(self, "name", None), doc)
 
     # placeholder
     def _object_viewer(self):
