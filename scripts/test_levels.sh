@@ -220,8 +220,11 @@ run_level_2() {
             # at no rank count anywhere: test_0005, test_0855 and test_0873.
             # A glob naming ranges grows holes as files are added between them
             # (#570, #611).
+            # --timeout: a test that fails on some ranks and passes on others
+            # desynchronises the next collective and spins at 100% CPU forever;
+            # the timeout turns that into a named failure (found at np=4, 2026-09).
             echo "Testing with $PARALLEL_RANKS MPI ranks..."
-            if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/ $VERBOSE; then
+            if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi --timeout=600 tests/parallel/ $VERBOSE; then
                 echo "✅ PASSED: Parallel tests ($PARALLEL_RANKS ranks)"
             else
                 echo "❌ FAILED: Parallel tests ($PARALLEL_RANKS ranks)"
@@ -236,7 +239,7 @@ run_level_2() {
                 # prefix because tests/pytest.ini puts rootdir at `tests/`, and
                 # a deselect that does not match is ignored in silence.
                 echo "Running extended parallel tests (4 ranks)..."
-                if mpirun -n 4 python -m pytest --with-mpi tests/parallel/ \
+                if mpirun -n 4 python -m pytest --with-mpi --timeout=600 tests/parallel/ \
                     --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
                     $VERBOSE; then
                     echo "✅ PASSED: Parallel tests (4 ranks)"

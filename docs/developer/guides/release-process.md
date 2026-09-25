@@ -171,7 +171,7 @@ dev ]    ── A ─────── B ─── C ─── s' ────�
 | 4 | Merge `main` into the release branch (catches hotfixes since last release) | manual |
 | 5 | Tag + push the RC on the release branch (`vX.Y.0rcN`) | confirm |
 | 6a | Serial validation: `test_levels.sh 1,2,3 --isolation` + the per-feature gate | auto |
-| 6b | MPI validation: `test_levels.sh 1,2,3 --isolation --parallel` | auto |
+| 6b | MPI validation: `test_levels.sh 1,2,3 --isolation --full-parallel` — runs at 2 **and** 4 ranks. Correct code is decomposition-independent, so a test that passes at 2 and fails at 4 is a real finding; both mpirun passes carry a per-test timeout so a rank-divergent failure is named rather than hanging. | auto |
 | 7 | Aggregate results → achieved maturity per feature | auto |
 | 8 | If tests fail: add skip markers on the release branch with detailed in-source reasons | manual |
 | 9 | Scaffold `docs/release-notes/vX.Y.0.md` | confirm |
@@ -275,10 +275,26 @@ This is the feature-level counterpart to the test-level drift check below:
 ## Keeping the manifest honest
 
 The main risk is **drift** — a `tier_a` test file that no feature references, so
-its coverage is invisible to the gate. `scripts/check_manifest_coverage.py` (run
-in `development` CI) warns when a `tier_a`-marked test file is not referenced by
-any feature's `validation.paths`. Start as a warning; promote to an error once
-coverage is established.
+its coverage is invisible to the gate. `scripts/check_manifest_coverage.py` warns
+when a `tier_a`-marked test file is not referenced by any feature's
+`validation.paths`. **It is not wired into CI** — nothing runs it automatically,
+so run it by hand. Automating it per-PR as a warning, and promoting it to
+`--strict` once coverage is established, is the obvious next step.
+
+Run it locally at any time:
+
+```bash
+pixi run -e dev python scripts/check_manifest_coverage.py
+```
+
+Coverage is currently far from complete — as of 2026-09-24, 136 of 153 `tier_a`
+files were unreferenced (115 of 132 a month earlier), so the gate measures roughly
+a tenth of the trustworthy suite. The count grows whenever a `tier_a` test lands
+without a manifest entry, which is the argument for running it per-PR rather than
+only at release time. Note the checker scans `tier_a` only while the gate also credits
+`tier_b`; the fault-network suite, for example, is almost entirely `tier_b` and
+so is usable by the gate yet invisible to this report. Closing the gap is what
+makes a release announcement proportionate to the work in it.
 
 ## Post-release tasks
 
