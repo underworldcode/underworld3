@@ -1110,6 +1110,17 @@ class _DDtBase(uw_object):
     #: Whether this flavour compiles :attr:`inflow_value` into its transport.
     applies_inflow_value = False
 
+    #: The owner's map from the carried quantity to what the history stores
+    #: (a solver sets its constitutive model's ``encode_history``); ``None``
+    #: stores the quantity itself.
+    _encode = None
+
+    def _inflow_record(self):
+        """:attr:`inflow_value` in the form the history stores."""
+        if self._encode is None:
+            return self._inflow_value
+        return sympy.Matrix(self._encode(self._inflow_value))
+
     def _nondim_timestep(self, dt):
         """The timestep as a non-dimensional model time (:func:`_as_float`); a
         symbolic timestep passes through unchanged."""
@@ -1123,7 +1134,7 @@ class _DDtBase(uw_object):
         only ``rows`` are written). Storage is non-dimensional, so a value
         that evaluates with units is reduced. A flavour that calls this sets
         ``_components`` (its stored columns)."""
-        expr = self._inflow_value
+        expr = self._inflow_record()
         for column, (i, j) in enumerate(self._components):
             vals = uw.function.evaluate(expr[i, j], coords)
             var.data[rows, column] = np.asarray(
@@ -1744,6 +1755,9 @@ class Eulerian(_DDtBase):
     def set_initial_history(self, values, dt=None):
         r"""Plant history values for BDF restart or analytical IC.
 
+        The values are what the history stores: for a stress history whose
+        model stores the log-conformation, ``log(sigma/G + I)``.
+
         Bypasses the automatic ``effective_order`` ramp so the very
         first solve runs at the full BDF order rather than starting at
         BDF-1. Use this when you have known values at :math:`t` and
@@ -2245,7 +2259,7 @@ class EulerianSUPG(Eulerian):
             normal_flow = sum(a[0, i] * self.mesh.Gamma[i] for i in range(self.mesh.dim))
             entering = sympy.Min(normal_flow, 0)
             indices = self._transport_components()
-            incoming = self._inflow_value
+            incoming = self._inflow_record()
             # Sign: `entering` is non-positive, so -entering is |u.n| on the
             # inflow and zero elsewhere, and the term is dissipative in
             # (sigma - sigma_in). With the sign the other way it amplifies:
@@ -3161,6 +3175,9 @@ class SemiLagrangian(_DDtBase):
 
     def set_initial_history(self, values, dt=None):
         r"""Plant history values for BDF restart or analytical IC.
+
+        The values are what the history stores: for a stress history whose
+        model stores the log-conformation, ``log(sigma/G + I)``.
 
         Bypasses the automatic ``effective_order`` ramp so the very
         first solve runs at the full BDF order rather than starting
@@ -5667,7 +5684,7 @@ class ForwardSemiLagrangian(_DDtBase):
             # boundary-cell dof, whether or not any of its cells is short
             bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
             filled = np.column_stack([
-                _to_nondim_ndarray(uw.function.evaluate(self._inflow_value[i, j],
+                _to_nondim_ndarray(uw.function.evaluate(self._inflow_record()[i, j],
                                                         dofs[bcells].reshape(-1, mesh.cdim))
                                    ).reshape(-1)
                 for (i, j) in self._components]).reshape(bcells.size, ndof, self.num_components)

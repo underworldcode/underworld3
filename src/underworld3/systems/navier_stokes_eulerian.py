@@ -431,7 +431,10 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
                 # is rebuilt from the stored velocity, as the new level has it
                 eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
                 solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
-                total = total + w * (sympy.Matrix(stress_history.psi_star[level].sym) + solvent)
+                carried = self.constitutive_model._carried_stress_sym(level) \
+                    if hasattr(self.constitutive_model, "_carried_stress_sym") \
+                    else stress_history.psi_star[level].sym
+                total = total + w * (sympy.Matrix(carried) + solvent)
             else:
                 raise ValueError(
                     f"the time scheme weights the flux at level {level + 1}, but the "

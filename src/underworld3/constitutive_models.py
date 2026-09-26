@@ -1626,6 +1626,41 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         return
 
 
+#: Smallest conformation eigenvalue the log-conformation history takes the
+#: logarithm of. The positive-definite step never produces a smaller one except
+#: by round-off, so this only bounds psi; the health check counts where it acts.
+_CONFORMATION_FLOOR = 1.0e-12
+
+
+def _sym2_parts(m):
+    """Mean and half-spread of the eigenvalues of a symmetric 2x2 matrix; the
+    spread is lifted by 1e-8 so the closed forms below stay finite at an
+    isotropic point (the lift is far below the solver tolerance)."""
+    a, b, c = m[0, 0], m[1, 1], m[0, 1]
+    mean = (a + b) / 2
+    d = sympy.sqrt(((a - b) / 2) ** 2 + c ** 2 + 1.0e-16)
+    return a, b, c, mean, d
+
+
+def _expm_sym2(m):
+    r"""Closed-form :math:`e^{M}` of a symmetric 2x2 matrix: positive-definite for any M."""
+    a, b, c, mean, d = _sym2_parts(m)
+    ch, sh = sympy.cosh(d), sympy.sinh(d) / d
+    return sympy.exp(mean) * sympy.Matrix([[ch + sh * (a - mean), sh * c],
+                                           [sh * c, ch + sh * (b - mean)]])
+
+
+def _logm_sym2(m):
+    r"""Closed-form :math:`\log M` of a symmetric 2x2 matrix, eigenvalues floored
+    at :data:`_CONFORMATION_FLOOR`."""
+    a, b, c, mean, d = _sym2_parts(m)
+    l1 = sympy.log(sympy.Max(mean + d, _CONFORMATION_FLOOR))
+    l2 = sympy.log(sympy.Max(mean - d, _CONFORMATION_FLOOR))
+    k = (l1 - l2) / (2 * d)
+    return sympy.Matrix([[(l1 + l2) / 2 + k * (a - mean), k * c],
+                         [k * c, (l1 + l2) / 2 + k * (b - mean)]])
+
+
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
     Viscoelastic-plastic flow constitutive model.
@@ -1649,7 +1684,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     """
 
     def __init__(self, unknowns, order=1, integrator: str = "bdf",
-                 material_name: str = None, objective_rate: str = "none"):
+                 material_name: str = None, objective_rate: str = "none",
+                 stress_history: str = "stress", convected_step: str = None):
         """Construct a viscoelastic-plastic flow model.
 
         Parameters
@@ -1684,6 +1720,28 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
               See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
         material_name : str, optional
             Name identifier for this material.
+        objective_rate : {"none", "upper_convected", "jaumann"}, default "none"
+            The objective stress rate the carried stress obeys (see
+            :meth:`_objective_term`).
+        stress_history : {"stress", "log_conformation"}, default "stress"
+            What the stress history stores. ``"log_conformation"`` stores
+            :math:`\psi = \log(\sigma/G + I)` and the model reads
+            :math:`\sigma^* = G(e^{\psi^*} - I)`, a conformation whatever the
+            history's interpolation, projection or fit did to :math:`\psi`.
+            The step is still taken on the conformation, where the relaxation
+            is linear, so neither integrator changes. Upper-convected, first
+            order, 2-D; it implies ``convected_step="deformation"``.
+        convected_step : {"linear", "deformation"}, optional
+            How the upper-convected stretching is taken over one step. In the
+            conformation :math:`c = \sigma/G + I`, ``"linear"`` advances the
+            carried state by :math:`c^* + \Delta t\,(Lc^* + c^*L^T)`, which
+            loses positive-definiteness once :math:`\Delta t\,|L|` is of
+            order one; ``"deformation"`` uses :math:`F c^* F^T` with
+            :math:`F = I + \Delta t\,L`, positive-definite for any step and
+            equally first order (with the exponential integrator the
+            stretching of the relaxation target is completed the same way).
+            Default ``"linear"``, or ``"deformation"`` with the
+            log-conformation history, which requires it.
         """
         if integrator not in ("bdf", "etd"):
             raise ValueError(
@@ -1707,6 +1765,24 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # the CURRENT velocity gradient, so it is linear in the unknown and
         # first order in time.
         self._objective_rate = objective_rate
+        if stress_history not in ("stress", "log_conformation"):
+            raise ValueError(f"stress_history must be 'stress' or 'log_conformation', got {stress_history!r}")
+        if convected_step is None:
+            convected_step = "deformation" if stress_history == "log_conformation" else "linear"
+        if convected_step not in ("linear", "deformation"):
+            raise ValueError(f"convected_step must be 'linear' or 'deformation', got {convected_step!r}")
+        if stress_history == "log_conformation" and convected_step != "deformation":
+            raise ValueError("the log-conformation history needs convected_step='deformation': the "
+                             "linear step can hand it an indefinite conformation, which has no logarithm")
+        if convected_step == "deformation":
+            if objective_rate != "upper_convected":
+                raise ValueError("convected_step='deformation' and the log-conformation history describe a "
+                                 "conformation tensor: they need objective_rate='upper_convected'")
+            if stress_history == "log_conformation" and unknowns.u.mesh.dim != 2:
+                raise NotImplementedError("the log-conformation history uses the closed-form 2x2 matrix "
+                                          "logarithm and exponential; 3-D is not implemented")
+        self._stress_history = stress_history
+        self._convected_step = convected_step
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -1739,6 +1815,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Equivalent value of strain rate 2nd invariant (accounting for stress history)",
         )
 
+        self._check_order_supported(order)
         self._order = order
         self._yield_mode = "softmin"  # "min", "harmonic", "smooth", or "softmin"
         self._yield_softness = 0.1  # δ parameter for "softmin" mode
@@ -1938,6 +2015,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         warn if the DFDt was created with a lower order (since it can't be
         changed after creation — the DFDt allocates history buffers at init).
         """
+        self._check_order_supported(value)
         self._order = value
         self._reset()
 
@@ -2087,12 +2165,36 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             return {"with_forcing_history": True}
         return {}
 
+    def _check_order_supported(self, order):
+        """The positive-definite step (and so the log-conformation history) is
+        first order: the second-order schemes combine history levels with
+        negative weights, which does not preserve positivity."""
+        if order != 1 and self._convected_step == "deformation":
+            raise NotImplementedError("convected_step='deformation' and the log-conformation history "
+                                      "are first order only")
+
+    def _carried_stress_sym(self, level=0):
+        r"""The carried stress :math:`\sigma^*` of history level ``level``: the
+        stored level, or :math:`G(e^{\psi^*} - I)` for the log-conformation
+        history (the modulus as its expression, so a read of it carries units)."""
+        stored = self.Unknowns.DFDt.psi_star[level].sym
+        if self._stress_history == "stress":
+            return stored
+        return (_expm_sym2(sympy.Matrix(stored)) - sympy.eye(2)) * self.Parameters.shear_modulus
+
+    def encode_history(self, stress):
+        r"""What the history stores for a stress: the stress, or
+        :math:`\log(\sigma/G + I)` for the log-conformation history."""
+        if self._stress_history == "stress":
+            return stress
+        return _logm_sym2(sympy.Matrix(stress) / self.Parameters.shear_modulus + sympy.eye(2))
+
     # The following should have no setters
     @property
     def stress_star(self):
         r"""Previous timestep stress :math:`\boldsymbol{\sigma}^*` from history."""
         if self.Unknowns.DFDt is not None:
-            self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
+            self._stress_star.sym = self._carried_stress_sym(0)
 
         return self._stress_star
 
@@ -2104,7 +2206,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.order >= 2:
-                self._stress_2star.sym = self.Unknowns.DFDt.psi_star[1].sym
+                self._stress_2star.sym = self._carried_stress_sym(1)
             else:
                 self._stress_2star.sym = sympy.sympify(0)
 
@@ -2150,32 +2252,47 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # expression tree, no separate code path needed.
             alpha = DDt._exp_alpha
             phi = DDt._exp_phi
-            sigma_star = DDt.psi_star[0].sym
+            sigma_star = self._carried_stress_sym(0)
             if DDt.forcing_star is not None:
                 edot_star = DDt.forcing_star.sym
             else:
                 edot_star = sympy.zeros(*E.shape)
             eta_raw = self.Parameters.shear_viscosity_0
-            self._E_eff.sym = (
+            E_eff = (
                 (1 - phi) * E
                 + (alpha / (2 * eta_raw)) * sigma_star
                 + (phi - alpha) * edot_star
                 # objective rate: the flux gains alpha * dt * S(sigma*)
                 + alpha * self.Parameters.dt_elastic * self._objective_term(sigma_star) / (2 * eta_raw)
             )
+            if self._convected_step == "deformation":
+                # The relaxation target is stretched during the step too. The
+                # exponential step carries that as (1-a) I + b (L + L^T) with
+                # b = lam (1 - (1+x) e^-x), x = dt/lam, exact to first order in L;
+                # adding (b^2/(1-a)) L L^T makes it the product
+                # (sqrt(1-a) I + b L/sqrt(1-a))(...)^T, positive semi-definite,
+                # without touching the first-order part. Written in x, not in the
+                # integrator's alpha, which is clamped to one in the elastic limit.
+                L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
+                lam = eta_raw / self.Parameters.shear_modulus
+                x = self.Parameters.dt_elastic / lam
+                decay = sympy.exp(-x)
+                b = lam * (1 - (1 + x) * decay)
+                E_eff = E_eff + (b ** 2 / (1 - decay)) * L * L.T / (2 * lam)
+            self._E_eff.sym = E_eff
             return self._E_eff
 
         # BDF default
         mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
         bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
         for i in range(DDt.order):
-            E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
+            E += -bdf_cs[i] * self._carried_stress_sym(i) / (2 * mu_dt)
         # objective rate on the newest level, explicit and first order: the
         # constitutive law is sigma + (eta/mu)(Dsigma/Dt - S) = 2 eta E, so the
         # flux gains (eta/mu) S(sigma*) and E_eff gains S/(2 mu) with weight
         # ONE whatever the BDF order (the BDF weights belong to the time
         # derivative, not to the source; -c1 = 2 at order 2 would double it).
-        E += self._objective_term(DDt.psi_star[0].sym) / (2 * self.Parameters.shear_modulus)
+        E += self._objective_term(self._carried_stress_sym(0)) / (2 * self.Parameters.shear_modulus)
         self._E_eff.sym = E
         return self._E_eff
 
@@ -2192,6 +2309,13 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         sigma = sympy.Matrix(sigma)
         L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
         if self._objective_rate == "upper_convected":
+            if self._convected_step == "deformation":
+                # F c* F^T - c* = dt (L c* + c* L^T) + dt^2 L c* L^T with
+                # c = sigma/G + I: the second-order term, in stress, is
+                # dt (L sigma L^T + G L L^T).
+                dt = self.Parameters.dt_elastic
+                G = self.Parameters.shear_modulus
+                return L * sigma + sigma * L.T + dt * (L * sigma * L.T + G * L * L.T)
             return L * sigma + sigma * L.T
         W = (L - L.T) / 2
         return W * sigma - sigma * W
@@ -2209,7 +2333,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             raise NotImplementedError(f"{type(DDt).__name__} does not expose the carried stress as "
                                       "one tensor per point; the conformation check reads a "
                                       "per-point tensor history (the trace-back flavours)")
-        return DDt.carried_tensors()
+        tau, points = DDt.carried_tensors()
+        if self._stress_history == "log_conformation":
+            from underworld3.systems.ddt import _to_nondim_ndarray
+            G = np.asarray(_to_nondim_ndarray(
+                uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
+            w, v = np.linalg.eigh(tau)
+            c = v @ (np.exp(w)[:, :, None] * np.transpose(v, (0, 2, 1)))
+            tau = G[:, None, None] * (c - np.eye(tau.shape[-1])[None])
+        return tau, points
 
     def max_elastic_timestep(self, safety: float = 0.3) -> float:
         r"""The largest step the explicit stretching term tolerates:
@@ -2233,11 +2365,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         the strain rate (what ``evaluate`` returns for a gradient) at the points
         of the carried stress. That projection sits a little below the per-cell
         gradient at a wall, which the safety factor covers. Reduced over
-        ranks. ``inf`` when there is no objective rate (nothing stretches) or
-        no flow; a velocity that is not finite raises rather than returning
-        a silent ``nan``.
+        ranks. ``inf`` when there is no objective rate (nothing stretches),
+        with ``convected_step="deformation"`` (the step is positive-definite
+        for any timestep, so this limit does not apply) or with no flow; a
+        velocity that is not finite raises rather than returning a silent ``nan``.
         """
-        if self._objective_rate == "none":
+        if self._objective_rate == "none" or self._convected_step == "deformation":
             return float("inf")
         E = sympy.Matrix(self.Unknowns.E)
         rate = sympy.sqrt(2 * (E.T * E).trace())
@@ -2296,7 +2429,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         n_all = int(comm.allreduce(n_local, op=uw.MPI.SUM))
         n_neg_all = int(comm.allreduce(n_neg, op=uw.MPI.SUM))
         where = tuple(float(x) for x in points[int(lo.argmin())]) if (n_local and local_min == gmin) else None
-        return {"min": gmin, "max": gmax, "fraction_negative": (n_neg_all / n_all) if n_all else 0.0, "where": where}
+        health = {"min": gmin, "max": gmax, "fraction_negative": (n_neg_all / n_all) if n_all else 0.0, "where": where}
+        if self._stress_history == "log_conformation":
+            # A decoded conformation is positive by construction, so the check
+            # that matters is where the logarithm's floor acted on the record.
+            psi, _ = self.Unknowns.DFDt.carried_tensors()
+            n_floor = int((np.linalg.eigvalsh(psi)[:, 0] <= np.log(_CONFORMATION_FLOOR) + 1.0e-6).sum()) \
+                if psi.shape[0] else 0
+            n_floor_all = int(comm.allreduce(n_floor, op=uw.MPI.SUM))
+            health["fraction_floored"] = (n_floor_all / n_all) if n_all else 0.0
+        return health
 
     @property
     def E_eff_inv_II(self):
@@ -2499,13 +2641,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         stress = 2 * self.Parameters.ve_effective_viscosity * edot
 
         if self.Unknowns.DFDt is not None:
-            stress_star = self.Unknowns.DFDt.psi_star[0]
-
             if self.is_elastic:
                 # 1st order
                 stress += (
                     self.Parameters.ve_effective_viscosity
-                    * stress_star.sym
+                    * self._carried_stress_sym(0)
                     / (self.Parameters.dt_elastic * self.Parameters.shear_modulus)
                 )
 
@@ -4687,6 +4827,10 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         # regression in tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
+        if any(getattr(m, "_stress_history", "stress") != "stress" for m in constitutive_models):
+            raise NotImplementedError(
+                "the multi-material model stores its averaged flux as a stress; a constituent "
+                "with stress_history='log_conformation' cannot share that history")
 
         self._material_var = material_swarmVariable
         self._constitutive_models = constitutive_models
