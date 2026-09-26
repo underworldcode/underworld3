@@ -48,6 +48,18 @@ is why an interpolating history that would be too diffusive for temperature or
 velocity is acceptable for stress. Where it fails is where the projection itself
 is wrong: sub-cell layers and no-slip walls.
 
+### Units
+
+Every history store holds non-dimensional values in `.data`, whichever flavour
+holds it; that is what the solver reads and what copies between stores go
+through. A solver builds its stress history with the stress's units, so the
+store's `.array`, and `evaluate` of its symbol, read back in pascals when
+reference scales are set. What enters is reduced on the way in: the timestep
+where each flavour receives it, and anything a flavour writes from `evaluate`
+(which returns dimensional values). `test_1064` runs every flavour in a units
+model with the timestep in kyr and as the same problem in plain numbers, from a
+moving start, at orders 1 and 2: the stores agree to solver precision.
+
 ## The timestep is set by the wall strain rate, not the far-field Courant number
 
 The objective-rate source $L\sigma^* + \sigma^* L^T$ acts on the carried stress

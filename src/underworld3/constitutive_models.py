@@ -48,7 +48,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
-from underworld3.systems.ddt import _bdf_coefficients
+from underworld3.systems.ddt import _bdf_coefficients, _as_float
 from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
@@ -2003,7 +2003,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             dt_history = self.Unknowns.DFDt._dt_history
             if order >= 2 and len(dt_history) > 0 and dt_history[0] is not None:
                 try:
-                    ratio = float(dt_current) / float(dt_history[0])
+                    # both as non-dimensional model time: the history keeps its
+                    # steps reduced, while dt_elastic may be a quantity
+                    ratio = _as_float(dt_current) / _as_float(dt_history[0])
                     if ratio > self._max_dt_ratio_for_higher_order:
                         order = 1
                 except (TypeError, ZeroDivisionError):
@@ -3757,7 +3759,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             dt_history = self.Unknowns.DFDt._dt_history
             if order >= 2 and len(dt_history) > 0 and dt_history[0] is not None:
                 try:
-                    ratio = float(dt_current) / float(dt_history[0])
+                    # both as non-dimensional model time: the history keeps its
+                    # steps reduced, while dt_elastic may be a quantity
+                    ratio = _as_float(dt_current) / _as_float(dt_history[0])
                     if ratio > self._max_dt_ratio_for_higher_order:
                         order = 1
                 except (TypeError, ZeroDivisionError):
