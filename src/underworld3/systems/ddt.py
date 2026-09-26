@@ -211,6 +211,31 @@ def _as_float(value):
         return None
 
 
+def _history_units(psi_fn, units=None):
+    """The units a history's stores are built with: ``units`` when given (a
+    solver knows what its history carries), else those of ``psi_fn``; ``None``
+    outside a model with reference quantities. The stores hold non-dimensional
+    values in ``.data`` whatever the units; the units only say what ``.array``
+    and ``evaluate`` read back as."""
+    if not uw.get_default_model().has_units():
+        return None
+    return units if units is not None else uw.get_units(psi_fn)
+
+
+def _write_evaluated(var, values):
+    """Write an evaluation of a store's quantity into the store.
+
+    ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
+    when it carries units (it is reduced), non-dimensional when it does not.
+    It is written component by component into ``.data``, the store's
+    non-dimensional storage, whatever units the store is built with.
+    """
+    shape = tuple(var.sym.shape)
+    values = np.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
+    for (i, j) in _storage_components(var.vtype, shape):
+        var.data[:, var._data_layout(i, j)] = values[:, i, j]
+
+
 def _to_nondim_ndarray(value, units=None):
     """Reduce a possibly unit-carrying array to a plain non-dimensional ndarray.
 
@@ -1001,8 +1026,6 @@ class _DDtBase(uw_object):
             for k, (i, j) in enumerate(self._psi_star_indep_indices):
                 values = np.asarray(self._psi_star_flat_var.data[:, k])
                 level_0.data[:, level_0._data_layout(i, j)] = values
-                if i != j:
-                    level_0.data[:, level_0._data_layout(j, i)] = values
         else:
             self._psi_star_projection_solver.uw_function = flux
             self._psi_star_projection_solver.smoothing = 0.0
@@ -1087,69 +1110,24 @@ class _DDtBase(uw_object):
     #: Whether this flavour compiles :attr:`inflow_value` into its transport.
     applies_inflow_value = False
 
-    def carried(self, level: int = 0):
-        """The carried quantity of history ``level``, as an expression in its
-        own units.
-
-        The history's stores are non-dimensional work arrays; this is the one
-        way to read them back. The owner of the quantity (a solver's
-        constitutive model) supplies the map from what is stored to what it
-        stands for (``_record_unmap``): the stored value times the quantity's
-        unit, or the decoding of a stored encoding. Without an owner the
-        stored value is returned as it is.
-
-        Parameters
-        ----------
-        level : int, default 0
-            0 is the newest level.
-
-        Returns
-        -------
-        sympy.Matrix
-        """
-        stored = self.psi_star[level].sym
-        unmap = self.__dict__.get("_record_unmap")
-        return stored if unmap is None else unmap(stored)
-
     def _nondim_timestep(self, dt):
-        r"""Reduce ``dt`` to a plain non-dimensional model-time value.
-
-        The semi-Lagrangian trace-back is performed ENTIRELY in the mesh's
-        NON-DIMENSIONAL (DM) coordinate space: evaluate()/global_evaluate
-        treat plain arrays as DM coords and the DM point-location uses DM
-        values (0..L_model, NOT dimensional metres). So coords, velocity
-        AND dt are all reduced to non-dimensional values, whether or not
-        the model carries units. (Previously the has_units branch kept
-        dimensional coords/velocity and left dt unitless -> a 'meter' vs
-        'meter/second' subtraction crash and mislocation against the ND
-        DM; UW3 issue #267.)
-        """
-        if hasattr(dt, "magnitude") or hasattr(dt, "value"):
-            # dt carries units -> non-dimensionalise it
-            dt_nondim = uw.non_dimensionalise(dt, uw.get_default_model())
-            if hasattr(dt_nondim, "magnitude"):
-                return float(dt_nondim.magnitude)
-            elif hasattr(dt_nondim, "value"):
-                return float(dt_nondim.value)
-            else:
-                return float(dt_nondim)
-        else:
-            # already non-dimensional model-time
-            return dt
-
+        """The timestep as a non-dimensional model time (:func:`_as_float`); a
+        symbolic timestep passes through unchanged."""
+        reduced = _as_float(dt)
+        return dt if reduced is None else reduced
 
     def _write_inflow(self, var, coords, rows):
         """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
         ``coords`` (the positions of ALL the points, so that the read, which
         is collective when the value holds a field, is made on every rank;
-        only ``rows`` are written). Storage is non-dimensional, so the value
-        is reduced through the history's units. A flavour that calls this
-        sets ``_components`` (its stored columns) and ``_psi_units``."""
+        only ``rows`` are written). Storage is non-dimensional, so a value
+        that evaluates with units is reduced. A flavour that calls this sets
+        ``_components`` (its stored columns)."""
         expr = self._inflow_value
         for column, (i, j) in enumerate(self._components):
             vals = uw.function.evaluate(expr[i, j], coords)
             var.data[rows, column] = np.asarray(
-                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)[rows]
+                _to_nondim_ndarray(vals)).reshape(-1)[rows]
 
     def _unknown_shape(self):
         """Shape of the unknown as a matrix (``Symbolic`` stores ``_shape`` as data)."""
@@ -1552,6 +1530,7 @@ class Eulerian(_DDtBase):
         order=1,
         smoothing=0.0,
         num_components=None,
+        units=None,
     ):
         super().__init__()
 
@@ -1605,6 +1584,7 @@ class Eulerian(_DDtBase):
                     degree=degree,
                     continuous=continuous,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                    units=_history_units(self._psi_fn, units),
                 )
             )
 
@@ -1733,11 +1713,11 @@ class Eulerian(_DDtBase):
                 pass
 
         try:
-            self.psi_star[0].data[...] = uw.function.evaluate(
+            self.psi_star[0].data[...] = np.asarray(_to_nondim_ndarray(uw.function.evaluate(
                 self.psi_fn,
                 self.psi_star[0].coords,
                 evalf=self.evalf,
-            ).reshape(-1, max(self.psi_fn.shape))
+            ))).reshape(-1, max(self.psi_fn.shape))
         except Exception:
             # Sanctioned fallback: evaluate() cannot interpolate
             # expressions containing derivatives (e.g. flux terms) —
@@ -1992,6 +1972,7 @@ class EulerianSUPG(Eulerian):
         peclet_weight: float = 4.0,
         num_components=None,
         transport_on_update: bool = False,
+        units=None,
     ):
         order = int(order)
         if order not in (1, 2, 3):
@@ -2012,7 +1993,7 @@ class EulerianSUPG(Eulerian):
         super().__init__(
             mesh, psi_fn, vtype, degree, continuous, V_fn=None, theta=theta,
             varsymbol=varsymbol, verbose=verbose, bcs=[] if bcs is None else bcs,
-            order=order, smoothing=smoothing, num_components=num_components,
+            order=order, smoothing=smoothing, num_components=num_components, units=units,
         )
         self._advection_mode = "assembled"
         self._integrator = "am" if order == 1 else "bdf"
@@ -2303,8 +2284,6 @@ class EulerianSUPG(Eulerian):
             for k, (i, j) in enumerate(indices):
                 values = np.asarray(flat.data[:, k])
                 history.data[:, history._data_layout(i, j)] = values
-                if i != j:
-                    history.data[:, history._data_layout(j, i)] = values
 
     def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True):
         """Refresh the scheme's coefficients and, when this manager owns the
@@ -2730,6 +2709,7 @@ class SemiLagrangian(_DDtBase):
         theta: float = 0.5,
         old_frame_traceback: bool = False,
         midtime_velocity: bool = True,
+        units=None,
     ):
         super().__init__()
 
@@ -2845,16 +2825,7 @@ class SemiLagrangian(_DDtBase):
         psi_star = []
         self.psi_star = psi_star
 
-        # Propagate units from psi_fn to psi_star if the model supports units.
-        # Internal psi_star variables should match the user's variable units when possible,
-        # but if no reference quantities are set, use unitless variables to avoid strict mode errors.
-        psi_units = uw.get_units(psi_fn)
-
-        # Check if the model can handle units (has reference quantities set)
-        model = uw.get_default_model()
-        if psi_units is not None and not model.has_units():
-            # Model doesn't have reference quantities - don't propagate units to internal vars
-            psi_units = None
+        psi_units = _history_units(psi_fn, units)
 
         for i in range(order):
             self.psi_star.append(
@@ -2865,7 +2836,7 @@ class SemiLagrangian(_DDtBase):
                     degree=self.degree,
                     continuous=self.continuous,
                     varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
-                    units=psi_units,  # Inherit units from psi_fn (or None if model has no units)
+                    units=psi_units,
                 )
             )
 
@@ -3165,11 +3136,7 @@ class SemiLagrangian(_DDtBase):
         coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
 
         try:
-            eval_result = uw.function.evaluate(self.psi_fn, coords_nd)
-            psi_units = self.psi_star[0].units
-            if psi_units is not None and not isinstance(eval_result, UnitAwareArray):
-                eval_result = UnitAwareArray(eval_result, units=psi_units)
-            self.psi_star[0].array[...] = eval_result
+            _write_evaluated(self.psi_star[0], uw.function.evaluate(self.psi_fn, coords_nd))
         except Exception:
             # Fallback: project psi_fn onto psi_star[0] via the SNES projector.
             # Route through the shared builder so snapshot substitution
@@ -3554,12 +3521,7 @@ class SemiLagrangian(_DDtBase):
                     node_coords_nd,
                     evalf=evalf,
                 )
-            # Wrap result with units if psi_star has units but eval didn't return UnitAwareArray
-            psi_star_units = self.psi_star[0].units
-            if psi_star_units is not None and not isinstance(eval_result, UnitAwareArray):
-                eval_result = UnitAwareArray(eval_result, units=psi_star_units)
-
-            self.psi_star[0].array[...] = eval_result
+            _write_evaluated(self.psi_star[0], eval_result)
 
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
@@ -3677,13 +3639,7 @@ class SemiLagrangian(_DDtBase):
                 monotone=monotone_mode,
             )
 
-        # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
-        # value also has units. global_evaluate may return plain arrays.
-        psi_star_units = self.psi_star[i].units
-        if psi_star_units is not None and not isinstance(value_at_end_points, UnitAwareArray):
-            value_at_end_points = UnitAwareArray(value_at_end_points, units=psi_star_units)
-
-        self.psi_star[i].array[...] = value_at_end_points
+        _write_evaluated(self.psi_star[i], value_at_end_points)
 
         # TODO(DESIGN): a moment-preserving correction (restore mean and L2
         # moment of psi_star after the semi-Lagrangian update) was removed
@@ -3791,7 +3747,7 @@ class SemiLagrangian(_DDtBase):
         # 3. Trace the characteristics back and sample each history slot
         #    at its departure points. Work from the oldest slot backwards
         #    so we don't overwrite history terms we still need to sample.
-        dt_for_calc = self._nondim_timestep(dt)
+        dt_for_calc = dt
 
         # Phase-2 ALE: if an adapt stashed Δx, build v_mesh = Δx / dt as
         # a per-DDt MeshVariable now so the trace-back below can use
@@ -4027,6 +3983,7 @@ class Lagrangian(_DDtBase):
         fill_param=3,
         proxy_location="cells",
         proxy_sampling="reconstruct",
+        units=None,
     ):
         super().__init__()
 
@@ -4039,12 +3996,7 @@ class Lagrangian(_DDtBase):
         self.V_fn = V_fn
         self.verbose = verbose
         self.order = order
-        # Particle storage is non-dimensional; an inflow datum with units is
-        # reduced through these before it is written (#783).
-        psi_units = uw.get_units(psi_fn)
-        if psi_units is not None and not uw.get_default_model().has_units():
-            psi_units = None
-        self._psi_units = psi_units
+        psi_units = _history_units(psi_fn, units)
         self._components = _storage_components(vtype, tuple(sympy.Matrix(psi_fn).shape))
 
         self._init_history_tracking(order)
@@ -4063,6 +4015,7 @@ class Lagrangian(_DDtBase):
                     proxy_location=proxy_location,
                     proxy_sampling=proxy_sampling,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                    units=psi_units,
                 )
             )
 
@@ -4316,10 +4269,6 @@ class Lagrangian(_DDtBase):
         psi_star_0 = self.psi_star[0]
         coords = np.asarray(self.swarm._particle_coordinates.data)
         updated = {}
-        # TODO(BUG): the evaluated psi_fn is written into non-dimensional
-        # storage without reduction through _psi_units (see _write_inflow); a
-        # psi_fn carrying units lands at its physical magnitude. Same in
-        # initialise_history and in Lagrangian_Swarm.
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
                 ij = psi_star_0._data_layout(i, j)
@@ -4589,7 +4538,7 @@ class Lagrangian_Swarm(_DDtBase):
                     coords,
                 )
                 psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
-                    updated_psi
+                    _to_nondim_ndarray(updated_psi)
                 ).reshape(-1)
 
         # Copy to all other history slots
@@ -4886,6 +4835,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         monotone_mode: Optional[str] = None,
         with_forcing_history: bool = False,
         store_smoothing: float = 0.0,
+        units=None,
         **_unsupported,      # TODO(BUG): swallowed without a stated failure mode (Charter 5)
     ):
         super().__init__()
@@ -4921,10 +4871,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             varsymbol = rf"u_{{ [{self.instance_number}] }}"
         inst = self.instance_number
 
-        psi_units = uw.get_units(self._psi_fn)
-        if psi_units is not None and not uw.get_default_model().has_units():
-            psi_units = None
-        self._psi_units = psi_units
+        psi_units = _history_units(self._psi_fn, units)
 
         # A vector or tensor history is one dof per INDEPENDENT component per
         # point. The trace-back and the weighted sums are shape-agnostic, so
@@ -5247,7 +5194,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for column, (i, j) in enumerate(self._components):
             vals = evaluate(expr[i, j], coords, **kwargs)
             var.data[:, column] = np.asarray(
-                _to_nondim_ndarray(vals, units=self._psi_units)
+                _to_nondim_ndarray(vals)
             ).reshape(-1)
 
     def _segment_dt(self, j, dt):
@@ -5442,6 +5389,7 @@ class ForwardSemiLagrangian(_DDtBase):
         varsymbol: Optional[str] = None,
         order: int = 1,
         theta: float = 0.5,
+        units=None,
         **_unsupported,
     ):
         super().__init__()
@@ -5468,10 +5416,7 @@ class ForwardSemiLagrangian(_DDtBase):
         if varsymbol is None:
             varsymbol = rf"u_{{ [{self.instance_number}] }}"
         inst = self.instance_number
-        psi_units = uw.get_units(self._psi_fn)
-        if psi_units is not None and not uw.get_default_model().has_units():
-            psi_units = None
-        self._psi_units = psi_units
+        psi_units = _history_units(self._psi_fn, units)
         self.psi_star = [
             uw.discretisation.MeshVariable(
                 f"psi_star_fwd_{inst}", mesh, vtype=vtype, degree=1, continuous=False,
@@ -5723,8 +5668,8 @@ class ForwardSemiLagrangian(_DDtBase):
             bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
             filled = np.column_stack([
                 _to_nondim_ndarray(uw.function.evaluate(self._inflow_value[i, j],
-                                                        dofs[bcells].reshape(-1, mesh.cdim)),
-                                   units=self._psi_units).reshape(-1)
+                                                        dofs[bcells].reshape(-1, mesh.cdim))
+                                   ).reshape(-1)
                 for (i, j) in self._components]).reshape(bcells.size, ndof, self.num_components)
             short = fed[bcells]
             if short.any():

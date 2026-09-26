@@ -5717,6 +5717,12 @@ class Swarm(Stateful, uw_object):
         import underworld3 as uw
 
         delta_t_model = uw.scaling.non_dimensionalise(delta_t)
+        # The particle arithmetic is in model units: a velocity read by
+        # global_evaluate comes back dimensional in a units model and is reduced.
+        from underworld3.systems.ddt import _to_nondim_ndarray
+
+        def _nondim_velocity(value):
+            return np.asarray(_to_nondim_ndarray(value))[:, 0, :]
 
         dt_limit = self.estimate_dt(V_fn)
 
@@ -5821,9 +5827,9 @@ class Swarm(Stateful, uw_object):
                 # rank-local evaluation silently extrapolates wrong values
                 # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.global_evaluate(
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(
                     V_fn_matrix, self._particle_coordinates.data
-                )[:, 0, :]
+                ))
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -5838,7 +5844,7 @@ class Swarm(Stateful, uw_object):
                 # (since the mid-points might have moved off-proc)
                 #
 
-                v_at_Vpts[...] = uw.function.global_evaluate(v_mid_matrix, mid_pt_coords)[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(v_mid_matrix, mid_pt_coords))
 
                 new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
@@ -5858,7 +5864,7 @@ class Swarm(Stateful, uw_object):
                     print(f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 v_at_Vpts = np.zeros_like(coords)
-                v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, coords[...])[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(V_fn_matrix, coords[...]))
 
                 if self.verbose:
                     print(f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)

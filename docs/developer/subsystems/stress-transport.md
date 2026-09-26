@@ -50,16 +50,15 @@ is wrong: sub-cell layers and no-slip walls.
 
 ### Units
 
-Every history store is a non-dimensional work array behind the units boundary,
-whichever flavour holds it, and carries no units of its own. What enters is
-reduced on the way in: the timestep where each flavour receives it, and anything
-a flavour writes from `evaluate` (which returns dimensional values), such as the
-flux at the particles or an inflow datum. Copies between stores go through
-`.data`. The one way to read a history back is `DFDt.carried(level)`: the
-constitutive model supplies the map from the stored value to the stress, so the
-read is in pascals when reference scales are set. `DFDt.psi_star[level]` is the
-raw store. The Maxwell shear box with reference quantities (`test_1064`) holds
-all five flavours to the same loading curve in Pa.
+Every history store holds non-dimensional values in `.data`, whichever flavour
+holds it; that is what the solver reads and what copies between stores go
+through. A solver builds its stress history with the stress's units, so the
+store's `.array`, and `evaluate` of its symbol, read back in pascals when
+reference scales are set. What enters is reduced on the way in: the timestep
+where each flavour receives it, and anything a flavour writes from `evaluate`
+(which returns dimensional values). `test_1064` runs every flavour in a units
+model with the timestep in kyr and as the same problem in plain numbers, from a
+moving start, at orders 1 and 2: the stores agree to solver precision.
 
 ## The timestep is set by the wall strain rate, not the far-field Courant number
 
