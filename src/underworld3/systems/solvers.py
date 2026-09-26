@@ -85,13 +85,20 @@ def expression(*args, **kwargs):
     return public_expression(*args, _unique_name_generation=True, **kwargs)
 
 
+def _history_record(constitutive_model):
+    """What a stress history stores: the model's memory part of the flux when
+    it separates one out (a solvent viscosity is rebuilt each step), else the
+    whole flux, in the model's encoding of it (:meth:`encode_history`)."""
+    flux = getattr(constitutive_model, "history_flux", None)
+    if flux is None:
+        flux = constitutive_model.flux
+    encode = getattr(constitutive_model, "encode_history", None)
+    return flux if encode is None else encode(flux)
+
+
 def _history_psi_fn(constitutive_model):
-    """The flux a stress history carries: the model's memory part when it
-    separates one out (a solvent viscosity is rebuilt each step), else the
-    whole flux. Transposed to the history's row layout."""
-    if hasattr(constitutive_model, "history_flux"):
-        return constitutive_model.history_flux.T
-    return constitutive_model.flux.T
+    """:func:`_history_record`, transposed to the history's row layout."""
+    return _history_record(constitutive_model).T
 
 
 def _as_scalar(value):
@@ -1732,9 +1739,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # levels. A particle-carried history does that itself in its post-solve,
         # by evaluating the new stress at its own particles.
         if not self.DFDt.commits_flux_in_post_solve:
-            self.DFDt.commit_flux_to_history(
-                getattr(self.constitutive_model, "history_flux", self.constitutive_model.flux),
-                verbose=verbose)
+            self.DFDt.commit_flux_to_history(_history_record(self.constitutive_model), verbose=verbose)
 
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
         self._devss_refresh(verbose=verbose)
@@ -1780,9 +1785,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             bcs=None,
             order=order,
             smoothing=0.0001,
-            # the history carries a stress; the flux handed over at construction
-            # is a zero placeholder, so it cannot say so itself
-            units=uw.units.Pa,
+            # the history carries a stress (the flux handed over at construction
+            # is a zero placeholder, so it cannot say so itself), or the
+            # dimensionless log-conformation of one
+            units=uw.units.Pa if getattr(cm, "_stress_history", "stress") == "stress" else None,
         )
         if self.stress_transport == "integration_point":
             unsupported = set(ddt_kwargs) - {"with_forcing_history"}
@@ -1871,6 +1877,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
         # yield admits the wrong fixed point under timestep change.
         self.Unknowns.DFDt.enable_source_snapshot()
+        # the history stores the model's encoding of a stress; an inflow datum
+        # is given as a stress and stored through the same encoding
+        self.Unknowns.DFDt._encode = getattr(cm, "encode_history", None)
 
     @timing.routine_timer_decorator
     @memprobe.instrument("Stokes.solve")
@@ -2078,11 +2087,24 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         r"""Deviatoric stress from the most recent solve.
 
         When stress history is active (VEP), returns ``psi_star[0]`` which
-        contains the actual projected stress. Otherwise falls through to the
-        base class lazy projection.
+        contains the actual projected stress; a log-conformation history is
+        decoded into a projected stress variable. Otherwise falls through to
+        the base class lazy projection.
         """
         if self.Unknowns.DFDt is not None:
-            return self.DFDt.psi_star[0]
+            cm = self.constitutive_model
+            if getattr(cm, "_stress_history", "stress") == "stress":
+                return self.DFDt.psi_star[0]
+            if getattr(self, "_tau_decoded", None) is None:
+                self._tau_decoded = uw.discretisation.MeshVariable(
+                    "tau_decoded", self.mesh, (self.mesh.dim, self.mesh.dim),
+                    vtype=uw.VarType.SYM_TENSOR, degree=self.DFDt.psi_star[0].degree,
+                    continuous=True, units=uw.units.Pa if uw.get_default_model().has_units() else None)
+                self._tau_decode = uw.systems.Tensor_Projection(self.mesh, self._tau_decoded)
+                self._tau_decode.smoothing = 0.0
+            self._tau_decode.uw_function = cm._carried_stress_sym(0)
+            self._tau_decode.solve()
+            return self._tau_decoded
         return super().tau
 
     # =========================================================================
@@ -5502,6 +5524,10 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         if DFDt is not None:
             # We can flag to only do this if the constitutive model has been updated
+            if getattr(self._constitutive_model, "_stress_history", "stress") != "stress":
+                raise NotImplementedError(
+                    "SNES_NavierStokes reads its history as a flux (Adams-Moulton), so it cannot "
+                    "decode a log-conformation history; use uw.systems.NavierStokes")
             DFDt.psi_fn = getattr(self._constitutive_model, 'history_flux', self._constitutive_model.flux).T
 
             F1 = expression(
