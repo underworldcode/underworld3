@@ -5766,3 +5766,189 @@ class ForwardSemiLagrangian(_DDtBase):
         self._launch_values = self._evaluate_at_launch(flux)
         self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)
         self._history_committed = True
+
+
+@dataclass
+class DDtForwardNodesState(_DDtCoreState):
+    """Snapshot of a :class:`ForwardNodesSemiLagrangian` instance."""
+    psi_star_var_names: list[str] = field(default_factory=list)
+
+
+class ForwardNodesSemiLagrangian(_DDtBase):
+    r"""Forward semi-Lagrangian history launched from where the field is known.
+
+    A field is known exactly at its own nodes (they are its unknowns) and, since
+    its interpolant is a polynomial inside each element, at any point of an
+    element's interior. Each step launches the values at the nodes and at a
+    lattice inside every element (the points of the discontinuous basis one
+    degree up), carries each one step forward along the characteristic, fits
+    the arrivals in each cell to a polynomial of the field's own degree, and
+    reads that fit back at the nodes. The fit never reaches across an element
+    boundary, where the interpolant has a kink. A cell with too few arrivals, or
+    arrivals on a line, falls back to a linear fit over the nearest arrivals; a
+    cell nothing reached keeps its previous fit (see
+    :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`).
+    Arrivals that leave the domain are dropped; a node the flow reached from
+    outside takes :attr:`inflow_value` when one is set.
+
+    The integration-point counterpart is :class:`ForwardSemiLagrangian`, which
+    launches from the quadrature points, where a flux (a stress) is formed.
+    First order; serial.
+
+    Parameters
+    ----------
+    mesh : Mesh
+    psi_fn : sympy expression or matrix
+        The carried quantity, for example ``T.sym``.
+    V_fn : sympy matrix
+        The velocity that carries it.
+    vtype : VarType
+    degree : int
+        Degree of the store and of the per-cell fit; use the field's own degree.
+    units : optional
+        Units of the carried quantity (see :func:`_history_units`).
+    """
+
+    applies_inflow_value = True
+    instances = 0
+
+    def __init__(self, mesh, psi_fn, V_fn, vtype=VarType.SCALAR, degree=1, varsymbol=None,
+                 order=1, theta=0.5, units=None, **_unsupported):
+        super().__init__()
+        if order != 1:
+            raise NotImplementedError("ForwardNodesSemiLagrangian carries one level; order must be 1")
+        if mesh.cdim != mesh.dim:
+            raise NotImplementedError("ForwardNodesSemiLagrangian fits in the embedding coordinates; no manifolds")
+        if uw.mpi.size > 1:
+            raise NotImplementedError("ForwardNodesSemiLagrangian is serial: the fit at a node near a "
+                                      "partition seam needs the arrivals on the other rank")
+        if _unsupported:
+            warnings.warn(f"ForwardNodesSemiLagrangian ignores {sorted(_unsupported)}", stacklevel=2)
+        self.vtype = vtype
+        self.mesh = mesh
+        self.degree = int(degree)
+        self.continuous = True
+        self.order = 1
+        self.theta = float(theta)
+        self.V_fn = V_fn
+        self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
+        self._init_history_tracking(1)
+        if varsymbol is None:
+            varsymbol = rf"u_{{ [{self.instance_number}] }}"
+        self.psi_star = [
+            uw.discretisation.MeshVariable(
+                f"psi_star_fwn_{self.instance_number}", mesh, vtype=vtype, degree=self.degree,
+                continuous=True, varsymbol=rf"{{ {varsymbol}^{{ * }} }}",
+                units=_history_units(self._psi_fn, units))
+        ]
+        self._components = _storage_components(vtype, tuple(self.psi_star[0].sym.shape))
+        # the per-cell fit: a discontinuous variable of the field's degree, and
+        # the interior lattice the values are also launched from
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+        self._fit_var = uw.discretisation.MeshVariable(
+            f"fit_fwn_{self.instance_number}", mesh, vtype=vtype, degree=self.degree, continuous=False)
+        self._projector = CellPolynomialProjector(self._fit_var)
+        self._interior = np.asarray(mesh._get_coords_for_basis(self.degree + 1, continuous=False)
+                                    ).reshape(-1, mesh.cdim)
+        self._fit = None
+        self._n_v = 2
+        self._init_coefficient_expressions(1, self.theta, with_exp=True)
+        self._register_with_default_model()
+
+    @property
+    def psi_fn(self):
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+
+    @property
+    def state(self) -> "DDtForwardNodesState":
+        return DDtForwardNodesState(
+            **self._core_state_kwargs(),
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+        )
+
+    @state.setter
+    def state(self, s: "DDtForwardNodesState") -> None:
+        self._validate_state_schema(s, DDtForwardNodesState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        self._restore_core_state(s, am_theta=self.theta)
+
+    # ------------------------------------------------------------------
+    def _nodes(self):
+        return np.asarray(_to_nondim_ndarray(self.psi_star[0].coords)).reshape(-1, self.mesh.cdim)
+
+    def _values_at(self, expr, X):
+        """``expr`` at the points ``X``, one column per stored component."""
+        expr = sympy.Matrix(expr)
+        return np.column_stack([
+            np.asarray(_to_nondim_ndarray(uw.function.evaluate(expr[i, j], X))).reshape(-1)
+            for (i, j) in self._components])
+
+    def _reconstruct(self, arrivals, values, nodes):
+        """Fit the arrivals in each cell at the field's degree; the fit at the nodes."""
+        inside = np.asarray(self.mesh.points_in_domain(arrivals), dtype=bool)
+        self._fit = self._projector.fit(arrivals[inside], values[inside], old=self._fit)
+        return np.nan_to_num(self._projector.interpolate(self._fit, nodes))
+
+    # ------------------------------------------------------------------
+    def initialise_history(self):
+        """Start from the current field at the nodes. A history already placed
+        by :meth:`commit_flux_to_history` is the start, and is kept."""
+        self.characteristics.initialise_levels(self._n_v)
+        if not self._history_committed:
+            self.psi_star[0].data[:, :] = self._values_at(self._psi_fn, self._nodes())
+        self._history_initialised = True
+
+    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True, **_ignored):
+        """Carry the field forward one step from the nodes and rebuild it there.
+
+        ``store_result=False`` says the store already holds the values to launch
+        (placed by :meth:`commit_flux_to_history`); otherwise the tracked field
+        is read at the nodes first.
+        """
+        self._dt = dt = self._nondim_timestep(dt)
+        if not self._history_initialised:
+            self.initialise_history()
+        _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        trace = self.characteristics
+        if self._owns_characteristics:
+            trace.begin_step(dt)
+        nodes = self._nodes()
+        launch = np.vstack([nodes, self._interior])
+        # the tracked field, or (when a flux was committed) the store, which is
+        # a polynomial inside each element, so its interior values are exact
+        source = self._psi_fn if store_result else self.psi_star[0].sym
+        values = np.vstack([self._values_at(source, nodes) if store_result else np.array(self.psi_star[0].data),
+                            self._values_at(source, self._interior)])
+        key = (_basis_key_of(self.psi_star[0]), "launch")
+        arrivals = np.asarray(trace.departure_points(key, launch, (("first", 0, -float(dt)),),
+                                                     evalf=evalf, clamp_final=False))
+        self.psi_star[0].data[:, :] = self._reconstruct(arrivals, values, nodes)
+        arrivals = arrivals[:nodes.shape[0]]
+        if self._inflow_value is not None:
+            # a node whose back-trace leaves the domain holds fluid that entered this step
+            back = 2.0 * nodes - arrivals
+            restored = np.asarray(self.mesh.return_coords_to_bounds(back.copy())).reshape(back.shape)
+            entered = np.any(restored != back, axis=1)
+            if entered.any():
+                self._write_inflow(self.psi_star[0], nodes, entered)
+        if self._owns_characteristics:
+            trace.finish_step()
+
+    def update(self, dt, evalf=False, verbose=False, **kwargs):
+        self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
+
+    def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
+        self._dt = dt = self._nondim_timestep(dt)
+        self._dt_history[0] = dt
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
+
+    def commit_flux_to_history(self, flux, verbose=False):
+        """Read the new flux at the nodes and leave it in the store until the next carry."""
+        self.psi_star[0].data[:, :] = self._values_at(flux, self._nodes())
+        self._history_committed = True
