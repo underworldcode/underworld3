@@ -48,6 +48,19 @@ is why an interpolating history that would be too diffusive for temperature or
 velocity is acceptable for stress. Where it fails is where the projection itself
 is wrong: sub-cell layers and no-slip walls.
 
+### Units
+
+Every history store is a non-dimensional work array behind the units boundary,
+whichever flavour holds it, and carries no units of its own. What enters is
+reduced on the way in: the timestep where each flavour receives it, and anything
+a flavour writes from `evaluate` (which returns dimensional values), such as the
+flux at the particles or an inflow datum. Copies between stores go through
+`.data`. The one way to read a history back is `DFDt.carried(level)`: the
+constitutive model supplies the map from the stored value to the stress, so the
+read is in pascals when reference scales are set. `DFDt.psi_star[level]` is the
+raw store. The Maxwell shear box with reference quantities (`test_1064`) holds
+all five flavours to the same loading curve in Pa.
+
 ## The timestep is set by the wall strain rate, not the far-field Courant number
 
 The objective-rate source $L\sigma^* + \sigma^* L^T$ acts on the carried stress

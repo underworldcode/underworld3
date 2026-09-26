@@ -88,7 +88,11 @@ def expression(*args, **kwargs):
 def _history_psi_fn(constitutive_model):
     """The flux a stress history carries: the model's memory part when it
     separates one out (a solvent viscosity is rebuilt each step), else the
-    whole flux. Transposed to the history's row layout."""
+    whole flux. Transposed to the history's row layout. The model also hands
+    the history its map back to a dimensional stress (``DFDt.carried``)."""
+    DDt = constitutive_model.Unknowns.DFDt
+    if DDt is not None:
+        DDt._record_unmap = getattr(constitutive_model, "decode_history", None)
     if hasattr(constitutive_model, "history_flux"):
         return constitutive_model.history_flux.T
     return constitutive_model.flux.T

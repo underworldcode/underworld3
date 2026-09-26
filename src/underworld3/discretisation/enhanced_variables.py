@@ -325,6 +325,20 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         """Units for this variable."""
         return self._base_var.units
 
+    def _data_layout(self, i, j=None):
+        """Column of a component in the flat ``.data`` storage.
+
+        Parameters
+        ----------
+        i, j : int
+            Component indices; ``j`` is omitted for a vector.
+
+        Returns
+        -------
+        int
+        """
+        return self._base_var._data_layout(i, j)
+
     @property
     def has_units(self) -> bool:
         """Check if this variable has units."""

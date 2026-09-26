@@ -987,7 +987,10 @@ class _DDtBase(uw_object):
         if not hasattr(self, "_psi_star_projection_solver"):
             self._setup_projections()
 
-        transported = np.copy(self.psi_star[0].array[...])
+        # The stores are non-dimensional work arrays: copies between them go
+        # through .data, never the unit-aware .array (#788).
+        level_0 = self.psi_star[0]
+        transported = np.array(level_0.data)
 
         if getattr(self, "_psi_star_use_multicomponent", False):
             # The snapshot machinery has frozen the projection's input, so this
@@ -996,18 +999,18 @@ class _DDtBase(uw_object):
             self._psi_star_projection_solver.smoothing = 0.0
             self._psi_star_projection_solver.solve(verbose=verbose)
             for k, (i, j) in enumerate(self._psi_star_indep_indices):
-                values = self._psi_star_flat_var.array[:, 0, k]
-                self.psi_star[0].array[:, i, j] = values
+                values = np.asarray(self._psi_star_flat_var.data[:, k])
+                level_0.data[:, level_0._data_layout(i, j)] = values
                 if i != j:
-                    self.psi_star[0].array[:, j, i] = values
+                    level_0.data[:, level_0._data_layout(j, i)] = values
         else:
             self._psi_star_projection_solver.uw_function = flux
             self._psi_star_projection_solver.smoothing = 0.0
             self._psi_star_projection_solver.solve(verbose=verbose)
 
         for level in range(self.order - 1, 0, -1):
-            self.psi_star[level].array[...] = (
-                transported if level == 1 else self.psi_star[level - 1].array[...])
+            self.psi_star[level].data[...] = (
+                transported if level == 1 else np.asarray(self.psi_star[level - 1].data))
 
         self._history_committed = True
 
@@ -1083,6 +1086,30 @@ class _DDtBase(uw_object):
 
     #: Whether this flavour compiles :attr:`inflow_value` into its transport.
     applies_inflow_value = False
+
+    def carried(self, level: int = 0):
+        """The carried quantity of history ``level``, as an expression in its
+        own units.
+
+        The history's stores are non-dimensional work arrays; this is the one
+        way to read them back. The owner of the quantity (a solver's
+        constitutive model) supplies the map from what is stored to what it
+        stands for (``_record_unmap``): the stored value times the quantity's
+        unit, or the decoding of a stored encoding. Without an owner the
+        stored value is returned as it is.
+
+        Parameters
+        ----------
+        level : int, default 0
+            0 is the newest level.
+
+        Returns
+        -------
+        sympy.Matrix
+        """
+        stored = self.psi_star[level].sym
+        unmap = self.__dict__.get("_record_unmap")
+        return stored if unmap is None else unmap(stored)
 
     def _nondim_timestep(self, dt):
         r"""Reduce ``dt`` to a plain non-dimensional model-time value.
@@ -1399,7 +1426,7 @@ class Symbolic(_DDtBase):
         verbose: Optional[bool] = False,
     ):
         """Pre-solve update hook. Auto-initialises history on first call."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -1417,7 +1444,7 @@ class Symbolic(_DDtBase):
         verbose: Optional[bool] = False,
     ):
         r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
@@ -1804,7 +1831,7 @@ class Eulerian(_DDtBase):
         grid-based advection correction so that bdf() approximates the
         material derivative Dφ/Dt rather than ∂φ/∂t.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -1859,7 +1886,7 @@ class Eulerian(_DDtBase):
         level it should hold. Invisible at order 1, a 150-fold error at order 2
         on the analytic Maxwell shear box.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if verbose and uw.mpi.rank == 0:
             print(f"Update {self.psi_fn}", flush=True)
@@ -2270,18 +2297,19 @@ class EulerianSUPG(Eulerian):
         for level in range(self.order):
             history = self.psi_star[level]
             for k, (i, j) in enumerate(indices):
-                flat.array[:, 0, k] = history.array[:, i, j]
-            previous.array[...] = flat.array[...]
+                flat.data[:, k] = np.asarray(history.data[:, history._data_layout(i, j)])
+            previous.data[...] = np.asarray(flat.data)
             self._transport_solver.solve(verbose=verbose)
             for k, (i, j) in enumerate(indices):
-                values = flat.array[:, 0, k]
-                history.array[:, i, j] = values
+                values = np.asarray(flat.data[:, k])
+                history.data[:, history._data_layout(i, j)] = values
                 if i != j:
-                    history.array[:, j, i] = values
+                    history.data[:, history._data_layout(j, i)] = values
 
     def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True):
         """Refresh the scheme's coefficients and, when this manager owns the
         transport of its history, carry every level forward by one step."""
+        dt = self._nondim_timestep(dt)
         super().update_pre_solve(dt, evalf=evalf, verbose=verbose,
                                  store_result=store_result)
         if self.transport_on_update and self.V_fn is not None and dt:
@@ -3395,7 +3423,7 @@ class SemiLagrangian(_DDtBase):
         dt_physical: Optional[float] = None,
     ):
         """Post-solve: record timestep and increment solve counter."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
@@ -3699,7 +3727,7 @@ class SemiLagrangian(_DDtBase):
             to force a particular mode for one call.
         """
 
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         # Resolve monotone_mode: explicit kwarg overrides instance attr.
         if monotone_mode == "__instance__":
@@ -4137,9 +4165,9 @@ class Lagrangian(_DDtBase):
                 ij = psi_star_0._data_layout(i, j)
                 if ij in updated:
                     continue
-                updated[ij] = np.asarray(
+                updated[ij] = np.asarray(_to_nondim_ndarray(
                     uw.function.evaluate(self.psi_fn[i, j], coords)
-                ).reshape(-1)
+                )).reshape(-1)
         for ij, vals in updated.items():
             psi_star_0.data[:, ij] = vals
 
@@ -4180,7 +4208,7 @@ class Lagrangian(_DDtBase):
         ``store_result`` is accepted for a uniform hook signature and ignored:
         this flavour records the stress at its particles in the post-solve.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -4263,7 +4291,7 @@ class Lagrangian(_DDtBase):
         **_ignored,
     ):
         """Shift history chain and advect swarm after solve."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
@@ -4297,9 +4325,9 @@ class Lagrangian(_DDtBase):
                 ij = psi_star_0._data_layout(i, j)
                 if ij in updated:
                     continue
-                updated[ij] = np.asarray(
+                updated[ij] = np.asarray(_to_nondim_ndarray(
                     uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
-                ).reshape(-1)
+                )).reshape(-1)
         for ij, vals in updated.items():
             psi_star_0.data[:, ij] = vals
 
@@ -4599,7 +4627,7 @@ class Lagrangian_Swarm(_DDtBase):
         arguments (the nodal manager's ``store_result``, ``dt_physical``,
         ``monotone_mode``) are accepted and ignored so a solver written for
         the nodal history can drive this one."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -4630,9 +4658,9 @@ class Lagrangian_Swarm(_DDtBase):
         for i in range(slot.shape[0]):
             for j in range(slot.shape[1]):
                 ij = slot._data_layout(i, j)
-                out[:, ij] = np.asarray(
+                out[:, ij] = np.asarray(_to_nondim_ndarray(
                     uw.function.evaluate(mv.sym[i, j], coords, evalf=evalf)
-                ).reshape(-1)
+                )).reshape(-1)
         return out
 
     def update_post_solve(
@@ -4653,7 +4681,7 @@ class Lagrangian_Swarm(_DDtBase):
         new (audit SWARM-06); a shift before the evaluation would hand the
         stress expression the wrong levels.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         phi = 1 / self.step_averaging
         psi_star_0 = self.psi_star[0]
@@ -4668,9 +4696,9 @@ class Lagrangian_Swarm(_DDtBase):
                 ij = psi_star_0._data_layout(i, j)
                 if ij in updated:
                     continue                       # symmetric storage: one evaluation per slot
-                updated[ij] = np.asarray(
+                updated[ij] = np.asarray(_to_nondim_ndarray(
                     uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
-                ).reshape(-1)
+                )).reshape(-1)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
@@ -5330,7 +5358,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         where the nodal and grid flavours sit at 1.5% (#732). The snapshots are
         placed by ``commit_flux_to_history`` instead, and the shift with them.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
         if not self._history_initialised:
             self.initialise_history()
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
@@ -5351,7 +5379,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
 
     def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
@@ -5736,7 +5764,7 @@ class ForwardSemiLagrangian(_DDtBase):
         :meth:`commit_flux_to_history` (the viscoelastic case); otherwise the
         tracked field is read at the launch points first.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
         if self._geometry_stamp() != self._launch_geometry:
             raise NotImplementedError(
                 "ForwardSemiLagrangian: the launch set, cell measures and boundary faces were "
@@ -5765,7 +5793,7 @@ class ForwardSemiLagrangian(_DDtBase):
         self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
 
     def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
         self._dt_history[0] = dt
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1

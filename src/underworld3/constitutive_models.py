@@ -1626,6 +1626,17 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         return
 
 
+def _reference_stress():
+    """The model's unit of stress as an expression (non-dimensional value one),
+    or ``None`` when the model has no reference scales."""
+    orchestration_model = uw.get_default_model()
+    if not orchestration_model.has_units():
+        return None
+    scale = orchestration_model.get_scale_for_dimensionality((1 * uw.units.Pa).dimensionality)
+    return expression(r"\sigma_{\mathrm{ref}}", uw.quantity(float(scale.magnitude), str(scale.units)),
+                      "the model's unit of stress")
+
+
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
     Viscoelastic-plastic flow constitutive model.
@@ -2084,6 +2095,17 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if self._integrator == "etd" and self._order == 2:
             return {"with_forcing_history": True}
         return {}
+
+    def decode_history(self, stored):
+        r"""The stress a stored history value stands for, in the model's units.
+
+        The history stores the stress non-dimensionally; this multiplies it by
+        the model's unit of stress (an expression whose non-dimensional value is
+        one), so a read through ``DFDt.carried`` comes back in pascals when
+        reference scales are set, and unchanged when they are not.
+        """
+        unit = _reference_stress()
+        return stored if unit is None else stored * unit
 
     # The following should have no setters
     @property
