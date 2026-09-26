@@ -209,6 +209,7 @@ subsystems/containers
 subsystems/checkpointing-system
 subsystems/model-orchestration
 subsystems/describe-and-view
+subsystems/transcript-query
 subsystems/jit-cache
 ```
 
