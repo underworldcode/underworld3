@@ -66,6 +66,29 @@ every nonlinear solver; layers 2–3 build on it.
 
 ### Layer 1 — automatic warm-start (all nonlinear solvers)
 
+```{warning}
+**Implementation status (#791, 2026-09-25).** As originally landed, this layer did not do what
+it specifies. The warm-up and `solve(picard=N)` ran SNES `nrichardson` with no nonlinear
+preconditioner — `x <- x - lambda F(x)`, a residual step with no linear solve — which is not a
+Picard step and is nearly inert. It is now corrected, with the semantics the rotated free-slip
+path already had:
+
+- `consistent_jacobian=False`: every iteration uses the frozen tangent, so `picard` is
+  satisfied by the solve itself.
+- `"continuation"`: `picard=N` guarantees at least N frozen-tangent iterations (stage 1, α=0).
+- `True`: `picard>0` raises on a nonlinear residual (no frozen tangent is compiled).
+
+The **automatic** cold-start warm-up is removed rather than repaired — it was never a Picard step,
+so nothing is lost. When the rest state is exactly zero (homogeneous essential BCs, no stress
+history) Newton's first iteration from rest IS the Picard step (verified to < 1e-6 in
+`tests/test_1068_picard_warmup_is_a_frozen_tangent_step.py`). A boundary-driven problem does NOT
+have this property — the Dirichlet values yield the driven layer immediately (first steps measured
+45% apart on a sheared box) — nor does a stress-history model; for those, a genuine Picard entry is
+`consistent_jacobian="continuation"` with `solve(picard=N)`. The Rules and cold/warm text below
+describe the ORIGINAL design intent of an automatic entry, which is not what the code now does.
+Measurements quoted elsewhere for "opening Picard steps" were of the nrichardson sweep.
+```
+
 A single **Picard (frozen-coefficient) step is a general cold-start warm-up**. It is
 defect-correction iteration 1: contractive, moves a cold guess into the Newton
 basin. UW3 already exposes it (`solve(picard=N)`) and already has the Picard tangent
