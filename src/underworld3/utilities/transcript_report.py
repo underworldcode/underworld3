@@ -63,7 +63,10 @@ PAGE_W, PAGE_H = 595.0, 842.0
 # ---------------------------------------------------------------------------
 
 def _as_runs(source):
-    """Accept a path, the list ``read_transcript`` returns, or a live model."""
+    """Accept a path, the list ``read_transcript`` returns, a live model, or
+    a :class:`~underworld3.utilities.transcript_query.Transcript`."""
+    if hasattr(source, "runs") and hasattr(source, "steps") and hasattr(source, "parts"):
+        return source.runs
     if isinstance(source, (str, os.PathLike)):
         import underworld3 as uw
 

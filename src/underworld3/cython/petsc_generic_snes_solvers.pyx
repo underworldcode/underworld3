@@ -2571,8 +2571,22 @@ class SolverBaseClass(uw_object):
                 model = uw.get_default_model()
                 # What it solves, not only that it solved: the residual is
                 # SymPy, so the weak form can be written into the transcript
-                # exactly as implemented.
-                model._describe_part(self, part, label)
+                # exactly as implemented. The run-time constants go with it:
+                # a parameter changed between solves does not rebuild the
+                # kernel, so its new value is what tells the record the
+                # equation is not the one it holds. The clock is left out,
+                # or a time-dependent run would re-record every step.
+                constants = None
+                try:
+                    from underworld3.utilities._jitextension import _pack_constants
+                    clock = getattr(self.mesh, "_t", None)
+                    packed = _pack_constants(self.constants_manifest)
+                    constants = {str(getattr(expr, "name", index)): float(packed[index])
+                                 for index, expr in self.constants_manifest
+                                 if expr is not clock}
+                except Exception:
+                    constants = None
+                model._describe_part(self, part, label, constants=constants)
                 model._record_step_event("solve", label, part=part)
             except Exception:
                 pass

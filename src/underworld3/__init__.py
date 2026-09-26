@@ -223,6 +223,7 @@ from .model import (
     create_thermal_convection_model,
 )
 from .utilities.describe import render
+from .utilities.transcript_query import Transcript
 from .utilities.transcript_report import (
     transcript_diagram,
     transcript_flowchart,

@@ -164,7 +164,7 @@ class ModelStep:
     """
 
     __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot",
-                 "wall")
+                 "wall", "abandoned_by")
 
     def __init__(self, index, t0, dt, label=None):
         self.index = index
@@ -177,6 +177,10 @@ class ModelStep:
         # want when watching a run: a step that suddenly takes ten times as
         # long is the first sign of a solver in trouble.
         self.wall = None
+        # What stopped a step that did not commit: the exception's class and
+        # message, so the record says why a step was abandoned and not only
+        # that it was.
+        self.abandoned_by = None
         # The state this step STARTED from, when the recording policy kept one.
         # Taken before the operators ran, which is the only correct point: a
         # DDt shifts its history in its post-solve hook, so a snapshot taken
@@ -223,6 +227,7 @@ class ModelStep:
             "restorable": bool(self.restorable),
             "wall": None if self.wall is None else float(self.wall),
             "events": [dict(e) for e in self.events],
+            **({"abandoned_by": dict(self.abandoned_by)} if self.abandoned_by else {}),
         }
 
     def __repr__(self):
@@ -1512,8 +1517,15 @@ class Model(PintNativeModelMixin, BaseModel):
         for entry in restorable[: max(0, len(restorable) - limit)]:
             entry.snapshot = None
 
-    def rewind(self, steps: int = 1):
+    def rewind(self, steps: int = 1, reason=None, **detail):
         """Go back to the state at the start of a completed step.
+
+        ``reason`` says why, in a word or a sentence — ``"timestep rejected"``,
+        ``"free surface displacement over the limit"`` — and ``detail`` carries
+        the numbers behind it (``observed=0.18, threshold=0.10,
+        action="halve dt"``). The transcript cannot infer either, since the
+        acceptance test lives in the caller's loop; recorded here, a reader
+        of the run sees the decision and not only the backtrack.
 
         ``steps=1`` returns to the beginning of the most recent completed step,
         undoing it. Fields, histories and the clock all come back together,
@@ -1553,10 +1565,13 @@ class Model(PintNativeModelMixin, BaseModel):
             to_step=int(target.index),
             steps_undone=int(dropped),
             t=_jsonable_quantity(self.tracker.time),
+            **({"reason": str(reason)} if reason is not None else {}),
+            **({"detail": {str(k): _jsonable_quantity(v) if hasattr(v, "magnitude") else v
+                           for k, v in detail.items()}} if detail else {}),
         )
         return target
 
-    def _describe_part(self, owner, part: str, label: str) -> None:
+    def _describe_part(self, owner, part: str, label: str, constants=None) -> None:
         """Record what a part SOLVES, not just that it ran.
 
         Underworld3's residuals are SymPy, so the weak form a solver assembles
@@ -1576,7 +1591,11 @@ class Model(PintNativeModelMixin, BaseModel):
         self._part_objects[part] = owner
         known = self._parts.get(part)
         rebuilding = not getattr(owner, "is_setup", True)
-        if known is not None and not rebuilding:
+        # a parameter's value is part of the equation as solved: a change
+        # re-reads the form even though nothing was rebuilt
+        changed = (known is not None and constants is not None
+                   and known.get("constants") != constants)
+        if known is not None and not rebuilding and not changed:
             return
 
         described = None
@@ -1598,6 +1617,8 @@ class Model(PintNativeModelMixin, BaseModel):
             described["forms"][f].get("text", "")
             for f in sorted(described["forms"])
         )
+        if constants:
+            fingerprint += json.dumps(constants, sort_keys=True)
         if known is not None and known.get("fingerprint") == fingerprint:
             return
 
@@ -1608,6 +1629,8 @@ class Model(PintNativeModelMixin, BaseModel):
             "at_step": self._open_step.index,
             "fingerprint": fingerprint,
         }
+        if constants is not None:
+            record["constants"] = constants
         # the description's own kind and its contained objects stay out of
         # the record: a part record IS a kind, and the children are recorded
         # as parts of their own when they act
@@ -1829,12 +1852,13 @@ class Model(PintNativeModelMixin, BaseModel):
             _warnings.showwarning = _record_and_show
             try:
                 yield record
-            except BaseException:
+            except BaseException as exc:
                 _restore()
                 record.wall = _time.monotonic() - wall0
                 # Abandon: put the clock back and do not commit.
                 self.tracker.time = t0
                 record.completed = False
+                record.abandoned_by = {"type": type(exc).__name__, "message": str(exc)[:300]}
                 self._open_step = None
                 # The abandoned record never joins the transcript, so the state it
                 # captured is unreachable — drop it rather than hold a field-
