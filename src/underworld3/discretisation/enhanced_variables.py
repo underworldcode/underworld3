@@ -255,7 +255,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
             if self.has_units:
                 facts["dimensionality"] = str(self.dimensionality)
         except Exception:
-            pass
+            pass        # a variable whose units cannot be read is described without them
         facts["persistent"] = bool(getattr(self, "_persistent", False))
         return d
 

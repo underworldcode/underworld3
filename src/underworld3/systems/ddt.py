@@ -571,14 +571,14 @@ class _DDtBase(uw_object):
                 if key in params and params[key].default is not inspect.Parameter.empty:
                     facts[f"default {key}"] = params[key].default
         except (TypeError, ValueError):
-            pass
+            pass        # a class whose signature cannot be inspected reports no defaults
         try:
             from underworld3.utilities.capabilities import guides_for
             linked = guides_for(cls.__name__)
             if linked:
                 facts["guides"] = linked
         except Exception:
-            pass
+            pass        # outside a checkout there are no guides to list
         return record("history_family", cls.__name__, doc.split("\n")[0], documentation=doc or None, facts=facts)
 
     def describe(self, depth=4):

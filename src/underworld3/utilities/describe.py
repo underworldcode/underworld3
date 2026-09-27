@@ -93,7 +93,7 @@ def plain(value):
         if isinstance(value, np.ndarray):
             return value.tolist()
     except ImportError:
-        pass
+        pass        # without numpy there are no array leaves to convert
     return str(value)
 
 
@@ -387,7 +387,7 @@ def view(target, format=None, depth=None, **describe_kwargs):
         if getattr(mpi, "rank", 0) != 0:
             return
     except ImportError:
-        pass
+        pass        # outside MPI every process is rank 0
     if format is None:
         from underworld3.utilities.docstring_utils import in_jupyter
         if in_jupyter():
