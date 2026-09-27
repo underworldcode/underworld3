@@ -51,6 +51,8 @@ Set up a Stokes solver:
 >>> stokes.solve()
 """
 
+import warnings
+
 import sympy
 from sympy import sympify
 import numpy as np
@@ -453,11 +455,28 @@ def _invalidate_solution_cache(u):
         target_var._canonical_data = None
 
 
-from .ddt import SemiLagrangian as SemiLagrangian_DDt
+from .ddt import BackwardNodesSemiLagrangian
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
+
+# The semi-Lagrangian schemes a solver can build its history with, named
+# "<trace>_<launch>" after the arguments of ddt.SemiLagrangian. A stress is
+# formed at the integration points, so it is not carried forward from nodes.
+_SEMI_LAGRANGIAN_TRANSPORTS = (
+    "backward_nodes", "backward_integration_points",
+    "forward_integration_points", "forward_nodes",
+)
+_STRESS_TRANSPORTS = (
+    "backward_nodes", "backward_integration_points", "forward_integration_points",
+    "lagrangian", "eulerian",
+)
+_RENAMED_TRANSPORTS = {
+    "semi_lagrangian": "backward_nodes",
+    "integration_point": "backward_integration_points",
+    "forward": "forward_integration_points",
+}
 
 
 class _ConstitutiveModelStateMixin:
@@ -504,9 +523,9 @@ class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
         Polynomial degree for the solution field (default: 2).
     verbose : bool, optional
         Enable verbose output during solve.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DuDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for time-dependent problems.
-    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DFDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for the flux.
 
     Notes
@@ -527,8 +546,8 @@ class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
         u_Field: uw.discretisation.MeshVariable = None,
         degree=2,
         verbose=False,
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
     ):
         if type(degree) is bool:
             # Legacy positional order (mesh, u_Field, verbose, degree): the
@@ -1394,9 +1413,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         If True (default), pressure is continuous. Set False for discontinuous pressure.
     verbose : bool, optional
         Enable verbose output during solving. Default is False.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DuDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Material derivative operator for velocity (used in derived classes).
-    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DFDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Material derivative operator for flux (used in viscoelastic models).
 
     Notes
@@ -1450,8 +1469,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
         # Not used in Stokes, but may be used in NS, VE etc
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
     ):
         super().__init__(
             mesh,
@@ -1544,43 +1563,56 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     @property
     def stress_transport(self) -> str:
-        """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
-        (default), ``"integration_point"``, ``"forward"``, ``"lagrangian"`` or
-        ``"eulerian"``.
+        """How a viscoelastic stress history is carried: ``"backward_nodes"``
+        (default), ``"backward_integration_points"``,
+        ``"forward_integration_points"``, ``"lagrangian"`` or ``"eulerian"``.
 
-        ``"forward"`` carries the stress from a fixed set of launch points inside
-        the cells (the integration points), one forward trajectory a step, and
-        fits the arrivals per cell; the constitutive flux is read at the launch
-        points through a continuous P1 projection. It holds the Maxwell
-        start-up below Courant one where the integration-point history rings
-        (see :class:`~underworld3.systems.ddt.ForwardSemiLagrangian`).
+        The first three are semi-Lagrangian schemes of
+        :func:`~underworld3.systems.ddt.SemiLagrangian`, named by the direction
+        of the trace and the points the history is held at. A backward trace
+        follows the characteristic back from each storage point and samples the
+        old stress at the departure point. ``"backward_nodes"`` stores the
+        history on a nodal field, which the assembler then interpolates to the
+        integration points: two interpolations a step.
+        ``"backward_integration_points"`` traces back to the integration points
+        themselves and holds the history there: one evaluation error and no
+        projection. A forward trace launches the old stress from where it is
+        known, carries it one step forward and fits the arrivals in each cell.
+        ``"forward_integration_points"`` launches from the integration points,
+        where the stress is formed, and reads the constitutive flux there
+        through a continuous P1 projection; it holds the Maxwell start-up below
+        Courant one where the backward integration-point history rings (see
+        :class:`~underworld3.systems.ddt.ForwardIntegrationPointsSemiLagrangian`).
+        The fourth semi-Lagrangian scheme, forward from nodes, carries a field
+        known at its nodes; a stress is formed at the integration points, so it
+        is not offered here.
 
-        The semi-Lagrangian history traces the stress back along characteristics
-        and stores it on a nodal field, which the assembler then interpolates to
-        the integration points: two interpolations a step. ``"integration_point"``
-        traces back to the integration points themselves and holds the history
-        there, so it carries one evaluation error and needs no projection. The
-        Eulerian one transports the stress on the grid with the same
+        ``"eulerian"`` transports the stress on the grid with the same
         streamline-upwind stabilisation the Eulerian solvers use, and gives the
         same answer on any partition. ``"lagrangian"`` carries the stress on a
         swarm of material points the solver creates and advects, reading the
         constitutive flux at the particles each step and never projecting it
         back to the mesh: no numerical diffusion of the history, at the cost of
-        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`). The default
-        is ``"semi_lagrangian"``. Set
-        it before the constitutive model is assigned: assigning the model
-        creates the history, and the choice cannot change after that.
+        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`).
+
+        Set it before the constitutive model is assigned: assigning the model
+        creates the history, and the choice cannot change after that. The
+        former names ``"semi_lagrangian"``, ``"integration_point"`` and
+        ``"forward"`` are accepted, with a warning.
         """
-        return getattr(self, "_stress_transport", "semi_lagrangian")
+        return getattr(self, "_stress_transport", "backward_nodes")
 
     @stress_transport.setter
     def stress_transport(self, value):
         value = str(value)
-        if value not in ("semi_lagrangian", "integration_point", "forward",
-                         "lagrangian", "eulerian"):
+        if value in _RENAMED_TRANSPORTS:
+            warnings.warn(
+                f"stress_transport={value!r} is now {_RENAMED_TRANSPORTS[value]!r}",
+                FutureWarning, stacklevel=2)
+            value = _RENAMED_TRANSPORTS[value]
+        if value not in _STRESS_TRANSPORTS:
             raise ValueError(
-                "stress_transport must be 'semi_lagrangian', 'integration_point', "
-                f"'forward', 'lagrangian' or 'eulerian', not {value!r}.")
+                f"stress_transport must be one of {_STRESS_TRANSPORTS}, not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
@@ -1790,51 +1822,51 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             # dimensionless log-conformation of one
             units=uw.units.Pa if getattr(cm, "_stress_history", "stress") == "stress" else None,
         )
-        if self.stress_transport == "integration_point":
+        if self.stress_transport == "backward_integration_points":
             unsupported = set(ddt_kwargs) - {"with_forcing_history"}
             if unsupported:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(unsupported)}, which the integration-point flavour "
-                    "does not provide; use stress_transport='semi_lagrangian'.")
-            self.Unknowns.DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+                    "does not provide; use stress_transport='backward_nodes'.")
+            self.Unknowns.DFDt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
                 **ddt_kwargs,
                 **{k: v for k, v in common.items() if k != "smoothing"},
             )
-        elif self.stress_transport == "forward":
+        elif self.stress_transport == "forward_integration_points":
             if ddt_kwargs:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which the forward flavour does not provide; "
-                    "use stress_transport='semi_lagrangian' for it.")
-            self.Unknowns.DFDt = uw.systems.ddt.ForwardSemiLagrangian(
+                    "use stress_transport='backward_nodes' for it.")
+            self.Unknowns.DFDt = uw.systems.ddt.ForwardIntegrationPointsSemiLagrangian(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
-                vtype=common["vtype"], varsymbol=common["varsymbol"], order=order,
-                units=common["units"],
+                vtype=common["vtype"], degree=common["degree"], varsymbol=common["varsymbol"],
+                order=order, units=common["units"],
             )
         elif self.stress_transport == "lagrangian":
             if ddt_kwargs:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
-                    "not provide; use stress_transport='semi_lagrangian' for it.")
+                    "not provide; use stress_transport='backward_nodes' for it.")
             # Order 1 BDF only for now: the particle flavour has no exponential
             # coefficients (it is built with_exp=False), and order 2 is not yet
             # validated. Refuse cleanly rather than crash inside the first solve.
             if getattr(cm, "_integrator", "bdf") != "bdf":
                 raise NotImplementedError(
                     "the particle Lagrangian stress history supports the BDF "
-                    "integrator only; use stress_transport='semi_lagrangian' for the "
+                    "integrator only; use stress_transport='backward_nodes' for the "
                     "exponential one.")
             if order > 1:
                 raise NotImplementedError(
                     "the particle Lagrangian stress history is first order for now; "
-                    "use stress_transport='semi_lagrangian' for order 2.")
+                    "use stress_transport='backward_nodes' for order 2.")
             # The solver owns the swarm: Lagrangian creates and populates it, and
             # carries the stress on it. Lagrangian_Swarm (a user-supplied swarm)
             # stays available by passing DFDt= to the constructor.
@@ -1856,7 +1888,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which only the semi-Lagrangian flavour "
-                    "provides; use stress_transport='semi_lagrangian' for it.")
+                    "provides; use stress_transport='backward_nodes' for it.")
             self.Unknowns.DFDt = uw.systems.ddt.EulerianSUPG(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
@@ -2807,8 +2839,8 @@ class SNES_VE_Stokes(SNES_Stokes):
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
     ):
         import warnings
         warnings.warn(
@@ -2935,8 +2967,8 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
     ):
         super().__init__(
             mesh,
@@ -4382,13 +4414,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         Function to restore particles to valid domain.
     verbose : bool, default=False
         Enable verbose output.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DuDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for the unknown.
-    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DFDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for the flux.
     monotone_mode : str or None, optional
         Monotonicity limiter for the semi-Lagrangian trace-back.
-        Forwarded to the internally-constructed ``SemiLagrangian_DDt``
+        Forwarded to the internally-constructed ``BackwardNodesSemiLagrangian``
         instances for ``DuDt`` and ``DFDt``.
 
         - ``None`` (default): pure FE trace-back. Can overshoot at
@@ -4411,7 +4443,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     theta : float, default=0.5
         Adams-Moulton theta for the diffusive flux at order 1.
         Forwarded to the internally-constructed
-        ``SemiLagrangian_DDt`` instances (same forwarding rule as
+        ``BackwardNodesSemiLagrangian`` instances (same forwarding rule as
         ``monotone_mode``).
 
         - ``0.5`` (default): Crank-Nicolson, A-stable but not
@@ -4422,6 +4454,17 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
           SLCN+CN ringing dominates the discretisation error.
         - ``0.0``: Forward Euler — unstable for stiff diffusion;
           included for completeness.
+    transport : str, default="backward_nodes"
+        The semi-Lagrangian scheme of the internally-constructed ``DuDt``:
+        ``"backward_nodes"``, ``"backward_integration_points"``,
+        ``"forward_integration_points"`` or ``"forward_nodes"``, named by the
+        ``trace`` and ``launch`` arguments of
+        :func:`~underworld3.systems.ddt.SemiLagrangian`; an option the scheme
+        does not take (``monotone_mode`` on a forward scheme, say) is refused.
+        Only the value history is chosen: the diffusive flux history ``DFDt``
+        is always backward from the nodes. ``"forward_integration_points"``
+        fits a linear polynomial per cell and so needs a degree-1 field;
+        ``"forward_nodes"`` runs in serial only.
     old_frame_traceback : bool, default=False
         Use the old-frame semi-Lagrangian reach-back for the advective
         ``DuDt`` history on a moving mesh (free surface or interior-node
@@ -4482,11 +4525,12 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         order: int = 1,
         restore_points_func: Callable = None,
         verbose=False,
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
         monotone_mode: Optional[str] = None,
         theta: float = 0.5,
         old_frame_traceback: bool = False,
+        transport: str = "backward_nodes",
     ):
         ## Parent class will set up default values etc
         super().__init__(
@@ -4519,8 +4563,14 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ## NB - Smoothing is generally required for stability. 0.0001 is effective
         ## at the various resolutions tested.
 
-        if DuDt is None:
-            self.Unknowns.DuDt = SemiLagrangian_DDt(
+        if transport not in _SEMI_LAGRANGIAN_TRANSPORTS:
+            raise ValueError(f"transport must be one of {_SEMI_LAGRANGIAN_TRANSPORTS}, "
+                             f"not {transport!r}")
+        if DuDt is not None and transport != "backward_nodes":
+            raise ValueError("transport chooses the DuDt the solver builds; it cannot "
+                             "apply to a DuDt that is supplied")
+        if DuDt is None and transport == "backward_nodes":
+            self.Unknowns.DuDt = BackwardNodesSemiLagrangian(
                 self.mesh,
                 u_Field.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
                 self._V_fn,
@@ -4535,6 +4585,29 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 monotone_mode=monotone_mode,
                 theta=theta,
                 old_frame_traceback=old_frame_traceback,
+            )
+        elif DuDt is None:
+            if not u_Field.continuous:
+                raise NotImplementedError(
+                    f"transport={transport!r} holds a continuous history; "
+                    "use transport='backward_nodes' for a discontinuous field")
+            # options a scheme does not take are refused by ddt.SemiLagrangian,
+            # so only those that were asked for are passed on
+            asked = {k: v for k, v in (("monotone_mode", monotone_mode),
+                                       ("old_frame_traceback", old_frame_traceback)) if v}
+            trace, launch = transport.split("_", 1)
+            self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                u_Field.sym,
+                self._V_fn,
+                uw.VarType.SCALAR,
+                trace=trace,
+                launch=launch,
+                degree=u_Field.degree,
+                varsymbol=u_Field.symbol,
+                order=1,
+                theta=theta,
+                **asked,
             )
 
         else:
@@ -4554,7 +4627,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         # flux vector (volume meshes have dim==cdim so this is
         # unchanged; manifold meshes have cdim > dim and need the
         # extra component).
-        self.Unknowns.DFDt = SemiLagrangian_DDt(
+        self.Unknowns.DFDt = BackwardNodesSemiLagrangian(
             self.mesh,
             sympy.Matrix([[0] * self.mesh.cdim]),  # Actual function is not defined at this point
             self._V_fn,
@@ -4585,7 +4658,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         # ALE trace-back path (and REMAP it correctly on an OT opt-out
         # reset). Only meaningful when DuDt traces back (SemiLagrangian);
         # Eulerian/Lagrangian fields keep the default policy.
-        if isinstance(self.Unknowns.DuDt, SemiLagrangian_DDt):
+        if isinstance(self.Unknowns.DuDt, BackwardNodesSemiLagrangian):
             from underworld3.discretisation.remesh import RemeshPolicy
             self.u.remesh_policy = RemeshPolicy.CARRY
             self.u._remesh_managed_by = self.Unknowns.DuDt
@@ -5047,9 +5120,9 @@ class SNES_Diffusion(SNES_Scalar):
         Numerically evaluate symbolic expressions during setup.
     verbose : bool, default=False
         Enable verbose output.
-    DuDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
+    DuDt : Eulerian_DDt, BackwardNodesSemiLagrangian, or Lagrangian_DDt, optional
         Time derivative operator for the unknown.
-    DFDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
+    DFDt : Eulerian_DDt, BackwardNodesSemiLagrangian, or Lagrangian_DDt, optional
         Time derivative operator for the flux.
 
     Notes
@@ -5081,8 +5154,8 @@ class SNES_Diffusion(SNES_Scalar):
         theta: float = 0.0,
         evalf: Optional[bool] = False,
         verbose=False,
-        DuDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[Eulerian_DDt, SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[Eulerian_DDt, BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[Eulerian_DDt, BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
     ):
         ## Parent class will set up default values etc
         super().__init__(
@@ -5373,9 +5446,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         If False, use discontinuous pressure elements.
     verbose : bool, default=False
         Enable verbose output.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DuDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for velocity.
-    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+    DFDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for stress.
 
     Notes
@@ -5421,8 +5494,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         flux_order: Optional[int] = None,
         p_continuous: Optional[bool] = False,
         verbose: Optional[bool] = False,
-        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
-        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
@@ -5637,7 +5710,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
+        DuDt_value: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt],
     ):
         """Set the time derivative operator for velocity."""
         self.Unknowns.DuDt = DuDt_value

@@ -50,6 +50,7 @@ See Also
 underworld3.systems.solvers : PDE solvers using these time derivatives.
 """
 
+import inspect
 import math
 import warnings
 
@@ -132,7 +133,7 @@ class DDtEulerianState(_DDtCoreState):
 
 @dataclass
 class DDtSemiLagrangianState(_DDtCoreState):
-    """Snapshot of a :class:`SemiLagrangian` DDt instance.
+    """Snapshot of a :class:`BackwardNodesSemiLagrangian` DDt instance.
 
     Like :class:`DDtEulerianState`, plus an optional ``forcing_star``
     variable (when ``with_forcing_history=True``) used by ETD-2
@@ -146,7 +147,7 @@ class DDtSemiLagrangianState(_DDtCoreState):
 
 @dataclass
 class DDtIntegrationPointState(_DDtCoreState):
-    """Snapshot of an :class:`IntegrationPointSemiLagrangian` instance: the
+    """Snapshot of an :class:`BackwardIntegrationPointsSemiLagrangian` instance: the
     point-value slots and their nodal snapshots are mesh variables captured
     by name; this carries the bookkeeping."""
     psi_star_var_names: list[str] = field(default_factory=list)
@@ -157,7 +158,7 @@ class DDtIntegrationPointState(_DDtCoreState):
 
 @dataclass
 class DDtForwardState(_DDtCoreState):
-    """Snapshot of a :class:`ForwardSemiLagrangian` instance: the fitted
+    """Snapshot of a :class:`ForwardIntegrationPointsSemiLagrangian` instance: the fitted
     field and the launch values are mesh variables captured by name."""
     psi_star_var_names: list[str] = field(default_factory=list)
     launch_var_name: str = ""
@@ -569,7 +570,7 @@ class _DDtBase(uw_object):
     r"""Shared machinery for the DDt history-manager flavors.
 
     The five flavors (:class:`Symbolic`, :class:`Eulerian`,
-    :class:`SemiLagrangian`, :class:`Lagrangian`,
+    :class:`BackwardNodesSemiLagrangian`, :class:`Lagrangian`,
     :class:`Lagrangian_Swarm`) share the same BDF/Adams-Moulton
     coefficient bookkeeping, effective-order startup ramp,
     fixed-structure ``bdf()`` / ``adams_moulton_flux()`` expressions,
@@ -989,7 +990,7 @@ class _DDtBase(uw_object):
     commits_flux_in_post_solve = False
 
     #: The forcing (strain-rate) history the second-order exponential
-    #: integrator reads; only :class:`SemiLagrangian` allocates one, on
+    #: integrator reads; only :class:`BackwardNodesSemiLagrangian` allocates one, on
     #: request. ``None`` means the integrator runs at first order (#739).
     forcing_star = None
 
@@ -1073,8 +1074,8 @@ class _DDtBase(uw_object):
         the relaxed stress of the incoming flow.
 
         :class:`EulerianSUPG` compiles the value into a boundary term of its
-        transport solve; :class:`IntegrationPointSemiLagrangian` gives it to a
-        departure point restored to the boundary; :class:`ForwardSemiLagrangian`
+        transport solve; :class:`BackwardIntegrationPointsSemiLagrangian` gives it to a
+        departure point restored to the boundary; :class:`ForwardIntegrationPointsSemiLagrangian`
         fills the uncovered share of an inflow cell with it;
         :class:`Lagrangian` gives it to every particle that entered through
         an inflow: one whose back-trace over the step, or over one cell for a
@@ -1102,7 +1103,7 @@ class _DDtBase(uw_object):
                     "restores an out-of-bounds departure point to the boundary "
                     "and reads the transported field there, which constrains "
                     "the inflow but is not the value you set. EulerianSUPG, "
-                    "IntegrationPointSemiLagrangian, ForwardSemiLagrangian and "
+                    "BackwardIntegrationPointsSemiLagrangian, ForwardIntegrationPointsSemiLagrangian and "
                     "Lagrangian apply it (#733, #783).",
                     stacklevel=2)
         self._inflow_value = value
@@ -1917,7 +1918,7 @@ class EulerianSUPG(Eulerian):
     component-wise to a scalar, a vector or a tensor unknown, and the
     streamline-upwind Petrov-Galerkin flux :math:`\tau\,R\otimes\mathbf{a}`
     of the solver's strong residual :math:`R`. The same solver takes a
-    :class:`SemiLagrangian` history in its place: that flavour answers zero
+    :class:`BackwardNodesSemiLagrangian` history in its place: that flavour answers zero
     for the advection and the flux because its history is already traced
     back along the characteristics.
 
@@ -2559,12 +2560,12 @@ def _matrix_of(V):
 
 # TODO(BUG): a non-symmetric psi_fn under vtype=SYM_TENSOR is silently
 # reduced here, and this class keeps the LOWER entry where
-# IntegrationPointSemiLagrangian keeps the UPPER one. Measured 2026-09-10 on
+# BackwardIntegrationPointsSemiLagrangian keeps the UPPER one. Measured 2026-09-10 on
 # [[1+x, 2+y], [100.0, 3+x*y]]: nodal psi_star -> [[1.45, 100.0], [100.0, 3.21]],
 # integration-point -> [[1.46, 2.47], [2.47, 3.21]]. Neither averages and
 # neither warns. The integration-point path now warns; this one should too,
 # and the two should agree on which triangle wins.
-class SemiLagrangian(_DDtBase):
+class BackwardNodesSemiLagrangian(_DDtBase):
     r"""
     Semi-Lagrangian history manager.
 
@@ -2604,7 +2605,7 @@ class SemiLagrangian(_DDtBase):
     sampling discretisation (the former ``swarm_degree`` /
     ``swarm_continuous`` were never read, issue #704). Denser sampling at
     the integration points is a separate history manager
-    (``IntegrationPointSemiLagrangian``, PR #703).
+    (``BackwardIntegrationPointsSemiLagrangian``, PR #703).
     varsymbol : str, optional
         LaTeX symbol for display.
     verbose : bool, default=False
@@ -2711,7 +2712,7 @@ class SemiLagrangian(_DDtBase):
         V_fn: sympy.Function,
         vtype: uw.VarType,
         degree: int,
-        continuous: bool,
+        continuous: bool = True,
         varsymbol: Optional[str] = None,
         verbose: Optional[bool] = False,
         bcs=[],
@@ -4734,7 +4735,7 @@ def _storage_components(vtype, shape):
     return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
 
 
-class IntegrationPointSemiLagrangian(_DDtBase):
+class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
     r"""Semi-Lagrangian history stored at the mesh integration points.
 
     The history slots ``psi_star[k]`` are
@@ -4743,12 +4744,12 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     solution from ``k+1`` steps ago evaluated **exactly** at the departure
     point of that integration point. There is no nodal history field and no
     second interpolation: only the FE solution's own error remains in the
-    advected term. Compare :class:`SemiLagrangian`, which samples at the
+    advected term. Compare :class:`BackwardNodesSemiLagrangian`, which samples at the
     nodes, stores a nodal ``psi_star`` and lets the assembler interpolate it
     to the integration points.
 
     Because a delta field cannot be sampled off its points, the chain
-    ``psi_star[k] <- psi_star[k-1]`` of :class:`SemiLagrangian` is replaced
+    ``psi_star[k] <- psi_star[k-1]`` of :class:`BackwardNodesSemiLagrangian` is replaced
     by nodal **snapshots** of the solution and of the velocity at the last
     ``order`` times. Slot ``k`` is filled by tracing ``k+1`` segments back
     from every integration point (segment ``j`` with the velocity at time
@@ -4766,13 +4767,13 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
     What is not here (yet): units-aware velocity reduction, ALE / old-frame
     trace-back. Use
-    :class:`SemiLagrangian` for those, or :class:`Lagrangian_Swarm` when the
+    :class:`BackwardNodesSemiLagrangian` for those, or :class:`Lagrangian_Swarm` when the
     history should ride on particles rather than on the rule.
 
     Parameters
     ----------
     mesh, psi_fn, V_fn, degree, continuous, varsymbol, verbose, bcs, order, theta
-        As for :class:`SemiLagrangian`. ``psi_fn`` may be a ``MeshVariable``
+        As for :class:`BackwardNodesSemiLagrangian`. ``psi_fn`` may be a ``MeshVariable``
         (its nodal data is then copied into the snapshot rather than
         re-evaluated) or an expression, of any ``vtype``.
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
@@ -4862,7 +4863,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self.store_smoothing = store_smoothing
         self.mesh = mesh
         if bcs:
-            raise ValueError("IntegrationPointSemiLagrangian applies no boundary conditions to its "
+            raise ValueError("BackwardIntegrationPointsSemiLagrangian applies no boundary conditions to its "
                              "store; an inflow is set through inflow_value")
         self.bcs = []
         self.verbose = verbose
@@ -4923,7 +4924,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         )
         if len(self._components) != self.num_components:
             raise RuntimeError(
-                f"IntegrationPointSemiLagrangian: {vtype} maps "
+                f"BackwardIntegrationPointsSemiLagrangian: {vtype} maps "
                 f"{len(self._components)} components onto "
                 f"{self.num_components} stored columns"
             )
@@ -5070,7 +5071,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             need = self._qdegree_with_at_least(local_dofs + 1)
             want = self._qdegree_with_at_least(2 * local_dofs)
             raise RuntimeError(
-                f"IntegrationPointSemiLagrangian: the mesh rule has {Nq} points per cell "
+                f"BackwardIntegrationPointsSemiLagrangian: the mesh rule has {Nq} points per cell "
                 f"but a degree-{degree} history has {local_dofs} local dofs; the "
                 "least-squares fit is not oversampled and is unstable at small Courant "
                 f"number. For this cell type and history degree the rule needs at least "
@@ -5079,7 +5080,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             )
         if Nq < 2 * local_dofs:
             warnings.warn(
-                f"IntegrationPointSemiLagrangian: {Nq} rule points per cell for "
+                f"BackwardIntegrationPointsSemiLagrangian: {Nq} rule points per cell for "
                 f"{local_dofs} local dofs is under 2x oversampling: weakly unstable under pure "
                 "advection (growth ~1.005/step at 1.5x, Courant 0.25) and stable with physical "
                 "diffusion at cell Peclet <= 100. 2x (qdegree 3 for P2 on triangles) is neutral.",
@@ -5121,7 +5122,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         expected = _psi_shape_for(self.vtype, self.mesh.cdim)
         if expected is not None and tuple(psi_fn.shape) != expected:
             raise ValueError(
-                f"IntegrationPointSemiLagrangian: psi_fn has shape "
+                f"BackwardIntegrationPointsSemiLagrangian: psi_fn has shape "
                 f"{tuple(psi_fn.shape)} but vtype={self.vtype} on a cdim="
                 f"{self.mesh.cdim} mesh needs {expected}. Pass the vtype that "
                 "matches the field, or reshape psi_fn."
@@ -5137,7 +5138,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         if supplied_var is not None and expected is not None:
             if int(supplied_var.num_components) != wanted:
                 raise ValueError(
-                    f"IntegrationPointSemiLagrangian: psi_fn stores "
+                    f"BackwardIntegrationPointsSemiLagrangian: psi_fn stores "
                     f"{supplied_var.num_components} components but vtype="
                     f"{self.vtype} stores {wanted}. A full tensor and a "
                     "symmetric tensor share a shape; pass the vtype the field "
@@ -5146,7 +5147,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         components = getattr(self, "num_components", None)
         if components is not None and expected is not None and wanted != components:
             raise ValueError(
-                f"IntegrationPointSemiLagrangian: psi_fn needs {wanted} stored "
+                f"BackwardIntegrationPointsSemiLagrangian: psi_fn needs {wanted} stored "
                 f"components but this history has {components}; vtype="
                 f"{self.vtype} is probably not the vtype of the field."
             )
@@ -5164,7 +5165,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 import warnings
 
                 warnings.warn(
-                    f"IntegrationPointSemiLagrangian: psi_fn is not symmetric at "
+                    f"BackwardIntegrationPointsSemiLagrangian: psi_fn is not symmetric at "
                     f"{dropped} but vtype=SYM_TENSOR stores only the upper "
                     "triangle, so the lower entries are discarded (not averaged). "
                     "Symmetrise psi_fn explicitly, or use VarType.TENSOR.",
@@ -5182,7 +5183,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     def _nudged_node_coords(self, var):
         """ND node coordinates of ``var`` moved 0.1 % toward their cell
         centroids so boundary nodes locate unambiguously (see
-        :meth:`SemiLagrangian._centroid_shifted_node_coords`)."""
+        :meth:`BackwardNodesSemiLagrangian._centroid_shifted_node_coords`)."""
         coords = np.asarray(var.coords_nd)
         cellid = self.mesh.get_closest_cells(coords).reshape(-1)
         cent = np.asarray(self.mesh._centroids)[cellid]
@@ -5351,7 +5352,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self._n_solves_completed += 1
 
 
-class ForwardSemiLagrangian(_DDtBase):
+class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
     r"""Semi-Lagrangian history carried forward from a fixed set of launch
     points inside the cells, read by the weak form through a per-cell fit.
 
@@ -5403,6 +5404,7 @@ class ForwardSemiLagrangian(_DDtBase):
         psi_fn,
         V_fn,
         vtype=VarType.SCALAR,
+        degree: int = 1,
         varsymbol: Optional[str] = None,
         order: int = 1,
         theta: float = 0.5,
@@ -5411,11 +5413,14 @@ class ForwardSemiLagrangian(_DDtBase):
     ):
         super().__init__()
         if order != 1:
-            raise NotImplementedError("ForwardSemiLagrangian carries one level; order must be 1")
+            raise NotImplementedError("ForwardIntegrationPointsSemiLagrangian carries one level; order must be 1")
+        if degree != 1:
+            raise NotImplementedError("ForwardIntegrationPointsSemiLagrangian fits a linear polynomial per "
+                                      f"cell; degree must be 1, not {degree}")
         if mesh.cdim != mesh.dim:
-            raise NotImplementedError("ForwardSemiLagrangian fits in the embedding coordinates; no manifolds")
+            raise NotImplementedError("ForwardIntegrationPointsSemiLagrangian fits in the embedding coordinates; no manifolds")
         if _unsupported:
-            warnings.warn(f"ForwardSemiLagrangian ignores {sorted(_unsupported)}: it has one level, "
+            warnings.warn(f"ForwardIntegrationPointsSemiLagrangian ignores {sorted(_unsupported)}: it has one level, "
                           "a linear fit per cell and no smoothing or monotone option", stacklevel=2)
         self.vtype = vtype
         self.mesh = mesh
@@ -5427,7 +5432,7 @@ class ForwardSemiLagrangian(_DDtBase):
         self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
         expected = _psi_shape_for(vtype, mesh.cdim)
         if expected is not None and tuple(self._psi_fn.shape) != expected:
-            raise ValueError(f"ForwardSemiLagrangian: psi_fn has shape {tuple(self._psi_fn.shape)} "
+            raise ValueError(f"ForwardIntegrationPointsSemiLagrangian: psi_fn has shape {tuple(self._psi_fn.shape)} "
                              f"but vtype={vtype} on a cdim={mesh.cdim} mesh needs {expected}")
         self._init_history_tracking(1)
         if varsymbol is None:
@@ -5452,7 +5457,7 @@ class ForwardSemiLagrangian(_DDtBase):
         self._launch = np.array(np.asarray(launch_var.coords_nd).reshape(-1, mesh.cdim))
         self._nq = int(launch_var.num_points_per_cell)
         if self._nq < mesh.dim + 1:
-            raise ValueError(f"ForwardSemiLagrangian needs at least {mesh.dim + 1} integration points per "
+            raise ValueError(f"ForwardIntegrationPointsSemiLagrangian needs at least {mesh.dim + 1} integration points per "
                              f"cell for a linear fit; this mesh's rule has {self._nq} (raise qdegree)")
         w_ref = np.asarray(mesh.integration_rule.getData()[1]).reshape(-1)
         self._cell_measure = self._cell_measures()
@@ -5530,7 +5535,7 @@ class ForwardSemiLagrangian(_DDtBase):
         # the mesh's own boundary label tells them apart.
         label = dm.getLabel("All_Boundaries") if dm.hasLabel("All_Boundaries") else None
         if label is None and uw.mpi.size > 1:
-            raise RuntimeError("ForwardSemiLagrangian: the mesh has no All_Boundaries label, so "
+            raise RuntimeError("ForwardIntegrationPointsSemiLagrangian: the mesh has no All_Boundaries label, so "
                                "partition faces cannot be told from domain faces in parallel")
         for f in range(f0, f1):
             if dm.getSupportSize(f) != 1:
@@ -5573,7 +5578,7 @@ class ForwardSemiLagrangian(_DDtBase):
         new_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
         expected = _psi_shape_for(self.vtype, self.mesh.cdim)
         if expected is not None and tuple(new_fn.shape) != expected:
-            raise ValueError(f"ForwardSemiLagrangian: psi_fn has shape {tuple(new_fn.shape)}, needs {expected}")
+            raise ValueError(f"ForwardIntegrationPointsSemiLagrangian: psi_fn has shape {tuple(new_fn.shape)}, needs {expected}")
         self._psi_fn = new_fn
 
     def _object_viewer(self):
@@ -5729,7 +5734,7 @@ class ForwardSemiLagrangian(_DDtBase):
         self._dt = dt = self._nondim_timestep(dt)
         if self._geometry_stamp() != self._launch_geometry:
             raise NotImplementedError(
-                "ForwardSemiLagrangian: the launch set, cell measures and boundary faces were "
+                "ForwardIntegrationPointsSemiLagrangian: the launch set, cell measures and boundary faces were "
                 "built for the mesh as it was, and the mesh has moved or been re-meshed since; "
                 "this flavour does not follow a changing mesh")
         if not self._history_initialised:
@@ -5786,14 +5791,16 @@ class ForwardNodesSemiLagrangian(_DDtBase):
     reads that fit back at the nodes. The fit never reaches across an element
     boundary, where the interpolant has a kink. A cell with too few arrivals, or
     arrivals on a line, falls back to a linear fit over the nearest arrivals; a
-    cell nothing reached keeps its previous fit (see
+    cell nothing reached keeps the field it launched (see
     :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`).
     Arrivals that leave the domain are dropped; a node the flow reached from
     outside takes :attr:`inflow_value` when one is set.
 
-    The integration-point counterpart is :class:`ForwardSemiLagrangian`, which
-    launches from the quadrature points, where a flux (a stress) is formed.
-    First order; serial.
+    The integration-point counterpart is :class:`ForwardIntegrationPointsSemiLagrangian`, which
+    launches from the quadrature points, where a flux (a stress) is formed, and
+    is the forward scheme for one: this class carries a field and refuses a flux.
+    First order; serial (a node near a partition seam needs arrivals from the
+    other rank); a fixed mesh.
 
     Parameters
     ----------
@@ -5850,7 +5857,6 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         self._projector = CellPolynomialProjector(self._fit_var)
         self._interior = np.asarray(mesh._get_coords_for_basis(self.degree + 1, continuous=False)
                                     ).reshape(-1, mesh.cdim)
-        self._fit = None
         self._n_v = 2
         self._init_coefficient_expressions(1, self.theta, with_exp=True)
         self._register_with_default_model()
@@ -5878,7 +5884,7 @@ class ForwardNodesSemiLagrangian(_DDtBase):
 
     # ------------------------------------------------------------------
     def _nodes(self):
-        return np.asarray(_to_nondim_ndarray(self.psi_star[0].coords)).reshape(-1, self.mesh.cdim)
+        return np.asarray(self.psi_star[0].coords_nd).reshape(-1, self.mesh.cdim)
 
     def _values_at(self, expr, X):
         """``expr`` at the points ``X``, one column per stored component."""
@@ -5888,28 +5894,30 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             for (i, j) in self._components])
 
     def _reconstruct(self, arrivals, values, nodes):
-        """Fit the arrivals in each cell at the field's degree; the fit at the nodes."""
+        """Fit the arrivals in each cell at the field's degree; the fit at the nodes.
+        A cell nothing reached keeps the field it launched."""
         inside = np.asarray(self.mesh.points_in_domain(arrivals), dtype=bool)
-        self._fit = self._projector.fit(arrivals[inside], values[inside], old=self._fit)
-        return np.nan_to_num(self._projector.interpolate(self._fit, nodes))
+        launched = self._values_at(self._psi_fn, np.asarray(self._fit_var.coords_nd))
+        fit = self._projector.fit(arrivals[inside], values[inside], old=launched)
+        at_nodes = self._projector.interpolate(fit, nodes)
+        if np.isnan(at_nodes).any():
+            raise RuntimeError("ForwardNodesSemiLagrangian: a node lies in no cell of the fit")
+        return at_nodes
 
     # ------------------------------------------------------------------
     def initialise_history(self):
-        """Start from the current field at the nodes. A history already placed
-        by :meth:`commit_flux_to_history` is the start, and is kept."""
+        """Start from the current field at the nodes."""
         self.characteristics.initialise_levels(self._n_v)
-        if not self._history_committed:
-            self.psi_star[0].data[:, :] = self._values_at(self._psi_fn, self._nodes())
+        self.psi_star[0].data[:, :] = self._values_at(self._psi_fn, self._nodes())
         self._history_initialised = True
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True, **_ignored):
-        """Carry the field forward one step from the nodes and rebuild it there.
-
-        ``store_result=False`` says the store already holds the values to launch
-        (placed by :meth:`commit_flux_to_history`); otherwise the tracked field
-        is read at the nodes first.
-        """
+    def update_pre_solve(self, dt, evalf=False, verbose=False, **_ignored):
+        """Carry the field forward one step from the nodes and rebuild it there."""
         self._dt = dt = self._nondim_timestep(dt)
+        if self._projector.mesh_version != self.mesh._mesh_version:
+            raise NotImplementedError(
+                "ForwardNodesSemiLagrangian: the launch lattice and the per-cell fit were built "
+                "for the mesh as it was, and the mesh has moved or been re-meshed since")
         if not self._history_initialised:
             self.initialise_history()
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
@@ -5919,11 +5927,7 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             trace.begin_step(dt)
         nodes = self._nodes()
         launch = np.vstack([nodes, self._interior])
-        # the tracked field, or (when a flux was committed) the store, which is
-        # a polynomial inside each element, so its interior values are exact
-        source = self._psi_fn if store_result else self.psi_star[0].sym
-        values = np.vstack([self._values_at(source, nodes) if store_result else np.array(self.psi_star[0].data),
-                            self._values_at(source, self._interior)])
+        values = self._values_at(self._psi_fn, launch)
         key = (_basis_key_of(self.psi_star[0]), "launch")
         arrivals = np.asarray(trace.departure_points(key, launch, (("first", 0, -float(dt)),),
                                                      evalf=evalf, clamp_final=False))
@@ -5932,8 +5936,7 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         if self._inflow_value is not None:
             # a node whose back-trace leaves the domain holds fluid that entered this step
             back = 2.0 * nodes - arrivals
-            restored = np.asarray(self.mesh.return_coords_to_bounds(back.copy())).reshape(back.shape)
-            entered = np.any(restored != back, axis=1)
+            entered = ~np.asarray(self.mesh.points_in_domain(back), dtype=bool)
             if entered.any():
                 self._write_inflow(self.psi_star[0], nodes, entered)
         if self._owns_characteristics:
@@ -5949,6 +5952,90 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             self._n_solves_completed += 1
 
     def commit_flux_to_history(self, flux, verbose=False):
-        """Read the new flux at the nodes and leave it in the store until the next carry."""
-        self.psi_star[0].data[:, :] = self._values_at(flux, self._nodes())
-        self._history_committed = True
+        """Refused: a flux is formed at the integration points, not known at the nodes."""
+        raise NotImplementedError(
+            "ForwardNodesSemiLagrangian carries a field known at its nodes; a flux (a stress) "
+            "is formed at the integration points, so carry it with "
+            "ForwardIntegrationPointsSemiLagrangian")
+
+
+_SEMI_LAGRANGIAN_SCHEMES = {
+    ("backward", "nodes"): BackwardNodesSemiLagrangian,
+    ("backward", "integration_points"): BackwardIntegrationPointsSemiLagrangian,
+    ("forward", "integration_points"): ForwardIntegrationPointsSemiLagrangian,
+    ("forward", "nodes"): ForwardNodesSemiLagrangian,
+}
+
+
+def SemiLagrangian(mesh, psi_fn, V_fn, vtype=VarType.SCALAR, *, trace="backward", launch="nodes",
+                   **kwargs):
+    r"""Semi-Lagrangian history of ``psi_fn`` carried by ``V_fn``.
+
+    A semi-Lagrangian history holds the carried quantity at the points where
+    the weak form reads it, one step along the characteristic. The schemes
+    differ in two choices:
+
+    ============  ======================  ==============================================
+    ``trace``     ``launch``              scheme
+    ============  ======================  ==============================================
+    backward      nodes                   :class:`BackwardNodesSemiLagrangian`
+    backward      integration_points      :class:`BackwardIntegrationPointsSemiLagrangian`
+    forward       integration_points      :class:`ForwardIntegrationPointsSemiLagrangian`
+    forward       nodes                   :class:`ForwardNodesSemiLagrangian`
+    ============  ======================  ==============================================
+
+    ``trace="backward"`` follows the characteristic back from each storage
+    point and samples the old field at the departure point.
+    ``trace="forward"`` launches the old field from where it is known, carries
+    it one step forward, and fits the arrivals in each cell. ``launch`` names
+    the storage points: the field's ``nodes``, or the mesh's
+    ``integration_points``, where a flux such as a stress is formed.
+
+    The remaining arguments are keywords for the scheme; see its class for
+    them. A keyword the chosen scheme does not take is an error.
+
+    Parameters
+    ----------
+    mesh : Mesh
+    psi_fn : sympy expression or matrix
+        The carried quantity, for example ``T.sym``.
+    V_fn : sympy matrix
+        The velocity that carries it.
+    vtype : VarType
+    trace : {"backward", "forward"}
+    launch : {"nodes", "integration_points"}
+
+    Examples
+    --------
+    .. code-block:: python
+
+        DuDt = uw.systems.ddt.SemiLagrangian(
+            mesh, T.sym, V.sym, uw.VarType.SCALAR, degree=T.degree,
+            trace="forward", launch="nodes")
+    """
+    try:
+        scheme = _SEMI_LAGRANGIAN_SCHEMES[(trace, launch)]
+    except KeyError:
+        raise ValueError(
+            f"no semi-Lagrangian scheme traces {trace!r} from {launch!r}: trace is "
+            "'backward' or 'forward', launch is 'nodes' or 'integration_points'") from None
+    taken = inspect.signature(scheme).parameters
+    refused = sorted(k for k in kwargs if k not in taken or taken[k].kind is taken[k].VAR_KEYWORD)
+    if refused:
+        raise TypeError(f"{scheme.__name__} takes no {refused}")
+    return scheme(mesh, psi_fn, V_fn, vtype, **kwargs)
+
+
+_RENAMED = {
+    "IntegrationPointSemiLagrangian": "BackwardIntegrationPointsSemiLagrangian",
+    "ForwardSemiLagrangian": "ForwardIntegrationPointsSemiLagrangian",
+}
+
+
+def __getattr__(name):
+    if name in _RENAMED:
+        warnings.warn(
+            f"ddt.{name} is now ddt.{_RENAMED[name]}, or "
+            f"ddt.SemiLagrangian(..., trace=..., launch=...)", FutureWarning, stacklevel=2)
+        return globals()[_RENAMED[name]]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

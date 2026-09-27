@@ -223,9 +223,9 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
 
 
 KINDS = {
-    "semi_lagrangian": "SemiLagrangian",
-    "integration_point": "IntegrationPointSemiLagrangian",
-    "forward": "ForwardSemiLagrangian",
+    "backward_nodes": "BackwardNodesSemiLagrangian",
+    "backward_integration_points": "BackwardIntegrationPointsSemiLagrangian",
+    "forward_integration_points": "ForwardIntegrationPointsSemiLagrangian",
     "lagrangian": "Lagrangian",
     "eulerian": "EulerianSUPG",
 }
@@ -247,8 +247,8 @@ def test_every_stress_history_solves_the_maxwell_shear_box(order, integrator, to
     for transport, expected_kind in KINDS.items():
         if integrator == "etd" and order == 2 and transport == "eulerian":
             continue        # the grid flavour has no forcing-history slot yet
-        if order == 2 and transport == "forward":
-            continue        # the forward flavour carries one level
+        if order == 2 and transport.startswith("forward_"):
+            continue        # the forward flavours carry one level
         if transport == "lagrangian" and (order == 2 or integrator == "etd"):
             continue        # order 1 BDF only for now (no exponential coefficients
                             # on the particle flavour; order 2 deferred)
@@ -278,7 +278,46 @@ def test_stress_transport_is_validated_and_fixed_once_the_history_exists():
     stokes.constitutive_model.Parameters.dt_elastic = 0.1
     assert type(stokes.DFDt).__name__ == "EulerianSUPG"
     with pytest.raises(RuntimeError, match="already exists"):
-        stokes.stress_transport = "semi_lagrangian"
+        stokes.stress_transport = "backward_nodes"
+
+
+def test_the_former_stress_transport_names_still_select_their_scheme():
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("U_old", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_old", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    for old, new in (("semi_lagrangian", "backward_nodes"),
+                     ("integration_point", "backward_integration_points"),
+                     ("forward", "forward_integration_points")):
+        with pytest.warns(FutureWarning, match=new):
+            stokes.stress_transport = old
+        assert stokes.stress_transport == new
+    # a stress is formed at the integration points: it is not carried from the nodes
+    with pytest.raises(ValueError, match="stress_transport must be"):
+        stokes.stress_transport = "forward_nodes"
+
+
+def test_semi_lagrangian_selects_its_scheme_by_trace_and_launch():
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25)
+    T = uw.discretisation.MeshVariable("T_sel", mesh, 1, degree=1)
+    V = sympy.Matrix([[1.0, 0.0]])
+    for (trace, launch), kind in (
+            (("backward", "nodes"), "BackwardNodesSemiLagrangian"),
+            (("backward", "integration_points"), "BackwardIntegrationPointsSemiLagrangian"),
+            (("forward", "integration_points"), "ForwardIntegrationPointsSemiLagrangian"),
+            (("forward", "nodes"), "ForwardNodesSemiLagrangian")):
+        history = uw.systems.ddt.SemiLagrangian(mesh, T.sym, V, uw.VarType.SCALAR,
+                                                trace=trace, launch=launch, degree=1)
+        assert type(history).__name__ == kind
+    with pytest.raises(ValueError, match="no semi-Lagrangian scheme"):
+        uw.systems.ddt.SemiLagrangian(mesh, T.sym, V, trace="sideways")
+    # an option the chosen scheme does not take is refused, not dropped
+    with pytest.raises(TypeError, match="monotone_mode"):
+        uw.systems.ddt.SemiLagrangian(mesh, T.sym, V, trace="forward", degree=1, monotone_mode="clamp")
+    with pytest.raises(NotImplementedError, match="integration points"):
+        uw.systems.ddt.SemiLagrangian(mesh, T.sym, V, trace="forward", degree=1).commit_flux_to_history(T.sym)
+    with pytest.warns(FutureWarning, match="ForwardIntegrationPointsSemiLagrangian"):
+        assert uw.systems.ddt.ForwardSemiLagrangian is uw.systems.ddt.ForwardIntegrationPointsSemiLagrangian
 
 
 def _sheared_varying_modulus(transport, order, steps=10, dt=0.1, res=6):
@@ -324,7 +363,7 @@ def _sheared_varying_modulus(transport, order, steps=10, dt=0.1, res=6):
 def test_the_two_stress_histories_agree_when_the_stress_moves_and_evolves():
     """With a stress that is carried as well as relaxed the schemes must agree
     to within their own time-discretisation error, and more tightly at order 2."""
-    traced, traced_slope = _sheared_varying_modulus("semi_lagrangian", 2)
+    traced, traced_slope = _sheared_varying_modulus("backward_nodes", 2)
     grid, grid_slope = _sheared_varying_modulus("eulerian", 2)
     assert traced_slope > 0.1 and grid_slope > 0.1, "the stress must not be uniform"
     # BASELINES (the L2 norm of the shear stress; see the ledger): each scheme
@@ -368,9 +407,9 @@ def test_navier_stokes_carries_a_viscoelastic_stress_either_way():
         return type(ns.DFDt).__name__, float(np.asarray(uw.function.evaluate(
             ns.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
 
-    traced_kind, traced = run("semi_lagrangian")
+    traced_kind, traced = run("backward_nodes")
     grid_kind, grid = run("eulerian")
-    assert traced_kind == "SemiLagrangian" and grid_kind == "EulerianSUPG"
+    assert traced_kind == "BackwardNodesSemiLagrangian" and grid_kind == "EulerianSUPG"
     # BASELINE: the shear stress at the origin after ten steps (see the ledger)
     assert abs(traced - NS_ORDER2_XY) < 1.0e-3 * NS_ORDER2_XY, traced
     assert abs(grid - traced) / traced < 1.0e-3, (grid, traced)
@@ -429,7 +468,7 @@ def test_crank_nicolson_carries_a_viscoelastic_stress_either_way():
         return float(np.asarray(uw.function.evaluate(
             ns.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
 
-    traced, grid = run("semi_lagrangian"), run("eulerian")
+    traced, grid = run("backward_nodes"), run("eulerian")
     # BASELINE: the shear stress at the origin after ten steps (see the ledger)
     assert abs(traced - CN_ORDER1_XY) < 1.0e-3 * CN_ORDER1_XY, traced
     assert abs(grid - traced) / traced < 1.0e-3, (grid, traced)
@@ -442,7 +481,7 @@ def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate(monkeypat
     off unless asked for. The varying-modulus box is the negative control: there
     D differs from edot by projection error, the term is live, and the answer
     must move -- by projection error, which is small, but not by nothing."""
-    _kind, off, exact = _maxwell_shear("integration_point", 1)
+    _kind, off, exact = _maxwell_shear("backward_integration_points", 1)
     assert abs(off - exact) / exact < 0.02
 
     def with_devss(builder, *args, **kw):
@@ -456,14 +495,14 @@ def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate(monkeypat
             m.setattr(uw.systems.Stokes, "__init__", patched)
             return builder(*args, **kw)
 
-    _kind, on, _ = with_devss(_maxwell_shear, "integration_point", 1)
+    _kind, on, _ = with_devss(_maxwell_shear, "backward_integration_points", 1)
     assert abs(on - off) < 1e-8 * abs(exact), (on, off)      # the pair cancelled
 
     # the varying-modulus helper differentiates the history in a weak form,
     # which an integration-point variable refuses; the term is on the solver
     # and flavour-independent, so the nodal history serves for this half
-    norm_off, _ = _sheared_varying_modulus("semi_lagrangian", 1)
-    norm_on, _ = with_devss(_sheared_varying_modulus, "semi_lagrangian", 1)
+    norm_off, _ = _sheared_varying_modulus("backward_nodes", 1)
+    norm_on, _ = with_devss(_sheared_varying_modulus, "backward_nodes", 1)
     moved = abs(norm_on - norm_off) / norm_off
     assert 1e-6 < moved < 5e-2, moved                        # live, and only projection-sized
 
@@ -512,7 +551,7 @@ def test_the_exponential_integrator_runs_on_the_trace_back_navier_stokes():
     as the Stokes family does; it did neither, so the memory term was absent
     and the exponential integrator ran in its viscous limit (#741)."""
     for integrator, tolerance in (("etd", 1e-3), ("bdf", 0.02)):
-        _, stress, exact = _maxwell_shear("semi_lagrangian", 1, integrator=integrator, solver="ns_slcn")
+        _, stress, exact = _maxwell_shear("backward_nodes", 1, integrator=integrator, solver="ns_slcn")
         assert abs(stress - exact) / exact < tolerance, (integrator, stress, exact)
 
 
@@ -523,8 +562,8 @@ def test_a_preset_velocity_gives_both_integrators_the_same_first_stress():
     exponential one read alpha = phi = 0 and recorded the full viscous stress,
     seven times the BDF value on the cylinder (#740). One step: the two
     first-order integrators agree to O(dt / t_r)."""
-    _, bdf, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="bdf", initial_velocity=True)
-    _, etd, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="etd", initial_velocity=True)
+    _, bdf, _ = _maxwell_shear("backward_nodes", 1, steps=1, integrator="bdf", initial_velocity=True)
+    _, etd, _ = _maxwell_shear("backward_nodes", 1, steps=1, integrator="etd", initial_velocity=True)
     # gammadot = 1, eta = lambda = 1, dt = 0.1. The history's first level is the
     # constitutive flux of the preset velocity (#740), so one step gives
     # BDF-1:  eta_eff gdot (1 + eta_eff / (mu dt)) = (1/11)(1 + 10/11) = 21/121
@@ -548,7 +587,7 @@ def test_the_integration_point_history_takes_the_inflow_value_at_an_inlet():
     incoming = sympy.Matrix([[1.0, 0.25], [0.25, -1.0]])
     results = {}
     for tag, inflow in (("with", incoming), ("without", None)):
-        manager = uw.systems.ddt.IntegrationPointSemiLagrangian(
+        manager = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, sympy.Matrix.zeros(2, 2), velocity, vtype=uw.VarType.SYM_TENSOR,
             degree=1, continuous=True, order=1, varsymbol=rf"S^{{{tag}}}")
         assert manager.applies_inflow_value
@@ -573,7 +612,7 @@ def test_the_integration_point_history_takes_the_inflow_value_at_an_inlet():
 
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point"])
+@pytest.mark.parametrize("transport", ["backward_nodes", "backward_integration_points"])
 def test_the_upper_convected_element_builds_the_first_normal_stress_in_shear(transport):
     """Start-up of simple shear for the UCM fluid has the closed form
     sigma_xy = eta gdot (1 - e^{-t/lambda}) and
@@ -626,7 +665,7 @@ def test_a_solvent_viscosity_adds_its_newtonian_stress():
     shear cannot tell (any uniform stress satisfies momentum): the channel
     flow's speed is set by the total viscosity."""
     steps, dt, eta_s = 20, 0.1, 0.5
-    _, polymer_xy, polymer_exact, _, solvent_xy = _maxwell_shear("semi_lagrangian", 1, steps=steps, dt=dt, solvent=eta_s)
+    _, polymer_xy, polymer_exact, _, solvent_xy = _maxwell_shear("backward_nodes", 1, steps=steps, dt=dt, solvent=eta_s)
     gdot = 1.0
     assert abs(polymer_xy - polymer_exact) / polymer_exact < 0.02, (polymer_xy, polymer_exact)
     assert abs(solvent_xy - eta_s * gdot) < 1e-6, solvent_xy
@@ -671,7 +710,7 @@ def _one_shear_step(transport, dt=1.0, objective_rate="none"):
     return stokes
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward"])
+@pytest.mark.parametrize("transport", ["backward_nodes", "backward_integration_points", "forward_integration_points"])
 def test_the_conformation_after_one_shear_step_is_one_minus_half_the_step(transport):
     stokes = _one_shear_step(transport, dt=1.0)
     health = stokes.constitutive_model.conformation_min_eigenvalue()
@@ -693,7 +732,7 @@ def test_the_conformation_check_sees_a_lost_conformation():
     v = uw.discretisation.MeshVariable("U_lost", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P_lost", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
-    stokes.stress_transport = "integration_point"
+    stokes.stress_transport = "backward_integration_points"
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         stokes.Unknowns, order=1, integrator="bdf")
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
@@ -712,7 +751,7 @@ def test_the_conformation_check_sees_a_lost_conformation():
     assert health["where"] is not None
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward"])
+@pytest.mark.parametrize("transport", ["backward_nodes", "backward_integration_points", "forward_integration_points"])
 def test_the_elastic_timestep_is_the_safety_factor_over_the_shear_rate(transport):
     stokes = _one_shear_step(transport, dt=1.0, objective_rate="upper_convected")
     # gammadot = 2 speed / height = 1 everywhere: dt_max = safety / 1. The rate is
@@ -724,7 +763,7 @@ def test_the_elastic_timestep_is_the_safety_factor_over_the_shear_rate(transport
 
 
 def test_the_store_smoothing_is_the_coefficient_times_the_local_cell_size_squared():
-    stokes = _one_shear_step("integration_point", dt=1.0)
+    stokes = _one_shear_step("backward_integration_points", dt=1.0)
     history = stokes.DFDt
     assert history.store_smoothing == 0.0
     assert history._commit_projection.smoothing == 0.0

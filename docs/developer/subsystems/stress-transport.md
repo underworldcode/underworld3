@@ -8,7 +8,7 @@ what limits it, and how to keep a run inside those limits.
 
 ```python
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.stress_transport = "integration_point"       # or "semi_lagrangian" (the default), "forward", "eulerian"
+stokes.stress_transport = "forward_integration_points"   # see the table for the others
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
     stokes.Unknowns, order=1, integrator="bdf", objective_rate="upper_convected")
 stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_p
@@ -19,11 +19,20 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 
 ## The five histories
 
+The four semi-Lagrangian names are `<trace>_<launch>`, the arguments of
+`uw.systems.ddt.SemiLagrangian(..., trace=, launch=)`: a backward trace follows the
+characteristic back from each storage point and samples the old stress at the foot; a
+forward trace carries the old stress from where it is known and fits the arrivals in
+each cell. The fourth combination, forward from nodes, carries a field known at its
+nodes (a temperature, say); a stress is formed at the integration points, so it is not
+a stress history. The former names `semi_lagrangian`, `integration_point` and `forward`
+are accepted with a warning.
+
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
-| `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
-| `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
-| `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
+| `backward_nodes` (the default) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
+| `backward_integration_points` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
+| `forward_integration_points` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 

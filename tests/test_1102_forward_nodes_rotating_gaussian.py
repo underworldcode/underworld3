@@ -3,7 +3,7 @@
 Launched from the field's own nodes and from a lattice inside every element
 (the field's interpolant is a polynomial there, so both are known exactly),
 carried one step forward, fitted per cell at the field's degree and read back at
-the nodes. Used as the DuDt of the SLCN advection-diffusion solver, half a
+the nodes. Selected by transport="forward_nodes" on the SLCN advection-diffusion solver, half a
 revolution, kappa 0.01, dt 0.02, P2 temperature, against the test_1101 fixture:
 the backward nodal history gives 2.52e-2 on the disc and 6.43e-2 on the box
 (where the flow crosses all four walls).
@@ -25,8 +25,8 @@ def _run(mesh, walls):
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(sol.at(0.0), T.coords).reshape(-1)
     V = sympy.Matrix([[-y, x]])
-    duDt = uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, T.sym, V, vtype=uw.VarType.SCALAR, degree=T.degree)
-    adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, DuDt=duDt, order=1)
+    adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, order=1, transport="forward_nodes")
+    assert type(adv.DuDt).__name__ == "ForwardNodesSemiLagrangian"
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = KAPPA
     for wall in walls:

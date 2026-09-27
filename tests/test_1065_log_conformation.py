@@ -59,7 +59,7 @@ def _extension_step(transport, convected_step, stress_history, integrator="bdf")
     uw.reset_default_model()
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4), minCoords=(-1, -1), maxCoords=(1, 1))
     x, y = mesh.X
-    tag = f"{transport[:3]}{convected_step[:3]}{stress_history[:3]}{integrator}"
+    tag = f"{"".join(w[0] for w in transport.split("_"))}{convected_step[:3]}{stress_history[:3]}{integrator}"
     v = uw.discretisation.MeshVariable(f"U_{tag}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -89,7 +89,7 @@ def _extension_step(transport, convected_step, stress_history, integrator="bdf")
 
 @pytest.mark.parametrize("integrator", ["bdf", "etd"])
 @pytest.mark.parametrize("transport, stress_history", [
-    ("semi_lagrangian", "stress"), ("semi_lagrangian", "log_conformation"),
+    ("backward_nodes", "stress"), ("backward_nodes", "log_conformation"),
     ("eulerian", "stress"), ("eulerian", "log_conformation")])
 def test_deformation_step_is_the_closed_form(transport, stress_history, integrator):
     c = _deformation_step(np.eye(2), np.diag([RATE, -RATE]), DT, 1.0, integrator)
@@ -100,14 +100,14 @@ def test_deformation_step_is_the_closed_form(transport, stress_history, integrat
 
 def test_linear_step_loses_the_conformation():
     """The defect the deformation step removes, measured against its closed form."""
-    c_min, _ = _extension_step("semi_lagrangian", "linear", "stress")
+    c_min, _ = _extension_step("backward_nodes", "linear", "stress")
     assert abs(c_min - (1 - 2 * DT * RATE + DT) / (1 + DT)) < 1.0e-6, c_min
 
 
 def _shear_startup(transport, integrator, steps=10, dt=0.1):
     uw.reset_default_model()
     mesh = uw.meshing.StructuredQuadBox(elementRes=(16, 8), minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5))
-    tag = f"s{transport[:3]}{integrator}"
+    tag = f"s{"".join(w[0] for w in transport.split("_"))}{integrator}"
     v = uw.discretisation.MeshVariable(f"U_{tag}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -139,7 +139,7 @@ def _shear_startup(transport, integrator, steps=10, dt=0.1):
 
 
 @pytest.mark.parametrize("integrator", ["bdf", "etd"])
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward", "eulerian"])
+@pytest.mark.parametrize("transport", ["backward_nodes", "backward_integration_points", "forward_integration_points", "eulerian"])
 def test_log_conformation_history_follows_the_recurrence(transport, integrator):
     """Uniform stress, so transport is a no-op: this checks the encoding, the
     decoding and the step together, against the discrete recurrence."""
