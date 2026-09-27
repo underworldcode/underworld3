@@ -131,6 +131,7 @@ guides/notebook-style-guide
 guides/GMSH_INTEGRATION_GUIDE
 guides/CODE-REVIEW-PROCESS
 guides/adversarial-review
+guides/mcp-server
 guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
