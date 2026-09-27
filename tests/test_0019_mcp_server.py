@@ -96,3 +96,17 @@ def test_the_tools_answer_as_yaml(run_path):
     assert "Poisson" in uwmcp.uw_transcript_key(p, format="text")
     rendered = uwmcp.uw_describe_render(uwmcp.uw_transcript_summary(p), format="markdown")
     assert rendered.startswith("## transcript")
+
+
+def test_the_capabilities_catalogue_comes_from_the_classes():
+    cat = yaml.safe_load(uwmcp.uw_capabilities())
+    assert set(cat) == {"solvers", "constitutive_models", "histories"}
+    stokes = next(r for r in cat["solvers"] if r["name"] == "Stokes")
+    assert set(stokes["equation"]) == {"F0", "F1", "PF0"} and "add_essential_bc" in stokes["conditions"]
+    assert any(r["name"] == "ViscoPlasticFlowModel" for r in cat["constitutive_models"])
+    assert any(r["name"] == "SemiLagrangian" for r in cat["histories"])
+    assert "error" in uwmcp.uw_capabilities(kind="nothing")
+    full = uwmcp.uw_capability("Stokes")
+    assert full.startswith("## solver family SNES_Stokes") and "Boundary conditions" in full
+    assert yaml.safe_load(uwmcp.uw_capability("SemiLagrangian", format="yaml"))["kind"] == "history_family"
+    assert "error" in uwmcp.uw_capability("Nothing")

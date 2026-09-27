@@ -61,6 +61,26 @@ them as a nested "where" list under each form.
 `view()` on a class, or `view(class_documentation=True)` on an instance,
 shows the class documentation as well.
 
+## At the class level
+
+A family describes itself with no instance and no mesh:
+
+```python
+uw.systems.Stokes.view()                       # the equation templates, terms, conditions, documentation
+uw.systems.Stokes.describe_class()             # the same as data
+uw.constitutive_models.ViscoPlasticFlowModel.describe_class()   # parameters with symbol, units, description
+uw.systems.ddt.SemiLagrangian.describe_class()                  # the scheme and its defaults
+```
+
+`describe_class()` reads what the class declares: the residual templates
+(`F0`, `F1`, `PF0`) with their symbols and descriptions, `_solver_terms`,
+the `add_*_bc` methods, the parameter descriptors of a constitutive
+model's `_Parameters`, and the docstring, which becomes `documentation`.
+`view()` on a class renders it, and `view(class_documentation=True)` on an
+instance renders the family before the instance. This is what the
+capabilities catalogue on the MCP server is built from, so "can Underworld
+solve this" is answered from the classes and cannot drift from them.
+
 ## Adding a description to a class
 
 Override `describe(self, depth=4)` and return a record built with

@@ -569,20 +569,16 @@ class uw_object:
         ``class_documentation=True``, the class documentation is shown too.
         """
         import inspect
-        from .docstring_utils import render_docstring, in_jupyter
+        from .docstring_utils import in_jupyter
+        from .describe import view as _view
         if inspect.isclass(self_or_cls) or class_documentation:
-            rendered = render_docstring(self_or_cls.__doc__, target="auto")
-            if in_jupyter():
-                from IPython.display import Markdown, display
-                display(Markdown(rendered))
-                if class_documentation:
-                    display(Markdown("---"))
-            else:
-                print(rendered)
-                if class_documentation:
-                    print("---")
-        if inspect.isclass(self_or_cls):
-            return
+            # the family: what this class solves, is given, and accepts,
+            # with its documentation — the same record for a class and for
+            # class_documentation=True on an instance
+            cls = self_or_cls if inspect.isclass(self_or_cls) else type(self_or_cls)
+            _view(cls.describe_class(), format=format, depth=depth)
+            if inspect.isclass(self_or_cls):
+                return
         if type(self_or_cls).describe is not uw_object.describe:
             from .describe import view as _view
             _view(self_or_cls, format=format, depth=depth)
@@ -606,6 +602,20 @@ class uw_object:
         from .describe import record
         doc = (type(self).__doc__ or "").strip().split("\n")[0]
         return record(type(self).__name__.lower(), getattr(self, "name", None), doc)
+
+    @classmethod
+    def describe_class(cls, depth=4):
+        """What this KIND of object is, as data, without an instance: the
+        class, the first line of its documentation as the summary, and the
+        documentation itself. A solver family adds the equation it solves,
+        the terms it is given and the conditions it accepts; a constitutive
+        model its parameters. ``view()`` on a class renders this, and the
+        capabilities catalogue is built from it.
+        """
+        from .describe import record
+        doc = (cls.__doc__ or "").strip()
+        return record(f"{cls.__name__.lower()}_class", cls.__name__, doc.split("\n")[0],
+                      documentation=doc or None)
 
     # placeholder
     def _object_viewer(self):

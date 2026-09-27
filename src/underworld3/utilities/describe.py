@@ -172,12 +172,33 @@ def _render_lines(d, mode, level, depth):
     elif d.get("terms_declared") is False:
         out.append("")
         out.append(_para(_emph("this solver does not declare the terms it was given", mode), mode, level))
+    # a class's documentation, after what it solves and accepts, without
+    # the first line the summary already gave
+    documentation = d.get("documentation") or ""
+    body = documentation.strip().split("\n", 1)[1] if "\n" in documentation.strip() else ""
+    if body.strip():
+        out.append("")
+        out.extend(_documentation_lines(body, mode, level))
     children = d.get("children") or []
     if children and (depth is None or level < depth):
         for child in children:
             out.append("")
             out.extend(_render_lines(child, mode, level + 1, depth))
     return out
+
+
+def _documentation_lines(text, mode, level):
+    """A class's documentation in the mode's markup: the docstring
+    renderer's Markdown for a notebook, its terminal text otherwise."""
+    from underworld3.utilities.docstring_utils import render_docstring
+    try:
+        rendered = render_docstring(text, target="jupyter" if mode == "markdown" else "terminal")
+    except Exception:
+        rendered = str(text)
+    if mode == "latex":
+        rendered = _tex_text(rendered)
+    lines = rendered.rstrip().splitlines()
+    return [("  " * level + l) if mode == "text" else l for l in lines]
 
 
 def _title(d):
@@ -253,13 +274,15 @@ def _form_lines(name, form, mode, level):
     symbol = form.get("symbol") or name
     what = form.get("description") or ""
     if mode == "text":
-        text = form.get("text", "")
-        out.append("  " * level + f"  {name}: {_plain_math(text)}")
+        text = form.get("text")
+        line = f"  {name}: {_plain_math(text)}" if text else f"  {name} = {_plain_math(symbol)}"
+        out.append("  " * level + line)
         if what:
             out.append("  " * level + f"      {what}")
     else:
         out.append("")
-        out.append(_math(f"{symbol} = {form.get('latex', '')}", mode, display=True))
+        latex = form.get("latex")
+        out.append(_math(f"{symbol} = {latex}" if latex else str(symbol), mode, display=True))
         if what:
             out.append(_emph(what, mode))
     where = _where_lines(form.get("where", []), mode, level + 1)

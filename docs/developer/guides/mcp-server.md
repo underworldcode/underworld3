@@ -40,6 +40,8 @@ pixi run -e <env> python -m pip install mcp
 | `uw_transcript_key` | the key to the run, Markdown or text |
 | `uw_transcript_adjoint_segments` | the run partitioned by adjoint support |
 | `uw_describe_render` | any description record in another form |
+| `uw_capabilities` | every solver family with its equation templates, terms and conditions, every constitutive model with its parameters, every history scheme |
+| `uw_capability` | one family in full, documentation included, as markdown, text or yaml |
 
 `path` may be a transcript file, a run directory, or a `transcripts`
 directory, in which case the latest run is read.
