@@ -379,7 +379,15 @@ def view(target, format=None, depth=None, **describe_kwargs):
     """Show a description: ``target`` is an object with ``describe()`` or a
     description already made. With no ``format``, Markdown with mathematics
     in a notebook and plain text elsewhere; a named format prints it."""
+    # describe() on every rank, since a description may take a collective
+    # (a mesh's cell quality); output from rank 0 only
     description = target.describe(**describe_kwargs) if hasattr(target, "describe") else target
+    try:
+        from underworld3 import mpi
+        if getattr(mpi, "rank", 0) != 0:
+            return
+    except ImportError:
+        pass
     if format is None:
         from underworld3.utilities.docstring_utils import in_jupyter
         if in_jupyter():

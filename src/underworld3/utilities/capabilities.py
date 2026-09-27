@@ -60,10 +60,13 @@ def guides_directory():
     return None
 
 
+_GUIDES_CACHE = {}
+
+
 def guides():
     """The capability guides in the checkout: ``{name: {name, description,
     families, kind, path}}`` read from each page's front matter. Empty
-    outside a checkout."""
+    outside a checkout. Read once per change of the directory's contents."""
     import glob
     import os
     import yaml
@@ -71,7 +74,12 @@ def guides():
     out = {}
     if directory is None:
         return out
-    for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
+    paths = sorted(glob.glob(os.path.join(directory, "*.md")))
+    stamp = tuple((p, os.path.getmtime(p)) for p in paths)
+    cached = _GUIDES_CACHE.get(directory)
+    if cached is not None and cached[0] == stamp:
+        return dict(cached[1])
+    for path in paths:
         with open(path, encoding="utf-8") as handle:
             head = handle.read(4000)
         if not head.startswith("---"):
@@ -89,7 +97,8 @@ def guides():
         out[name] = {"name": name, "description": str(meta.get("description") or ""),
                      "families": [str(f) for f in (meta.get("families") or [])],
                      "kind": str(meta.get("kind") or "guide"), "path": path}
-    return out
+    _GUIDES_CACHE[directory] = (stamp, out)
+    return dict(out)
 
 
 def guides_for(*names):

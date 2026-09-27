@@ -552,6 +552,10 @@ class uw_object:
             else:
                 print(rendered)
             return
+        if type(self_or_cls).describe is not uw_object.describe:
+            from .describe import view as _view
+            _view(self_or_cls)          # the description, without a subclass view's side effects
+            return
         self_or_cls.view()
 
     # View is similar but we can give it arguments to force the

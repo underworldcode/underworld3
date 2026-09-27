@@ -49,6 +49,18 @@ The note then carries `reason` and `detail`, and `t.backtracks()` returns
 them. A step abandoned by an exception records the exception's class and
 message as `abandoned_by` without anything from the caller.
 
+## When a part is recorded again
+
+A part records its description when it first acts and again when its form
+changes. Its record also carries `constants`: the run-time constants the
+solver packed for that solve, by name, as the nondimensional values the
+kernel reads (a run with units stores the scaled numbers here and the
+dimensional values under `terms`). When any of them changes between
+solves the part is recorded again, since a parameter changed without a
+rebuild is still a different equation; the model clock and the timesteps
+are left out, so a run with an adaptive step does not re-record every
+step. `t.part(name, at_step=i)` returns the record in force at step `i`.
+
 ## The same tree as everything else
 
 `t.describe()` is a record in the shape every object uses (see

@@ -3309,7 +3309,6 @@ class Swarm(Stateful, uw_object):
 
     instances = 0
 
-    @timing.routine_timer_decorator
     def describe(self, depth=4):
         """What this swarm is, as data: its particle count and its mesh, with
         its variables as children."""
@@ -3335,6 +3334,7 @@ class Swarm(Stateful, uw_object):
                                       if "particles on this rank" in facts else "")
         return record("swarm", getattr(self, "name", None), summary, facts=facts, children=children)
 
+    @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
         # Particle recycling (streak swarms) was excised in 2026-07: the
         # machinery had been broken (NameError) and untested for some time

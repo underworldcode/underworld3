@@ -1504,11 +1504,6 @@ class SolverBaseClass(uw_object):
             if any(b.__name__ == base for b in cls.__mro__):
                 facts["unknown"] = what
                 break
-        try:
-            params = inspect.signature(cls.__init__).parameters
-            facts["time dependent"] = any(p in params for p in ("DuDt", "DFDt", "order"))
-        except (TypeError, ValueError):
-            pass
         forms = {}
         for name in ("F0", "F1", "PF0"):
             declared = None
@@ -2644,8 +2639,10 @@ class SolverBaseClass(uw_object):
                 # exactly as implemented. The run-time constants go with it:
                 # a parameter changed between solves does not rebuild the
                 # kernel, so its new value is what tells the record the
-                # equation is not the one it holds. The clock is left out,
-                # or a time-dependent run would re-record every step.
+                # equation is not the one it holds. The clock and the
+                # timesteps (the solver's and each history's \Delta t) are
+                # left out, or a time-dependent run with an adaptive step
+                # would re-record the whole description every step.
                 constants = None
                 try:
                     from underworld3.utilities._jitextension import _pack_constants
@@ -2653,7 +2650,8 @@ class SolverBaseClass(uw_object):
                     packed = _pack_constants(self.constants_manifest)
                     constants = {str(getattr(expr, "name", index)): float(packed[index])
                                  for index, expr in self.constants_manifest
-                                 if expr is not clock}
+                                 if expr is not clock
+                                 and not str(getattr(expr, "name", "")).startswith("\\Delta t")}
                 except Exception:
                     constants = None
                 model._describe_part(self, part, label, constants=constants)

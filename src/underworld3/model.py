@@ -5671,7 +5671,10 @@ class Model(PintNativeModelMixin, BaseModel):
         notebook or a terminal, or in the ``format`` named. ``verbose``
         adds a level of contained objects per unit."""
         from underworld3.utilities.describe import view as _view
-        _view(self, format=format, depth=1 + int(verbose))
+        description = self.describe(depth=1 + int(verbose))
+        if not show_materials:
+            (description.get("facts") or {}).pop("materials", None)
+        _view(description, format=format, depth=1 + int(verbose))
         if show_petsc:
             try:
                 self.mesh.dm.view()

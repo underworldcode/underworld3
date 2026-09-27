@@ -1820,9 +1820,10 @@ class Mesh(Stateful, uw_object):
         import numpy as np
 
         if level == 0:
+            # every rank describes (the cell-quality summary is a collective);
+            # the renderer prints on rank 0 only
             from underworld3.utilities.describe import view as _view
-            if uw.mpi.rank == 0:
-                _view(self, format=format)
+            _view(self, format=format)
             if uw.is_notebook() and uw.mpi.size == 1:
                 uw.visualisation.plot_mesh(self, window_size=(600, 400))
         elif level == 1:
