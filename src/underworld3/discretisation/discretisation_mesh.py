@@ -1823,7 +1823,7 @@ class Mesh(Stateful, uw_object):
             from underworld3.utilities.describe import view as _view
             if uw.mpi.rank == 0:
                 _view(self, format=format)
-            if uw.is_notebook and uw.mpi.size == 1:
+            if uw.is_notebook() and uw.mpi.size == 1:
                 uw.visualisation.plot_mesh(self, window_size=(600, 400))
         elif level == 1:
             if uw.mpi.rank == 0:
