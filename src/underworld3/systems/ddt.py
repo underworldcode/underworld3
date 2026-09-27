@@ -223,6 +223,40 @@ def _history_units(psi_fn, units=None):
     return units if units is not None else uw.get_units(psi_fn)
 
 
+# A history projection's result is the carried field itself, so it is solved
+# to convergence: a mass-matrix solve left at a projection's default tolerance
+# (1e-4) carries an error of that size into every step, and the error depends
+# on the partition. Converging it costs a few more iterations.
+_HISTORY_PROJECTION_TOLERANCE = 1.0e-10
+
+
+def _tracked_field(mesh, psi_fn, store):
+    """The mesh variable whose values ``psi_fn`` is, when it is laid out like
+    ``store`` (same degree, continuity and components), else ``None``.
+
+    Recording such a field into a history is a copy of its nodal values:
+    exact, and the same on any partition. Evaluating it at the nodes instead
+    locates each node in a cell, and a node on a partition seam is located in
+    a different cell on each rank. ``psi_fn`` is the variable itself or its
+    symbol (``T.sym``, or ``T.sym[0]`` for a one-component field).
+    """
+    if isinstance(psi_fn, uw.discretisation.MeshVariable):
+        field = psi_fn
+    else:
+        hit = uw.discretisation.meshVariable_lookup_by_symbol(mesh, psi_fn)
+        if hit is None and isinstance(psi_fn, sympy.MatrixBase) and psi_fn.shape == (1, 1):
+            hit = uw.discretisation.meshVariable_lookup_by_symbol(mesh, psi_fn[0, 0])
+        if hit is None:
+            return None
+        field, component = hit
+        if component != -1 and field.num_components != 1:
+            return None
+    if (field.degree, field.continuous, field.num_components) != (
+            store.degree, store.continuous, store.num_components):
+        return None
+    return field
+
+
 def _write_evaluated(var, values):
     """Write an evaluation of a store's quantity into the store.
 
@@ -1128,6 +1162,33 @@ class _DDtBase(uw_object):
         reduced = _as_float(dt)
         return dt if reduced is None else reduced
 
+    def _project_nodally(self, expr, name="flux", smoothing=0.0, verbose=False):
+        """L2 projection of the stored components of ``expr`` onto a field of the
+        history's degree and continuity; returns that (1, ncomponents) field.
+        A flux holds gradients, which are discontinuous across elements, so it
+        is projected rather than read at nodes. Each ``name`` keeps its own
+        projection, so a history that projects two expressions does not
+        recompile one projection back and forth."""
+        if not hasattr(self, "_nodal_projections"):
+            self._nodal_projections = {}
+        expr = sympy.Matrix(expr)
+        columns = _storage_components(self.vtype, expr.shape)
+        if name not in self._nodal_projections:
+            target = uw.discretisation.MeshVariable(
+                f"{name}_nodal_{self.instance_number}", self.mesh, (1, len(columns)),
+                vtype=uw.VarType.MATRIX, degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=rf"{{{name}^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
+            projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=target, n_components=len(columns), verbose=self.verbose)
+            projection.tolerance = _HISTORY_PROJECTION_TOLERANCE
+            self._nodal_projections[name] = (target, projection)
+        target, projection = self._nodal_projections[name]
+        projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in columns]])
+        projection.smoothing = smoothing
+        projection.solve(verbose=verbose)
+        return target
+
     def _write_inflow(self, var, coords, rows):
         """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
         ``coords`` (the positions of ALL the points, so that the read, which
@@ -1699,6 +1760,7 @@ class Eulerian(_DDtBase):
                 verbose=False,
             )
             self._psi_star_use_multicomponent = True
+        self._psi_star_projection_solver.tolerance = _HISTORY_PROJECTION_TOLERANCE
 
         self._psi_star_projection_solver.uw_function = self._build_projection_source(
             self.psi_fn)
@@ -2487,15 +2549,13 @@ class CharacteristicTrace:
         half = sympy.Rational(1, 2)
         return self.level_expr(k - 1), (self.level_expr(k - 1) + self.level_expr(k)) * half
 
-    def departure_points(self, key, X0, segments, evalf=False, X_eval=None,
+    def departure_points(self, key, X0, segments, evalf=False,
                          clamp_final=True, subtract_v_mesh=False, v_mesh_var=None):
         r"""Trace ``X0`` back through ``segments`` (RK2 midpoint each):
         ``x_mid = x - dt/2 v_start(x)``, ``x_dep = x - dt v_mid(x_mid)``.
 
-        ``key`` names the launch node set (a variable's ``_basis_key`` plus
-        a tag for the nudge); ``X_eval`` are the points where the first
-        segment's start velocity is evaluated when they differ from ``X0``
-        (the centroid-nudged nodes of the nodal history). Midpoints are
+        ``key`` names the launch point set (a variable's ``_basis_key`` plus
+        a tag). Midpoints are
         clamped to the domain; the last point is clamped unless
         ``clamp_final`` is False (old-frame reach-back).
         """
@@ -2513,8 +2573,7 @@ class CharacteristicTrace:
                 continue
             kind, k, dt = segments[j]
             v_start, v_mid = self._segment_exprs(segments[j])
-            X_start = X_eval if (j == 0 and X_eval is not None) else X
-            v0 = self.velocity_at(v_start, X_start, use_global=j > 0, evalf=evalf,
+            v0 = self.velocity_at(v_start, X, use_global=j > 0, evalf=evalf,
                                   subtract_v_mesh=subtract_v_mesh, v_mesh_var=v_mesh_var)
             Xm = X - v0 * (0.5 * dt)
             if clamp is not None:
@@ -2969,6 +3028,7 @@ class BackwardNodesSemiLagrangian(_DDtBase):
                 verbose=False,
             )
             self._psi_star_use_multicomponent = True
+        self._psi_star_projection_solver.tolerance = _HISTORY_PROJECTION_TOLERANCE
 
         # We should find a way to add natural bcs here
         # (self.Unknowns.u carried as a symbol from solver to solver)
@@ -3283,40 +3343,15 @@ class BackwardNodesSemiLagrangian(_DDtBase):
         """
         self._pending_v_mesh_disp = None
 
-    def _record_psi_star_from_field_data(self):
-        """Parallel-safe 'record current field into psi_star[0]'.
-
-        The default record step evaluates ``psi_fn`` at its own node
-        coordinates, which under MPI mis-locates on-vertex points at a
-        process seam (first-pass ``get_closest_cells`` + FE extrapolation),
-        seeding a spurious history value. When ``psi_fn`` is a single
-        mesh-variable component living on this mesh with the same nodal
-        layout as ``psi_star[0]``, "evaluate at own nodes" is exactly that
-        variable's nodal data, so we copy it directly — no point location.
-
-        Returns an array shaped like ``psi_star[0].array`` for that case, or
-        ``None`` (caller falls back to ``evaluate``) for non-scalar or
-        expression ``psi_fn`` (e.g. a flux with derivatives).
-        """
-        try:
-            comps = list(self.psi_fn)  # sympy Matrix, row-major
-            if len(comps) != 1:                  # scoped to scalar fields
-                return None
-            hit = uw.discretisation.meshVariable_lookup_by_symbol(
-                self.mesh, comps[0])
-            if hit is None:
-                return None
-            var, comp = hit
-            vflat = np.asarray(var.array)
-            vflat = vflat.reshape(vflat.shape[0], -1)
-            out = np.array(np.asarray(self.psi_star[0].array))
-            oflat = out.reshape(out.shape[0], -1)
-            if vflat.shape[0] != oflat.shape[0] or oflat.shape[1] != 1:
-                return None
-            oflat[:, 0] = vflat[:, comp]
-            return out
-        except Exception:
-            return None
+    def _copy_tracked_field(self):
+        """Record the current field into ``psi_star[0]`` by copying its nodal
+        values, when ``psi_fn`` is a mesh variable laid out like the store
+        (see :func:`_tracked_field`). Returns whether it did."""
+        field = _tracked_field(self.mesh, self.psi_fn, self.psi_star[0])
+        if field is None:
+            return False
+        self.psi_star[0].data[...] = field.data[...]
+        return True
 
     def _midtime_velocity_expr(self):
         r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
@@ -3336,14 +3371,6 @@ class BackwardNodesSemiLagrangian(_DDtBase):
         Blankenbach 1a wall Nusselt number by 0.9 %."""
         if getattr(self, "_owns_characteristics", True):
             self.characteristics.finish_step()
-
-    def _centroid_shifted_var_coords(self, var):
-        """ND node coordinates of ``var`` nudged 0.1 % toward their cell
-        centroids (see :meth:`_centroid_shifted_node_coords`)."""
-        coords = np.asarray(var.coords_nd)
-        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
-        cent = np.asarray(self.mesh._centroids)[cellid]
-        return 0.999 * coords + 0.001 * cent
 
     def _velocity_nd_at(
         self,
@@ -3463,83 +3490,28 @@ class BackwardNodesSemiLagrangian(_DDtBase):
         points = _to_nondim_ndarray(history.coords).reshape(-1, self.mesh.cdim)
         return values, points
 
-    def _centroid_shifted_node_coords(self):
-        r"""ND node coordinates of ``psi_star[0]``, nudged toward cell centroids.
-
-        Point-location and FE interpolation are ambiguous exactly on
-        element edges/vertices (worst on quad meshes at the domain
-        boundary), so the sample points are moved 0.1 % of the way toward
-        the centroid of their owning cell: far enough to make cell
-        ownership unambiguous, close enough not to bias the sampled
-        values. Coordinates are plain non-dimensional arrays — never raw
-        ``.magnitude``, which would be dimensional metres (see
-        ``_to_nondim_ndarray`` and issue #267).
-        """
-        psi_star_0_coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
-
-        cellid = self.mesh.get_closest_cells(
-            psi_star_0_coords_nd,
-        )
-        centroid_coords = self.mesh._centroids[cellid]
-
-        shift = 0.001
-        return (1.0 - shift) * psi_star_0_coords_nd[:, :] + shift * centroid_coords[
-            :, :
-        ]
-
     def _record_current_field_into_history(
-        self, node_coords_nd, evalf, verbose, oldframe_active
+        self, node_coords_nd, evalf, verbose
     ):
         r"""Record the current value of :math:`\psi` into ``psi_star[0]``.
 
         Three routes, in order of preference:
 
-        1. direct nodal copy of the tracked field's data (parallel, or
-           old-frame reach-back);
+        1. direct nodal copy of the tracked field's data, when ``psi_fn``
+           is a mesh variable laid out like the store (:func:`_tracked_field`);
         2. pointwise evaluation of ``psi_fn`` at the centroid-shifted
-           node coordinates (the validated serial path);
+           node coordinates;
         3. an L2 projection for expressions that ``evaluate`` cannot
            handle (e.g. the NS viscous flux, which contains derivatives).
         """
         try:
-            # Use shifted ND coords to avoid quad mesh boundary issues
-            # node_coords_nd is slightly shifted toward cell centroids
-            # evaluate() treats plain numpy as ND [0-1] coordinates.
-            #
-            # PARALLEL band-aid (parallel-singular-corruption, 2026-05):
-            # this "record current field into psi_star" step samples psi_fn
-            # at its OWN node coords. On-vertex sampling + first-pass
-            # get_closest_cells mis-locates at a process seam under MPI,
-            # recording a spurious history value that the implicit solve
-            # then propagates (the seam spike in adaptive advection-
-            # diffusion). When psi_fn is a single mesh-variable component on
-            # this mesh (the SLCN adv-diff case), "evaluate at own nodes" ==
-            # the field's nodal data, so under MPI copy it directly (exact,
-            # no point location). Serial keeps the validated shifted-
-            # evaluate path bit-identically; non-scalar / expression psi_fn
-            # falls back to evaluate(). Proper fix (remap-on-adapt / ALE)
-            # tracked separately.
-            # Old-frame: record the history by a DIRECT nodal carry
-            # of the field rather than re-evaluating psi_fn at the
-            # (centroid-shifted) nodes of the DEFORMED mesh. The
-            # re-evaluate injects boundary-layer interpolation error
-            # that grows with mesh distortion and then rides the
-            # old-geometry sample below — the exact value we want is
-            # the carried nodal value (cf. the lagged-clone "store
-            # primitives" principle). Reuses the parallel direct-copy
-            # path, which returns None for non-scalar / expression
-            # psi_fn (those fall back to evaluate).
-            _direct = (self._record_psi_star_from_field_data()
-                       if (uw.mpi.size > 1 or oldframe_active) else None)
-            if _direct is not None:
-                eval_result = _direct
-            else:
+            if not self._copy_tracked_field():
                 eval_result = uw.function.evaluate(
                     self.psi_fn,
                     node_coords_nd,
                     evalf=evalf,
                 )
-            _write_evaluated(self.psi_star[0], eval_result)
+                _write_evaluated(self.psi_star[0], eval_result)
 
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
@@ -3566,7 +3538,7 @@ class BackwardNodesSemiLagrangian(_DDtBase):
                         self.psi_star[0].array[:, j, i] = vals
 
     def _trace_departure_points(
-        self, i, node_coords_nd, dt_for_calc, evalf, subtract_v_mesh, oldframe_active
+        self, i, dt_for_calc, evalf, subtract_v_mesh, oldframe_active
     ):
         r"""RK2 midpoint trace-back: departure points for history slot ``i``.
 
@@ -3586,16 +3558,14 @@ class BackwardNodesSemiLagrangian(_DDtBase):
         any foot that falls outside the old mesh, matching the validated
         prototype, which omits this clamp).
         """
-        # One RK2 segment from the true nodes, the start velocity taken at
-        # the centroid-nudged coordinates (node_coords_nd). Served from the
-        # shared trace: a second history on the same nodes, or an older slot
-        # of this one, reuses the departure points computed here.
+        # One RK2 segment from the nodes. Served from the shared trace: a
+        # second history on the same nodes, or an older slot of this one,
+        # reuses the departure points computed here.
         return self.characteristics.departure_points(
-            (_basis_key_of(self.psi_star[i]), "nudged"),
+            (_basis_key_of(self.psi_star[i]), "nodes"),
             np.asarray(self.psi_star[i].coords_nd),
             (("first", 0, dt_for_calc),),
             evalf=evalf,
-            X_eval=node_coords_nd,
             clamp_final=not oldframe_active,
             subtract_v_mesh=subtract_v_mesh,
             v_mesh_var=getattr(self, "_v_mesh_var", None),
@@ -3755,11 +3725,15 @@ class BackwardNodesSemiLagrangian(_DDtBase):
         #    When store_result=False (e.g. VE stress history), skip this —
         #    psi_star[0] already contains the projected actual stress from
         #    the previous solve and we want to advect *that*, not the flux.
-        node_coords_nd = self._centroid_shifted_node_coords()
+        # The nodes themselves: a node on a no-slip wall has zero velocity and
+        # departs from where it is. (A 0.1% nudge toward "the closest cell's"
+        # centroid gave it a velocity, and on a partition seam a different
+        # nudge on each rank.)
+        node_coords_nd = np.asarray(self.psi_star[0].coords_nd)
 
         if store_result:
             self._record_current_field_into_history(
-                node_coords_nd, evalf, verbose, _oldframe_active
+                node_coords_nd, evalf, verbose
             )
 
         # 3. Trace the characteristics back and sample each history slot
@@ -3793,7 +3767,7 @@ class BackwardNodesSemiLagrangian(_DDtBase):
             _ale_this_iter = _ale_active and not (store_result and i == 0)
 
             end_pt_coords = self._trace_departure_points(
-                i, node_coords_nd, dt_for_calc, evalf,
+                i, dt_for_calc, evalf,
                 _ale_this_iter, _oldframe_active,
             )
             self._sample_history_at_departure(
@@ -4696,6 +4670,43 @@ class Lagrangian_Swarm(_DDtBase):
 
 
 
+def _hand_arrivals_to_owners(X, columns, locate):
+    """Give every arrival to the rank whose cell it landed in.
+
+    ``locate`` returns the owning local cell of each point, -1 where the point
+    is in none of this rank's cells. Only the points that left their rank
+    travel: each rank offers its leavers to everyone and keeps the offered
+    points that land in its own cells (at Courant one that is the seam layer,
+    not the whole set). A point no rank takes has left the domain and is
+    dropped. The locators are local; the exchange is the only collective and
+    every rank makes it, a rank with no cells contributing and taking nothing
+    (comm.allgather rather than gather_data: the rows are vectors, and
+    gather_data flattens).
+
+    Returns the kept points, their ``columns`` (arrays with a row per point),
+    their cells, and how many arrived from another rank.
+    """
+    def owner(P):
+        return (np.asarray(locate(P), dtype=np.int64).reshape(-1) if P.shape[0]
+                else np.zeros(0, dtype=np.int64))
+
+    X = np.asarray(X)
+    columns = [np.asarray(c) for c in columns]
+    own = owner(X)
+    stay = own >= 0
+    if uw.mpi.size == 1:
+        return X[stay], [c[stay] for c in columns], own[stay], 0
+    comm = uw.mpi.comm
+    offered = np.concatenate(comm.allgather(X[~stay]), axis=0)
+    offered_columns = [np.concatenate(comm.allgather(c[~stay]), axis=0) for c in columns]
+    taken = owner(offered)
+    take = taken >= 0
+    return (np.concatenate([X[stay], offered[take]], axis=0),
+            [np.concatenate([c[stay], o[take]], axis=0) for c, o in zip(columns, offered_columns)],
+            np.concatenate([own[stay], taken[take]]),
+            int(take.sum()))
+
+
 def _psi_shape_for(vtype, cdim):
     """The symbolic shape a history of ``vtype`` must have."""
     if vtype == uw.VarType.SCALAR:
@@ -4784,9 +4795,6 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
     #: there when one is set (#745); without one they sample the edge.
     applies_inflow_value = True
 
-    _commit_projection = None
-    _commit_flat = None
-
     def commit_flux_to_history(self, flux, verbose=False):
         """Project the new flux into the nodal snapshot and read it at the
         points, then shift both ladders.
@@ -4806,22 +4814,8 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
         explicit and needs no snapshot substitution.
         """
         history = self.psi_star[0]
-        flux = sympy.Matrix(flux)
-        columns = _storage_components(self.vtype, flux.shape)
-
-        if self._commit_projection is None:
-            self._commit_flat = uw.discretisation.MeshVariable(
-                f"flux_nodal_{self.instance_number}", self.mesh, (1, len(columns)),
-                vtype=uw.VarType.MATRIX, degree=self.degree,
-                continuous=self.continuous,
-                varsymbol=rf"{{F^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
-            self._commit_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
-                self.mesh, u_Field=self._commit_flat, n_components=len(columns),
-                verbose=self.verbose)
-        self._commit_projection.uw_function = sympy.Matrix(
-            [[flux[i, j] for (i, j) in columns]])
-        self._commit_projection.smoothing = self._store_smoothing_alpha()
-        self._commit_projection.solve(verbose=verbose)
+        columns = _storage_components(self.vtype, sympy.Matrix(flux).shape)
+        nodal_flux = self._project_nodally(flux, smoothing=self._store_smoothing_alpha(), verbose=verbose)
 
         # Oldest first, so each level reads the one above before it is written.
         for level in range(self.order - 1, 0, -1):
@@ -4830,10 +4824,10 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
 
         points = np.asarray(history.integration_points).reshape(-1, self.mesh.cdim)
         for column in range(len(columns)):
-            nodal = self._commit_flat.data[:, column]
+            nodal = nodal_flux.data[:, column]
             self.psi_snap[0].data[:, column] = np.asarray(nodal).reshape(-1)
             history.data[:, column] = np.asarray(uw.function.evaluate(
-                self._commit_flat.sym[0, column], points)).reshape(-1)
+                nodal_flux.sym[0, column], points)).reshape(-1)
 
         self._history_committed = True
 
@@ -5180,25 +5174,14 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
         display(Latex(rf"$\quad$History steps = {self.order} (at the integration points)"))
 
     # ------------------------------------------------------------------
-    def _nudged_node_coords(self, var):
-        """ND node coordinates of ``var`` moved 0.1 % toward their cell
-        centroids so boundary nodes locate unambiguously (see
-        :meth:`BackwardNodesSemiLagrangian._centroid_shifted_node_coords`)."""
-        coords = np.asarray(var.coords_nd)
-        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
-        cent = np.asarray(self.mesh._centroids)[cellid]
-        return 0.999 * coords + 0.001 * cent
-
     def _record_current(self):
         """Snapshot slot 0 <- the current solution and velocity."""
         ps = self.psi_snap[0]
-        if self._psi_meshVar is not None and (
-            self._psi_meshVar.degree == ps.degree
-            and self._psi_meshVar.continuous == ps.continuous
-        ):
-            ps.data[...] = self._psi_meshVar.data[...]
+        field = _tracked_field(self.mesh, self._psi_meshVar or self.psi_fn, ps)
+        if field is not None:
+            ps.data[...] = field.data[...]
         else:
-            self._write_components(ps, self.psi_fn, self._nudged_node_coords(ps))
+            self._write_components(ps, self.psi_fn, np.asarray(ps.coords_nd))
 
     def _write_components(self, var, expr, coords, evaluate=None, **kwargs):
         """Evaluate ``expr`` at ``coords`` and store it component by component.
@@ -5281,6 +5264,7 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
             self._forcing_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
                 self.mesh, u_Field=self._forcing_flat, n_components=len(columns),
                 verbose=self.verbose)
+            self._forcing_projection.tolerance = _HISTORY_PROJECTION_TOLERANCE
         self._forcing_projection.uw_function = sympy.Matrix(
             [[forcing[i, j] for (i, j) in columns]])
         self._forcing_projection.smoothing = 0.0
@@ -5595,6 +5579,7 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         if self._flux_projection is None:
             self._flux_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
                 self.mesh, u_Field=self._flux_var, n_components=self.num_components)
+            self._flux_projection.tolerance = _HISTORY_PROJECTION_TOLERANCE
         self._flux_projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in self._components]])
         self._flux_projection.smoothing = self.flux_smoothing
         self._flux_projection.solve()
@@ -5636,38 +5621,15 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         ncell = self._cell_measure.size
         w = self._launch_weights
         if cell is None:
-            if uw.mpi.size > 1:
-                # Only the points that left this rank's partition travel: each rank
-                # offers its leavers to everyone and keeps the offered points that
-                # land in its own cells. At Courant one that is the seam layer, not
-                # the whole set. A rank with no cells owns nothing and keeps nothing.
-                # Ownership is by strict containment (face tolerance zero), not the
-                # evaluation locator's slab: a point a hair across a seam face would
-                # otherwise be kept by the rank it left and fitted into the wrong
-                # cell. The locators are local; the exchange is the only collective
-                # and every rank makes it, a rank with no cells contributing and
-                # taking nothing. (comm.allgather rather than gather_data: the rows
-                # are vectors, and gather_data flattens.)
-                X, values = np.asarray(X), np.asarray(values)
-                own = np.asarray(mesh._get_closest_local_cells_internal(X, tol=0.0), dtype=int).reshape(-1)
-                stay = own >= 0
-                comm = uw.mpi.comm
-                offered = np.concatenate(comm.allgather(X[~stay]), axis=0)
-                offered_values = np.concatenate(comm.allgather(values[~stay]), axis=0)
-                offered_w = np.concatenate(comm.allgather(w[~stay]), axis=0)
-                taken = np.asarray(mesh._get_closest_local_cells_internal(offered, tol=0.0), dtype=int).reshape(-1)
-                take = taken >= 0
-                self._n_relocated = int(take.sum())
-                X = np.concatenate([X[stay], offered[take]], axis=0)
-                values = np.concatenate([values[stay], offered_values[take]], axis=0)
-                w = np.concatenate([w[stay], offered_w[take]], axis=0)
-                cell = np.concatenate([own[stay], taken[take]])
-            else:
-                # the same strict rule as the parallel path, so a partition does
-                # not change which cell a point on a face is fitted into
-                cell = np.asarray(mesh._get_closest_local_cells_internal(X, tol=0.0), dtype=int).reshape(-1)
-                inside = cell >= 0
-                X, values, w, cell = X[inside], values[inside], w[inside], cell[inside]
+            # Ownership is by strict containment (face tolerance zero), not the
+            # evaluation locator's slab: a point a hair across a seam face would
+            # otherwise be kept by the rank it left and fitted into the wrong
+            # cell; serially the same rule, so a partition does not change which
+            # cell a point on a face is fitted into.
+            def strict(P):
+                return np.asarray(mesh._get_closest_local_cells_internal(P, tol=0.0), dtype=int).reshape(-1)
+            X, (values, w), cell, self._n_relocated = _hand_arrivals_to_owners(
+                X, (values, w), strict)
         centroid = np.asarray(mesh._centroids)[:, :d]
         h = np.sqrt(self._cell_measure) if d == 2 else np.cbrt(self._cell_measure)
         # centred on the cell and scaled by its size, so the constant is c0 and the
@@ -5785,22 +5747,32 @@ class ForwardNodesSemiLagrangian(_DDtBase):
     A field is known exactly at its own nodes (they are its unknowns) and, since
     its interpolant is a polynomial inside each element, at any point of an
     element's interior. Each step launches the values at the nodes and at a
-    lattice inside every element (the points of the discontinuous basis one
-    degree up), carries each one step forward along the characteristic, fits
+    lattice inside every element (the points of the discontinuous basis two
+    degrees up), carries each one step forward along the characteristic, fits
     the arrivals in each cell to a polynomial of the field's own degree, and
-    reads that fit back at the nodes. The fit never reaches across an element
-    boundary, where the interpolant has a kink. A cell with too few arrivals, or
-    arrivals on a line, falls back to a linear fit over the nearest arrivals; a
-    cell nothing reached keeps the field it launched (see
+    projects the per-cell fits (L2) onto the continuous store. The fit never
+    reaches across an element boundary, where the interpolant has a kink; the
+    projection weighs every cell that shares a node. A cell with too few arrivals
+    for that takes a linear fit to its own arrivals, or their mean; a cell
+    nothing reached keeps the field it launched (see
     :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`).
     Arrivals that leave the domain are dropped; a node the flow reached from
     outside takes :attr:`inflow_value` when one is set.
 
-    The integration-point counterpart is :class:`ForwardIntegrationPointsSemiLagrangian`, which
-    launches from the quadrature points, where a flux (a stress) is formed, and
-    is the forward scheme for one: this class carries a field and refuses a flux.
-    First order; serial (a node near a partition seam needs arrivals from the
-    other rank); a fixed mesh.
+    A flux (a viscoelastic stress) is committed by L2 projection onto the
+    continuous store, since it holds gradients that are discontinuous across
+    elements; the next step launches from that projected field, which is a
+    polynomial inside each element like any other. The integration-point
+    counterpart, :class:`ForwardIntegrationPointsSemiLagrangian`, launches a
+    flux from the quadrature points where it is formed.
+
+    An arrival on a face or vertex shared by several cells (a node on a
+    no-slip wall arrives where it started) is fitted in every one of them. In
+    parallel a node shared by two ranks is launched once, by its owner, and an
+    arrival that crosses a partition seam, or lands on one, is handed to every
+    rank with a cell that contains it, so each cell is fitted from everything
+    that reached it and the result does not depend on the partition. First
+    order; a fixed mesh.
 
     Parameters
     ----------
@@ -5826,15 +5798,13 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             raise NotImplementedError("ForwardNodesSemiLagrangian carries one level; order must be 1")
         if mesh.cdim != mesh.dim:
             raise NotImplementedError("ForwardNodesSemiLagrangian fits in the embedding coordinates; no manifolds")
-        if uw.mpi.size > 1:
-            raise NotImplementedError("ForwardNodesSemiLagrangian is serial: the fit at a node near a "
-                                      "partition seam needs the arrivals on the other rank")
         if _unsupported:
             warnings.warn(f"ForwardNodesSemiLagrangian ignores {sorted(_unsupported)}", stacklevel=2)
         self.vtype = vtype
         self.mesh = mesh
         self.degree = int(degree)
         self.continuous = True
+        self.verbose = False
         self.order = 1
         self.theta = float(theta)
         self.V_fn = V_fn
@@ -5855,8 +5825,18 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         self._fit_var = uw.discretisation.MeshVariable(
             f"fit_fwn_{self.instance_number}", mesh, vtype=vtype, degree=self.degree, continuous=False)
         self._projector = CellPolynomialProjector(self._fit_var)
-        self._interior = np.asarray(mesh._get_coords_for_basis(self.degree + 1, continuous=False)
+        # two degrees up: enough arrivals that every cell of the rotating
+        # Gaussian fits at the field's degree (one degree up left ~8% of the
+        # cells to the linear fallback; three gains nothing)
+        self._interior = np.asarray(mesh._get_coords_for_basis(self.degree + 2, continuous=False)
                                     ).reshape(-1, mesh.cdim)
+        # A node on a partition seam is on both ranks and is launched once, by its
+        # owner: writing the rank into the store and reading it back after the
+        # ghost update leaves every copy holding its owner's rank.
+        self.psi_star[0].data[:, 0] = uw.mpi.rank
+        self._owned = np.asarray(self.psi_star[0].data[:, 0]) == uw.mpi.rank
+        self.psi_star[0].data[:, :] = 0.0
+        self._n_relocated = 0
         self._n_v = 2
         self._init_coefficient_expressions(1, self.theta, with_exp=True)
         self._register_with_default_model()
@@ -5893,26 +5873,73 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             np.asarray(_to_nondim_ndarray(uw.function.evaluate(expr[i, j], X))).reshape(-1)
             for (i, j) in self._components])
 
-    def _reconstruct(self, arrivals, values, nodes):
-        """Fit the arrivals in each cell at the field's degree; the fit at the nodes.
-        A cell nothing reached keeps the field it launched."""
-        inside = np.asarray(self.mesh.points_in_domain(arrivals), dtype=bool)
-        launched = self._values_at(self._psi_fn, np.asarray(self._fit_var.coords_nd))
-        fit = self._projector.fit(arrivals[inside], values[inside], old=launched)
-        at_nodes = self._projector.interpolate(fit, nodes)
-        if np.isnan(at_nodes).any():
-            raise RuntimeError("ForwardNodesSemiLagrangian: a node lies in no cell of the fit")
-        return at_nodes
+    _FACE_TOLERANCE = 1.0e-9
+
+    def _arrivals_by_cell(self, X, values):
+        """Every arrival with every cell that contains it, on the rank that owns
+        the cell: one row per (arrival, cell).
+
+        An arrival strictly inside a cell of this rank belongs to that cell
+        alone. One on a face or vertex (a node on a no-slip wall arrives where
+        it started) belongs to every cell that shares it, and one in none of
+        this rank's cells has left the rank; both are offered to every rank,
+        which takes them into each of its own cells that contains them. No
+        tie-break between cells is made, so the assignment, and the fit, are the
+        same on any partition.
+        """
+        pj = self._projector
+        tol = self._FACE_TOLERANCE
+        point, cell, lam = pj.containing_cells(X, tol)
+        strict = np.zeros(X.shape[0], dtype=bool)
+        strict[point[lam > tol]] = True
+        keep = strict[point]
+        offered_X, offered_v = X[~strict], values[~strict]
+        if uw.mpi.size > 1:
+            comm = uw.mpi.comm
+            parts_X = comm.allgather(offered_X)
+            parts_v = comm.allgather(offered_v)
+            offered_X = np.concatenate(parts_X, axis=0)
+            offered_v = np.concatenate(parts_v, axis=0)
+            mine_from = sum(p.shape[0] for p in parts_X[:uw.mpi.rank])
+            n_mine = parts_X[uw.mpi.rank].shape[0]
+        else:
+            mine_from, n_mine = 0, offered_X.shape[0]
+        q, qcell, _ = pj.containing_cells(offered_X, tol)
+        own = (q >= mine_from) & (q < mine_from + n_mine)
+        self._n_relocated = int(np.unique(q[~own]).size)
+        return (np.concatenate([X[point[keep]], offered_X[q]], axis=0),
+                np.concatenate([values[point[keep]], offered_v[q]], axis=0),
+                np.concatenate([cell[keep], qcell]))
+
+    def _reconstruct(self, arrivals, values, source):
+        """Fit the arrivals in each cell at the field's degree, and project the
+        per-cell fits onto the continuous store. A node is shared by several
+        cells whose fits differ slightly; the projection weighs them all, where
+        reading one cell's fit would depend on which cell (and in parallel which
+        rank) the node was located in. A cell nothing reached keeps the field it
+        launched (``source``)."""
+        arrivals, values, cells = self._arrivals_by_cell(arrivals, values)
+        launched = self._values_at(source, np.asarray(self._fit_var.coords_nd))
+        self._fit_var.data[:, :] = self._projector.fit(arrivals, values, old=launched,
+                                                       cell_local=True, cells=cells)
+        return np.array(self._project_nodally(self._fit_var.sym, name="fit").data)
 
     # ------------------------------------------------------------------
     def initialise_history(self):
-        """Start from the current field at the nodes."""
+        """Start from the current field at the nodes. A history already placed
+        by :meth:`commit_flux_to_history` is the start, and is kept."""
         self.characteristics.initialise_levels(self._n_v)
-        self.psi_star[0].data[:, :] = self._values_at(self._psi_fn, self._nodes())
+        if not self._history_committed:
+            self.psi_star[0].data[:, :] = self._values_at(self._psi_fn, self._nodes())
         self._history_initialised = True
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False, **_ignored):
-        """Carry the field forward one step from the nodes and rebuild it there."""
+    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True, **_ignored):
+        """Carry the field forward one step from the nodes and rebuild it there.
+
+        ``store_result=False`` says the store already holds the values to launch
+        (a flux placed by :meth:`commit_flux_to_history`); otherwise the tracked
+        field is read first.
+        """
         self._dt = dt = self._nondim_timestep(dt)
         if self._projector.mesh_version != self.mesh._mesh_version:
             raise NotImplementedError(
@@ -5926,19 +5953,27 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         if self._owns_characteristics:
             trace.begin_step(dt)
         nodes = self._nodes()
-        launch = np.vstack([nodes, self._interior])
-        values = self._values_at(self._psi_fn, launch)
+        owned = nodes[self._owned]
+        launch = np.vstack([owned, self._interior])
+        # the tracked field, or the committed store, which is a polynomial
+        # inside each element, so its interior values are exact
+        source = self._psi_fn if store_result else self.psi_star[0].sym
+        at_owned = (self._values_at(source, owned) if store_result
+                    else np.asarray(self.psi_star[0].data)[self._owned])
+        values = np.vstack([at_owned, self._values_at(source, self._interior)])
         key = (_basis_key_of(self.psi_star[0]), "launch")
         arrivals = np.asarray(trace.departure_points(key, launch, (("first", 0, -float(dt)),),
                                                      evalf=evalf, clamp_final=False))
-        self.psi_star[0].data[:, :] = self._reconstruct(arrivals, values, nodes)
-        arrivals = arrivals[:nodes.shape[0]]
+        carried = self._reconstruct(arrivals, values, source)
         if self._inflow_value is not None:
-            # a node whose back-trace leaves the domain holds fluid that entered this step
-            back = 2.0 * nodes - arrivals
-            entered = ~np.asarray(self.mesh.points_in_domain(back), dtype=bool)
-            if entered.any():
-                self._write_inflow(self.psi_star[0], nodes, entered)
+            # an owned node whose back-trace leaves the domain holds fluid that
+            # entered this step (a ghost copy takes its owner's value)
+            back = 2.0 * owned - arrivals[:owned.shape[0]]
+            entered = np.zeros(nodes.shape[0], dtype=bool)
+            entered[np.flatnonzero(self._owned)] = ~np.asarray(self.mesh.points_in_domain(back), dtype=bool)
+            inflow = self._values_at(self._inflow_record(), nodes)
+            carried[entered] = inflow[entered]
+        self.psi_star[0].data[:, :] = carried
         if self._owns_characteristics:
             trace.finish_step()
 
@@ -5952,11 +5987,10 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             self._n_solves_completed += 1
 
     def commit_flux_to_history(self, flux, verbose=False):
-        """Refused: a flux is formed at the integration points, not known at the nodes."""
-        raise NotImplementedError(
-            "ForwardNodesSemiLagrangian carries a field known at its nodes; a flux (a stress) "
-            "is formed at the integration points, so carry it with "
-            "ForwardIntegrationPointsSemiLagrangian")
+        """Project the new flux onto the store, where the next step launches it."""
+        projected = self._project_nodally(flux, verbose=verbose)
+        self.psi_star[0].data[:, :] = np.asarray(projected.data)
+        self._history_committed = True
 
 
 _SEMI_LAGRANGIAN_SCHEMES = {

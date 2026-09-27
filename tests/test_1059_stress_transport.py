@@ -226,6 +226,7 @@ KINDS = {
     "backward_nodes": "BackwardNodesSemiLagrangian",
     "backward_integration_points": "BackwardIntegrationPointsSemiLagrangian",
     "forward_integration_points": "ForwardIntegrationPointsSemiLagrangian",
+    "forward_nodes": "ForwardNodesSemiLagrangian",
     "lagrangian": "Lagrangian",
     "eulerian": "EulerianSUPG",
 }
@@ -292,9 +293,6 @@ def test_the_former_stress_transport_names_still_select_their_scheme():
         with pytest.warns(FutureWarning, match=new):
             stokes.stress_transport = old
         assert stokes.stress_transport == new
-    # a stress is formed at the integration points: it is not carried from the nodes
-    with pytest.raises(ValueError, match="stress_transport must be"):
-        stokes.stress_transport = "forward_nodes"
 
 
 def test_semi_lagrangian_selects_its_scheme_by_trace_and_launch():
@@ -314,8 +312,6 @@ def test_semi_lagrangian_selects_its_scheme_by_trace_and_launch():
     # an option the chosen scheme does not take is refused, not dropped
     with pytest.raises(TypeError, match="monotone_mode"):
         uw.systems.ddt.SemiLagrangian(mesh, T.sym, V, trace="forward", degree=1, monotone_mode="clamp")
-    with pytest.raises(NotImplementedError, match="integration points"):
-        uw.systems.ddt.SemiLagrangian(mesh, T.sym, V, trace="forward", degree=1).commit_flux_to_history(T.sym)
     with pytest.warns(FutureWarning, match="ForwardIntegrationPointsSemiLagrangian"):
         assert uw.systems.ddt.ForwardSemiLagrangian is uw.systems.ddt.ForwardIntegrationPointsSemiLagrangian
 
@@ -766,11 +762,11 @@ def test_the_store_smoothing_is_the_coefficient_times_the_local_cell_size_square
     stokes = _one_shear_step("backward_integration_points", dt=1.0)
     history = stokes.DFDt
     assert history.store_smoothing == 0.0
-    assert history._commit_projection.smoothing == 0.0
+    assert history._nodal_projections["flux"][1].smoothing == 0.0
     history.store_smoothing = 0.05
     stokes.solve(timestep=1.0, zero_init_guess=False)
     # the projection's smoothing is now a field: c times the cell-size field squared
-    alpha = history._commit_projection.smoothing
+    alpha = history._nodal_projections["flux"][1].smoothing
     x0 = np.array([[0.1, 0.1]])
     h = float(np.asarray(uw.function.evaluate(stokes.mesh.cell_size(), x0)).reshape(-1)[0])
     a = float(np.asarray(uw.function.evaluate(alpha, x0)).reshape(-1)[0])

@@ -572,9 +572,10 @@ def global_evaluate_nd(   expr,
     #      rank whose nearest cell is globally closest, and Allreduce(SUM of
     #      the winner-only value/flag) scatters that rank's extrapolation back.
     #
-    # A point some rank actually contains (distance ~ 0) naturally wins, so
-    # only genuinely-stranded points are corrected. Cost is O(boundary points)
-    # — no dense global tree, no exhaustive search.
+    # A point some rank's cell contains is then evaluated by that rank with the
+    # FE interpolant, not the rbf extrapolation (see the containment round
+    # below). Cost is O(stranded points) — no dense global tree, no
+    # exhaustive search.
     #
     # DEADLOCK SAFETY — read before editing. Every collective here (allgather,
     # Allreduce) runs unconditionally on the IDENTICAL global set on every
@@ -649,6 +650,32 @@ def global_evaluate_nd(   expr,
             contrib_flag = np.where(i_win, ext_flag, 0).astype(np.int32)
             best_flag = np.empty(n_ext_total, dtype=np.int32)
             comm.Allreduce([contrib_flag, MPI.INT], [best_flag, MPI.INT], op=MPI.SUM)
+
+            # A stranded point that a rank's cell CONTAINS is not out of the
+            # domain: the migration's claim (points_in_domain) is looser than
+            # cell containment, so a point a hair from a partition seam can be
+            # claimed by the neighbour, found in none of its cells and stranded.
+            # The rank that contains it evaluates it with the FE interpolant,
+            # exactly as serial evaluate() would (the rbf value above is only
+            # for points no rank contains). Every rank calls evaluate_nd, on
+            # the points it contains -- possibly none -- as the first pass does
+            # on the points it received, so the collectives stay in lockstep.
+            contains = np.asarray(mesh._robust_owning_cells(all_ext)) >= 0
+            my_owner = np.where(contains, comm.rank, comm.size).astype(np.int32)
+            owner = np.empty(n_ext_total, dtype=np.int32)
+            comm.Allreduce([my_owner, MPI.INT], [owner, MPI.INT], op=MPI.MIN)
+            mine = owner == comm.rank
+            fe_vals, _fe_flag = evaluate_nd(
+                expr, np.ascontiguousarray(all_ext[mine]), rbf=rbf, evalf=evalf,
+                verbose=False, simplify=simplify, check_extrapolated=True,)
+            contrib_fe = np.zeros((n_ext_total,) + expr_shape, dtype=np.float64)
+            if mine.any():
+                contrib_fe[mine] = np.asarray(fe_vals, dtype=np.float64).reshape((-1,) + expr_shape)
+            fe_val = np.empty_like(contrib_fe)
+            comm.Allreduce([contrib_fe, MPI.DOUBLE], [fe_val, MPI.DOUBLE], op=MPI.SUM)
+            contained = owner < comm.size
+            best_val[contained] = fe_val[contained]
+            best_flag[contained] = 0
 
             # Scatter this rank's segment of the global set back to its points.
             offset = int(counts[:comm.rank].sum())

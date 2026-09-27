@@ -462,15 +462,10 @@ from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
 
 # The semi-Lagrangian schemes a solver can build its history with, named
-# "<trace>_<launch>" after the arguments of ddt.SemiLagrangian. A stress is
-# formed at the integration points, so it is not carried forward from nodes.
+# "<trace>_<launch>" after the arguments of ddt.SemiLagrangian.
 _SEMI_LAGRANGIAN_TRANSPORTS = (
     "backward_nodes", "backward_integration_points",
     "forward_integration_points", "forward_nodes",
-)
-_STRESS_TRANSPORTS = (
-    "backward_nodes", "backward_integration_points", "forward_integration_points",
-    "lagrangian", "eulerian",
 )
 _RENAMED_TRANSPORTS = {
     "semi_lagrangian": "backward_nodes",
@@ -1565,9 +1560,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried: ``"backward_nodes"``
         (default), ``"backward_integration_points"``,
-        ``"forward_integration_points"``, ``"lagrangian"`` or ``"eulerian"``.
+        ``"forward_integration_points"``, ``"forward_nodes"``, ``"lagrangian"``
+        or ``"eulerian"``.
 
-        The first three are semi-Lagrangian schemes of
+        The first four are the semi-Lagrangian schemes of
         :func:`~underworld3.systems.ddt.SemiLagrangian`, named by the direction
         of the trace and the points the history is held at. A backward trace
         follows the characteristic back from each storage point and samples the
@@ -1583,9 +1579,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         through a continuous P1 projection; it holds the Maxwell start-up below
         Courant one where the backward integration-point history rings (see
         :class:`~underworld3.systems.ddt.ForwardIntegrationPointsSemiLagrangian`).
-        The fourth semi-Lagrangian scheme, forward from nodes, carries a field
-        known at its nodes; a stress is formed at the integration points, so it
-        is not offered here.
+        ``"forward_nodes"`` launches the stress projected onto the continuous
+        history space from its nodes and from a lattice inside each element (see
+        :class:`~underworld3.systems.ddt.ForwardNodesSemiLagrangian`).
 
         ``"eulerian"`` transports the stress on the grid with the same
         streamline-upwind stabilisation the Eulerian solvers use, and gives the
@@ -1610,9 +1606,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 f"stress_transport={value!r} is now {_RENAMED_TRANSPORTS[value]!r}",
                 FutureWarning, stacklevel=2)
             value = _RENAMED_TRANSPORTS[value]
-        if value not in _STRESS_TRANSPORTS:
+        if value not in _SEMI_LAGRANGIAN_TRANSPORTS + ("lagrangian", "eulerian"):
             raise ValueError(
-                f"stress_transport must be one of {_STRESS_TRANSPORTS}, not {value!r}.")
+                f"stress_transport must be one of {_SEMI_LAGRANGIAN_TRANSPORTS} or "
+                f"'lagrangian' or 'eulerian', not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
@@ -1836,17 +1833,19 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 **ddt_kwargs,
                 **{k: v for k, v in common.items() if k != "smoothing"},
             )
-        elif self.stress_transport == "forward_integration_points":
+        elif self.stress_transport.startswith("forward_"):
             if ddt_kwargs:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
-                    f"{sorted(ddt_kwargs)}, which the forward flavour does not provide; "
+                    f"{sorted(ddt_kwargs)}, which the forward flavours do not provide; "
                     "use stress_transport='backward_nodes' for it.")
-            self.Unknowns.DFDt = uw.systems.ddt.ForwardIntegrationPointsSemiLagrangian(
+            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
-                vtype=common["vtype"], degree=common["degree"], varsymbol=common["varsymbol"],
+                common["vtype"],
+                trace="forward", launch=self.stress_transport[len("forward_"):],
+                degree=common["degree"], varsymbol=common["varsymbol"],
                 order=order, units=common["units"],
             )
         elif self.stress_transport == "lagrangian":
@@ -4463,8 +4462,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         does not take (``monotone_mode`` on a forward scheme, say) is refused.
         Only the value history is chosen: the diffusive flux history ``DFDt``
         is always backward from the nodes. ``"forward_integration_points"``
-        fits a linear polynomial per cell and so needs a degree-1 field;
-        ``"forward_nodes"`` runs in serial only.
+        fits a linear polynomial per cell and so needs a degree-1 field.
     old_frame_traceback : bool, default=False
         Use the old-frame semi-Lagrangian reach-back for the advective
         ``DuDt`` history on a moving mesh (free surface or interior-node

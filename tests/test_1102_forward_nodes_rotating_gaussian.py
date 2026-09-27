@@ -41,7 +41,7 @@ def _run(mesh, walls):
 def test_forward_from_nodes_on_the_disc():
     uw.reset_default_model()
     err, peak = _run(_disc(24), ("Upper",))
-    assert abs(err - 0.01996) < 0.002, err                 # BASELINE (2026-09-26)
+    assert abs(err - 0.01780) < 0.0018, err                # BASELINE (2026-09-27)
     assert abs(peak - EXACT_PEAK) < 0.002, (peak, EXACT_PEAK)
 
 
@@ -50,5 +50,5 @@ def test_forward_from_nodes_holds_the_box():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0),
                                              cellSize=2.0 / 24, qdegree=3, regular=False)
     err, peak = _run(mesh, ("Left", "Right", "Top", "Bottom"))
-    assert abs(err - 0.0617) < 0.006, err                  # BASELINE (2026-09-26)
+    assert abs(err - 0.0657) < 0.0065, err                 # BASELINE (2026-09-27)
     assert abs(peak - EXACT_PEAK) < 0.005, (peak, EXACT_PEAK)
