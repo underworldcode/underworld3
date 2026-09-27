@@ -53,6 +53,16 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
+def _public_names(cls):
+    """The names ``uw.systems`` exports a solver class under."""
+    try:
+        systems = uw.systems
+    except AttributeError:
+        return []
+    return sorted(name for name, obj in vars(systems).items()
+                  if obj is cls and not name.startswith("SNES_"))
+
+
 def _jacobian_unwrap(expr):
     """Expand UWexpressions down to (but NOT including) constant atoms, for use
     as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
@@ -1474,6 +1484,61 @@ class SolverBaseClass(uw_object):
                 })
         return terms
 
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The family: the equation it solves as the residual templates
+        declared on the class, the terms it is given, the conditions it
+        accepts, and its documentation — with no instance and no mesh."""
+        import inspect
+        from underworld3.utilities.describe import record
+        from underworld3.utilities._api_tools import Template
+
+        doc = (cls.__doc__ or "").strip()
+        facts = {}
+        public = _public_names(cls)
+        if public:
+            facts["public name"] = public[0] if len(public) == 1 else public
+        for base, what in (("SNES_Stokes_SaddlePt", "velocity and pressure, a saddle point"),
+                           ("SNES_MultiComponent", "several components"),
+                           ("SNES_Vector", "a vector field"), ("SNES_Scalar", "a scalar field")):
+            if any(b.__name__ == base for b in cls.__mro__):
+                facts["unknown"] = what
+                break
+        forms = {}
+        for name in ("F0", "F1", "PF0"):
+            declared = None
+            for base in cls.__mro__:
+                if name in base.__dict__:
+                    declared = base.__dict__[name]
+                    break
+            if declared is None:
+                continue
+            if isinstance(declared, Template):
+                forms[name] = {"symbol": declared.name, "latex": None, "text": None,
+                               "description": (declared.description or "").strip().split("\n")[0], "where": []}
+            elif isinstance(declared, property):
+                forms[name] = {"symbol": name, "latex": None, "text": None,
+                               "description": (declared.__doc__ or "").strip().split("\n")[0], "where": []}
+        terms = [{"name": attr, "symbol": None, "latex": None, "text": None, "units": None,
+                  "description": what, "where": []}
+                 for attr, what in (getattr(cls, "_solver_terms", None) or ())]
+        conditions = []
+        for method in sorted(m for m in dir(cls) if m.startswith("add_") and m.endswith("_bc")):
+            fn = getattr(cls, method, None)
+            conditions.append({"mechanism": method, "type": method[4:-3].replace("_", " "),
+                               "boundary": "any", "latex": None,
+                               "text": (getattr(fn, "__doc__", "") or "").strip().split("\n")[0] or None})
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__, *public)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("solver_family", cls.__name__, doc.split("\n")[0], documentation=doc or None,
+                      facts=facts, forms=forms or None, terms=terms or None,
+                      conditions=conditions or None, terms_declared=bool(terms))
+
     def describe(self, depth=4):
         """What this solver solves, as data.
 
@@ -1604,36 +1669,36 @@ class SolverBaseClass(uw_object):
                     "where": unpack(value, 1, set()) if value is not None else [],
                 })
 
+        unknown = getattr(getattr(self, "u", None), "name", None)
+        dim = getattr(self.mesh, "dim", None)
+        summary = f"{type(self).__name__}" + (f" for {unknown}" if unknown else "") + (f", {dim}-D" if dim else "")
+        # what the solver contains: its constitutive model and its histories,
+        # each describing itself one level down
+        children = []
+        for child in (getattr(self, "constitutive_model", None),
+                      getattr(self, "DuDt", None), getattr(self, "DFDt", None)):
+            if child is None or not hasattr(child, "describe"):
+                continue
+            try:
+                children.append(child.describe(depth=max(depth - 1, 0)))
+            except Exception:
+                continue
         return {
+            "kind": "solver",
+            "name": type(self).__name__,
+            "summary": summary,
             "solver": type(self).__name__,
-            "unknown": getattr(getattr(self, "u", None), "name", None),
-            "dim": getattr(self.mesh, "dim", None),
+            "unknown": unknown,
+            "dim": dim,
             "cdim": getattr(self.mesh, "cdim", None),
             "forms": forms,
             "boundary_conditions": conditions,
             "terms": described_terms,
             "terms_declared": terms is not None,
+            "children": children,
         }
 
-    def _describe_where(self, entries, display, Latex, level=0):
-        """Render the "Where:" tree from :meth:`describe`."""
-        for entry in entries:
-            indent = "\\quad " * (level + 1)
-            tail = f" \\quad ({entry['description']})" if entry["description"] else ""
-            display(Latex(f"${indent}{entry['symbol']} = {entry['latex']}${tail}"))
-            self._describe_where(entry.get("where", []), display, Latex, level + 1)
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        display(Markdown(fr"### Boundary Conditions"))
-
-        display(Markdown(fr"This solver is formulated as {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
-
-        return
 
     def _reset_rotated_solver_cache(self):
         """Release the rotated-free-slip cross-solve workspace (rotated_bc
@@ -2571,8 +2636,25 @@ class SolverBaseClass(uw_object):
                 model = uw.get_default_model()
                 # What it solves, not only that it solved: the residual is
                 # SymPy, so the weak form can be written into the transcript
-                # exactly as implemented.
-                model._describe_part(self, part, label)
+                # exactly as implemented. The run-time constants go with it:
+                # a parameter changed between solves does not rebuild the
+                # kernel, so its new value is what tells the record the
+                # equation is not the one it holds. The clock and the
+                # timesteps (the solver's and each history's \Delta t) are
+                # left out, or a time-dependent run with an adaptive step
+                # would re-record the whole description every step.
+                constants = None
+                try:
+                    from underworld3.utilities._jitextension import _pack_constants
+                    clock = getattr(self.mesh, "_t", None)
+                    packed = _pack_constants(self.constants_manifest)
+                    constants = {str(getattr(expr, "name", index)): float(packed[index])
+                                 for index, expr in self.constants_manifest
+                                 if expr is not clock
+                                 and not str(getattr(expr, "name", "")).startswith("\\Delta t")}
+                except Exception:
+                    constants = None
+                model._describe_part(self, part, label, constants=constants)
                 model._record_step_event("solve", label, part=part)
             except Exception:
                 pass
@@ -4446,50 +4528,6 @@ class SNES_Scalar(SolverBaseClass):
 
         return
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        f0 = self.F0.sym
-        F1 = self.F1.sym
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
-
-        # feedback on this instance
-        display(
-            Markdown(f"# Underworld / PETSc General Scalar Equation Solver"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-        )
-
-
-        # Rendered from describe(), so the "Where:" a reader sees and the
-        # equation the run transcript records come from one description.
-        where = []
-        for form in self.describe()["forms"].values():
-            where.extend(form.get("where", []))
-        if where:
-            display(Markdown("*Where:*"))
-            self._describe_where(where, display, Latex)
-
-
-        display(
-            Markdown(fr"# Boundary Conditions"),)
-
-        bc_table = "| Type   | Boundary | Expression | \n"
-        bc_table += "|:------------------------ | -------- | ---------- | \n"
-
-        for bc in self.essential_bcs:
-            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
-        for bc in self.natural_bcs:
-                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
-
-        display(Markdown(bc_table))
-
-        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 
 
@@ -5519,48 +5557,6 @@ class SNES_Vector(SolverBaseClass):
 
         return
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        f0 = self.F0.sym
-        F1 = self.F1.sym
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
-
-        # feedback on this instance
-        display(
-            Markdown(f"# Underworld / PETSc General Vector Equation Solver"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-        )
-
-        # Rendered from describe(), so the "Where:" a reader sees and the
-        # equation the run transcript records come from one description.
-        where = []
-        for form in self.describe()["forms"].values():
-            where.extend(form.get("where", []))
-        if where:
-            display(Markdown("*Where:*"))
-            self._describe_where(where, display, Latex)
-
-        display(
-            Markdown(fr"# Boundary Conditions"),)
-
-        bc_table = "| Type   | Boundary | Expression | \n"
-        bc_table += "|:------------------------ | -------- | ---------- | \n"
-
-        for bc in self.essential_bcs:
-             bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
-        for bc in self.natural_bcs:
-                 bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
-
-        display(Markdown(bc_table))
-
-        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 ### =================================
 
@@ -6218,20 +6214,6 @@ class SNES_MultiComponent(SolverBaseClass):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        f0 = self.F0.sym
-        F1 = self.F1.sym
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex(F1) + "$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex(f0) + "\\color{Black} = 0 $"
-
-        display(
-            Markdown(f"# Underworld / PETSc General Multi-Component Solver ({self._n_components} components)"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-        )
 
 ### =================================
 
@@ -8075,58 +8057,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     # redundant uf0/uF1 aliases used below); settle one scheme rather than
     # adding new spellings.
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        uf0 = self.F0.sym
-        uF1 = self.F1.sym
-        pF0 = self.PF0.sym
-
-        if self.penalty.sym == 0:
-            uF1 = self.F1.sym.subs(self.penalty, self.penalty.sym)
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( uF1 )+"$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( uf0 )+"\\color{Black} = 0 $"
-        eqp0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} " + sympy.latex( pF0 ) + " = 0 $"
-
-        # feedback on this instance
-        display(
-            Markdown(f"# Underworld / PETSc General Saddle Point Equation Solver"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-            Markdown(f"Constraint: "),
-            Latex(eqp0 ),
-        )
-
-        exprs = uw.function.fn_extract_expressions(self.F0)
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.PF0))
-
-        if len(exprs) != 0:
-            display(Markdown("*Where:*"))
-
-            for expr in exprs:
-                expr._object_viewer()
-
-        display(
-            Markdown(fr"# Boundary Conditions"),)
-
-        bc_table = "| Type   | Boundary | Expression | \n"
-        bc_table += "|:------------------------ | -------- | ---------- | \n"
-
-        for bc in self.essential_bcs:
-            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
-        for bc in self.natural_bcs:
-                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
-
-        display(Markdown(bc_table))
-
-        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
-
-        return
 
     def validate_solver(self):
         """Checks to see if the required properties have been set"""
