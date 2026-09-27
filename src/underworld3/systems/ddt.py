@@ -572,6 +572,13 @@ class _DDtBase(uw_object):
                     facts[f"default {key}"] = params[key].default
         except (TypeError, ValueError):
             pass
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
         return record("history_family", cls.__name__, doc.split("\n")[0], documentation=doc or None, facts=facts)
 
     def describe(self, depth=4):

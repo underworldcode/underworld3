@@ -40,6 +40,76 @@ def families():
     return out
 
 
+def guides_directory():
+    """The checkout's ``docs/developer/guides``, found upward from the
+    working directory or from ``UW_DOCS``; ``None`` outside a checkout."""
+    import os
+    candidates = []
+    if os.environ.get("UW_DOCS"):
+        candidates.append(os.path.join(os.environ["UW_DOCS"], "developer", "guides"))
+    here = os.path.abspath(os.getcwd())
+    while True:
+        candidates.append(os.path.join(here, "docs", "developer", "guides"))
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
+def guides():
+    """The capability guides in the checkout: ``{name: {name, description,
+    families, kind, path}}`` read from each page's front matter. Empty
+    outside a checkout."""
+    import glob
+    import os
+    import yaml
+    directory = guides_directory()
+    out = {}
+    if directory is None:
+        return out
+    for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
+        with open(path, encoding="utf-8") as handle:
+            head = handle.read(4000)
+        if not head.startswith("---"):
+            continue
+        parts = head.split("---", 2)
+        if len(parts) < 3:
+            continue
+        try:
+            meta = yaml.safe_load(parts[1]) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(meta, dict) or "families" not in meta:
+            continue
+        name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])
+        out[name] = {"name": name, "description": str(meta.get("description") or ""),
+                     "families": [str(f) for f in (meta.get("families") or [])],
+                     "kind": str(meta.get("kind") or "guide"), "path": path}
+    return out
+
+
+def guides_for(*names):
+    """The names of the guides whose ``families`` include any of ``names``
+    (a public name or a class name)."""
+    wanted = {str(n) for n in names if n}
+    return [g["name"] for g in guides().values() if wanted & set(g["families"])]
+
+
+def guide_text(name):
+    """The body of one guide, front matter removed, or ``None``."""
+    g = guides().get(name)
+    if g is None:
+        return None
+    with open(g["path"], encoding="utf-8") as handle:
+        text = handle.read()
+    parts = text.split("---", 2)
+    return parts[2].lstrip("\n") if text.startswith("---") and len(parts) == 3 else text
+
+
 def _summary_row(name, description):
     """A family reduced to what a catalogue line needs."""
     facts = dict(description.get("facts") or {})
@@ -51,6 +121,9 @@ def _summary_row(name, description):
         facts["given"] = [t["name"] for t in description["terms"]]
     if description.get("conditions"):
         facts["conditions"] = [c.get("mechanism") for c in description["conditions"]]
+    linked = guides_for(name, description.get("name"))
+    if linked:
+        facts["guides"] = linked
     return record(description.get("kind", "family"), name, description.get("summary", ""),
                   facts={"class": description.get("name"), **facts})
 
@@ -91,5 +164,9 @@ def family(name):
         if cls is None:
             cls = next((c for c in members.values() if c.__name__ == name), None)
         if cls is not None:
-            return cls.describe_class()
+            d = cls.describe_class()
+            linked = guides_for(name, cls.__name__)
+            if linked:
+                d.setdefault("facts", {})["guides"] = linked
+            return d
     return None

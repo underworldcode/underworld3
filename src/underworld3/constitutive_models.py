@@ -759,8 +759,16 @@ class Constitutive_Model(uw_object):
                                       "text": None, "units": getattr(attr, "units", None),
                                       "description": (getattr(attr, "description", "") or "").strip(),
                                       "where": []})
+        facts = {}
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
         return record("constitutive_model_family", cls.__name__, doc.split("\n")[0],
-                      documentation=doc or None, terms=terms or None)
+                      documentation=doc or None, facts=facts or None, terms=terms or None)
 
     def describe(self, depth=4):
         """What this constitutive model is, as data: its parameters as terms,

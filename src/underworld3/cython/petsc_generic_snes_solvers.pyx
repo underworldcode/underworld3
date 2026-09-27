@@ -1533,6 +1533,13 @@ class SolverBaseClass(uw_object):
             conditions.append({"mechanism": method, "type": method[4:-3].replace("_", " "),
                                "boundary": "any", "latex": None,
                                "text": (getattr(fn, "__doc__", "") or "").strip().split("\n")[0] or None})
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__, *public)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
         return record("solver_family", cls.__name__, doc.split("\n")[0], documentation=doc or None,
                       facts=facts, forms=forms or None, terms=terms or None,
                       conditions=conditions or None, terms_declared=bool(terms))

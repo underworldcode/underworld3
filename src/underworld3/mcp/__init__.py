@@ -334,5 +334,30 @@ def uw_capability(name: str, format: str = "markdown") -> str:
         return f"error: {exc}"
 
 
+@server.tool(name="uw_guides", annotations=_READ_ONLY)
+def uw_guides() -> str:
+    """The capability guides in this checkout: curated guidance the code
+    cannot state about itself (which transport scheme, which boundary
+    treatment, how to make a hard solve converge), each with the families
+    it applies to. uw_guide reads one."""
+    from ..utilities.capabilities import guides
+    found = guides()
+    if not found:
+        return "no guides found: the server is not running inside an Underworld3 checkout (set UW_DOCS to its docs directory)"
+    return _yaml([{k: v for k, v in g.items() if k != "path"} for g in found.values()])
+
+
+@server.tool(name="uw_guide", annotations=_READ_ONLY)
+def uw_guide(name: str) -> str:
+    """One capability guide in full, as Markdown. name is from uw_guides,
+    such as transport-schemes, boundary-condition-rulings or
+    nonlinear-solver."""
+    from ..utilities.capabilities import guide_text, guides
+    text = guide_text(name)
+    if text is None:
+        return f"error: no guide named {name!r}; guides are {sorted(guides())}"
+    return text
+
+
 def main():
     server.run(transport="stdio")
