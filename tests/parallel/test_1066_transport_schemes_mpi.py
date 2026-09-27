@@ -4,7 +4,8 @@ Stress: the turned-over Maxwell box of test_1062 (a shear modulus varying in x,
 two counter-rotating cells between no-slip walls, an unstructured mesh), so
 the stress is non-uniform and the flow crosses seams of either orientation.
 Advection: a rotating Gaussian in a square box (the flow crosses every wall),
-P2, a quarter turn, with each of the four semi-Lagrangian value histories. The values at two points after the
+P2, a quarter turn, with each of the four semi-Lagrangian value histories.
+Momentum: the lid-driven cavity of test_1103, with each velocity history. The values at two points after the
 run must be the serial ones. At least three ranks: two ranks meet only along
 one seam, while three or more also meet at points, where an arrival can be
 handed to either of two other ranks.
@@ -19,8 +20,14 @@ import numpy as np
 import pytest
 import sympy
 
+import sys
+from pathlib import Path
+
 import underworld3 as uw
 from test_1062_forward_stress_history_mpi import turned_over_maxwell_box
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from test_1103_navier_stokes_velocity_transport import CAVITY_U, lid_driven_cavity  # noqa: E402
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.mpi(min_size=3), pytest.mark.timeout(1200)]
 
@@ -87,3 +94,10 @@ def test_every_value_history_gives_the_serial_field_on_every_rank(transport):
     uw.reset_default_model()
     values = rotating_gaussian(transport)
     assert np.allclose(values, ADVECTED_T[transport], atol=ATOL), (transport, values)
+
+
+@pytest.mark.parametrize("transport", list(CAVITY_U))
+def test_every_velocity_history_gives_the_serial_flow_on_every_rank(transport):
+    uw.reset_default_model()
+    _kind, values = lid_driven_cavity(transport)
+    assert np.allclose(values, CAVITY_U[transport], atol=ATOL), (transport, values)

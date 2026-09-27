@@ -86,6 +86,15 @@ make that so, and a new history has to respect them:
 - a point is never given to one of two cells by a tie-break: a forward arrival
   on a shared face is fitted in every cell that contains it, and a point the
   parallel evaluator strands is evaluated by the rank whose cell contains it.
+- a monotone bound (`monotone_mode="clamp"`) is applied on the rank that
+  evaluates the point, among the point's own nodes: applied on the rank that
+  asked, it bounded a departure point on another rank by the wrong
+  neighbourhood (#682, 1.6% of a level set's volume at np 8).
+
+The same holds for the value histories of advection-diffusion
+(`AdvDiffusionSLCN(transport=...)`) and for the Navier-Stokes velocity history
+(`NavierStokesSLCN(velocity_transport=...)`; the forward integration-point fit
+is linear, so it refuses a P2 velocity).
 
 The particle history differs from serial by about 1e-5 at np 4 and 6 (np 3
 matches); the cause is open.

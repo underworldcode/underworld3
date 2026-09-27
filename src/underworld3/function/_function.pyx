@@ -370,6 +370,7 @@ def global_evaluate_nd(   expr,
                 force_l2=False,
                 smoothing=1e-6,
                 local_fallback=True,
+                limit=None,
             ):
 
     """
@@ -518,6 +519,10 @@ def global_evaluate_nd(   expr,
     # sympy.simplify on every call for any expression holding a mesh variable
     # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
     values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
+    # ``limit(coords, values)`` (a monotone bound) runs on the rank that
+    # evaluated the points, where their neighbourhood is local
+    if limit is not None and local_coords.shape[0] > 0:
+        values = limit(local_coords, values)
 
     if local_coords.shape[0] > 0:
         data_container.array[...] = values[...]
@@ -677,6 +682,8 @@ def global_evaluate_nd(   expr,
                 fe_vals, _fe_flag = evaluate_nd(
                     expr, np.ascontiguousarray(all_ext[mine]), rbf=rbf, evalf=evalf,
                     verbose=False, simplify=simplify, check_extrapolated=True,)
+                if limit is not None and mine.any():
+                    fe_vals = limit(np.ascontiguousarray(all_ext[mine]), fe_vals)
                 contrib_fe = np.zeros((n_ext_total,) + expr_shape, dtype=np.float64)
                 if mine.any():
                     contrib_fe[mine] = np.asarray(fe_vals, dtype=np.float64).reshape((-1,) + expr_shape)

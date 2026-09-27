@@ -469,6 +469,35 @@ _SEMI_LAGRANGIAN_TRANSPORTS = {
     "forward_integration_points": ("forward", "integration_points"),
     "forward_nodes": ("forward", "nodes"),
 }
+def _value_history(transport, mesh, field, V_fn, vtype, order, nodal_options, requested,
+                   **common):
+    """The semi-Lagrangian history a solver builds for the value of ``field``.
+
+    ``transport`` names the scheme (a key of ``_SEMI_LAGRANGIAN_TRANSPORTS``).
+    ``nodal_options`` go to the backward nodal scheme only (its boundary
+    conditions, smoothing, ...); ``requested`` are options the user set, which
+    go to whichever scheme is chosen and are refused by one that does not
+    take them; ``common`` go to every scheme.
+    """
+    if transport not in _SEMI_LAGRANGIAN_TRANSPORTS:
+        raise ValueError(f"transport must be one of {tuple(_SEMI_LAGRANGIAN_TRANSPORTS)}, "
+                         f"not {transport!r}")
+    if transport == "backward_nodes":
+        return BackwardNodesSemiLagrangian(
+            mesh, field.sym, V_fn, vtype=vtype, degree=field.degree,
+            continuous=field.continuous, varsymbol=field.symbol, order=order,
+            **nodal_options, **requested, **common)
+    if not field.continuous:
+        raise NotImplementedError(
+            f"transport={transport!r} holds a continuous history; "
+            "use transport='backward_nodes' for a discontinuous field")
+    trace, launch = _SEMI_LAGRANGIAN_TRANSPORTS[transport]
+    return uw.systems.ddt.SemiLagrangian(
+        mesh, field.sym, V_fn, vtype, trace=trace, launch=launch,
+        degree=field.degree, varsymbol=field.symbol, order=order,
+        **requested, **common)
+
+
 _RENAMED_TRANSPORTS = {
     "semi_lagrangian": "backward_nodes",
     "integration_point": "backward_integration_points",
@@ -4565,51 +4594,16 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ## NB - Smoothing is generally required for stability. 0.0001 is effective
         ## at the various resolutions tested.
 
-        if transport not in _SEMI_LAGRANGIAN_TRANSPORTS:
-            raise ValueError(f"transport must be one of {tuple(_SEMI_LAGRANGIAN_TRANSPORTS)}, "
-                             f"not {transport!r}")
         if DuDt is not None and transport != "backward_nodes":
             raise ValueError("transport chooses the DuDt the solver builds; it cannot "
                              "apply to a DuDt that is supplied")
-        if DuDt is None and transport == "backward_nodes":
-            self.Unknowns.DuDt = BackwardNodesSemiLagrangian(
-                self.mesh,
-                u_Field.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
-                self._V_fn,
-                vtype=uw.VarType.SCALAR,
-                degree=u_Field.degree,
-                continuous=u_Field.continuous,
-                varsymbol=u_Field.symbol,
-                verbose=verbose,
-                bcs=self.essential_bcs,
-                order=1,
-                smoothing=0.0,
-                monotone_mode=monotone_mode,
+        if DuDt is None:
+            self.Unknowns.DuDt = _value_history(
+                transport, self.mesh, u_Field, self._V_fn, uw.VarType.SCALAR, order=1,
+                nodal_options=dict(verbose=verbose, bcs=self.essential_bcs, smoothing=0.0),
+                requested={k: v for k, v in (("monotone_mode", monotone_mode),
+                                             ("old_frame_traceback", old_frame_traceback)) if v},
                 theta=theta,
-                old_frame_traceback=old_frame_traceback,
-            )
-        elif DuDt is None:
-            if not u_Field.continuous:
-                raise NotImplementedError(
-                    f"transport={transport!r} holds a continuous history; "
-                    "use transport='backward_nodes' for a discontinuous field")
-            # options a scheme does not take are refused by ddt.SemiLagrangian,
-            # so only those that were asked for are passed on
-            asked = {k: v for k, v in (("monotone_mode", monotone_mode),
-                                       ("old_frame_traceback", old_frame_traceback)) if v}
-            trace, launch = _SEMI_LAGRANGIAN_TRANSPORTS[transport]
-            self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
-                self.mesh,
-                u_Field.sym,
-                self._V_fn,
-                uw.VarType.SCALAR,
-                trace=trace,
-                launch=launch,
-                degree=u_Field.degree,
-                varsymbol=u_Field.symbol,
-                order=1,
-                theta=theta,
-                **asked,
             )
 
         else:
@@ -5452,6 +5446,14 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         Time derivative operator for velocity.
     DFDt : BackwardNodesSemiLagrangian or Lagrangian_DDt, optional
         Time derivative operator for stress.
+    velocity_transport : str, default="backward_nodes"
+        The semi-Lagrangian scheme of the internally-constructed velocity
+        history: ``"backward_nodes"``, ``"backward_integration_points"``,
+        ``"forward_integration_points"`` or ``"forward_nodes"``, named by the
+        ``trace`` and ``launch`` arguments of
+        :func:`~underworld3.systems.ddt.SemiLagrangian`. The forward schemes
+        carry one level, so they need ``order=1``; the viscoelastic stress
+        history is chosen separately, by :attr:`stress_transport`.
 
     Notes
     -----
@@ -5498,6 +5500,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         verbose: Optional[bool] = False,
         DuDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
         DFDt: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt] = None,
+        velocity_transport: str = "backward_nodes",
     ):
         ## Parent class will set up default values and load u_Field into the solver
         super().__init__(
@@ -5534,20 +5537,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         ### sets up DuDt and DFDt
         ## ._setup_history_terms()
 
-        # If DuDt is not provided, then we can build a SLCN version
+        if DuDt is not None and velocity_transport != "backward_nodes":
+            raise ValueError("velocity_transport chooses the DuDt the solver builds; it "
+                             "cannot apply to a DuDt that is supplied")
         if self.Unknowns.DuDt is None:
-            self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
-                self.mesh,
-                self.u.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
-                self.u.sym,
-                vtype=uw.VarType.VECTOR,
-                degree=self.u.degree,
-                continuous=self.u.continuous,
-                varsymbol=self.u.symbol,
-                verbose=self.verbose,
-                bcs=self.essential_bcs,
+            self.Unknowns.DuDt = _value_history(
+                velocity_transport, self.mesh, self.u, self.u.sym, uw.VarType.VECTOR,
                 order=self._order,
-                smoothing=0.0001,
+                nodal_options=dict(verbose=self.verbose, bcs=self.essential_bcs, smoothing=0.0001),
+                requested={},
             )
 
         # F (at least for N-S) is a nodal point variable so there is no benefit
