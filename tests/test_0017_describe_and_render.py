@@ -159,3 +159,18 @@ def test_every_family_describes_itself_at_the_class_level(capsys):
     assert "yield_stress" in {t["name"] for t in uw.constitutive_models.ViscoPlasticFlowModel.describe_class()["terms"]}
     d = uw.systems.ddt.SemiLagrangian.describe_class()
     assert d["kind"] == "history_family" and d["facts"]["scheme"] == "SemiLagrangian"
+
+
+def test_the_capabilities_catalogue_is_the_families_in_one_record(capsys):
+    cat = uw.capabilities()
+    assert cat["kind"] == "capabilities" and [g["kind"] for g in cat["children"]] == [
+        "solvers", "constitutive_models", "histories"]
+    solvers = {c["name"]: c for c in cat["children"][0]["children"]}
+    assert "Stokes" in solvers and solvers["Stokes"]["facts"]["class"] == "SNES_Stokes"
+    assert "given" in solvers["Stokes"]["facts"] and "conditions" in solvers["Stokes"]["facts"]
+    full = uw.capabilities("solvers", detail="full")
+    assert full["children"][0]["children"][0].get("documentation")
+    uw.view(uw.capabilities("histories"))
+    assert "SemiLagrangian" in capsys.readouterr().out
+    with pytest.raises(ValueError):
+        uw.capabilities("nothing")

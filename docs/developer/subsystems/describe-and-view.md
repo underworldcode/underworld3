@@ -77,9 +77,19 @@ uw.systems.ddt.SemiLagrangian.describe_class()                  # the scheme and
 the `add_*_bc` methods, the parameter descriptors of a constitutive
 model's `_Parameters`, and the docstring, which becomes `documentation`.
 `view()` on a class renders it, and `view(class_documentation=True)` on an
-instance renders the family before the instance. This is what the
-capabilities catalogue on the MCP server is built from, so "can Underworld
-solve this" is answered from the classes and cannot drift from them.
+instance renders the family before the instance.
+
+The catalogue of every family is one record, built from those:
+
+```python
+uw.view(uw.capabilities())                               # every family, one line each
+uw.view(uw.capabilities("solvers", detail="full"), depth=2)
+uw.capabilities("constitutive_models")                   # the record, for a query
+```
+
+The MCP server serves the same record, so "can Underworld solve this" is
+answered from the classes, in a notebook or from a tool, and cannot drift
+from them.
 
 ## Adding a description to a class
 

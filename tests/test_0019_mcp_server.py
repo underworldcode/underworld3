@@ -100,11 +100,12 @@ def test_the_tools_answer_as_yaml(run_path):
 
 def test_the_capabilities_catalogue_comes_from_the_classes():
     cat = yaml.safe_load(uwmcp.uw_capabilities())
-    assert set(cat) == {"solvers", "constitutive_models", "histories"}
-    stokes = next(r for r in cat["solvers"] if r["name"] == "Stokes")
-    assert set(stokes["equation"]) == {"F0", "F1", "PF0"} and "add_essential_bc" in stokes["conditions"]
-    assert any(r["name"] == "ViscoPlasticFlowModel" for r in cat["constitutive_models"])
-    assert any(r["name"] == "SemiLagrangian" for r in cat["histories"])
+    groups = {g["kind"]: g["children"] for g in cat["children"]}
+    assert set(groups) == {"solvers", "constitutive_models", "histories"}
+    stokes = next(r for r in groups["solvers"] if r["name"] == "Stokes")
+    assert "F0" in stokes["facts"]["equation"] and "add_essential_bc" in stokes["facts"]["conditions"]
+    assert any(r["name"] == "ViscoPlasticFlowModel" for r in groups["constitutive_models"])
+    assert any(r["name"] == "SemiLagrangian" for r in groups["histories"])
     assert "error" in uwmcp.uw_capabilities(kind="nothing")
     full = uwmcp.uw_capability("Stokes")
     assert full.startswith("## solver family SNES_Stokes") and "Boundary conditions" in full

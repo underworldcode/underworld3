@@ -301,55 +301,19 @@ def uw_describe_render(record_yaml: str, format: str = "markdown", depth: int = 
         return f"error: {exc}"
 
 
-def _families():
-    """Every solver, constitutive model and history family, by public name."""
-    import inspect
-    import underworld3 as uw
-    from underworld3.cython.generic_solvers import SolverBaseClass
-    out = {"solvers": {}, "constitutive_models": {}, "histories": {}}
-    for name, obj in vars(uw.systems).items():
-        if inspect.isclass(obj) and issubclass(obj, SolverBaseClass) and not name.startswith("SNES_"):
-            out["solvers"][name] = obj
-    for name, obj in vars(uw.constitutive_models).items():
-        if (inspect.isclass(obj) and issubclass(obj, uw.constitutive_models.Constitutive_Model)
-                and obj is not uw.constitutive_models.Constitutive_Model):
-            out["constitutive_models"][name] = obj
-    for name, obj in vars(uw.systems.ddt).items():
-        if inspect.isclass(obj) and issubclass(obj, uw.systems.ddt._DDtBase) and not name.startswith("_"):
-            out["histories"][name] = obj
-    return out
-
-
 @server.tool(name="uw_capabilities", annotations=_READ_ONLY)
 def uw_capabilities(kind: str = "all") -> str:
     """What Underworld3 can solve: every solver family with the residual
     templates it declares, the terms it is given and the conditions it
     accepts; every constitutive model with its parameters; every transport
     history scheme. kind is all, solvers, constitutive_models or
-    histories. One line of documentation each; uw_capability gives the
-    whole of one."""
-    families = _families()
-    if kind != "all" and kind not in families:
-        return f"error: kind must be one of all, {', '.join(families)}"
-    out = {}
-    for group, members in families.items():
-        if kind not in ("all", group):
-            continue
-        rows = []
-        for name, cls in sorted(members.items()):
-            d = cls.describe_class()
-            row = {"name": name, "class": cls.__name__, "summary": d.get("summary")}
-            if d.get("facts"):
-                row.update({k: v for k, v in d["facts"].items() if k != "public name"})
-            if d.get("forms"):
-                row["equation"] = {k: f"{v.get('symbol')}: {v.get('description')}" for k, v in d["forms"].items()}
-            if d.get("terms"):
-                row["given"] = [t["name"] for t in d["terms"]]
-            if d.get("conditions"):
-                row["conditions"] = [c["mechanism"] for c in d["conditions"]]
-            rows.append(row)
-        out[group] = rows
-    return _yaml(out)
+    histories. One line each; uw_capability gives the whole of one. The
+    same catalogue a notebook gets from uw.capabilities()."""
+    from ..utilities.capabilities import capabilities
+    try:
+        return _yaml(capabilities(kind))
+    except ValueError as exc:
+        return f"error: {exc}"
 
 
 @server.tool(name="uw_capability", annotations=_READ_ONLY)
@@ -358,19 +322,16 @@ def uw_capability(name: str, format: str = "markdown") -> str:
     parameters and conditions, rendered as markdown, text or yaml. name is
     a public name from uw_capabilities, such as Stokes, AdvDiffusion,
     ViscoPlasticFlowModel or SemiLagrangian."""
-    for group, members in _families().items():
-        cls = members.get(name)
-        if cls is None:
-            cls = next((c for c in members.values() if c.__name__ == name), None)
-        if cls is not None:
-            d = cls.describe_class()
-            if format == "yaml":
-                return _yaml(d)
-            try:
-                return render(d, format)
-            except ValueError as exc:
-                return f"error: {exc}"
-    return f"error: no family named {name!r}; uw_capabilities lists them"
+    from ..utilities.capabilities import family
+    d = family(name)
+    if d is None:
+        return f"error: no family named {name!r}; uw_capabilities lists them"
+    if format == "yaml":
+        return _yaml(d)
+    try:
+        return render(d, format)
+    except ValueError as exc:
+        return f"error: {exc}"
 
 
 def main():
