@@ -124,3 +124,53 @@ def test_the_transcript_part_record_is_still_a_part(tmp_path, objects):
     records = [json.loads(l) for l in (tmp_path / "run.jsonl").read_text().splitlines()]
     parts = [r for r in records if r.get("kind") == "part"]
     assert parts and "children" not in parts[0] and parts[0]["forms"]
+
+
+def _solver_classes():
+    from underworld3.cython.generic_solvers import SolverBaseClass
+    found = {}
+
+    def walk(cls):
+        for sub in cls.__subclasses__():
+            found[sub.__name__] = sub
+            walk(sub)
+    walk(SolverBaseClass)
+    return found
+
+
+def test_every_family_describes_itself_at_the_class_level(capsys):
+    """The class carries what the family solves, is given and accepts, with
+    no instance: what the capabilities catalogue is built from."""
+    for name, cls in _solver_classes().items():
+        d = cls.describe_class()
+        assert d["kind"] == "solver_family" and d["name"] == name and d["summary"], name
+        assert d.get("conditions"), f"{name} declares no boundary-condition methods"
+        for fmt in FORMATS:
+            assert render(d, fmt).strip()
+    stokes = uw.systems.Stokes.describe_class()
+    assert set(stokes["forms"]) == {"F0", "F1", "PF0"} and stokes["facts"]["public name"] == "Stokes"
+    assert {t["name"] for t in stokes["terms"]} >= {"bodyforce", "penalty"}
+    uw.systems.Stokes.view()
+    out = capsys.readouterr().out
+    assert "solver family SNES_Stokes" in out and "Boundary conditions" in out and "F1" in out
+    for cls in (uw.constitutive_models.ViscoPlasticFlowModel, uw.constitutive_models.DiffusionModel):
+        d = cls.describe_class()
+        assert d["kind"] == "constitutive_model_family" and {t["name"] for t in d["terms"]}
+    assert "yield_stress" in {t["name"] for t in uw.constitutive_models.ViscoPlasticFlowModel.describe_class()["terms"]}
+    d = uw.systems.ddt.SemiLagrangian.describe_class()
+    assert d["kind"] == "history_family" and d["facts"]["scheme"] == "SemiLagrangian"
+
+
+def test_the_capabilities_catalogue_is_the_families_in_one_record(capsys):
+    cat = uw.capabilities()
+    assert cat["kind"] == "capabilities" and [g["kind"] for g in cat["children"]] == [
+        "solvers", "constitutive_models", "histories"]
+    solvers = {c["name"]: c for c in cat["children"][0]["children"]}
+    assert "Stokes" in solvers and solvers["Stokes"]["facts"]["class"] == "SNES_Stokes"
+    assert "given" in solvers["Stokes"]["facts"] and "conditions" in solvers["Stokes"]["facts"]
+    full = uw.capabilities("solvers", detail="full")
+    assert full["children"][0]["children"][0].get("documentation")
+    uw.view(uw.capabilities("histories"))
+    assert "SemiLagrangian" in capsys.readouterr().out
+    with pytest.raises(ValueError):
+        uw.capabilities("nothing")

@@ -739,6 +739,37 @@ class Constitutive_Model(uw_object):
 
         return
 
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The family: its parameters, with symbol, units and description,
+        from the descriptors on its ``_Parameters`` class, and its
+        documentation — with no instance."""
+        from underworld3.utilities.describe import record
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+        doc = (cls.__doc__ or "").strip()
+        terms = []
+        params = getattr(cls, "_Parameters", None)
+        if params is not None:
+            seen = set()
+            for base in params.__mro__:
+                for key, attr in base.__dict__.items():
+                    if isinstance(attr, ExpressionDescriptor) and key not in seen:
+                        seen.add(key)
+                        terms.append({"name": key, "symbol": getattr(attr, "name", None), "latex": None,
+                                      "text": None, "units": getattr(attr, "units", None),
+                                      "description": (getattr(attr, "description", "") or "").strip(),
+                                      "where": []})
+        facts = {}
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("constitutive_model_family", cls.__name__, doc.split("\n")[0],
+                      documentation=doc or None, facts=facts or None, terms=terms or None)
+
     def describe(self, depth=4):
         """What this constitutive model is, as data: its parameters as terms,
         with the named expressions inside each followed to ``depth``, and

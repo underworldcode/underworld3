@@ -557,6 +557,30 @@ class _DDtBase(uw_object):
       Symbolic, Eulerian, SemiLagrangian).
     """
 
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The scheme: its documentation and the arguments that set its
+        order and weighting — with no instance."""
+        import inspect
+        from underworld3.utilities.describe import record
+        doc = (cls.__doc__ or "").strip()
+        facts = {"scheme": cls.__name__}
+        try:
+            params = inspect.signature(cls.__init__).parameters
+            for key in ("order", "theta"):
+                if key in params and params[key].default is not inspect.Parameter.empty:
+                    facts[f"default {key}"] = params[key].default
+        except (TypeError, ValueError):
+            pass
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("history_family", cls.__name__, doc.split("\n")[0], documentation=doc or None, facts=facts)
+
     def describe(self, depth=4):
         """What this history is, as data: the scheme (the class), its order,
         its weighting, the field it tracks and the history slots it keeps.

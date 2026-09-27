@@ -53,6 +53,16 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
+def _public_names(cls):
+    """The names ``uw.systems`` exports a solver class under."""
+    try:
+        systems = uw.systems
+    except AttributeError:
+        return []
+    return sorted(name for name, obj in vars(systems).items()
+                  if obj is cls and not name.startswith("SNES_"))
+
+
 def _jacobian_unwrap(expr):
     """Expand UWexpressions down to (but NOT including) constant atoms, for use
     as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
@@ -1474,6 +1484,66 @@ class SolverBaseClass(uw_object):
                 })
         return terms
 
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The family: the equation it solves as the residual templates
+        declared on the class, the terms it is given, the conditions it
+        accepts, and its documentation — with no instance and no mesh."""
+        import inspect
+        from underworld3.utilities.describe import record
+        from underworld3.utilities._api_tools import Template
+
+        doc = (cls.__doc__ or "").strip()
+        facts = {}
+        public = _public_names(cls)
+        if public:
+            facts["public name"] = public[0] if len(public) == 1 else public
+        for base, what in (("SNES_Stokes_SaddlePt", "velocity and pressure, a saddle point"),
+                           ("SNES_MultiComponent", "several components"),
+                           ("SNES_Vector", "a vector field"), ("SNES_Scalar", "a scalar field")):
+            if any(b.__name__ == base for b in cls.__mro__):
+                facts["unknown"] = what
+                break
+        try:
+            params = inspect.signature(cls.__init__).parameters
+            facts["time dependent"] = any(p in params for p in ("DuDt", "DFDt", "order"))
+        except (TypeError, ValueError):
+            pass
+        forms = {}
+        for name in ("F0", "F1", "PF0"):
+            declared = None
+            for base in cls.__mro__:
+                if name in base.__dict__:
+                    declared = base.__dict__[name]
+                    break
+            if declared is None:
+                continue
+            if isinstance(declared, Template):
+                forms[name] = {"symbol": declared.name, "latex": None, "text": None,
+                               "description": (declared.description or "").strip().split("\n")[0], "where": []}
+            elif isinstance(declared, property):
+                forms[name] = {"symbol": name, "latex": None, "text": None,
+                               "description": (declared.__doc__ or "").strip().split("\n")[0], "where": []}
+        terms = [{"name": attr, "symbol": None, "latex": None, "text": None, "units": None,
+                  "description": what, "where": []}
+                 for attr, what in (getattr(cls, "_solver_terms", None) or ())]
+        conditions = []
+        for method in sorted(m for m in dir(cls) if m.startswith("add_") and m.endswith("_bc")):
+            fn = getattr(cls, method, None)
+            conditions.append({"mechanism": method, "type": method[4:-3].replace("_", " "),
+                               "boundary": "any", "latex": None,
+                               "text": (getattr(fn, "__doc__", "") or "").strip().split("\n")[0] or None})
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__, *public)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("solver_family", cls.__name__, doc.split("\n")[0], documentation=doc or None,
+                      facts=facts, forms=forms or None, terms=terms or None,
+                      conditions=conditions or None, terms_declared=bool(terms))
+
     def describe(self, depth=4):
         """What this solver solves, as data.
 
@@ -2571,8 +2641,22 @@ class SolverBaseClass(uw_object):
                 model = uw.get_default_model()
                 # What it solves, not only that it solved: the residual is
                 # SymPy, so the weak form can be written into the transcript
-                # exactly as implemented.
-                model._describe_part(self, part, label)
+                # exactly as implemented. The run-time constants go with it:
+                # a parameter changed between solves does not rebuild the
+                # kernel, so its new value is what tells the record the
+                # equation is not the one it holds. The clock is left out,
+                # or a time-dependent run would re-record every step.
+                constants = None
+                try:
+                    from underworld3.utilities._jitextension import _pack_constants
+                    clock = getattr(self.mesh, "_t", None)
+                    packed = _pack_constants(self.constants_manifest)
+                    constants = {str(getattr(expr, "name", index)): float(packed[index])
+                                 for index, expr in self.constants_manifest
+                                 if expr is not clock}
+                except Exception:
+                    constants = None
+                model._describe_part(self, part, label, constants=constants)
                 model._record_step_event("solve", label, part=part)
             except Exception:
                 pass

@@ -44,6 +44,26 @@ same topic are reference or historical material subordinate to the governing doc
 | Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
 | Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
 
+## Capability guides
+
+Curated guidance that the code cannot state about itself: which scheme to
+choose, which boundary treatment to prefer, how to make a hard solve
+converge. Each is one page with front matter naming the families it applies
+to, so `uw.capabilities()`, `uw.systems.Stokes.view()` and the MCP server list
+it beside the family; the AI skills in `.claude/skills` are symlinks to these
+pages, never copies. A change to a family is reviewed against its guides.
+
+| Guide | Applies to |
+|---|---|
+| [Transport schemes](guides/transport-schemes.md) | advection-diffusion, Navier-Stokes, the history schemes |
+| [Boundary-condition rulings](guides/boundary-condition-rulings.md) | every solver |
+| [Nonlinear solver recipe](guides/nonlinear-solver.md) | viscoplastic Stokes |
+| [Plasticity solvers](guides/plasticity-solvers.md) | viscoplastic and VEP Stokes |
+| [Adaptive meshing](guides/adaptive-meshing.md) | moving-mesh convection |
+| [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
+| [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
+| [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
+
 ## Documentation Structure
 
 This documentation is organized into focused sections:
@@ -131,6 +151,7 @@ guides/notebook-style-guide
 guides/GMSH_INTEGRATION_GUIDE
 guides/CODE-REVIEW-PROCESS
 guides/adversarial-review
+guides/mcp-server
 guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
@@ -139,6 +160,15 @@ guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
 guides/mpi-hang-supervision
+guides/transport-schemes
+guides/boundary-condition-rulings
+guides/nonlinear-solver
+guides/plasticity-solvers
+guides/adaptive-meshing
+guides/adapt-on-top-faults
+guides/free-surface-convection
+guides/uw-visualisation
+guides/cetz-figures
 ```
 
 ```{toctree}
@@ -209,6 +239,7 @@ subsystems/containers
 subsystems/checkpointing-system
 subsystems/model-orchestration
 subsystems/describe-and-view
+subsystems/transcript-query
 subsystems/jit-cache
 ```
 
