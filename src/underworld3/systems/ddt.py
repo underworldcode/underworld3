@@ -224,10 +224,28 @@ def _history_units(psi_fn, units=None):
 
 
 # A history projection's result is the carried field itself, so it is solved
-# to convergence: a mass-matrix solve left at a projection's default tolerance
-# (1e-4) carries an error of that size into every step, and the error depends
-# on the partition. Converging it costs a few more iterations.
-_HISTORY_PROJECTION_TOLERANCE = 1.0e-10
+# to convergence, by CG with a Jacobi preconditioner (the matrix is SPD), and
+# from zero: a mass-matrix solve left at a projection's default tolerance (1e-4)
+# carries an error of that size into every step, with an aggregating multigrid
+# that error depends on the partition, and a solve warmed from the previous
+# step's field depends on a state a restart does not restore.
+_HISTORY_PROJECTION_TOLERANCE = 1.0e-12
+
+
+def _owned_rows(var):
+    """Rows of ``var.data`` this rank owns; a ghost row copies another rank's
+    (its point has no place in the global section)."""
+    _is, subdm = var.mesh.dm.createSubDM(var.field_id)
+    local, global_ = subdm.getLocalSection(), subdm.getGlobalSection()
+    nc = var.num_components
+    owned = np.zeros(np.asarray(var.data).shape[0], dtype=bool)
+    p_start, p_end = local.getChart()
+    for p in range(p_start, p_end):
+        ndof = local.getDof(p)
+        if ndof and global_.getOffset(p) >= 0:
+            offset = local.getOffset(p)
+            owned[offset // nc:(offset + ndof) // nc] = True
+    return owned
 
 
 def _tracked_field(mesh, psi_fn, store):
@@ -242,10 +260,10 @@ def _tracked_field(mesh, psi_fn, store):
     """
     if isinstance(psi_fn, uw.discretisation.MeshVariable):
         field = psi_fn
+        if field.mesh is not mesh:
+            return None
     else:
         hit = uw.discretisation.meshVariable_lookup_by_symbol(mesh, psi_fn)
-        if hit is None and isinstance(psi_fn, sympy.MatrixBase) and psi_fn.shape == (1, 1):
-            hit = uw.discretisation.meshVariable_lookup_by_symbol(mesh, psi_fn[0, 0])
         if hit is None:
             return None
         field, component = hit
@@ -1057,14 +1075,14 @@ class _DDtBase(uw_object):
             # is a one-shot Galerkin projection and not a fixed-point iteration
             # (which at a yield kink admits the wrong branch).
             self._psi_star_projection_solver.smoothing = 0.0
-            self._psi_star_projection_solver.solve(verbose=verbose)
+            self._psi_star_projection_solver.solve(verbose=verbose, zero_init_guess=True)
             for k, (i, j) in enumerate(self._psi_star_indep_indices):
                 values = np.asarray(self._psi_star_flat_var.data[:, k])
                 level_0.data[:, level_0._data_layout(i, j)] = values
         else:
             self._psi_star_projection_solver.uw_function = flux
             self._psi_star_projection_solver.smoothing = 0.0
-            self._psi_star_projection_solver.solve(verbose=verbose)
+            self._psi_star_projection_solver.solve(verbose=verbose, zero_init_guess=True)
 
         for level in range(self.order - 1, 0, -1):
             self.psi_star[level].data[...] = (
@@ -1181,12 +1199,12 @@ class _DDtBase(uw_object):
                 varsymbol=rf"{{{name}^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
             projection = uw.systems.solvers.SNES_MultiComponent_Projection(
                 self.mesh, u_Field=target, n_components=len(columns), verbose=self.verbose)
-            projection.tolerance = _HISTORY_PROJECTION_TOLERANCE
+            projection.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
             self._nodal_projections[name] = (target, projection)
         target, projection = self._nodal_projections[name]
         projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in columns]])
         projection.smoothing = smoothing
-        projection.solve(verbose=verbose)
+        projection.solve(verbose=verbose, zero_init_guess=True)
         return target
 
     def _write_inflow(self, var, coords, rows):
@@ -1760,7 +1778,7 @@ class Eulerian(_DDtBase):
                 verbose=False,
             )
             self._psi_star_use_multicomponent = True
-        self._psi_star_projection_solver.tolerance = _HISTORY_PROJECTION_TOLERANCE
+        self._psi_star_projection_solver.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
 
         self._psi_star_projection_solver.uw_function = self._build_projection_source(
             self.psi_fn)
@@ -1775,16 +1793,12 @@ class Eulerian(_DDtBase):
         evaluation of ``psi_fn``; an L2 projection for expressions that
         ``evaluate`` cannot handle (e.g. containing derivatives).
         """
-        if self._psi_meshVar is not None:
-            try:
-                self.psi_star[0].data[...] = self._psi_meshVar.data[...]
-                return
-            except ValueError:
-                # Sanctioned fallthrough: the tracked variable's nodal
-                # layout differs from psi_star's (different degree /
-                # continuity), so the direct copy cannot broadcast —
-                # evaluate psi_fn at psi_star's own nodes instead.
-                pass
+        field = _tracked_field(
+            self.mesh, self._psi_meshVar if self._psi_meshVar is not None else self.psi_fn,
+            self.psi_star[0])
+        if field is not None:
+            self.psi_star[0].data[...] = field.data[...]
+            return
 
         try:
             self.psi_star[0].data[...] = np.asarray(_to_nondim_ndarray(uw.function.evaluate(
@@ -1797,7 +1811,7 @@ class Eulerian(_DDtBase):
             # expressions containing derivatives (e.g. flux terms) —
             # project them onto psi_star[0] instead.
             self._setup_projections()
-            self._psi_star_projection_solver.solve()
+            self._psi_star_projection_solver.solve(zero_init_guess=True)
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -3028,7 +3042,7 @@ class BackwardNodesSemiLagrangian(_DDtBase):
                 verbose=False,
             )
             self._psi_star_use_multicomponent = True
-        self._psi_star_projection_solver.tolerance = _HISTORY_PROJECTION_TOLERANCE
+        self._psi_star_projection_solver.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
 
         # We should find a way to add natural bcs here
         # (self.Unknowns.u carried as a symbol from solver to solver)
@@ -3218,7 +3232,7 @@ class BackwardNodesSemiLagrangian(_DDtBase):
             # semantics are consistent.
             self._psi_star_projection_solver.uw_function = self._build_projection_source(self.psi_fn)
             self._psi_star_projection_solver.smoothing = 0.0
-            self._psi_star_projection_solver.solve()
+            self._psi_star_projection_solver.solve(zero_init_guess=True)
             if getattr(self, '_psi_star_use_multicomponent', False):
                 # Fan out flat result to tensor psi_star[0]
                 for k, (i, j) in enumerate(self._psi_star_indep_indices):
@@ -3524,7 +3538,7 @@ class BackwardNodesSemiLagrangian(_DDtBase):
                 self.psi_fn
             )
             self._psi_star_projection_solver.smoothing = 0.0
-            self._psi_star_projection_solver.solve(verbose=verbose)
+            self._psi_star_projection_solver.solve(verbose=verbose, zero_init_guess=True)
 
             # For tensor vtypes the projection writes into the flat (1, Nc) variable,
             # so we must fan it back out to psi_star[0] — otherwise subsequent
@@ -4670,6 +4684,11 @@ class Lagrangian_Swarm(_DDtBase):
 
 
 
+# TODO(DESIGN): the forward integration-point history gives an arrival on a
+# shared face to one cell (nearest centroid) through this helper, where the
+# forward nodal history (_arrivals_by_cell) fits it in every containing cell.
+# Integration points almost never arrive on a face, so the two agree in
+# practice; one rule for both would remove the difference.
 def _hand_arrivals_to_owners(X, columns, locate):
     """Give every arrival to the rank whose cell it landed in.
 
@@ -5177,7 +5196,8 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
     def _record_current(self):
         """Snapshot slot 0 <- the current solution and velocity."""
         ps = self.psi_snap[0]
-        field = _tracked_field(self.mesh, self._psi_meshVar or self.psi_fn, ps)
+        field = _tracked_field(
+            self.mesh, self._psi_meshVar if self._psi_meshVar is not None else self.psi_fn, ps)
         if field is not None:
             ps.data[...] = field.data[...]
         else:
@@ -5264,11 +5284,11 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
             self._forcing_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
                 self.mesh, u_Field=self._forcing_flat, n_components=len(columns),
                 verbose=self.verbose)
-            self._forcing_projection.tolerance = _HISTORY_PROJECTION_TOLERANCE
+            self._forcing_projection.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
         self._forcing_projection.uw_function = sympy.Matrix(
             [[forcing[i, j] for (i, j) in columns]])
         self._forcing_projection.smoothing = 0.0
-        self._forcing_projection.solve(verbose=verbose)
+        self._forcing_projection.solve(verbose=verbose, zero_init_guess=True)
         points = np.asarray(self.forcing_star.integration_points).reshape(-1, self.mesh.cdim)
         for column in range(len(columns)):
             self.forcing_snap.data[:, column] = np.asarray(
@@ -5579,10 +5599,10 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         if self._flux_projection is None:
             self._flux_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
                 self.mesh, u_Field=self._flux_var, n_components=self.num_components)
-            self._flux_projection.tolerance = _HISTORY_PROJECTION_TOLERANCE
+            self._flux_projection.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
         self._flux_projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in self._components]])
         self._flux_projection.smoothing = self.flux_smoothing
-        self._flux_projection.solve()
+        self._flux_projection.solve(zero_init_guess=True)
         out = np.empty_like(self._launch_values)
         for k in range(self.num_components):
             out[:, k] = _to_nondim_ndarray(uw.function.evaluate(self._flux_var.sym[0, k], self._launch)).reshape(-1)
@@ -5830,12 +5850,8 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         # cells to the linear fallback; three gains nothing)
         self._interior = np.asarray(mesh._get_coords_for_basis(self.degree + 2, continuous=False)
                                     ).reshape(-1, mesh.cdim)
-        # A node on a partition seam is on both ranks and is launched once, by its
-        # owner: writing the rank into the store and reading it back after the
-        # ghost update leaves every copy holding its owner's rank.
-        self.psi_star[0].data[:, 0] = uw.mpi.rank
-        self._owned = np.asarray(self.psi_star[0].data[:, 0]) == uw.mpi.rank
-        self.psi_star[0].data[:, :] = 0.0
+        # a node on a partition seam is on both ranks and is launched once, by its owner
+        self._owned = _owned_rows(self.psi_star[0])
         self._n_relocated = 0
         self._n_v = 2
         self._init_coefficient_expressions(1, self.theta, with_exp=True)
@@ -5873,8 +5889,6 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             np.asarray(_to_nondim_ndarray(uw.function.evaluate(expr[i, j], X))).reshape(-1)
             for (i, j) in self._components])
 
-    _FACE_TOLERANCE = 1.0e-9
-
     def _arrivals_by_cell(self, X, values):
         """Every arrival with every cell that contains it, on the rank that owns
         the cell: one row per (arrival, cell).
@@ -5888,11 +5902,17 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         same on any partition.
         """
         pj = self._projector
-        tol = self._FACE_TOLERANCE
-        point, cell, lam = pj.containing_cells(X, tol)
+        tol = pj.FACE_TOLERANCE
+        point, cell, lam = pj.containing_cells(X)
+        inside = lam > tol
         strict = np.zeros(X.shape[0], dtype=bool)
-        strict[point[lam > tol]] = True
-        keep = strict[point]
+        strict[point[inside]] = True
+        # a strictly-inside point belongs to its one cell, even where a larger
+        # neighbour puts it within the tolerance of a face
+        keep = inside
+        # TODO(DESIGN): every face point is offered, including those on faces
+        # inside this rank's partition (no-slip wall nodes, stagnant regions);
+        # only faces on a partition seam need to travel.
         offered_X, offered_v = X[~strict], values[~strict]
         if uw.mpi.size > 1:
             comm = uw.mpi.comm
@@ -5904,7 +5924,7 @@ class ForwardNodesSemiLagrangian(_DDtBase):
             n_mine = parts_X[uw.mpi.rank].shape[0]
         else:
             mine_from, n_mine = 0, offered_X.shape[0]
-        q, qcell, _ = pj.containing_cells(offered_X, tol)
+        q, qcell, _ = pj.containing_cells(offered_X)
         own = (q >= mine_from) & (q < mine_from + n_mine)
         self._n_relocated = int(np.unique(q[~own]).size)
         return (np.concatenate([X[point[keep]], offered_X[q]], axis=0),
@@ -5925,12 +5945,20 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         return np.array(self._project_nodally(self._fit_var.sym, name="fit").data)
 
     # ------------------------------------------------------------------
+    def _field_at_nodes(self):
+        """The tracked field at the nodes: its own nodal values when it is a mesh
+        variable laid out like the store, else evaluated there."""
+        field = _tracked_field(self.mesh, self._psi_fn, self.psi_star[0])
+        if field is not None:
+            return np.array(field.data)
+        return self._values_at(self._psi_fn, self._nodes())
+
     def initialise_history(self):
         """Start from the current field at the nodes. A history already placed
         by :meth:`commit_flux_to_history` is the start, and is kept."""
         self.characteristics.initialise_levels(self._n_v)
         if not self._history_committed:
-            self.psi_star[0].data[:, :] = self._values_at(self._psi_fn, self._nodes())
+            self.psi_star[0].data[:, :] = self._field_at_nodes()
         self._history_initialised = True
 
     def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True, **_ignored):
@@ -5958,8 +5986,8 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         # the tracked field, or the committed store, which is a polynomial
         # inside each element, so its interior values are exact
         source = self._psi_fn if store_result else self.psi_star[0].sym
-        at_owned = (self._values_at(source, owned) if store_result
-                    else np.asarray(self.psi_star[0].data)[self._owned])
+        at_owned = (self._field_at_nodes() if store_result
+                    else np.asarray(self.psi_star[0].data))[self._owned]
         values = np.vstack([at_owned, self._values_at(source, self._interior)])
         key = (_basis_key_of(self.psi_star[0]), "launch")
         arrivals = np.asarray(trace.departure_points(key, launch, (("first", 0, -float(dt)),),
@@ -5968,9 +5996,13 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         if self._inflow_value is not None:
             # an owned node whose back-trace leaves the domain holds fluid that
             # entered this step (a ghost copy takes its owner's value)
+            # (the global-domain test the other flavours use: restoring the
+            # point moves it; a per-rank "in domain" test calls a partition
+            # face a boundary)
             back = 2.0 * owned - arrivals[:owned.shape[0]]
+            restored = np.asarray(self.mesh.return_coords_to_bounds(back.copy())).reshape(back.shape)
             entered = np.zeros(nodes.shape[0], dtype=bool)
-            entered[np.flatnonzero(self._owned)] = ~np.asarray(self.mesh.points_in_domain(back), dtype=bool)
+            entered[np.flatnonzero(self._owned)] = np.any(np.abs(restored - back) > 0.0, axis=1)
             inflow = self._values_at(self._inflow_record(), nodes)
             carried[entered] = inflow[entered]
         self.psi_star[0].data[:, :] = carried

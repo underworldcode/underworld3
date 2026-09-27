@@ -463,10 +463,12 @@ from .ddt import Symbolic as Symbolic_DDt
 
 # The semi-Lagrangian schemes a solver can build its history with, named
 # "<trace>_<launch>" after the arguments of ddt.SemiLagrangian.
-_SEMI_LAGRANGIAN_TRANSPORTS = (
-    "backward_nodes", "backward_integration_points",
-    "forward_integration_points", "forward_nodes",
-)
+_SEMI_LAGRANGIAN_TRANSPORTS = {
+    "backward_nodes": ("backward", "nodes"),
+    "backward_integration_points": ("backward", "integration_points"),
+    "forward_integration_points": ("forward", "integration_points"),
+    "forward_nodes": ("forward", "nodes"),
+}
 _RENAMED_TRANSPORTS = {
     "semi_lagrangian": "backward_nodes",
     "integration_point": "backward_integration_points",
@@ -1606,9 +1608,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 f"stress_transport={value!r} is now {_RENAMED_TRANSPORTS[value]!r}",
                 FutureWarning, stacklevel=2)
             value = _RENAMED_TRANSPORTS[value]
-        if value not in _SEMI_LAGRANGIAN_TRANSPORTS + ("lagrangian", "eulerian"):
+        if value not in (*_SEMI_LAGRANGIAN_TRANSPORTS, "lagrangian", "eulerian"):
             raise ValueError(
-                f"stress_transport must be one of {_SEMI_LAGRANGIAN_TRANSPORTS} or "
+                f"stress_transport must be one of {tuple(_SEMI_LAGRANGIAN_TRANSPORTS)} or "
                 f"'lagrangian' or 'eulerian', not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
@@ -1833,7 +1835,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 **ddt_kwargs,
                 **{k: v for k, v in common.items() if k != "smoothing"},
             )
-        elif self.stress_transport.startswith("forward_"):
+        elif _SEMI_LAGRANGIAN_TRANSPORTS.get(self.stress_transport, ("",))[0] == "forward":
             if ddt_kwargs:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
@@ -1844,7 +1846,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
                 common["vtype"],
-                trace="forward", launch=self.stress_transport[len("forward_"):],
+                trace="forward", launch=_SEMI_LAGRANGIAN_TRANSPORTS[self.stress_transport][1],
                 degree=common["degree"], varsymbol=common["varsymbol"],
                 order=order, units=common["units"],
             )
@@ -3493,7 +3495,9 @@ class _SmoothingLengthMixin:
     ``_smoothing_is_dimensional`` flag that lets a dimensional input
     round-trip as a Pint Quantity while plain-float input round-trips as a
     plain float. Subclasses keep their own property docstrings as thin
-    wrappers delegating here.
+    wrappers delegating here. It also holds :meth:`linear_solver`, the switch
+    to a CG solve that every projection (scalar, vector, multi-component) can
+    take.
     """
 
     def _set_smoothing(self, value):
@@ -3539,6 +3543,53 @@ class _SmoothingLengthMixin:
             raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
         self._smoothing_is_dimensional = is_dim
         self._smoothing = sympify(L_nd) ** 2
+
+    def linear_solver(self, pc="jacobi", rtol=1.0e-10):
+        """Switch this projector to a lightweight *linear* (SPD) solve.
+
+        An L2 projection (and the screened-Poisson smoother) is a **linear,
+        symmetric-positive-definite** problem, so the inherited
+        ``newtonls / gmres / gamg`` default is unnecessarily heavy — GAMG
+        setup/repartition dominates cost and memory at MPI scale, which is the
+        bottleneck for repeated post-processing projections (UW3 issue #156).
+        This replaces it with ``ksponly + CG + a cheap preconditioner`` — the
+        right tool for the mass/Helmholtz matrix — and removes the now-unused
+        GAMG options.
+
+        Opt-in: the default ``SNES_Scalar`` solver stack is unchanged for code
+        that relies on it. Call this on a projector used purely for output /
+        post-processing.
+
+        Parameters
+        ----------
+        pc : str, default "jacobi"
+            Preconditioner. ``"jacobi"`` is fine for a well-conditioned mass
+            matrix; use ``"bjacobi"`` or ``"icc"`` if CG iteration counts climb
+            on distorted or high-degree meshes.
+        rtol : float, default 1e-10
+            KSP relative tolerance.
+
+        Returns
+        -------
+        self (so the call can be chained).
+        """
+        self.petsc_options["snes_type"] = "ksponly"
+        self.petsc_options["ksp_type"] = "cg"
+        self.petsc_options["pc_type"] = pc
+        self.petsc_options["ksp_rtol"] = rtol
+        # GAMG-specific options are now unused; remove them to avoid PETSc
+        # "unused option" warnings (and any stale AMG configuration).
+        for _k in (
+            "pc_gamg_type",
+            "pc_gamg_repartition",
+            "pc_gamg_agg_nsmooths",
+            "pc_mg_type",
+        ):
+            try:
+                self.petsc_options.delValue(_k)
+            except Exception:
+                pass
+        return self
 
 
 class SNES_Projection(_SmoothingLengthMixin, SNES_Scalar):
@@ -3690,53 +3741,6 @@ class SNES_Projection(_SmoothingLengthMixin, SNES_Scalar):
 
     # Use SymbolicProperty for automatic unwrapping
     uw_function = SymbolicProperty(matrix_wrap=True, doc="Function to project onto mesh")
-
-    def linear_solver(self, pc="jacobi", rtol=1.0e-10):
-        """Switch this projector to a lightweight *linear* (SPD) solve.
-
-        An L2 projection (and the screened-Poisson smoother) is a **linear,
-        symmetric-positive-definite** problem, so the inherited
-        ``newtonls / gmres / gamg`` default is unnecessarily heavy — GAMG
-        setup/repartition dominates cost and memory at MPI scale, which is the
-        bottleneck for repeated post-processing projections (UW3 issue #156).
-        This replaces it with ``ksponly + CG + a cheap preconditioner`` — the
-        right tool for the mass/Helmholtz matrix — and removes the now-unused
-        GAMG options.
-
-        Opt-in: the default ``SNES_Scalar`` solver stack is unchanged for code
-        that relies on it. Call this on a projector used purely for output /
-        post-processing.
-
-        Parameters
-        ----------
-        pc : str, default "jacobi"
-            Preconditioner. ``"jacobi"`` is fine for a well-conditioned mass
-            matrix; use ``"bjacobi"`` or ``"icc"`` if CG iteration counts climb
-            on distorted or high-degree meshes.
-        rtol : float, default 1e-10
-            KSP relative tolerance.
-
-        Returns
-        -------
-        self (so the call can be chained).
-        """
-        self.petsc_options["snes_type"] = "ksponly"
-        self.petsc_options["ksp_type"] = "cg"
-        self.petsc_options["pc_type"] = pc
-        self.petsc_options["ksp_rtol"] = rtol
-        # GAMG-specific options are now unused; remove them to avoid PETSc
-        # "unused option" warnings (and any stale AMG configuration).
-        for _k in (
-            "pc_gamg_type",
-            "pc_gamg_repartition",
-            "pc_gamg_agg_nsmooths",
-            "pc_mg_type",
-        ):
-            try:
-                self.petsc_options.delValue(_k)
-            except Exception:
-                pass
-        return self
 
     @property
     def smoothing(self):
@@ -4562,7 +4566,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ## at the various resolutions tested.
 
         if transport not in _SEMI_LAGRANGIAN_TRANSPORTS:
-            raise ValueError(f"transport must be one of {_SEMI_LAGRANGIAN_TRANSPORTS}, "
+            raise ValueError(f"transport must be one of {tuple(_SEMI_LAGRANGIAN_TRANSPORTS)}, "
                              f"not {transport!r}")
         if DuDt is not None and transport != "backward_nodes":
             raise ValueError("transport chooses the DuDt the solver builds; it cannot "
@@ -4593,7 +4597,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             # so only those that were asked for are passed on
             asked = {k: v for k, v in (("monotone_mode", monotone_mode),
                                        ("old_frame_traceback", old_frame_traceback)) if v}
-            trace, launch = transport.split("_", 1)
+            trace, launch = _SEMI_LAGRANGIAN_TRANSPORTS[transport]
             self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
                 u_Field.sym,

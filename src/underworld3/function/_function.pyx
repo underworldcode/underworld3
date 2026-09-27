@@ -580,12 +580,13 @@ def global_evaluate_nd(   expr,
     # DEADLOCK SAFETY — read before editing. Every collective here (allgather,
     # Allreduce) runs unconditionally on the IDENTICAL global set on every
     # rank, so all ranks stay in lockstep (n_ext_total is itself a reduced
-    # value, so the `> 0` guard is taken identically everywhere). The per-rank
-    # value MUST come from the LOCAL rbf path (rbf=True): the FE interpolation
-    # path (petsc_interpolate / DMInterpolation) is itself collective and would
-    # desync here, because each rank classifies the same global set against its
-    # own domain (different interior-point counts) → hang. Never route the
-    # fallback value through FE interpolation.
+    # value, so the `> 0` guard is taken identically everywhere). The
+    # best-claim value comes from the LOCAL rbf path (rbf=True), evaluated on
+    # the whole global set. The FE path is used only in the containment round,
+    # only on meshes whose cell hint is authoritative (no DMLocatePoints, so no
+    # collective inside it), and every rank calls it on the points it contains
+    # -- possibly none. Never call the FE path on the global set, and never on
+    # a mesh that needs DMLocatePoints.
     #
     # Serial is left untouched (the serial path above already extrapolates from
     # the true nearest cell). Escape hatch: GE_LOCAL_FALLBACK=0 restores the
@@ -660,22 +661,33 @@ def global_evaluate_nd(   expr,
             # for points no rank contains). Every rank calls evaluate_nd, on
             # the points it contains -- possibly none -- as the first pass does
             # on the points it received, so the collectives stay in lockstep.
-            contains = np.asarray(mesh._robust_owning_cells(all_ext)) >= 0
-            my_owner = np.where(contains, comm.rank, comm.size).astype(np.int32)
-            owner = np.empty(n_ext_total, dtype=np.int32)
-            comm.Allreduce([my_owner, MPI.INT], [owner, MPI.INT], op=MPI.MIN)
-            mine = owner == comm.rank
-            fe_vals, _fe_flag = evaluate_nd(
-                expr, np.ascontiguousarray(all_ext[mine]), rbf=rbf, evalf=evalf,
-                verbose=False, simplify=simplify, check_extrapolated=True,)
-            contrib_fe = np.zeros((n_ext_total,) + expr_shape, dtype=np.float64)
-            if mine.any():
-                contrib_fe[mine] = np.asarray(fe_vals, dtype=np.float64).reshape((-1,) + expr_shape)
-            fe_val = np.empty_like(contrib_fe)
-            comm.Allreduce([contrib_fe, MPI.DOUBLE], [fe_val, MPI.DOUBLE], op=MPI.SUM)
-            contained = owner < comm.size
-            best_val[contained] = fe_val[contained]
-            best_flag[contained] = 0
+            #
+            # Only where the cell hint is authoritative: there the FE path
+            # locates without DMLocatePoints, so a rank holding none of the
+            # points takes no collective. Elsewhere (warped quads/hexes) the
+            # rbf value stands, as before.
+            all_continuous = all(
+                getattr(varfn.meshvar(), "continuous", True) for varfn in varfns)
+            if mesh._hint_is_authoritative(all_continuous):
+                contains = np.asarray(mesh._robust_owning_cells(all_ext)) >= 0
+                my_owner = np.where(contains, comm.rank, comm.size).astype(np.int32)
+                owner = np.empty(n_ext_total, dtype=np.int32)
+                comm.Allreduce([my_owner, MPI.INT], [owner, MPI.INT], op=MPI.MIN)
+                mine = owner == comm.rank
+                fe_vals, _fe_flag = evaluate_nd(
+                    expr, np.ascontiguousarray(all_ext[mine]), rbf=rbf, evalf=evalf,
+                    verbose=False, simplify=simplify, check_extrapolated=True,)
+                contrib_fe = np.zeros((n_ext_total,) + expr_shape, dtype=np.float64)
+                if mine.any():
+                    contrib_fe[mine] = np.asarray(fe_vals, dtype=np.float64).reshape((-1,) + expr_shape)
+                fe_val = np.empty_like(contrib_fe)
+                comm.Allreduce([contrib_fe, MPI.DOUBLE], [fe_val, MPI.DOUBLE], op=MPI.SUM)
+                # a located point whose FE value is NaN is why the fallback
+                # exists (see above): its finite rbf value stands
+                use = (owner < comm.size) & np.isfinite(
+                    fe_val.reshape(n_ext_total, -1)).all(axis=1)
+                best_val[use] = fe_val[use]
+                best_flag[use] = 0
 
             # Scatter this rank's segment of the global set back to its points.
             offset = int(counts[:comm.rank].sum())

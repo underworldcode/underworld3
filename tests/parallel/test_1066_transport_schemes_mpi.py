@@ -8,6 +8,12 @@ P2, a quarter turn, with each of the four semi-Lagrangian value histories. The v
 run must be the serial ones. At least three ranks: two ranks meet only along
 one seam, while three or more also meet at points, where an arrival can be
 handed to either of two other ranks.
+
+The value histories that apply an inflow value are given one, so the inflow
+detection runs across seams too. At np 4 the backward integration-point stress
+history has three departure points that the parallel evaluator used to strand
+and fill by rbf extrapolation (7.5e-5 before the 2026-09-27 fix): this file is
+the regression test for global_evaluate's containment round as well.
 """
 import numpy as np
 import pytest
@@ -51,6 +57,8 @@ def rotating_gaussian(transport, steps=16, dt=np.pi / 32):
         sympy.exp(-((x - 0.5) ** 2 + y ** 2) / (2 * 0.1 ** 2)), T.coords).reshape(-1)
     adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=sympy.Matrix([[-y, x]]), order=1,
                                       transport=transport)
+    if adv.DuDt.applies_inflow_value:
+        adv.DuDt.inflow_value = sympy.Matrix([[0.0]])
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = 1.0e-3
     for wall in ("Left", "Right", "Top", "Bottom"):
@@ -63,16 +71,19 @@ def rotating_gaussian(transport, steps=16, dt=np.pi / 32):
 
 @pytest.mark.parametrize("transport", [
     pytest.param(t, marks=pytest.mark.xfail(
-        uw.mpi.size >= 4, strict=True, reason="TODO(BUG): the particle history differs from serial by 1.2e-5 "
-        "at np >= 4 (np 3 matches); the particle values, their ownership and the cell "
-        "proxy's fit are partition-independent -- cause not yet found"))
+        uw.mpi.size >= 4, strict=False, reason="#797: the particle history differs from "
+        "serial by 1.2e-5 at np 4 and 6 (np 3 matches)"))
     if t == "lagrangian" else t for t in STRESS_XY])
 def test_every_stress_history_gives_the_serial_stress_on_every_rank(transport):
-    _kind, values, _relocated = turned_over_maxwell_box(transport)
+    uw.reset_default_model()
+    _kind, values, relocated = turned_over_maxwell_box(transport)
+    if transport.startswith("forward_"):
+        assert relocated > 0      # the seams were crossed, so the exchange ran
     assert np.allclose(values, STRESS_XY[transport], atol=ATOL), (transport, values)
 
 
 @pytest.mark.parametrize("transport", list(ADVECTED_T))
 def test_every_value_history_gives_the_serial_field_on_every_rank(transport):
+    uw.reset_default_model()
     values = rotating_gaussian(transport)
     assert np.allclose(values, ADVECTED_T[transport], atol=ATOL), (transport, values)

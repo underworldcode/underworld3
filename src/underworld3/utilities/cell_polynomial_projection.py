@@ -64,10 +64,12 @@ class CellPolynomialProjector:
         self.ncells = self.detJ.shape[0]
         probe = tabulate(self.fe, np.zeros((1, self.dim)))
         self.Nb = probe.shape[1] // self.num_components     # scalar basis size
-        # Reference-cell centroid, mapped: xi_c + 1 = 2 / (dim + 1) on every axis.
+        # Reference-cell centroid, mapped: xi_c + 1 = 2 / (dim + 1) on every axis
+        # of a simplex, 1 (the origin of [-1, 1]^dim) of a quadrilateral or hexahedron.
         J = np.linalg.inv(self.invJ) if self.ncells else self.invJ
         self.centroids = self.v0 + np.einsum(
-            "cij,j->ci", J, np.full(self.dim, 2.0 / (self.dim + 1))
+            "cij,j->ci", J,
+            np.full(self.dim, 2.0 / (self.dim + 1) if mesh.isSimplex else 1.0)
         )
         self._check_layout()
         # Reference coordinates of the cell's dof nodes (the same in every
@@ -106,7 +108,9 @@ class CellPolynomialProjector:
         """Reference coordinates (PETSc's [-1, 1] frame) of points in their cells."""
         return np.einsum("cij,cj->ci", self.invJ[cells], coords - self.v0[cells]) - 1.0
 
-    def containing_cells(self, coords, tol=1.0e-9):
+    FACE_TOLERANCE = 1.0e-9
+
+    def containing_cells(self, coords, tol=FACE_TOLERANCE):
         """Every local cell that contains each point.
 
         Returns ``(point, cell, lam)``: one row per (point, containing cell)
@@ -131,14 +135,29 @@ class CellPolynomialProjector:
         point = np.repeat(np.arange(coords.shape[0]), k)
         cell = near.reshape(-1)
         xi = self.reference_coords(np.repeat(coords, k, axis=0), cell)
+        lam = self._reference_distance(xi)
+        inside = lam >= -tol
+        point, cell, lam = point[inside], cell[inside], lam[inside]
+        # a point whose containing cell is not among the nearest centroids (a
+        # large cell next to small ones): ask the locator
+        missed = np.setdiff1d(np.arange(coords.shape[0]), point)
+        if missed.size:
+            found = np.asarray(self.mesh._robust_owning_cells(coords[missed]), dtype=np.int64)
+            ok = found >= 0
+            if ok.any():
+                xm = self.reference_coords(coords[missed[ok]], found[ok])
+                point = np.concatenate([point, missed[ok]])
+                cell = np.concatenate([cell, found[ok]])
+                lam = np.concatenate([lam, self._reference_distance(xm)])
+        return point, cell, lam
+
+    def _reference_distance(self, xi):
+        """How far inside its cell's nearest face a point is, in reference units."""
         if self.mesh.isSimplex:
             # PETSc's reference simplex has vertices at -1 and +1 on each axis
             lam_axes = 0.5 * (xi + 1.0)
-            lam = np.minimum(lam_axes.min(axis=1), 1.0 - lam_axes.sum(axis=1))
-        else:
-            lam = 0.5 * (1.0 - np.abs(xi).max(axis=1))
-        inside = lam >= -tol
-        return point[inside], cell[inside], lam[inside]
+            return np.minimum(lam_axes.min(axis=1), 1.0 - lam_axes.sum(axis=1))
+        return 0.5 * (1.0 - np.abs(xi).max(axis=1))
 
     def locate(self, coords):
         """Owning local cell of each point (-1 when not on this rank) and its reference coordinates."""
@@ -222,6 +241,8 @@ class CellPolynomialProjector:
             U[held] = np.asarray(old, dtype=np.float64).reshape(self.ncells, self.Nb, nc)[held]
         thin = np.nonzero(~dense & ~held)[0]
         self.n_thin = int(thin.shape[0])
+        if cell_local and old is None:
+            raise ValueError("cell_local needs old: the value a cell nothing reached keeps")
         if cell_local and thin.shape[0] > 0:
             U[thin] = self._cell_linear_fit(thin, c, xi[ok], psi, cond_max)
         elif thin.shape[0] > 0 and c.shape[0] > 0:
