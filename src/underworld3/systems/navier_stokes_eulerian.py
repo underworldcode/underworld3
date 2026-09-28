@@ -385,9 +385,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         :math:`-p\mathbf{I}` in :math:`\mathbf{F}_1`, so it must not appear in
         :math:`\mathbf{f}_0`, but a strong residual without it is O(1) at the
         exact solution and the stabilisation then injects an O(tau) error
-        (measured on Kovasznay flow: 50 times the Galerkin error). The
-        viscous term needs second derivatives the kernels do not see; it is
-        the remaining inconsistency for P2 velocity.
+        (measured on Kovasznay flow: 50 times the Galerkin error). For the
+        same reason it takes the divergence of the stress a viscoelastic
+        history carries (:meth:`_memory_stress`): at high Weissenberg number
+        that stress dominates the momentum balance. The viscous term needs
+        second derivatives the kernels do not see; it is the remaining
+        inconsistency for P2 velocity.
         """
         # The body-force setter may store a column; the residual is a row.
         dim = self.mesh.dim
@@ -396,7 +399,57 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         if with_pressure:
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
+            memory = self._memory_stress()
+            if memory is not None:
+                R = R - sympy.Matrix([[sum(memory[i, j].diff(X[j]) for j in range(dim))
+                                       for i in range(dim)]])
         return R
+
+    def _memory_stress(self):
+        r"""The part of the momentum flux the stress history carries, or ``None``.
+
+        The model's flux is :math:`2\eta\,\dot\varepsilon_\mathrm{eff}`, and the
+        effective strain rate is the velocity's own strain rate plus the terms
+        of the history (the carried stress, decoded from a log-conformation
+        store, and a stored strain rate for the exponential integrator). With
+        the velocity's derivatives set to zero, what remains is the history's
+        part, whichever integrator made it; the stored levels of the theta rule
+        are history too. Its divergence needs only first derivatives of the
+        stores (of an integration-point store's nodal snapshot). Terms that carry the velocity gradient itself (the objective
+        rate's, the deformation step's) go with the viscous term: their
+        divergence needs second derivatives of the velocity, as does that of a
+        yielding material's strain-rate-dependent viscosity.
+        """
+        history = self.Unknowns.DFDt
+        cm = self.constitutive_model
+        if history is None or not getattr(cm, "is_elastic", False):
+            return None
+        # TODO(DESIGN): a yielding material's viscosity depends on the strain
+        # rate; its divergence needs second derivatives the kernels do not see.
+        X = self.mesh.X
+        dim = self.mesh.dim
+        own_rate = {self.u.sym[i].diff(X[j]): 0 for i in range(dim) for j in range(dim)}
+        memory = 2 * cm.viscosity * sympy.Matrix(cm.E_eff.sym).xreplace(own_rate)
+        weights = self.DuDt.spatial_weights()
+        memory = weights[0] * memory
+        for level, w in enumerate(weights[1:]):
+            if w == 0:
+                continue
+            memory = memory + w * sympy.Matrix(
+                cm._carried_stress_sym(level) if hasattr(cm, "_carried_stress_sym")
+                else history.psi_star[level].sym)
+        # An integration-point store has no derivative. Its values are the nodal
+        # snapshot of the committed stress sampled at the departure points, so
+        # the snapshot stands in for it here: the divergence of the stress where
+        # it was rather than where it has been carried, an O(dt) difference.
+        stand_in = {}
+        for store, snapshot in ((getattr(history, "psi_star", []), getattr(history, "psi_snap", None)),
+                                ([history.forcing_star] if getattr(history, "forcing_star", None) is not None
+                                 else [], [getattr(history, "forcing_snap", None)])):
+            for level, star in enumerate(store):
+                if getattr(star, "is_integration_point", False):
+                    stand_in.update(zip(sympy.Matrix(star.sym), sympy.Matrix(snapshot[level].sym)))
+        return memory.xreplace(stand_in) if stand_in else memory
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the

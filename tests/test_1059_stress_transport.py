@@ -158,7 +158,7 @@ def test_transport_is_off_unless_asked_for():
 
 
 def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver="stokes", initial_velocity=False,
-                   objective_rate="none", solvent=0.0):
+                   objective_rate="none", solvent=0.0, stress_history="stress"):
     """The analytic Maxwell shear box, with the stress history of one's choosing.
 
     Simple shear of a Maxwell material: sigma_xy = eta gammadot (1 - exp(-t/t_r)).
@@ -182,7 +182,8 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
         stokes.bodyforce = sympy.Matrix([[0.0, 0.0]])
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        stokes.Unknowns, order=order, integrator=integrator, objective_rate=objective_rate)
+        stokes.Unknowns, order=order, integrator=integrator, objective_rate=objective_rate,
+        stress_history=stress_history)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
     stokes.constitutive_model.Parameters.shear_modulus = shear_modulus
     stokes.constitutive_model.Parameters.solvent_viscosity = solvent
@@ -202,11 +203,10 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
     for _ in range(steps):
         stokes.solve(timestep=dt, zero_init_guess=False)
 
-    # After a solve the Stokes family has committed the new stress into the
-    # history's first level; the trace-back Navier-Stokes solver records it at
-    # the NEXT carry, so there its first level still holds the previous step
-    # and the stress just solved for is the constitutive flux (#742).
-    latest = stokes.DFDt.psi_star[0].sym if solver == "stokes" else stokes.constitutive_model.flux
+    # After a solve every solver has committed the new stress into the
+    # history's first level (read through the model: a log-conformation store
+    # decodes to a stress).
+    latest = stokes.constitutive_model._carried_stress_sym(0)
     origin = np.array([[0.0, 0.0]])
     stress = float(np.asarray(uw.function.evaluate(latest[0, 1], origin)).reshape(-1)[0])
     rate = 2.0 * speed / height
@@ -773,3 +773,26 @@ def test_the_store_smoothing_is_the_coefficient_times_the_local_cell_size_square
     assert abs(a - 0.05 * h * h) < 1.0e-12 * max(1.0, h * h)
     with pytest.raises(ValueError):
         history.store_smoothing = -1.0
+
+
+@pytest.mark.parametrize("transport", list(KINDS))
+def test_the_semi_lagrangian_navier_stokes_carries_every_stress_history(transport):
+    """NavierStokesSLCN takes stress_transport as the Stokes family does, and at
+    negligible inertia gives the analytic Maxwell shear stress with each."""
+    kind, stress, exact = _maxwell_shear(transport, 1, solver="ns_slcn")
+    assert kind == KINDS[transport]
+    assert abs(stress - exact) / exact < 0.02, (transport, stress, exact)
+
+
+def test_the_semi_lagrangian_navier_stokes_reads_a_log_conformation_history():
+    """The log-conformation store through NavierStokesSLCN, on upper-convected
+    start-up (lambda = 1, gammadot = 1, t = 2): the shear stress is
+    eta gammadot (1 - e^-t) and the first normal-stress difference
+    2 eta lambda gammadot^2 [1 - e^-t (1 + t)] = 1.188. The deformation step
+    the log store uses gives 1.193; the linear step of the stress store 1.108."""
+    _, s_log, exact, n1_log, _ = _maxwell_shear(
+        "forward_integration_points", 1, solver="ns_slcn", objective_rate="upper_convected",
+        stress_history="log_conformation")
+    n1_exact = 2.0 * (1.0 - np.exp(-2.0) * 3.0)
+    assert abs(s_log - exact) / exact < 0.02, (s_log, exact)
+    assert abs(n1_log - n1_exact) / n1_exact < 0.01, (n1_log, n1_exact)

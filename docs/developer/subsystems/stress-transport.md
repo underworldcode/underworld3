@@ -96,6 +96,27 @@ The same holds for the value histories of advection-diffusion
 (`NavierStokesSLCN(velocity_transport=...)`; the forward integration-point fit
 is linear, so it refuses a P2 velocity).
 
+## With inertia
+
+Both Navier-Stokes solvers take `stress_transport` and carry the stress history
+through the same three steps as the Stokes family (prepare, carry once per
+step, commit after the solve), and both read a log-conformation store through
+the model's decode.
+
+- `uw.systems.NavierStokes` transports momentum on the grid with SUPG. The
+  SUPG term weights the strong momentum residual, and that residual includes
+  the divergence of the stress the history carries (at high Weissenberg number
+  the largest term of the balance). The integration-point store has no
+  derivative, so `backward_integration_points` is refused here; the viscous
+  term and the terms that carry the velocity gradient itself (the objective
+  rate's) need second derivatives and remain outside the residual.
+- `uw.systems.NavierStokesSLCN` carries the velocity semi-Lagrangianly
+  (`velocity_transport=`) and applies the theta rule to the momentum flux: the
+  new stress, and at each stored level the carried stress plus the solvent
+  stress of the carried velocity. Its time order is the momentum's; the stress
+  history's order is the constitutive model's.
+
+
 The particle history differs from serial by about 1e-5 at np 4 and 6 (np 3
 matches); the cause is open.
 
