@@ -395,6 +395,12 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   supports piecewise-constant radial viscosity and reproduces every analytical
   response printed in Zhong Tables 2 and 3; geoid and self-gravity are delegated
   to the generic postprocessing functions above.
+- **Bug fix**: the zero-datum guard in `add_rotated_freeslip_bc` now uses
+  `is_zero` instead of sympy structural equality, so the value-first call
+  `add_rotated_freeslip_bc(0.0, boundary)` — the exact form the deprecation
+  message recommends — is accepted for all numeric zero forms (#336, #339).
+  The Wave C deprecation shim messages now correctly name the legacy form
+  the caller actually used (#339).
 
 ### Generalized Geometric Multigrid via Custom Prolongation (July 2026)
 
