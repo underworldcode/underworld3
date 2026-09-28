@@ -71,6 +71,9 @@ features:
         - tests/test_0850_mesh_smoothing.py
       markers: "tier_a or tier_b"
 
+  # NOTE: this entry's paths exercise mesh.remesh() and hand-built multigrid
+  # hierarchies, not adapt(). A dead path (test_0760_mesh_ot_adapt.py) was
+  # removed here; the wider re-scoping is decision 2 in the feature table.
   - key: mesh-adaptation
     title: "MMPDE Mesh Mover / Adaptive Remeshing"
     owner: "@lmoresi"
@@ -85,18 +88,17 @@ features:
     validation:
       paths:
         - tests/test_0750_meshing_follow_metric.py
-        - tests/test_0760_mesh_ot_adapt.py
         - tests/test_0830_mesh_adapt_variable_transfer.py
       markers: "tier_a or tier_b"
 
   - key: fmg
     title: "Geometric Multigrid / FMG Preconditioner"
     owner: "@lmoresi"
-    # Tests pass (11/11 tier_a/b matching 'multigrid') but these are general
-    # Stokes tests, not a purpose-built FMG validation suite. Downgraded to
-    # preview for v3.1.0 to be conservative — upgrade to supported once a
-    # dedicated FMG tier_a benchmark exists.
-    claim: preview
+    # v3.1.0 held this at preview pending "a dedicated FMG tier_a benchmark".
+    # tests/test_1020_fmg_single_field_lockout.py (tier_a, FMG-specific) now
+    # meets that condition, and set_custom_fmg is new this quarter (0 -> 31
+    # uses), so v3.2.0 proposes supported. THE ONLY CHANGED CLAIM.
+    claim: supported
     summary: >
       Automatic geometric full-multigrid preconditioning for the SNES solvers
       on refinement meshes (the `preconditioner` property).
@@ -117,4 +119,231 @@ features:
     validation:
       paths:
         - tests/test_1056_constant_nullspace.py
+      markers: "tier_a or tier_b"
+
+  # ---------------------------------------------------------------------------
+  # Proposed additions for v3.2.0. Claims follow the bands in
+  # docs/developer/planning/v3.2.0-feature-table.md. The gate computes
+  # min(claim, measured), so an over-claim is downgraded, not shipped.
+  # OWNERSHIP IS UNCONFIRMED — @lmoresi has not agreed to vouch for these.
+  # ---------------------------------------------------------------------------
+
+  - key: curved-boundary-conditions
+    title: "Boundary Conditions on Curved Surfaces"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Free-slip and traction BCs applied with true geometric normals rather
+      than the flat-facet approximation, via a nodal rotation of the solution
+      space.
+    validation:
+      paths:
+        - tests/test_1018_rotated_freeslip.py
+        - tests/test_1018_rotated_nodal_normal.py
+        - tests/test_0062_rotated_constraint_exclusivity.py
+      markers: "tier_a or tier_b"
+
+  - key: navier-stokes-supg
+    title: "Navier-Stokes with SUPG Stabilisation"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Inertial flow with streamline-upwind Petrov-Galerkin stabilisation,
+      composed from the transport-plugin interface.
+    validation:
+      paths:
+        - tests/test_1056_navier_stokes_supg_api.py
+        - tests/test_1055_advdiff_supg_api.py
+        - tests/test_1057_ddt_transport_plugin.py
+      markers: "tier_a or tier_b"
+
+  - key: data-access-array-contract
+    title: "Variable Data Access Contract"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      One canonical write path for mesh and swarm variable data: a read-only
+      snapshot, intercepted ufunc writes, and a context manager that flushes
+      every dirty variable collectively.
+    validation:
+      paths:
+        - tests/test_0140_synchronised_updates.py
+        - tests/test_0509_symmetric_tensor_array_writes.py
+        - tests/parallel/test_0758_synchronised_update_collective_flush.py
+      markers: "tier_a or tier_b"
+
+  - key: checkpoint-restart
+    title: "Checkpoint and Restart"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      In-memory snapshots, on-disk checkpoints, and exact same-mesh reload
+      through the PETSc DMPlex section/vector path.
+    validation:
+      paths:
+        - tests/test_0010_snapshot_disk_format.py
+        - tests/test_0007_snapshot_inmemory.py
+        - tests/test_0003_save_load.py
+        - tests/parallel/test_0757_swarm_read_timestep_mpi.py
+      markers: "tier_a or tier_b"
+
+  - key: analytic-solutions
+    title: "Analytic Benchmark Solutions"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Closed-form solutions (SolKx, SolKz, SolDB, Richards, transport,
+      Zhong2008 shell response) used to verify solver convergence rates.
+    validation:
+      paths:
+        - tests/test_1025_analytic_transport.py
+        - tests/test_1026_analytic_richards.py
+        - tests/test_1029_analytic_faulted_medium.py
+        - tests/test_1019_analytic_transcription.py
+      markers: "tier_a or tier_b"
+
+  - key: materials-system
+    title: "Materials Registry and Distribution"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Separates what a material is (a named property table) from where it is
+      (particle-carried or region-based), so one rheology can be attached
+      either way without rewriting it.
+    validation:
+      paths:
+        - tests/test_0072_material_swarm.py
+        - tests/test_0073_material_regions.py
+      markers: "tier_a or tier_b"
+
+  - key: stress-visualisation
+    title: "Stress Tensor Visualisation"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Principal-stress glyphs and stress trajectories from projected
+      deviatoric stress plus pressure.
+    validation:
+      paths:
+        - tests/test_0848_stress_glyphs.py
+      markers: "tier_a or tier_b"
+
+  - key: constitutive-models
+    title: "Constitutive Models"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Viscous, viscoplastic, viscoelastic-plastic, diffusion and Darcy
+      relationships, including transverse-isotropic VEP with a yield-limited
+      weak-plane viscosity.
+    validation:
+      paths:
+        - tests/test_1059_yield_anchor.py
+        - tests/test_1055_yield_smoother.py
+        - tests/test_1057_yield_homotopy_solve.py
+        - tests/test_1051_VE_shear_box.py
+        - tests/test_1052_VEP_stability_regression.py
+      markers: "tier_a or tier_b"
+
+  - key: fault-networks
+    title: "Fault Networks and Split-Node Faults"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Faults as real mesh discontinuities rather than smeared weak zones:
+      specified once as a trace and hierarchy, then realised as a split-node
+      cut with contact laws or as a volumetric weak plane.
+    validation:
+      paths:
+        - tests/test_0849_fault_network_prep.py
+        - tests/test_0858_fault_network_realisations.py
+        - tests/test_0859_fault_network_junction_glue.py
+        - tests/test_0863_fault_network_3d_width.py
+        - tests/test_0855_place_thin_volume.py
+      markers: "tier_a or tier_b"
+
+  - key: transport-histories
+    title: "Material History Transport"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Semi-Lagrangian, backward-differentiation and Adams-Moulton flux forms
+      behind one D/Dt interface, with history stored at nodes or at
+      integration points.
+    validation:
+      paths:
+        - tests/test_0857_lagrangian_ddt_advecting_history.py
+        - tests/test_1052_ddt_set_initial_history.py
+        - tests/test_0067_integration_point_proxy.py
+      markers: "tier_a or tier_b"
+
+  - key: interpolation-and-evaluation
+    title: "Point Location and Function Evaluation"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Locating points in a distributed mesh and evaluating symbolic functions
+      there, with an RBF fallback ladder and cheap rejection of foreign points.
+    validation:
+      paths:
+        - tests/test_0761_point_locator.py
+        - tests/test_0757_evaluate_all_combinations.py
+        - tests/test_0760_evaluate_monotone.py
+        - tests/test_0102_kdtree_linear_rbf.py
+      markers: "tier_a or tier_b"
+
+  - key: solver-control-and-reporting
+    title: "Solver Control and Reporting"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Per-iteration solver callbacks, convergence and tolerance reporting, and
+      detection of runs that stall.
+    validation:
+      paths:
+        - tests/test_1058_solve_report.py
+        - tests/test_1016_snes_update_callbacks.py
+        - tests/test_0205_subsolve_cap_detection.py
+      markers: "tier_a or tier_b"
+
+  - key: boundary-flux-recovery
+    title: "Consistent Boundary Flux Recovery"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Recovers a pointwise surface flux (heat flux, or traction) from the
+      interior residual at essential-BC nodes, de-smeared with the boundary
+      mass matrix.
+    validation:
+      paths:
+        - tests/test_1019_boundary_flux.py
+        - tests/parallel/test_1065_boundary_flux_parallel.py
+      markers: "tier_a or tier_b"
+
+  - key: free-surface
+    title: "Prognostic Free Surface"
+    owner: "@lmoresi"
+    claim: preview
+    summary: >
+      Surface height relaxes toward the stress-derived equilibrium topography
+      using an L-stable exponential integrator that cannot overshoot; now
+      dimension-general and running on a 3-D spherical shell.
+    validation:
+      paths:
+        - tests/test_1070_free_surface_plume.py
+        - tests/test_1072_free_surface_spherical.py
+        - tests/test_1071_slcn_moving_mesh.py
+      markers: "tier_a or tier_b"
+
+  - key: geoid-postprocessing
+    title: "Geoid and Self-Gravity Response"
+    owner: "@gthyagi"
+    claim: experimental
+    summary: >
+      Coefficient-only geoid and self-gravity response functions for spherical
+      shells and cylindrical annuli, independent of the Stokes discretisation.
+    validation:
+      paths:
+        - tests/test_1070_postprocessing_geoid.py
+        - tests/parallel/test_1071_spherical_shell_geoid_parallel.py
       markers: "tier_a or tier_b"
