@@ -231,19 +231,42 @@ features:
   - key: constitutive-models
     title: "Constitutive Models"
     owner: "@lmoresi"
-    claim: preview
+    claim: supported
     summary: >
       Viscous, viscoplastic, viscoelastic-plastic, diffusion and Darcy
-      relationships, including transverse-isotropic VEP with a yield-limited
-      weak-plane viscosity.
+      relationships plugged into the SNES solvers. Transverse isotropy is a
+      separate entry: it carries an unresolved accuracy drift.
     validation:
       paths:
         - tests/test_1059_yield_anchor.py
         - tests/test_1055_yield_smoother.py
         - tests/test_1057_yield_homotopy_solve.py
         - tests/test_1051_VE_shear_box.py
-        - tests/test_1052_VEP_stability_regression.py
       markers: "tier_a or tier_b"
+
+  - key: transverse-isotropy
+    title: "Transverse-Isotropic Rheology"
+    owner: "@lmoresi"
+    claim: preview
+    # Held at preview by one unresolved accuracy drift, NOT by immaturity: the
+    # TI path improved substantially this quarter (#493 uu_G3 transposed tangent
+    # and un-frozen Picard, #535 yield-limited weak-plane viscosity, #475
+    # yield_anchor). tests/parallel/test_1063_constrained_freeslip_parallel.py
+    # [ti] moves the mean-stripped topography from 37.078 to 37.753 (+1.8%,
+    # against a 1% tolerance) on an identical mesh, identically at 2 and 4
+    # ranks. It is rank-independent, so not a partition effect. That test
+    # carries no tier marker and so is invisible to this gate.
+    summary: >
+      Anisotropic viscosity with a director, including transverse-isotropic VEP
+      reporting the yield-limited weak-plane viscosity. Present and much
+      improved this release; one accuracy drift remains unexplained.
+    validation:
+      paths:
+        - tests/test_1052_VEP_stability_regression.py
+        - tests/test_1066_stokes_jacobian_layout.py
+      markers: "tier_a or tier_b"
+    docs:
+      - docs/advanced/vep-transverse-isotropy-faults.md
 
   - key: fault-networks
     title: "Fault Networks and Split-Node Faults"
@@ -265,17 +288,39 @@ features:
   - key: transport-histories
     title: "Material History Transport"
     owner: "@lmoresi"
-    claim: preview
+    claim: supported
     summary: >
       Semi-Lagrangian, backward-differentiation and Adams-Moulton flux forms
-      behind one D/Dt interface, with history stored at nodes or at
-      integration points.
+      behind one D/Dt interface. Storage of history at quadrature points is a
+      separate entry.
     validation:
       paths:
         - tests/test_0857_lagrangian_ddt_advecting_history.py
         - tests/test_1052_ddt_set_initial_history.py
+      markers: "tier_a or tier_b"
+
+  - key: integration-point-variables
+    title: "Integration-Point Variables"
+    owner: "@lmoresi"
+    claim: preview
+    # New this quarter (IntegrationPointVariable, 0 -> 27 uses). tier_a tests
+    # pass, but the only documentation is docs/developer/subsystems/
+    # integration-point-variables.md — a developer page. Nothing under
+    # docs/api/, no tutorial, no example instantiates the class (the 31 hits
+    # elsewhere are the prose phrase "integration point"). That fails the TRL 6
+    # bar of "a user-facing page and a worked demonstration", so preview.
+    # Split out of transport-histories so each is judged on its own evidence.
+    summary: >
+      Material history stored at quadrature points rather than at mesh nodes,
+      with particle repopulation, mid-time swarm stepping and viscoelastic
+      stress history carried on particles.
+    validation:
+      paths:
+        - tests/test_0065_integration_point_variable.py
         - tests/test_0067_integration_point_proxy.py
       markers: "tier_a or tier_b"
+    docs:
+      - docs/developer/subsystems/integration-point-variables.md
 
   - key: interpolation-and-evaluation
     title: "Point Location and Function Evaluation"
