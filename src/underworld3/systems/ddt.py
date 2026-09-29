@@ -1180,6 +1180,11 @@ class _DDtBase(uw_object):
         reduced = _as_float(dt)
         return dt if reduced is None else reduced
 
+    def _derivative_stand_ins(self):
+        """What to read in place of each stored symbol where a derivative of it
+        is needed: nothing, for a store that has one."""
+        return {}
+
     def _project_nodally(self, expr, name="flux", smoothing=0.0, verbose=False):
         """L2 projection of the stored components of ``expr`` onto a field of the
         history's degree and continuity; returns that (1, ncomponents) field.
@@ -4813,6 +4818,20 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
     #: Departure points restored to the boundary take :attr:`inflow_value`
     #: there when one is set (#745); without one they sample the edge.
     applies_inflow_value = True
+
+    def _derivative_stand_ins(self):
+        """The integration-point stores have no derivative. Their values are the
+        nodal snapshots sampled at the departure points, so where a derivative
+        is needed the snapshot stands in: the field where it was rather than
+        where it has been carried, an O(dt) difference (more at an inflow,
+        where the points take the inflow value and the snapshot does not)."""
+        pairs = list(zip(self.psi_star, self.psi_snap))
+        if self.forcing_star is not None:
+            pairs.append((self.forcing_star, self.forcing_snap))
+        stand_in = {}
+        for store, snapshot in pairs:
+            stand_in.update(zip(sympy.Matrix(store.sym), sympy.Matrix(snapshot.sym)))
+        return stand_in
 
     def commit_flux_to_history(self, flux, verbose=False):
         """Project the new flux into the nodal snapshot and read it at the

@@ -40,6 +40,18 @@ from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.advection_diffusion_eulerian import _check_supplied_manager
 from underworld3.systems.solvers import SNES_Stokes, _dimensionalise_dt
 
+def _expand_spatial(expr):
+    """``expr`` with every expression container that varies in space replaced
+    by its content, repeatedly; containers holding constants stay, so they
+    remain runtime parameters of the compiled form."""
+    from underworld3.function.expressions import UWexpression
+    while True:
+        spatial = {a: a.sym for a in expr.atoms(UWexpression) if not a.is_uw_constant()}
+        if not spatial:
+            return expr
+        expr = expr.xreplace(spatial)
+
+
 _ADVECTION_MODES = ("extrapolated", "implicit")
 
 
@@ -408,17 +420,20 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     def _memory_stress(self):
         r"""The part of the momentum flux the stress history carries, or ``None``.
 
-        The model's flux is :math:`2\eta\,\dot\varepsilon_\mathrm{eff}`, and the
-        effective strain rate is the velocity's own strain rate plus the terms
-        of the history (the carried stress, decoded from a log-conformation
-        store, and a stored strain rate for the exponential integrator). With
-        the velocity's derivatives set to zero, what remains is the history's
-        part, whichever integrator made it; the stored levels of the theta rule
-        are history too. Its divergence needs only first derivatives of the
-        stores (of an integration-point store's nodal snapshot). Terms that carry the velocity gradient itself (the objective
-        rate's, the deformation step's) go with the viscous term: their
-        divergence needs second derivatives of the velocity, as does that of a
-        yielding material's strain-rate-dependent viscosity.
+        The model's flux with the velocity's own derivatives set to zero: what
+        remains is the history's part (the carried stress, decoded from a
+        log-conformation store, and a stored strain rate for the exponential
+        integrator), for any model and integrator, and the solvent stress drops
+        out. The stored levels of the theta rule are history too. Expression
+        containers that vary in space are expanded first, so the divergence
+        sees the gradient of a varying modulus or viscosity; constant ones (the
+        timestep, the integrator weights) stay runtime parameters. The
+        divergence needs only first derivatives of the stores (of an
+        integration-point store's nodal snapshot). Terms that carry the
+        velocity gradient itself (the objective rate's, the deformation
+        step's) go with the viscous term: their divergence needs second
+        derivatives of the velocity, as does that of a yielding material's
+        strain-rate-dependent viscosity.
         """
         history = self.Unknowns.DFDt
         cm = self.constitutive_model
@@ -429,27 +444,13 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         X = self.mesh.X
         dim = self.mesh.dim
         own_rate = {self.u.sym[i].diff(X[j]): 0 for i in range(dim) for j in range(dim)}
-        memory = 2 * cm.viscosity * sympy.Matrix(cm.E_eff.sym).xreplace(own_rate)
         weights = self.DuDt.spatial_weights()
-        memory = weights[0] * memory
+        memory = weights[0] * _expand_spatial(sympy.Matrix(cm.flux)).xreplace(own_rate)
         for level, w in enumerate(weights[1:]):
             if w == 0:
                 continue
-            memory = memory + w * sympy.Matrix(
-                cm._carried_stress_sym(level) if hasattr(cm, "_carried_stress_sym")
-                else history.psi_star[level].sym)
-        # An integration-point store has no derivative. Its values are the nodal
-        # snapshot of the committed stress sampled at the departure points, so
-        # the snapshot stands in for it here: the divergence of the stress where
-        # it was rather than where it has been carried, an O(dt) difference.
-        stand_in = {}
-        for store, snapshot in ((getattr(history, "psi_star", []), getattr(history, "psi_snap", None)),
-                                ([history.forcing_star] if getattr(history, "forcing_star", None) is not None
-                                 else [], [getattr(history, "forcing_snap", None)])):
-            for level, star in enumerate(store):
-                if getattr(star, "is_integration_point", False):
-                    stand_in.update(zip(sympy.Matrix(star.sym), sympy.Matrix(snapshot[level].sym)))
-        return memory.xreplace(stand_in) if stand_in else memory
+            memory = memory + w * _expand_spatial(sympy.Matrix(cm._carried_stress_sym(level)))
+        return memory.xreplace(history._derivative_stand_ins())
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the
@@ -472,27 +473,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         """
         states = self.DuDt.states()
         weights = self.DuDt.spatial_weights()
+        if self.Unknowns.DFDt is not None:
+            return self._theta_rule_flux(weights, states[1:])
         total = weights[0] * self.stress_deviator
-        stress_history = self.Unknowns.DFDt
-        for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
-            if w == 0:
-                continue
-            if stress_history is None:
+        for w, u_k in zip(weights[1:], states[1:]):
+            if w != 0:
                 total = total + w * self._viscous_stress(u_k)
-            elif level < len(stress_history.psi_star):
-                # the history carries the memory part only; a solvent viscosity
-                # is rebuilt from the stored velocity, as the new level has it
-                eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
-                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
-                carried = self.constitutive_model._carried_stress_sym(level) \
-                    if hasattr(self.constitutive_model, "_carried_stress_sym") \
-                    else stress_history.psi_star[level].sym
-                total = total + w * (sympy.Matrix(carried) + solvent)
-            else:
-                raise ValueError(
-                    f"the time scheme weights the flux at level {level + 1}, but the "
-                    f"stress history holds {len(stress_history.psi_star)} level(s): "
-                    "give the constitutive model a higher order, or the solver a lower one.")
         return total
 
     def _stabilisation_flux(self):

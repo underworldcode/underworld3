@@ -525,6 +525,12 @@ class Constitutive_Model(uw_object):
         else:
             return self._c.as_immutable()
 
+    def _carried_stress_sym(self, level=0):
+        r"""The stress the history carries at level ``level``: its stored value.
+        A model that stores something else (the log-conformation history)
+        decodes it here."""
+        return self.Unknowns.DFDt.psi_star[level].sym
+
     @property
     def flux(self):
         """Computes the effect of the constitutive tensor on the gradients of the unknowns.

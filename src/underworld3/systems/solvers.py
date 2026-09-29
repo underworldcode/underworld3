@@ -521,6 +521,33 @@ class _StressHistoryMixin:
     def _devss_refresh(self, verbose=False):
         """Refresh a history stabilisation; a solver without one has nothing to do."""
 
+    def _theta_rule_flux(self, weights, velocities):
+        r"""The momentum flux of the time scheme with a stress history.
+
+        ``weights`` are the momentum scheme's weights of the spatial operator at
+        each level (1 on the new level for BDF, the Adams-Moulton weights for
+        the theta rule) and ``velocities`` the velocity at each stored level.
+        The new level takes the model's flux (the solvent stress included); a
+        stored level takes the stress the history carries there -- decoded, so
+        a log-conformation store reads as a stress -- plus the solvent stress of
+        the velocity at that level.
+        """
+        cm = self.constitutive_model
+        history = self.Unknowns.DFDt
+        eta_s = getattr(cm.Parameters, "solvent_viscosity", 0)
+        total = weights[0] * sympy.Matrix(cm.flux)
+        for level, (w, u_k) in enumerate(zip(weights[1:], velocities)):
+            if w == 0:
+                continue
+            if level >= len(history.psi_star):
+                raise ValueError(
+                    f"the time scheme weights the flux at level {level + 1}, but the "
+                    f"stress history holds {len(history.psi_star)} level(s): give the "
+                    "constitutive model a higher order, or the solver a lower one.")
+            solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
+            total = total + w * (sympy.Matrix(cm._carried_stress_sym(level)) + solvent)
+        return total
+
     @property
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried: ``"backward_nodes"``
@@ -629,7 +656,7 @@ class _StressHistoryMixin:
         its Picard corrections) must not advance the history once per pass.
         """
         if uw.mpi.rank == 0 and verbose:
-            print("Stokes solver - carry the stress history", flush=True)
+            print("carry the stress history", flush=True)
 
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
                                    store_result=False)
@@ -5576,6 +5603,19 @@ class SNES_NavierStokes(_StressHistoryMixin, SNES_Stokes_SaddlePt):
         # rule (see _create_flux_history). A DFDt passed in is used as given.
         return
 
+    @property
+    def constitutive_model(self):
+        """The constitutive model (see the base class)."""
+        return self._constitutive_model
+
+    @constitutive_model.setter
+    def constitutive_model(self, model_or_class):
+        # the base builds a stress history for a viscoelastic model; any other
+        # gets the viscous-flux history of the theta rule
+        SNES_Stokes_SaddlePt.constitutive_model.fset(self, model_or_class)
+        if self.Unknowns.DFDt is None:
+            self._create_flux_history()
+
     def _create_flux_history(self):
         """The theta rule's history of the viscous flux, for a model without a
         stress history of its own: carried back from the velocity nodes."""
@@ -5617,24 +5657,14 @@ class SNES_NavierStokes(_StressHistoryMixin, SNES_Stokes_SaddlePt):
         cm = self._constitutive_model
 
         if DFDt is not None and getattr(cm, "requires_stress_history", False):
-            # The theta rule on the momentum flux: the new stress (the model's
-            # flux, solvent included) and, at each stored level, the stress the
-            # history carries -- decoded, so a log-conformation store reads as a
-            # stress -- plus the solvent stress of the velocity carried there.
-            coefficients = DFDt._am_coeffs
-            eta_s = getattr(cm.Parameters, "solvent_viscosity", 0)
-            u_levels = self.Unknowns.DuDt.psi_star
-            flux = coefficients[0] * sympy.Matrix(cm.flux).T
-            for level, weight in enumerate(coefficients[1:]):
-                carried = sympy.Matrix(cm._carried_stress_sym(level)
-                                       if hasattr(cm, "_carried_stress_sym")
-                                       else DFDt.psi_star[level].sym)
-                u_carried = u_levels[min(level, len(u_levels) - 1)].sym
-                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_carried))
-                flux = flux + weight * (carried + solvent)
+            # the momentum scheme's weights; a velocity store without a
+            # derivative is read through its nodal snapshot for the solvent term
+            DuDt = self.Unknowns.DuDt
+            stand_in = DuDt._derivative_stand_ins()
+            velocities = [sympy.Matrix(u_k).xreplace(stand_in) for u_k in DuDt.states()[1:]]
             F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                flux
+                self._theta_rule_flux(DuDt.spatial_weights(), velocities)
                 - sympy.eye(self.mesh.dim) * (self.p.sym[0])
                 + self.penalty * self.div_u * sympy.eye(dim),
                 "NStokes pointwise flux term: F_1(u)",
@@ -5846,8 +5876,6 @@ class SNES_NavierStokes(_StressHistoryMixin, SNES_Stokes_SaddlePt):
             # the stress history's life in a step is the Stokes family's
             self._stress_history_prepare(timestep, _force_setup=_force_setup)
         else:
-            if self.Unknowns.DFDt is None:
-                self._create_flux_history()
             if not _cm._solver_is_setup:
                 self._needs_function_rewire = True
                 self.DFDt.psi_fn = _history_psi_fn(_cm)
@@ -5876,8 +5904,9 @@ class SNES_NavierStokes(_StressHistoryMixin, SNES_Stokes_SaddlePt):
         if trace is not None:
             trace.finish_step()
 
-        # Override AM coefficients if flux_order is explicitly set
-        if self._flux_order is not None:
+        # Override AM coefficients if flux_order is explicitly set (the
+        # viscous-flux history's; a stress history follows the momentum scheme)
+        if self._flux_order is not None and not viscoelastic:
             from underworld3.systems.ddt import _update_am_values
             fo = min(self._flux_order, self.DFDt.effective_order)
             _update_am_values(self.DFDt._am_coeffs, fo, 0.5)

@@ -25,7 +25,9 @@ U_X = (0.639601419, 0.840013154)
 SIGMA_XY = (-0.00331132215, 0.00220579959)
 
 
-def developing_channel(transport="forward_integration_points", steps=10, dt=0.05, cell=0.1):
+def developing_channel(transport="forward_integration_points", steps=10, dt=0.05, cell=0.1,
+                       solver="supg", stress_history="stress", velocity_transport="backward_nodes",
+                       modulus_varies=False):
     eta_s, eta_p = BETA * ETA, (1 - BETA) * ETA
     lam = WI * H / U
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, -H), maxCoords=(L, H),
@@ -33,13 +35,18 @@ def developing_channel(transport="forward_integration_points", steps=10, dt=0.05
     x, y = mesh.X
     v = uw.discretisation.MeshVariable("U_ch", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P_ch", mesh, 1, degree=1)
-    ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0)
+    if solver == "supg":
+        ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0)
+    else:
+        ns = uw.systems.NavierStokesSLCN(mesh, v, p, rho=1.0, order=2,
+                                         velocity_transport=velocity_transport)
     ns.stress_transport = transport
     ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        ns.Unknowns, order=1, integrator="etd", objective_rate="upper_convected")
+        ns.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        stress_history=stress_history)
     cm = ns.constitutive_model
     cm.Parameters.shear_viscosity_0 = eta_p
-    cm.Parameters.shear_modulus = eta_p / lam
+    cm.Parameters.shear_modulus = eta_p / lam * ((1 + 0.5 * x) if modulus_varies else 1)
     cm.Parameters.solvent_viscosity = eta_s
     cm.Parameters.dt_elastic = dt
     u_in = U * (1 - y ** 2 / H ** 2)
@@ -59,12 +66,27 @@ def developing_channel(transport="forward_integration_points", steps=10, dt=0.05
 def test_the_supg_residual_carries_the_memory_stress_and_no_velocity_derivative():
     uw.reset_default_model()
     ns, v = developing_channel(steps=1)
-    memory = ns._memory_stress()
-    assert memory is not None
+    memory = sympy.Matrix(ns._memory_stress())
     X = ns.mesh.X
     own = {ns.u.sym[i].diff(X[j]) for i in range(2) for j in range(2)}
-    assert not (sympy.Matrix(memory).atoms(sympy.Function) & own)
-    assert any(e != 0 for e in sympy.Matrix(memory))
+    assert not (memory.atoms(sympy.Function) & own)
+    # after one step the entering fluid has built a stress, so the memory is not zero
+    probe = np.array([[0.2, 0.3]])
+    value = float(np.asarray(uw.function.evaluate(memory[0, 1], probe)).reshape(-1)[0])
+    assert np.isfinite(value) and abs(value) > 1.0e-8, value
+
+
+def test_a_varying_modulus_is_expanded_so_its_gradient_is_seen():
+    """A modulus that varies in space is expanded in the memory stress (its
+    divergence then has the modulus gradient); the timestep stays a runtime
+    parameter."""
+    from underworld3.function.expressions import UWexpression
+    uw.reset_default_model()
+    ns, v = developing_channel(steps=1, modulus_varies=True)
+    cm = ns.constitutive_model
+    containers = sympy.Matrix(ns._memory_stress()).atoms(UWexpression)
+    assert cm.Parameters.shear_modulus not in containers
+    assert containers and all(c.is_uw_constant() for c in containers)
 
 
 def test_a_viscous_fluid_has_no_memory_stress():
@@ -96,3 +118,32 @@ def test_the_developing_channel_keeps_its_recorded_flow():
         ns.constitutive_model._carried_stress_sym(0)[0, 1], POINTS)).reshape(-1)
     assert np.allclose(ux, U_X, atol=1.0e-7), ux
     assert np.allclose(sxy, SIGMA_XY, atol=1.0e-9), sxy
+
+
+# BASELINES: the semi-Lagrangian solver (momentum order 2, model order 1,
+# solvent, log-conformation store): u_x and sigma_xy at POINTS (2026-09-28)
+SLCN_U_X = (0.639781087, 0.840017720)
+SLCN_SIGMA_XY = (-0.00330714240, 0.00221101846)
+
+
+def test_the_semi_lagrangian_solver_keeps_its_recorded_developing_channel():
+    """NavierStokesSLCN on the developing channel: a stress that varies along the
+    flow, a solvent, the log-conformation store, and momentum order 2 against a
+    first-order stress history, so every term of its momentum flux is live."""
+    uw.reset_default_model()
+    ns, v = developing_channel(solver="slcn", stress_history="log_conformation")
+    ux = np.asarray(uw.function.global_evaluate(v.sym[0], POINTS)).reshape(-1)
+    sxy = np.asarray(uw.function.global_evaluate(
+        ns.constitutive_model._carried_stress_sym(0)[0, 1], POINTS)).reshape(-1)
+    assert np.allclose(ux, SLCN_U_X, atol=1.0e-7), ux
+    assert np.allclose(sxy, SLCN_SIGMA_XY, atol=1.0e-9), sxy
+
+
+def test_an_integration_point_velocity_history_carries_a_viscoelastic_flow():
+    """The solvent stress of the stored velocity needs its derivative; an
+    integration-point velocity store is read through its nodal snapshot."""
+    uw.reset_default_model()
+    ns, v = developing_channel(solver="slcn", velocity_transport="backward_integration_points",
+                               steps=2)
+    ux = np.asarray(uw.function.global_evaluate(v.sym[0], POINTS)).reshape(-1)
+    assert np.all(np.isfinite(ux)) and np.all(ux > 0.3), ux
