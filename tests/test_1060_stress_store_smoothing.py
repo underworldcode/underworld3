@@ -30,7 +30,7 @@ def _cell_scale_content(history, mesh):
     return rms(raw - fit) / max(rms(raw), 1.0e-300)
 
 
-def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transport="integration_point",
+def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transport="backward_integration_points",
                          return_kind=False):
     """Waters and King start-up on the integration-point history, pure Maxwell,
     below Courant one. Returns u at the centre at t 1, the cell-scale content
@@ -50,15 +50,15 @@ def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transpor
     ns.add_dirichlet_bc((0.0, 0.0), "Top"); ns.add_dirichlet_bc((0.0, 0.0), "Bottom")
     ns.add_dirichlet_bc((sympy.oo, 0.0), "Left"); ns.add_dirichlet_bc((sympy.oo, 0.0), "Right")
     ns.bodyforce = sympy.Matrix([[G, 0.0]]); ns.tolerance = 1e-6
-    if transport == "integration_point":
+    if transport == "backward_integration_points":
         ns.DFDt.store_smoothing = store_smoothing
-    elif transport == "forward":
+    elif transport == "forward_integration_points":
         ns.DFDt.flux_smoothing = store_smoothing * mesh.cell_size() ** 2
     # The content has to be read after the trace-back and before the solve: after
     # the store the point values are a P1 field sampled at the points and the
     # cell-scale part is zero by construction, whatever the run is doing.
     latest = {"content": float("nan")}
-    if transport == "integration_point":
+    if transport == "backward_integration_points":
         carry = ns.DFDt.update_pre_solve
         def carry_and_measure(*args, **kwargs):
             out = carry(*args, **kwargs)
@@ -95,7 +95,7 @@ def test_the_store_smoothing_holds_the_cell_scale_mode_of_the_integration_point_
     """
     u_plain, plain, _, kind = waters_king_start_up(0.0, return_kind=True)
     u_smooth, smooth, _ = waters_king_start_up(0.07)
-    assert kind == "IntegrationPointSemiLagrangian"
+    assert kind == "BackwardIntegrationPointsSemiLagrangian"
     growth = plain[2.0] / plain[1.0]
     assert 4.0 < growth < 20.0, growth                  # e^{gamma}, gamma between 1.4 and 3 per unit time
     assert smooth[2.0] < smooth[1.0], smooth            # held: decaying, not growing

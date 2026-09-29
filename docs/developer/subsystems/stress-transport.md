@@ -8,7 +8,7 @@ what limits it, and how to keep a run inside those limits.
 
 ```python
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.stress_transport = "integration_point"       # or "semi_lagrangian" (the default), "forward", "eulerian"
+stokes.stress_transport = "forward_integration_points"   # see the table for the others
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
     stokes.Unknowns, order=1, integrator="bdf", objective_rate="upper_convected")
 stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_p
@@ -17,13 +17,21 @@ stokes.constitutive_model.Parameters.solvent_viscosity = eta_s    # Oldroyd-B; o
 stokes.constitutive_model.Parameters.dt_elastic = dt
 ```
 
-## The five histories
+## The six histories
+
+The four semi-Lagrangian names are `<trace>_<launch>`, the arguments of
+`uw.systems.ddt.SemiLagrangian(..., trace=, launch=)`: a backward trace follows the
+characteristic back from each storage point and samples the old stress at the foot; a
+forward trace carries the old stress from where it is known and fits the arrivals in
+each cell. The former names `semi_lagrangian`, `integration_point` and `forward`
+are accepted with a warning.
 
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
-| `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
-| `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
-| `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
+| `backward_nodes` (the default) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
+| `backward_integration_points` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
+| `forward_integration_points` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
+| `forward_nodes` | continuous, the history's degree, at its nodes | the stress projected onto that store, launched from its nodes and from a lattice inside each element, one forward trajectory a step; a per-cell fit at the history's degree read back at the nodes | measured on transport alone (rotating diffusing Gaussian, P2: 1.78e-2 against 2.52e-2 for `backward_nodes` over half a turn) | not yet measured on a stress benchmark; first order only; does not follow a moving mesh |
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
@@ -59,6 +67,61 @@ where each flavour receives it, and anything a flavour writes from `evaluate`
 (which returns dimensional values). `test_1064` runs every flavour in a units
 model with the timestep in kyr and as the same problem in plain numbers, from a
 moving start, at orders 1 and 2: the stores agree to solver precision.
+
+
+## In parallel
+
+Every history except the particle one gives the serial answer on any number of
+ranks: `tests/parallel/test_1066` holds the six stress histories on a
+turned-over Maxwell box and the four semi-Lagrangian value histories on a
+rotating Gaussian to 1e-6 of their serial values at np 3, 4 and 6. Four things
+make that so, and a new history has to respect them:
+
+- a field that is itself a mesh variable is recorded into a history by copying
+  its nodal values, never by evaluating it at its nodes;
+- a trace starts from the node or point itself: a nudge toward "the nearest
+  cell's" centroid depends on which cells a rank holds;
+- every history projection is solved to 1e-10, since its result is the carried
+  field and an iterative error is partition-dependent;
+- a point is never given to one of two cells by a tie-break: a forward arrival
+  on a shared face is fitted in every cell that contains it, and a point the
+  parallel evaluator strands is evaluated by the rank whose cell contains it.
+- a monotone bound (`monotone_mode="clamp"`) is applied on the rank that
+  evaluates the point, among the point's own nodes: applied on the rank that
+  asked, it bounded a departure point on another rank by the wrong
+  neighbourhood (#682, 1.6% of a level set's volume at np 8).
+
+The same holds for the value histories of advection-diffusion
+(`AdvDiffusionSLCN(transport=...)`) and for the Navier-Stokes velocity history
+(`NavierStokesSLCN(velocity_transport=...)`; the forward integration-point fit
+is linear, so it refuses a P2 velocity).
+
+## With inertia
+
+Both Navier-Stokes solvers take `stress_transport` and carry the stress history
+through the same three steps as the Stokes family (prepare, carry once per
+step, commit after the solve), and both read a log-conformation store through
+the model's decode.
+
+- `uw.systems.NavierStokes` transports momentum on the grid with SUPG. The
+  SUPG term weights the strong momentum residual, and that residual includes
+  the divergence of the stress the history carries (at high Weissenberg number
+  the largest term of the balance), gradients of a spatially varying modulus
+  or viscosity included. An integration-point store has no derivative; its
+  nodal snapshot stands in, an O(dt) difference. The viscous term, the terms
+  that carry the velocity gradient itself (the objective rate's) and a
+  yielding viscosity need second derivatives and remain outside the residual.
+- `uw.systems.NavierStokesSLCN` carries the velocity semi-Lagrangianly
+  (`velocity_transport=`).
+- Both apply the momentum scheme's weights to the momentum flux (the theta
+  rule at first order, the new level alone for BDF): the new stress, and at a
+  stored level the carried stress plus the solvent stress of the velocity
+  there. The momentum's time order is the solver's; the stress history's is
+  the constitutive model's.
+
+
+The particle history differs from serial by about 1e-5 at np 4 and 6 (np 3
+matches); the cause is open.
 
 ## The timestep is set by the wall strain rate, not the far-field Courant number
 

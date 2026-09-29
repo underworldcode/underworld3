@@ -17,11 +17,11 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.mpi(min_size=2), pytest.mark.timeout(600)]
 
 # BASELINES: the serial values (see the ledger)
-XY_AT_A, XY_AT_B = -0.1190789, 0.0702257
+XY_AT_A, XY_AT_B = -0.1190800, 0.0702081
 POINTS = np.array([[0.5, 0.2], [-0.3, -0.35]])
 
 
-def turned_over_maxwell_box(transport="forward", steps=10, dt=0.1):
+def turned_over_maxwell_box(transport="forward_integration_points", steps=10, dt=0.1):
     Lx, H = 1.0, 0.5
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-Lx, -H), maxCoords=(Lx, H),
                                              cellSize=0.125, qdegree=3, regular=False)
@@ -48,12 +48,10 @@ def turned_over_maxwell_box(transport="forward", steps=10, dt=0.1):
 
 def test_the_forward_history_gives_the_serial_stress_on_every_rank():
     kind, values, relocated = turned_over_maxwell_box()
-    assert kind == "ForwardSemiLagrangian"
+    assert kind == "ForwardIntegrationPointsSemiLagrangian"
     # The serial values are the hard baseline (they pin the physics; regenerate
-    # them if a default changes). Parallel matches them to 1e-4, not to
-    # round-off: a cell's arrivals are summed into its least-squares fit in an
-    # order the partition sets, and ten steps of that reordering reach ~2e-5 on
-    # a mildly conditioned fit. A dropped or misrouted arrival would be far larger.
-    assert abs(values[0] - XY_AT_A) < 1.0e-4 and abs(values[1] - XY_AT_B) < 1.0e-4, values
+    # them if a default changes). Parallel matches them to the recorded figures
+    # (see test_1066); a dropped or misrouted arrival costs 1e-5 or more.
+    assert abs(values[0] - XY_AT_A) < 1.0e-6 and abs(values[1] - XY_AT_B) < 1.0e-6, values
     # the seam must actually have been crossed for this to test the parallel path
     assert relocated > 0

@@ -42,7 +42,7 @@ def _stress_at_origin(stokes):
     return float(np.asarray(uw.function.evaluate(stokes.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point", "forward", "lagrangian"])
+@pytest.mark.parametrize("transport", ["backward_nodes", "backward_integration_points", "forward_integration_points", "forward_nodes", "lagrangian"])
 def test_a_restored_history_continues_where_it_left_off(transport):
     orchestration_model, stokes, dt = _shear_box(transport)
     for _ in range(6):

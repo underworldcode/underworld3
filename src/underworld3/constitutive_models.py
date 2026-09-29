@@ -47,7 +47,7 @@ import underworld3.cython
 from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
-from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
+from underworld3.systems.ddt import BackwardNodesSemiLagrangian
 from underworld3.systems.ddt import _bdf_coefficients, _as_float
 from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
@@ -459,7 +459,7 @@ class Constitutive_Model(uw_object):
 
         Returns
         -------
-        SemiLagrangian_DDt or Lagrangian_DDt or None
+        BackwardNodesSemiLagrangian or Lagrangian_DDt or None
             The material derivative operator, or None if not set.
         """
         return self._DuDt
@@ -467,7 +467,7 @@ class Constitutive_Model(uw_object):
     @DuDt.setter
     def DuDt(
         self,
-        DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
+        DuDt_value: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt],
     ):
         """Set the material derivative operator for the unknown."""
         self._DuDt = DuDt_value
@@ -483,7 +483,7 @@ class Constitutive_Model(uw_object):
     @DFDt.setter
     def DFDt(
         self,
-        DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
+        DFDt_value: Union[BackwardNodesSemiLagrangian, Lagrangian_DDt],
     ):
         """Set the material derivative operator for flux history."""
         self._DFDt = DFDt_value
@@ -524,6 +524,12 @@ class Constitutive_Model(uw_object):
             return sympy.Matrix(self._c.sym).as_immutable()
         else:
             return self._c.as_immutable()
+
+    def _carried_stress_sym(self, level=0):
+        r"""The stress the history carries at level ``level``: its stored value.
+        A model that stores something else (the log-conformation history)
+        decodes it here."""
+        return self.Unknowns.DFDt.psi_star[level].sym
 
     @property
     def flux(self):

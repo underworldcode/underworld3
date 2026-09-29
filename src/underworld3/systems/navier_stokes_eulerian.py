@@ -40,6 +40,18 @@ from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.advection_diffusion_eulerian import _check_supplied_manager
 from underworld3.systems.solvers import SNES_Stokes, _dimensionalise_dt
 
+def _expand_spatial(expr):
+    """``expr`` with every expression container that varies in space replaced
+    by its content, repeatedly; containers holding constants stay, so they
+    remain runtime parameters of the compiled form."""
+    from underworld3.function.expressions import UWexpression
+    while True:
+        spatial = {a: a.sym for a in expr.atoms(UWexpression) if not a.is_uw_constant()}
+        if not spatial:
+            return expr
+        expr = expr.xreplace(spatial)
+
+
 _ADVECTION_MODES = ("extrapolated", "implicit")
 
 
@@ -385,9 +397,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         :math:`-p\mathbf{I}` in :math:`\mathbf{F}_1`, so it must not appear in
         :math:`\mathbf{f}_0`, but a strong residual without it is O(1) at the
         exact solution and the stabilisation then injects an O(tau) error
-        (measured on Kovasznay flow: 50 times the Galerkin error). The
-        viscous term needs second derivatives the kernels do not see; it is
-        the remaining inconsistency for P2 velocity.
+        (measured on Kovasznay flow: 50 times the Galerkin error). For the
+        same reason it takes the divergence of the stress a viscoelastic
+        history carries (:meth:`_memory_stress`): at high Weissenberg number
+        that stress dominates the momentum balance. The viscous term needs
+        second derivatives the kernels do not see; it is the remaining
+        inconsistency for P2 velocity.
         """
         # The body-force setter may store a column; the residual is a row.
         dim = self.mesh.dim
@@ -396,7 +411,46 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         if with_pressure:
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
+            memory = self._memory_stress()
+            if memory is not None:
+                R = R - sympy.Matrix([[sum(memory[i, j].diff(X[j]) for j in range(dim))
+                                       for i in range(dim)]])
         return R
+
+    def _memory_stress(self):
+        r"""The part of the momentum flux the stress history carries, or ``None``.
+
+        The model's flux with the velocity's own derivatives set to zero: what
+        remains is the history's part (the carried stress, decoded from a
+        log-conformation store, and a stored strain rate for the exponential
+        integrator), for any model and integrator, and the solvent stress drops
+        out. The stored levels of the theta rule are history too. Expression
+        containers that vary in space are expanded first, so the divergence
+        sees the gradient of a varying modulus or viscosity; constant ones (the
+        timestep, the integrator weights) stay runtime parameters. The
+        divergence needs only first derivatives of the stores (of an
+        integration-point store's nodal snapshot). Terms that carry the
+        velocity gradient itself (the objective rate's, the deformation
+        step's) go with the viscous term: their divergence needs second
+        derivatives of the velocity, as does that of a yielding material's
+        strain-rate-dependent viscosity.
+        """
+        history = self.Unknowns.DFDt
+        cm = self.constitutive_model
+        if history is None or not getattr(cm, "is_elastic", False):
+            return None
+        # TODO(DESIGN): a yielding material's viscosity depends on the strain
+        # rate; its divergence needs second derivatives the kernels do not see.
+        X = self.mesh.X
+        dim = self.mesh.dim
+        own_rate = {self.u.sym[i].diff(X[j]): 0 for i in range(dim) for j in range(dim)}
+        weights = self.DuDt.spatial_weights()
+        memory = weights[0] * _expand_spatial(sympy.Matrix(cm.flux)).xreplace(own_rate)
+        for level, w in enumerate(weights[1:]):
+            if w == 0:
+                continue
+            memory = memory + w * _expand_spatial(sympy.Matrix(cm._carried_stress_sym(level)))
+        return memory.xreplace(history._derivative_stand_ins())
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the
@@ -419,27 +473,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         """
         states = self.DuDt.states()
         weights = self.DuDt.spatial_weights()
+        if self.Unknowns.DFDt is not None:
+            return self._theta_rule_flux(weights, states[1:])
         total = weights[0] * self.stress_deviator
-        stress_history = self.Unknowns.DFDt
-        for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
-            if w == 0:
-                continue
-            if stress_history is None:
+        for w, u_k in zip(weights[1:], states[1:]):
+            if w != 0:
                 total = total + w * self._viscous_stress(u_k)
-            elif level < len(stress_history.psi_star):
-                # the history carries the memory part only; a solvent viscosity
-                # is rebuilt from the stored velocity, as the new level has it
-                eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
-                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
-                carried = self.constitutive_model._carried_stress_sym(level) \
-                    if hasattr(self.constitutive_model, "_carried_stress_sym") \
-                    else stress_history.psi_star[level].sym
-                total = total + w * (sympy.Matrix(carried) + solvent)
-            else:
-                raise ValueError(
-                    f"the time scheme weights the flux at level {level + 1}, but the "
-                    f"stress history holds {len(stress_history.psi_star)} level(s): "
-                    "give the constitutive model a higher order, or the solver a lower one.")
         return total
 
     def _stabilisation_flux(self):
