@@ -144,12 +144,12 @@ features:
       markers: "tier_a or tier_b"
 
   - key: navier-stokes-supg
-    title: "Navier-Stokes with SUPG Stabilisation"
+    title: "SUPG-Stabilised Transport"
     owner: "@lmoresi"
     claim: supported
     summary: >
-      Inertial flow with streamline-upwind Petrov-Galerkin stabilisation,
-      composed from the transport-plugin interface.
+      Streamline-upwind Petrov-Galerkin stabilisation as a transport plugin —
+      the default for both advection-diffusion and Navier-Stokes.
     validation:
       paths:
         - tests/test_1056_navier_stokes_supg_api.py
