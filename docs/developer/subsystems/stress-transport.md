@@ -98,30 +98,36 @@ is linear, so it refuses a P2 velocity).
 
 ## With inertia
 
-Both Navier-Stokes solvers take `stress_transport` and carry the stress history
-through the same three steps as the Stokes family (prepare, carry once per
-step, commit after the solve), and both read a log-conformation store through
-the model's decode.
+`uw.systems.NavierStokes` is one solver with two choices:
 
-- `uw.systems.NavierStokes` transports momentum on the grid with SUPG. The
-  SUPG term weights the strong momentum residual, and that residual includes
-  the divergence of the stress the history carries (at high Weissenberg number
-  the largest term of the balance), gradients of a spatially varying modulus
-  or viscosity included. An integration-point store has no derivative; its
-  nodal snapshot stands in, an O(dt) difference. The viscous term, the terms
-  that carry the velocity gradient itself (the objective rate's) and a
-  yielding viscosity need second derivatives and remain outside the residual.
-- `uw.systems.NavierStokesSLCN` carries the velocity semi-Lagrangianly
-  (`velocity_transport=`).
-- Both apply the momentum scheme's weights to the momentum flux (the theta
-  rule at first order, the new level alone for BDF): the new stress, and at a
-  stored level the carried stress plus the solvent stress of the velocity
-  there. The momentum's time order is the solver's; the stress history's is
-  the constitutive model's.
+```python
+ns = uw.systems.NavierStokes(mesh, v, p, rho=rho, velocity_transport="eulerian")
+ns.stress_transport = "forward_integration_points"      # a viscoelastic material only
+```
 
+- `velocity_transport` carries the momentum: `"eulerian"` (the default)
+  assembles the advection on the mesh with SUPG; `"backward_nodes"`,
+  `"backward_integration_points"`, `"forward_integration_points"` or
+  `"forward_nodes"` carry the velocity semi-Lagrangianly (the forward schemes
+  at `order=1`; the forward integration-point fit is linear and refuses a P2
+  velocity).
+- `stress_transport` carries a viscoelastic stress, as for Stokes, with the
+  same three steps (prepare, carry once per step, commit after the solve), and
+  a log-conformation store is read through the model's decode.
 
-The particle history differs from serial by about 1e-5 at np 4 and 6 (np 3
-matches); the cause is open.
+The momentum flux takes the momentum scheme's weights (the theta rule at
+first order, the new level alone for BDF): the new stress, and at a stored
+level the carried stress plus the solvent stress of the velocity there. With
+`"eulerian"` the SUPG term weights the strong momentum residual, which
+includes the divergence of the stress the history carries, gradients of a
+spatially varying modulus or viscosity included. A store with no derivative
+(the integration-point histories) is read there through its nodal snapshot,
+an O(dt) difference. The viscous term, the terms that carry the velocity
+gradient itself (the objective rate's) and a yielding viscosity need second
+derivatives and remain outside the residual.
+
+The former `NavierStokesSLCN` and `AdvDiffusionSLCN` still work, with a
+warning; `AdvDiffusion` takes `transport=` in the same way.
 
 ## The timestep is set by the wall strain rate, not the far-field Courant number
 

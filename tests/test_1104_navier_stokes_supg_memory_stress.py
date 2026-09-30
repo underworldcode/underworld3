@@ -26,7 +26,7 @@ SIGMA_XY = (-0.00331132215, 0.00220579959)
 
 
 def developing_channel(transport="forward_integration_points", steps=10, dt=0.05, cell=0.1,
-                       solver="supg", stress_history="stress", velocity_transport="backward_nodes",
+                       velocity_transport="eulerian", order=1, stress_history="stress",
                        modulus_varies=False):
     eta_s, eta_p = BETA * ETA, (1 - BETA) * ETA
     lam = WI * H / U
@@ -35,11 +35,8 @@ def developing_channel(transport="forward_integration_points", steps=10, dt=0.05
     x, y = mesh.X
     v = uw.discretisation.MeshVariable("U_ch", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P_ch", mesh, 1, degree=1)
-    if solver == "supg":
-        ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0)
-    else:
-        ns = uw.systems.NavierStokesSLCN(mesh, v, p, rho=1.0, order=2,
-                                         velocity_transport=velocity_transport)
+    ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=order,
+                                 velocity_transport=velocity_transport)
     ns.stress_transport = transport
     ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         ns.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
@@ -120,18 +117,21 @@ def test_the_developing_channel_keeps_its_recorded_flow():
     assert np.allclose(sxy, SIGMA_XY, atol=1.0e-9), sxy
 
 
-# BASELINES: the semi-Lagrangian solver (momentum order 2, model order 1,
-# solvent, log-conformation store): u_x and sigma_xy at POINTS (2026-09-28)
-SLCN_U_X = (0.639781087, 0.840017720)
-SLCN_SIGMA_XY = (-0.00330714240, 0.00221101846)
+# BASELINES: semi-Lagrangian momentum (backward nodes, order 2) against a
+# first-order stress history, solvent, log-conformation store: u_x and
+# sigma_xy at POINTS (2026-09-29)
+SLCN_U_X = (0.639781102, 0.840017737)
+SLCN_SIGMA_XY = (-0.00330714249, 0.00221101845)
 
 
-def test_the_semi_lagrangian_solver_keeps_its_recorded_developing_channel():
-    """NavierStokesSLCN on the developing channel: a stress that varies along the
-    flow, a solvent, the log-conformation store, and momentum order 2 against a
-    first-order stress history, so every term of its momentum flux is live."""
+def test_semi_lagrangian_momentum_keeps_its_recorded_developing_channel():
+    """Semi-Lagrangian momentum on the developing channel: a stress that varies
+    along the flow, a solvent, the log-conformation store, and momentum order 2
+    against a first-order stress history, so every term of the momentum flux is
+    live."""
     uw.reset_default_model()
-    ns, v = developing_channel(solver="slcn", stress_history="log_conformation")
+    ns, v = developing_channel(velocity_transport="backward_nodes", order=2,
+                               stress_history="log_conformation")
     ux = np.asarray(uw.function.global_evaluate(v.sym[0], POINTS)).reshape(-1)
     sxy = np.asarray(uw.function.global_evaluate(
         ns.constitutive_model._carried_stress_sym(0)[0, 1], POINTS)).reshape(-1)
@@ -143,7 +143,6 @@ def test_an_integration_point_velocity_history_carries_a_viscoelastic_flow():
     """The solvent stress of the stored velocity needs its derivative; an
     integration-point velocity store is read through its nodal snapshot."""
     uw.reset_default_model()
-    ns, v = developing_channel(solver="slcn", velocity_transport="backward_integration_points",
-                               steps=2)
+    ns, v = developing_channel(velocity_transport="backward_integration_points", steps=2)
     ux = np.asarray(uw.function.global_evaluate(v.sym[0], POINTS)).reshape(-1)
     assert np.all(np.isfinite(ux)) and np.all(ux > 0.3), ux

@@ -178,7 +178,8 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
         stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
     else:
         # The trace-back Navier-Stokes solver at negligible inertia: the same box.
-        stokes = uw.systems.NavierStokesSLCN(mesh, v, p, rho=1.0e-6, order=1)
+        stokes = uw.systems.NavierStokes(mesh, v, p, rho=1.0e-6, order=1,
+                                         velocity_transport="backward_nodes")
         stokes.bodyforce = sympy.Matrix([[0.0, 0.0]])
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(

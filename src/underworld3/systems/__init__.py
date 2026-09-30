@@ -18,14 +18,12 @@ VE_Stokes : class
 Projection : class
     L2 projection of fields onto mesh variables.
 AdvDiffusion : class
-    Advection-diffusion composed from a DDt transport manager (the default
-    manager, EulerianSUPG, assembles implicit advection with SUPG).
-AdvDiffusionSLCN : class
-    Advection-diffusion with semi-Lagrangian transport (flux history).
+    Advection-diffusion; ``transport=`` chooses how the field is carried:
+    "eulerian" (assembled, SUPG; the default) or a semi-Lagrangian history.
 NavierStokes : class
-    Navier-Stokes composed from a DDt transport manager (EulerianSUPG default).
-NavierStokesSLCN : class
-    Navier-Stokes with semi-Lagrangian transport and a stress history.
+    Navier-Stokes; ``velocity_transport=`` chooses how the momentum is
+    carried ("eulerian" or a semi-Lagrangian history) and, for a
+    viscoelastic material, ``stress_transport`` how the stress is.
 Diffusion : class
     Pure diffusion (no advection).
 TransientDarcy : class
@@ -68,7 +66,6 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 
 
 # These are now implemented the same way using the ddt module
-from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion_Swarm as AdvDiffusionSwarm
 # The generic names are the composing solvers: the transport (assembled SUPG
 # advection, or a semi-Lagrangian history) is the DDt manager they hold.
@@ -83,8 +80,6 @@ from .solvers import SNES_TransientDarcy as TransientDarcy
 from .solvers import SNES_Richards as Richards
 
 # These are now implemented the same way using the ddt module
-from .solvers import SNES_NavierStokes as NavierStokesSwarm
-from .solvers import SNES_NavierStokes as NavierStokesSLCN
 
 from .free_surface import FreeSurface
 
@@ -104,3 +99,25 @@ from .ddt import EulerianSUPG as EulerianSUPG_DDt
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
 from .yield_continuation import yield_continuation, YieldHomotopyControl
 from .solve_report import SolveReport
+
+
+# Former names. One solver per equation, the transport chosen by argument:
+# NavierStokes(velocity_transport=...), AdvDiffusion(transport=...).
+_FORMER_NAMES = {
+    "NavierStokesSLCN": ("SNES_NavierStokes",
+                         "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')"),
+    "NavierStokesSwarm": ("SNES_NavierStokes",
+                          "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')"),
+    "AdvDiffusionSLCN": ("SNES_AdvectionDiffusion",
+                         "uw.systems.AdvDiffusion(..., transport='backward_nodes')"),
+}
+
+
+def __getattr__(name):
+    if name in _FORMER_NAMES:
+        import warnings
+        from . import solvers
+        implementation, instead = _FORMER_NAMES[name]
+        warnings.warn(f"uw.systems.{name} is {instead}", FutureWarning, stacklevel=2)
+        return getattr(solvers, implementation)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

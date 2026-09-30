@@ -4479,7 +4479,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
            duDt = uw.systems.ddt.SemiLagrangian(
                mesh, T.sym, V_fn, vtype=uw.VarType.SCALAR,
                degree=T.degree, continuous=T.continuous, order=2)
-           adv = uw.systems.AdvDiffusionSLCN(mesh, T, V_fn, DuDt=duDt, order=1)
+           adv = uw.systems.AdvDiffusion(mesh, T, V_fn, DuDt=duDt, order=1)
            adv.DFDt.theta = 1.0   # flux implicit at n+1 (BDF2-consistent)
 
         A BDF2 stencil with a Crank-Nicolson flux (``order=2`` + ``theta=0.5``)
@@ -5072,7 +5072,7 @@ class SNES_AdvectionDiffusion_Swarm(SNES_AdvectionDiffusion):
             raise ValueError(
                 "SNES_AdvectionDiffusion_Swarm needs a swarm to carry the history on; "
                 "pass the material swarm (this solver does not create a private one). "
-                "Use AdvDiffusionSLCN for the mesh-based semi-Lagrangian scheme.")
+                "Use uw.systems.AdvDiffusion(..., transport='backward_nodes') for the mesh-based semi-Lagrangian scheme.")
         if int(step_averaging) < 1:
             raise ValueError(f"step_averaging must be >= 1, not {step_averaging!r}")
         if abs(float(theta) - 0.5) > 1e-12:

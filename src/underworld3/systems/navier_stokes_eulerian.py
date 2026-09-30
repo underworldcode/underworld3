@@ -131,6 +131,17 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         (2\nu)`; both are combined with the transient term as
         :math:`[(C_t c_0/\Delta t)^2 + \tau^{-2}]^{-1/2}` so the time step still
         caps them. The advective and viscous weights are not used by these two.
+    velocity_transport : str, default "eulerian"
+        How the momentum is carried. ``"eulerian"`` assembles the advection on
+        the mesh and stabilises it with SUPG (the parameters above). A
+        semi-Lagrangian history instead carries the velocity along its own
+        characteristics: ``"backward_nodes"``, ``"backward_integration_points"``,
+        ``"forward_integration_points"`` or ``"forward_nodes"``, named by the
+        ``trace`` and ``launch`` arguments of
+        :func:`~underworld3.systems.ddt.SemiLagrangian`; the forward schemes
+        carry one level (``order=1``), and the forward integration-point fit
+        is linear, so it refuses a P2 velocity. A viscoelastic stress history
+        is chosen separately, by ``stress_transport``.
     peclet_weight : float, default 4
         A critical cell Péclet number. The SUPG term is multiplied by
         :math:`Pe^2 / (Pe^2 + Pe_c^2)`, :math:`Pe = |a| h / 2\nu`, so the
@@ -180,6 +191,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         DuDt: Optional[_DDtBase] = None,
         DFDt=None,
         restore_points_func=None,
+        velocity_transport: str = "eulerian",
     ):
         if DFDt is not None:
             raise ValueError(
@@ -237,7 +249,18 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # The transport plugin: the history manager owns the time scheme, the
         # advecting velocity, the assembled advection and the stabilisation.
         # At the stored levels the momentum is carried by the stored velocity.
-        if DuDt is None:
+        if DuDt is not None and velocity_transport != "eulerian":
+            raise ValueError("velocity_transport chooses the DuDt the solver builds; it cannot "
+                             "apply to a DuDt that is supplied")
+        if DuDt is None and velocity_transport != "eulerian":
+            # a semi-Lagrangian history carries the momentum along the velocity
+            # itself; it has no assembled advection and no stabilisation
+            from underworld3.systems.solvers import _value_history
+            self.Unknowns.DuDt = _value_history(
+                velocity_transport, self.mesh, u, u.sym, uw.VarType.VECTOR, order=order,
+                nodal_options=dict(verbose=verbose, bcs=self.essential_bcs, smoothing=0.0),
+                requested={}, theta=theta)
+        elif DuDt is None:
             self.Unknowns.DuDt = EulerianSUPG_DDt(
                 self.mesh,
                 u,
@@ -471,7 +494,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         elastic stress history. BDF puts every spatial term at the new level and
         the question does not arise.
         """
-        states = self.DuDt.states()
+        # a velocity store without a derivative is read through its snapshot
+        stand_in = self.DuDt._derivative_stand_ins()
+        states = [sympy.Matrix(u_k).xreplace(stand_in) for u_k in self.DuDt.states()]
         weights = self.DuDt.spatial_weights()
         if self.Unknowns.DFDt is not None:
             return self._theta_rule_flux(weights, states[1:])
@@ -641,8 +666,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         if carries_stress:
             self._stress_history_post_solve(dt, verbose=verbose, evalf=False)
 
-        # Shift the extrapolation level, then the history.
-        self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]
+        # Shift the extrapolation level (the velocity this step started from),
+        # then the history.
+        self._u_prev.array[...] = u_n
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True

@@ -210,9 +210,19 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         solver into a semi-Lagrangian scheme on the field history, with no
         assembled advection and no stabilisation. A supplied manager fixes
         ``order`` and ``theta``.
+    transport : str, default "eulerian"
+        How the field is carried. ``"eulerian"`` assembles the advection on the
+        mesh with SUPG. A semi-Lagrangian history instead carries it along
+        ``V_fn``: ``"backward_nodes"``, ``"backward_integration_points"``,
+        ``"forward_integration_points"`` or ``"forward_nodes"``, named by the
+        ``trace`` and ``launch`` arguments of
+        :func:`~underworld3.systems.ddt.SemiLagrangian` (the forward schemes
+        carry one level, ``order=1``).
     restore_points_func, monotone_mode, old_frame_traceback, DFDt
-        Semi-Lagrangian arguments, accepted for drop-in compatibility and
-        ignored with a warning: there is no trace-back here.
+        Semi-Lagrangian arguments. With a semi-Lagrangian ``transport``,
+        ``monotone_mode`` and ``old_frame_traceback`` go to its history (a
+        scheme that does not take one refuses it); with ``"eulerian"`` they are
+        ignored with a warning, as are the others.
 
     Notes
     -----
@@ -245,16 +255,21 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         restore_points_func: Optional[Callable] = None,
         monotone_mode: Optional[str] = None,
         old_frame_traceback: bool = False,
+        transport: str = "eulerian",
     ):
-        if not u_Field.continuous:
+        eulerian = transport == "eulerian"
+        if eulerian and not u_Field.continuous:
             raise ValueError(
                 "u_Field must be a continuous MeshVariable: the SUPG weak form "
                 "is continuous Galerkin."
             )
+        if DuDt is not None and not eulerian:
+            raise ValueError("transport chooses the DuDt the solver builds; it cannot "
+                             "apply to a DuDt that is supplied")
         ignored = [name for name, value in (
             ("restore_points_func", restore_points_func),
-            ("monotone_mode", monotone_mode),
-            ("old_frame_traceback", old_frame_traceback),
+            ("monotone_mode", monotone_mode if eulerian else None),
+            ("old_frame_traceback", old_frame_traceback if eulerian else None),
             ("DFDt", DFDt),
         ) if value]
         if ignored:
@@ -291,7 +306,17 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
 
         # The transport plugin: the history manager owns the time scheme, the
         # advecting velocity, the assembled advection and the stabilisation.
-        if DuDt is None:
+        if DuDt is None and not eulerian:
+            # a semi-Lagrangian history carries the field along V_fn; it has no
+            # assembled advection and no stabilisation
+            from underworld3.systems.solvers import _value_history
+            self.Unknowns.DuDt = _value_history(
+                transport, self.mesh, u_Field, V_fn, uw.VarType.SCALAR, order=order,
+                nodal_options=dict(verbose=verbose, bcs=self.essential_bcs, smoothing=0.0),
+                requested={k: v for k, v in (("monotone_mode", monotone_mode),
+                                             ("old_frame_traceback", old_frame_traceback)) if v},
+                theta=theta)
+        elif DuDt is None:
             self.Unknowns.DuDt = EulerianSUPG_DDt(
                 self.mesh,
                 u_Field,
