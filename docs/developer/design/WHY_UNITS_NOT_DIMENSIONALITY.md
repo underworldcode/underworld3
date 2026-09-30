@@ -1,5 +1,7 @@
 # Why "Units" Not "Dimensionality" - User-Facing Terminology
 
+**Status**: Decision record (2025) — the user-facing "units" terminology is the shipped convention.
+
 **Date:** 2025-01-07
 **Decision:** Merge DimensionalityMixin INTO UnitAwareMixin, keep "units" terminology
 **Reason:** User communication and API consistency

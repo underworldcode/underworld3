@@ -101,19 +101,19 @@ def solve_response(method, solver_mode):
     stokes.add_natural_bc(y_l0 * unit_r, mesh.boundaries.Internal.name)
 
     if method == "nitsche":
-        stokes.add_nitsche_bc("Upper", normal=unit_r, gamma=NITSCHE_GAMMA)
-        stokes.add_nitsche_bc("Lower", normal=-unit_r, gamma=NITSCHE_GAMMA)
+        stokes.add_nitsche_bc(0.0, "Upper", normal=unit_r, gamma=NITSCHE_GAMMA)
+        stokes.add_nitsche_bc(0.0, "Lower", normal=-unit_r, gamma=NITSCHE_GAMMA)
     else:
         stokes.add_constraint_bc(
+            0.0,
             "Upper",
-            g=0.0,
             normal=unit_r,
             augmentation_base=1.0e4,
             degree=2,
         )
         stokes.add_constraint_bc(
+            0.0,
             "Lower",
-            g=0.0,
             normal=-unit_r,
             augmentation_base=1.0e4,
             degree=2,
@@ -190,18 +190,6 @@ def test_default_nitsche_matches_zhong_velocity_response():
     assert abs(cmb_velocity - ZHONG_CMB_VELOCITY) / ZHONG_CMB_VELOCITY < 0.05
 
 
-@pytest.mark.skip(
-    reason=(
-        "Timeout (>120s) as of 2026-06-25 -- not yet rerun with a longer "
-        "timeout to confirm whether this is a genuine hang or just a slow "
-        "benchmark. Lower-priority than the other Level 2/3 findings: this "
-        "test is tier_c (doesn't count toward 'supported' claims) and marked "
-        "'slow', and the file already has 2 pre-existing xfail tests "
-        "elsewhere, so some flakiness here was already anticipated by the "
-        "author. Skipped to unblock v3.1.0 validation; rerun with a higher "
-        "--timeout before concluding anything further."
-    )
-)
 def test_default_constrained_matches_zhong_velocity_response():
     """The DEFAULT constrained field-split path reproduces the Zhong response.
 

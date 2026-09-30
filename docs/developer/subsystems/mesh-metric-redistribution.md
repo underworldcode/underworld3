@@ -7,18 +7,25 @@ which remeshes / changes topology).
 
 > **Mathematics:** the full derivations (optimal-transport /
 > Monge–Ampère, the volumetric spring, the anisotropic
-> metric-tensor / Winslow mover, the gradient-metric construction,
-> dynamic field handling, and the Nusselt diagnostic) are in
+> metric-tensor / Winslow mover — all retired 2026-07 — the
+> gradient-metric construction, dynamic field handling, and the
+> Nusselt diagnostic) are in
 > {doc}`/developer/design/mesh-adaptation-formulation`. This page is
 > the operational guide.
+
+> **Retirement note (2026-07):** the `spring`, `ma`, `ot` and
+> `anisotropic` movers described in the historical sections below
+> were retired — superseded by `method="mmpde"` (the default),
+> whose scalar-metric behaviour reproduces their isotropic
+> equidistribution. The retired spellings raise a `ValueError`.
+> Sections describing them are kept as the R&D record.
 
 ```python
 import underworld3 as uw
 from underworld3.meshing import smooth_mesh_interior
 
-smooth_mesh_interior(mesh, metric=f, method="spring")       # fast
-smooth_mesh_interior(mesh, metric=f, method="ma")           # robust
-smooth_mesh_interior(mesh, metric=f, method="anisotropic")  # cleanest, aligned
+smooth_mesh_interior(mesh, metric=f)                  # mmpde (default)
+smooth_mesh_interior(mesh, metric=M_tensor)           # tensor metric: aligned
 ```
 
 ## When to use it

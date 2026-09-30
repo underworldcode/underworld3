@@ -10,6 +10,13 @@
 
 **Branch**: `feature/exp-integrator-investigation`
 
+**Provenance artifacts**: the experiment scripts (`_exp_integrator_*.py`,
+`_phase_*.py`, `_plot_phase_*.py`, `_exp_jury_rig_minimal.py`) and result
+images (`exp_integrator_*.png`) cited throughout this document live in
+`experiments/exp-integrator/` (moved from this directory 2026-07, DOC-06).
+The raw `.trace.txt` solver logs were deleted — they are reproducible from
+the scripts and preserved in git history.
+
 **API (production)**:
 - `ViscoElasticPlasticFlowModel(unknowns, integrator='etd', order=1)` — ETD-1 (first-order). **Default-recommended for new code** — BDF-1 stability + analytical exp factor for the linear-relaxation part.
 - `TransverseIsotropicVEPFlowModel(unknowns, integrator='etd', order=1)` — same, TI variant.
@@ -215,7 +222,7 @@ Centre-probe metrics (apples-to-apples with BDF-1 production), ETD-2 vs BDF-1:
 
 ETD-2 **is tighter than BDF-1 production on every probe**. BDF-2 (the higher-order method ETD-2 replaces) blows up to 10⁵-10⁹ on every yield-active combo (τ_y=0.15) — confirming the structural argument empirically.
 
-Runner: `docs/developer/design/_exp_integrator_phase_b_killer.py`.
+Runner: `docs/developer/design/experiments/exp-integrator/_exp_integrator_phase_b_killer.py`.
 
 ---
 
@@ -383,7 +390,7 @@ The Phase D and Phase E artefacts stay on the branch as instructive failures of 
 | **1.00** | **1.0e-1** | 3.5e-1 | 3.5e-1 |
 | **2.00** | **5.7e-2** | 3.4e-1 | 3.4e-1 |
 
-Exp shows clean second-order slope at small Δt and stays accurate at Δt ≥ τ where both BDFs collapse to near-zero output. Figure: `exp_integrator_phase_a.png`.
+Exp shows clean second-order slope at small Δt and stays accurate at Δt ≥ τ where both BDFs collapse to near-zero output. Figure: `experiments/exp-integrator/exp_integrator_phase_a.png`.
 
 ### Phase B (VEP, large Δt, square wave, variable-Δt) — DONE
 
@@ -397,7 +404,7 @@ Exp shows clean second-order slope at small Δt and stays accurate at Δt ≥ τ
 
 - **Variable-Δt around BC flips** (correctly schedule, with fine-zone clamp): improvement of 11–19% in max error for both VE and VEP, both Exp and BDF-1. The exp's plateau-period exactness shows clearly as the per-step error drops to near machine precision once the BC discontinuity is well-resolved.
 
-Figures: `exp_integrator_phase_b_yield.png`, `exp_integrator_phase_b_largedt.png`, `exp_integrator_phase_b_square.png`, `exp_integrator_phase_b_vardt.png`.
+Figures (in `experiments/exp-integrator/`): `exp_integrator_phase_b_yield.png`, `exp_integrator_phase_b_largedt.png`, `exp_integrator_phase_b_square.png`, `exp_integrator_phase_b_vardt.png`.
 
 ### Phase B UW3 jury-rig — partial (propagation snag identified)
 

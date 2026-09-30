@@ -260,32 +260,60 @@ class JITCallbackSet:
                 len(self.bd_residual), len(self.bd_jacobian))
 
 
+def _reveal_constants(fn):
+    """Expand non-constant UWexpressions to fixpoint, KEEPING truly-constant
+    atoms symbolic — so constants nested at ANY depth surface as atoms.
+
+    This must run BEFORE the ``constants[]`` substitution: a top-level
+    ``xreplace`` cannot see a constant hidden inside a nested UWexpression
+    (every ``Parameters.*`` value is template-wrapped in one), so nested
+    constants were silently folded to C literals while the manifest still
+    listed them as live — issue #302. The keep-constants predicate here is
+    the same ``_is_truly_constant`` used to build the manifest, so the set
+    of atoms revealed is exactly the set the manifest routes to
+    ``constants[]``.
+    """
+    from underworld3.function.expressions import (
+        unwrap_expression,
+        UWDerivativeExpression,
+    )
+
+    if fn is None:
+        return fn
+    if isinstance(fn, UWDerivativeExpression):
+        fn = fn.doit()
+    if isinstance(fn, sympy.MatrixBase):
+        return fn.applyfunc(
+            lambda e: unwrap_expression(e, mode='symbolic_keep_constants'))
+    return unwrap_expression(fn, mode='symbolic_keep_constants')
+
+
 def prepare_for_cache_key(fn, constants_subs_map):
     """Prepare a single expression for JIT cache hashing.
 
-    Two-phase process:
-    1. Substitute constant UWexpressions with ``_JITConstant`` placeholders
+    Three-phase process (mirrors the codegen lowering in ``_createext`` so
+    the cache key and the generated C agree — issue #302):
+    1. Reveal nested constants (``_reveal_constants``).
+    2. Substitute manifested constants with ``_JITConstant`` placeholders
        so that changing a constant's *value* does not invalidate the cache.
-    2. Unwrap remaining (non-constant) UWexpressions to pure SymPy so the
-       hash is deterministic.
-
-    Parameters
-    ----------
-    fn : sympy expression or None
-        The expression to expand.
-    constants_subs_map : dict or None
-        Mapping from UWexpression symbols to ``_JITConstant`` placeholders.
+    3. Unwrap the remaining UW atoms to pure SymPy so the hash is
+       deterministic.
     """
-    # Phase 1: Substitute constants with _JITConstant placeholders
-    if constants_subs_map and fn is not None:
-        try:
-            fn_structural = fn.xreplace(constants_subs_map) if hasattr(fn, "xreplace") else fn
-        except Exception:
-            fn_structural = fn
-    else:
-        fn_structural = fn
+    # Phase 1: reveal constants nested inside other UWexpressions. Loud on
+    # failure, exactly like the codegen path — a silent fallback here would
+    # hash constant VALUES into the cache key and force a recompile on
+    # every ramp (adversarial-review finding).
+    fn_structural = _reveal_constants(fn)
 
-    # Phase 2: Unwrap remaining (non-constant) expressions
+    # Phase 2: Substitute constants with _JITConstant placeholders
+    if constants_subs_map and fn_structural is not None:
+        try:
+            if hasattr(fn_structural, "xreplace"):
+                fn_structural = fn_structural.xreplace(constants_subs_map)
+        except Exception:
+            pass
+
+    # Phase 3: Unwrap remaining (non-constant) expressions
     return underworld3.function.expressions.unwrap(
         fn_structural, keep_constants=False, return_self=False
     )
@@ -301,20 +329,54 @@ def prepare_for_cache_key(fn, constants_subs_map):
 # ============================================================================
 
 class _JITConstant(sympy.Symbol):
-    """Symbol subclass that renders as constants[i] in generated C code.
+    r"""Symbol subclass that renders as ``constants[i]`` in generated C code.
 
-    Used by the JIT compiler to route constant UWexpressions through
-    PETSc's PetscDSSetConstants() mechanism instead of baking values
-    as C literals.
+    Used by the JIT compiler to route constant UWexpressions through PETSc's
+    ``PetscDSSetConstants()`` mechanism instead of baking values as C literals.
+
+    Two constants may legitimately share a display name — every
+    ``ViscousFlowModel`` calls its viscosity :math:`\eta`, so a two-material
+    model has two of them — and each needs its own ``constants[]`` slot. Two
+    separate SymPy properties have to hold for that to work, and they are not
+    the same property:
+
+    **Identity** — the slot index is in ``_hashable_content``, and the symbol
+    is built with ``Symbol.__xnew__`` to bypass SymPy's ``(cls, name)``
+    instance cache. Without both, ``Symbol.__new__`` hands back the cached
+    instance for that name: the second placeholder IS the first object, and
+    setting its ``_ccodestr`` overwrites the first one's, so every occurrence
+    renders as one slot.
+
+    **Ordering** — the slot index is also in the NAME. ``_hashable_content``
+    does nothing for ``Symbol.sort_key()``, which is derived from the name, so
+    two same-named placeholders sort equal; term order inside an ``Add`` then
+    falls back to hash order, which is randomised per process. The generated C
+    then differs between MPI ranks and ``getext``'s cross-rank hash check
+    aborts the run — intermittently, since it depends on the hash seed.
+
+    Identity without ordering is a parallel abort; ordering without identity is
+    a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
+    pins each one separately.
     """
 
+    __slots__ = ("_const_index", "_ccodestr")
+
     def __new__(cls, index, name=None):
-        if name is None:
-            name = f"_jit_const_{index}"
-        obj = super().__new__(cls, name)
+        # The index leads the name so that sort_key() orders placeholders by
+        # slot; see the class docstring on why the name alone is not enough
+        # and _hashable_content alone is not either.
+        suffix = "" if name is None else f"_{name}"
+        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}")
         obj._const_index = index
         obj._ccodestr = f"constants[{index}]"
         return obj
+
+    def _hashable_content(self):
+        """Two placeholders differ if their constants[] slot differs."""
+        return sympy.Symbol._hashable_content(self) + (self._const_index,)
+
+    def __getnewargs_ex__(self):
+        return ((self._const_index, self.name), {})
 
     def _ccode(self, printer):
         return self._ccodestr
@@ -366,14 +428,26 @@ def _extract_constants(all_fns, mesh):
     # Sort by the user-given symbol name, not ``str(expr)`` — ``__str__`` on a
     # UWexpression returns the current *value*, which shuffles the index
     # assignment whenever a value changes. ``.name`` is stable.
-    sorted_constants = sorted(constant_exprs, key=lambda e: (e.name, _stable_sort_key(e)))
+    #
+    # Two constants can legitimately SHARE a name: every ViscousFlowModel calls
+    # its viscosity \eta, so a model with two of them has two \eta constants.
+    # ``instance_number`` (creation order, identical on every rank running the
+    # same script) breaks that tie without reintroducing the value into the key.
+    # Creation order breaks a name tie. It is identical on every rank of an
+    # SPMD run, and unlike the value it does not move when a parameter is
+    # ramped — a slot permutation between two solves of the same model would
+    # invalidate the JIT cache for no reason.
+    sorted_constants = sorted(
+        constant_exprs, key=lambda e: (e.name, e.instance_number, _stable_sort_key(e))
+    )
 
     manifest = []
     subs_map = {}
     for i, expr in enumerate(sorted_constants):
         # Use ``expr.name`` (stable) instead of ``str(expr)`` (= current value)
         # so the placeholder symbol's identity is independent of parameter value.
-        jit_const = _JITConstant(i, name=f"_jit_const_{expr.name}")
+        #
+        jit_const = _JITConstant(i, name=expr.name)
         manifest.append((i, expr))
         subs_map[expr] = jit_const
 
@@ -614,20 +688,36 @@ def getext(
         (canonical_source + "\n---\n" + _abi_salt()).encode("utf-8")
     ).hexdigest()[:16]
 
-    # Determinism check: all ranks must agree on the hash. A mismatch means
-    # generate_c_source isn't deterministic across ranks (typically caused
-    # by set/dict-iteration order leaking into the emitted C). Caching
-    # cannot work correctly if ranks disagree, so fail loudly rather than
-    # let stale entries propagate.
-    if underworld3.mpi.size > 1:
-        all_hashes = underworld3.mpi.comm.allgather(source_hash)
-        if any(h != source_hash for h in all_hashes):
-            raise RuntimeError(
-                f"JIT C-source hash differs across MPI ranks: {set(all_hashes)}. "
-                f"This indicates non-determinism in generate_c_source — likely "
-                f"a set or dict whose iteration order leaks into the C output. "
-                f"Treating this as a hard error since cache reuse would be unsound."
-            )
+    # All ranks must end up compiling and loading the SAME module: the module
+    # name and the C symbol prefix are both derived from `source_hash` below, so
+    # ranks that disagree would build disjoint artefacts and the
+    # rank-0-compiles/others-load protocol would break.
+    #
+    # Agreement used to be REQUIRED here, and a mismatch was a hard error. It
+    # fires in practice: the lowering above is not yet deterministic across
+    # ranks (#752), and a Stokes solve with a power-law transversely isotropic
+    # viscosity trips it in roughly half of np=2 runs. What we measured there
+    # matters for why this is safe to repair rather than refuse:
+    #
+    #   * the sources differ only in the ORDER of factors in commutative
+    #     products — identical token multisets, identical length, identical
+    #     mathematics. Every rank's source is a correct kernel for the same
+    #     equation;
+    #   * the solver's own symbolic blocks (constitutive tensor, flux, every
+    #     Jacobian block) hash IDENTICALLY across ranks on the runs that abort.
+    #     What differs is produced inside this function, not handed to it.
+    #
+    # So the disagreement is about which of several correct spellings to
+    # compile, and adopting one of them is enough. Rank 0's is taken, and every
+    # rank rehashes from it, which restores the one invariant that matters: one
+    # source, one hash, one module.
+    #
+    # This is a REPAIR, not a fix. The non-determinism upstream is still a bug
+    # and still worth finding, which is why it is said out loud rather than
+    # papered over silently.
+    canonical_codeguys, canonical_source, source_hash = _agree_source_across_ranks(
+        canonical_codeguys, canonical_source, source_hash
+    )
 
     # Derive the real modname/randstr from the hash — same source ⇒ same
     # compiled artefact, different sources ⇒ disjoint symbol namespaces.
@@ -652,6 +742,7 @@ def getext(
         module = _ext_dict[source_hash]
     else:
         from underworld3.utilities import _jit_cache as _jc
+        from mpi4py import MPI as _MPI
 
         # Disk lookup is cheap and rank-local — every rank checks
         # independently. UW assumes a shared filesystem for the cache dir.
@@ -661,7 +752,23 @@ def getext(
             if module is not None and verbose and underworld3.mpi.rank == 0:
                 print(f"JIT compiled module cached (disk) ... {source_hash}", flush=True)
 
-        if module is None:
+        # COLLECTIVE decision. The disk lookup above is rank-local — its own
+        # comment says so — and the branch below contains a Barrier, so the two
+        # must not be joined by a rank-local predicate: one rank finding the
+        # published module while another does not leaves the second waiting at
+        # a barrier nobody else enters. On the shared filesystems this path
+        # exists for, that divergence is ordinary (attribute caching, metadata
+        # lag, a write not yet visible), and it is what the barrier is meant to
+        # manage rather than something it can assume away.
+        #
+        # `needs_compile` is a global OR: if ANY rank lacks the module, every
+        # rank enters the branch and reaches the barrier. Ranks that already
+        # have it keep it and simply take part.
+        needs_compile = underworld3.mpi.comm.allreduce(
+            module is None, op=_MPI.LOR
+        )
+
+        if needs_compile:
             # Cold compile path. With MPI, only rank 0 invokes cc and
             # publishes; the other ranks barrier-wait and then load the
             # freshly-published .so from disk. This avoids the N× cc
@@ -671,10 +778,17 @@ def getext(
             # cache is disabled (no way to share a build), in which
             # case the wasted cc cost is on the user's chosen path.
             multi_rank = underworld3.mpi.size > 1
-            disk_enabled = cache and _jc.get_cache_dir() is not None
+            # Also collective, and for the same reason: a rank whose cache
+            # directory cannot be resolved would otherwise take the `else`
+            # branch — which has no barrier — while its peers wait in one. A
+            # global AND makes every rank fall back together, at the cost of
+            # each compiling locally, which is the safe direction.
+            disk_enabled = underworld3.mpi.comm.allreduce(
+                cache and _jc.get_cache_dir() is not None, op=_MPI.LAND
+            )
 
             if multi_rank and disk_enabled:
-                if underworld3.mpi.rank == 0:
+                if underworld3.mpi.rank == 0 and module is None:
                     if verbose:
                         print(
                             f"JIT compiling new module on rank 0 ... {source_hash}",
@@ -691,7 +805,7 @@ def getext(
                 # Synchronisation point: rank 0 has now published the
                 # entry; other ranks may load it.
                 underworld3.mpi.comm.Barrier()
-                if underworld3.mpi.rank != 0:
+                if module is None:
                     module = _jc.load_module(
                         source_hash, real_modname, constants_manifest
                     )
@@ -707,17 +821,18 @@ def getext(
                     print(
                         f"JIT compiling new module ... {source_hash}", flush=True
                     )
-                module, tmpdir = compile_and_load(
-                    real_modname, codeguys_final, verbose=verbose
-                )
-                if verbose and underworld3.mpi.rank == 0:
-                    # Tests in test_0004_pointwise_fns parse this exact prefix
-                    # to find the per-call build directory.
-                    print(f"Location of compiled module: {tmpdir}", flush=True)
-                if cache:
-                    _jc.store_module(
-                        source_hash, real_modname, tmpdir, constants_manifest
+                if module is None:
+                    module, tmpdir = compile_and_load(
+                        real_modname, codeguys_final, verbose=verbose
                     )
+                    if verbose and underworld3.mpi.rank == 0:
+                        # Tests in test_0004_pointwise_fns parse this exact
+                        # prefix to find the per-call build directory.
+                        print(f"Location of compiled module: {tmpdir}", flush=True)
+                    if cache:
+                        _jc.store_module(
+                            source_hash, real_modname, tmpdir, constants_manifest
+                        )
 
         if cache:
             _ext_dict[source_hash] = module
@@ -745,6 +860,59 @@ def getext(
 
 
 @timing.routine_timer_decorator
+def _aux_component_offsets(mesh):
+    """Component offset of every field of the mesh DM, keyed by field id.
+
+    Read from the DM itself, not from ``mesh.vars``: a MeshVariable that
+    was dropped and collected leaves its PETSc field in the DM (a DMPlex
+    cannot shed a field), and PETSc lays the auxiliary arrays out over
+    ALL fields in field order. The offsets therefore have to count the
+    orphaned fields too.
+    """
+    offsets = {}
+    total = 0
+    for field_id in range(mesh.dm.getNumFields()):
+        fe, _label = mesh.dm.getField(field_id)
+        offsets[field_id] = total
+        total += fe.getNumComponents()
+    return offsets
+
+
+def _agree_source_across_ranks(canonical_codeguys, canonical_source, source_hash):
+    """Make every rank compile the SAME generated C, and say so if they did not.
+
+    Returns the (possibly replaced) ``(codeguys, source, hash)``. Serial runs and
+    runs where the ranks already agree are returned untouched, so the common path
+    costs one ``allgather`` of a 16-character string.
+
+    See the call site for why adopting one rank's source is a sound repair rather
+    than papering over a wrong answer. Separated out so the repair can be tested
+    directly — forcing a real disagreement through the JIT means reproducing a
+    non-deterministic bug, which is not a test.
+    """
+    import hashlib          # module-local in generate_c_source too
+
+    if underworld3.mpi.size <= 1:
+        return canonical_codeguys, canonical_source, source_hash
+
+    all_hashes = underworld3.mpi.comm.allgather(source_hash)
+    if all(h == source_hash for h in all_hashes):
+        return canonical_codeguys, canonical_source, source_hash
+
+    canonical_codeguys = underworld3.mpi.comm.bcast(canonical_codeguys, root=0)
+    canonical_source = "\n".join(entry[1] for entry in canonical_codeguys)
+    source_hash = hashlib.sha256(
+        (canonical_source + "\n---\n" + _abi_salt()).encode("utf-8")
+    ).hexdigest()[:16]
+    underworld3.mpi.pprint(
+        f"[jit] WARNING: generated C differed across ranks "
+        f"({sorted(set(all_hashes))}); adopted rank 0's source so every rank "
+        f"compiles the same module. The kernels are mathematically identical — "
+        f"see issue #752 for the upstream non-determinism."
+    )
+    return canonical_codeguys, canonical_source, source_hash
+
+
 def generate_c_source(
     name,
     mesh: underworld3.discretisation.Mesh,
@@ -794,7 +962,7 @@ def generate_c_source(
         count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
 
     # `_ccode` patching
-    def ccode_patch_fns(varlist, prefix_str):
+    def ccode_patch_fns(varlist, prefix_str, component_offsets=None):
         """
         This function patches uw functions with the necessary ccode
         routines for the code printing.
@@ -820,11 +988,41 @@ def generate_c_source(
             ordered according to their `field_id`.
         prefix_str: str
             The string prefix to write.
+        component_offsets: dict, optional
+            Component offset of every field in the DM, by ``field_id``
+            (see ``_aux_component_offsets``). When given, each variable
+            is patched from ITS OWN field's offset instead of a running
+            count over ``varlist``: a field whose Python variable has
+            been dropped stays in the DM and still occupies its slots,
+            so a running count would shift every later variable onto
+            the wrong data.
         """
         u_i = 0  # variable increment
         u_x_i = 0  # variable gradient increment
         lambdafunc = lambda self, printer: self._ccodestr
+
+        def _no_derivative(self, printer):
+            # An integration-point variable has no gradient (its tabulated
+            # derivative is identically zero), so a derivative of its symbol
+            # in a weak form would be a silent zero. Refuse at code generation.
+            raise RuntimeError(
+                f"{self.__class__.__name__}: derivative of an integration-point "
+                "variable has no meaning (the field is defined only at the "
+                "quadrature points), so the gradient here would be a silent "
+                "zero. This is refused in a WEAK FORM only, where the "
+                "discretisation is yours to choose: build the variable with "
+                "proxy_location='cells' instead, whose level sets are a "
+                "least-squares polynomial per cell and differentiate directly. "
+                "uw.function.evaluate() of the same derivative does answer: as "
+                "a query it recovers the gradient from a per-cell fit for you."
+            )
+
         for var in varlist:
+            is_ip = getattr(var, "is_integration_point", False)
+            dfunc = _no_derivative if is_ip else lambdafunc
+            if component_offsets is not None:
+                u_i = component_offsets[var.field_id]
+                u_x_i = u_i * mesh.cdim
             if var.vtype == VarType.SCALAR:
                 # monkey patch this guy into the function
                 type(var.fn)._ccodestr = f"{prefix_str}[{u_i}]"
@@ -840,7 +1038,7 @@ def generate_c_source(
                 for ind in range(mesh.cdim):
                     # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                     var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                    var.fn._diff[ind]._ccode = lambdafunc
+                    var.fn._diff[ind]._ccode = dfunc
                     u_x_i += 1
             elif (
                 var.vtype == VarType.VECTOR
@@ -859,7 +1057,7 @@ def generate_c_source(
                     for ind in range(mesh.cdim):
                         # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                         comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                        comp._diff[ind]._ccode = lambdafunc
+                        comp._diff[ind]._ccode = dfunc
                         u_x_i += 1
             else:
                 raise RuntimeError(
@@ -870,7 +1068,8 @@ def generate_c_source(
     # is important, as the secondary call will overwrite
     # those patched in the first call.
 
-    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a")
+    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a",
+                    component_offsets=_aux_component_offsets(mesh))
     ccode_patch_fns(primary_field_list, "petsc_u")
 
     # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
@@ -962,17 +1161,71 @@ def generate_c_source(
         # Save original for debugging
         fn_original = fn
 
-        # Two-phase unwrap:
-        # Phase 1: Substitute constant UWexpressions with _JITConstant symbols
-        #          These survive into C code as constants[i]
-        if constants_subs_map and fn is not None:
-            try:
-                fn = fn.xreplace(constants_subs_map) if hasattr(fn, 'xreplace') else fn
-            except Exception:
-                pass
+        # --- Gate the UW lowering (issue #302 pipeline) on the presence of
+        # UW-expression atoms. Plain-sympy components — the derivative
+        # blocks, which dominate the expression size — have no UW atoms, so
+        # the reveal / validate / xreplace / unwrap pipeline (≈5 full
+        # traversals per component) would be pure overhead: skip it entirely
+        # when there is nothing to lower.
+        from underworld3.function.expressions import UWexpression as _UWexpr
+        from underworld3.function.expressions import UWDerivativeExpression as _UWderiv
 
-        # Phase 2: Unwrap remaining non-constant UWexpressions to numerical values
-        fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
+        _needs_lowering = (
+            isinstance(fn, (_UWexpr, _UWderiv))
+            # `has` is a bare traversal (no atom-set build) — the atoms()
+            # form built a set of every node, which cost seconds per 100k-node
+            # Jacobian component (measured ~20 s on a large collision model).
+            or (hasattr(fn, "has") and fn.has(_UWexpr))
+            or not isinstance(fn, (sympy.MatrixBase, sympy.MatrixExpr))
+        )
+        if _needs_lowering:
+            # Phase 1: reveal constants nested inside other UWexpressions, so
+            #          the substitution below can reach them. A top-level
+            #          xreplace missed constants inside template-wrapped
+            #          parameters and baked them as C literals while the
+            #          manifest listed them.
+            fn = _reveal_constants(fn)
+
+            # A truly-constant atom the manifest does NOT know about would be
+            # silently folded to a literal in phase 3 — the manifest and the
+            # C source must never disagree (issue #302).
+            if constants_subs_map is not None and hasattr(fn, 'atoms'):
+                unmanifested = [
+                    a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                    if isinstance(a, _UWexpr)
+                    and _is_truly_constant(a, _UWexpr)
+                    and a not in constants_subs_map
+                ]
+                if unmanifested:
+                    raise RuntimeError(
+                        f"JIT constants manifest is incomplete: constant expression(s) "
+                        f"{unmanifested} appear in a kernel but have no constants[] "
+                        f"slot — they would be baked into the C source (issue #302)."
+                    )
+
+            # Phase 2: Substitute constant UWexpressions with _JITConstant symbols
+            #          These survive into C code as constants[i]
+            if constants_subs_map and fn is not None:
+                try:
+                    fn = fn.xreplace(constants_subs_map) if hasattr(fn, 'xreplace') else fn
+                except Exception:
+                    pass
+
+            # Phase 3: Unwrap remaining non-constant UWexpressions to numerical values
+            fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
+
+            # A manifested constant surviving to here bypassed its constants[]
+            # slot and is about to be baked — refuse rather than freeze the
+            # parameter silently (issue #302).
+            if constants_subs_map and hasattr(fn, 'atoms'):
+                baked = [a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                         if a in constants_subs_map]
+                if baked:
+                    raise RuntimeError(
+                        f"Manifested constant(s) {baked} were not routed through "
+                        f"constants[] and would be baked into the C source "
+                        f"(issue #302)."
+                    )
 
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
@@ -1049,7 +1302,58 @@ def generate_c_source(
                     print(f"    - {sym} (type: {type(sym).__name__}, _ccodestr: {getattr(sym, '_ccodestr', 'N/A')})")
 
         out = sympy.MatrixSymbol("out", *fn.shape)
-        eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+
+        # CSE before printing: shared subexpressions become ``double xN = ...;``
+        # temps evaluated in dependency order, so the generated C — and hence
+        # the codegen time, gcc memory/time, and .so size — collapses on large
+        # expressions (measured: monster Jacobian output ~460k nodes -> ~30k).
+        # Semantics-preserving: temps are exact aliases of repeated
+        # subexpressions, so the generated kernel evaluates identical values.
+        # Opt in with UW_JIT_CSE=1 (default is off to preserve original behavior).
+        if os.environ.get("UW_JIT_CSE") in ("1", "true", "True", "yes", "YES"):
+            from sympy.simplify.cse_main import cse
+            from sympy.vector.scalar import BaseScalar
+
+            _repl, _red = cse([fn])
+            if _repl:
+                # cse may mint NEW coordinate instances (BaseScalar /
+                # UWCoordinate wrappers) that lack the mesh-set _ccodestr;
+                # recover it from their _id (same scheme as the
+                # COORDINATE SYMBOL RECOVERY above).
+                def _patch_coords(expr):
+                    for _sym in set(expr.free_symbols):
+                        _target = getattr(_sym, "_original_base_scalar", _sym)
+                        if isinstance(_target, BaseScalar) and not hasattr(
+                            _target, "_ccodestr"
+                        ):
+                            _idx = _target._id[0]
+                            _sys = str(_target._id[1])
+                            _target._ccodestr = (
+                                f"petsc_n[{_idx}]"
+                                if "Gamma" in _sys
+                                else f"petsc_x[{_idx}]"
+                            )
+
+                for _t_sym, _t_expr in _repl:
+                    _patch_coords(_t_expr)
+                _patch_coords(_red[0])
+
+                _temp_code = "\n".join(
+                    "double {} = {};".format(
+                        printer.doprint(t_sym), printer.doprint(t_expr)
+                    )
+                    for t_sym, t_expr in _repl
+                )
+                _red_code = printer.doprint(_red[0], out)
+                if _red_code.startswith("// Not supported in C:"):
+                    eqn = ("eqn_" + str(index), _red_code)
+                else:
+                    eqn = ("eqn_" + str(index), _temp_code + "\n" + _red_code)
+            else:
+                eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+        else:
+            eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+
         if eqn[1].startswith("// Not supported in C:"):
             spliteqn = eqn[1].split("\n")
             raise RuntimeError(
@@ -1065,6 +1369,27 @@ def generate_c_source(
         eqns.append(eqn)
 
     MODNAME = "fn_ptr_ext_" + str(name)
+
+    # JIT compile flags for the generated kernels. Default keeps -O3 (kernel
+    # runtime speed) but adds -g0 to drop the debug info that the base Python
+    # CFLAGS injects via sysconfig -- pure overhead, and a memory hog on huge
+    # expressions, for these generated kernels. For very large expressions
+    # whose gcc -O3 compile is slow or OOM-killed, set UW3_JIT_CFLAGS to a
+    # lower optimisation level, e.g. UW3_JIT_CFLAGS="-O1 -g0". -std=c99 is
+    # always prepended (the generated code relies on it).
+    _default_jit_cflags = ["-O3", "-g0"]
+    _jit_cflags_env = os.environ.get("UW3_JIT_CFLAGS")
+    extra_compile_args = (
+        ["-std=c99", *_jit_cflags_env.split()]
+        if _jit_cflags_env is not None
+        else ["-std=c99", *_default_jit_cflags]
+    )
+    if verbose:
+        print(
+            f"JIT compile flags: {extra_compile_args}"
+            f"{' (from UW3_JIT_CFLAGS)' if _jit_cflags_env is not None else ' (default)'}",
+            flush=True,
+        )
 
     codeguys = []
     # Create a `setup.py`
@@ -1083,7 +1408,7 @@ ext_mods = [Extension(
     library_dirs={LIBDIRS},
     runtime_library_dirs={LIBDIRS},
     libraries={LIBFILES},
-    extra_compile_args=['-std=c99','-O3'],
+    extra_compile_args={EXTRA_COMPILE_ARGS},
     extra_link_args=[]
 )]
 setup(ext_modules=cythonize(ext_mods))
@@ -1092,6 +1417,7 @@ setup(ext_modules=cythonize(ext_mods))
         HEADERS=list(_stable_sorted(underworld3._incdirs.keys())),
         LIBDIRS=list(_stable_sorted(underworld3._libdirs.keys())),
         LIBFILES=list(_stable_sorted(underworld3._libfiles.keys())),
+        EXTRA_COMPILE_ARGS=extra_compile_args,
     )
     codeguys.append(["setup.py", setup_py_str])
 
@@ -1134,7 +1460,6 @@ cdef extern from "cy_ext.h" nogil:
 
     import string
     import random
-    import os
 
     if not "UW_JITNAME" in os.environ:
         randstr = "".join(random.choices(string.ascii_uppercase, k=5))

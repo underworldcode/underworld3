@@ -18,28 +18,38 @@ import underworld3 as uw
 from test_0800_optional_modules import requires_amr
 
 
-pytestmark = [pytest.mark.level_1, requires_amr]
+def _has_petsc_adaptation_backend():
+    """Runtime probe: try a trivial in-place ``remesh`` (MMG). ``requires_amr``
+    only greps petscvariables for 'pragmatic', which can be present while the
+    runtime adapter is non-functional (e.g. the custom-MG PETSc build); this
+    actually exercises ``adaptMetric`` and skips if it raises."""
+    try:
+        m = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        H = uw.discretisation.MeshVariable("_probe810", m, 1, degree=1)
+        H.data[:, 0] = 100.0
+        m.remesh(H)
+        return True
+    except Exception:
+        return False
+
+
+_petsc_has_adaptation = _has_petsc_adaptation_backend()
+
+pytestmark = [
+    pytest.mark.level_1,
+    requires_amr,
+    pytest.mark.skipif(
+        not _petsc_has_adaptation,
+        reason="PETSc mesh-adaptation backend (MMG/pragmatic) is non-functional "
+        "at runtime; remesh() cannot run here.",
+    ),
+]
 
 
 @requires_amr
-@pytest.mark.skip(
-    reason=(
-        "Recurrence of the issue #135 bug class in a different cache. As of "
-        "2026-06-25: deterministic IndexError ('index 91 is out of bounds for "
-        "axis 0 with size 80') in discretisation_mesh.py, building "
-        "cell_point_coords from nav_coords for KD-tree construction -- "
-        "nav_coords is stale (sized for the pre-adapt mesh) while nav_dm "
-        "already reflects the post-adapt point count. Same invalidation gap "
-        "the original #135 fix addressed for faces_outer/inner_control_points, "
-        "now resurfacing in a newer cache (likely introduced by one of the "
-        "KD-tree/spatial-indexing refactors merged after the #135 fix). "
-        "Reproduced 3/3 in isolation -- not flaky. Skipped to unblock v3.1.0 "
-        "validation; needs a real fix (invalidate nav_coords alongside the "
-        "other caches in nuke_coords_and_rebuild) before re-enabling."
-    )
-)
 def test_swarm_migration_after_adapt_does_not_raise():
-    """mesh.adapt() then swarm._force_migration_after_mesh_change() must not
+    """mesh.remesh() then swarm._force_migration_after_mesh_change() must not
     raise IndexError on the failing case from issue #135.
     """
     mesh = uw.meshing.UnstructuredSimplexBox(
@@ -61,7 +71,7 @@ def test_swarm_migration_after_adapt_does_not_raise():
     h_vals = uw.function.evaluate(h_subbed, mesh.X.coords)
 
     metric = uw.adaptivity.create_metric(mesh, h_vals)
-    mesh.adapt(metric)
+    mesh.remesh(metric)
 
     cells_after = mesh.dm.getHeightStratum(0)[1]
     assert cells_after != cells_before, (

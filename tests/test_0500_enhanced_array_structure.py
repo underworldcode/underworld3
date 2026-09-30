@@ -17,8 +17,8 @@ def test_enhanced_array_classes_exist():
         from underworld3.swarm import SwarmVariable
 
         # Check that SwarmVariable has the unified array interface
-        assert hasattr(SwarmVariable, "_create_variable_array")
-        print("✅ _create_variable_array factory method exists")
+        assert hasattr(SwarmVariable, "_create_canonical_data_array")
+        print("✅ _create_canonical_data_array factory method exists")
 
         # Check that the direct methods exist
         required_methods = [
@@ -137,7 +137,7 @@ class TestEnhancedArrayStructure:
             from underworld3.swarm import SwarmVariable
 
             # Test that the unified interface methods exist
-            assert hasattr(SwarmVariable, "_create_variable_array")
+            assert hasattr(SwarmVariable, "_create_canonical_data_array")
             assert hasattr(SwarmVariable, "pack_uw_data_to_petsc")
             assert hasattr(SwarmVariable, "unpack_uw_data_from_petsc")
 
@@ -178,7 +178,7 @@ def test_implementation_completeness():
         features = {
             "Enhanced pack method": hasattr(SwarmVariable, "pack_uw_data_to_petsc"),
             "Enhanced unpack method": hasattr(SwarmVariable, "unpack_uw_data_from_petsc"),
-            "Unified array factory": hasattr(SwarmVariable, "_create_variable_array"),
+            "Unified array factory": hasattr(SwarmVariable, "_create_canonical_data_array"),
             "Legacy method compatibility": hasattr(SwarmVariable, "use_enhanced_array")
             and hasattr(SwarmVariable, "use_legacy_array"),
             "Sync context manager": hasattr(SwarmVariable, "sync_disabled"),

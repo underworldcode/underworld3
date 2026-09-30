@@ -137,3 +137,26 @@ def test_mesh_centroid(res, dim, fill_param):
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.
     assert np.allclose(cellid, kdpt), "Point indices weren't as expected."
+
+
+def test_empty_point_cloud():
+    """#399: a KDTree over zero points is legitimate — a parallel rank can
+    own no cells. Construction succeeds and queries report not-found."""
+    kd = uw.kdtree.KDTree(np.empty((0, 2)))
+    assert kd.n == 0
+
+    query = np.array([[0.5, 0.5]])
+    indices, dist_sqr, found = kd.find_closest_point(query)
+    assert not found[0]
+    assert np.isinf(dist_sqr[0])
+
+    n_idx, n_dist = kd.find_closest_n_points(3, query)
+    assert n_idx.shape == (1, 3)
+    assert np.isinf(n_dist).all()
+
+
+def test_one_dimensional_input_rejected():
+    """#399: numpy.array([]) is 1-D — the constructor must say so legibly
+    instead of failing in the memoryview cast."""
+    with pytest.raises(RuntimeError, match="2-D"):
+        uw.kdtree.KDTree(np.empty(0))

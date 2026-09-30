@@ -78,24 +78,19 @@ mesh = uw.meshing.UnstructuredSimplexBox(
 # %%
 # NL problem
 # Create solution functions
-from underworld3.function.analytic import (
-    AnalyticSolNL_velocity,
-    AnalyticSolNL_bodyforce,
-    AnalyticSolNL_viscosity)
+from underworld3 import analytic as A
 
 x, y = mesh.X
 
-r = mesh.r
 eta0 = 1.0
 n = 1
 r0 = 1.5
-params = (eta0, n, r0)
-sol_bf_ijk = AnalyticSolNL_bodyforce(*params, *r)
-sol_vel_ijk = AnalyticSolNL_velocity(*params, *r)
 
-sol_bf = mesh.vector.to_matrix(sol_bf_ijk)
-sol_vel = mesh.vector.to_matrix(sol_vel_ijk)
-sol_visc = AnalyticSolNL_viscosity(*params, *r)
+sol = A.SolNL(mesh, eta_0=eta0, n=n, r=r0)
+
+sol_vel = sol.fn_velocity
+sol_bf = sol.fn_bodyforce
+sol_visc = sol.fn_viscosity
 
 # debug - are problems just because there is no analytic solution module on mac
 # The solNL case is a MMS force term (complicated) designed to produce a specific

@@ -10,6 +10,7 @@ from .cartesian import (
     UnstructuredSimplexBox,
     StructuredQuadBox,
     BoxInternalBoundary,
+    BoxInternalPatch,
 )
 
 from .spherical import (
@@ -45,6 +46,8 @@ from .surfaces import (
     SurfaceVariable,
     SurfaceCollection,
     fault_metric_tensor,
+    prepare_fault_network,
+    damage_zone_yield,
     fault_comb_metric,
     fault_metric,
     compose_metrics,
@@ -55,13 +58,25 @@ from .faults import (
     FaultCollection,
 )
 
+from .fault_network import (
+    FaultNetwork,
+)
+
 from .smoothing import (
     smooth_mesh_interior,
     smooth_surface_field,
+    node_redistribution,
     metric_density_from_gradient,
     mesh_metric_mismatch,
     follow_metric,
     ADAPT_STRATEGIES,
+)
+
+from .bounding_surface import (
+    BoundingSurface,
+    register_radial_surfaces,
+    register_plane_surfaces,
+    register_box_face_surfaces,
 )
 
 # Make all functions available at module level for backward compatibility
@@ -70,6 +85,7 @@ __all__ = [
     "UnstructuredSimplexBox",
     "StructuredQuadBox",
     "BoxInternalBoundary",
+    "BoxInternalPatch",
     # Spherical meshes
     "SphericalShell",
     "SphericalShellInternalBoundary",
@@ -95,17 +111,26 @@ __all__ = [
     "SurfaceVariable",
     "SurfaceCollection",
     "fault_metric_tensor",
+    "prepare_fault_network",
+    "FaultNetwork",
+    "damage_zone_yield",
     "fault_comb_metric",
     "fault_metric",
     "compose_metrics",
     # Backward compatibility aliases
     "FaultSurface",
     "FaultCollection",
-    # Mesh smoothing
+    # Mesh smoothing / node redistribution
     "smooth_mesh_interior",
     "smooth_surface_field",
+    "node_redistribution",
     "metric_density_from_gradient",
     "mesh_metric_mismatch",
     "follow_metric",
     "ADAPT_STRATEGIES",
+    # Bounding surfaces (tangent-slip providers for deforming boundaries)
+    "BoundingSurface",
+    "register_radial_surfaces",
+    "register_plane_surfaces",
+    "register_box_face_surfaces",
 ]

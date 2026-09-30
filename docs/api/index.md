@@ -29,6 +29,8 @@ model
 utilities
 visualisation
 adaptivity
+analytic
+postprocessing
 ```
 
 ## Quick Links
@@ -49,6 +51,12 @@ adaptivity
 - **{doc}`function`** - Expressions, evaluation, and symbolic functions
 - **{doc}`scaling`** - Units, quantities, and non-dimensionalisation
 - **{doc}`maths`** - Mathematical operations and integrals
+
+### Validation
+- **{doc}`analytic`** - Exact solutions for benchmarking and convergence testing
+
+### Post-processing
+- **{doc}`postprocessing`** - Boundary-response, geoid, and self-gravity coefficients
 
 ### Infrastructure
 - **{doc}`model`** - Model management and configuration

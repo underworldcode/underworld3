@@ -1,5 +1,7 @@
 # Coordinate Access Migration Guide
 
+**Status**: Historical migration guide (2025). The `mesh.data` → `mesh.X.coords` transition it documents has shipped; kept as a reference for updating old code.
+
 **Date**: 2025-01-11
 **Audience**: Developers updating Underworld3 code to use new mesh.X interface
 

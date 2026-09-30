@@ -1,3 +1,26 @@
+def _reaches_container(sym, target, UWexpression, _seen=None):
+    """True if ``target`` is reachable anywhere inside ``sym``, walking THROUGH the
+    stored contents of nested UWexpressions. A cycle hidden one wrapper down still
+    recurses at ``.value``/unwrap time — and the depth-capped unwrap can hand back a
+    silently garbled result (~2^50 scaling) instead of raising (issue #447). The
+    visited set bounds the walk on legitimate (acyclic) expression DAGs and also
+    catches cross-container cycles (a → b → a)."""
+    if _seen is None:
+        _seen = set()
+    if not hasattr(sym, "atoms"):
+        return False
+    for atom in sym.atoms(UWexpression):
+        if atom is target:
+            return True
+        if id(atom) in _seen:
+            continue
+        _seen.add(id(atom))
+        inner = atom._sym
+        if inner is not None and _reaches_container(inner, target, UWexpression, _seen):
+            return True
+    return False
+
+
 class Stateful:
     """
     This is a mixin class for underworld objects that are stateful.
@@ -299,6 +322,23 @@ class ExpressionDescriptor:
         #   - Unit chain: container.units → value.units → value._sym.units (UWQuantity)
         # At unwrap/JIT time the chain is followed automatically.
         if isinstance(value, UWexpression):
+            # Read-back write (p = Params.x; Params.x = p): __get__ returned THIS
+            # container, so storing it would nest the expression inside itself and
+            # every later .value walk recurses to stack death (issue #447). A
+            # write-back of the same expression is a no-op.
+            if value is expr:
+                return
+            # A cycle hidden inside the assigned expression's contents (wrapper
+            # holding Params.x, or a → b → a across containers) recurses just the
+            # same, or worse: the depth-capped unwrap silently returns a ~2^50-
+            # scaled result. Reject loudly (#447).
+            if _reaches_container(value._sym, expr, UWexpression):
+                raise ValueError(
+                    f"Assigning this expression to '{self.public_name}' would create "
+                    f"a reference cycle: it contains '{self.public_name}' (possibly "
+                    f"nested inside another expression). Snapshot the current value "
+                    f"explicitly instead, e.g. use `param.sym` or `float(param.value)`."
+                )
             expr.sym = value  # Store symbolic reference, not inner value
 
         # Special case: Plain UWQuantity (not UWexpression) - has ._value and ._pint_qty
@@ -319,6 +359,31 @@ class ExpressionDescriptor:
             # Auto-unwrap if value has _sympify_
             if hasattr(value, "_sympify_"):
                 value = value._sympify_()
+
+            # Composite self-reference (Params.x = Params.x * 2): the container
+            # appearing in its own new contents is the same cycle as above, one
+            # level down. Snapshot semantics is the only meaning that terminates:
+            # substitute the container's CURRENT contents in its place (#447).
+            if hasattr(value, "atoms") and expr in value.atoms(UWexpression):
+                import sympy as _sympy
+                if isinstance(expr._sym, _sympy.MatrixBase):
+                    # xreplace would substitute a Matrix INTO a matrix entry and
+                    # store malformed nested-matrix sympy silently.
+                    raise ValueError(
+                        f"Cannot snapshot Matrix-valued '{self.public_name}' inside "
+                        f"a composite self-assignment; assign a fresh Matrix built "
+                        f"from `{self.public_name}.sym` instead."
+                    )
+                value = value.xreplace({expr: expr._sym})
+            # Cycles one wrapper down (plain-sympy tree holding an expression
+            # whose contents reach this container) survive the snapshot above —
+            # reject them loudly too (#447).
+            if _reaches_container(value, expr, UWexpression):
+                raise ValueError(
+                    f"Assigning this expression to '{self.public_name}' would create "
+                    f"a reference cycle through a nested expression. Snapshot the "
+                    f"current value explicitly (`param.sym` / `float(param.value)`)."
+                )
 
             # Update the expression's .sym
             expr.sym = value

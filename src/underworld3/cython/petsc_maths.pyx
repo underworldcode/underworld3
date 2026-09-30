@@ -1,5 +1,6 @@
 from typing import Union
 import sympy
+import numpy as np
 
 import underworld3
 import underworld3.timing as timing
@@ -13,6 +14,31 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetObjective( PetscDS, PetscInt, PetscDSResidualFn )
     PetscErrorCode DMPlexComputeIntegralFEM( PetscDM, PetscVec, PetscScalar*, void* )
     PetscErrorCode DMPlexComputeCellwiseIntegralFEM( PetscDM, PetscVec, PetscVec, void* )
+
+
+def _pack_manifest(manifest):
+    """The current values of the JIT constants manifest as a contiguous array."""
+    from underworld3.utilities._jitextension import _pack_constants
+    if not manifest:
+        return None
+    return np.ascontiguousarray(_pack_constants(manifest), dtype=np.float64)
+
+
+cdef _set_ds_constants(PetscDS ds, manifest):
+    """Hand the current UWexpression values to the DS the integral kernel reads.
+
+    The JIT routes every ``uw.function.expression`` in the integrand to PETSc's
+    constants array (the same mechanism the solvers use, so a changed value does
+    not recompile). A DS that never receives the values hands the kernel zeros:
+    a viscosity, a time or any other expression in an integrand silently
+    integrated to nothing (found on the cylinder drag, 2026-09-05).
+    """
+    cdef double[::1] vals
+    values = _pack_manifest(manifest)
+    if values is None or len(values) == 0:
+        return
+    vals = values
+    CHKERRQ(PetscDSSetConstants(ds, len(values), <const PetscScalar*>&vals[0]))
 
 
 def dm_force_coordinate_field(dm):
@@ -122,8 +148,9 @@ class Integral:
         cdef DS ds = self.dm.getDS()
         cdef PetscScalar val_array[256]
 
-        # Now set callback...
+        # Now set callback (and the current constant values the kernel reads)...
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
+        _set_ds_constants(ds.ds, _getext_result.constants_manifest)
         ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, &(val_array[0]), NULL); CHKERRQ(ierr)
 
         self.dm.restoreGlobalVec(a_global)
@@ -259,14 +286,14 @@ class CellWiseIntegral:
         super().__init__()
 
     @timing.routine_timer_decorator
-    def evaluate(self) -> float:
+    def evaluate(self):
         """
         Evaluate the cell-wise integral and return results per cell.
 
         Returns
         -------
         ndarray
-            Array of integral values, one per mesh cell.
+            Array of integral values, one per (rank-local) mesh cell.
 
         Raises
         ------
@@ -290,8 +317,9 @@ class CellWiseIntegral:
         elif isinstance(self.fn, sympy.vector.Dyadic):
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
-        cdef PtrContainer ext = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
-                                       self.mesh.vars.values()).ptrobj
+        _getext_result = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
+                                self.mesh.vars.values())
+        cdef PtrContainer ext = _getext_result.ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
         self.mesh.update_lvec()
@@ -300,27 +328,40 @@ class CellWiseIntegral:
         cdef Vec cgvec
         cgvec = a_global
 
-        # TODO(BUG): clone+createDefault+createDS gives dmc a single P1 field,
-        # but cgvec is packed for mesh.dm's multi-field layout — the integral
-        # reads the wrong DOFs and over-counts by ~2x on the unit square.
-        # Same bug as PR #172 (reverted in PR #173-followup). Tests in
-        # tests/test_0501_integrals.py::test_cellwise_integrate_* are xfail
-        # until this is rewritten to integrate against mesh.dm + getDS()
-        # directly (the pre-PR-172 Integral pattern).
-        cdef DM dmc = self.mesh.dm.clone()
-        cdef FE fec = FE().createDefault(self.mesh.dim, 1, False, -1)
-        dmc.setField(0, fec)
-        dmc.createDS()
-
-        cdef DS ds = dmc.getDS()
+        # Integrate on the mesh DM with its own DS (the `Integral` pattern
+        # above).  The JIT objective is compiled against the mesh's
+        # multi-field packing, so it must be evaluated with the mesh DS and
+        # the mesh-packed solution vector.  An earlier clone + createDefault
+        # + createDS variant attached a single P1 field to the cloned DM
+        # while cgvec remained packed for mesh.dm — the layout mismatch made
+        # the integral read the wrong DOFs and over-count (~2x for fn=1 on
+        # the unit square; the same defect that forced the PR #172 revert
+        # for Integral, see 88807c26).
+        #
+        # Note: setting the objective on the shared mesh DS re-inherits the
+        # issue-#171 repeated-call cost-growth behaviour that Integral has —
+        # accepted here for correctness parity.
+        cdef DM dm = self.mesh.dm
+        cdef DS ds = self.mesh.dm.getDS()
         CHKERRQ( PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]) )
+        _set_ds_constants(ds.ds, _getext_result.constants_manifest)
 
-        cdef Vec rvec = dmc.createGlobalVec()
-        CHKERRQ( DMPlexComputeCellwiseIntegralFEM(dmc.dm, cgvec.vec, rvec.vec, NULL) )
+        # DMPlexComputeCellwiseIntegralFEM writes Nf scalars per cell into a
+        # flat [cell*Nf + field] layout when the output vector carries no
+        # DM/section.  Only field 0 has an objective; the other field slots
+        # are left at zero.
+        num_fields = self.mesh.dm.getNumFields()
+        cStart, cEnd = self.mesh.dm.getHeightStratum(0)
+        num_cells = cEnd - cStart
+
+        rvec_py = PETSc.Vec().createMPI((num_cells * num_fields, None),
+                                        comm=self.mesh.dm.comm)
+        cdef Vec rvec = rvec_py
+        CHKERRQ( DMPlexComputeCellwiseIntegralFEM(dm.dm, cgvec.vec, rvec.vec, NULL) )
         self.mesh.dm.restoreGlobalVec(a_global)
 
-        results = rvec.array.copy()
-        rvec.destroy()
+        results = rvec_py.array.reshape(-1, num_fields)[:, 0].copy()
+        rvec_py.destroy()
 
         return results
 
@@ -334,8 +375,10 @@ class BdIntegral:
     for some scalar function :math:`f` over a named boundary :math:`\partial \Omega`
     of the mesh. In 2D this is a line integral; in 3D a surface integral.
 
-    The integrand may reference the outward unit normal via ``mesh.Gamma_N``
-    (components map to ``petsc_n[0], petsc_n[1], ...`` in the generated C code).
+    The integrand may reference the outward unit normal via ``mesh.Gamma``
+    (on external boundaries the components map to ``petsc_n[0], petsc_n[1],
+    ...`` in the generated C code; on internal boundaries they resolve to the
+    mesh's declared analytic normal — see ``Mesh._resolve_boundary_normals``).
 
     Parameters
     ----------
@@ -409,9 +452,15 @@ class BdIntegral:
 
         mesh = self.mesh
 
+        # mesh.Gamma is resolved per boundary: external boundaries keep the
+        # exact per-quadrature petsc_n[]; internal boundaries substitute the
+        # declared analytic normal (petsc_n is orientation-ambiguous there,
+        # see Mesh._resolve_boundary_normals / issue #327).
+        fn = mesh._resolve_boundary_normals(self.fn, self.boundary)
+
         # Compile integrand using the boundary residual slot (includes petsc_n[] in signature)
         _getext_result = getext(
-            self.mesh, JITCallbackSet(bd_residual=(self.fn,)),
+            self.mesh, JITCallbackSet(bd_residual=(fn,)),
             self.mesh.vars.values(), verbose=verbose)
         cdef PtrContainer ext = _getext_result.ptrobj
 
@@ -440,6 +489,11 @@ class BdIntegral:
 
         cdef PetscDMLabel sandbox_label = NULL
         CHKERRQ(DMGetLabel(sandbox_dm, boundary_bytes, &sandbox_label))
+
+        # The sandbox has its own DS (DMCreateDS): the constants go there.
+        cdef PetscDS sandbox_ds = NULL
+        CHKERRQ(DMGetDS(sandbox_dm, &sandbox_ds))
+        _set_ds_constants(sandbox_ds, _getext_result.constants_manifest)
 
         # Output value
         cdef PetscScalar result = 0.0

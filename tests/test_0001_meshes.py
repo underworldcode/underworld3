@@ -174,3 +174,40 @@ def test_create_solid_usbIB_3d_mesh():
     )
 
     return
+
+
+@pytest.mark.tier_a
+def test_no_null_boundary_label_is_manufactured():
+    """A mesh does not label every vertex with the ``Null_Boundary`` sentinel.
+
+    ``Null_Boundary`` (666) used to be created on every mesh, marking the whole
+    depth-0 stratum. It marked no facet, so it integrated nothing, and its only
+    consumer was a fake natural BC the solver manufactured — since removed,
+    with no change to any answer at any rank count.
+
+    Asserting its ABSENCE is what protects the fix that motivated the removal:
+    a pass that looks for material interfaces by reading labelled *points* saw
+    every vertex of every UW3 mesh labelled, and silently declined all of them.
+    """
+    from underworld3.meshing import StructuredQuadBox
+
+    mesh = StructuredQuadBox(elementRes=(4, 4))
+    dm = mesh.dm
+
+    # Asserted against the DM's own list of label NAMES. `getLabel` on a name
+    # the DM does not have returns a non-None DMLabel wrapper with a null
+    # handle, so `is not None` reports every absent label as present; the
+    # codebase's `if label:` idiom exists for exactly this reason.
+    names = [dm.getLabelName(i) for i in range(dm.getNumLabels())]
+    assert "Null_Boundary" not in names, names
+    assert not dm.getLabel("Null_Boundary")
+    assert "Null_Boundary" not in [b.name for b in mesh.boundaries]
+
+    # The boundary that DOES mean "the whole outside" is still there, and it
+    # is a different animal: exterior FACETS, so it integrates.
+    all_bd = mesh.dm.getLabel("All_Boundaries")
+    assert all_bd is not None
+    fS, fE = mesh.dm.getHeightStratum(1)
+    pts = all_bd.getStratumIS(1001).getIndices()
+    assert len(pts) > 0
+    assert ((pts >= fS) & (pts < fE)).all(), "All_Boundaries must mark facets"

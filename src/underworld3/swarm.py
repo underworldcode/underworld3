@@ -46,6 +46,55 @@ from enum import Enum
 
 
 # We can grab this type from the PETSc module
+class _ReadOnlyCoordinateSnapshot(np.ndarray):
+    """Read-only view returned by the deprecated ``swarm.points`` /
+    ``swarm.data`` reads.
+
+    Plain read-only ndarrays refuse writes with numpy's bare
+    "assignment destination is read-only" — no pointer to the working
+    interfaces. This view carries the guidance (#379 item 1).
+
+    Non-``__setitem__`` mutation routes (``fill``, ``sort``,
+    ``np.copyto``, in-place operators, ``out=`` ufuncs) are refused by
+    the read-only flag with numpy's own error; when the mesh carries
+    units the ``UnitAwareArray`` wrapper likewise stays non-writeable
+    but surfaces numpy's message rather than this guidance. Deliberately
+    re-enabling ``snapshot.base.flags.writeable`` writes only into the
+    DETACHED copy — never the swarm.
+    """
+
+    _GUIDANCE = (
+        "swarm.points / swarm.data is a read-only snapshot (issue #379): "
+        "its writable stack ran collective particle migration per write "
+        "and could deadlock in parallel. Write coordinates via "
+        "swarm.coords = values (physical units), or "
+        "swarm._particle_coordinates.data[...] (model units) — masked "
+        "writes are supported inside 'with swarm.migration_control():'."
+    )
+
+    def __setitem__(self, key, value):
+        raise ValueError(self._GUIDANCE)
+
+
+def _coordinate_row_keys(coords):
+    """One opaque key per coordinate row, for exact set membership.
+
+    Used by :meth:`Swarm.migrate` to remember which points a rank has already
+    claimed, so the round loop does not reclassify them. The identity has to be
+    the coordinate rather than the index: ``dm.migrate`` does not preserve the
+    local ordering, so an index from the previous round refers to a different
+    particle after the move.
+
+    The comparison is on the exact bit pattern, so this matches only points
+    whose coordinates are identical — which is what migration produces, since
+    it moves values without touching them.
+    """
+
+    a = np.ascontiguousarray(coords, dtype=np.float64)
+
+    return a.view(np.dtype((np.void, a.dtype.itemsize * a.shape[1]))).reshape(-1)
+
+
 class SwarmType(Enum):
     """
     PETSc swarm type specification.
@@ -66,14 +115,116 @@ class SwarmType(Enum):
     DMSWARM_PIC = 1
 
 
-# We can grab this type from the PETSc module
-# SwarmPICLayout has been moved to pic_swarm.py
-
-
 # Note - much of the setup is necessarily the same as the MeshVariable
 # and the duplication should be removed.
 
 from underworld3.utilities.dimensionality_mixin import DimensionalityMixin
+
+
+#: Which sampling rules each proxy target can offer. ``proxy_location`` chooses
+#: WHERE the assembler reads the particle data; ``proxy_sampling`` chooses WHAT
+#: it reads there. The two axes are not fully independent: a per-cell
+#: least-squares fit is a reconstruction by construction, and the Voronoi share
+#: needs the cell-major integration-point layout to restrict itself to a cell.
+_PROXY_SAMPLING_BY_LOCATION = {
+    "nodes": ("reconstruct",),
+    "integration_points": ("reconstruct", "share"),
+    "cells": ("reconstruct",),
+}
+
+#: ``"nearest"`` is deliberately absent above. Reading one particle's value
+#: whole is the MATERIAL mapping, and a material is an
+#: :class:`IndexSwarmVariable` — it carries the label, presents one level set
+#: per material, and lets the properties be blended by that partition of unity.
+#: Carrying a property field directly on the particles and sampling it is the
+#: route this does not offer: it puts the constitutive relationship on the
+#: particles, where the solver cannot reach the pieces it needs.
+_NO_HAND_ROLLED_MATERIALS = (
+    "a nearest-particle read is the material mapping, and a material is an "
+    "IndexSwarmVariable: it carries the label, presents one level set per "
+    "material, and blends the properties through that partition of unity "
+    "(see createMask). Building the property field itself on the particles is "
+    "deliberately not offered — the solver needs the constitutive law, not a "
+    "sampled answer to it."
+)
+
+_PROXY_SAMPLING_WHY = {
+    ("nodes", "nearest"): _NO_HAND_ROLLED_MATERIALS,
+    ("integration_points", "nearest"): _NO_HAND_ROLLED_MATERIALS,
+    ("cells", "nearest"): _NO_HAND_ROLLED_MATERIALS,
+    ("cells", "share"): (
+        "a 'cells' proxy already uses every particle in the cell, by fitting "
+        "them. The share is the integration-point equivalent: use "
+        "proxy_location='integration_points'."
+    ),
+    ("nodes", "share"): (
+        "the share partitions a cell between its integration points, and a "
+        "NODE is shared between cells, so there is no cell to restrict to. Use "
+        "proxy_location='integration_points'."
+    ),
+}
+
+
+def _validate_proxy_sampling(proxy_location, proxy_sampling):
+    """Check a (location, sampling) pair and return the sampling rule.
+
+    Raises rather than silently ignoring an unavailable combination: a
+    material mapping that quietly did something other than what was asked is
+    exactly the failure this machinery exists to prevent.
+    """
+    allowed = _PROXY_SAMPLING_BY_LOCATION.get(proxy_location)
+    if allowed is None:
+        raise ValueError(
+            "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+            f"not {proxy_location!r}"
+        )
+    if proxy_sampling in allowed:
+        return proxy_sampling
+    if proxy_sampling not in ("reconstruct", "nearest", "share"):
+        raise ValueError(
+            "proxy_sampling must be 'reconstruct', 'nearest' or 'share', "
+            f"not {proxy_sampling!r}"
+        )
+    why = _PROXY_SAMPLING_WHY.get((proxy_location, proxy_sampling), "")
+    raise ValueError(
+        f"proxy_sampling={proxy_sampling!r} is not available for "
+        f"proxy_location={proxy_location!r} (offered: {', '.join(allowed)})"
+        + (" — " + why if why else "")
+    )
+
+
+def _validate_index_proxy_sampling(proxy_location, proxy_sampling):
+    """Resolve ``proxy_sampling`` for a level-set (index) variable.
+
+    The level sets of an :class:`IndexSwarmVariable` are built differently at
+    each target — a distance-weighted nodal fill, a per-cell least-squares
+    fraction, or a direct read at the integration points — so the sampling
+    axis only opens up for the last of those. ``None`` means "the sensible
+    one for this location".
+    """
+    if proxy_location not in _PROXY_SAMPLING_BY_LOCATION:
+        raise ValueError(
+            "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+            f"not {proxy_location!r}"
+        )
+    if proxy_location != "integration_points":
+        if proxy_sampling not in (None, "reconstruct"):
+            raise ValueError(
+                f"proxy_sampling={proxy_sampling!r} is only available for "
+                "proxy_location='integration_points'. A 'nodes' level set is a "
+                "distance-weighted fill and a 'cells' level set is a "
+                "least-squares fraction; neither takes a sampling rule."
+            )
+        return "reconstruct"
+    if proxy_sampling is None:
+        return "nearest"
+    if proxy_sampling not in ("nearest", "share"):
+        raise ValueError(
+            "proxy_sampling for an IndexSwarmVariable at the integration points "
+            f"must be 'nearest' (a material label, sharp) or 'share' (material "
+            f"fractions from every particle), not {proxy_sampling!r}"
+        )
+    return proxy_sampling
 
 
 class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
@@ -98,16 +249,68 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         If None, inferred from ``size``.
     dtype : type, default=float
         Data type for storage (float or int).
+    proxy_location : {"nodes", "integration_points", "cells"}, default="nodes"
+        Where the proxy lives. ``"nodes"``: a nodal mesh variable of
+        ``proxy_degree`` / ``proxy_continuous``, reconstructed from the
+        particles at its nodes and interpolated by the basis wherever the
+        weak form reads it. ``"integration_points"``: an
+        :class:`~underworld3.discretisation.IntegrationPointVariable`
+        reconstructed from the nearest particles at every integration point
+        and read there directly, with no second interpolation (the
+        Ellipsis / Underworld PIC-LIP mapping); a material interface keeps
+        its sub-cell position, and the proxy has no gradient of its own: a
+        derivative of its symbol in a WEAK FORM is refused (see ``"cells"``
+        below for the remedy), while ``uw.function.evaluate`` of the same
+        derivative answers by fitting the values per cell first.
+        ``proxy_degree`` / ``proxy_continuous`` are ignored in that case. ``"cells"``: a discontinuous mesh variable
+        of ``proxy_degree`` holding, in every cell, the least-squares
+        polynomial through the particles that cell holds (a thin cell takes
+        a linear fit to the particles nearest its centroid, an empty cell
+        keeps its previous value). THIS is the target to choose when a solve
+        needs a gradient: the level sets are polynomials, so they
+        differentiate directly in a weak form, with no projection solve
+        (degree 2 recovers the gradient of a quadratic particle field to
+        2e-7). Exact for
+        polynomial particle fields up to ``proxy_degree``, integrated exactly
+        by the default rule, sharp at cell edges, with a gradient, and no
+        neighbour search across ranks; see
+        :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`.
+        ``proxy_continuous`` is ignored (the proxy is discontinuous).
     proxy_degree : int, default=1
         Polynomial degree for the mesh proxy variable.
     proxy_continuous : bool, default=True
         Whether the proxy uses continuous (True) or discontinuous (False)
         interpolation.
+    proxy_sampling : {"reconstruct", "share"}, default="reconstruct"
+        How the particle values become a value at each proxy point.
+        ``proxy_location`` says *where* the assembler reads; this says *what*
+        it reads there.
+
+        - ``"reconstruct"``: a weighted fit over the ``nnn`` nearest
+          particles, exact for linear fields. What a smooth field wants.
+        - ``"share"``: the mean over the particles this point speaks for —
+          those whose nearest integration point *within their own cell* is
+          this one (the cell-restricted Voronoi share). Every particle reaches
+          the assembly, weighted by the sub-region it represents, which is
+          what a HISTORY wants: stress, damage, accumulated strain, anything
+          whose value was earned by being advected. Requires
+          ``proxy_location="integration_points"``.
+
+        There is no nearest-particle option here. Sampling one particle's
+        value whole is the *material* mapping, and materials are built from
+        :class:`IndexSwarmVariable`, which carries the label and presents one
+        level set per material for the properties to be blended by. Putting a
+        property field on the particles and sampling it hands the solver an
+        answer where it needs a constitutive law, so it is not offered.
+
+        ``"cells"`` fits a polynomial per cell and takes ``"reconstruct"``
+        only; ``"share"`` needs the cell-major integration-point layout. An
+        unavailable combination raises rather than being quietly ignored.
     varsymbol : str, optional
         LaTeX symbol for display. Defaults to ``name``.
     rebuild_on_cycle : bool, default=True
-        If True, rebuild the proxy when particles cycle through periodic
-        boundaries. Recommended for continuous fields.
+        No effect. Retained for backward compatibility with the removed
+        particle-recycling (streak swarm) feature.
     units : str or pint.Unit, optional
         Physical units for this variable (e.g., 'kelvin', 'Pa').
         Requires reference quantities to be set on the model.
@@ -147,9 +350,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         dtype=float,
         proxy_degree=1,
         proxy_continuous=True,
+        proxy_location="nodes",
+        proxy_sampling="reconstruct",
         _register=True,
         _proxy=True,
-        _nn_proxy=False,
         varsymbol=None,
         rebuild_on_cycle=True,
         units=None,
@@ -299,6 +503,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             raise TypeError(
                 f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'."
             )
+        self._petsc_dtype = petsc_type
 
         if _register:
             # Check if swarm is already populated - PETSc doesn't allow registering
@@ -321,7 +526,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # add to swarms dict
 
         self.swarm._vars[self.clean_name] = self
-        self._is_accessed = False
 
         # Initialize proxy flags first before creating proxy variable
         self._updating_proxy = False  # Flag to prevent recursive proxy updates
@@ -332,10 +536,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._vtype = vtype
         self._proxy_degree = proxy_degree
         self._proxy_continuous = proxy_continuous
-        self._nn_proxy = _nn_proxy
+        if proxy_location not in ("nodes", "integration_points", "cells"):
+            raise ValueError(
+                "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+                f"not {proxy_location!r}"
+            )
+        self._cell_projector = None
+        self._proxy_location = proxy_location
+        self._proxy_sampling = _validate_proxy_sampling(proxy_location, proxy_sampling)
         self._create_proxy_variable()
 
-        # recycle swarm
+        # Inert: kept for backward compatibility with the removed
+        # particle-recycling (streak swarm) feature.
         self._rebuild_on_cycle = rebuild_on_cycle
         self._register = _register
 
@@ -384,58 +596,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         """Check if this variable has units."""
         return self._units is not None
 
-    def _create_variable_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for variable data.
-        Follows the same pattern as swarm.points implementation.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            initial_data = self.unpack_uw_data_from_petsc(squeeze=False, sync=True)
-
-        # Create NDArray_With_Callback (following swarm._points pattern)
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Single callback function (following swarm_update_callback pattern)
-        def variable_update_callback(array, change_context):
-            """Callback to sync variable changes back to PETSc (like swarm.points)"""
-            var = array.owner
-            if var is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or mesh rebuilds),
-                # where the owning Python variable has already been garbage
-                # collected but the NDArray proxy still exists.
-                return
-
-            # Only act on data-changing operations (following swarm.points pattern)
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # Skip updates during coordinate changes to prevent corruption
-            if hasattr(var.swarm, "_migration_disabled") and var.swarm._migration_disabled:
-                return
-
-            # Persist changes to PETSc (like swarm callback updates coordinates)
-            var.pack_uw_data_to_petsc(array, sync=True)
-
-        # Register the callback (following swarm.points pattern)
-        array_obj.add_callback(variable_update_callback)
-        return array_obj
-
     def _create_canonical_data_array(self, initial_data=None):
         """
         Create the single canonical data array with PETSc synchronization.
@@ -455,11 +615,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         """
         if initial_data is None:
             # Use unpack_raw to get flat format (-1, num_components)
-            initial_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=True)
+            initial_data = self.unpack_raw_data_from_petsc(squeeze=False)
 
             # Handle case where unpack returns None (swarm not initialized)
             if initial_data is None:
-                initial_data = np.zeros((0, self.num_components))
+                initial_data = np.zeros(
+                    (0, self.num_components), dtype=self._petsc_dtype
+                )
 
         # Create NDArray_With_Callback for flat data
         array_obj = uw.utilities.NDArray_With_Callback(
@@ -468,41 +630,77 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             disable_inplace_operators=False,  # Allow operations like existing arrays
         )
 
-        # Single canonical callback for PETSc synchronization
+        # Single canonical callback for PETSc synchronization. The
+        # add_canonical_callback dispatch guarantees `array` IS the canonical
+        # storage (views resolved to it, fancy-index copies skipped), so the
+        # pack below always covers every local particle — never a
+        # partition-dependent subset (#376).
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
+            # Resolve the variable through the owner weakref (like the mesh
+            # callback) rather than closing over self: the callback list
+            # lives on the canonical array, so a strong self-capture here
+            # would be a var <-> array reference cycle.
+            var = array.owner
+            if var is None:
+                # Array outlived its variable (teardown / swarm rebuild)
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
 
-            # Skip updates during migration to prevent corruption
-            if hasattr(self.swarm, "_migration_disabled") and self.swarm._migration_disabled:
-                return
-
-            # Check for None array to prevent copy errors
-            if array is None:
+            # While migration is suppressed, DEFER the PETSc pack rather than
+            # discarding the write: the DMSwarm layout may be mid-change, so
+            # packing now could corrupt it, but the user's values must survive
+            # in the canonical array. They are flushed to PETSc by
+            # Swarm._flush_pending_petsc_sync() when the migration-control
+            # context exits (SWARM-04: previously these writes were silently
+            # lost — nothing re-packed, and migrate()'s trailing invalidation
+            # destroyed the only copy).
+            if getattr(var.swarm, "_migration_disabled", False):
+                var.swarm._pending_petsc_sync.add(var.clean_name)
                 return
 
             # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
-            import numpy as np
-
             canonical_array = np.atleast_2d(array)
-            if canonical_array.shape != (array.shape[0], self.num_components):
+            if canonical_array.shape != (array.shape[0], var.num_components):
                 # Reshape to canonical format: (-1, num_components)
-                canonical_array = canonical_array.reshape(-1, self.num_components)
+                canonical_array = canonical_array.reshape(-1, var.num_components)
 
             # STEP 1: Sync to PETSc using established method with correct shape
-            self.pack_raw_data_to_petsc(canonical_array, sync=True)
+            var.pack_raw_data_to_petsc(canonical_array)
+
+            # Coordinate writes may strand particles on the wrong rank. Mark
+            # the swarm for DEFERRED migration — migrate() itself is
+            # collective and must not run from a per-write callback (ranks
+            # write unevenly → deadlock). The migration happens at the next
+            # collective point: migration-control context exit or solve entry
+            # (SWARM-03; the class docstring's automatic-migration promise).
+            if getattr(var.swarm, "_coord_var", None) is var:
+                var.swarm._needs_migration = True
 
             # STEP 2: Handle variable-specific updates (like IndexSwarmVariable proxy marking)
-            if hasattr(self, "_on_data_changed"):
-                self._on_data_changed()
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
 
-        # Register the single canonical callback
-        array_obj.add_callback(canonical_data_callback)
+        # Register through the central view/copy guard
+        array_obj.add_canonical_callback(canonical_data_callback)
         return array_obj
+
+    def _deferred_canonical_flush(self):
+        """Rank-local flush target for ``uw.synchronised_array_update``.
+
+        Re-resolves the LIVE canonical at flush time: migration inside the
+        context invalidates and rebuilds it, and flushing a pinned
+        pre-migration array would resurrect stale values. (A migrate()
+        issued inside the context forfeits unflushed writes made before
+        it — the flush stays consistent with the post-migration layout.)
+        """
+        from underworld3.utilities.nd_array_callback import fire_canonical_callbacks
+
+        fire_canonical_callbacks(self.data)
 
     def _create_array_view(self):
         """
@@ -661,49 +859,44 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 reshaped_data = modified_data.reshape(-1, self.parent.num_components)
                 self.parent.data[:] = reshaped_data
 
-            # Forward common array methods
+            # Reduction methods follow the MeshVariable array-view contract:
+            # scalar (float) for single-component variables, per-component
+            # tuple for multi-component variables (LE-07 / BF-11).
+            #
+            # NOTE: these are simple arithmetic reductions over the particle
+            # values. Swarm particles are generally non-uniformly distributed
+            # in space, so mean()/std() only APPROXIMATE the spatial
+            # statistics — use mesh integrals of the proxy field for
+            # spatially-accurate statistics.
+
+            def _per_component_reduction(self, reduction):
+                data = self._get_array_data()
+                if self.parent.num_components == 1:
+                    return float(reduction(data))
+                flat = np.asarray(data).reshape(data.shape[0], -1)
+                return tuple(
+                    float(reduction(flat[:, i])) for i in range(self.parent.num_components)
+                )
+
             def max(self):
-                return self._get_array_data().max()
+                """Maximum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.max)
 
             def min(self):
-                return self._get_array_data().min()
+                """Minimum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.min)
 
             def mean(self):
-                """
-                Compute mean value of swarm particles.
-
-                ⚠️  WARNING: This computes a simple arithmetic mean of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial mean. For accurate spatial
-                statistics, consider using integration via swarm proxy variables or
-                computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Mean value (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().mean()
+                """Arithmetic particle mean (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.mean)
 
             def sum(self):
-                return self._get_array_data().sum()
+                """Sum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.sum)
 
             def std(self):
-                """
-                Compute standard deviation of swarm particles.
-
-                ⚠️  WARNING: This computes a simple numpy std of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial standard deviation. For accurate
-                spatial statistics, consider using integration via swarm proxy variables
-                or computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Standard deviation (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().std()
+                """Arithmetic particle standard deviation (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.std)
 
             @property
             def shape(self):
@@ -713,9 +906,17 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             def dtype(self):
                 return self._get_array_data().dtype
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -817,9 +1018,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                         f"  3. For non-dimensional values, use: {self.parent.name}.data[...] = value\n"
                     )
 
-                # Get current NON-DIMENSIONAL array data from PETSc
-                # Note: We use unpack directly here, not _get_array_data() which dimensionalizes
-                array_data = self.parent.unpack_uw_data_from_petsc(squeeze=False)
+                # Current NON-DIMENSIONAL values, read from the CANONICAL
+                # array rather than from the PETSc field.
+                #
+                # Reading PETSc here made every write inside
+                # uw.synchronised_array_update() overwrite the one before it:
+                # that context defers the PETSc pack, so the field still held
+                # the pre-context values and each __setitem__ started from
+                # them. Two component writes to one swarm variable kept only
+                # the last, silently -- and writing a vector or tensor one
+                # component at a time inside that context is exactly what the
+                # data-access guide recommends. Mesh variables were never
+                # affected: their view writes through the canonical array.
+                # (Not _get_array_data(), which dimensionalises.)
+                array_data = self.parent._unpack_data_to_array_format(
+                    np.asarray(self.parent.data)
+                )
                 # Create a copy to modify (avoid modifying view directly)
                 modified_data = array_data.copy()
 
@@ -864,53 +1078,53 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
                 # Update the specific elements
                 modified_data[key] = value
+                # A symmetric tensor stores one value per off-diagonal PAIR,
+                # so a write to one half has to be carried to the other; see
+                # SwarmVariable._mirror_symmetric_pairs.
+                self.parent._mirror_symmetric_pairs(array_data, modified_data)
                 # Pack back to canonical data format
                 packed_data = self.parent._pack_array_to_data_format(modified_data)
                 self.parent.data[:] = packed_data
 
-            # Forward common array methods
+            # Reduction methods follow the MeshVariable array-view contract:
+            # scalar (float) for single-component variables, per-component
+            # tuple for multi-component variables (LE-07 / BF-11). Components
+            # are ordered as in the flat canonical layout.
+            #
+            # NOTE: these are simple arithmetic reductions over the particle
+            # values. Swarm particles are generally non-uniformly distributed
+            # in space, so mean()/std() only APPROXIMATE the spatial
+            # statistics — use mesh integrals of the proxy field for
+            # spatially-accurate statistics.
+
+            def _per_component_reduction(self, reduction):
+                data = self._get_array_data()
+                if self.parent.num_components == 1:
+                    return float(reduction(data))
+                flat = np.asarray(data).reshape(data.shape[0], -1)
+                return tuple(
+                    float(reduction(flat[:, i])) for i in range(self.parent.num_components)
+                )
+
             def max(self):
-                return self._get_array_data().max()
+                """Maximum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.max)
 
             def min(self):
-                return self._get_array_data().min()
+                """Minimum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.min)
 
             def mean(self):
-                """
-                Compute mean value of swarm particles.
-
-                ⚠️  WARNING: This computes a simple arithmetic mean of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial mean. For accurate spatial
-                statistics, consider using integration via swarm proxy variables or
-                computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Mean value (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().mean()
+                """Arithmetic particle mean (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.mean)
 
             def sum(self):
-                return self._get_array_data().sum()
+                """Sum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.sum)
 
             def std(self):
-                """
-                Compute standard deviation of swarm particles.
-
-                ⚠️  WARNING: This computes a simple numpy std of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial standard deviation. For accurate
-                spatial statistics, consider using integration via swarm proxy variables
-                or computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Standard deviation (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().std()
+                """Arithmetic particle standard deviation (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.std)
 
             @property
             def shape(self):
@@ -920,9 +1134,17 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             def dtype(self):
                 return self._get_array_data().dtype
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -943,19 +1165,77 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         return TensorSwarmArrayView(self)
 
+    def _mirror_symmetric_pairs(self, before, after):
+        """Carry an off-diagonal write across to its mirror entry.
+
+        Only for a symmetric variable, whose ``(i, j)`` and ``(j, i)`` share
+        one stored value. Writing one half and leaving the other stale loses
+        the write; changing both to different values asks for something the
+        storage cannot hold and is refused.
+        """
+        if self.vtype != uw.VarType.SYM_TENSOR or after.ndim < 3:
+            return
+        rows, cols = after.shape[1], after.shape[2]
+        for i in range(rows):
+            for j in range(i + 1, cols):
+                upper_moved = not np.array_equal(after[:, i, j], before[:, i, j])
+                lower_moved = not np.array_equal(after[:, j, i], before[:, j, i])
+                if upper_moved and not lower_moved:
+                    after[:, j, i] = after[:, i, j]
+                elif lower_moved and not upper_moved:
+                    after[:, i, j] = after[:, j, i]
+                elif upper_moved and lower_moved and not np.array_equal(
+                    after[:, i, j], after[:, j, i]
+                ):
+                    raise ValueError(
+                        f"'{self.clean_name}' is a symmetric tensor: components "
+                        f"[{i}, {j}] and [{j}, {i}] share one stored value and "
+                        "cannot be set to different values in a single assignment."
+                    )
+
+    def _unpack_data_to_array_format(self, flat_data):
+        """Canonical ``(N, components)`` -> array ``(N, a, b)``.
+
+        The inverse of :meth:`_pack_array_to_data_format`, and the read half
+        of a read-modify-write on the canonical array. Follows
+        ``_data_layout``, so a symmetric tensor's shared off-diagonal column
+        appears at both ``(i, j)`` and ``(j, i)``.
+        """
+        flat_data = np.asarray(flat_data)
+        shape = self.shape
+        unpacked = np.empty((flat_data.shape[0], *shape), dtype=flat_data.dtype)
+        for i in range(shape[0]):
+            for j in range(shape[1]):
+                unpacked[:, i, j] = flat_data[:, self._data_layout(i, j)]
+        return unpacked
+
     def _pack_array_to_data_format(self, array_data):
-        """Convert array format (N,a,b) back to canonical data format (N,components)"""
-        # Use existing pack logic but return numpy array instead of writing to PETSc
-        # This is a pure conversion method - no PETSc access
+        """Convert array format (N,a,b) back to canonical data format (N,components)
+
+        A flat reshape is wrong for a symmetric tensor: the ``(N, dim, dim)``
+        view has ``dim*dim`` entries and storage holds only the independent
+        ones, so reshaping produced ``(N, 4)`` for a ``(N, 3)`` variable and
+        the assignment failed to broadcast. ``_data_layout`` is the mapping
+        that ``pack_uw_data_to_petsc`` uses; follow it.
+        """
         # Empty-partition guard: an N=0 array has total size 0, so numpy cannot
         # infer the -1 component dimension ("cannot reshape array of size 0 into
         # shape (0,newaxis)"). This bites a rank that owns no local particles
         # during a parallel read_timestep. Compute the component count from the
         # trailing dims explicitly.
         if array_data.size == 0:
-            ncomp = int(np.prod(array_data.shape[1:])) if array_data.ndim > 1 else 1
-            return array_data.reshape(array_data.shape[0], ncomp)
-        return array_data.reshape(array_data.shape[0], -1)
+            return array_data.reshape(array_data.shape[0], self.num_components)
+
+        if array_data.ndim < 3 or array_data.shape[1] * array_data.shape[2] == self.num_components:
+            return array_data.reshape(array_data.shape[0], -1)
+
+        packed = np.empty(
+            (array_data.shape[0], self.num_components), dtype=array_data.dtype
+        )
+        for i in range(array_data.shape[1]):
+            for j in range(array_data.shape[2]):
+                packed[:, self._data_layout(i, j)] = array_data[:, i, j]
+        return packed
 
     # Legacy methods preserved for backward compatibility (now do nothing)
     def use_legacy_array(self):
@@ -1041,16 +1321,50 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # var stale via _mark_reinit_stale; we wire that callback
             # below to set ``self._proxy_stale = True`` so the next
             # access re-projects.
-            self._meshVar = uw.discretisation.MeshVariable(
-                "proxy_" + self.clean_name,
-                self.swarm.mesh,
-                self.shape,
-                self._vtype,
-                degree=self._proxy_degree,
-                continuous=self._proxy_continuous,
-                varsymbol=r"\left<" + self.symbol + r"\right>",
-                remesh_policy="reinit",
-            )
+            if getattr(self, "_proxy_location", "nodes") == "integration_points":
+                # Particles -> integration points directly: the assembler reads
+                # the stored values at the rule with no basis interpolation.
+                self._meshVar = uw.discretisation.IntegrationPointVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    varsymbol=r"\left<" + self.symbol + r"\right>_q",
+                    remesh_policy="reinit",
+                    units=self._units,
+                )
+            elif getattr(self, "_proxy_location", "nodes") == "cells":
+                # Particles -> a polynomial per cell (least squares); read by
+                # the assembler through the ordinary discontinuous basis.
+                self._meshVar = uw.discretisation.MeshVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    degree=self._proxy_degree,
+                    continuous=False,
+                    varsymbol=r"\left<" + self.symbol + r"\right>_c",
+                    remesh_policy="reinit",
+                    units=self._units,
+                )
+                self._cell_projector = None
+            else:
+                self._meshVar = uw.discretisation.MeshVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    degree=self._proxy_degree,
+                    continuous=self._proxy_continuous,
+                    varsymbol=r"\left<" + self.symbol + r"\right>",
+                    remesh_policy="reinit",
+                    # The proxy is what `var.sym` resolves to, so it advertises
+                    # the same units as the variable it stands for. Without this,
+                    # evaluating a proxied symbol returned the NON-DIMENSIONAL
+                    # number with no units attached, as though it were the answer
+                    # (issue #439). Stored data stays non-dimensional either way.
+                    units=self._units,
+                )
             # The remesh helper calls this on REINIT vars after an
             # adapt. Bound here so the closure captures ``self`` (the
             # SwarmVariable) rather than the proxy MeshVariable.
@@ -1072,6 +1386,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         return
 
+    # NB: laziness is safe because freshness is enforced at CONSUMPTION:
+    # the `.sym` accessors call this, and `Swarm._sync_before_assembly()`
+    # (invoked from Mesh.update_lvec at solve entry) eagerly refreshes any
+    # stale proxy before a solver reads the proxy DM directly
+    # (issue #215 Bug 3 / issue #289).
     def _update_proxy_if_stale(self):
         """
         Actually update the proxy mesh variable if it's marked as stale.
@@ -1086,19 +1405,154 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         if not self._proxy_stale or self._updating_proxy:
             return
 
+        # Lifetime contract: variables hold their parent swarm by WEAK
+        # reference (a strong back-reference would cycle with the swarm's
+        # own strong _coord_var/_X0 members and defer DMSwarm destruction
+        # from refcount-immediate to gc time — the transient-evaluation-
+        # swarm leak guarded by tests/test_0006_memory_leak.py). A variable
+        # that outlives its swarm is therefore a symbolic FOSSIL: its proxy
+        # keeps the last projection and can never be refreshed — say so
+        # loudly instead of raising from deep inside a .sym access.
+        # Particle-data paths (.data, rbf_interpolate, ...) still raise
+        # via the .swarm property guard.
+        if self._swarm_ref is None or self._swarm_ref() is None:
+            import warnings
+
+            warnings.warn(
+                f"SwarmVariable '{self.clean_name}': the parent swarm no "
+                "longer exists; the proxy mesh variable retains its last "
+                "projection and cannot be refreshed.",
+                stacklevel=2,
+            )
+            self._proxy_stale = False  # nothing can ever refresh it again
+            return
+
         try:
             self._updating_proxy = True
-            self._rbf_to_meshVar(self._meshVar)
+            if getattr(self, "_proxy_location", "nodes") == "cells":
+                self._cells_to_meshVar(self._meshVar)
+            else:
+                self._rbf_to_meshVar(self._meshVar)
             self._proxy_stale = False  # Mark as fresh
         finally:
             self._updating_proxy = False
 
         return
 
-    # Maybe rbf_interpolate for this one and meshVar is a special case
-    def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False):
+    def _cells_to_meshVar(self, meshVar):
+        """Refresh a ``proxy_location="cells"`` proxy: a least-squares polynomial
+        per cell through the particles it holds (see
+        :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`).
+
+        Rank-local: each rank fits the cells it holds from the particles it
+        holds; the proxy's own ghost synchronisation delivers owned values
+        to the neighbours. The starved-rank guard and the collective
+        read-then-write sequence mirror :meth:`_rbf_to_meshVar`.
         """
-        Here is how it works: for each particle, create a distance-weighted average on the node data
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+        if meshVar.mesh != self.swarm.mesh:
+            if hasattr(self, "_meshVar") and meshVar is self._meshVar:
+                self._create_proxy_variable()
+                meshVar = self._meshVar
+            else:
+                raise RuntimeError("Cannot map a swarm to a different mesh")
+
+        current_values = np.array(meshVar.data[...], copy=True)
+
+        if self.swarm.local_size <= 1:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"Swarm proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; proxy variable "
+                    f"'{getattr(meshVar, 'clean_name', meshVar.name)}' left "
+                    "unchanged on this rank.",
+                    stacklevel=2,
+                )
+            Values = current_values
+        else:
+            projector = self._cell_projector
+            if (
+                projector is None
+                or projector.var is not meshVar
+                or projector.mesh_version != self.swarm.mesh._mesh_version
+            ):
+                projector = CellPolynomialProjector(meshVar)
+                self._cell_projector = projector
+            raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
+            Values = projector.fit(
+                self.swarm._particle_coordinates.data, raw_data, old=current_values
+            )
+
+        meshVar.data[...] = Values[...]
+        return
+
+    # Maybe rbf_interpolate for this one and meshVar is a special case
+    def _share_to_integration_points(self, meshVar, values):
+        r"""Values at the integration points by the cell-restricted Voronoi share.
+
+        Each particle is assigned to the nearest integration point *of its own
+        cell*, and each point reads the mean over the particles assigned to
+        it. Every particle reaches the assembly exactly once, weighted by the
+        sub-region of the cell it represents — the nearest-particle rule, by
+        contrast, discards whichever particles are not closest to a rule point,
+        which at ten per cell is most of them.
+
+        A rule point whose share is empty (an under-filled or empty cell) falls
+        back to the nearest particle anywhere on this rank, which is the same
+        answer ``proxy_sampling="nearest"`` would have given it. The count of
+        such points is kept on ``self._share_empty`` — a persistently non-zero
+        value means the swarm is too thin for the rule, and
+        :meth:`Swarm.repopulate` is the fix.
+
+        Parameters
+        ----------
+        meshVar : IntegrationPointVariable
+            The proxy being filled.
+        values : ndarray, shape (Np, ncomp)
+            Particle values, non-dimensional.
+
+        Returns
+        -------
+        ndarray, shape (ncells * Nq, ncomp)
+        """
+        from underworld3.utilities.particle_share import (
+            share_assignment,
+            share_average,
+        )
+
+        ipc = np.asarray(meshVar.integration_points)      # (ncells, Nq, cdim)
+        npoints = ipc.shape[0] * ipc.shape[1]
+        values = np.asarray(values, dtype=float)
+        values = values.reshape(values.shape[0], -1)
+
+        flat = share_assignment(
+            ipc, np.asarray(self.swarm._particle_coordinates.data),
+            self.swarm._owning_cells(),
+        )
+        means, counts = share_average(flat, values, npoints)
+
+        empty = counts == 0
+        self._share_empty = int(empty.sum())
+        if self._share_empty:
+            _, nearest = self.swarm._get_kdtree().query(
+                ipc.reshape(-1, ipc.shape[-1])[empty], k=1, sqr_dists=False
+            )
+            means[empty] = values[np.asarray(nearest).reshape(-1)]
+
+        return means
+
+    def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False, order=1,
+                        monotone=False):
+        """
+        Refresh a proxy mesh variable from the particles.
+
+        Each proxy node gathers from its ``nnn`` nearest particles. The
+        default weights reproduce linear fields exactly (``order=1``), so a
+        field with a uniform gradient transfers without smearing; ``nnn`` and
+        ``order`` are resolved in :meth:`rbf_interpolate`.
 
         Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
         Todo: some form of global fall-back for when there are no particles on a processor
@@ -1106,9 +1560,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         # Mapping to the coordinates of the variable from the
         # particle coords
-
-        if nnn is None:
-            nnn = self.swarm.mesh.dim + 1
 
         if meshVar.mesh != self.swarm.mesh:
             # If this is our own proxy variable and mesh has changed, recreate it
@@ -1119,59 +1570,57 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             else:
                 raise RuntimeError("Cannot map a swarm to a different mesh")
 
-        new_coords = meshVar.coords
+        # coords_nd, NOT coords: the swarm kd-tree is built from
+        # _particle_coordinates.data, which is always non-dimensional, while
+        # MeshVariable.coords dimensionalises once the model has reference
+        # quantities (issue #426).
+        new_coords = meshVar.coords_nd
 
-        Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=nnn)
+        # Starved-rank guard (SWARM-07): with <= 1 local particles there is
+        # nothing meaningful to interpolate — rbf_interpolate would return
+        # silent zeros. Keep this rank's current proxy nodal values instead,
+        # and say so. NB: MeshVariable reads/writes perform collective ghost
+        # synchronisation, so EVERY rank must execute the same read-then-write
+        # sequence; only the values differ on starved ranks.
+        current_values = np.array(meshVar.data[...], copy=True)
+
+        if self.swarm.local_size <= 1:
+            # Warn only once the swarm has ever held particles: proxied
+            # variables are created (and their .sym touched) before
+            # populate(), and that expected pre-population state should not
+            # generate noise.
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"Swarm proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; proxy variable "
+                    f"'{getattr(meshVar, 'clean_name', meshVar.name)}' left "
+                    "unchanged on this rank.",
+                    stacklevel=2,
+                )
+            Values = current_values
+        elif getattr(self, "_proxy_sampling", "reconstruct") == "share":
+            Values = self._share_to_integration_points(
+                meshVar, self.unpack_raw_data_from_petsc(squeeze=False)
+            )
+        elif monotone:
+            # The limiter is data-dependent, so it cannot ride on a cached
+            # geometry-only operator; take the direct path.
+            Values = self.rbf_interpolate(
+                new_coords, verbose=verbose, nnn=nnn, order=order, monotone=monotone
+            )
+        else:
+            raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
+            resolved_nnn, resolved_order = self._resolve_stencil(
+                nnn, order, raw_data.shape[0]
+            )
+            operator = self.swarm._proxy_interpolation_operator(
+                meshVar, resolved_nnn, 2, resolved_order
+            )
+            Values = operator @ raw_data
 
         meshVar.data[...] = Values[...]
-
-        return
-
-    def _rbf_reduce_to_meshVar(self, meshVar, verbose=False):
-        """
-        This method updates a mesh variable for the current
-        swarm & particle variable state by reducing the swarm to
-        the nearest point for each particle
-
-        Here is how it works:
-
-            1) for each particle, create a distance-weighted average on the node data
-            2) check to see which nodes have zero weight / zero contribution and replace with nearest particle value
-
-        Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
-        Todo: some form of global fall-back for when there are no particles on a processor
-
-        """
-
-        # if not proxied, nothing to do. return.
-        if not self._meshVar:
-            return
-
-        # 1 - Average particles to nodes with distance weighted average
-
-        # Use cached KDTree for interpolation (avoids redundant index construction)
-        kd = meshVar._get_kdtree()
-
-        with self.swarm.access():
-            d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
-
-            node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
-            w = np.zeros(meshVar.coords.shape[0])
-
-            if not self._nn_proxy:
-                for i in range(self.local_size):
-                    # if b[i]:
-                    node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
-                    w[n[i]] += 1.0 / (1.0e-24 + d[i])
-
-                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(-1, 1)
-
-        # 2 - set NN vals on mesh var where w == 0.0
-
-        p_nnmap = self.swarm._get_map(self)
-
-        meshVar.data[...] = node_values[...]
-        meshVar.data[np.where(w == 0.0), :] = self.data[p_nnmap[np.where(w == 0.0)], :]
 
         return
 
@@ -1193,7 +1642,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
     #     return
 
-    def pack_uw_data_to_petsc(self, data_array, sync=True):
+    @staticmethod
+    def _warn_deprecated_sync(sync):
+        """One-cycle keyword shim for the removed no-op ``sync=`` argument on
+        the four pack/unpack methods (it never had an effect)."""
+        if sync is not None:
+            import warnings
+            warnings.warn(
+                "the 'sync' argument never had an effect and is deprecated; "
+                "remove it",
+                DeprecationWarning, stacklevel=3)
+
+    def pack_uw_data_to_petsc(self, data_array, sync=None):
         """
         Enhanced pack method that directly accesses PETSc field without access() context.
         Designed for the new swarmVariable.array interface.
@@ -1202,9 +1662,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         data_array : numpy.ndarray
             Array data to pack into PETSc field
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
         """
+        self._warn_deprecated_sync(sync)
         shape = self.shape
         data_array_3d = data_array.reshape(-1, *self.shape)
 
@@ -1223,11 +1684,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
             # Update the proxy mesh variable if one exists (for integral calculations)
             self._update()
-
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
 
         finally:
             # Always restore the field
@@ -1256,7 +1712,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     #     else:
     #         return data_array_3d
 
-    def unpack_uw_data_from_petsc(self, squeeze=True, sync=True):
+    def unpack_uw_data_from_petsc(self, squeeze=True, sync=None):
         """
         Enhanced unpack method that directly accesses PETSc field without access() context.
         Designed for the new swarmVariable.array interface.
@@ -1265,20 +1721,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         squeeze : bool
             Whether to squeeze singleton dimensions (default True)
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
         """
+        self._warn_deprecated_sync(sync)
         shape = self.shape
 
         # Direct PETSc field access without context manager
         petsc_data = self.swarm.dm.getField(self.clean_name).reshape((-1, self.num_components))
 
         try:
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
-
             # Unpack data using same layout as original method
             points = petsc_data.shape[0]
             data_array_3d = np.empty(shape=(points, *shape), dtype=petsc_data.dtype)
@@ -1297,7 +1749,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             return data_array_3d
 
-    def pack_raw_data_to_petsc(self, data_array, sync=True):
+    def pack_raw_data_to_petsc(self, data_array, sync=None):
         """
         Pack data array to PETSc using traditional data shape (-1, num_components).
         Direct PETSc access without access() context for backward compatibility.
@@ -1306,9 +1758,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         data_array : numpy.ndarray
             Array data in traditional flat format (-1, num_components)
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
         """
+        self._warn_deprecated_sync(sync)
         import numpy as np
 
         # Convert to expected shape: (-1, num_components)
@@ -1331,18 +1784,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # Update the proxy mesh variable if one exists (for integral calculations)
             self._update()
 
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
-
         finally:
             # Always restore the field
             self.swarm.dm.restoreField(self.clean_name)
 
         return
 
-    def unpack_raw_data_from_petsc(self, squeeze=True, sync=True):
+    def unpack_raw_data_from_petsc(self, squeeze=True, sync=None):
         """
         Unpack data from PETSc in traditional data shape (-1, num_components).
         Direct PETSc access without access() context for backward compatibility.
@@ -1351,39 +1799,39 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         squeeze : bool
             Whether to remove singleton dimensions (default True)
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
 
         Returns
         -------
         numpy.ndarray
             Array data in traditional flat format (-1, num_components)
         """
+        self._warn_deprecated_sync(sync)
         import numpy as np
 
         # Check if swarm has any particles before accessing field
         swarm_size = self.swarm.local_size
         if swarm_size <= 0:
-            # Swarm not populated yet, return empty array
-            return np.zeros((0, self.num_components))
+            # Swarm not populated yet, return empty array. Keep the field's
+            # PETSc dtype so that an empty rank's array agrees with a
+            # non-empty rank's (a float64 default here made the collective
+            # parallel-HDF5 create_dataset in ``save`` see different dtypes
+            # across ranks and deadlock on close for ``int`` variables).
+            return np.zeros((0, self.num_components), dtype=self._petsc_dtype)
 
         # Direct PETSc field access without context manager
         field_data = self.swarm.dm.getField(self.clean_name)
         if field_data is None:
             # Field not properly initialized, restore and return empty array
             self.swarm.dm.restoreField(self.clean_name)
-            return np.zeros((0, self.num_components))
+            return np.zeros((0, self.num_components), dtype=self._petsc_dtype)
 
         petsc_data = field_data.reshape((-1, self.num_components))
 
         try:
             # Return data in traditional flat format
             result = petsc_data.copy()
-
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
 
         finally:
             # Always restore the field
@@ -1407,6 +1855,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
   > symbol:  ${self.symbol}$\n
   > shape:   ${self.shape}$\n
   > proxy:   ${self._proxy}$\n
+  > proxy_location:  `{self._proxy_location}`\n
   > proxy_degree:  ${self._proxy_degree}$\n
   > proxy_continuous:  `{self._proxy_continuous}`\n
   > type:    `{self.vtype.name}`"""
@@ -1416,12 +1865,31 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         display(self.data),
         return
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
+    def _resolve_stencil(self, nnn, order, n_particles):
+        """Stencil size and reproduction order this rank can actually support.
+
+        A rank holding fewer particles than the affine tail needs cannot
+        support a linear fit, so it degrades to inverse distance rather than
+        failing the whole refresh. Shared by the direct and the cached-operator
+        paths so they cannot disagree about what they asked for.
+        """
+        if nnn is None:
+            nnn = 2 * (self.swarm.mesh.dim + 1)
+        nnn = min(nnn, n_particles)
+        if order == 1 and nnn < self.swarm.mesh.dim + 2:
+            order = 0
+        return nnn, order
+
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=None, order=1,
+                        monotone=False):
         """
         Radial basis function interpolation of particle data to arbitrary points.
 
-        Uses inverse-distance weighting to interpolate particle values
-        to new coordinate locations.
+        By default this reproduces constant *and linear* fields exactly
+        (``order=1``): a polyharmonic kernel with an affine tail over the
+        ``nnn`` nearest particles. Inverse-distance weighting (``order=0``)
+        reproduces only constants, so any field with a gradient is smeared by
+        an error that does not vanish as the particles crowd together.
 
         Parameters
         ----------
@@ -1430,7 +1898,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         verbose : bool, default=False
             Print diagnostic information during interpolation.
         nnn : int, optional
-            Number of nearest neighbors to use. Defaults to ``mesh.dim + 1``.
+            Number of nearest neighbours to use. Defaults to
+            ``2 * (mesh.dim + 1)`` — comfortably above the ``dim + 2`` that the
+            affine tail needs, so that near-degenerate particle neighbourhoods
+            do not have to fall back.
+        order : int, default=1
+            Polynomial reproduction order: 1 (constants and linears exact) or
+            0 (constants only, inverse distance). Drops to 0 automatically on a
+            rank holding too few particles to determine the affine tail.
+        monotone : bool or str, default=False
+            Limit the non-affine part of the interpolant to the non-affine
+            variation present in the particle stencil. The local linear trend
+            is preserved, so this does not cost linear exactness.
 
         Returns
         -------
@@ -1444,31 +1923,34 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         import numpy as np
 
         # Get data directly from PETSc to avoid circular callback dependencies
-        raw_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=False)
+        raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
         data_size = raw_data.shape
 
-        # What to do if there are no particles
+        # What to do if there are no particles: never SILENTLY return zeros
+        # (SWARM-07) — a starved rank writing these into a proxy corrupts it.
+        # (Silent only for a swarm that has never been populated: proxied
+        # variables legitimately touch this path at creation time.)
         if data_size[0] <= 1:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"rbf_interpolate: rank {uw.mpi.rank} holds only "
+                    f"{data_size[0]} particles of swarm variable "
+                    f"'{self.clean_name}' — returning zeros for this rank's "
+                    "query points.",
+                    stacklevel=2,
+                )
             return np.zeros((new_coords.shape[0], data_size[1]))
 
-        if nnn is None:
-            nnn = self.swarm.mesh.dim + 1
-
-        if nnn > data_size[0]:
-            nnn = data_size[0]
+        nnn, order = self._resolve_stencil(nnn, order, data_size[0])
 
         # Use direct PETSc access to avoid callback circular dependency
-        if self.swarm.recycle_rate > 1:
-            not_remeshed = self.swarm._remeshed.data[:, 0] != 0
-            D = raw_data[not_remeshed].copy()
-
-            kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[not_remeshed, :])
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
-        else:
-            D = raw_data.copy()
-            # Use cached KDTree for standard swarms
-            kdt = self.swarm._get_kdtree()
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
+        D = raw_data.copy()
+        kdt = self.swarm._get_kdtree()
+        values = kdt.rbf_interpolator_local(
+            new_coords, D, nnn, verbose=verbose, order=order, monotone=monotone
+        )
 
         return values
 
@@ -1948,10 +2430,35 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     if "data" in h5f:
                         h5f["data"].attrs["units_metadata"] = json.dumps(swarm_metadata)
 
+        # Same quiescence contract as Swarm.save (issue #330): all ranks
+        # wait for rank 0's metadata append so an immediate reopen cannot
+        # hit HDF5 file locking.
+        comm.barrier()
+
         return
 
     @timing.routine_timer_decorator
     def write_proxy(self, filename: str):
+        """Write this variable's proxy mesh variable to an HDF5 file.
+
+        The proxy is the RBF-interpolated mesh-variable image of the
+        particle data (built when the variable was created with
+        ``proxy_degree > 0``); this writes that mesh field via
+        ``MeshVariable.write``, which is often the most convenient
+        checkpoint/visualisation form of particle data.
+
+        Parameters
+        ----------
+        filename : str
+            Output file path, passed directly to
+            ``MeshVariable.write`` (conventionally ``*.h5``).
+
+        Notes
+        -----
+        If the variable has no proxy (``proxy_degree=0`` /
+        ``_proxy=False``), nothing is written; a message is printed and
+        the call returns.
+        """
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             uw.pprint("No proxy mesh variable that can be saved")
@@ -1970,6 +2477,52 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         index: int,
         outputPath="",
     ):
+        """Restore this variable's values from a saved timestep.
+
+        Reads the checkpoint files written by ``Swarm.write_timestep``
+        and maps the saved (coordinate, value) pairs onto the *current*
+        particles by nearest-neighbour interpolation — the live swarm
+        need not have the same particle count or positions as the saved
+        one.
+
+        Filename convention (matching ``Swarm.write_timestep(
+        data_filename, swarmID, swarmVars=[...], outputPath=...,
+        index=...)``):
+
+        * swarm coordinates:
+          ``{outputPath}/{data_filename}.{swarmID}.{index:05}.h5``
+        * this variable's data:
+          ``{outputPath}/{data_filename}.{swarmID}.{data_name}.{index:05}.h5``
+
+        Both files must exist (``RuntimeError`` otherwise).
+
+        Parameters
+        ----------
+        data_filename : str
+            Base name used when the checkpoint was written. (Note: the
+            corresponding parameter on ``Swarm.read_timestep`` is
+            spelled ``base_filename`` — the two signatures predate a
+            common convention.)
+        swarmID : str
+            Swarm identifier used when the checkpoint was written
+            (``swarm_id`` on ``Swarm.read_timestep``).
+        data_name : str
+            The saved variable's ``name`` (``Swarm.write_timestep``
+            embeds each variable's ``.name`` in its data filename).
+        index : int
+            Timestep index (zero-padded to five digits in the
+            filename).
+        outputPath : str, optional
+            Directory holding the checkpoint files (default: current
+            directory).
+
+        Notes
+        -----
+        MPI-collective. Rank 0 reads the saved data in one shot; the
+        saved points are then routed to their owning ranks with the
+        same migration rule the live swarm uses, so the rank-local
+        nearest-neighbour lookup always sees the correct neighbours.
+        """
         # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
         # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
 
@@ -2021,8 +2574,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 X_chunk = h5f_swarm["coordinates"][()].reshape(-1, dim)
                 D_chunk = h5f_data["data"][()].reshape(-1, n_components)
         else:
-            X_chunk = np.empty((0, dim), dtype=np.double)
-            D_chunk = np.empty((0, n_components), dtype=np.double)
+            X_chunk = np.empty((0, dim), dtype=np.float64)
+            D_chunk = np.empty((0, n_components), dtype=np.float64)
 
         tmp_swarm = uw.swarm.Swarm(self.swarm.mesh)
         saved = SwarmVariable(
@@ -2086,6 +2639,49 @@ class IndexSwarmVariable(SwarmVariable):
         Polynomial degree for mesh projection (default 1).
     proxy_continuous : bool
         Whether mesh proxy is continuous (default True).
+    proxy_location : {"integration_points", "nodes", "cells"}, default="integration_points"
+        Where the level sets live.
+
+        ``"integration_points"`` (the default): the level sets are stored at
+        the points where the assembler evaluates the weak form, so a material
+        interface keeps its sub-cell position and each mask is exactly 0 or 1
+        (the Ellipsis / Underworld particle-in-cell material mapping). These
+        level sets have no gradient of their own, so a derivative of a mask in
+        a weak form is refused rather than silently answered with zero;
+        ``uw.function.evaluate`` still answers, by fitting per cell.
+
+        ``"nodes"``: a continuous field per material. A node on an interface
+        averages both materials, so the cells either side see a property that
+        is neither, and the smear is about one cell wide however many
+        particles you add — it is a property of the basis, not of the swarm.
+        Kept for continuity with existing models; measurably the worst of the
+        three at an interface (layered Couette: 8.0e-2 against 1.8e-7).
+
+        ``"cells"``: a polynomial material fraction per cell, clamped to
+        [0, 1] and renormalised. Sharp at cell edges and DIFFERENTIABLE — the
+        one to choose when a solve needs the gradient of a material property.
+
+        ``proxy_continuous`` applies only to ``"nodes"``.
+    proxy_sampling : {"nearest", "share"}, optional
+        Only for ``proxy_location="integration_points"``; defaults to
+        ``"nearest"``.
+
+        ``"nearest"``: each integration point takes the material of its
+        nearest particle, so the masks are 0 or 1 and sum to 1 by
+        construction. Nothing is mixed, so no mixing assumption is made. The
+        error falls as particles are added until the quadrature rule limits
+        it — about eight particles per cell on P2 velocity, after which the
+        mesh, not the swarm, is what to refine.
+
+        ``"share"``: each integration point takes the material FRACTIONS of
+        the particles it speaks for (the cell-restricted Voronoi share), so a
+        cell the interface crosses carries fractional masks. Use it when the
+        material genuinely is a sub-cell mixture rather than an interface, and
+        note the trap: :meth:`createMask` blends properties arithmetically,
+        which is a Voigt (equal-strain-rate) average, and on a sharp contrast
+        that does not converge with particle density — 3.5e-2 flat, against
+        1.2e-2 for the same masks blended harmonically. Fractions are only
+        worth having when you have chosen the mixing rule deliberately.
 
     Examples
     --------
@@ -2107,6 +2703,8 @@ class IndexSwarmVariable(SwarmVariable):
         indices=1,
         proxy_degree=1,
         proxy_continuous=True,
+        proxy_location="integration_points",
+        proxy_sampling=None,
         update_type=0,
         npoints=5,
         radius=0.5,
@@ -2115,6 +2713,18 @@ class IndexSwarmVariable(SwarmVariable):
         varsymbol=None,
     ):
         self.indices = indices
+        proxy_sampling = _validate_index_proxy_sampling(proxy_location, proxy_sampling)
+        if update_type != 0 and proxy_location != "nodes":
+            import warnings
+
+            warnings.warn(
+                f"update_type={update_type} selects between two NODAL fill "
+                f"algorithms and has no effect at proxy_location="
+                f"{proxy_location!r}; pass proxy_location='nodes' if that is "
+                "what you meant.",
+                stacklevel=2,
+            )
+        self._cell_projector = None
         self.nnn = npoints
         self.radius_s = radius  # **2 # changed to radius
         self.update_type = update_type
@@ -2134,17 +2744,12 @@ class IndexSwarmVariable(SwarmVariable):
             _proxy=False,
             varsymbol=varsymbol,
         )
-        """
-        vtype = (None,)
-        dtype = (float,)
-        proxy_degree = (1,)
-        proxy_continuous = (True,)
-        _register = (True,)
-        _proxy = (True,)
-        _nn_proxy = (False,)
-        varsymbol = (None,)
-        rebuild_on_cycle = (True,)
-        """
+        # AFTER super().__init__, which sets _proxy_location / _proxy_sampling
+        # from its own defaults (this class does not forward the arguments,
+        # since the base single-proxy _meshVar is not built here at all).
+        self._proxy_location = proxy_location
+        self._proxy_sampling = proxy_sampling
+
         # The indices variable defines how many "level set" maps we create as components in the proxy variable
 
         import sympy
@@ -2153,13 +2758,21 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
-                name + R"^{[" + str(i) + R"]}",
-                self.swarm.mesh,
-                num_components=1,
-                degree=proxy_degree,
-                continuous=proxy_continuous,
-            )
+            lname = name + R"^{[" + str(i) + R"]}"
+            if proxy_location == "integration_points":
+                self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
+                    lname, self.swarm.mesh,
+                )
+            elif proxy_location == "cells":
+                self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
+                    lname, self.swarm.mesh, num_components=1,
+                    degree=proxy_degree, continuous=False,
+                )
+            else:
+                self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
+                    lname, self.swarm.mesh, num_components=1,
+                    degree=proxy_degree, continuous=proxy_continuous,
+                )
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state
@@ -2184,6 +2797,40 @@ class IndexSwarmVariable(SwarmVariable):
         """
         self._proxy_stale = True
 
+    def _update_proxy_if_stale(self):
+        """
+        Refresh the level-set proxy variables if they are marked stale.
+
+        Overrides the base implementation (which requires ``self._meshVar``;
+        an IndexSwarmVariable keeps its proxies in ``_meshLevelSetVars``
+        instead). Used by the lazy ``.sym`` accessor and by the solve-entry
+        refresh (``Swarm._sync_before_assembly``).
+        """
+        if not self._proxy_stale or self._updating_proxy:
+            return
+
+        # Fossil-variable contract — see the base implementation: a
+        # variable that outlives its (weakly-referenced) parent swarm keeps
+        # the last level-set projection and warns instead of raising.
+        if self._swarm_ref is None or self._swarm_ref() is None:
+            import warnings
+
+            warnings.warn(
+                f"IndexSwarmVariable '{self.clean_name}': the parent swarm "
+                "no longer exists; the level-set proxies retain their last "
+                "projection and cannot be refreshed.",
+                stacklevel=2,
+            )
+            self._proxy_stale = False  # nothing can ever refresh it again
+            return
+
+        try:
+            self._updating_proxy = True
+            self._update_proxy_variables()
+            self._proxy_stale = False
+        finally:
+            self._updating_proxy = False
+
     # This is the sympy vector interface - it's meaningless if these are not spatial arrays
     @property
     def sym(self):
@@ -2194,9 +2841,7 @@ class IndexSwarmVariable(SwarmVariable):
         and only if the proxy variables are marked as stale due to data changes.
         This avoids expensive RBF interpolation during data assignment operations.
         """
-        if self._proxy_stale:
-            self._update_proxy_variables()
-            self._proxy_stale = False
+        self._update_proxy_if_stale()
         return self._MaskArray
 
     @property
@@ -2339,6 +2984,95 @@ class IndexSwarmVariable(SwarmVariable):
         uw.pprint(f"IndexSwarmVariable {self}")
         uw.pprint(f"Numer of indices {self.indices}")
 
+    def _update_index_proxies_from_particles(self):
+        r"""Fill the level sets directly from the particles, with no nodal step.
+
+        ``proxy_location="integration_points"`` with ``proxy_sampling="nearest"``
+        (the default): every integration point takes the material of its
+        NEAREST PARTICLE, so each level set is exactly 0 or 1 there and the
+        masks sum to 1 by construction. That is the Ellipsis / Underworld
+        particle-in-cell material mapping: the interface keeps its sub-cell
+        position, no node averages two materials, and no reconstruction can
+        overshoot into a negative viscosity.
+
+        ``proxy_sampling="share"``: every integration point takes the material
+        FRACTIONS of the particles it speaks for — those whose nearest
+        integration point within their own cell is this one. Every particle
+        contributes; a cell the interface crosses carries fractional masks.
+        See the class docstring for when that is what you want, and for the
+        mixing-rule trap that comes with it.
+
+        ``proxy_location="cells"``: each level set is the least-squares
+        polynomial through the cell's own particle indicators
+        (:class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`),
+        clamped to :math:`[0, 1]` and renormalised so the masks still sum to 1.
+        A material fraction per cell, with a gradient, sharp at cell edges.
+        """
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+        # Collective read/write sequence: every rank walks the same variables
+        # (only the values differ), as in the nodal path's starved-rank guard.
+        # One particle is enough here, unlike the nodal path's weighted
+        # average: the nearest-particle answer is well defined from a single
+        # particle, and the cell fit falls back to its patch. Only a rank with
+        # NO particles has nothing to say.
+        starved = self.swarm.local_size < 1
+        if starved:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"IndexSwarmVariable proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; level-set "
+                    f"variables for '{self.clean_name}' left unchanged on this rank.",
+                    stacklevel=2,
+                )
+            for var in self._meshLevelSetVars:
+                var.data[:, 0] = var.data[:, 0]          # keep, but write collectively
+            return
+
+        Xp = np.asarray(self.swarm._particle_coordinates.data)
+        idx = np.asarray(self.data).reshape(-1).astype(int)
+        indicator = (idx[:, None] == np.arange(self.indices)[None, :]).astype(float)
+
+        if self._proxy_location == "integration_points":
+            if self._proxy_sampling == "share":
+                # A mean of rows that each sum to 1 still sums to 1, and the
+                # empty-share fallback is one particle's 0/1 row, so the masks
+                # remain a partition of unity whatever the sampling density.
+                U = self._share_to_integration_points(
+                    self._meshLevelSetVars[0], indicator
+                )
+            else:
+                # Every level set is stored at the same points, so the
+                # nearest-particle lookup is done once for all of them.
+                tree = uw.kdtree.KDTree(Xp)
+                _, nearest = tree.query(
+                    np.asarray(self._meshLevelSetVars[0].coords_nd),
+                    k=1, sqr_dists=False,
+                )
+                U = indicator[np.asarray(nearest).reshape(-1)]
+            for ii, var in enumerate(self._meshLevelSetVars):
+                var.data[:, 0] = U[:, ii]
+            return
+
+        # "cells": one fit for every index at once (the level sets share a basis)
+        projector = self._cell_projector
+        if (projector is None or projector.var is not self._meshLevelSetVars[0]
+                or projector.mesh_version != self.swarm.mesh._mesh_version):
+            projector = CellPolynomialProjector(self._meshLevelSetVars[0])
+            self._cell_projector = projector
+        old = np.column_stack([np.asarray(v.data[:, 0]) for v in self._meshLevelSetVars])
+        U = projector.fit(Xp, indicator, old=old)
+        # A fitted indicator can leave [0, 1]; clamp, then renormalise so the
+        # masks remain a partition of unity (createMask stays a weighted mean).
+        U = np.clip(U, 0.0, 1.0)
+        total = U.sum(axis=1)
+        good = total > 1.0e-12
+        U[good] /= total[good, None]
+        for ii, var in enumerate(self._meshLevelSetVars):
+            var.data[:, 0] = U[:, ii]
+
     def _update_proxy_variables(self):
         """
         This method updates the proxy mesh (vector) variable for the index variable on the current swarm locations
@@ -2357,40 +3091,89 @@ class IndexSwarmVariable(SwarmVariable):
         update_type 0: assign the particles to the nearest mesh_levelset nodes, and calculate the value on nodes from them.
         update_type 1: calculate the material property value on mesh_levelset nodes from the nearest N particles directly.
 
+        ``proxy_location`` other than ``"nodes"`` takes neither route: see
+        :meth:`_update_index_proxies_from_particles`.
         """
-        if self.update_type == 0:
-            # Use non-dimensional coordinates for internal level set KDTree
-            kd = self._meshLevelSetVars[0]._get_kdtree()
+        if self._proxy_location != "nodes":
+            self._update_index_proxies_from_particles()
+            return
+        # Starved-rank guard (SWARM-07): with <= 1 local particles the
+        # nearest-neighbour machinery cannot run — KDTree construction on an
+        # empty coordinate array raises IndexError, aborting/hanging the
+        # collective proxy update — and there is nothing to project anyway.
+        # Leave this rank's level-set nodal values unchanged and warn. Every
+        # rank still enters the (collective) access contexts below so ranks
+        # holding particles can proceed.
+        starved = self.swarm.local_size <= 1
+        if starved and self.swarm._population_generation > 0:
+            # (silent for a never-populated swarm — creation-time .sym
+            # touches are expected; see the equivalent guard in
+            # _rbf_to_meshVar)
+            import warnings
 
-            n_distance, n_indices = kd.query(
-                self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False
+            warnings.warn(
+                f"IndexSwarmVariable proxy update: rank {uw.mpi.rank} holds "
+                f"{max(self.swarm.local_size, 0)} particles; level-set "
+                f"variables for '{self.clean_name}' left unchanged on this "
+                "rank.",
+                stacklevel=2,
             )
-            kd_swarm = self.swarm._get_kdtree()
-            # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
-            d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1, sqr_dists=False)
+
+        if self.update_type == 0:
+            if not starved:
+                # Use non-dimensional coordinates for internal level set KDTree
+                kd = self._meshLevelSetVars[0]._get_kdtree()
+
+                n_distance, n_indices = kd.query(
+                    self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False
+                )
+                kd_swarm = self.swarm._get_kdtree()
+                # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
+                # coords_nd: kd_swarm indexes non-dimensional particle
+                # coordinates (issue #426).
+                d, n = kd_swarm.query(
+                    self._meshLevelSetVars[0].coords_nd, k=1, sqr_dists=False
+                )
+
+                # Which (particle, node) pairs are valid:
+                # - node is at same distance as the nearest node
+                # - node is within radius_s
+                is_nearest = np.isclose(n_distance, n_distance[:, [0]])
+                within_radius = n_distance < self.radius_s
+                valid = is_nearest & within_radius
+
+                # IDW weights (only for valid pairs; others zeroed)
+                weights = 1.0 / (n_distance + 1e-16)
+                weights[~valid] = 0.0
+
+                # Total weight per node — material independent, compute once
+                n_mesh_nodes = self._meshLevelSetVars[0].data.shape[0]
+                w = np.zeros(n_mesh_nodes)
+                np.add.at(w, n_indices, weights)
 
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
 
-                with self.swarm.mesh.access(meshVar), self.swarm.access():
-                    node_values = np.zeros((meshVar.data.shape[0],))
-                    w = np.zeros((meshVar.data.shape[0],))
+                # MeshVariable reads/writes perform collective ghost
+                # synchronisation, so every rank must execute exactly the
+                # same read-then-write sequence per level set: compute into
+                # a LOCAL buffer first, then issue a single symmetric write.
+                # (The previous in-context formulation issued a
+                # data-dependent number of writes per rank — the deferred
+                # sync at access-exit then ran mismatched collectives.)
+                final_values = np.array(meshVar.data[:, 0], copy=True)
 
-                    for i in range(self.swarm.local_size):
-                        tem = np.isclose(n_distance[i, :], n_distance[i, 0])
-                        dist = n_distance[i, tem]
-                        indices = n_indices[i, tem]
-                        tem = dist < self.radius_s
-                        dist = dist[tem]
-                        indices = indices[tem]
-                        for j, ind in enumerate(indices):
-                            node_values[ind] += (
-                                np.isclose(self.data[i], ii) / (1.0e-16 + dist[j])
-                            )[0]
-                            w[ind] += 1.0 / (1.0e-16 + dist[j])
+                if not starved:
+                    # Material presence mask: (n_particles, 1) for broadcasting
+                    mat_mask = (self.data.flatten() == ii).astype(weights.dtype)[:, None]
 
-                    node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
-                    meshVar.data[:, 0] = node_values[...]
+                    # Weighted sum per node
+                    node_values = np.zeros(final_values.shape[0])
+                    np.add.at(node_values, n_indices, weights * mat_mask)
+
+                    # Normalize
+                    node_values[w > 0] /= w[w > 0]
+                    final_values = node_values
 
                     # if there is no material found,
                     # impose a near-neighbour hunt for a valid material and set that one
@@ -2398,55 +3181,75 @@ class IndexSwarmVariable(SwarmVariable):
                     if len(ind_w0) > 0:
                         ind_ = np.where(self.data[n[ind_w0]] == ii)[0]
                         if len(ind_) > 0:
-                            meshVar.data[ind_w0[ind_]] = 1.0
+                            final_values[ind_w0[ind_]] = 1.0
+
+                # single symmetric write (starved ranks write back their
+                # current values, i.e. the proxy is left unchanged there)
+                meshVar.data[:, 0] = final_values
         elif self.update_type == 1:
-            kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
-            n_distance, n_indices = kd.query(
-                self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=False
-            )
+            if not starved:
+                kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
+                # coords_nd: the tree above is non-dimensional (issue #426).
+                n_distance, n_indices = kd.query(
+                    self._meshLevelSetVars[0].coords_nd, k=self.nnn, sqr_dists=False
+                )
+
+                # IDW weights and validity mask for all (node, particle) pairs
+                valid = n_distance < self.radius_s
+                a = 1.0 / (n_distance + 1e-16)
+                a[~valid] = 0.0
+
+                # Total weight per node (material-independent)
+                w = a.sum(axis=1)
+
+                # Handle boundary nodes: restrict to nnn_bc particles
+                if hasattr(self, 'ind_bc') and self.ind_bc is not None:
+                    bc_idx = np.array(list(self.ind_bc))
+                    bc_idx = bc_idx[bc_idx < a.shape[0]]
+                    if len(bc_idx) > 0:
+                        valid_bc = n_distance[bc_idx, :self.nnn_bc] < self.radius_s
+                        a_bc = 1.0 / (n_distance[bc_idx, :self.nnn_bc] + 1e-16)
+                        a_bc[~valid_bc] = 0.0
+                        w_bc = a_bc.sum(axis=1)
+
+                        a[bc_idx] = 0.0
+                        a[bc_idx, :self.nnn_bc] = a_bc
+                        w[bc_idx] = w_bc
 
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
-                node_values = np.zeros((meshVar.data.shape[0],))
-                w = np.zeros((meshVar.data.shape[0],))
-                for i in range(meshVar.data.shape[0]):
-                    if i not in self.ind_bc:
-                        ind = np.where(n_distance[i, :] < self.radius_s)
-                        a = 1.0 / (n_distance[i, ind] + 1.0e-16)
-                        w[i] = np.sum(a)
-                        b = np.isclose(self.data[n_indices[i, ind]], ii)
-                        node_values[i] = np.sum(np.dot(a, b))
-                        if ind[0].size == 0:
-                            w[i] = 0
-                    else:
-                        ind = np.where(n_distance[i, : self.nnn_bc] < self.radius_s)
-                        a = 1.0 / (n_distance[i, : self.nnn_bc][ind] + 1.0e-16)
-                        w[i] = np.sum(a)
-                        b = np.isclose(self.data[n_indices[i, : self.nnn_bc][ind]], ii)
-                        node_values[i] = np.sum(np.dot(a, b))
-                        if ind[0].size == 0:
-                            w[i] = 0
 
-                node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
-                meshVar.data[:, 0] = node_values[...]
+                # MeshVariable reads/writes perform collective ghost
+                # synchronisation, so every rank must execute exactly the
+                # same read-then-write sequence per level set (same pattern
+                # as update_type=0 above). Starved ranks read their current
+                # proxy values and write them back unchanged; populated ranks
+                # compute and write new values.
+                final_values = np.array(meshVar.data[:, 0], copy=True)
 
-                # if there is no material found,
-                # impose a near-neighbour hunt for a valid material and set that one
-                ind_w0 = np.where(w == 0.0)[0]
-                if len(ind_w0) > 0:
-                    ind_ = np.where(self.data[n_indices[ind_w0]] == ii)[0]
-                    if len(ind_) > 0:
-                        meshVar.data[ind_w0[ind_]] = 1.0
+                if not starved:
+                    # Material presence at each (node, particle) pair
+                    # self.data has shape (n_particles, 1); flatten to (n_particles,)
+                    # so fancy indexing yields (n_nodes, nnn) — matching `a`.
+                    mat_present = (self.data.flatten()[n_indices] == ii).astype(a.dtype)
+
+                    # Weighted sum per node, then normalize
+                    node_values = (a * mat_present).sum(axis=1)
+                    node_values[w > 0] /= w[w > 0]
+                    final_values = node_values
+
+                    # if there is no material found,
+                    # impose a near-neighbour hunt for a valid material and set that one
+                    ind_w0 = np.where(w == 0.0)[0]
+                    if len(ind_w0) > 0:
+                        ind_ = np.where(self.data[n_indices[ind_w0]] == ii)[0]
+                        if len(ind_) > 0:
+                            final_values[ind_w0[ind_]] = 1.0
+
+                # single symmetric write (starved ranks write back their
+                # current values, i.e. the proxy is left unchanged there)
+                meshVar.data[:, 0] = final_values
         return
-
-
-## Import PIC-related classes from separate module to maintain compatibility
-# from .pic_swarm import PICSwarm, NodalPointPICSwarm, SwarmPICLayout
-
-## This should be the basic swarm, and we can then create a sub-class that will
-## be a PIC swarm
-
-# PICSwarm and NodalPointPICSwarm classes have been moved to pic_swarm.py
 
 
 ## New - Basic Swarm (no PIC skillz)
@@ -2475,9 +3278,10 @@ class Swarm(Stateful, uw_object):
         The mesh object that defines the computational domain for particle operations.
         Particles will be associated with this mesh for spatial queries and operations.
     recycle_rate : int, optional
-        Rate at which particles are recycled for streak management. If > 1, enables
-        streak particle functionality where particles are duplicated and tracked
-        across multiple cycles. Default is 0 (no recycling).
+        Particle recycling (streak swarms) is NOT implemented: values > 1
+        raise ``NotImplementedError``. The parameter is retained so that
+        existing calls passing the default (0 or 1, meaning no recycling)
+        keep working.
     verbose : bool, optional
         Enable verbose output for debugging and monitoring particle operations.
         Default is False.
@@ -2491,20 +3295,18 @@ class Swarm(Stateful, uw_object):
     >>> swarm = uw.swarm.Swarm(mesh=mesh)
     >>> swarm.populate(fill_param=2)
 
-    Create a streak swarm with recycling:
-
-    >>> streak_swarm = uw.swarm.Swarm(mesh=mesh, recycle_rate=5)
-    >>> streak_swarm.populate(fill_param=1)
-
     Add custom particle data:
 
     >>> temperature = swarm.add_variable("temperature", 1)
     >>> velocity = swarm.add_variable("velocity", mesh.dim)
 
-    Manual particle migration after coordinate updates:
+    Particle migration after coordinate updates:
 
-    Note: particle migration is still called automatically when we
-    `access` and update the particle_coordinates variables
+    Note: writing particle coordinates (via ``swarm._particle_coordinates.data``
+    or the ``coords`` setter) marks the swarm for migration; the collective
+    ``migrate()`` itself is DEFERRED to the next collective point — a
+    ``migration_control()`` context exit, an explicit ``swarm.migrate()``,
+    or solve entry — never run per-write (uneven writes would deadlock).
 
     Note: `swarm.populate` uses a the mesh point locations for discontinuous interpolants to
     determine the particle locations.
@@ -2515,6 +3317,16 @@ class Swarm(Stateful, uw_object):
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
+        # Particle recycling (streak swarms) was excised in 2026-07: the
+        # machinery had been broken (NameError) and untested for some time
+        # (audit finding SWARM-08). Refuse rather than crash later.
+        if recycle_rate > 1:
+            raise NotImplementedError(
+                "Particle recycling / streak swarms (recycle_rate > 1) are not "
+                "implemented. Construct the Swarm without recycle_rate and manage "
+                "particle re-seeding explicitly (e.g. add_particles_with_coordinates)."
+            )
+
         Swarm.instances += 1
 
         self.verbose = verbose
@@ -2562,17 +3374,11 @@ class Swarm(Stateful, uw_object):
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
         self._data = None
 
-        # Add data structure to hold point location information in
-        # an array with a callback that resets the relevant parts of the
-        # swarm variable stack when the data structure is modified.
-
-        self._coords = None
-
         ####
 
-        # Is the swarm a streak-swarm ?
+        # Retained attribute: always 0 or 1 (no recycling) — see the
+        # NotImplementedError guard above.
         self.recycle_rate = recycle_rate
-        self.cycle = 0
 
         # dictionary for variables
         # Using WeakValueDictionary to prevent circular references
@@ -2611,25 +3417,47 @@ class Swarm(Stateful, uw_object):
             rebuild_on_cycle=False,
         )
 
-        # This is for swarm streak management:
-        # add variable to hold swarm origins
-
-        if self.recycle_rate > 1:
-
-            self._remeshed = uw.swarm.SwarmVariable(
-                "DMSwarm_remeshed",
-                self,
-                1,
-                dtype=int,
-                _register=True,
-                _proxy=False,
-                rebuild_on_cycle=False,
-            )
-
         self._X0_uninitialised = True
+        # Callables run at the top of advection(), before any particle moves:
+        # a Lagrangian history registers its first sampling here so it sees
+        # the field at the launch positions, not at the landing ones.
+        self._pre_advection_hooks = []
+        # Population control: a dict of repopulate() keyword arguments (or
+        # None). When set, advection() ends with repopulate(**population_control)
+        # so no cell is left starved before the next fit of a cells proxy.
+        self.population_control = None
         self._index = None
-        self._nnmapdict = {}
+        # Particle -> proxy-node transfer operators, keyed by geometry and
+        # stencil and shared by every proxied variable of this swarm. Entries
+        # carry the kd-tree they were built from, so they self-invalidate.
+        self._proxy_interpolation_cache = {}
+        self._proxy_cache_mesh_version = None
         self._migration_disabled = False
+
+        # Deterministic (SPMD-consistent) creation index — used to order
+        # collective per-swarm operations identically on every rank.
+        self._instance_number = Swarm.instances
+
+        # Names of variables whose canonical writes were made while
+        # _migration_disabled was set: the PETSc pack is deferred (not
+        # discarded) and flushed by _flush_pending_petsc_sync() at context
+        # exit (SWARM-04).
+        self._pending_petsc_sync = set()
+
+        # Set when particle coordinates are written through the modern
+        # interface; the actual (collective) migrate() is deferred to the
+        # next collective point — migration-context exit or solve entry —
+        # never run per-write, which would deadlock when ranks write
+        # unevenly (SWARM-03).
+        self._needs_migration = False
+
+        # SPMD-consistent guard: while True, _sync_before_assembly() must NOT
+        # run the deferred migration. Set by advection() around its substep
+        # loop — its velocity evaluations pass through Mesh.update_lvec(), and
+        # a migrate() there would reorder particle rows between the coordinate
+        # array and the velocity array captured from it. advection() runs its
+        # own migrate() at the end.
+        self._deferred_migration_suspended = False
 
         super().__init__()
 
@@ -2690,9 +3518,195 @@ class Swarm(Stateful, uw_object):
         for var in list(self._vars.values()):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
+            # Mark the proxy stale (lazy) so it re-interpolates on next access.
+            # NB: set the flag directly rather than calling var._update() —
+            # IndexSwarmVariable._update() is EAGER (_update_proxy_variables),
+            # so calling it here re-interpolates the proxy on every invalidation
+            # (i.e. every swarm.access write), an O(100 MiB) leak over a time loop
+            # (tests/test_0006_memory_leak.py). The proxy still refreshes lazily
+            # via .sym / _update_proxy_if_stale().
+            if hasattr(var, "_proxy_stale"):
+                var._proxy_stale = True
 
         # Invalidate cached spatial index
         self._kdtree = None
+        self._owning_cells_cache = None
+
+    def _flush_pending_petsc_sync(self):
+        """Pack canonical arrays written while migration was suppressed.
+
+        Writes made inside ``migration_control()`` / ``migration_disabled()``
+        land in each variable's canonical array but their PETSc pack is
+        deferred (see the sync callbacks). This flushes them into the DMSwarm
+        fields. Called on migration-context exit and defensively at
+        :meth:`migrate` entry; a no-op when nothing is pending (SWARM-04).
+        """
+        pending, self._pending_petsc_sync = self._pending_petsc_sync, set()
+        for name in pending:
+            var = self._vars.get(name, None)
+            if var is None:
+                continue
+            canonical = getattr(var, "_canonical_data", None)
+            if canonical is None:
+                # cache was invalidated after the write; PETSc already holds
+                # the authoritative data — nothing left to flush.
+                continue
+            arr = np.asarray(canonical).reshape(-1, var.num_components)
+            if arr.shape[0] != max(self.dm.getLocalSize(), 0):
+                raise RuntimeError(
+                    f"Cannot flush deferred writes for swarm variable "
+                    f"'{name}': cached array has {arr.shape[0]} rows but the "
+                    f"DMSwarm holds {self.dm.getLocalSize()} particles. The "
+                    "particle layout changed while migration was disabled."
+                )
+            var.pack_raw_data_to_petsc(arr)
+            if self._coord_var is var:
+                self._needs_migration = True
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
+
+    def _sync_before_assembly(self):
+        """Collective: bring PETSc-facing swarm state up to date for a solve.
+
+        Called from ``Mesh.update_lvec()`` — the common entry point where
+        assembly pulls variable data — this performs, in order:
+
+        1. any DEFERRED particle migration (coordinates written through the
+           modern interface mark ``_needs_migration`` instead of migrating
+           per-write, which would deadlock under uneven writes — SWARM-03);
+        2. an eager refresh of stale proxy mesh variables, which are
+           otherwise refreshed only via the lazy ``.sym`` accessor — solvers
+           read the proxy DM directly and previously consumed stale data
+           (issue #215 Bug 3 / issue #289).
+
+        Rank-local flags are combined with a global MAX reduction so every
+        rank takes the same sequence of collective actions even when writes
+        were rank-uneven. Repeated calls are no-ops (flag-guarded).
+        """
+        if self._migration_disabled:
+            # A migration-suppressed context is active (SPMD-consistent by
+            # construction); leave everything for its exit to handle.
+            return
+
+        # A swarm with no particles anywhere has nothing to migrate or
+        # project — leave proxies stale (they refresh after population)
+        # rather than issue spurious starved-rank warnings pre-populate.
+        global_count = max(self.local_size, 0)
+        if uw.mpi.size > 1:
+            global_count = uw.mpi.comm.allreduce(global_count, op=uw.MPI.MAX)
+        if global_count == 0:
+            return
+
+        # A mesh coordinate change (deform / adaptation) strands particles
+        # in cells that moved; nothing re-bins them since the read-trigger
+        # on swarm.points was retired (#379 item 1 — a collective on READ
+        # was itself a parallel hazard). Solve entry is the collective
+        # point that notices the mesh version changed.
+        if getattr(self, "_mesh_version", None) != self.mesh._mesh_version:
+            self._needs_migration = True
+            self._mesh_version = self.mesh._mesh_version
+
+        if not self._deferred_migration_suspended:
+            needs_migration = bool(self._needs_migration)
+            if uw.mpi.size > 1:
+                needs_migration = (
+                    uw.mpi.comm.allreduce(int(needs_migration), op=uw.MPI.MAX) > 0
+                )
+            if needs_migration:
+                self.migrate()
+
+        # Deterministic variable order: the refresh performs collective
+        # mesh-variable writes, so all ranks must visit variables in the
+        # same sequence.
+        for name in sorted(self._vars.keys()):
+            var = self._vars.get(name)
+            if var is None:
+                continue
+            has_proxy = (
+                getattr(var, "_meshVar", None) is not None
+                or isinstance(var, IndexSwarmVariable)
+            )
+            if not has_proxy:
+                continue
+            stale = bool(getattr(var, "_proxy_stale", False))
+            if uw.mpi.size > 1:
+                stale = uw.mpi.comm.allreduce(int(stale), op=uw.MPI.MAX) > 0
+            if stale:
+                var._proxy_stale = True  # align ranks before the collective refresh
+                var._update_proxy_if_stale()
+
+    def _proxy_interpolation_operator(self, meshVar, nnn, p, order):
+        """Sparse particle -> proxy-node transfer, shared across variables.
+
+        The weights depend only on geometry, so every proxied variable whose
+        proxy has the same degree and continuity on the same mesh needs the
+        SAME operator. Measured: a refresh is ~75% weight solve, and the cost
+        of refreshing K proxied variables on one swarm scales linearly with K
+        (4 variables cost 3.95x one in 2D, 4.08x in 3D) because each solves
+        for identical weights independently. Building the operator once per
+        (geometry, stencil) collapses that to one solve plus K sparse
+        products.
+
+        Validity is tied to the kd-tree *instance* rather than to a flag, so
+        the cache cannot outlive the particle positions it was built from:
+        ``migrate()`` drops ``_kdtree``, the next lookup sees a different
+        object and rebuilds. A stale entry therefore keeps its old tree alive
+        until it is replaced -- one tree per distinct key, which is bounded by
+        the number of proxy discretisations in use.
+        """
+        # Two independent things can invalidate an operator, and each is
+        # handled where it can be detected structurally rather than by a flag
+        # someone has to remember to set:
+        #
+        #   mesh geometry  -- a deform or adapt bumps _mesh_version. The whole
+        #                     cache is dropped, because every entry was built
+        #                     against the old node positions. Keying on the
+        #                     version instead would keep the dead entries
+        #                     forever, one set per mesh generation.
+        #   particle motion -- migrate() replaces the kd-tree, so an entry that
+        #                     does not carry the current tree is stale.
+        version = self.mesh._mesh_version
+        if self._proxy_cache_mesh_version != version:
+            self._proxy_interpolation_cache.clear()
+            self._proxy_cache_mesh_version = version
+
+        kdtree = self._get_kdtree()
+        key = (meshVar.degree, meshVar.continuous, nnn, p, order)
+
+        cached = self._proxy_interpolation_cache.get(key)
+        if cached is not None and cached[0] is kdtree:
+            return cached[1]
+
+        operator = kdtree.interpolation_matrix(
+            meshVar.coords_nd, nnn=nnn, p=p, order=order
+        )
+        self._proxy_interpolation_cache[key] = (kdtree, operator)
+        return operator
+
+    def _owning_cells(self):
+        """Local owning cell of every particle, cached until they move.
+
+        A UW3 swarm is ``DMSWARM_BASIC``: PETSc keeps no cell id for us, so
+        the cell has to be located. That is the expensive half of any
+        cell-local particle operation, and several of them (the Voronoi share,
+        a population census, a per-cell fit) want the same answer within one
+        update, so it is cached here and dropped wherever ``_kdtree`` is.
+
+        Returns
+        -------
+        ndarray, shape (local_size,), int64
+            Local cell index, or ``-1`` for a particle the local mesh does not
+            contain (one in flight between ranks, or just outside an open
+            boundary).
+        """
+        if getattr(self, "_owning_cells_cache", None) is None:
+            X = np.asarray(self._particle_coordinates.data)
+            self._owning_cells_cache = (
+                np.asarray(self.mesh._robust_owning_cells(X), dtype=np.int64)
+                if X.shape[0]
+                else np.zeros(0, dtype=np.int64)
+            )
+        return self._owning_cells_cache
 
     def _get_kdtree(self):
         """
@@ -2842,10 +3856,10 @@ class Swarm(Stateful, uw_object):
 
     @property
     def data(self):
-        r"""Particle coordinates (alias for :attr:`points`).
+        r"""Particle coordinates (alias for :attr:`points`; read-only snapshot).
 
         .. deprecated:: 0.99.0
-            Use direct DM field access for particle coordinates.
+            Use :attr:`coords` instead.
 
         Returns
         -------
@@ -2857,168 +3871,80 @@ class Swarm(Stateful, uw_object):
     @property
     def points(self):
         """
-        Swarm particle coordinates in physical units.
+        Swarm particle coordinates in physical units (read-only snapshot).
 
         .. deprecated:: 0.99.0
-            Use swarm variables or direct DM access instead.
-            ``swarm.points`` is being deprecated.
+            Read coordinates via :attr:`coords`; write them via the
+            ``coords`` setter (physical units) or
+            ``swarm._particle_coordinates.data`` (model units).
 
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from internal model coordinates
-        to physical coordinates for user access.
+        The returned array is a detached, read-only copy. The previous
+        writable wrapper ran collective particle migration from inside a
+        per-write callback, which deadlocks when ranks write unevenly, and
+        reading it could force a collective migration after mesh changes —
+        so a read performed on some ranks only could hang (#379). Like
+        ``mesh.points`` (BF-18), the write path is removed rather than
+        repaired.
 
-        When the mesh has coordinate units specified, returns a unit-aware array.
-
-        Returns:
-            numpy.ndarray or UnitAwareArray: Particle coordinates (with units if mesh.units is set)
+        Returns
+        -------
+        numpy.ndarray or UnitAwareArray
+            Particle coordinates (with units if mesh.units is set).
         """
         import warnings
 
-        warnings.warn("swarm.points is deprecated", DeprecationWarning, stacklevel=2)
+        warnings.warn(
+            "swarm.points is deprecated, use swarm.coords instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-        # Check for mesh coordinate changes and trigger migration if needed
-        if hasattr(self, "_mesh_version") and self._mesh_version != self.mesh._mesh_version:
-            # Mesh coordinates have changed, force migration to update swarm
-            self._force_migration_after_mesh_change()
-            # Update our mesh version to match
-            self._mesh_version = self.mesh._mesh_version
-
-        # Get current coordinate data from PETSc (these are in model coordinates)
+        # Current coordinates from PETSc (model coordinates)
         model_coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Apply scaling to convert model coordinates to physical coordinates
+        # Scale model coordinates to physical coordinates
         if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
-            scale_factor = self.mesh.CoordinateSystem._length_scale
-            coords = model_coords * scale_factor
+            coords = model_coords * self.mesh.CoordinateSystem._length_scale
+            scaled_to_si = True
         else:
             coords = model_coords
+            scaled_to_si = False
 
-        # Cache and reuse NDArray_With_Callback object for consistent object identity
-        if not hasattr(self, "_coords") or self._coords is None:
-            # First access: create new NDArray_With_Callback object
-            self._coords = uw.utilities.NDArray_With_Callback(
-                coords,
-                owner=self,
-                disable_inplace_operators=True,
-            )
+        coords.flags.writeable = False
+        coords = coords.view(_ReadOnlyCoordinateSnapshot)
 
-            # Define the callback function (only once)
-            def swarm_update_callback(array, change_context):
-                # print(
-                #     f"Swarm update callback - {self.dm.getLocalSize()}",
-                #     flush=True,
-                # )
-
-                # Check if this operation may have changed data
-                # Skip expensive operations for read-only sync operations
-                data_changed = change_context.get("data_has_changed", True)
-
-                if not data_changed:
-                    # print(
-                    #     "Swarm callback: Skipping migration - read-only sync operation"
-                    # )
-                    return
-
-                # Check if sizes match before attempting to copy back
-                petsc_size = self.dm.getLocalSize()
-                points_size = array.shape[0]
-
-                if petsc_size == points_size:
-                    # Update PETSc state
-                    # We could do this directly which would be more efficient and bypass the access manager (appropriately, here)
-                    self._coord_var.array[:, 0, :] = array[...]
-
-                    # Migrate by default (unless user has disabled it)
-                    if not self._migration_disabled:
-                        self.migrate()
-                        for var in self._vars.values():
-                            var._update()
-
-                else:
-                    # This means a migration call has been made before we have
-                    # had a chance to update the swarm consistently. This is an error
-                    # condition. We raise an exception to prevent further errors.
-
-                    print(
-                        f"Size mismatch: PETSc={petsc_size}, Points={points_size}\n",
-                        f"The swarm migration state has become corrupted",
-                    )
-                    raise RuntimeError
-
-                return
-
-            # Add callback to the cached object
-            self._coords.add_callback(swarm_update_callback)
-        else:
-            # Subsequent accesses: efficiently sync new coordinate data
-            # This preserves callbacks and delay contexts, updating object reference if size
-            # changed as a result of migration operations
-
-            self._coords = self._coords.sync_data(coords)
-
-        # Wrap with unit-aware array if mesh has units
         if hasattr(self.mesh, "units") and self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
 
-            return UnitAwareArray(self._coords, units=self.mesh.units)
+            # The _length_scale factor converts model coordinates to SI
+            # metres, so scaled values are labelled "meter" — the same
+            # convention as mesh.X.coords. Labelling metre magnitudes with
+            # mesh.units (e.g. kilometres) was a 1000x label/value
+            # mismatch (issue #386).
+            return UnitAwareArray(
+                coords, units="meter" if scaled_to_si else self.mesh.units)
 
-        return self._coords
+        return coords
 
     @points.setter
     def points(self, value):
+        """Removed. Write coordinates via :attr:`coords` or
+        ``swarm._particle_coordinates.data``.
+
+        The deprecated setter wrote through a cached callback wrapper whose
+        per-write callback ran collective migration — ranks writing unevenly
+        deadlocked in parallel, and the masked-write idiom its own
+        documentation advertised raised through the same wrapper (#379).
         """
-        Set swarm particle coordinates from physical units.
-
-        .. deprecated:: 0.99.0
-            Use swarm variables or direct DM access instead.
-
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from physical coordinates
-        to internal model coordinates for PETSc storage.
-
-        Args:
-            value (numpy.ndarray): Particle coordinates in physical units
-        """
-        import warnings
-
-        warnings.warn("swarm.points is deprecated", DeprecationWarning, stacklevel=2)
-
-        if value.shape[0] != self.local_size:
-            raise TypeError(
-                f"Points must be a numpy array with the same size as the swarm",
-                f"  - partial allocation to the swarm may trigger migration or point removal",
-                f"  - either change all the swarm points at once or use the `with migration_control()` manager",
-            )
-
-        # Apply inverse scaling to convert physical coordinates to model coordinates
-        if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
-            scale_factor = self.mesh.CoordinateSystem._length_scale
-            model_coords = value / scale_factor
-        else:
-            model_coords = value
-
-        # Update the cached NDArray (triggers callback) - use physical coordinates for cache
-        self._coords[...] = value[...]
-
-        # Update PETSc DM field directly with model coordinates for immediate consistency
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-        coords[...] = model_coords[...]
-        self.dm.restoreField("DMSwarmPIC_coor")
-
-    # @points.setter
-    # def points(self, value):
-
-    #     if isinstance(value, np.ndarray):
-    #         if value.shape[0] != self.local_size:
-    #             message = (
-    #                 "Points must be a numpy array with the same size as the swarm."
-    #                 + "Partial allocation to the swarm may trigger particle migration"
-    #                 + "either change all the swarm points at once or use the `with migration_disabled()` manager",
-    #             )
-    #             raise TypeError(message)
-
-    #     self._coords[...] = value[...]
+        raise AttributeError(
+            "Assigning to swarm.points has been removed (issue #379): its "
+            "per-write callback ran collective particle migration and could "
+            "deadlock in parallel. Use swarm.coords = values (physical "
+            "units), or write swarm._particle_coordinates.data[...] (model "
+            "units) — masked writes are supported inside "
+            "'with swarm.migration_control():'."
+        )
 
     @property
     def _particle_coordinates(self):
@@ -3201,7 +4127,9 @@ class Swarm(Stateful, uw_object):
         Use migration_control(disable=True) for new code.
 
         Context manager that temporarily disables particle migration for the swarm.
-        Migration is NOT called when exiting the context.
+        Migration is NOT called when exiting the context. Writes made inside
+        the context are packed to PETSc at exit (only the migration is
+        suppressed — data is never discarded).
 
         Usage:
             with swarm.migration_disabled():
@@ -3227,9 +4155,10 @@ class Swarm(Stateful, uw_object):
         --------
         Defer migration until end (default)::
 
+            coords = swarm._particle_coordinates.data
             with swarm.migration_control():
-                swarm.points[mask1] += delta1
-                swarm.points[mask2] *= scale
+                coords[mask1] += delta1
+                coords[mask2] *= scale
                 # Migration happens HERE on exit
 
         Completely disable migration::
@@ -3237,6 +4166,10 @@ class Swarm(Stateful, uw_object):
             with swarm.migration_control(disable=True):
                 # Operations where migration should never happen
                 # No migration on exit
+
+        In both modes, variable/coordinate writes made inside the context are
+        flushed to the underlying DMSwarm at exit — only the migration itself
+        is deferred (default) or skipped (``disable=True``).
         """
 
         class _MigrationControlContext:
@@ -3255,6 +4188,13 @@ class Swarm(Stateful, uw_object):
 
             def __exit__(self, exc_type, exc_val, exc_tb):
                 self.swarm._migration_disabled = self.original_value
+
+                # Flush writes deferred while the flag was set — suppressing
+                # migration must not discard data (SWARM-04). Skipped only
+                # when an enclosing context still holds the flag (it flushes
+                # on its own exit).
+                if not self.swarm._migration_disabled:
+                    self.swarm._flush_pending_petsc_sync()
 
                 # Perform deferred migration if not disabled and not still blocked
                 if not self.disable and not self.swarm._migration_disabled:
@@ -3320,48 +4260,12 @@ class Swarm(Stateful, uw_object):
         self.dm.restoreField("DMSwarmPIC_coor")
         self.dm.restoreField("DMSwarm_rank")
 
-        if self.recycle_rate > 1:
-            with self.access():
-                # This is a mesh-local quantity, so let's just
-                # store it on the mesh in an ad_hoc fashion for now
-
-                self.mesh.particle_X_orig = self._particle_coordinates.data.copy()
-
-            with self.access():
-                swarm_orig_size = self.local_size
-                all_local_coords = np.vstack(
-                    (self._particle_coordinates.data,) * (self.recycle_rate)
-                )
-
-                swarm_new_size = all_local_coords.shape[0]
-
-            self.dm.addNPoints(swarm_new_size - swarm_orig_size)
-
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-
-            # Compute perturbation - extract magnitude if coordinates have units
-            # numpy.array(..., dtype=float64) forces conversion to plain array
-            coord_data = np.array(all_local_coords, dtype=np.float64)
-            search_lengths = np.array(self.mesh._search_lengths[all_local_cells], dtype=np.float64)
-
-            perturbation = (
-                (0.33 / (1 + fill_param))
-                * (np.random.random(size=coord_data.shape) - 0.5)
-                * 0.00001
-                * search_lengths  # typical cell size
-            )
-
-            # Add perturbation (coords array stores dimensionless values)
-            coords[...] = coord_data + perturbation
-
-            self.dm.restoreField("DMSwarmPIC_coor")
-
-            ## Now set the cycle values
-
-            with self.access(self._remeshed):
-                for i in range(0, self.recycle_rate):
-                    offset = swarm_orig_size * i
-                    self._remeshed.data[offset::, 0] = i
+        # Invalidate cached data — the swarm was just given its particles.
+        # Any canonical `.data` array created before populate() (legitimate:
+        # variables must be created first) is sized for the empty swarm and
+        # would otherwise hide every particle from reads and corrupt writes
+        # (SWARM-17, same stale-cache class as #216).
+        self._invalidate_canonical_data()
 
         # Informational: particle population just changed.
         self._population_generation += 1
@@ -3395,6 +4299,11 @@ class Swarm(Stateful, uw_object):
         if self._migration_disabled:
             return
 
+        # Deferred writes must reach the DMSwarm before we read coordinates
+        # from it below (no-op unless a migration-suppressed context left
+        # pending packs behind, SWARM-04).
+        self._flush_pending_petsc_sync()
+
         # Informational: migration may move or drop particles. Bump
         # unconditionally; restore is not gated on this counter so a
         # conservative no-op bump is harmless.
@@ -3417,6 +4326,11 @@ class Swarm(Stateful, uw_object):
             swarm_coord_array,
         )
 
+        # The working set for the round loop below. Seeded with what this first
+        # pass claimed; it only ever grows, because a point in this rank's
+        # domain stays in it.
+        claimed_keys = _coordinate_row_keys(swarm_coord_array[in_or_not])
+
         num_points_in_domain = np.count_nonzero(in_or_not == True)
         num_points_not_in_domain = np.count_nonzero(in_or_not == False)
         not_my_points = np.where(in_or_not == False)[0]
@@ -3434,6 +4348,19 @@ class Swarm(Stateful, uw_object):
         # Unlikely, but we should check this
         uw.mpi.barrier()
         if global_unclaimed_points == 0:
+            # No particle needs to change rank, but we were still called
+            # because coordinates and/or the population may have changed
+            # (in-place coordinate writes, addNPoints, serial advection).
+            # The cached canonical arrays, the particle kd-tree, and the
+            # proxy variables are stale regardless of whether anything
+            # moved between ranks. Skipping this invalidation froze proxy
+            # mesh variables after serial advection (issue #289) and left
+            # wrong-sized `.data` caches after particle addition
+            # (SWARM-01/SWARM-02, 2026-07 audit).
+            self._invalidate_canonical_data()
+            self._needs_migration = False
+            # any explicit/terminal migrate ends an advection suspension
+            self._deferred_migration_suspended = False
             return
 
         # Migrate particles between processes (if there are more than one of them)
@@ -3463,7 +4390,43 @@ class Swarm(Stateful, uw_object):
                 uw.mpi.barrier()
 
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
-                in_or_not = self.mesh.points_in_domain(swarm_coord_array)
+
+                # Only classify what we have not already claimed. A point this
+                # rank has found to be in its domain stays in its domain: the
+                # coordinates do not change during migration and neither does
+                # the mesh. Re-testing it on every round is what made the
+                # per-rank classification work grow with the round count (a
+                # fixed 47k-point global set was offered to points_in_domain
+                # 238k times at np=4).
+                #
+                # The bookkeeping is by COORDINATE rather than by index because
+                # `dm.migrate` does not preserve the local ordering — measured,
+                # retained points are not left at the front — so an index from
+                # the previous round means nothing after the move. Two
+                # particles sharing a coordinate share the answer, so a
+                # collision is harmless.
+                keys_now = _coordinate_row_keys(swarm_coord_array)
+                already = np.isin(keys_now, claimed_keys)
+
+                # UNCONDITIONAL: points_in_domain is COLLECTIVE — it reaches
+                # get_max_radius() before any short-circuit, precisely so that a
+                # rank with nothing to classify still joins the reduction (the
+                # #405 treatment, stated in its own source). Calling it only
+                # when this rank has undecided points deadlocks as soon as one
+                # rank runs out of them, which is what an earlier draft of this
+                # did at np=4.
+                in_or_not = already.copy()
+                undecided = np.where(~already)[0]
+                in_or_not[undecided] = self.mesh.points_in_domain(
+                    swarm_coord_array[undecided]
+                )
+
+                newly_claimed = np.where(in_or_not & ~already)[0]
+                if newly_claimed.size:
+                    claimed_keys = np.concatenate(
+                        [claimed_keys, keys_now[newly_claimed]]
+                    )
+
                 self.dm.restoreField("DMSwarmPIC_coor")
 
                 num_points_in_domain = np.count_nonzero(in_or_not == True)
@@ -3508,6 +4471,9 @@ class Swarm(Stateful, uw_object):
         # Any particle movement (send, receive, or balanced swap) makes
         # cached arrays stale — both size and values may have changed.
         self._invalidate_canonical_data()
+        self._needs_migration = False
+        # any explicit/terminal migrate ends an advection suspension
+        self._deferred_migration_suspended = False
 
         return
 
@@ -3607,20 +4573,10 @@ class Swarm(Stateful, uw_object):
             self.dm.restoreField("DMSwarm_rank")
             self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Here we update the swarm cycle values as required
-
-        if self.recycle_rate > 1:
-            with self.access(self._remeshed):
-                # self._Xorig.data[...] = coordinatesArray
-                self._remeshed.data[...] = 0
-
         self.dm.migrate(remove_sent_points=True)
 
         # Invalidate cached data — particle count changed after addNPoints + migrate
-        self._particle_coordinates._canonical_data = None
-        for var in self._vars.values():
-            if hasattr(var, "_canonical_data"):
-                var._canonical_data = None
+        self._invalidate_canonical_data()
 
         # Informational: addNPoints + direct dm.migrate path doesn't go
         # through Swarm.migrate, so bump explicitly.
@@ -3635,18 +4591,25 @@ class Swarm(Stateful, uw_object):
         migrate=True,
         delete_lost_points=True,
     ) -> int:
-        """Add particles on every rank, then migrate to correct owners.
+        """Insert the full coordinate array on every rank (low-level primitive).
 
-        Every rank inserts **all** supplied points into the local swarm, then
-        ``dm.migrate()`` moves each particle to the rank that owns its
-        spatial location.  If the same array is passed on every rank, this
-        produces one copy of each point in the correct partition — but calling
-        it with *different* arrays per rank will accumulate all of them.
+        Every rank inserts **all** supplied points into its local swarm.
+        There is no locality filtering and no deduplication: migration is a
+        scatter that routes each inserted particle to the rank owning its
+        location, so passing the same array on every rank at ``np`` processes
+        yields ``np`` copies of every point.
 
-        This is primarily an internal method used by global-evaluation and
-        mesh-transfer utilities.  For general use, prefer
-        :meth:`add_particles_with_coordinates`, which filters non-local
-        points automatically and never creates duplicates.
+        Correct usage is one of:
+
+        - ``migrate=False``, where each rank deliberately keeps a full copy
+          of the points (the global-evaluation / mesh-transfer pattern), or
+        - input that is pre-partitioned across ranks — or supplied on rank 0
+          only, with empty ``(0, dim)`` arrays elsewhere — followed by
+          migration to route each point to its owner.
+
+        For general use, prefer :meth:`add_particles_with_coordinates`,
+        which accepts a rank-identical array and filters non-local points so
+        each point is added exactly once.
 
         Parameters
         ----------
@@ -3707,12 +4670,11 @@ class Swarm(Stateful, uw_object):
         self.dm.restoreField("DMSwarm_rank")
         self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Here we update the swarm cycle values as required
-
-        if self.recycle_rate > 1:
-            with self.access(self._remeshed):
-                # self._Xorig.data[...] = globalCoordinatesArray
-                self._remeshed.data[...] = 0
+        # Invalidate cached data — the particle count changed via addNPoints
+        # (mirrors add_particles_with_coordinates). This must not be left to
+        # migrate(): with migrate=False nothing else invalidates, and every
+        # cached `.data` array keeps the old particle count (SWARM-01).
+        self._invalidate_canonical_data()
 
         if migrate:
             self.migrate(remove_sent_points=True, delete_lost_points=delete_lost_points)
@@ -3794,8 +4756,14 @@ class Swarm(Stateful, uw_object):
         else:
             # Sequential fallback: rank 0 creates the file and writes its slab,
             # then each higher rank appends in turn.
-
-            points_data_copy = self.points[:].copy()
+            #
+            # MODEL-UNIT coordinates, exactly like the parallel branch above:
+            # the deprecated `self.points` used here previously applied the
+            # model length scale, so sequential checkpoints differed from
+            # parallel ones by that factor and could not round-trip through
+            # read_timestep, which re-inserts raw model-unit coordinates
+            # (SWARM-19 / BF-17).
+            points_data_copy = self._particle_coordinates.data[:].copy()
             local_n = points_data_copy.shape[0]
 
             if comm.rank == 0:
@@ -3861,6 +4829,13 @@ class Swarm(Stateful, uw_object):
                             swarm_coord_metadata
                         )
 
+        # The file must be quiescent when save() returns on EVERY rank:
+        # without this barrier, non-zero ranks return while rank 0 still
+        # holds the file open for the metadata append, and an immediate
+        # reopen (e.g. read_timestep right after write_timestep) hits HDF5
+        # file locking (BlockingIOError, errno 35) — issue #330.
+        comm.barrier()
+
         return
 
     @timing.routine_timer_decorator
@@ -3872,18 +4847,68 @@ class Swarm(Stateful, uw_object):
         outputPath: Optional[str] = "",
         migrate=True,
     ):
+        """Restore the swarm's particle coordinates from a saved timestep.
+
+        Adds particles at the coordinates saved by
+        ``Swarm.write_timestep``; call this on a freshly-built swarm
+        *before* restoring variable values with
+        ``SwarmVariable.read_timestep``. File read (matching
+        ``write_timestep(filename, swarmname, index, outputPath=...)``):
+
+        ``{outputPath}/{base_filename}.{swarm_id}.{index:05}.h5``
+
+        Parameters
+        ----------
+        base_filename : str
+            Base name used when the checkpoint was written
+            (``filename`` on ``write_timestep``; note
+            ``SwarmVariable.read_timestep`` spells it
+            ``data_filename`` — the two signatures predate a common
+            convention).
+        swarm_id : str
+            Swarm identifier used when the checkpoint was written
+            (``swarmname`` on ``write_timestep``).
+        index : int
+            Timestep index (zero-padded to five digits in the
+            filename).
+        outputPath : str, optional
+            Directory holding the checkpoint files (default: current
+            directory).
+        migrate : bool, optional
+            ``True`` (default): every rank reads the saved coordinates
+            and keeps only the points it owns — the parallel restore
+            path. ``False``: every rank keeps a full copy of the saved
+            swarm, including points outside the local (or entire)
+            domain — useful for debugging, visualisation, or when the
+            mesh has been adapted since the save.
+        """
         output_base_name = os.path.join(outputPath, base_filename)
         swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
 
-        ### open up file with coords on all procs
-        with h5py.File(f"{swarm_file}", "r") as h5f:
-            coordinates = h5f["coordinates"][:]
+        if migrate:
+            # Keep-local restore: every rank reads the saved coordinates
+            # (plain read-only h5py) and add_particles_with_coordinates
+            # keeps only the points this rank owns — no communication, no
+            # rank-0 memory hotspot. The cost is np-fold read amplification,
+            # which scalable/striped parallel filesystems absorb, so this is
+            # the right default; rank-0-routed reading remains the pattern
+            # in SwarmVariable.read_timestep pending its own reconsideration.
+            # Reading everywhere and inserting via the *global* method with
+            # migration restores one copy of the swarm per rank — migration
+            # is a scatter with no deduplication (issue #324).
+            with h5py.File(f"{swarm_file}", "r") as h5f:
+                coordinates = h5f["coordinates"][:]
 
-        # We make it possible not to migrate the swarm because this
-        # will also delete points outside the mesh. We may not want to do
-        # that (either for debugging / visualisation, or when adapting the mesh)
+            self.add_particles_with_coordinates(coordinates)
+        else:
+            # No migration: every rank keeps a full copy of the saved swarm.
+            # Skipping migration also preserves points that fall outside the
+            # mesh, which migration would delete (useful for debugging /
+            # visualisation, or when adapting the mesh).
+            with h5py.File(f"{swarm_file}", "r") as h5f:
+                coordinates = h5f["coordinates"][:]
 
-        self.add_particles_with_global_coordinates(coordinates, migrate=migrate)
+            self.add_particles_with_global_coordinates(coordinates, migrate=False)
 
         return
 
@@ -3894,7 +4919,6 @@ class Swarm(Stateful, uw_object):
         size=1,
         dtype=float,
         proxy_degree=2,
-        _nn_proxy=False,
         units=None,
     ):
         """
@@ -3914,8 +4938,6 @@ class Swarm(Stateful, uw_object):
             Data type (float or int)
         proxy_degree : int, default 2
             Degree for mesh proxy variable interpolation
-        _nn_proxy : bool, default False
-            Internal parameter for nearest-neighbor proxy
         units : str, optional
             Physical units for this variable (e.g., "kg/m^3", "m/s")
 
@@ -3960,7 +4982,6 @@ class Swarm(Stateful, uw_object):
             size,
             dtype=dtype,
             proxy_degree=proxy_degree,
-            _nn_proxy=_nn_proxy,
             units=units,
         )
 
@@ -4168,7 +5189,7 @@ class Swarm(Stateful, uw_object):
         Captured: per-rank particle coordinates (from
         ``DMSwarmPIC_coor``) and every user swarm-variable's data
         array. PETSc-internal variables (``DMSwarmPIC_coor``,
-        ``DMSwarm_X0``, ``DMSwarm_remeshed``) are excluded — their
+        ``DMSwarm_X0``) are excluded — their
         contents either come from the captured coords or are
         regenerated on the next solve.
         """
@@ -4249,11 +5270,7 @@ class Swarm(Stateful, uw_object):
 
         # Invalidate canonical-data caches — the underlying arrays
         # have been reallocated by the addNPoints path.
-        if hasattr(self._particle_coordinates, "_canonical_data"):
-            self._particle_coordinates._canonical_data = None
-        for var in self._vars.values():
-            if hasattr(var, "_canonical_data"):
-                var._canonical_data = None
+        self._invalidate_canonical_data()
 
         # The raw PETSc primitives used above (removePoint loop +
         # addNPoints + direct field writes) deliberately bypass
@@ -4304,148 +5321,14 @@ class Swarm(Stateful, uw_object):
                     f"{var_clean_name!r} data shape mismatch — current "
                     f"{current.shape} vs snapshot {saved.shape}"
                 )
-            current[...] = saved
-
-    def _legacy_access(self, *writeable_vars: SwarmVariable):
-        """
-        This context manager makes the underlying swarm variables data available to
-        the user. The data should be accessed via the variables `data` handle.
-
-        As default, all data is read-only. To enable writeable data, the user should
-        specify which variable they wish to modify.
-
-        At the conclusion of the users context managed block, numerous further operations
-        will be automatically executed. This includes swarm parallel migration routines
-        where the swarm's `particle_coordinates` variable has been modified. The swarm
-        variable proxy mesh variables will also be updated for modifed swarm variables.
-
-        Parameters
-        ----------
-        writeable_vars
-            The variables for which data write access is required.
-
-        Example
-        -------
-
-        >>> import underworld3 as uw
-        >>> someMesh = uw.discretisation.FeMesh_Cartesian()
-        >>> with someMesh._deform_mesh():
-        ...     someMesh.data[0] = [0.1,0.1]
-        >>> someMesh.data[0]
-        array([ 0.1,  0.1])
-        """
-        import time
-
-        uw.timing._incrementDepth()
-        stime = time.time()
-
-        deaccess_list = []
-        for var in self._vars.values():
-            # if already accessed within higher level context manager, continue.
-            if var._is_accessed == True:
-                continue
-            # set flag so variable status can be known elsewhere
-            var._is_accessed = True
-            # add to de-access list to rewind this later
-            deaccess_list.append(var)
-            # grab numpy object, setting read only if necessary
-            var._data = self.dm.getField(var.clean_name).reshape((-1, var.num_components))
-            assert var._data is not None
-            if var not in writeable_vars:
-                var._old_data_flag = var._data.flags.writeable
-                var._data.flags.writeable = False
-            else:
-                # increment variable state
-                var._increment()
-
-            # make *view* for each var component
-            if var._proxy:
-                for i in range(0, var.shape[0]):
-                    for j in range(0, var.shape[1]):
-                        var._data_container[i, j] = var._data_container[i, j]._replace(
-                            data=var._data[:, var._data_layout(i, j)],
-                        )
-
-        # if particles moving, update swarm state
-        if self._particle_coordinates in writeable_vars:
-            self._increment()
-
-        # Create a class which specifies the required context
-        # manager hooks (`__enter__`, `__exit__`).
-        class exit_manager:
-            def __init__(self, swarm):
-                self.em_swarm = swarm
-
-            def __enter__(self):
-
-                pass
-
-            def __exit__(self, *args):
-
-                for var in self.em_swarm.vars.values():
-                    # only de-access variables we have set access for.
-                    if var not in deaccess_list:
-                        continue
-                    # set this back, although possibly not required.
-                    if var not in writeable_vars:
-                        var._data.flags.writeable = var._old_data_flag
-                    var._data = None
-                    self.em_swarm.dm.restoreField(var.clean_name)
-                    var._is_accessed = False
-                # do particle migration if coords changes
-
-                if self.em_swarm._particle_coordinates in writeable_vars:
-                    # let's use the mesh index to update the particles owning cells.
-                    # note that the `petsc4py` interface is more convenient here as the
-                    # `SwarmVariable.data` interface is controlled by the context manager
-                    # that we are currently within, and it is therefore too easy to
-                    # get things wrong that way.
-                    #
-                    #
-
-                    # if uw.mpi.size > 1:
-                    #     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
-                    #         (-1, self.em_swarm.dim)
-                    #     )
-
-                    #     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
-
-                    #     ## We'll need to identify the new processes here and update the particle rank value accordingly
-                    #
-
-                    # Even if only on one process, migrate needs to be called to remove particles that are
-                    # not in the domain.
-
-                    self.em_swarm.migrate(
-                        remove_sent_points=True,
-                        delete_lost_points=self.em_swarm._clip_to_mesh,
-                    )
-
-                    # void these things too
-                    self.em_swarm._index = None
-                    self.em_swarm._nnmapdict = {}
-
-                # do var updates
-                for var in self.em_swarm.vars.values():
-                    # if swarm migrated, update all.
-                    # if var updated, update var.
-                    if (self.em_swarm._particle_coordinates in writeable_vars) or (
-                        var in writeable_vars
-                    ):
-                        var._update()
-
-                    if var._proxy:
-                        for i in range(0, var.shape[0]):
-                            for j in range(0, var.shape[1]):
-                                # var._data_ij[i, j] = None
-                                var._data_container[i, j] = var._data_container[i, j]._replace(
-                                    data=f"SwarmVariable[...].data is only available within mesh.access() context",
-                                )
-
-                uw.timing._decrementDepth()
-                uw.timing.log_result(time.time() - stime, "Swarm.access", 1)
-
-        return exit_manager(self)
+            # Write THROUGH the canonical array (not the detached
+            # np.asarray view above) so the PETSc pack callback fires.
+            # Writing into the view mutated only the cached copy: the
+            # DMSwarm field kept its post-realloc garbage, and the first
+            # cache invalidation after restore (e.g. migrate() at the end
+            # of advection) silently replaced the restored values with
+            # that garbage (exposed by the SWARM-01 invalidation fix).
+            var.data[...] = saved
 
     def access(self, *writeable_vars: SwarmVariable):
         """
@@ -4526,26 +5409,219 @@ class Swarm(Stateful, uw_object):
         if self.vtype == uw.VarType.MATRIX:
             return i + j * self.shape[0]
 
-    ## Check this - the interface to kdtree has changed, are we picking the correct field ?
     @timing.routine_timer_decorator
-    def _get_map(self, var):
-        # generate tree if not avaiable
-        kd = self._get_kdtree()
+    @uw.collective_operation
+    def repopulate(
+        self,
+        min_per_cell=None,
+        max_per_cell=None,
+        values=None,
+        nnn=None,
+        order=0,
+        nearest=None,
+        verbose=False,
+    ):
+        """Add particles to cells that hold too few, remove from cells that hold
+        too many, so every cell can support a well-posed fit of its particles.
 
-        # get or generate map
-        meshvar_coords = var._meshVar.coords
-        # we can't use numpy arrays directly as keys in python dicts, so
-        # we'll use `xxhash` to generate a hash of array.
-        # this shouldn't be an issue performance wise but we should test to be
-        # sufficiently confident of this.
-        import xxhash
+        The trigger is the per-cell census (owning cells from the strict
+        locator). A starved cell is filled from its own lattice, the points
+        ``populate`` uses (degree ``fill_param``, cell interior), choosing the
+        lattice points farthest from the particles already present. A new
+        particle takes, for every variable, the RBF reconstruction from the
+        nearest existing particles at its position: bounded Shepard weights by
+        default (``order=0``), since a starved cell is where the neighbours
+        are far and a linear-exact tail extrapolates (measured: values of 100
+        on a field bounded by 1 in the emptied corners of a rotating box);
+        ``order=1`` gives the linear-exact reconstruction. ``values`` overrides
+        a variable with a callable ``f(coords) -> (n, components)`` or a
+        constant, an inflow datum for instance. A cell above
+        ``max_per_cell`` loses its most redundant particles, those closest to
+        a neighbour in the same cell.
 
-        h = xxhash.xxh64()
-        h.update(meshvar_coords)
-        digest = h.intdigest()
-        if digest not in self._nnmapdict:
-            self._nnmapdict[digest] = kd.query(meshvar_coords, k=1, sqr_dists=False)[1]
-        return self._nnmapdict[digest]
+        Rank-local placement (a cell is filled by the rank that owns it), but
+        collective: every rank must call it, the domain test reduces.
+
+        Parameters
+        ----------
+        min_per_cell : int, optional
+            Particles a cell must hold; default the lattice count of
+            ``fill_param`` (the density ``populate`` gave).
+        max_per_cell : int, optional
+            Cap above which particles are removed; default no removal.
+        values : dict, optional
+            ``{variable or name: callable or constant}`` for new particles.
+        nnn : int, optional
+            Neighbours in the RBF reconstruction (default ``2 (dim + 1)``).
+        order : {0, 1}, optional
+            RBF reconstruction order for new particles: 0 bounded (default),
+            1 linear-exact.
+        nearest : variable, name, or list of them, optional
+            Variables (or names) a new particle takes whole from its nearest
+            existing neighbour instead of by reconstruction. INTEGER-valued
+            variables are always in this set: a material index is a label, and
+            the average of two labels is not a label. Use it for any other
+            field that must stay one of its own values.
+
+        Returns
+        -------
+        (added, removed) : the counts on this rank.
+        """
+        mesh = self.mesh
+        dim = self.cdim
+        fill = getattr(self, "fill_param", None) or 1
+        lattice = np.asarray(mesh._get_coords_for_basis(fill, continuous=False))
+        c0, c1 = mesh.dm.getHeightStratum(0)
+        ncells = c1 - c0
+        n_lat = lattice.shape[0] // max(ncells, 1)
+        if min_per_cell is None:
+            min_per_cell = n_lat
+        if max_per_cell is not None:
+            min_per_cell = min(min_per_cell, max_per_cell)   # a cap below the lattice count wins
+
+        # Every rank must reach the (collective) domain test before any
+        # rank-local branch; the census itself is rank-local.
+        lat_owned = np.asarray(mesh.points_in_domain(lattice, strict_validation=True), dtype=bool)
+        self._flush_pending_petsc_sync()
+        X = np.array(self._particle_coordinates.data, copy=True) if self.local_size > 0 \
+            else np.zeros((0, dim))
+        # The census and the Voronoi-share proxy fill want the same answer, and
+        # locating particles is the expensive half of both, so take the swarm's
+        # cached assignment (dropped whenever the particles move).
+        cells = self._owning_cells()
+        if cells.shape[0] != X.shape[0]:                # cache raced the copy above
+            cells = (np.asarray(mesh._robust_owning_cells(X), dtype=np.int64)
+                     if X.shape[0] else np.zeros(0, np.int64))
+        npc = np.bincount(cells[cells >= 0], minlength=ncells)
+        lat_cells = np.asarray(mesh._robust_owning_cells(lattice), dtype=np.int64)
+        owned = np.zeros(ncells, dtype=bool)
+        owned[lat_cells[lat_owned & (lat_cells >= 0)]] = True
+
+        added = removed = 0
+
+        # ---- removal: the most redundant particles of over-full cells ----------
+        if max_per_cell is not None and X.shape[0] > 1:
+            drop = []
+            over = np.nonzero(owned & (npc > max_per_cell))[0]
+            if over.shape[0] > 0:
+                # nearest-neighbour distance of every particle, one kd-tree query
+                d2, _ = uw.kdtree.KDTree(X).query(X, k=2)
+                nearest_all = np.sqrt(np.asarray(d2).reshape(X.shape[0], -1)[:, 1])
+            for c in over:
+                idx = np.nonzero(cells == c)[0]
+                surplus = int(npc[c] - max_per_cell)
+                drop.extend(idx[np.argsort(nearest_all[idx])[:surplus]].tolist())
+            if drop:
+                for index in sorted(drop, reverse=True):
+                    self.dm.removePointAtIndex(int(index))
+                removed = len(drop)
+                keep = np.ones(X.shape[0], dtype=bool)
+                keep[drop] = False
+                X, cells = X[keep], cells[keep]
+                npc = np.bincount(cells[cells >= 0], minlength=ncells)
+                self._invalidate_canonical_data()
+
+        # ---- addition: starved cells, lattice points farthest from particles -
+        need = np.where(owned, np.maximum(min_per_cell - npc, 0), 0)
+        new_coords = []
+        if need.sum() > 0:
+            cand_ok = lat_owned & (lat_cells >= 0) & (need[np.maximum(lat_cells, 0)] > 0)
+            cand = lattice[cand_ok]
+            cand_cells = lat_cells[cand_ok]
+            if X.shape[0] > 0:
+                dist, _ = uw.kdtree.KDTree(X).query(cand, k=1, sqr_dists=False)
+                dist = np.asarray(dist).reshape(-1)
+            else:
+                dist = np.zeros(cand.shape[0])
+            sort_idx = np.lexsort((-dist, cand_cells))       # by cell, farthest first
+            cand, cand_cells, dist = cand[sort_idx], cand_cells[sort_idx], dist[sort_idx]
+            # rank within cell
+            start = np.searchsorted(cand_cells, np.arange(ncells), side="left")
+            rank_in_cell = np.arange(cand.shape[0]) - start[cand_cells]
+            take = rank_in_cell < need[cand_cells]
+            new_coords = cand[take]
+
+        n_new = int(len(new_coords))
+        if n_new > 0:
+            n_old = max(self.dm.getLocalSize(), 0)
+            nnn = nnn or 2 * (dim + 1)
+            nnn = min(nnn, max(n_old, 1))
+            rbf_order = order if nnn >= dim + 2 else 0
+            operator = None
+            nearest_row = None
+            if n_old > 0:
+                tree = uw.kdtree.KDTree(X)
+                operator = tree.interpolation_matrix(
+                    np.asarray(new_coords), nnn=nnn, p=2, order=rbf_order)
+                _, nearest_row = tree.query(np.asarray(new_coords), k=1)
+                nearest_row = np.asarray(nearest_row).reshape(-1)
+            nearest_spec = nearest or ()
+            if isinstance(nearest_spec, str) or not hasattr(nearest_spec, "__iter__"):
+                nearest_spec = (nearest_spec,)          # a bare name or variable
+            nearest_set = set()
+            for item in nearest_spec:
+                nearest_set.add(item if isinstance(item, str) else getattr(item, "clean_name", item))
+            # raw values of every variable at the old particles, BEFORE the add
+            raw_old = {}
+            for name, var in self._vars.items():
+                if var is self._particle_coordinates or var.clean_name in (
+                        "DMSwarmPIC_coor", "DMSwarm_rank", "DMSwarm_X0"):
+                    continue
+                raw_old[name] = np.asarray(var.unpack_raw_data_from_petsc(squeeze=False)).reshape(n_old, -1)
+
+            self.dm.finalizeFieldRegister()
+            # PETSc < 3.24 under-allocates by one on the first add to an empty
+            # swarm (the workaround populate() carries).
+            from petsc4py import PETSc
+            n_alloc = n_new + (1 if (n_old == 0 and PETSc.Sys.getVersion() < (3, 24, 0)) else 0)
+            self.dm.addNPoints(n_alloc)
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, dim))
+            coords[n_old:, :] = np.asarray(new_coords)
+            self.dm.restoreField("DMSwarmPIC_coor")
+            ranks = self.dm.getField("DMSwarm_rank")
+            ranks.reshape(-1)[n_old:] = uw.mpi.rank
+            self.dm.restoreField("DMSwarm_rank")
+            x0 = getattr(self, "_X0", None)
+            if x0 is not None:
+                f = self.dm.getField(x0.clean_name).reshape((-1, dim))
+                f[n_old:, :] = np.asarray(new_coords)
+                self.dm.restoreField(x0.clean_name)
+
+            values = values or {}
+            for name, var in self._vars.items():
+                if name not in raw_old:
+                    continue
+                spec = values.get(var, values.get(name, values.get(var.clean_name)))
+                ncomp = raw_old[name].shape[1] if n_old > 0 else var.num_components
+                # A label cannot be averaged: integer variables (a material
+                # index) take their nearest neighbour's value whole.
+                take_nearest = (
+                    name in nearest_set
+                    or var.clean_name in nearest_set
+                    or np.issubdtype(np.dtype(getattr(var, "_petsc_dtype", float)), np.integer)
+                )
+                if spec is not None:
+                    vals = spec(np.asarray(new_coords)) if callable(spec) else spec
+                    vals = np.broadcast_to(np.asarray(vals, dtype=float).reshape(n_new, -1) if np.ndim(vals) > 0 else vals, (n_new, ncomp))
+                elif take_nearest and nearest_row is not None:
+                    vals = raw_old[name][nearest_row]
+                elif operator is not None:
+                    vals = operator @ raw_old[name]
+                else:
+                    vals = np.zeros((n_new, ncomp))
+                f = self.dm.getField(var.clean_name).reshape((-1, ncomp))
+                f[n_old:, :] = np.asarray(vals).reshape(n_new, ncomp).astype(f.dtype, copy=False)
+                self.dm.restoreField(var.clean_name)
+            added = n_new
+            self._invalidate_canonical_data()
+
+        if added or removed:
+            self._population_generation += 1
+        if verbose:
+            print(f"repopulate: rank {uw.mpi.rank} added {added}, removed {removed} "
+                  f"(cells starved {int((need > 0).sum())})", flush=True)
+        return added, removed
+
 
     @timing.routine_timer_decorator
     def advection(
@@ -4557,7 +5633,73 @@ class Swarm(Stateful, uw_object):
         restore_points_to_domain_func=None,
         evalf=False,
         step_limit=False,
+        midtime_velocity=False,
+        characteristics=None,
     ):
+        r"""Advect the particle swarm through one timestep of a velocity field.
+
+        Particle positions are updated with an explicit Runge-Kutta step
+        of :math:`\dot{\mathbf{x}} = \mathbf{V}(\mathbf{x})`. Velocity
+        is sampled with a *global* evaluation (off-rank sample points
+        are resolved collectively), so the call is MPI-collective: every
+        rank must make it, including ranks holding no particles. On
+        completion the swarm is migrated so each particle lands on the
+        rank owning its new location; particles that leave the domain
+        are removed (unless ``restore_points_to_domain_func`` or the
+        mesh's own ``return_coords_to_bounds`` returns them).
+
+        Parameters
+        ----------
+        V_fn : vector UW function / sympy expression
+            Velocity field, evaluated at particle locations. Any
+            expression accepted by :func:`uw.function.evaluate`,
+            e.g. ``stokes.u.sym``.
+        delta_t : float or UWQuantity
+            Timestep. Non-dimensionalised internally
+            (``uw.scaling.non_dimensionalise``), so a dimensional time
+            (e.g. ``uw.quantity(1000, "year")``) is valid when scaling
+            is active; a plain float is taken to be in model units,
+            consistent with the model-unit velocity.
+        order : int, optional
+            Runge-Kutta order: ``2`` (default) is the midpoint scheme;
+            any other value falls back to first-order forward Euler.
+        corrector : bool, optional
+            Historical predictor-corrector option; currently inert (the
+            corrector block is disabled). Retained for call
+            compatibility. Default ``False``.
+        restore_points_to_domain_func : callable, optional
+            Maps an ``(n, dim)`` coordinate array back into the domain
+            (periodic wrap, boundary projection, ...). Applied to the
+            updated positions each substep, in addition to the mesh's
+            own ``return_coords_to_bounds``.
+        evalf : bool, optional
+            Historical flag selecting RBF (``evalf``) velocity
+            sampling; currently inert — velocity is always sampled with
+            ``uw.function.global_evaluate``. Default ``False``.
+        midtime_velocity : bool, optional
+            Take the mid-point velocity of the RK2 step at the mid TIME,
+            :math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, from a
+            :class:`~underworld3.systems.ddt.CharacteristicTrace` the swarm
+            owns (the previous velocity is cached by evaluation at the nodes
+            at the end of each call). Second order in an unsteady flow; a
+            steady flow is unchanged. Off by default. Ignored when the step
+            is substepped.
+        characteristics : CharacteristicTrace, optional
+            A solver's shared trace to take the mid-time velocity from
+            instead of a swarm-owned one (its levels are the solver's).
+        step_limit : bool, optional
+            If ``True``, split ``delta_t`` into substeps no larger than
+            :meth:`estimate_dt` (roughly one element crossing per
+            substep). Default ``False`` here; note
+            :meth:`NodalPointSwarm.advection` defaults it to ``True``.
+        """
+        if self.local_size < 0:
+            # DMSwarm reports -1 until particles have been added on some rank (#702);
+            # an EMPTY rank of a populated swarm is size 0 and is handled below.
+            raise RuntimeError(
+                "This swarm has never been populated (no particles were added on any "
+                "rank): call populate() or add_particles_with_coordinates() before advection."
+            )
         # Convert delta_t to model units if it has units
         # This ensures consistent arithmetic: velocity is in model units, so time must be too
         import underworld3 as uw
@@ -4573,6 +5715,9 @@ class Swarm(Stateful, uw_object):
 
         if uw.mpi.rank == 0 and self.verbose:
             print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
+
+        for hook in list(getattr(self, "_pre_advection_hooks", ())):
+            hook()
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -4622,6 +5767,26 @@ class Swarm(Stateful, uw_object):
         #         del updated_current_coords
         #         del v_at_Vpts
 
+        # Suspend the deferred (solve-entry) migration for the duration of
+        # the substep loop: the velocity evaluations below pass through
+        # Mesh.update_lvec(), and a migrate() firing there would reorder
+        # particle rows between the coordinate array and the velocity array
+        # captured from it. advection() performs its own migrate() at the end.
+        # Mid-time velocity for the RK2 mid-point stage: from the solver's
+        # shared trace when given, else a swarm-owned one (levels recorded at
+        # the end of each call). The levels, not the step cache, feed the
+        # expression, so a shared trace needs no step delimiting here.
+        trace = characteristics
+        owns_trace = False
+        if trace is None and midtime_velocity:
+            trace = self._characteristics_for(V_fn)
+            owns_trace = True
+        v_mid_matrix = V_fn_matrix
+        if trace is not None and substeps == 1:
+            v_mid_matrix = trace.midtime_expr()
+
+        self._deferred_migration_suspended = True
+
         # Wrap this whole thing in sub-stepping loop
         for step in range(0, substeps):
 
@@ -4630,17 +5795,23 @@ class Swarm(Stateful, uw_object):
             # Mid point algorithm (2nd order)
 
             if order == 2:
-                print(f"Advection (2nd): {self.local_size} - swarm points", flush=True)
+                if self.verbose:
+                    print(f"Advection (2nd): {self.local_size} - swarm points", flush=True)
 
                 # Use internal model-unit coordinates directly (no conversion needed)
                 v_at_Vpts = np.zeros_like(self._particle_coordinates.data[...])
 
-                # First evaluate the velocity at the particle locations
-                # (this is a local operation)
+                # First evaluate the velocity at the launch points. This must
+                # be a GLOBAL evaluation: no migration happens inside the
+                # substep loop (deferred migration is suspended above, so
+                # arrays keep a stable row order), which means from substep 2
+                # onward a particle can sit outside this rank's domain — a
+                # rank-local evaluation silently extrapolates wrong values
+                # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.evaluate(V_fn_matrix, self._particle_coordinates.data)[
-                    :, 0, :
-                ]
+                v_at_Vpts[...] = uw.function.global_evaluate(
+                    V_fn_matrix, self._particle_coordinates.data
+                )[:, 0, :]
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -4655,7 +5826,7 @@ class Swarm(Stateful, uw_object):
                 # (since the mid-points might have moved off-proc)
                 #
 
-                v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, mid_pt_coords)[:, 0, :]
+                v_at_Vpts[...] = uw.function.global_evaluate(v_mid_matrix, mid_pt_coords)[:, 0, :]
 
                 new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
@@ -4671,25 +5842,19 @@ class Swarm(Stateful, uw_object):
             # forward Euler (1st order)
             else:
                 coords = self._particle_coordinates.data
-                print(
-                    f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
-                    flush=True,
-                )
+                if self.verbose:
+                    print(f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 v_at_Vpts = np.zeros_like(coords)
                 v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, coords[...])[:, 0, :]
 
-                print(
-                    f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
-                    flush=True,
-                )
+                if self.verbose:
+                    print(f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 new_coords = coords[...] + delta_t_model * v_at_Vpts / substeps
 
-                print(
-                    f"3. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
-                    flush=True,
-                )
+                if self.verbose:
+                    print(f"3. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 if self.mesh.return_coords_to_bounds is not None:
                     new_coords = self.mesh.return_coords_to_bounds(new_coords)
@@ -4697,97 +5862,9 @@ class Swarm(Stateful, uw_object):
                 self._particle_coordinates.data[...] = new_coords[...]
 
         ## End of substepping loop
-
-        ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
-        ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
-        ## original location.
-
-        if self.recycle_rate > 1:
-            # Restore particles which have cycle == cycle rate (use >= just in case)
-
-            # Remove remesh points and recreate a new set at the mesh-local
-            # locations that we already have stored.
-
-            with self.access(self._particle_coordinates, self._remeshed):
-                remeshed = self._remeshed.data[:, 0] == 0
-                # This is one way to do it ... we can do this better though
-                self.data[remeshed, 0] = 1.0e100
-
-            swarm_size = self.dm.getLocalSize()
-
-            num_remeshed_points = self.mesh.particle_X_orig.shape[0]
-
-            self.dm.addNPoints(num_remeshed_points)
-
-            # Informational: remesh just re-injected particles.
-            self._population_generation += 1
-
-            ## cellid = self.dm.getField("DMSwarm_cellid")
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-            rmsh = self.dm.getField("DMSwarm_remeshed")
-
-            # print(f"cellid -> {cellid.shape}")
-            # print(f"particle coords -> {coords.shape}")
-            # print(f"remeshed points  -> {num_remeshed_points}")
-
-            # Compute perturbation - extract magnitude if coordinates have units
-            # numpy.array(..., dtype=float64) forces conversion to plain array
-            coord_data = np.array(self.mesh.particle_X_orig[:, :], dtype=np.float64)
-            radii_data = np.array(self.mesh._radii[cellid[swarm_size::]], dtype=np.float64)
-
-            perturbation = 0.00001 * (
-                (0.33 / (1 + self.fill_param))
-                * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
-                * radii_data.reshape(-1, 1)
-            )
-
-            # Add perturbation (coords array stores dimensionless values)
-            coords[swarm_size::] = coord_data + perturbation
-            ## cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
-            rmsh[swarm_size::] = 0
-
-            # self.dm.restoreField("DMSwarm_cellid")
-            self.dm.restoreField("DMSwarmPIC_coor")
-            self.dm.restoreField("DMSwarm_remeshed")
-
-            # when we let this go, the particles may be re-distributed to
-            # other processors, and we will need to rebuild the remeshed
-            # array before trying to compute / assign values to variables
-
-            for swarmVar in self.vars.values():
-                if swarmVar._rebuild_on_cycle:
-                    with self.access(swarmVar):
-                        if swarmVar.dtype is int:
-                            nnn = 1
-                        else:
-                            nnn = self.mesh.dim + 1  # 3 for triangles, 4 for tets ...
-
-                        interpolated_values = (
-                            swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
-                            #     swarmVar._meshVar.fn, self.mesh.particle_X_orig
-                            # )
-                        ).astype(swarmVar.dtype)
-
-                        swarmVar.data[swarm_size::] = interpolated_values
-
-            ##
-            ## Determine RANK
-            ##
-
-            # Migrate will already have been called by the access manager.
-            # Maybe we should hash the local particle coords to make this
-            # a little more user-friendly
-
-            # self.dm.migrate(remove_sent_points=True)
-
-            with self.access(self._remeshed):
-                self._remeshed.data[...] = np.mod(self._remeshed.data[...] - 1, self.recycle_rate)
-
-            self.cycle += 1
-
-            ## End of cycle_swarm loop
-            #
-            #
+        self._deferred_migration_suspended = False
+        if owns_trace:
+            trace.finish_step()          # the velocity used this step becomes v^{n-1}
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that
@@ -4799,7 +5876,21 @@ class Swarm(Stateful, uw_object):
             delete_lost_points=True,
         )
 
+        if self.population_control is not None:
+            self.repopulate(**self.population_control)
+
         return
+
+    def _characteristics_for(self, V_fn):
+        """The swarm-owned :class:`CharacteristicTrace` for ``V_fn`` (rebuilt
+        when the velocity expression changes)."""
+        from underworld3.systems.ddt import CharacteristicTrace, _matrix_of
+
+        tr = getattr(self, "_characteristics", None)
+        if tr is None or not (tr.V_fn is V_fn or sympy.Matrix(_matrix_of(tr.V_fn)) == sympy.Matrix(_matrix_of(V_fn))):
+            tr = CharacteristicTrace(self.mesh, V_fn, midtime_velocity=True)
+            self._characteristics = tr
+        return tr
 
     @timing.routine_timer_decorator
     def estimate_dt(self, V_fn):
@@ -4825,8 +5916,22 @@ class Swarm(Stateful, uw_object):
             # Plain UWQuantity without units context - use magnitude
             vel = vel.magnitude
 
-        # Ensure vel is a plain numpy array
+        # Ensure vel is a plain numpy array in flat (n_particles, dim) form.
+        # evaluate() returns matrix-shaped (n, 1, dim) arrays; indexing that
+        # shape as vel[:, 1] hit the size-1 axis and the swallowed IndexError
+        # made estimate_dt() return None for every non-trivial velocity —
+        # silently disabling advection's step_limit substepping (BF-16).
         vel = np.asarray(vel)
+        if vel.ndim == 3:
+            # Guard against empty ranks: an array of size 0 cannot be
+            # reshaped with a `-1` axis (NumPy cannot infer the implied
+            # dimension from zero elements) — e.g. (0, 1, dim) -> (0, -1)
+            # raises ValueError. A zero-particle rank legitimately has no
+            # velocities and contributes 0 to the global max below.
+            if vel.size == 0:
+                vel = np.zeros((0, vel.shape[2]) if vel.ndim >= 3 else (0,))
+            else:
+                vel = vel.reshape(vel.shape[0], -1)
 
         try:
             magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
@@ -4836,6 +5941,9 @@ class Swarm(Stateful, uw_object):
             max_magvel = math.sqrt(magvel_squared.max())
 
         except (ValueError, IndexError):
+            # Sanctioned: a rank holding zero particles has an empty vel
+            # array (its .max() raises); it contributes zero to the
+            # global maximum below.
             max_magvel = 0.0
 
         from mpi4py import MPI
@@ -4857,6 +5965,12 @@ class Swarm(Stateful, uw_object):
 class NodalPointSwarm(Swarm):
     r"""BASIC_Swarm with particles located at the coordinate points of a meshVariable
 
+    .. deprecated:: 2026-07
+        ``NodalPointSwarm`` is deprecated and will be removed in the next
+        release cycle. The semi-Lagrangian history managers in
+        ``uw.systems.ddt`` no longer use it and there are no remaining
+        internal callers.
+
     The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
     after they have been moved.
 
@@ -4868,13 +5982,26 @@ class NodalPointSwarm(Swarm):
         trackedVariable: uw.discretisation.MeshVariable,
         verbose=False,
     ):
+        import warnings
+
+        warnings.warn(
+            "NodalPointSwarm is deprecated and will be removed in the next "
+            "release cycle. Use the semi-Lagrangian history managers in "
+            "uw.systems.ddt, or a plain Swarm populated at the variable's "
+            "coordinates.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
 
         mesh = trackedVariable.mesh
 
-        # Set up a standard swarm
-        super().__init__(mesh, verbose, clip_to_mesh=False)
+        # Keyword-explicit: Swarm.__init__ takes recycle_rate as its second
+        # positional parameter, so a positional `verbose` here used to land
+        # in recycle_rate and be silently discarded (SWARM-11).
+        super().__init__(mesh, verbose=verbose, clip_to_mesh=False)
 
         nswarm = self
 
@@ -4938,9 +6065,8 @@ class NodalPointSwarm(Swarm):
 
         nswarm.dm.migrate(remove_sent_points=True)
 
-        with nswarm.access(nX0, nI0):
-            nX0.data[:, :] = coords
-            nI0.data[:, 0] = range(0, coords.shape[0])
+        nX0.data[:, :] = coords
+        nI0.data[:, 0] = range(0, coords.shape[0])
 
         self._nswarm = nswarm
         self._nX0 = nX0
@@ -4960,12 +6086,23 @@ class NodalPointSwarm(Swarm):
         evalf=False,
         step_limit=True,
     ):
+        """Advect the nodal-point swarm one timestep (semi-Lagrangian sweep).
 
-        with self.access(self._X0):
-            self._X0.data[...] = self._nX0.data[...]
+        Records each particle's launch point (its home mesh node) and
+        origin rank, then delegates to :meth:`Swarm.advection`. The
+        recorded launch data is what lets semi-Lagrangian schemes return
+        sampled values to the node the particle departed from after the
+        (possibly off-rank) trajectory.
 
-        with self.access(self._nR0):
-            self._nR0.data[...] = uw.mpi.rank
+        Parameters are those of :meth:`Swarm.advection`, with one
+        difference: ``step_limit`` defaults to ``True`` — trajectories
+        are substepped to at most ~one element crossing per substep
+        (see :meth:`Swarm.estimate_dt`), which keeps the node-return
+        bookkeeping robust for large ``delta_t``.
+        """
+        self._X0.data[...] = self._nX0.data[...]
+
+        self._nR0.data[...] = uw.mpi.rank
 
         super().advection(
             V_fn,
@@ -4986,3 +6123,9 @@ class NodalPointSwarm(Swarm):
 ##  - PIC layouts of particles are not directly available / must be done by hand
 ##  - No automatic migration - must compute ranks for the particle swarms
 ##  - No automatic definition of coordinate fields (need to add by hand)
+
+
+# Materials live in their own module (this one is long enough) but belong to
+# the swarm namespace: a MaterialSwarm IS a Swarm. Imported at the end so the
+# submodule can import Swarm and IndexSwarmVariable from here.
+from underworld3.swarm_materials import MaterialSwarm  # noqa: E402,F401

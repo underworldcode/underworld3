@@ -303,15 +303,19 @@ def parse_cython_file(filepath: Path) -> List[CodeElement]:
     elements = []
     source = filepath.read_text()
 
-    # Pattern for function/method definitions
+    # Pattern for function/method definitions.
+    # NB: the leading indent group must be [ \t]* (NOT \s*): with re.MULTILINE,
+    # \s* consumes preceding blank lines, shifting the computed line number so
+    # the docstring search starts on the def/class line itself and misses the
+    # docstring entirely (and miscounts the indent).
     func_pattern = re.compile(
-        r'^(\s*)((?:cdef|cpdef|def)\s+\w+\s*\([^)]*\)[^:]*:)\s*$',
+        r'^([ \t]*)((?:cdef|cpdef|def)\s+\w+\s*\([^)]*\)[^:]*:)\s*$',
         re.MULTILINE
     )
 
     # Pattern for class definitions
     class_pattern = re.compile(
-        r'^(\s*)((?:cdef\s+)?class\s+(\w+)[^:]*:)\s*$',
+        r'^([ \t]*)((?:cdef\s+)?class\s+(\w+)[^:]*:)\s*$',
         re.MULTILINE
     )
 
@@ -324,10 +328,15 @@ def parse_cython_file(filepath: Path) -> List[CodeElement]:
         class_name = match.group(3)
         line_no = source[:match.start()].count('\n') + 1
 
-        # Try to extract docstring (next non-empty line with quotes)
+        # Try to extract docstring (next non-empty line with quotes).
+        # Search from the END of the (possibly multi-line) signature, not from
+        # the definition line, or long signatures hide their docstring.
+        sig_end_line = source[:match.end(2)].count('\n') + 1
         docstring = None
-        for i in range(line_no, min(line_no + 5, len(lines))):
-            line = lines[i].strip()
+        for i in range(sig_end_line, min(sig_end_line + 5, len(lines))):
+            # Accept string prefixes on docstrings (r""", rb"""; common in .pyx)
+            line = re.sub(r"^[rRbBuUfF]{1,2}(?=\"\"\"|''')", "",
+                          lines[i].strip())
             if line.startswith('"""') or line.startswith("'''"):
                 # Find end of docstring
                 doc_lines = []
@@ -375,12 +384,17 @@ def parse_cython_file(filepath: Path) -> List[CodeElement]:
         # Skip if it's a method inside a class (indented)
         indent = len(match.group(1))
 
-        # Try to extract docstring
+        # Try to extract docstring.
+        # Search from the END of the (possibly multi-line) signature, not from
+        # the definition line, or long signatures hide their docstring.
+        sig_end_line = source[:match.end(2)].count('\n') + 1
         docstring = None
-        for i in range(line_no, min(line_no + 5, len(lines))):
+        for i in range(sig_end_line, min(sig_end_line + 5, len(lines))):
             if i >= len(lines):
                 break
-            line = lines[i].strip()
+            # Accept string prefixes on docstrings (r""", rb"""; common in .pyx)
+            line = re.sub(r"^[rRbBuUfF]{1,2}(?=\"\"\"|''')", "",
+                          lines[i].strip())
             if line.startswith('"""') or line.startswith("'''"):
                 quote = line[:3]
                 if line.endswith(quote) and len(line) > 6:

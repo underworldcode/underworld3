@@ -35,6 +35,31 @@ fault-plane yield for modelling fault zones.
 
 **[→ VEP + Transverse Isotropy](vep-transverse-isotropy-faults.md)**
 
+### Fault Zones That Cross
+Finite-width fault zones fused into one region, and what the rheology of
+the overlap is worth.
+
+**[→ Crossing Fault Zones](crossing-fault-zones.md)**
+
+### Gouge Zones
+What a fault zone's width is for, and what collapsing it to a surface
+throws away.
+
+**[→ Gouge Zones](gouge-zones.md)**
+
+### Branching Faults and Junctions
+What a crack model cannot do at a branch point, measured in a shear box
+— and how to choose representations because of it.
+
+**[→ Branching Faults and Junctions](fault-branching-junctions.md)**
+
+### Visualising the Stress Tensor
+Principal-stress crosses sampled at seed points (2-D and 3-D) and
+stress trajectories — the tensor equivalents of velocity arrows and
+streamlines.
+
+**[→ Stress Visualisation](stress-visualisation.md)**
+
 ### Custom Meshes
 Create complex geometries with gmsh for research problems.
 
@@ -49,6 +74,13 @@ Accurate free-slip and Neumann conditions on elliptical and non-planar boundarie
 Dynamic remeshing and adaptive refinement strategies.
 
 **[→ Mesh Adaptation](mesh-adaptation.md)**
+
+### Particles: Population Control and Materials
+Keep every cell sampled as the flow deforms the swarm, and declare materials
+on a `MaterialSwarm` so an interface stays where the particles put it — read
+at the integration points, with no level sets in the model script.
+
+**[→ Particle Population and Materials](particle-population-and-materials.md)**
 
 ### Semi-Lagrangian Time Integration (SLCN / SL-BDF2)
 How `AdvDiffusionSLCN` discretizes advection–diffusion in time: the BDF
@@ -103,10 +135,20 @@ multigrid-preconditioning
 solver-iteration-callbacks
 complex-rheologies
 vep-transverse-isotropy-faults
+split-node-faults
+fault-networks
+crossing-fault-zones
+gouge-zones
+fault-branching-junctions
+fault-mechanics-examples
+stress-visualisation
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
+particle-population-and-materials
 semi-lagrangian-time-integration
+eulerian-advection-diffusion
+eulerian-navier-stokes
 porous-flow
 snapshot-restore
 troubleshooting

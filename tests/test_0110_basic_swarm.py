@@ -157,3 +157,82 @@ def test_particle_clip_context_manager(setup_data):
 
     npts1 = swarm._particle_coordinates.data.shape[0]
     assert npts1 == 0
+
+
+@pytest.mark.tier_a
+def test_recycle_rate_not_implemented():
+    """recycle_rate > 1 (streak swarms) must refuse at construction.
+
+    The recycling machinery was excised in 2026-07 (audit SWARM-08/SWARM-09,
+    remediation D4): it had been broken for some time (NameError in populate
+    and advection) and had zero tests. A clear NotImplementedError at
+    construction replaces a crash deep inside populate().
+    """
+    from underworld3 import swarm
+    from underworld3.meshing import UnstructuredSimplexBox
+
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0)
+
+    with pytest.raises(NotImplementedError, match="recycle_rate"):
+        swarm.Swarm(mesh, recycle_rate=5)
+
+    # The no-recycling defaults still construct and populate normally
+    s = swarm.Swarm(mesh, recycle_rate=0)
+    s.populate(fill_param=1)
+    assert s._particle_coordinates.data.shape[0] > 0
+
+
+@pytest.mark.tier_a
+def test_nodal_point_swarm_deprecated_but_working():
+    """NodalPointSwarm: deprecation warning + construction smoke test.
+
+    The class is deprecated (audit SWARM-11, remediation D5) and will be
+    removed next release cycle; during the warning period it must still
+    construct correctly. This also pins the SWARM-11 positional-argument
+    fix: `verbose` used to be passed positionally into Swarm's
+    `recycle_rate` slot and silently discarded.
+    """
+    import numpy as np
+    import underworld3 as uw
+    from underworld3.meshing import UnstructuredSimplexBox
+
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0)
+    T = uw.discretisation.MeshVariable("T_nps_smoke", mesh, 1)
+
+    with pytest.warns(DeprecationWarning, match="NodalPointSwarm is deprecated"):
+        nswarm = uw.swarm.NodalPointSwarm(T, verbose=True)
+
+    # verbose must reach Swarm.__init__ (not land in recycle_rate)
+    assert nswarm.verbose is True
+    assert nswarm.recycle_rate == 0
+
+    # Still functional during the warning period: one particle per node of
+    # the tracked variable, with launch points recorded for snap-back.
+    n_local = nswarm._particle_coordinates.data.shape[0]
+    n_global = uw.mpi.comm.allreduce(n_local)
+    assert n_global == T.coords.shape[0]
+    assert nswarm._nX0.data.shape == (n_local, mesh.dim)
+
+
+@pytest.mark.tier_a
+def test_estimate_dt_with_mesh_variable_velocity():
+    """estimate_dt must return a positive limit for a non-trivial velocity.
+
+    Regression (BF-16 collateral): evaluate() returns matrix-shaped
+    (n, 1, dim) arrays; estimate_dt indexed vel[:, 1] into the size-1 axis
+    and the swallowed IndexError made it return None for every velocity —
+    silently disabling advection's step_limit substepping.
+    """
+    import numpy as np
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8))
+    V = uw.discretisation.MeshVariable("V_dt_est", mesh, mesh.dim, degree=1)
+    V.array[:, 0, 0] = -(V.coords[:, 1] - 0.5)
+    V.array[:, 0, 1] = V.coords[:, 0] - 0.5
+
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.populate(fill_param=1)
+
+    dt_limit = swarm.estimate_dt(V.sym)
+    assert dt_limit is not None and dt_limit > 0.0

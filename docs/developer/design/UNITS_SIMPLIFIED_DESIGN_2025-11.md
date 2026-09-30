@@ -203,6 +203,16 @@ Gateway function that:
 - Re-dimensionalizes result
 - Returns `UnitAwareArray` with correct units
 
+**Coordinate input forms** (maintainer ruling D7, 2026-07-06 — the
+coordinate-units family is unsupported): `coords` must be a plain numpy
+array of model-unit (non-dimensional) values with shape `(n_points, dim)`,
+or a unit-aware array (`UnitAwareArray`, e.g. `mesh.X.coords`, or an
+array-valued `UWQuantity`), which is non-dimensionalised automatically.
+Python lists/tuples of coordinates — including quantity-valued lists such
+as `[(x_qty, y_qty)]` — raise `TypeError`. Convert dimensional
+coordinates explicitly (`float(uw.non_dimensionalise(x_qty))`) and pass
+an array.
+
 ## What We Deleted
 
 The following are **no longer used** (preserved as `*_old.py` for reference):

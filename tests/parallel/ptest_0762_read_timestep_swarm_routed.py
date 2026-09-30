@@ -72,11 +72,9 @@ def test_meshvariable_read_timestep_parallel_round_trip():
         _cleanup_shared_tmpdir(tmpdir)
 
 
-@pytest.mark.skip(
-    reason="Pre-existing: Swarm.write_timestep hangs on N>1 with parallel h5py "
-    "(unrelated to read_timestep refactor). Serial round-trip is covered by "
-    "tests/test_0003_save_load.py::test_swarmvariable_save_and_load."
-)
+# The former skip here cited a parallel Swarm.write_timestep hang; that was
+# issue #151, fixed 2026-04 (commit 453e5063) — the skip outlived the bug
+# (LOOSE-ENDS-AUDIT refuted-claims appendix, 2026-07).
 @pytest.mark.mpi(min_size=2)
 @pytest.mark.level_1
 @pytest.mark.tier_a

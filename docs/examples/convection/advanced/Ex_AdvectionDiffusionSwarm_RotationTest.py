@@ -91,7 +91,7 @@ delta_t = 1.0
 
 
 # +
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=t_soln,
     V_fn = v_soln,

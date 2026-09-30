@@ -86,7 +86,7 @@ stokes.add_natural_bc(1e4 * Gamma.dot(v.sym) * Gamma, "Lower")
 
 # Nitsche free-slip on internal boundary
 # Uses constitutive model viscosity, so it sees the contrast
-stokes.add_nitsche_bc("Internal", direction=unit_rvec, gamma=10.0, theta=1)
+stokes.add_nitsche_bc(0.0, "Internal", direction=unit_rvec, gamma=10.0, theta=1)
 
 # --- Solver options ---
 

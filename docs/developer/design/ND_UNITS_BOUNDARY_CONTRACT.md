@@ -1,5 +1,7 @@
 # The non-dimensional ↔ units boundary (contract)
 
+**Status**: Contract / reference (current) — PR #278 (2026-06-24). Documents the shipped ND ↔ units boundary (`non_dimensionalise` / `dimensionalise` in `units.py`, `.coords_nd`).
+
 This page defines **where the units system stops and the non-dimensional (ND)
 solver world begins** in Underworld3, for both users and developers. It is the
 companion "rules of engagement" to the

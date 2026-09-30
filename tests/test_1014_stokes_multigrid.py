@@ -91,7 +91,12 @@ def test_invalid_preconditioner_raises():
         stokes.preconditioner = "wibble"
 
 
-def test_scalar_poisson_auto_geometric_mg():
+def test_scalar_poisson_auto_falls_back_to_gamg():
+    # #276: native geometric FMG is locked out for single-field (scalar/vector)
+    # solvers — DMCreateInjection is not reliably constructible on a refined
+    # DMPlex for a single field (fails on curved shells and some high-degree flat
+    # cases). So a scalar solver on a refined hierarchy falls back to GAMG rather
+    # than crashing; robust geometric MG for scalars is via custom_mg.set_custom_fmg.
     poisson = uw.systems.Poisson(mesh_refined)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson.constitutive_model.Parameters.diffusivity = 1
@@ -99,7 +104,7 @@ def test_scalar_poisson_auto_geometric_mg():
     poisson.add_dirichlet_bc(0.0, "Bottom")
     poisson.add_dirichlet_bc(1.0, "Top")
     poisson.solve()
-    assert poisson.petsc_options.getString("pc_type") == "mg"
+    assert poisson.petsc_options.getString("pc_type") == "gamg"
     assert poisson.snes.getConvergedReason() > 0
 
 
@@ -145,12 +150,19 @@ def test_geometric_mg_without_galerkin_is_repaired():
 def test_default_fmg_bundle_is_parallel_safe():
     # The property's OWN default FMG bundle must be usable at np>1 unaided: a
     # parallel-safe coarse solver (redundant+lu, not bare serial lu) and a
-    # robust smoother (richardson+sor, not eigen-estimate-fragile chebyshev).
+    # smoother sized for a DEEP hierarchy — gmres+sor, not eigen-estimate-fragile
+    # chebyshev and not stationary richardson, which degrades on the non-symmetric
+    # consistent-Newton operator (measured: per-V-cycle contraction 0.75 richardson
+    # vs 0.56 gmres over 4 nested levels on the Spiegelman notch).
     stokes = _make_stokes(mesh_refined)
     stokes.preconditioner = "fmg"
     stokes.solve()
     vp = "fieldsplit_velocity_"
     assert stokes.petsc_options.getString(vp + "mg_coarse_pc_type") == "redundant"
     assert stokes.petsc_options.getString(vp + "mg_coarse_redundant_pc_type") == "lu"
-    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "richardson"
+    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "gmres"
+    assert stokes.petsc_options.getString(vp + "mg_levels_pc_type") == "sor"
+    # Fixed-cost V-cycle: exactly mg_levels_ksp_max_it smoother iterations, no
+    # residual-norm computation and no early exit.
+    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_norm_type") == "none"
     assert stokes.snes.getConvergedReason() > 0

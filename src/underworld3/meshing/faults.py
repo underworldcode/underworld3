@@ -268,6 +268,82 @@ class FaultSurface:
         self._triangles = faces.reshape(-1, 4)[:, 1:4]
         self._normals = np.array(self._pv_mesh.cell_data["Normals"])
 
+    def rim_polygon(self, planar_tol: float = 1e-6) -> np.ndarray:
+        """The ordered rim polygon of a PLANAR triangulated surface.
+
+        This is the bridge into the split-node fault pipeline:
+        ``uw.meshing.BoxInternalPatch(patch_points=fault_surface, ...)``
+        embeds the rim polygon as the conforming patch, and
+        ``split_fault`` then duplicates everything inside it. The rim is
+        the chain of boundary edges (edges used by exactly one
+        triangle), returned as an ``(N, 3)`` loop of point coordinates
+        in walking order.
+
+        Planarity is required for now — the conforming embed handles
+        plane polygons only; a genuinely curved sheet waits on the
+        discrete-entity embed. ``planar_tol`` is relative to the
+        surface's extent.
+
+        Raises
+        ------
+        NotImplementedError
+            If the surface deviates from its best-fit plane by more
+            than ``planar_tol`` times its extent.
+        RuntimeError
+            If the boundary edges do not form a single closed loop
+            (a surface with holes, or a degenerate triangulation).
+        """
+        if not self.is_triangulated:
+            self.triangulate()
+        pts = np.asarray(self._points, dtype=float)
+        tris = np.asarray(self._triangles, dtype=int)
+
+        centre = pts.mean(axis=0)
+        _u, _s, vt = np.linalg.svd(pts - centre, full_matrices=False)
+        extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        dev = float(np.abs((pts - centre) @ vt[2]).max())
+        if dev > planar_tol * extent:
+            raise NotImplementedError(
+                f"fault surface {self.name!r} deviates from planar by "
+                f"{dev:.3g} (tolerance {planar_tol * extent:.3g}); the "
+                "conforming patch embed is plane-polygon only for now.")
+
+        edge_count = {}
+        for tri in tris:
+            for a, b in ((tri[0], tri[1]), (tri[1], tri[2]),
+                         (tri[2], tri[0])):
+                edge_count[(min(a, b), max(a, b))] = \
+                    edge_count.get((min(a, b), max(a, b)), 0) + 1
+        boundary = [e for e, n in edge_count.items() if n == 1]
+        if not boundary:
+            raise RuntimeError(
+                f"fault surface {self.name!r} has no boundary edges — a "
+                "closed surface cannot be a fault patch.")
+        neighbours = {}
+        for a, b in boundary:
+            neighbours.setdefault(a, []).append(b)
+            neighbours.setdefault(b, []).append(a)
+        if any(len(v) != 2 for v in neighbours.values()):
+            raise RuntimeError(
+                f"fault surface {self.name!r}: rim is not a simple loop "
+                "(a vertex joins more than two boundary edges).")
+        start = boundary[0][0]
+        loop, prev, here = [start], None, start
+        while True:
+            a, b = neighbours[here]
+            nxt = b if a == prev else a
+            if nxt == start:
+                break
+            loop.append(nxt)
+            prev, here = here, nxt
+        if len(loop) != len(neighbours):
+            raise RuntimeError(
+                f"fault surface {self.name!r}: rim has "
+                f"{len(neighbours)} boundary vertices but the walked "
+                f"loop closes after {len(loop)} — more than one loop "
+                "(holes are not supported).")
+        return pts[np.asarray(loop, dtype=int)]
+
     def compute_normals(self, consistent_normals: bool = True) -> None:
         """Recompute face normals for triangulated surface.
 

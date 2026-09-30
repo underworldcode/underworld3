@@ -112,9 +112,10 @@ def test_bd_integral_invalid_boundary():
 
 
 # --- Internal boundary tests (BoxInternalBoundary) ---
-# BoxInternalBoundary has a pre-existing MPI bug (UnboundLocalError in the mesh
-# constructor) so these tests are skipped under MPI. They use lazy initialization
-# to avoid crashing the entire module if the mesh constructor fails.
+# These run in serial and parallel: the BoxInternalBoundary rank>0
+# UnboundLocalError (2026-07 audit, BF-13) is fixed, and signed-normal
+# integrands written with plain mesh.Gamma are partition-safe (resolved
+# to the declared analytic normal — issue #327).
 
 from underworld3.meshing import BoxInternalBoundary
 
@@ -138,7 +139,6 @@ def _get_internal_mesh():
     return _mesh_internal, _x_i, _y_i
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_boundary_length():
     """Internal boundary at y=0.5 across a unit box should have length 1.0."""
 
@@ -149,7 +149,6 @@ def test_bd_integral_internal_boundary_length():
     assert abs(value - 1.0) < 0.001, f"Expected 1.0, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_coordinate_fn():
     """Integrate x along internal boundary at y=0.5: int_0^1 x dx = 0.5."""
 
@@ -160,25 +159,26 @@ def test_bd_integral_internal_coordinate_fn():
     assert abs(value - 0.5) < 0.01, f"Expected 0.5, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
+# `mesh.Gamma` is the single user-facing normal symbol on any boundary.
+# On an internal boundary the raw petsc_n[] is orientation-ambiguous
+# (DMPlex support[0] is partition-dependent at seam facets — issue #327),
+# so BdIntegral resolves the Gamma components to the mesh factory's
+# declared analytic normal (Mesh._resolve_boundary_normals). The declared
+# internal normal points from region Inner to region Outer (+y here).
 def test_bd_integral_internal_normal_ny():
-    """Integrate n_y along internal boundary at y=0.5.
-    The internal boundary has normals pointing in +y or -y direction,
-    so integrating n_y should give +1 or -1 (length 1 boundary)."""
+    """Integrate n_y along internal boundary at y=0.5 with plain mesh.Gamma.
+    The declared internal normal is +y, so the integral is exactly +1
+    (length-1 boundary)."""
 
     mesh_internal, _, _ = _get_internal_mesh()
-    Gamma = mesh_internal.Gamma
-    n_y = Gamma[1]
+    n_y = mesh_internal.Gamma[1]
 
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=n_y, boundary="Internal")
     value = bd_int.evaluate()
 
-    # Normal orientation is consistent but direction depends on mesh;
-    # absolute value should be 1.0
-    assert abs(abs(value) - 1.0) < 0.01, f"Expected |n_y integral| = 1.0, got {value}"
+    assert abs(value - 1.0) < 1e-6, f"Expected +1.0, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_normal_nx():
     """Integrate n_x along internal boundary at y=0.5.
     The internal boundary is horizontal, so n_x should be ~0."""
@@ -190,25 +190,93 @@ def test_bd_integral_internal_normal_nx():
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=n_x, boundary="Internal")
     value = bd_int.evaluate()
 
-    assert abs(value) < 0.01, f"Expected ~0, got {value}"
+    assert abs(value) < 1e-6, f"Expected ~0, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_normal_weighted():
-    """Integrate x * n_y along internal boundary at y=0.5.
-    int_0^1 x * n_y dx = n_y * 0.5. Since |n_y| = 1, result should be ~0.5."""
+    """Integrate x * n_y along internal boundary at y=0.5 with plain
+    mesh.Gamma: int_0^1 x * (+1) dx = +0.5."""
 
     mesh_internal, x_i, _ = _get_internal_mesh()
-    Gamma = mesh_internal.Gamma
-    n_y = Gamma[1]
+    n_y = mesh_internal.Gamma[1]
 
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=x_i * n_y, boundary="Internal")
     value = bd_int.evaluate()
 
-    assert abs(abs(value) - 0.5) < 0.01, f"Expected |value| = 0.5, got {value}"
+    assert abs(value - 0.5) < 1e-6, f"Expected +0.5, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
+def test_bd_integral_internal_canonical_normal_accessor():
+    """The canonical_normal accessor remains available and agrees with the
+    normal that mesh.Gamma resolves to on the internal boundary."""
+
+    mesh_internal, _, _ = _get_internal_mesh()
+    normal = mesh_internal.canonical_normal("Internal")
+    n_y = normal[1]
+
+    bd_int = uw.maths.BdIntegral(mesh_internal, fn=n_y, boundary="Internal")
+    value = bd_int.evaluate()
+
+    assert abs(value - 1.0) < 1e-6, f"Expected +1.0, got {value}"
+
+
+def test_bd_integral_internal_gamma_off_grid_zint():
+    """Regression for the failing partition-through-boundary case from #327.
+
+    With ``zintCoord=0.55`` (off-grid), the mpirun -n 2 partition seam runs
+    through the internal boundary and one seam facet's raw ``petsc_n[]``
+    flips sign: the unresolved integral returned 0.9375 = 1 − 2/32 instead
+    of 1.0. With plain ``mesh.Gamma`` now resolved to the declared analytic
+    normal, the value is exact regardless of partition."""
+    mesh_off = BoxInternalBoundary(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=1.0/32.0, zintCoord=0.55, simplex=True,
+    )
+    # Need at least one variable so BdIntegral has a section to integrate against
+    uw.discretisation.MeshVariable("T_off", mesh_off, 1, degree=2)
+
+    n_y = mesh_off.Gamma[1]
+    val = uw.maths.BdIntegral(mesh_off, fn=n_y, boundary="Internal").evaluate()
+    assert abs(val - 1.0) < 1e-6, (
+        f"mesh.Gamma internal integral should be exactly +1, got {val}")
+
+
+@pytest.mark.skipif(
+    uw.mpi.size > 1,
+    reason="mesh.deform crashes at np>1 (issue #360, kd-tree index rebuild)",
+)
+def test_bd_integral_internal_gamma_stale_after_deform():
+    """Deformation invalidates the factory-declared analytic normal.
+
+    The declaration describes the original geometry; after mesh.deform()
+    resolving mesh.Gamma on the internal boundary must fail loudly rather
+    than integrate a stale normal. Re-assigning mesh.boundary_normals
+    re-declares it for the new geometry. The deformation used here
+    vanishes on y=0.5 (sin(2*pi*y) = 0), so the internal boundary is
+    unmoved and the re-declared +y normal gives exactly +1 again."""
+
+    mesh_d = BoxInternalBoundary(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=1.0/16.0, zintCoord=0.5, simplex=True,
+    )
+    uw.discretisation.MeshVariable("T_deform", mesh_d, 1, degree=2)
+    n_y = mesh_d.Gamma[1]
+
+    coords = np.array(mesh_d.X.coords)
+    new_coords = coords.copy()
+    new_coords[:, 1] += (
+        0.01 * np.sin(np.pi * coords[:, 0]) * np.sin(2.0 * np.pi * coords[:, 1])
+    )
+    mesh_d.deform(new_coords)
+
+    with pytest.raises(RuntimeError, match="coordinates have changed"):
+        uw.maths.BdIntegral(mesh_d, fn=n_y, boundary="Internal").evaluate()
+
+    mesh_d.boundary_normals = mesh_d.boundary_normals
+    val = uw.maths.BdIntegral(mesh_d, fn=n_y, boundary="Internal").evaluate()
+    assert abs(val - 1.0) < 1e-6, f"Expected +1.0 after re-declaration, got {val}"
+
+
 def test_bd_integral_internal_does_not_affect_external():
     """External boundaries should still work on the internal-boundary mesh."""
 
@@ -344,6 +412,61 @@ def test_bd_integral_spherical_internal_boundary_areas():
             f"{boundary} area should be close to {expected:.4f}; "
             f"got {value:.4f} (relative error {relative_error:.3f})"
         )
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_spherical_internal_boundary_mesh_files_only(tmp_path, monkeypatch):
+    """File generation can bypass Mesh construction and preserve labels."""
+    from enum import Enum
+
+    import underworld3.meshing.spherical as spherical
+    from underworld3.coordinates import CoordinateSystemType
+
+    mesh_file = str(tmp_path / "spherical_internal_mesh_files_only.msh")
+
+    def fail_mesh_construction(*args, **kwargs):
+        raise AssertionError(
+            "write_mesh_files_only=True must not construct an Underworld Mesh"
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(spherical, "Mesh", fail_mesh_construction)
+        h5_file = spherical.SphericalShellInternalBoundary(
+            radiusOuter=_R_SHELL_OUTER,
+            radiusInternal=_R_SHELL_INTERNAL,
+            radiusInner=_R_SHELL_INNER,
+            cellSize=0.25,
+            filename=mesh_file,
+            write_mesh_files_only=True,
+        )
+
+    assert h5_file == f"{mesh_file}.h5"
+    assert (tmp_path / "spherical_internal_mesh_files_only.msh").is_file()
+    assert (tmp_path / "spherical_internal_mesh_files_only.msh.h5").is_file()
+
+    class Boundaries(Enum):
+        Centre = 1
+        Lower = 11
+        Internal = 12
+        Upper = 13
+        All_Boundaries = 1001
+
+    reloaded_mesh = uw.discretisation.Mesh(
+        h5_file,
+        degree=1,
+        qdegree=2,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=Boundaries,
+    )
+
+    for boundary in ("Lower", "Internal", "Upper"):
+        label = reloaded_mesh.dm.getLabel(boundary)
+        assert label is not None
+        assert label.getNumValues() > 0
 
 
 def _build_spherical_shell_for_integrals():

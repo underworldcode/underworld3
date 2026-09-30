@@ -78,8 +78,5 @@ Factory function for creating UWQuantity objects with units.
 
 ## Analytic Functions
 
-```{eval-rst}
-.. automodule:: underworld3.function.analytic
-   :members:
-   :show-inheritance:
-```
+The analytic solutions have moved to {doc}`analytic` — `underworld3.function.analytic`
+is a deprecation shim. Use `uw.analytic.SolCx(mesh, ...)`.

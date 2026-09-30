@@ -171,7 +171,7 @@ y = meshbox.N.y
 # %%
 k = params.uw_diffusivity
 
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
     V_fn=v_soln,

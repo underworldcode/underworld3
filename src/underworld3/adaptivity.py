@@ -108,7 +108,7 @@ def create_metric(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.adapt().
+        Scalar MeshVariable containing metric values ready for mesh.remesh().
 
     Notes
     -----
@@ -132,7 +132,7 @@ def create_metric(
     >>> # Create metric from h-field computed elsewhere
     >>> h_field = compute_error_based_h(solution)  # User function
     >>> metric = uw.adaptivity.create_metric(mesh, h_field)
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     See Also
     --------
@@ -148,10 +148,9 @@ def create_metric(
     # Create metric MeshVariable
     metric = uw.discretisation.MeshVariable(name, mesh, 1, degree=1)
 
-    with mesh.access(metric):
-        # Convert to metric tensor: M = 1/h² × I (isotropic)
-        # This is dimension-independent: same formula for 2D and 3D
-        metric.data[:, 0] = 1.0 / (h_values ** 2)
+    # Convert to metric tensor: M = 1/h² × I (isotropic)
+    # This is dimension-independent: same formula for 2D and 3D
+    metric.data[:, 0] = 1.0 / (h_values ** 2)
 
     return metric
 
@@ -198,7 +197,7 @@ def metric_from_gradient(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.adapt().
+        Scalar MeshVariable containing metric values ready for mesh.remesh().
 
     Notes
     -----
@@ -244,14 +243,14 @@ def metric_from_gradient(
     >>> metric = uw.adaptivity.metric_from_gradient(
     ...     T, h_min=0.005, h_max=0.05, profile="smoothstep"
     ... )
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     >>> # Refine based on strain rate
     >>> # First compute strain rate magnitude as scalar field
     >>> SR = uw.discretisation.MeshVariable("SR", mesh, 1)
     >>> # ... populate SR with strain rate second invariant ...
     >>> metric = uw.adaptivity.metric_from_gradient(SR, h_min=0.01, h_max=0.1)
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     See Also
     --------
@@ -360,7 +359,7 @@ def metric_from_field(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.adapt().
+        Scalar MeshVariable containing metric values ready for mesh.remesh().
 
     Notes
     -----
@@ -381,7 +380,7 @@ def metric_from_field(
     >>> # Refine based on error estimate
     >>> error = compute_error_estimate(solution)  # User function
     >>> metric = uw.adaptivity.metric_from_field(error, h_min=0.005, h_max=0.05)
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     >>> # Refine at phase boundaries (phi transitions from 0 to 1)
     >>> # Want fine mesh where phi is near 0.5
@@ -402,8 +401,7 @@ def metric_from_field(
         )
 
     # Get indicator values
-    with mesh.access(indicator):
-        ind_values = indicator.data[:, 0].copy()
+    ind_values = indicator.data[:, 0].copy()
 
     # Handle indicator bounds
     if indicator_min is None:
@@ -504,6 +502,17 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
     stacked_bc_label = dm.getLabel(stacked_bc_label_name)
     vals = stacked_bc_label.getNonEmptyStratumValuesIS().getIndices()
 
+    # BUGFIX: ``vals`` is rank-local (a rank only sees stratum values that
+    # are non-empty on its own partition), but the loop below makes
+    # collective calls (``labelComplete``) once per value. If ranks
+    # iterate different value sets — routine at np>=4, where a partition
+    # quadrant may touch no facet of some boundary — the collective call
+    # counts diverge and the run deadlocks. Iterate the global union so
+    # every rank makes the same sequence of collective calls; guard the
+    # local stratum access to values that are live on this rank.
+    local_vals = set(int(v) for v in vals)
+    vals = sorted(set().union(*uw.mpi.comm.allgather(local_vals)))
+
     # Clear labels just in case
     for b in boundaries:
         dm.removeLabel(b.name)
@@ -522,8 +531,9 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
             continue
 
         b_dmlabel = dm.getLabel(b.name)
-        lab_is = stacked_bc_label.getStratumIS(v)
-        b_dmlabel.setStratumIS(v, lab_is)
+        if v in local_vals:
+            lab_is = stacked_bc_label.getStratumIS(v)
+            b_dmlabel.setStratumIS(v, lab_is)
 
         # BUGFIX(#162): expand the boundary label to include its closure
         # (the vertices and edges bordering the labeled facets). The
@@ -647,10 +657,9 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     if the returned swarm is ephemeral
     """
 
-    with swarm0.access():
-        swarm_data = swarm0._particle_coordinates.data.copy()
-        for swarmVar in swarmVarList:
-            swarm_data = np.hstack((swarm_data, np.ascontiguousarray(swarmVar.data.astype(float))))
+    swarm_data = swarm0._particle_coordinates.data.copy()
+    for swarmVar in swarmVarList:
+        swarm_data = np.hstack((swarm_data, np.ascontiguousarray(swarmVar.data.astype(float))))
 
     s_coords0 = np.ascontiguousarray(swarm_data[:, 0 : mesh0.dim])
 
@@ -891,8 +900,7 @@ def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
 
     # print(f"Map data to swarm (rbf) - points = {tmp_swarm.dm.getSize()}", flush=True)
 
-    with tmp_swarm.access(tmp_varS):
-        tmp_varS.data[...] = meshVar0.rbf_interpolate(tmp_swarm._particle_coordinates.data)
+    tmp_varS.data[...] = meshVar0.rbf_interpolate(tmp_swarm._particle_coordinates.data)
 
     # print(f"Distribute swarm", flush=True)
 

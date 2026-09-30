@@ -438,21 +438,13 @@ The NDArray_With_Callback system intercepts NumPy operations:
 ```python
 
 def __setitem__(self, key, value):
-    # Capture old value for callback info
-    old_value = self[key].copy() if self._track_changes else None
-    
     # Perform the actual assignment
     super().__setitem__(key, value)
-    
-    # Trigger callbacks with operation info
-    if self._callbacks_enabled:
-        change_info = {
-            'operation': 'setitem',
-            'indices': key,
-            'old_value': old_value,
-            'new_value': self[key],
-        }
-        self._trigger_callback(change_info)
+
+    # Notify callbacks. old_value is always None: no registered callback
+    # ever read prior values, and snapshotting them cost a full-array
+    # copy per write (the key is retained for dict-shape compatibility).
+    self._trigger_callback("setitem", indices=key, new_value=value)
 ```
 
 ## PETSc Synchronization Details

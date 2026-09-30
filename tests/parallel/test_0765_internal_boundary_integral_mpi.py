@@ -63,23 +63,6 @@ def test_outer_boundary_circumference_parallel():
 
 
 @pytest.mark.mpi(min_size=2)
-@pytest.mark.skip(
-    reason=(
-        "Real bug as of 2026-06-25, found only because this is an MPI test "
-        "(--parallel, not run by default by test_levels.sh or by ./uw dev "
-        "release's own validation step). Calls the internal primitive "
-        "mesh._deform_mesh() directly (written 2026-03-30, before any guard "
-        "existed). Commit f99c8aa2 (2026-06-16, 'Foolproof mesh-coordinate "
-        "mutation: capability gate + public deform() + SL-field CARRY "
-        "transfer' -- the feature/mesh-deform-cache-invalidation work, #188) "
-        "added _assert_coord_mutation_allowed(), which now correctly rejects "
-        "direct _deform_mesh() calls on a mesh that already carries "
-        "variables. This test was never migrated to the new public API. Fix "
-        "is straightforward: replace mesh._deform_mesh(coords * ...) with "
-        "mesh.deform(coords * ..., dt=...). Skipped to unblock v3.1.0 "
-        "validation; needs the API migration before re-enabling."
-    )
-)
 def test_deformed_spherical_shell_boundary_area_parallel():
     """
     Boundary integrals must remain valid after coordinate deformation in MPI.
@@ -104,7 +87,10 @@ def test_deformed_spherical_shell_boundary_area_parallel():
     a = math.log(2.0)
     mapped = (np.exp(a * t) - 1.0) / (math.exp(a) - 1.0)
     new_radii = 0.5 + thickness * mapped
-    mesh._deform_mesh(coords * (new_radii / radii)[:, None])
+    # Public deform() (pure geometric move, no dt): the raw _deform_mesh
+    # primitive is rejected by the live-mesh coordinate-mutation guard when
+    # a variable exists (issue #331).
+    mesh.deform(coords * (new_radii / radii)[:, None])
 
     lower = float(uw.maths.BdIntegral(mesh=mesh, fn=1.0, boundary="Lower").evaluate())
     upper = float(uw.maths.BdIntegral(mesh=mesh, fn=1.0, boundary="Upper").evaluate())

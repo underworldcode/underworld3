@@ -88,53 +88,6 @@ class TestVariableUnitsIntegration:
         assert velocity.units is not None
         assert material_id.units is None
 
-    @pytest.mark.skip(
-        reason="coord_units parameter not implemented - planned feature for evaluate()"
-    )
-    def test_unit_aware_evaluation_returns_uwquantity(self):
-        """Test that evaluating variables with units returns UnitAwareArray with unit metadata."""
-        # Create temperature field with units
-        temperature = uw.discretisation.MeshVariable("T", self.mesh, 1, units="kelvin")
-
-        # Set field data
-        with uw.synchronised_array_update():
-            temperature.array[:, 0, 0] = 1000 + 500 * self.mesh.X.coords[:, 0]
-
-        coords_km = np.array([[500, 500]], dtype=np.float64)
-
-        # Evaluate with coordinate units - should return UnitAwareArray
-        result = uw.function.evaluate(temperature.sym, coords_km, coord_units="km")
-
-        # Check result type and units
-        assert hasattr(result, "_units"), f"Expected UnitAwareArray with units, got {type(result)}"
-        assert result._units is not None, "Result should have units metadata"
-        assert "kelvin" in str(result._units), f"Expected kelvin units, got {result._units}"
-
-        # Check result is numpy compatible
-        assert isinstance(result, np.ndarray), "Result should be numpy array compatible"
-        assert result.shape == (1, 1, 1), f"Expected shape (1,1,1), got {result.shape}"
-
-    @pytest.mark.skip(
-        reason="coord_units parameter not implemented - planned feature for evaluate()"
-    )
-    def test_dimensionless_evaluation_returns_plain_array(self):
-        """Test that evaluating variables without explicit units returns plain array."""
-        # Create variable without explicit units
-        dimensionless = uw.discretisation.MeshVariable("d", self.mesh, 1)
-
-        # Set field data
-        with uw.synchronised_array_update():
-            dimensionless.array[:, 0, 0] = 0.5
-
-        coords_km = np.array([[500, 500]], dtype=np.float64)
-
-        # Evaluate - should return plain numpy array (no units)
-        result = uw.function.evaluate(dimensionless.sym, coords_km, coord_units="km")
-
-        # Check result type - variable has no units, so result should be plain array
-        assert isinstance(result, np.ndarray), f"Expected numpy array, got {type(result)}"
-        assert not hasattr(result, "_pint_qty"), "Result should not have units"
-
     def test_mixed_unit_variable_evaluation(self):
         """Test evaluation of expressions mixing variables with different units."""
         # Create variables with different units

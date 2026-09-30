@@ -1,8 +1,13 @@
 ---
 title: "Mesh.OT_adapt() — public API proposal"
 date: 2026-05-24
-status: proposal
+status: retired (2026-07 — OT_adapt removed; superseded by the MMPDE mover)
 ---
+
+> **RETIRED movers note (2026-07):** the spring / Monge-Ampère / OT-step /
+> anisotropic-Winslow interior movers this document discusses were retired
+> (superseded by `method="mmpde"`, the default). Kept as the R&D record;
+> the code lives in git history before the retirement commit.
 
 # `mesh.OT_adapt()` — public API proposal
 

@@ -363,7 +363,7 @@ nodal_vorticity_from_v.petsc_options.delValue("ksp_monitor")
 """
 
 # %%
-navier_stokes = uw.systems.NavierStokes(
+navier_stokes = uw.systems.NavierStokesSLCN(
     pipemesh,
     velocityField=v_soln,
     pressureField=p_soln,

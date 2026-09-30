@@ -45,8 +45,8 @@ def _freeslip_rotation_coefficient():
     st.petsc_use_nullspace = True            # build the rotation (+ pressure) nullspace
     # Fully free-slip: BOTH boundaries are constraint BCs, NO essential velocity
     # BC -> the rigid-rotation nullspace is ACTIVE (the case the fix targets).
-    st.add_constraint_bc("Upper", g=0.0, normal=unit_r)
-    st.add_constraint_bc("Lower", g=0.0, normal=unit_r)
+    st.add_constraint_bc(0.0, "Upper", normal=unit_r)
+    st.add_constraint_bc(0.0, "Lower", normal=unit_r)
     # purely radial drive: does zero work against a rigid rotation, so the
     # physical solution has no net rotation component.
     st.bodyforce = 1.0e2 * sympy.sin(3 * sympy.atan2(X[1], X[0])) * unit_r

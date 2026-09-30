@@ -24,8 +24,6 @@ See Also
 underworld3.discretisation : Mesh and variable classes.
 underworld3.swarm : Particle swarm evaluation targets.
 """
-from . import analytic
-
 # Import the _function module to expose it in the namespace (needed by expressions.py)
 from . import _function
 from ._function import (
@@ -234,3 +232,23 @@ def derivative(expression, variable, evaluate=True):
                         derivative[i, j] = _derivative_expression(latex, expression, variable[i, j])
 
     return derivative
+
+
+def __getattr__(name):
+    """Keep ``uw.function.analytic`` reachable by attribute after the move.
+
+    The analytic suite now lives in :mod:`underworld3.analytic`; what remains
+    here is a deprecation shim. Importing it eagerly would pull the whole
+    analytic package in as a side effect of ``import underworld3.function``, so
+    it is resolved on first use instead.
+    """
+
+    if name == "analytic":
+        # import_module, not `from . import analytic`: the latter resolves the
+        # submodule by calling getattr() on this module, which lands back here.
+        # import_module also binds the result as an attribute, so this runs once.
+        import importlib
+
+        return importlib.import_module(f"{__name__}.analytic")
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

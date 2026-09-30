@@ -28,7 +28,7 @@ import weakref
 from typing import Optional, Union
 import numpy as np
 
-from .discretisation_mesh_variables import _BaseMeshVariable
+from .discretisation_mesh_variables import _BaseMeshVariable, _BaseIntegrationPointVariable
 from ..utilities import MathematicalMixin
 from ..utilities.dimensionality_mixin import DimensionalityMixin
 
@@ -62,6 +62,11 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         persistent_var = EnhancedMeshVariable("pressure", mesh, 1, persistent=True)
         success = persistent_var.transfer_data_from(old_pressure)
     """
+
+    # The storage class this wrapper delegates to; IntegrationPointVariable
+    # swaps in the quadrature-point element.
+    _base_variable_class = _BaseMeshVariable
+    is_integration_point = False
 
     def __new__(cls, varname, mesh, *args, **kwargs):
         """Custom __new__ to ensure proper initialization and registration."""
@@ -127,7 +132,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         self._mesh_ref = weakref.ref(mesh)  # Weak reference to avoid circular deps
 
         # Create base variable without registration (we handle registration ourselves)
-        self._base_var = _BaseMeshVariable(
+        self._base_var = self._base_variable_class(
             varname=varname,
             mesh=mesh,
             num_components=num_components,
@@ -463,9 +468,39 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
     # === ADDITIONAL DELEGATED METHODS ===
 
-    def clone(self):
-        """Clone the variable."""
-        return self._base_var.clone()
+    def clone(self, name, varsymbol):
+        """Create a copy of this variable with a new name and symbol.
+
+        Mirrors ``MeshVariable.clone(name, varsymbol)``: the new variable
+        shares the mesh, shape, type, degree and continuity of this one,
+        but has its own (zero-initialised) data.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new variable.
+        varsymbol : str
+            LaTeX symbol for the new variable.
+
+        Returns
+        -------
+        EnhancedMeshVariable
+            New variable with copied structure but independent data.
+
+        Notes
+        -----
+        This forwarded no arguments at all until issue #498, so it raised
+        whichever way it was called: with the two arguments every caller uses,
+        and without them inside the base. Six shipped examples aborted on it.
+
+        The construction itself lives in ``_BaseMeshVariable.clone``, which
+        goes through the public ``uw.discretisation.MeshVariable`` factory and
+        so returns the enhanced type. Delegating keeps a single code path;
+        duplicating the constructor call here is what let the two halves of
+        #498 drift apart in the first place.
+        """
+
+        return self._base_var.clone(name, varsymbol)
 
     def max(self):
         """Maximum value of the variable."""
@@ -514,38 +549,33 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         return self._base_var.read_timestep(*args, **kwargs)
 
     def copy_into(self, target):
-        """Copy this variable's data into a variable on a related mesh.
+        """Copy this variable's data into a variable on a related (child/parent) mesh.
 
-        Detects the parent/submesh relationship and calls restrict or
-        prolongate as appropriate. Both meshes must be related via
-        ``extract_region``.
+        Detects the parent/child relationship and dispatches restrict or
+        prolongate as appropriate. The two meshes must be related via
+        ``extract_region`` (submesh child) or ``adapt`` (SBR refinement child).
+
+        The operation depends on the **kind** of child:
+
+        - **submesh** (``extract_region``): the child is a *subset*, DOFs
+          coincide. parent → child is restrict; child → parent is prolongate.
+        - **refinement** (``adapt``): the child is *finer*, DOFs differ. parent →
+          child is prolongate (FE-exact custom-P); child → parent is restrict
+          (injection at shared nodes).
 
         Parameters
         ----------
         target : MeshVariable
-            Destination variable. Must be on the parent or a submesh
-            of this variable's mesh.
+            Destination variable, on the parent or a child of this variable's mesh.
 
         Examples
         --------
-        >>> v_full.copy_into(v_rock)   # restrict: parent → submesh
-        >>> v_rock.copy_into(v_full)   # prolongate: submesh → parent
+        >>> v_full.copy_into(v_rock)   # submesh:    restrict parent → child
+        >>> v_rock.copy_into(v_full)   # submesh:    prolongate child → parent
+        >>> v_base.copy_into(v_child)  # refinement: prolongate parent → child
+        >>> v_child.copy_into(v_base)  # refinement: restrict   child → parent
         """
-        src_mesh = self._base_var.mesh
-        tgt_mesh = target._base_var.mesh if hasattr(target, '_base_var') else target.mesh
-
-        if hasattr(tgt_mesh, 'parent') and tgt_mesh.parent is src_mesh:
-            # target is submesh of source → restrict
-            tgt_mesh.restrict(self, target, mode="replace")
-        elif hasattr(src_mesh, 'parent') and src_mesh.parent is tgt_mesh:
-            # source is submesh of target → prolongate
-            src_mesh.prolongate(self, target, mode="replace")
-        else:
-            raise ValueError(
-                "copy_into requires a parent/submesh relationship between "
-                "the two variables' meshes. Use uw.function.evaluate() "
-                "for unrelated meshes."
-            )
+        self._copy_into(target, mode="replace")
 
     def add_into(self, target):
         """Add this variable's data into a variable on a related mesh.
@@ -553,28 +583,43 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         Like ``copy_into`` but uses ADD_VALUES — adds to existing
         values in the target rather than replacing them.
 
-        Parameters
-        ----------
-        target : MeshVariable
-            Destination variable. Must be on the parent or a submesh
-            of this variable's mesh.
-
         Examples
         --------
         >>> v_rock.add_into(v_full)    # prolongate with ADD
         """
-        src_mesh = self._base_var.mesh
-        tgt_mesh = target._base_var.mesh if hasattr(target, '_base_var') else target.mesh
+        self._copy_into(target, mode="add")
 
-        if hasattr(tgt_mesh, 'parent') and tgt_mesh.parent is src_mesh:
-            tgt_mesh.restrict(self, target, mode="add")
-        elif hasattr(src_mesh, 'parent') and src_mesh.parent is tgt_mesh:
-            src_mesh.prolongate(self, target, mode="add")
+    def _copy_into(self, target, mode):
+        """Shared parent/child dispatch for copy_into / add_into."""
+        src_var = self
+        tgt_var = target
+        src_mesh = src_var._base_var.mesh
+        tgt_mesh = tgt_var._base_var.mesh if hasattr(tgt_var, '_base_var') else tgt_var.mesh
+
+        # Identify which mesh is the child (its .parent is the other).
+        if getattr(tgt_mesh, 'parent', None) is src_mesh:
+            child, parent_is_src = tgt_mesh, True          # src=parent, tgt=child
+        elif getattr(src_mesh, 'parent', None) is tgt_mesh:
+            child, parent_is_src = src_mesh, False         # src=child, tgt=parent
         else:
             raise ValueError(
-                "add_into requires a parent/submesh relationship between "
-                "the two variables' meshes."
+                "copy_into requires a parent/child relationship between the two "
+                "variables' meshes (extract_region or adapt). Use "
+                "uw.function.evaluate() for unrelated meshes."
             )
+
+        kind = getattr(child, "_relationship_kind", "submesh")
+
+        if kind == "refinement":
+            if parent_is_src:                              # parent → child
+                child._refine_prolongate(src_var, tgt_var, mode=mode)
+            else:                                          # child → parent
+                child._refine_restrict(src_var, tgt_var, mode=mode)
+        else:                                              # submesh (DOFs coincide)
+            if parent_is_src:                              # parent → child: restrict
+                child.restrict(src_var, tgt_var, mode=mode)
+            else:                                          # child → parent: prolongate
+                child.prolongate(src_var, tgt_var, mode=mode)
 
     def stats(self, *args, **kwargs):
         """Get statistics for the variable."""
@@ -886,3 +931,78 @@ def demonstrate_enhanced_variables():
 # Note: The demonstration function above references EnhancedSwarmVariable
 # which doesn't exist - SwarmVariable is already enhanced (see swarm.py).
 # Update this demo to use uw.swarm.SwarmVariable directly if needed.
+
+
+class IntegrationPointVariable(EnhancedMeshVariable):
+    r"""A field stored at the mesh integration points.
+
+    A peer of :class:`MeshVariable` and of swarm variables: one value per
+    quadrature point per cell, on an element whose basis is the identity on the
+    mesh rule (``mesh.integration_rule``). The pointwise functions read the
+    stored values directly, with no interpolation, so it is the carrier for
+    values that are *injected* at the integration points - a semi-Lagrangian
+    history sampled at the departure points of the quadrature points, or a
+    material property reconstructed from a swarm with sub-cell resolution.
+
+    Between its points the field is piecewise constant on the
+    nearest-integration-point partition of each cell; ``uw.function.evaluate``
+    returns that, so a query agrees with what the assembler used at the same
+    point. Derivatives of the symbol are refused by the JIT (the gradient is
+    identically zero). Vector and tensor variables are supported (one dof
+    per component per point).
+
+    Examples
+    --------
+    >>> eta_q = uw.discretisation.IntegrationPointVariable("eta_q", mesh)
+    >>> eta_q.cell_data[...] = 1.0          # (ncells, Nq, 1)
+    >>> eta_q.coords                         # the physical integration points
+    >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_q.sym
+    
+    Gradients: this variable has none of its own (it stores a value at each
+    integration point and nothing between them, so its tabulated derivative is
+    identically zero). A derivative of its symbol in a WEAK FORM is refused
+    rather than answered with that zero; use a discontinuous mesh variable, or
+    ``SwarmVariable(proxy_location="cells")``, when a solve needs the gradient.
+    ``uw.function.evaluate`` of the same derivative does answer, by fitting the
+    values per cell first: a recovered gradient, for inspection.
+    """
+
+    _base_variable_class = _BaseIntegrationPointVariable
+
+    def __init__(
+        self,
+        varname,
+        mesh,
+        num_components=1,
+        vtype=None,
+        varsymbol=None,
+        persistent=False,
+        units=None,
+        units_backend=None,
+        **kwargs,
+    ):
+        kwargs.pop("degree", None)
+        kwargs.pop("continuous", None)
+        super().__init__(
+            varname, mesh, num_components=num_components, vtype=vtype,
+            degree=0, continuous=False, varsymbol=varsymbol, persistent=persistent,
+            units=units, units_backend=units_backend, **kwargs,
+        )
+
+    # Explicit passthroughs (the wrapper delegates unknown attributes to the
+    # sympy matrix, not to the storage object).
+    is_integration_point = True
+
+    @property
+    def integration_points(self):
+        """Physical integration points, ``(ncells, Nq, cdim)``, local cell order."""
+        return self._base_var.integration_points
+
+    @property
+    def num_points_per_cell(self):
+        return self._base_var.num_points_per_cell
+
+    @property
+    def cell_data(self):
+        """``data`` viewed as ``(ncells, Nq, num_components)``."""
+        return self._base_var.cell_data

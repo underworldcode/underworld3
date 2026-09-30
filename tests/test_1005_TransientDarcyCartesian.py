@@ -49,12 +49,13 @@ def create_mesh():
     )
 
 
-# Analytical solution: step-change diffusion in a semi-infinite column
-# h(y,t) = erfc(y / (2 sqrt(D t))) where D = K/Ss
-# with h(0,t) = 1, h(inf,t) = 0
-y_sym, t_sym = sp.symbols("y t", positive=True)
+# Analytical solution: step-change diffusion in a semi-infinite column,
+# h(y,t) = erfc(y / (2 sqrt(D t))) with h(0,t) = 1 and h(inf,t) = 0.
+#
+# This used to be written out here. It is now uw.analytic.ErfcDiffusion, which
+# is the same expression checked against du/dt = div(k grad u) — the profile
+# below was never verified to solve anything.
 D_val = K_val / Ss_val
-h_analytic = sp.erfc(y_sym / (2 * sp.sqrt(D_val * t_sym)))
 
 
 def test_transient_darcy_diffusion():
@@ -83,9 +84,10 @@ def test_transient_darcy_diffusion():
     darcy._v_projector.petsc_options["snes_rtol"] = 1.0e-6
     darcy._v_projector.smoothing = 1.0e-6
 
+    exact = uw.analytic.ErfcDiffusion(mesh, diffusivity=D_val)
+
     # Initial condition: analytical profile at t_start
-    h_init = h_analytic.subs(t_sym, t_start)
-    h_init_fn = h_init.subs(y_sym, mesh.X[1])
+    h_init_fn = exact.fn_solution.subs(exact.t, t_start)
     h_soln.array = uw.function.evaluate(h_init_fn, h_soln.coords)
 
     # Time-step
@@ -108,7 +110,7 @@ def test_transient_darcy_diffusion():
 
     h_numerical = uw.function.evaluate(h_soln.sym[0], sample_pts).squeeze()
 
-    h_exact_fn = h_analytic.subs(t_sym, t_end).subs(y_sym, mesh.X[1])
+    h_exact_fn = exact.fn_solution.subs(exact.t, t_end)
     h_exact = uw.function.evaluate(h_exact_fn, sample_pts).squeeze()
 
     assert np.allclose(h_numerical, h_exact, atol=0.1), (

@@ -188,3 +188,13 @@ def test_helmholtz_smoother_self_consistent():
     ebar_after = np.array(ebar.data[:, 0])
     rel = np.linalg.norm(ebar_after - ebar_before) / (np.linalg.norm(ebar_after) + 1.0e-30)
     assert rel < 1.0e-4, f"ebar not self-consistent at convergence: rel = {rel}"
+
+
+def test_stokes_init_declares_effective_order_state():
+    # Regression for READ-97 / Wave D-65: `_prev_effective_order` (the
+    # last-seen VE/VEP constitutive effective_order that triggers a
+    # function re-wire in solve()) must be declared in __init__, not
+    # lazily created behind a hasattr guard inside solve(), so the solver
+    # state is complete on construction.
+    mesh, v, p, stokes = _lid_driven(cellSize=0.2)
+    assert stokes._prev_effective_order is None

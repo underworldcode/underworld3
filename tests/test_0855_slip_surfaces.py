@@ -1,7 +1,7 @@
 """Named-surface tangent slip for the metric movers.
 
 Locks the ``slip_surfaces`` API on ``mesh.boundary_slip`` (the mesh-owned
-contract the movers now consume; the private ``_ot_adapt._build_slip_projector``
+contract the movers now consume; the private slip-projector machinery
 it replaced has been removed — see boundary-slip-strategy.md):
 
 * slip-vs-pin is **label-driven** — a boundary vertex slips iff it lies on
@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
-from underworld3.meshing import _ot_adapt as ota
+from underworld3.meshing import smoothing as ota
 from underworld3.meshing.smoothing import _pinned_mask
 
 

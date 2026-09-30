@@ -9,7 +9,7 @@ import sympy
 from typing import Optional, Union, Callable
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
-from underworld3.systems.ddt import SemiLagrangian_DDt, Lagrangian_DDt, Eulerian_DDt
+from underworld3.systems.ddt import SemiLagrangian, Lagrangian, Eulerian
 from underworld3 import timing
 from underworld3.systems.solvers import expression
 
@@ -89,8 +89,8 @@ class SNES_MyEquation(SNES_Scalar):
         u_Field: Optional[uw.discretisation.MeshVariable] = None,
         degree: int = 2,
         verbose: bool = False,
-        DuDt: Optional[Union[SemiLagrangian_DDt, Lagrangian_DDt, Eulerian_DDt]] = None,
-        DFDt: Optional[Union[SemiLagrangian_DDt, Lagrangian_DDt, Eulerian_DDt]] = None,
+        DuDt: Optional[Union[SemiLagrangian, Lagrangian, Eulerian]] = None,
+        DFDt: Optional[Union[SemiLagrangian, Lagrangian, Eulerian]] = None,
     ):
         """
         Initialize the solver.

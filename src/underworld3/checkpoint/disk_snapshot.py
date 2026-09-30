@@ -13,8 +13,9 @@ Design (see ``memory/project_snapshot_v1_1_disk_format.md`` and
     the *layout* and the *metadata*, not the binary serialisation of
     fields.
 
-File structure (target — phases 2+ fill in the bulk under these
-groups; phase 1 writes the metadata and empty stub groups):
+File structure (the phased writers below fill the bulk under these
+groups; ``write_snapshot_skeleton`` stubs each group with a
+``filled_by`` attribute naming its writer):
 
     my_run.snap.h5/
     ├── /metadata          (attrs: uw3_version, schema_version,
@@ -26,10 +27,10 @@ groups; phase 1 writes the metadata and empty stub groups):
     ├── /swarms            (phase 3 — possibly @external_file refs)
     └── /python_state      (phase 3 — Snapshottable dataclasses as attrs)
 
-Phase 1 (this commit): the metadata layer and the skeleton group
-structure, with an inspectability acceptance test that asserts an
-external reader (h5py here) sees meaningful information without any
-UW3 imports.
+Phases 1 (metadata + skeleton), 2 (mesh + variables) and 3 (swarms +
+python_state) are all implemented in this module; an inspectability
+acceptance test asserts an external reader (h5py) sees meaningful
+information without any UW3 imports.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ import datetime
 import json
 import os
 import warnings
+from contextlib import contextmanager
 from typing import Any, Optional
 
 import numpy as np
@@ -246,8 +248,8 @@ def read_snapshot_metadata(path: str) -> dict:
 #
 #   /path/to/run.snap.h5              wrapper (metadata, h5py-readable)
 #   /path/to/run.snap.bulk/           companion directory (one per snapshot)
-#       {mesh_safe}.mesh.00000.h5     mesh DM dump (PETSc HDF5)
-#       {mesh_safe}.{var_clean}.00000.h5  per-variable section + vec (PETSc HDF5)
+#       mesh_0000.mesh.00000.h5       mesh DM dump (PETSc HDF5)
+#       mesh_0000.{var_clean}.00000.h5  per-variable section + vec (PETSc HDF5)
 #       ... one set per (mesh, var) ...
 #
 # The bulk-dir path is derived from the wrapper path by convention, so a
@@ -259,6 +261,23 @@ def _bulk_dir_for(wrapper_path: str) -> str:
     """Convention: wrapper at `run.snap.h5` ⇒ bulk at `run.snap.bulk/`."""
     base = wrapper_path[:-3] if wrapper_path.endswith(".h5") else wrapper_path
     return base + ".bulk"
+
+
+@contextmanager
+def _short_io_path(path: str):
+    """Expose ``path`` to native I/O as a basename from its parent directory.
+
+    Some parallel PETSc/HDF5 stacks fail on valid absolute paths well below
+    ``PATH_MAX``. Snapshot artifacts retain their normal locations, while the
+    native reader or writer receives only the final path component.
+    """
+    absolute_path = os.path.abspath(path)
+    previous_directory = os.getcwd()
+    os.chdir(os.path.dirname(absolute_path))
+    try:
+        yield os.path.basename(absolute_path)
+    finally:
+        os.chdir(previous_directory)
 
 
 def _sanitise(name: str) -> str:
@@ -305,8 +324,13 @@ def write_snapshot(model, path: str) -> str:
     # bulk directory. write_checkpoint is collective (PETSc HDF5
     # viewer), so all ranks must participate.
     mesh_records: list[dict] = []
-    for mesh in list(model._meshes.values()):
-        mesh_safe = _sanitise(mesh.name)
+    for mesh_index, mesh in enumerate(list(model._meshes.values())):
+        # Loaded meshes commonly use their complete source path as ``name``.
+        # Embedding that path in every PETSc-HDF5 bulk filename can exceed
+        # practical MPI-I/O pathname limits even when the wrapper path itself
+        # is valid. The wrapper preserves the original name for exact restore
+        # matching, so bulk files only need a compact deterministic identifier.
+        mesh_safe = f"mesh_{mesh_index:04d}"
         mesh_vars = list(mesh.vars.values())
         # Filter to allocated variables — same skip rule as the in-memory
         # path: lazy-allocated vars with _gvec == None have no data.
@@ -318,14 +342,15 @@ def write_snapshot(model, path: str) -> str:
         # (consumed by the reload path below). Suppress the FutureWarning for
         # this internal call rather than spam every snapshot. (Migrating the
         # snapshot to write_timestep is tracked in #252.)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            mesh.write_checkpoint(
-                mesh_safe,
-                outputPath=bulk_dir,
-                meshVars=mesh_vars,
-                index=0,
-            )
+        with _short_io_path(bulk_dir) as short_bulk_dir:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                mesh.write_checkpoint(
+                    mesh_safe,
+                    outputPath=short_bulk_dir,
+                    meshVars=mesh_vars,
+                    index=0,
+                )
 
         mesh_records.append({
             "name": mesh.name,
@@ -460,6 +485,15 @@ def read_snapshot(model, path: str) -> None:
     import h5py
 
     md = read_snapshot_metadata(path)
+    write_size = int(md.get("mpi_ranks_at_write", 1))
+    if write_size != int(uw.mpi.size):
+        raise ValueError(
+            f"snapshot at {path} was written on {write_size} MPI rank(s); "
+            f"this run uses {uw.mpi.size}. Exact disk restart requires the "
+            "same rank count; use mesh.write_timestep/read_timestep for "
+            "coordinate-remapped field transfer."
+        )
+
     bulk_dir = _bulk_dir_for(path)
     if not os.path.isdir(bulk_dir):
         raise FileNotFoundError(
@@ -495,10 +529,14 @@ def read_snapshot(model, path: str) -> None:
                         f"snapshot variable {var_name!r} not registered on "
                         f"mesh {mesh_name!r}"
                     )
-                var.read_checkpoint(
-                    os.path.join(bulk_dir, external_file),
-                    data_name=var_name,
-                )
+                with _short_io_path(
+                    os.path.join(bulk_dir, external_file)
+                ) as short_external_file:
+                    var.read_checkpoint(
+                        short_external_file,
+                        data_name=var_name,
+                        same_layout=True,
+                    )
 
         # Phase 3a: restore state-bearer dataclasses.
         if _GROUP_PYTHON_STATE in f:
@@ -698,11 +736,7 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
 
     # Invalidate canonical-data caches so subsequent var.data reads
     # re-resolve to the rebuilt PETSc fields.
-    if hasattr(swarm._particle_coordinates, "_canonical_data"):
-        swarm._particle_coordinates._canonical_data = None
-    for var in swarm._vars.values():
-        if hasattr(var, "_canonical_data"):
-            var._canonical_data = None
+    swarm._invalidate_canonical_data()
 
     # Restore counted as a population change (matches in-memory path).
     swarm._population_generation += 1
@@ -952,13 +986,17 @@ def extract_var_via_bridge(wrapper_path: str, var_name: str):
     # Rebuild a transient source mesh + variable to read DOFs into.
     # We deliberately don't register them with the live model — these
     # are throwaway and exit scope on return.
-    src_mesh = uw.discretisation.Mesh(os.path.join(bulk_dir, mesh_file_rel))
+    with _short_io_path(
+        os.path.join(bulk_dir, mesh_file_rel)
+    ) as short_mesh_file:
+        src_mesh = uw.discretisation.Mesh(short_mesh_file)
     src_var = uw.discretisation.MeshVariable(
         var_name, src_mesh, components, degree=degree, continuous=continuous,
     )
-    src_var.read_checkpoint(
-        os.path.join(bulk_dir, var_file_rel), data_name=var_name
-    )
+    with _short_io_path(
+        os.path.join(bulk_dir, var_file_rel)
+    ) as short_var_file:
+        src_var.read_checkpoint(short_var_file, data_name=var_name)
 
     coords = np.asarray(src_var.coords).copy()
     values = np.asarray(src_var.array[...]).reshape(

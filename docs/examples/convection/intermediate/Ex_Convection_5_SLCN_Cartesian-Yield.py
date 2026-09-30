@@ -158,7 +158,7 @@ stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 """
 
 # %%
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
     V_fn=v_soln,

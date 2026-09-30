@@ -182,6 +182,7 @@ def view():
 # Needed everywhere
 import underworld3.mpi
 from .mpi import pprint, selective_ranks, collective_operation, CollectiveOperationError
+from .mpi import watch, unwatch, watching, checkpoint, ranks_agree
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
@@ -201,13 +202,16 @@ import underworld3.function
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
+import underworld3.postprocessing
 import underworld3.maths
 import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
-import underworld3.discretisation.persistence
 import underworld3.checkpoint
+
+# After underworld3.function: the analytic suite still sources SolCx from it.
+import underworld3.analytic
 
 from .model import (
     Model,
@@ -218,18 +222,30 @@ from .model import (
     create_thermal_convection_model,
 )
 from .parameters import ParameterRegistry, ParameterType
-from .materials import MaterialRegistry, MaterialProperty
+from .materials import (
+    MaterialRegistry,
+    MaterialProperty,
+    MaterialDefinition,
+    MaterialRegions,
+)
 from .constitutive_models import MultiMaterialConstitutiveModel
-from .function import quantity, expression, with_units, expand, unwrap
+# uw.quantity is THE quantity factory (returns UWQuantity, exposed alongside
+# for isinstance checks); uw.create_quantity is deprecated (see units.py).
+from .function import quantity, UWQuantity, expression, with_units, expand, unwrap
 from .coordinates import uwdiff  # Differentiation helper for UWCoordinates
 from .utilities import retention_curves
 
 # Unit utilities (top-level convenience for user code)
 from .function.unit_conversion import _extract_value
 
-# Currently on binder, pykdtree is hanging - fallback to previous implementation
-# import underworld3.kdtree
+# KDTree backend is ckdtree (nanoflann). Register the submodule alias in
+# sys.modules so `import underworld3.kdtree` and the `underworld3.kdtree`
+# attribute are the SAME module object. A separate shim file used to shadow
+# this attribute on the first `import underworld3.kdtree` (submodule import
+# rebinds the package attribute), silently dropping the memprobe counters
+# for every later test in the run — issue #316.
 import underworld3.ckdtree as kdtree
+sys.modules["underworld3.kdtree"] = kdtree
 import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation
@@ -615,10 +631,18 @@ from .discretisation import MeshVariable
 
 def synchronised_array_update(context_info="user operations"):
     """
-    Context manager for synchronised array updates across multiple variables.
+    Context manager for batched variable updates that stay parallel-safe.
 
-    Batches multiple array assignments together and defers PETSc synchronization
-    until the end of the context, ensuring atomic updates and better performance.
+    Writes made inside the context land in the local arrays immediately;
+    the parallel synchronisation of each touched variable happens once, at
+    context exit, in the same order on every rank. Ranks do not need to
+    make the same writes — one rank updating a masked subset while others
+    write nothing is safe — but every rank must enter and leave the
+    context together (it is a collective operation, like a solve).
+
+    If the context body raises, the deferred synchronisation is skipped
+    (ranks unwind exceptions asymmetrically); the written values remain in
+    the local arrays.
 
     Example
     -------
@@ -626,7 +650,7 @@ def synchronised_array_update(context_info="user operations"):
         velocity.array[...] = new_velocity_values
         pressure.array[...] = new_pressure_values
         temperature.array[...] = new_temperature_values
-    # All arrays are synchronized here
+    # Each variable is synchronised exactly once, here
 
     Parameters
     ----------
@@ -635,7 +659,7 @@ def synchronised_array_update(context_info="user operations"):
 
     Returns
     -------
-    Context manager for delayed callback execution
+    Context manager for deferred, rank-agreed synchronisation
     """
     return utilities.NDArray_With_Callback.delay_callbacks_global(context_info)
 
@@ -753,3 +777,9 @@ __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
 # Note: SymPy converter registration approach doesn't work reliably in strict mode
 # The better approach is to ensure UWexpression arithmetic operations return SymPy objects
 # This is handled by the __rmul__, __radd__ etc. methods in the mathematical mixin
+
+# The environment-armed hang watchdog (UW_HANG_WATCHDOG), armed HERE —
+# after every module above has finished importing — because
+# faulthandler's repeating C dump against a still-importing interpreter
+# was measured to livelock or SIGSEGV (see mpi._watch_from_environment).
+mpi._arm_environment_watchdog()

@@ -1,5 +1,6 @@
 ---
 title: "Feasibility study: a scalable saddle-point smoother for Stokes SNESFAS"
+status: "Investigation record (preserved via PR #245, 2026-06-18); prototype only — FAS wrap / UW3 API not landed"
 ---
 
 # Feasibility study — scalable saddle smoother for Stokes FAS

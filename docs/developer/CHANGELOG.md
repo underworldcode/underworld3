@@ -6,6 +6,321 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### The Multiplier Was Not the Whole Traction (August 2026)
+
+**`Stokes_Constrained.topography()` now returns the traction the boundary is
+actually held with**, and a new `traction()` exposes it directly. The momentum
+row carries `λ + r(n·u − g)`, so the bare multiplier is short by the
+augmented-Lagrangian share — `r` times the discrete constraint residual. With the
+viscosity-weighted default `r = 1e4·μ(x)` that share is a few per cent of the
+surface traction on a uniform-viscosity annulus and most of it across a `1e6`
+viscosity step, where `λ` alone reads a tenth of the exact SolCx topography and
+is anti-correlated with it. `multiplier()` still returns `λ` and now says what it
+is not.
+
+The defect survived because the validation scored a **correlation** (0.9999)
+between the multiplier and the recovered normal stress. A correlation is
+scale-free and cannot see a systematic amplitude deficit, which is precisely what
+a missing share of the load is. The new guard,
+`tests/test_1063_constrained_traction.py`, scores a relative `l2` against the
+exact SolCx surface topography and carries the bare multiplier as its negative
+control.
+
+The corrected quantity is the consistent boundary flux: at convergence
+`M_Γ(λ + r(n·u − g))` balances the volume residual restricted to the boundary,
+which is the CBF nodal load (Zhong, Gurnis & Hulbert 1993). So the multiplier
+route and the rotated constraint's `boundary_normal_traction` are the same
+computation, and they agree to 3–5% — inside each route's own error against the
+exact answer.
+
+Documentation: `docs/advanced/curved-boundary-conditions.md` now writes the
+penalty free-slip recipe against `mesh.boundary_normal` rather than `mesh.Gamma`.
+A penalty against the per-facet normal over-constrains the shared nodes and does
+not converge — measured on an annulus at coefficient `1e6`, the velocity error
+stays at 0.60 and the surface-stress error grows from 0.21 to 0.26 as the mesh is
+refined, while the leak reads 1e-5 throughout. (underworld3#607, #608, #614)
+
+### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)
+
+**The grad-div penalty default stays off**, but the reason it was held off turned out to
+be a defect somewhere else entirely (#633) — so the objection that had blocked it is gone,
+and a different one took its place.
+
+With the penalty at 10, the spherical dynamic topography recovered from the rotated
+free-slip reaction dropped 28% at *vertices* while the facet-integrated value stayed
+correct. The natural reading — that grad-div augmentation corrupts the de-smearing from
+reaction loads to pointwise stress — was wrong.
+
+The de-smearing mass for a 3-D **P2 triangular** trace has vertex rows that sum to
+**exactly zero**. Those rows annihilate a constant, so solving `M σ = R` amplifies any
+perturbation of the nodal load at vertices by O(1) — and, being an instability rather
+than a discretisation error, does so independently of mesh resolution. The recovery was
+already 7.6% low with no penalty at all; the penalty only made it large enough to fail a
+test whose 12% tolerance had been hiding it.
+
+The discrimination needed a case that was curved but not 3-D. A 2-D annulus reproduces
+the signature exactly and then parts company under refinement: its error falls ~O(h²)
+while the shell's stays flat at ~0.28 over a 3.2× node-count range. The 2-D P2 **line**
+mass has positive vertex row sums, which is why 2-D never showed the defect and why
+dimension, curvature and the rotated constraint were all red herrings.
+
+- The zero-mean P2 vertex basis was **already known and documented in #414**, which
+  recorded the same drift-away-under-refinement we re-measured here. Its mechanism is
+  the sharper one and is adopted: because the vertex basis has zero surface mean, the
+  vertex reaction carries essentially only the O(h) facet-normal/geometry error, and the
+  consistent solve *faithfully reconstructs that error* — it is not amplifying noise.
+  What #633 adds is the separation from the grad-div penalty (which was blamed for it)
+  and the fix below, which is #414's own unactioned recommendation (2).
+- So `mass="auto"` stops asking. On a 3-D P2 trace it now takes the **consistent** solve,
+  keeps its superconvergent midpoints, and **reconstructs the vertices from them**: the
+  three midpoints of a facet determine a unique linear function, so a vertex reads its
+  two adjacent midpoints and subtracts the opposite one, averaged over incident facets.
+  Worst-node error against the analytic coefficient, over cellSize 0.25 → 0.11:
+
+  | | 0.25 | 0.20 | 0.16 | 0.13 | 0.11 |
+  |---|---|---|---|---|---|
+  | surface, P1-projected | 0.041 | 0.026 | 0.018 | 0.013 | 0.008 |
+  | surface, reconstructed | 0.016 | 0.012 | 0.012 | 0.003 | 0.004 |
+  | CMB, P1-projected | 0.116 | 0.067 | 0.047 | 0.030 | 0.025 |
+  | CMB, reconstructed | 0.094 | 0.058 | 0.043 | 0.024 | 0.015 |
+
+  Better at every resolution on both boundaries, by 1.8x to 4.9x, and converging. The
+  simpler P1-projected recovery stays available as `mass="p1"` — it is sound, it just
+  discards the good data along with the bad.
+- `FreeSurface` already used the P1-projected recovery in 3-D, so production dynamic
+  topography was never affected. The exposure was `mass="auto"`.
+- The spherical topography test is refined (cellSize 0.25 → 0.13) and its tolerances
+  tightened from 0.10/0.12 to 0.01/0.05, set from measured discretisation error with
+  ~2× headroom, and now assert every node class rather than the aggregate — the failure
+  was confined to one class and an aggregate assertion passed straight through it.
+- Filed #637: 3-D recovery accepts only P1/P2 triangular traces, so dynamic topography
+  has exactly one supported discretisation there and cannot be cross-validated. That
+  blocked the P3/hex arm of this investigation.
+- `Stokes.DEFAULT_PENALTY` was flipped to 10 on the #625 evidence and then **reverted**.
+  Three tier-A/B tests fail at 10 and pass at 0, and the same three run **8.3x slower**
+  (9.27 s to 76.92 s, warm cache both ways). The #625 win needs an FMG hierarchy; without
+  `refinement>=1` the velocity block falls back to GAMG, which is where grad-div
+  augmentation drives the solve into its iteration cap. The default path is the one
+  without a hierarchy, so the default serves it; set `penalty=10` explicitly where FMG
+  is available.
+- Two of those three failures are not penalty defects. The Nitsche free-slip leak
+  (1.234e-4 against a 1e-4 bound) is augmentation perturbing a *weakly* imposed
+  constraint — a strong rotated constraint is untouched. The swarm one exposed #641:
+  `evaluate` returns −0.4976 for `sqrt((E**2).trace()/2)` at in-domain points near the
+  lid-corner singularity, at `penalty=0` as well; the penalty merely moved an accumulated
+  total across zero.
+
+### The Free Surface Reaches the Spherical Shell (July 2026)
+
+**`uw.systems.FreeSurface` now runs in 3D on a spherical shell** — the same
+exponential three-number integrator, held-lid σ_nn recovery and strong
+material-boundary datum, with the surface machinery made dimension-general
+rather than ported piecewise:
+
+- The datum gauge (mean removal) is an FE trace-mass reduction over
+  owned boundary facets — no ordered ring, no gather; the same code is the
+  2D line gauge and the 3D area gauge. On the way it resolved a real 2D
+  defect: the deforming-ring strong-datum solves used to stall at a ~2e-3
+  residual floor, which turned out to be three stacked causes (arc-length vs
+  FE trace weights; the datum's *directed* mean flux through the deformed
+  facet normals, now stripped with the same FE surface integral the residual
+  uses; and the constant-pressure gauge mode, which the inner solver projects
+  and the outer loop therefore now measures in the quotient space). With all
+  three closed, every step of the power-law acceptance run converges.
+- σ_nn on a 3D P2 boundary is recovered by **P1 projection** (edge-midpoint
+  loads folded exactly onto vertices, sound P1 lumped triangle mass) — chosen
+  over the consistent P2 mass because its vertex-integral checkerboard sits
+  exactly at the vertices the P1 topography field consumes.
+- The two genuinely 2D features (ring Taubin filter, tangential transport)
+  are refused explicitly in 3D; everything else is shared code.
+
+First 3D evidence (spherical Y20 topographic relaxation, constant-density
+shell): exponential decay at an O(1) shell correction below the half-space
+Cathles rate, in the physically correct direction, with the equilibrium
+modal bias falling 16% → 2% of the initial amplitude over one resolution
+step (the known discrete recovery defect, resolution-convergent). The
+detailed benchmarking — analytic shell-rate comparison, convergence study,
+low-Ra spherical convection, 3D parallel — is deliberately left to the
+review pass.
+
+### One Owner for the Geometric-Multigrid Option Bundle (July 2026)
+
+**The PETSc option bundle that configures a Stokes velocity block's multigrid
+now lives in exactly one module, and all three routes that reach that block read
+it from there** (#468), **and rotated free-slip now picks up a mesh-owned
+multigrid hierarchy instead of silently discarding it** (#467).
+
+Three routes reach a multigrid velocity block: native (PETSc interpolation
+between refined DMPlex levels), custom-P on the standard solve path, and custom-P
+through the rotated free-slip path. They are the same preconditioner reached
+three ways, not alternatives — custom-P is *mandatory* wherever native cannot go,
+namely rotated boundary conditions and `adapt()` children. The bundle was
+written in two places and had drifted: the native path had been moved to a
+`gmres`+`sor` smoother on a recorded measurement, and the custom-P routes had
+not. Worse, the custom-P writer never *set* the smoother iteration count at all,
+so it inherited whatever had last written that options prefix — 3 left behind by
+the GAMG bundle on the standard path, PETSc's own default of 2 on the rotated
+path. The same function smoothed differently depending on what had run before
+it.
+
+Unifying the bundle recovers, on the same operator, right-hand side and coarse
+solve: rotated custom-P velocity-block iterations 11 → 5 (0.68 s → 0.39 s of
+linear solve, timed in isolation), standard custom-P 5 → 4, on a *two-level*
+hierarchy — the depth at which the native measurement says the gmres margin is
+smallest. The bundle also now derives which stale keys it must clear rather than
+carrying a hand-maintained list, which is what let the iteration count go unset
+in the first place.
+
+Separately, `mesh.adapt()` leaves a coarse tail on its refinement child so that
+every solver on an adapted mesh gets geometric multigrid with no per-solver call.
+The rotated path never consulted it — the standard path's injection hook runs
+after the rotated dispatch has already returned — so an adapt child under rotated
+free-slip fell back to algebraic multigrid, indistinguishable from having no
+hierarchy at all. That is the `adapt-on-top-faults` workflow's own configuration
+(a fault resolved by local refinement, with rotated free-slip chosen because it
+composes with transverse isotropy). Both paths now resolve the hierarchy through
+one shared rule, with the same opportunistic degrade-to-GAMG behaviour.
+
+The regression test reads the smoother configuration back off the **live PETSc
+objects** for all three routes and asserts they agree. An options-database
+assertion would not have caught the original drift, because the drift was
+precisely a key nobody wrote.
+
+### One Rotated Free-Slip Path, Now With a Prescribed Wall-Normal Velocity (July 2026)
+
+**Rotated strong free-slip now takes a prescribed wall-normal velocity datum
+(`add_rotated_freeslip_bc(conds, boundary, ...)` with non-zero `conds`) through
+the full nonlinear Newton machinery, and the separate linear and nonlinear
+solve paths have been unified into one** (#438; #403 items 2 and 4).
+
+The rotated constraint `u·n̂ = ũ_n` is the primitive behind both the held free-slip
+lid and the free-surface material-boundary condition — they differ only in the
+constraint right-hand side. Previously the non-zero datum existed only on a
+linear one-shot path, so a power-law or anisotropic rheology silently fell back
+to a weak penalty (which leaks worst exactly where anisotropy makes it matter).
+Now every rotated solve runs a single Newton/Picard loop in which accepted
+iterates carry the datum exactly; a cold start imposes it through the first
+increment's affine lift at the rest-state tangent (snapping a zero state onto a
+datum creates a boundary strain state a shear-thinning tangent cannot recover
+from — measured, not assumed); a linear model simply converges after that first
+increment, so the up-front nonlinearity probe is gone from the dispatch and
+every linear rotated solve saves two Jacobian assemblies.
+
+Three latent solver defects were found and fixed by making the loop report
+honestly along the way:
+
+- Branching on rank-local datum bookkeeping desynchronised the ranks'
+  collective sequences (an np>1 deadlock class); the datum-activity decision is
+  now a collective PETSc reduction.
+- A rigid-rotation mode pinned by an essential condition on *another* boundary
+  could still enter the solver null space (only the rotated rows were checked),
+  silently projecting an irreducible component out of every increment — Newton
+  converged superlinearly and then floored, far above tolerance. Candidate
+  modes are now verified as null vectors of the assembled operator, which
+  catches any form of pinning.
+- A tiny Newton step was reported as convergence even when the residual was
+  still large (a stiff tangent also produces tiny steps); the step-norm exit is
+  now verified against the problem's rest-state residual scale, which is also
+  the convergence reference for warm starts (rtol relative to a good warm
+  start's own small initial residual demands ever-more absolute accuracy).
+
+The free-surface manager's `consistent_constraint="strong"` therefore works for
+nonlinear rheologies: the penalty fallback is removed, and the consistent solve
+warm-starts from the free solve's converged fields. Acceptance: power-law
+annulus free-surface convection holds the material boundary at the strong-datum
+level (5e-3, versus 4e-2 for the penalty) with net surface flux 1e-4; a
+transversely isotropic fault-bearing smoke test converges through the same
+path. Direct LU per Newton increment remains available as a serial,
+preconditioner-free diagnostic (`solver._rotated_use_lu`).
+
+New subsystem documentation: `subsystems/rotated-freeslip.md`.
+
+### Local Interpolation That Reproduces Linear Fields (July 2026)
+
+**The local scattered-point interpolator now has a linear-reproduction
+guarantee**, and the swarm proxy variables use it by default (#430).
+
+Underworld's local interpolator was inverse-distance (Shepard) weighting.
+Its weights are positive and sum to one, so it reproduced a *constant* exactly
+but not a linear field: any field with a gradient was smeared, and the error
+did not fall as the points crowded together. Measured on an exactly linear
+field — which lies inside both the P1 and P2 proxy space, so the finite element
+discretisation contributes nothing and all of the error is particle-to-node
+transfer — the swarm proxy carried 1e-3 to 2e-2 relative error, falling only
+first order with refinement and **not at all** with stencil size.
+
+- New `order=1` scheme on `uw.kdtree.KDTree.rbf_interpolator_local`: a
+  polyharmonic kernel with an affine tail, solved per target point on its own
+  nearest-neighbour stencil. Constants and linear fields are exact by
+  construction, and the result stays sparse at `nnn` non-zeros per row. The
+  existing inverse-distance path is unchanged and remains the KDTree default.
+- Proxy error on a linear field falls to round-off; on a quadratic field it
+  improves roughly ninety-fold in 2D and thirty-fold in 3D. Swarm proxy
+  variables now default to `order=1`.
+- `KDTree.interpolation_matrix()` returns the transfer as a sparse operator.
+  The weights depend only on geometry, so one build serves every field and
+  component — the form a multigrid prolongation or a remesh transfer wants.
+- Stencils that cannot support an affine fit (collinear in 2D, coplanar in 3D)
+  are detected, retried on a wider neighbourhood, and only then fall back to
+  inverse distance with a warning. They never return `NaN`, and never silently.
+- An opt-in limiter bounds the non-affine part of the interpolant while leaving
+  the linear reconstruction untouched, so limiting does not cost the guarantee.
+
+Two deliberate exclusions, both measured rather than assumed:
+`MeshVariable.rbf_interpolate` keeps inverse distance because it is the
+fallback rung of the point-location ladder, whose documented contract is that
+it is bounded; and `IndexSwarmVariable` material level sets keep it because
+they estimate a fraction from a handful of *integer* samples, where the error
+is dominated by variance rather than bias. Signed weights amplify that variance
+by roughly an order of magnitude and push level sets outside `[0, 1]`, while
+the bias they would remove is already negligible.
+
+Related: swarm proxy refresh no longer fails under an active units model
+(#426, #434); the units the proxy advertises are tracked separately (#439).
+New subsystem documentation: `subsystems/interpolation.md`.
+
+### Purposeful Adapt / Redistribution Naming (July 2026)
+
+**User-facing mesh-modification names now state the capability** (maintainer
+naming ruling 2026-07-16); the algorithm names (NVB, MMPDE) stay in internals
+and docstrings:
+
+- New user entry `uw.meshing.node_redistribution(mesh, metric, ...)`,
+  dispatching through the mesh-controlled `Mesh.redistribute_nodes(metric)`
+  method — the architecture by which each mesh type controls how it can be
+  modified. The base implementation supports 2D simplex (triangle) meshes
+  (via the MMPDE mover); quad/hex, 3D and manifold meshes raise an honest
+  `NotImplementedError` stating what exists. `smooth_mesh_interior` remains
+  as the machinery underneath.
+- `mesh.adapt(metric, max_levels=...)` no longer needs `engine=`: the graded
+  newest-vertex-bisection engine is the default on 2D meshes (NVB is 2D-only
+  this pass, so 3D meshes resolve to SBR); `engine=` stays as the
+  advanced/internal selector.
+
+### Retired Interior Movers — MMPDE Is the Mover (July 2026)
+
+**The superseded fixed-topology interior movers were retired** (maintainer
+ruling 2026-07): the spring-equilibrium, Monge–Ampère, OT-improvement-step
+and anisotropic-Winslow movers were deleted, together with `mesh.OT_adapt()`
+(built on the OT step; closes #346, whose latent MPI deadlock dies with the
+spring mover, and #353, whose `strategy=` TypeError dies with the dispatch).
+
+- `smooth_mesh_interior(method=...)` now defaults to **`"mmpde"`** (was
+  `"spring"`) — a sanctioned behaviour change: with a scalar metric the
+  MMPDE mover reproduces the retired movers' isotropic equidistribution
+  (the isotropic-metric equivalence), and with a tensor metric it clusters
+  and aligns where they could not. Retired spellings raise a `ValueError`
+  naming the replacement.
+- `follow_metric(...)` (the two-knob adapter) now drives the MMPDE mover;
+  `mesh.OT_adapt()` raises a `RuntimeError` tombstone pointing at
+  `follow_metric` / `smooth_mesh_interior` / `mesh.adapt`.
+- The graph-Laplacian Jacobi smoother and the Taubin surface-field smoother
+  (`smooth_surface_field`) are separate, current tools and are unchanged.
+- The boundary-facet / boundary-slip primitives shared with surviving code
+  moved from `meshing/_ot_adapt.py` into `meshing/smoothing/graph.py`;
+  the style-gate allowlist shrank by the deleted files' entries.
+
+
 ### July 2026 Quality Campaign — Audit, Style Charter, Remediation Waves (July 2026)
 
 **A systematic post-development-burst quality campaign**: six adversarially
@@ -53,8 +368,33 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
 - A general **consistent boundary flux (CBF) primitive** recovers boundary
   fluxes for any solver — surface heat flux / Nusselt number for scalar
   diffusion, boundary traction σ·n for Stokes (#294).
+- Three-dimensional CBF recovery now assembles the exact triangular trace mass:
+  P1 supports lumped or consistent recovery, while P2 uses the required
+  consistent six-node surface-mass solve. The default `mass="auto"` selects the
+  valid method; explicit P2 lumping and non-triangular 3D traces raise instead
+  of returning a non-pointwise reaction scaling. Strict MPI invariance of a
+  vector normal projection requires an analytic normal; geometric facet-normal
+  seam sensitivity is unchanged (#404).
 - Recorded as the preferred free-slip BC in the project guidance (#300);
   conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
+- `uw.postprocessing.geoid` provides generic spherical-shell geoid and
+  self-gravity coefficient functions. Its rotated-Stokes adapter projects the
+  existing boundary traction onto an axisymmetric harmonic; the pure functions
+  also accept coefficients recovered by other methods and an optional internal
+  load.
+- Rotated free slip exposes
+  `Stokes.boundary_normal_traction_integral(boundary, fn)` for a distributed
+  weak contraction of the assembled normal reaction. Cylindrical-annulus
+  Stokes responses use this fitted integral and its matching finite-element
+  boundary norm instead of gathering pointwise samples for angular quadrature.
+- The spherical-shell geoid adapter accepts `projection="reaction"` to use
+  the same fitted integral without pointwise P2 recovery or a rank-zero
+  surface triangulation; `projection="centroid"` remains the default.
+- `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
+  oracle used for the Zhong et al. spherical-shell response benchmark. It
+  supports piecewise-constant radial viscosity and reproduces every analytical
+  response printed in Zhong Tables 2 and 3; geoid and self-gravity are delegated
+  to the generic postprocessing functions above.
 - **Bug fix**: the zero-datum guard in `add_rotated_freeslip_bc` now uses
   `is_zero` instead of sympy structural equality, so the value-first call
   `add_rotated_freeslip_bc(0.0, boundary)` — the exact form the deprecation
@@ -163,6 +503,11 @@ in `Stokes_Constrained` (#224), then made parallel-correct.
 - `selfp` Schur preconditioner default, viscosity-scaled penalty, and
   nullspace re-setup fix (#229); over-conservative serial guard removed
   (#240); gauge, convergence, knockout, and rotation-gauge fixes (#265).
+- The main `Stokes.penalty` (augmented-Lagrangian grad-div) is likewise
+  viscosity-scaled since June 2026: the parameter is now a dimensionless
+  O(1) number, not a large constant tuned against the viscosity magnitude.
+  Migration note for older scripts in `docs/advanced/troubleshooting.md`
+  (#292).
 
 ### Boundary Conditions: Local-h Nitsche and Boundary-Slip Surfaces (June 2026)
 
@@ -170,6 +515,11 @@ in `Stokes_Constrained` (#224), then made parallel-correct.
 minimum radius, restoring correct stiffness on graded and adapted meshes
 (#275).
 
+- The local size now comes from each cell's own geometry instead of a kd-tree
+  over the centroids held by the current MPI rank. The old field changed at
+  partition boundaries and moved the default ``local_h=True`` Nitsche velocity
+  answer by 6.6e-3 between rank counts; the replacement is cell-by-cell
+  identical from one to eight ranks (#569, #687).
 - `mesh.boundary_slip` API with `BoundingSurface` objects for boundary
   tangent-slip (#225); `Surface.influence_function` respects finite edges
   (#241).

@@ -27,7 +27,7 @@ def test_bodyforce_accepts_uwquantity_buoyancy():
         temperature_difference=uw.quantity(1000, "K"),
     )
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0), units="km"
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0)
     )
     v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)

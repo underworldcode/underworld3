@@ -120,7 +120,7 @@ d_eta = np.log10(params.uw_eta_background.magnitude) - np.log10(params.uw_eta_ba
 # calls needed.
 #
 # The Model must be set up **before** mesh creation so that the mesh
-# inherits the correct coordinate units (km).
+# coordinates carry the model's reference length (H = 30 km per ND unit).
 
 # %%
 # Reference quantities that define the scaling (Table 1, Spiegelman et al. 2016)
@@ -160,12 +160,15 @@ if uw.mpi.rank == 0:
 
 
 # %% jupyter={"source_hidden": true}
-### Set up the mesh — geometry in km (Table 1, Spiegelman et al. 2016)
+### Set up the mesh — geometry in units of H (Table 1, Spiegelman et al. 2016)
 #
-# The gmsh geometry is defined in non-dimensional units of H (model height),
-# then scaled to km.  Domain is 4H × H = 120 km × 30 km.
+# The gmsh geometry is defined in NON-DIMENSIONAL units of H (model height):
+# UW3 reads raw plex coordinates as already non-dimensional against the model's
+# reference length (H = 30 km), so the 4H × H = 120 km × 30 km domain is
+# [-2, 2] × [-1, 0]. Building the geometry in km here (S = H.magnitude) made
+# the solved model 30x too large in every direction — issue #451.
 
-S = H.magnitude  # 30.0 — scale factor: non-dimensional → km
+S = 1.0  # geometry is non-dimensional; reference length H supplies the km scale
 
 if problem_size <= 1:
     cl_1 = 0.25 * S
@@ -198,7 +201,7 @@ if uw.mpi.rank == 0:
     gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.model.add("Notch")
 
-    # Domain outline (non-dimensional × S → km)
+    # Domain outline in non-dimensional units of H (S = 1: 4H × H → [-2,2] × [-1,0])
     Point1  = gmsh.model.geo.addPoint(-2 * S,      -1 * S,    0, cl_1)
     Point3  = gmsh.model.geo.addPoint(+2 * S,      -1 * S,    0, cl_1)
     Point4  = gmsh.model.geo.addPoint( 2 * S,    -3/4 * S,    0, cl_1)

@@ -1,5 +1,10 @@
 # Monge–Ampère mesh redistribution: Newton/cofactor linearisation
 
+> **RETIRED movers note (2026-07):** the spring / Monge-Ampère / OT-step /
+> anisotropic-Winslow interior movers this document discusses were retired
+> (superseded by `method="mmpde"`, the default). Kept as the R&D record;
+> the code lives in git history before the retirement commit.
+
 > **Status**: exploration (Phase 0), `feature/winslow-mesh-smoother`,
 > 2026-05-17. Companion to
 > `docs/developer/subsystems/mesh-metric-redistribution.md` (the

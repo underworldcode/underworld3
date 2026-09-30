@@ -25,6 +25,14 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 
+[project.optional-dependencies]
+# Curved-geometry Stokes benchmarks. `assess` (Kramer et al. 2021,
+# doi:10.5194/gmd-14-1899-2021) backs uw.analytic.CylindricalStokes and the
+# annulus/spherical benchmark scripts under docs/examples/. Optional rather than
+# required: it is needed only to run those benchmarks, and everything else in
+# uw.analytic is self-contained SymPy.
+benchmarks = ["assess"]
+
 [project.urls]
 Homepage = "https://github.com/underworldcode/underworld3"
 Documentation = "https://underworldcode.github.io/underworld3/"

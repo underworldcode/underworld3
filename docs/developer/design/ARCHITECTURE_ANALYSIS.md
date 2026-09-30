@@ -1,5 +1,7 @@
 # MeshVariable Architecture Analysis
 
+**Status**: Historical analysis (2025-11 snapshot of the MeshVariable layering). The `persistence.py` layout it describes is superseded — `EnhancedMeshVariable` now lives in `discretisation/enhanced_variables.py` and the duplicated array-view classes were consolidated. The governing data-access document is `subsystems/data-access.md`.
+
 ## Current Architecture (2025-01-13)
 
 ### The Layered Structure

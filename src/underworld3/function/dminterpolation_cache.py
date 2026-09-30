@@ -25,7 +25,7 @@ class DMInterpolationCache:
     """
     Per-mesh cache for DMInterpolation structures.
 
-    Cache key: (coord_hash, dofcount)
+    Cache key: (coord_hash, dofcount, policy)
     Cache value: CachedDMInterpolationInfo object (Cython wrapper)
 
     Automatically tracks hits, misses, and invalidations.
@@ -52,7 +52,7 @@ class DMInterpolationCache:
         # Check mesh flag (default: True)
         return getattr(self.mesh, 'enable_dminterpolation_cache', True)
 
-    def get_structure(self, coords: np.ndarray, dofcount: int):
+    def get_structure(self, coords: np.ndarray, dofcount: int, policy=None):
         """
         Get cached CachedDMInterpolationInfo or None.
 
@@ -62,6 +62,11 @@ class DMInterpolationCache:
             Evaluation coordinates
         dofcount : int
             Total DOF count for current variables
+        policy : hashable, optional
+            Location-policy token (e.g. ``"auth"`` / ``"locate"``). A
+            structure built under one policy must not serve an evaluation
+            under the other — same coords with a different field-continuity
+            mix can legitimately need both.
 
         Returns
         -------
@@ -73,7 +78,7 @@ class DMInterpolationCache:
 
         # Compute cache key
         coords_hash = self._hash_coords(coords)
-        key = (coords_hash, dofcount)
+        key = (coords_hash, dofcount, policy)
 
         # Check cache
         if key in self._cache:
@@ -88,7 +93,7 @@ class DMInterpolationCache:
             self._stats['misses'] += 1
             return None
 
-    def store_structure(self, coords: np.ndarray, dofcount: int, cached_info):
+    def store_structure(self, coords: np.ndarray, dofcount: int, cached_info, policy=None):
         """
         Store CachedDMInterpolationInfo in cache.
 
@@ -100,12 +105,14 @@ class DMInterpolationCache:
             Total DOF count
         cached_info : CachedDMInterpolationInfo
             Cython wrapper object containing DMInterpolation structure
+        policy : hashable, optional
+            Location-policy token — must match the ``get_structure`` lookup.
         """
         if not self._is_enabled():
             return  # Don't cache if disabled
 
         coords_hash = self._hash_coords(coords)
-        key = (coords_hash, dofcount)
+        key = (coords_hash, dofcount, policy)
 
         # LRU management: remove oldest entries if we exceed max_entries
         if len(self._cache) >= self.max_entries:
