@@ -134,3 +134,29 @@ def test_dg1_fields_are_physical_at_element_corners(tmp_path):
         with h5py.File(directory / "dg.mesh.00000.h5", "r") as handle:
             assert np.isclose(handle["viz/dg1/coordinates"][:].max(), 10.0)
             assert handle["viz/dg1/coordinates"].attrs["units"] == "kilometer"
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("degree, continuous", [(0, False), (1, True), (1, False)])
+def test_physical_timestep_reload_without_reference_scales(tmp_path, degree, continuous):
+    """A units-free session restores the saved solver frame, including DG1 traces."""
+    _set_reference_scales()
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, regular=True)
+    pressure = uw.discretisation.MeshVariable(
+        "cross_session_pressure", mesh, 1, degree=degree,
+        continuous=continuous, units="MPa",
+    )
+    native = 1.0 + pressure.coords_nd[:, 0] + 2.0 * pressure.coords_nd[:, 1]
+    pressure.array[:, 0, 0] = uw.quantity(native * 2.0, "MPa")
+    directory = Path(uw.mpi.comm.bcast(str(tmp_path), root=0))
+    mesh.write_timestep("cross_session", 0, outputPath=str(directory), meshVars=[pressure])
+
+    uw.reset_default_model()
+    reloaded_mesh = uw.discretisation.Mesh(str(directory / "cross_session.mesh.00000.h5"))
+    reloaded = uw.discretisation.MeshVariable(
+        "restored_pressure", reloaded_mesh, 1, degree=degree, continuous=continuous,
+    )
+    reloaded.read_timestep("cross_session", "cross_session_pressure", 0, outputPath=str(directory))
+    expected = 1.0 + reloaded.coords_nd[:, 0] + 2.0 * reloaded.coords_nd[:, 1]
+    np.testing.assert_allclose(np.asarray(reloaded.array)[:, 0, 0], expected, rtol=1e-12)

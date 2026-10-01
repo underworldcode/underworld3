@@ -9768,8 +9768,8 @@ def _write_xdmf_field(mesh, var, var_h5_path, mesh_h5_path):
             )
             mesh_viewer.destroy()
 
-    _, field_units = _physical_visualisation_values(numpy.ones(1), var.units)
-    _, coordinate_units = _physical_visualisation_values(numpy.ones(1), mesh.units)
+    field_scale, field_units = _physical_visualisation_values(numpy.ones(1), var.units)
+    coordinate_scale, coordinate_units = _physical_visualisation_values(numpy.ones(1), mesh.units)
     with uw.selective_ranks(0) as should_execute:
         if should_execute:
             with h5py.File(var_h5_path, "a") as handle:
@@ -9777,6 +9777,7 @@ def _write_xdmf_field(mesh, var, var_h5_path, mesh_h5_path):
                 field = handle[f"fields/{var.clean_name}"]
                 field.attrs["units"] = field_units or "dimensionless"
                 field.attrs["storage_frame"] = "physical"
+                field.attrs["model_to_physical_scale"] = float(field_scale[0])
                 field.attrs["degree"] = var.degree
                 field.attrs["continuous"] = var.continuous
                 field.attrs["representation"] = (
@@ -9789,6 +9790,7 @@ def _write_xdmf_field(mesh, var, var_h5_path, mesh_h5_path):
                     coordinates = handle["fields/coordinates"]
                     coordinates.attrs["units"] = coordinate_units or "dimensionless"
                     coordinates.attrs["storage_frame"] = "physical"
+                    coordinates.attrs["model_to_physical_scale"] = float(coordinate_scale[0])
                 if needs_projection:
                     projected = handle[f"visualization/{var.clean_name}"]
                     projected.attrs["units"] = field_units or "dimensionless"
@@ -9800,6 +9802,7 @@ def _write_xdmf_field(mesh, var, var_h5_path, mesh_h5_path):
                     coordinates = mesh_handle["viz/dg1/coordinates"]
                     coordinates.attrs["units"] = coordinate_units or "dimensionless"
                     coordinates.attrs["storage_frame"] = "physical"
+                    coordinates.attrs["model_to_physical_scale"] = float(coordinate_scale[0])
                     mesh_handle["viz/dg1/cells"].attrs["representation"] = (
                         "disconnected_simplex"
                     )

@@ -62,6 +62,31 @@ from sympy.vector import CoordSys3D
 ## https://stackoverflow.com/questions/46073413/python-enum-combination
 
 
+def _physical_dataset_model_values(dataset):
+    """Read physical output in the destination model's solver frame.
+
+    An active units model defines the destination scaling. Without reference
+    quantities, restore the writer's solver frame using its saved conversion
+    factor, rather than treating physical magnitudes as solver magnitudes.
+    """
+    values = dataset[()]
+    units = dataset.attrs.get("units")
+    if isinstance(units, bytes):
+        units = units.decode()
+    if not units or units == "dimensionless":
+        return values
+    if uw.get_default_model().has_units_active():
+        return numpy.asarray(uw.non_dimensionalise(uw.quantity(values, units)))
+    scale = dataset.attrs.get("model_to_physical_scale")
+    if scale is None:
+        raise RuntimeError(
+            f"Physical dataset {dataset.name} in {dataset.file.filename} has no saved "
+            "model-to-physical scale. Set the writer's reference quantities before "
+            "reading, or rewrite the timestep with the current writer."
+        )
+    return values / scale
+
+
 def extend_enum(inherited):
     def wrapper(final):
         joined = {}
@@ -1287,22 +1312,8 @@ class _BaseMeshVariable(Stateful, uw_object):
                     if isinstance(storage_frame, bytes):
                         storage_frame = storage_frame.decode()
                     if storage_frame == "physical":
-                        coordinate_units = coordinate_dataset.attrs.get("units")
-                        field_units = field_dataset.attrs.get("units")
-                        if isinstance(coordinate_units, bytes):
-                            coordinate_units = coordinate_units.decode()
-                        if isinstance(field_units, bytes):
-                            field_units = field_units.decode()
-                        if coordinate_units and coordinate_units != "dimensionless":
-                            X_src = np.asarray(
-                                uw.non_dimensionalise(
-                                    uw.quantity(X_src, coordinate_units)
-                                )
-                            )
-                        if field_units and field_units != "dimensionless":
-                            D_src = np.asarray(
-                                uw.non_dimensionalise(uw.quantity(D_src, field_units))
-                            )
+                        X_src = _physical_dataset_model_values(coordinate_dataset).reshape(-1, dim)
+                        D_src = _physical_dataset_model_values(field_dataset).reshape(-1, n_components)
         else:
             X_src = np.empty((0, dim), dtype=np.float64)
             D_src = np.empty((0, n_components), dtype=np.float64)
@@ -1488,21 +1499,17 @@ class _BaseMeshVariable(Stateful, uw_object):
         if uw.mpi.rank == 0:
             with h5py.File(data_file, "r") as field_handle:
                 field = field_handle[f"fields/{data_name}"]
-                values = field[()].reshape(-1, n_components)
-                field_units = field.attrs.get("units")
+                values = _physical_dataset_model_values(field).reshape(-1, n_components)
                 mesh_file = field_handle.attrs.get("dg1_mesh_file")
                 geometry_path = field_handle.attrs.get(
                     "dg1_geometry_path", "/viz/dg1"
                 )
             for name, value in (
-                ("field units", field_units),
                 ("mesh file", mesh_file),
                 ("geometry path", geometry_path),
             ):
                 if isinstance(value, bytes):
-                    if name == "field units":
-                        field_units = value.decode()
-                    elif name == "mesh file":
+                    if name == "mesh file":
                         mesh_file = value.decode()
                     else:
                         geometry_path = value.decode()
@@ -1515,20 +1522,9 @@ class _BaseMeshVariable(Stateful, uw_object):
                 coordinates_dataset = mesh_handle[
                     f"{geometry_path.strip('/')}/coordinates"
                 ]
-                coordinates = coordinates_dataset[()].reshape(-1, dim)
-                coordinate_units = coordinates_dataset.attrs.get("units")
+                coordinates = _physical_dataset_model_values(coordinates_dataset).reshape(-1, dim)
                 cells = mesh_handle[f"{geometry_path.strip('/')}/cells"][()].reshape(
                     -1, corner_count
-                )
-            if isinstance(coordinate_units, bytes):
-                coordinate_units = coordinate_units.decode()
-            if coordinate_units and coordinate_units != "dimensionless":
-                coordinates = np.asarray(
-                    uw.non_dimensionalise(uw.quantity(coordinates, coordinate_units))
-                )
-            if field_units and field_units != "dimensionless":
-                values = np.asarray(
-                    uw.non_dimensionalise(uw.quantity(values, field_units))
                 )
             source_corners = coordinates[cells]
             source_values = values[cells]
