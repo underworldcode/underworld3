@@ -759,21 +759,80 @@ def test_the_elastic_timestep_is_the_safety_factor_over_the_shear_rate(transport
     assert _one_shear_step(transport, dt=1.0).constitutive_model.max_elastic_timestep() == float("inf")
 
 
-def test_the_store_smoothing_is_the_coefficient_times_the_local_cell_size_squared():
-    stokes = _one_shear_step("backward_integration_points", dt=1.0)
+def _store_projection(history):
+    """The projection a history stores its new flux through."""
+    if hasattr(history, "_flux_projection"):
+        return history._flux_projection
+    return history._nodal_projections["flux"][1]
+
+
+@pytest.mark.parametrize("transport", ["backward_integration_points", "forward_integration_points", "forward_nodes"])
+def test_the_store_smoothing_is_the_coefficient_times_the_local_cell_size_squared(transport):
+    stokes = _one_shear_step(transport, dt=1.0)
     history = stokes.DFDt
     assert history.store_smoothing == 0.0
-    assert history._nodal_projections["flux"][1].smoothing == 0.0
+    assert _store_projection(history).smoothing == 0.0
     history.store_smoothing = 0.05
     stokes.solve(timestep=1.0, zero_init_guess=False)
     # the projection's smoothing is now a field: c times the cell-size field squared
-    alpha = history._nodal_projections["flux"][1].smoothing
+    alpha = _store_projection(history).smoothing
     x0 = np.array([[0.1, 0.1]])
     h = float(np.asarray(uw.function.evaluate(stokes.mesh.cell_size(), x0)).reshape(-1)[0])
     a = float(np.asarray(uw.function.evaluate(alpha, x0)).reshape(-1)[0])
     assert abs(a - 0.05 * h * h) < 1.0e-12 * max(1.0, h * h)
     with pytest.raises(ValueError):
         history.store_smoothing = -1.0
+
+
+def test_the_forward_fit_limiter_keeps_each_cell_inside_the_range_of_its_arrivals():
+    """Arrivals bunched in one corner of a cell, with a steep tilt between them:
+    the unlimited linear fit extrapolates that tilt across the cell and puts
+    values at the far dofs well outside anything that arrived; the limited fit
+    keeps every dof inside the arrivals' range and the cell's centroid value."""
+    stokes = _one_shear_step("forward_integration_points", dt=1.0)
+    history = stokes.DFDt
+    mesh = stokes.mesh
+    d, ncomp = mesh.dim, history.num_components
+    centroid = np.asarray(mesh._centroids)[0, :d]
+    h = float(np.sqrt(history._cell_measure[0]))
+    cell = 0
+    # the cell's own launch points pulled 95% of the way to its first one: a
+    # corner cluster that still spans two directions (the fit is determined)
+    own = history._launch[history._launch_cell == cell][:, :d]
+    X = own[0] + 0.05 * (own - own[0])
+    rng = np.random.default_rng(1)
+    values = np.repeat((X[:, :1] - centroid[0]) / h, ncomp, axis=1) + 0.01 * rng.standard_normal((X.shape[0], ncomp))
+
+    def fit(limit):
+        history.fit_limiter = limit
+        # every other cell keeps its own launch points, so only cell 0 is unusual
+        keep = history._launch_cell != cell
+        Xall = np.vstack([history._launch[keep], X])
+        vall = np.vstack([history._launch_values[keep], values])
+        call = np.concatenate([history._launch_cell[keep], np.full(X.shape[0], cell)])
+        w = history._launch_weights
+        history._launch_weights = np.concatenate([w[keep], w[~keep]])
+        try:
+            history._fit_arrivals(Xall, vall, cell=call)
+        finally:
+            history._launch_weights = w
+        ndof = history.psi_star[0].data.shape[0] // history._cell_measure.size
+        return np.array(history.psi_star[0].data[cell * ndof:(cell + 1) * ndof])
+
+    free = fit(False)
+    assert history._fit_overshoot > 0.5          # recorded without the limiter
+    assert (free.max() > values.max() + 0.5) or (free.min() < values.min() - 0.5)
+    limited = fit(True)
+    assert limited.max() <= values.max() + 1.0e-12
+    assert limited.min() >= values.min() - 1.0e-12
+
+
+def test_the_forward_history_refuses_two_smoothing_doses():
+    stokes = _one_shear_step("forward_integration_points", dt=1.0)
+    stokes.DFDt.store_smoothing = 0.05
+    stokes.DFDt.flux_smoothing = 1.0e-4
+    with pytest.raises(ValueError, match="not both"):
+        stokes.solve(timestep=1.0, zero_init_guess=False)
 
 
 @pytest.mark.parametrize("transport", list(KINDS))

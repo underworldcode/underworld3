@@ -4770,7 +4770,62 @@ def _storage_components(vtype, shape):
     return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
 
 
-class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
+class _StoreSmoothingMixin:
+    """The Laplacian smoothing of the projection that stores a new flux, shared by
+    the semi-Lagrangian stress histories whose store cycle has no dissipation of
+    its own at the cell scale."""
+
+    _store_smoothing = 0.0
+
+    @property
+    def store_smoothing(self) -> float:
+        r"""Coefficient :math:`c` of the Laplacian term in the store projection,
+        :math:`\alpha = c\,h(\mathbf{x})^2` with :math:`h` the local cell size.
+
+        Every step the new flux is L2-projected onto the continuous snapshot and
+        read back at the points. That cycle is a consistent-mass Galerkin
+        transport of the carried stress and has no dissipation at the cell
+        scale, so below Courant one a cell-scale mode of the stress grows from
+        round-off at a rate :math:`\gamma` set by the elastic feedback (about
+        2.4 per unit time on the Maxwell Waters-King start-up, 1.8 with a
+        solvent fraction of 0.2, and negligible at 0.59). The term
+        :math:`\alpha\nabla^2` in the projection multiplies wavenumber
+        :math:`k` by :math:`1/(1+\alpha k^2)` once per step, so the mode is held
+        when :math:`\alpha (\pi/h)^2 \gtrsim \gamma\,\Delta t`, i.e.
+        :math:`\alpha \approx \gamma\,\Delta t\,(h/\pi)^2`. Measured on the
+        1/32 mesh at :math:`\Delta t = 0.01`: 1e-5 holds it for eight time
+        units at 0.1% on the peak, 3e-5 holds it unconditionally at 0.5%,
+        1e-4 costs 3%. In units of the mesh cell-size field (RMS vertex-to-
+        centroid distance, about 2h/3 on triangles) that is :math:`c` between
+        0.03 and 0.07; the irregular mesh needs 0.07. Zero (the default) is
+        the plain projection. Only the stress store is smoothed; the forcing
+        history is not.
+
+        The forward histories have the same cycle and take the same dose: the
+        forward integration-point history smooths the projection its launch
+        points read the new flux from, the forward nodal history the projection
+        that commits the new flux to its store. On a graded mesh with one time
+        step the large cells run well below Courant one, which is where the
+        mode grows.
+        """
+        return self._store_smoothing
+
+    @store_smoothing.setter
+    def store_smoothing(self, value):
+        value = float(value)
+        if value < 0.0:
+            raise ValueError(f"store_smoothing must be >= 0, got {value}")
+        self._store_smoothing = value
+
+    def _store_smoothing_alpha(self):
+        """The smoothing the store projection uses this step: a field, so the
+        dose follows the local cell on a graded mesh."""
+        if self._store_smoothing <= 0.0:
+            return 0.0
+        return self._store_smoothing * self.mesh.cell_size() ** 2
+
+
+class BackwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     r"""Semi-Lagrangian history stored at the mesh integration points.
 
     The history slots ``psi_star[k]`` are
@@ -5008,39 +5063,6 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
         self._restore_core_state(s, am_theta=self.theta)
         self._history_committed = bool(s.history_committed)
 
-    @property
-    def store_smoothing(self) -> float:
-        r"""Coefficient :math:`c` of the Laplacian term in the store projection,
-        :math:`\alpha = c\,h(\mathbf{x})^2` with :math:`h` the local cell size.
-
-        Every step the new flux is L2-projected onto the continuous snapshot and
-        read back at the points. That cycle is a consistent-mass Galerkin
-        transport of the carried stress and has no dissipation at the cell
-        scale, so below Courant one a cell-scale mode of the stress grows from
-        round-off at a rate :math:`\gamma` set by the elastic feedback (about
-        2.4 per unit time on the Maxwell Waters-King start-up, 1.8 with a
-        solvent fraction of 0.2, and negligible at 0.59). The term
-        :math:`\alpha\nabla^2` in the projection multiplies wavenumber
-        :math:`k` by :math:`1/(1+\alpha k^2)` once per step, so the mode is held
-        when :math:`\alpha (\pi/h)^2 \gtrsim \gamma\,\Delta t`, i.e.
-        :math:`\alpha \approx \gamma\,\Delta t\,(h/\pi)^2`. Measured on the
-        1/32 mesh at :math:`\Delta t = 0.01`: 1e-5 holds it for eight time
-        units at 0.1% on the peak, 3e-5 holds it unconditionally at 0.5%,
-        1e-4 costs 3%. In units of the mesh cell-size field (RMS vertex-to-
-        centroid distance, about 2h/3 on triangles) that is :math:`c` between
-        0.03 and 0.07; the irregular mesh needs 0.07. Zero (the default) is
-        the plain projection. Only the stress store is smoothed; the forcing
-        history is not.
-        """
-        return self._store_smoothing
-
-    @store_smoothing.setter
-    def store_smoothing(self, value):
-        value = float(value)
-        if value < 0.0:
-            raise ValueError(f"store_smoothing must be >= 0, got {value}")
-        self._store_smoothing = value
-
     def carried_tensors(self, level: int = 0):
         """The carried history as one tensor per point, non-dimensional, with the
         points: ``(values[n, d, d], coords[n, cdim])``. The integration-point
@@ -5056,13 +5078,6 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
             values[:, j, i] = data[:, k]
         points = np.asarray(history.integration_points).reshape(-1, self.mesh.cdim)
         return values, points
-
-    def _store_smoothing_alpha(self):
-        """The smoothing the store projection uses this step: a field, so the
-        dose follows the local cell on a graded mesh."""
-        if self._store_smoothing <= 0.0:
-            return 0.0
-        return self._store_smoothing * self.mesh.cell_size() ** 2
 
     def spatial_weights(self):
         """As the base class, except that at ``theta = 1`` the old-level
@@ -5375,7 +5390,7 @@ class BackwardIntegrationPointsSemiLagrangian(_DDtBase):
             self._n_solves_completed += 1
 
 
-class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
+class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     r"""Semi-Lagrangian history carried forward from a fixed set of launch
     points inside the cells, read by the weak form through a per-cell fit.
 
@@ -5399,7 +5414,7 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
     It is, like the integration-point history, a consistently transported
     scheme with no dissipation of its own at the cell scale: below Courant one
     on a Maxwell element a cell-scale mode grows from round-off, and the
-    read-back projection needs :attr:`flux_smoothing` for the same reason and
+    read-back projection needs :attr:`store_smoothing` for the same reason and
     at the same dose as the integration-point store. See
     :doc:`/developer/subsystems/stress-transport`.
 
@@ -5432,6 +5447,8 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         order: int = 1,
         theta: float = 0.5,
         units=None,
+        store_smoothing: float = 0.0,
+        fit_limiter: bool = False,
         **_unsupported,
     ):
         super().__init__()
@@ -5490,11 +5507,14 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         self._launch_geometry = self._geometry_stamp()
         self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
         # The flux read at the launch points, through a continuous P1 projection.
-        # `flux_smoothing` is the Laplacian coefficient of that projection, a
-        # number or a field (length^2): c * mesh.cell_size()**2 with c between
-        # 0.03 and 0.07 is the dose the integration-point store needs below
-        # Courant one on a Maxwell element, and this cycle needs the same.
+        # Its Laplacian coefficient is `store_smoothing` (c, with alpha = c h^2
+        # from the local cell) or, as an absolute override, `flux_smoothing`
+        # (a number or a field, length^2); not both.
         self.flux_smoothing = 0.0
+        self.store_smoothing = store_smoothing
+        # limit each cell's slope to the range of what arrived (see _fit_arrivals)
+        self.fit_limiter = bool(fit_limiter)
+        self._fit_overshoot, self._fit_overshoot_cells = 0.0, 0
         self._flux_var = uw.discretisation.MeshVariable(
             f"flux_fwd_{inst}", mesh, (1, self.num_components), vtype=VarType.MATRIX,
             degree=1, continuous=True, varsymbol=rf"{{ F^{{\mathrm{{nodal}}}}_{{ [{inst}] }} }}")
@@ -5620,7 +5640,11 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
                 self.mesh, u_Field=self._flux_var, n_components=self.num_components)
             self._flux_projection.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
         self._flux_projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in self._components]])
-        self._flux_projection.smoothing = self.flux_smoothing
+        if self._store_smoothing > 0.0 and not (isinstance(self.flux_smoothing, (int, float)) and self.flux_smoothing == 0.0):
+            raise ValueError("ForwardIntegrationPointsSemiLagrangian: set store_smoothing (c, alpha = c h^2) "
+                             "or flux_smoothing (alpha), not both")
+        self._flux_projection.smoothing = (self._store_smoothing_alpha() if self._store_smoothing > 0.0
+                                           else self.flux_smoothing)
         self._flux_projection.solve(zero_init_guess=True)
         out = np.empty_like(self._launch_values)
         for k in range(self.num_components):
@@ -5652,7 +5676,11 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         missing share filled with the inflow value at its own dofs, weighted
         by that share: the state of the part of the cell nothing has reached
         is the incoming fluid. A cell whose arrivals cannot determine a linear
-        fit keeps its previous one.
+        fit keeps its previous one. With :attr:`fit_limiter` the slope of each
+        fit is scaled so that no dof leaves the range of the values that reached
+        the cell; ``_fit_overshoot`` records, with or without it, the largest
+        excursion of the unlimited fit beyond that range (relative to the
+        largest range) and ``_fit_overshoot_cells`` how many cells had one.
         """
         mesh = self.mesh
         d = mesh.dim
@@ -5683,6 +5711,7 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         ndof = dofs.shape[0] // ncell if ncell else 0
         dofs = dofs.reshape(ncell, ndof, mesh.cdim)
         Adof = np.concatenate([np.ones((ncell, ndof, 1)), (dofs[:, :, :d] - centroid[:, None, :]) / h[:, None, None]], axis=2)
+        short = np.zeros(0, dtype=bool)
         if self._inflow_value is not None and inflow is not None:
             deficit = np.clip(self._cell_measure - received, 0.0, None) * inflow
             fed = deficit > 0.0
@@ -5706,7 +5735,40 @@ class ForwardIntegrationPointsSemiLagrangian(_DDtBase):
         fit_ok = ev[:, 0] > 1.0e-6 * np.maximum(ev[:, -1], 1.0e-300)
         beta = np.zeros_like(R)
         beta[fit_ok] = np.linalg.solve(M[fit_ok], R[fit_ok])
-        fitted = np.einsum("cqi,cik->cqk", Adof, beta).reshape(ncell * ndof, self.num_components)
+        fitted = np.einsum("cqi,cik->cqk", Adof, beta)
+        # The range of what reached each cell (and the inflow it was fed): a fit
+        # whose arrivals cover a corner of the cell is determined but extrapolates
+        # its slope across the rest, and can put a value at a dof far outside
+        # anything carried there (a new extremum the exponential decode of a
+        # log-conformation store then amplifies).
+        lo = np.full((ncell, self.num_components), np.inf)
+        hi = np.full((ncell, self.num_components), -np.inf)
+        np.minimum.at(lo, cell, values)
+        np.maximum.at(hi, cell, values)
+        if self._inflow_value is not None and inflow is not None and short.any():
+            lo[sel] = np.minimum(lo[sel], filled[short].min(axis=1))
+            hi[sel] = np.maximum(hi[sel], filled[short].max(axis=1))
+        spread = np.where(fit_ok[:, None], hi - lo, 0.0)
+        excess = np.maximum(fitted - hi[:, None, :], lo[:, None, :] - fitted).max(axis=1)
+        excess = np.where(fit_ok[:, None], np.clip(excess, 0.0, None), 0.0)
+        # overshoot of the fit beyond the arrivals' range, relative to the largest
+        # range in the cell set (a diagnostic, recorded with or without the limiter)
+        scale = max(float(spread.max()) if spread.size else 0.0, 1.0e-300)
+        self._fit_overshoot = float(excess.max()) / scale if excess.size else 0.0
+        self._fit_overshoot_cells = int(np.count_nonzero(excess.max(axis=1) > 1.0e-12 * scale)) if excess.size else 0
+        if self.fit_limiter and fit_ok.any():
+            # Barth-Jespersen: keep the cell value at the centroid (clipped to the
+            # range), scale the slope by the largest factor that keeps every dof
+            # inside the range
+            c0 = np.clip(beta[:, 0, :], lo, hi)
+            delta = fitted - c0[:, None, :]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                room = np.where(delta > 0.0, (hi - c0)[:, None, :] / delta,
+                                np.where(delta < 0.0, (lo - c0)[:, None, :] / delta, np.inf))
+            phi = np.clip(np.nan_to_num(room.min(axis=1), nan=1.0, posinf=1.0), 0.0, 1.0)
+            limited = c0[:, None, :] + phi[:, None, :] * delta
+            fitted = np.where(fit_ok[:, None, None], limited, fitted)
+        fitted = fitted.reshape(ncell * ndof, self.num_components)
         rows_ok = np.repeat(fit_ok, ndof)
         for k in range(self.num_components):
             column = np.array(self.psi_star[0].data[:, k])
@@ -5780,7 +5842,7 @@ class DDtForwardNodesState(_DDtCoreState):
     psi_star_var_names: list[str] = field(default_factory=list)
 
 
-class ForwardNodesSemiLagrangian(_DDtBase):
+class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     r"""Forward semi-Lagrangian history launched from where the field is known.
 
     A field is known exactly at its own nodes (they are its unknowns) and, since
@@ -5803,7 +5865,9 @@ class ForwardNodesSemiLagrangian(_DDtBase):
     elements; the next step launches from that projected field, which is a
     polynomial inside each element like any other. The integration-point
     counterpart, :class:`ForwardIntegrationPointsSemiLagrangian`, launches a
-    flux from the quadrature points where it is formed.
+    flux from the quadrature points where it is formed. The commit is a
+    consistent-mass projection with no dissipation at the cell scale, so a
+    stress carried below Courant one needs :attr:`store_smoothing`.
 
     An arrival on a face or vertex shared by several cells (a node on a
     no-slip wall arrives where it started) is fitted in every one of them. In
@@ -5825,16 +5889,20 @@ class ForwardNodesSemiLagrangian(_DDtBase):
         Degree of the store and of the per-cell fit; use the field's own degree.
     units : optional
         Units of the carried quantity (see :func:`_history_units`).
+    store_smoothing : float
+        Smoothing of the projection that commits a flux (see
+        :attr:`store_smoothing`); a carried field is not smoothed.
     """
 
     applies_inflow_value = True
     instances = 0
 
     def __init__(self, mesh, psi_fn, V_fn, vtype=VarType.SCALAR, degree=1, varsymbol=None,
-                 order=1, theta=0.5, units=None, **_unsupported):
+                 order=1, theta=0.5, units=None, store_smoothing=0.0, **_unsupported):
         super().__init__()
         if order != 1:
             raise NotImplementedError("ForwardNodesSemiLagrangian carries one level; order must be 1")
+        self.store_smoothing = store_smoothing
         if mesh.cdim != mesh.dim:
             raise NotImplementedError("ForwardNodesSemiLagrangian fits in the embedding coordinates; no manifolds")
         if _unsupported:
@@ -6039,7 +6107,7 @@ class ForwardNodesSemiLagrangian(_DDtBase):
 
     def commit_flux_to_history(self, flux, verbose=False):
         """Project the new flux onto the store, where the next step launches it."""
-        projected = self._project_nodally(flux, verbose=verbose)
+        projected = self._project_nodally(flux, smoothing=self._store_smoothing_alpha(), verbose=verbose)
         self.psi_star[0].data[:, :] = np.asarray(projected.data)
         self._history_committed = True
 

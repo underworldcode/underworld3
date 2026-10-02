@@ -50,10 +50,8 @@ def waters_king_start_up(store_smoothing, res=16, dt=0.0125, t_end=2.0, transpor
     ns.add_dirichlet_bc((0.0, 0.0), "Top"); ns.add_dirichlet_bc((0.0, 0.0), "Bottom")
     ns.add_dirichlet_bc((sympy.oo, 0.0), "Left"); ns.add_dirichlet_bc((sympy.oo, 0.0), "Right")
     ns.bodyforce = sympy.Matrix([[G, 0.0]]); ns.tolerance = 1e-6
-    if transport == "backward_integration_points":
+    if transport in ("backward_integration_points", "forward_integration_points", "forward_nodes"):
         ns.DFDt.store_smoothing = store_smoothing
-    elif transport == "forward_integration_points":
-        ns.DFDt.flux_smoothing = store_smoothing * mesh.cell_size() ** 2
     # The content has to be read after the trace-back and before the solve: after
     # the store the point values are a P1 field sampled at the points and the
     # cell-scale part is zero by construction, whatever the run is doing.
