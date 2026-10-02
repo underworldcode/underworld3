@@ -16,12 +16,12 @@ so a user assembles it from one configured solver rather than by hand.
 
 import numpy as np
 import sympy
+import warnings
 from mpi4py import MPI
 
 import underworld3 as uw
 from underworld3 import function
 from underworld3.coordinates import CoordinateSystemType
-
 
 class FreeSurface:
     r"""Evolve a free surface by exponential relaxation toward stress equilibrium.
@@ -37,8 +37,16 @@ class FreeSurface:
 
     .. math::
 
-        \gamma = \frac{\dot h}{h_\infty - h}, \qquad
+        \gamma = \frac{\oint w\,\dot h\,(h_\infty - h)\,\mathrm{d}s}
+                      {\oint w\,(h_\infty - h)^2\,\mathrm{d}s}, \qquad
         h \leftarrow h_\infty + (h - h_\infty)\,e^{-\gamma\,\Delta t}.
+
+    :math:`\gamma` is ONE rate for the whole surface, recovered by least squares
+    against the FE trace mass. For a single relaxation mode — what this update is
+    derived for — that is exactly the pointwise ratio :math:`\dot h/(h_\infty-h)`,
+    which is then the same number at every node. Under a multi-wavelength load it
+    is not, and the pointwise form manufactures node-scale structure that is in
+    neither field; see :meth:`_relaxation_rate`.
 
     Parameters
     ----------
@@ -57,16 +65,82 @@ class FreeSurface:
         Analytic outward surface normal for the rotated constraint and the
         normal-velocity read (e.g. ``X/|X|`` on a spherical cap). ``None`` uses the
         per-node geometric facet normal — correct as the surface deforms.
-    composition : uw.discretisation.MeshVariable or None, optional
-        A material field advected with the consistent surface velocity (e.g. a mesh
-        level set holding a signed distance, or temperature). ``None`` evolves the
-        surface alone (e.g. a topographic-relaxation benchmark).
+    composition : uw.discretisation.MeshVariable, underworld3.level_set.MaterialCLS,
+        underworld3.swarm_materials.MaterialSwarm, or None, optional
+        A material field advected with the consistent surface velocity. A
+        single ``MeshVariable`` (e.g. a mesh level set holding a signed
+        distance, or temperature) uses ``advection``/``conserve`` below,
+        transported by ONE solver FreeSurface builds and owns. A
+        :class:`~underworld3.level_set.MaterialCLS` instead already owns
+        its OWN per-material :class:`~underworld3.level_set.LevelSetSolver`\\ s
+        (one each, with their own advection scheme and mass conservation) —
+        FreeSurface takes it over by calling its own ``.solve(dt)`` each
+        step, rather than building a second, redundant transport layer on
+        top; ``advection``/``conserve`` below do not apply and must be left
+        at their defaults (see each). If the ``MaterialCLS`` is NOT yet
+        built (no property read, no ``.solve()``/``.build()`` call) when
+        passed in, FreeSurface also points its velocity at its own
+        consistent surface velocity before anything gets built — the ideal
+        case. If it's already built (the common, often unavoidable case
+        when the same materials also supply ``stokes.bodyforce``/
+        ``shear_viscosity_0``, which must exist before ``stokes`` — and
+        hence ``FreeSurface`` — can be constructed), a warning says so:
+        those materials keep advecting with whatever velocity they were
+        originally built with, not the surface-consistent correction. See
+        :meth:`_build_composition_transport`.
+
+        A :class:`~underworld3.swarm_materials.MaterialSwarm` is the third
+        supported form, and the simplest of the three to reason about: it
+        carries the materials on LAGRANGIAN PARTICLES holding absolute
+        physical coordinates, so FreeSurface builds no transport solver for
+        it at all and instead calls the swarm's own
+        ``advection(V_fn, dt, ...)`` each step, with its own consistent
+        surface velocity IN FULL — no ALE mesh-velocity correction, because
+        a particle has no moving frame to correct for (see
+        :meth:`_advect_swarm`). ``advection`` resolves to ``"swarm"`` on its
+        own here, and ``conserve`` is not valid (a particle population
+        conserves its material by construction).
+
+        ``None`` evolves the surface alone (e.g. a topographic-relaxation
+        benchmark).
+    advection : {None, "slcn", "supg", "swarm"}, default None
+        Transport scheme. ``None`` (the default) selects the only scheme that
+        makes sense for the ``composition``'s own type: ``"swarm"`` for a
+        ``MaterialSwarm``, ``"slcn"`` otherwise — so the previous default
+        behaviour of a ``MeshVariable`` composition is unchanged. ``"swarm"``
+        is resolved automatically and requires a ``MaterialSwarm``: passing it
+        with a mesh field raises, and passing a mesh scheme with a
+        ``MaterialSwarm`` warns and is ignored.
+
+        For a single-``MeshVariable`` ``composition`` the choice is between the
+        two mesh schemes below. It is
+        ignored (with a warning if explicitly set) when ``composition`` is
+        a ``MaterialCLS`` — each material there already chose its own
+        scheme via its own ``LevelSetSolver``. ``"slcn"`` (default,
+        unchanged from before this option existed) is the semi-Lagrangian
+        solver (``uw.systems.AdvDiffusionSLCN``) with
+        ``old_frame_traceback=False`` — see
+        :meth:`_build_composition_transport` for why that specific setting
+        matters on a per-step-deforming mesh
+        (underworldcode/underworld3#423). ``"supg"`` uses the Eulerian
+        SUPG solver (``uw.systems.AdvDiffusion``) instead: no trace-back at
+        all, so the deforming-mesh hazard that motivated
+        ``old_frame_traceback=False`` doesn't apply to it in the first
+        place, at the cost of the usual SUPG behaviour on an
+        under-resolved front (see ``underworld3.systems.AdvDiffusion``'s
+        own docstring). Both call ``.solve(timestep=dt)`` identically, so
+        switching this does not change anything else about
+        ``FreeSurface``'s per-step behaviour.
     conserve : sympy expression or None, optional
-        An integrand whose domain integral is held fixed by a uniform shift of
-        ``composition`` after each advection — the enclosed-area conservation of a
-        mesh level set. Requires ``composition``; the shift derivative is taken
-        symbolically from this expression, so pass the same smoothed-Heaviside used
-        in the body force.
+        An integrand whose domain integral is held fixed by a uniform shift
+        of ``composition`` after each advection — the enclosed-area
+        conservation of a mesh level set. Requires a single-``MeshVariable``
+        ``composition``; the shift derivative is taken symbolically from
+        this expression, so pass the same smoothed-Heaviside used in the
+        body force. Not valid with a ``MaterialCLS`` ``composition``
+        (raises) — each material there already conserves its own volume via
+        its own ``LevelSetSolver``'s ``conserve_mass``, so a single blanket
+        shift would not even apply to a well-defined single field.
     driving_buoyancy : sympy expression or None, optional
         Body force for the held solve. ``None`` reuses ``stokes.bodyforce``; because
         :math:`\sigma_{nn}` is mean-removed and a constant body force gives a uniform
@@ -106,6 +180,16 @@ class FreeSurface:
         (the background body force, e.g. ``-rho_g * rhat``) instead runs a twin held
         solve and subtracts its recovery — the exact reference mode. ``None``
         (default) is the reduced/driving-only formulation, unchanged.
+    swarm_advection_order : int, optional
+        Runge-Kutta order handed to ``MaterialSwarm.advection``. Ignored unless
+        ``composition`` is a ``MaterialSwarm``, and dropped silently if that
+        build's ``advection`` does not take an ``order`` keyword.
+    swarm_restore_fn : callable or None, optional
+        Hook passed as ``restore_points_to_domain_func`` to
+        ``MaterialSwarm.advection``, for particles whose RK feet land outside the
+        domain. ``None`` (default) uses the mesh's own deform-aware
+        ``return_coords_to_bounds`` when it exists — the same primitive the
+        semi-Lagrangian trace-back relies on — and otherwise passes nothing.
     verbose : bool, optional
         Report per-step surface diagnostics through :func:`uw.mpi.rank`-safe output.
     """
@@ -117,6 +201,7 @@ class FreeSurface:
         buoyancy_scale=1.0,
         normal=None,
         composition=None,
+        advection=None,
         conserve=None,
         driving_buoyancy=None,
         smooth_length=0.0,
@@ -129,14 +214,99 @@ class FreeSurface:
         consistent_constraint="strong",
         consistent_penalty=1.0e5,
         background_buoyancy=None,
+        swarm_advection_order=2,
+        swarm_restore_fn=None,
         verbose=False,
     ):
+        if advection not in (None, "slcn", "supg", "swarm"):
+            raise ValueError(
+                f"advection must be None, 'slcn', 'supg' or 'swarm', not {advection!r}."
+            )
+
+        # Lazy imports, and they MUST stay inside __init__: this module lives in
+        # underworld3.systems, while level_set.py and swarm_materials.py sit
+        # outside it and themselves import FROM underworld3.systems. Hoisting
+        # either to module level is a circular import. By the time user code
+        # constructs a FreeSurface, both modules are already loaded, so the cost
+        # here is a dict lookup.
+        from underworld3.level_set import MaterialCLS
+        try:
+            from underworld3.swarm_materials import MaterialSwarm
+        except ImportError:                  # build without swarm materials
+            MaterialSwarm = ()
+
+        # ONE discriminator, resolved once here; every per-step dispatch below
+        # reads _comp_kind rather than re-running isinstance checks:
+        #   "none"   no material field — the surface evolves alone
+        #   "cls"    MaterialCLS — owns per-material LevelSetSolvers; .solve(dt)
+        #   "swarm"  MaterialSwarm — Lagrangian particles; .advection(V, dt)
+        #   "field"  a single MeshVariable — ONE solver FreeSurface builds/owns
+        if composition is None:
+            self._comp_kind = "none"
+        elif isinstance(composition, MaterialCLS):
+            self._comp_kind = "cls"
+        elif MaterialSwarm and isinstance(composition, MaterialSwarm):
+            self._comp_kind = "swarm"
+        else:
+            self._comp_kind = "field"
+        # Back-compatible alias; existing internals and user code read this.
+        self._is_multi_material = self._comp_kind == "cls"
+        self._composition_velocity_sync = False  # set for real in _build_composition_transport
+
+        # Resolve the transport scheme against the composition's own type. None
+        # picks the only scheme that can apply; an explicit value is honoured
+        # where it is meaningful and refused where it is not -- a mesh field
+        # cannot be particle-advected, and particles are not moved by a PDE.
+        # Without this, `advection` can reach self._advection still set to None,
+        # where the "supg" test below silently falls through to the slcn branch.
+        if self._comp_kind == "swarm":
+            if advection not in (None, "swarm"):
+                warnings.warn(
+                    f"FreeSurface: advection={advection!r} is ignored with a "
+                    "MaterialSwarm `composition` -- particles are advected by "
+                    "the swarm's own Lagrangian integrator, not by a mesh PDE "
+                    "solver.",
+                    stacklevel=2,
+                )
+            advection = "swarm"
+        elif advection == "swarm":
+            raise ValueError(
+                "FreeSurface: advection='swarm' requires a MaterialSwarm "
+                f"`composition`; got {type(composition).__name__}. A mesh "
+                "field is transported with 'slcn' or 'supg'."
+            )
+        elif advection is None:
+            advection = "slcn"
+
+        if self._comp_kind == "swarm" and conserve is not None:
+            raise ValueError(
+                "FreeSurface: `conserve` is not valid with a MaterialSwarm "
+                "`composition` -- a Lagrangian particle population carries its "
+                "material with it and conserves it by construction; there is "
+                "no field for a blanket `conserve` shift to apply to."
+            )
+        if self._comp_kind == "cls" and conserve is not None:
+            if conserve is not None:
+                raise ValueError(
+                    "FreeSurface: `conserve` is not valid with a MaterialCLS "
+                    "`composition` -- each material there already conserves "
+                    "its own volume via its own LevelSetSolver's "
+                    "conserve_mass; there is no single field for a blanket "
+                    "`conserve` shift to apply to."
+                )
+
         self.free = stokes
         self.mesh = stokes.mesh
         self.surface = surface
         self.buoyancy_scale = buoyancy_scale
         self.normal = normal
         self.composition = composition
+        self._advection = advection
+        self._swarm_advection_order = int(swarm_advection_order)
+        self._swarm_restore_fn = (
+            swarm_restore_fn if swarm_restore_fn is not None
+            else getattr(stokes.mesh, "return_coords_to_bounds", None))
+        self._swarm_adv_kwargs = {}   
         self._conserve_integrand = conserve
         self._smooth_length = smooth_length
         # sigma_nn de-smear: "lumped" is the monotone 2D default; on a 3D P2
@@ -241,7 +411,14 @@ class FreeSurface:
         self._build_consistent()
         self._build_interior_diffuser()
         self._filter_iters = int(surface_filter)
+        # The ALE mesh-velocity correction exists for EULERIAN transport of a
+        # field whose nodes move with the mesh. A MaterialSwarm carries absolute
+        # particle coordinates and needs no such correction (see _advect_swarm),
+        # so its tracking variables and projection solver are never built.
+        self._track_mesh_velocity = self._comp_kind in ("cls", "field")
         if composition is not None:
+            if self._track_mesh_velocity:
+                self._build_mesh_velocity_tracking()
             self._build_composition_transport()
 
         self._h_inf = None  # recovered in solve(), consumed in advance()
@@ -706,35 +883,263 @@ class FreeSurface:
         others = [n for n in self._walls if n != self.surface]
         return others[0] if others else None
 
+    def _build_mesh_velocity_tracking(self):
+        r"""Mesh velocity, for the ALE advection correction that SUPG's
+        Eulerian transport needs but does not do on its own.
+
+        SemiLagrangian (the ``"slcn"`` path) already handles a deforming
+        mesh internally — it temporarily deforms BACK to the old geometry
+        to evaluate history values there before restoring (confirmed from
+        ``underworld3.systems.ddt``'s own source: ``mesh._deform_mesh``
+        inside ``SemiLagrangian``'s trace-back — see also
+        ``old_frame_traceback`` and underworldcode/underworld3#423, in
+        :meth:`_build_composition_transport`'s SLCN branch). The Eulerian
+        SUPG history manager (``EulerianSUPG``, what ``AdvDiffusion``/
+        ``LevelSetSolver`` use for ``advection="supg"``) has NO such
+        handling anywhere in its implementation — confirmed by inspection,
+        not inferred. So on a mesh that moves every step (as FreeSurface's
+        does), an uncorrected SUPG advection term implicitly measures the
+        GRID time derivative :math:`D\psi/Dt|_{mesh}` (comparing values at
+        what are now different physical locations across a step), not the
+        physical :math:`\partial\psi/\partial t|_{fixed}` the transport
+        equation actually wants. The standard ALE fix (e.g. Donea et al.
+        2004; see also ASPECT's own ALE documentation) is to advect with
+        the velocity RELATIVE to the mesh, :math:`\mathbf u - \mathbf
+        u_{mesh}`, not the raw material velocity.
+
+        :math:`\mathbf u_{mesh}` is built at the mesh's own (P1) node
+        resolution — the same resolution :meth:`_carry_and_deform`'s
+        ``displacement``/``_normal_direction`` are already computed at —
+        then projected up to the velocity space (P2, matching
+        ``consistent.u``) with a ``Vector_Projection``, mirroring
+        :meth:`_build_surface_velocity_projection`'s existing P2→P1
+        projection in the opposite direction.
+
+        ORDERING CAVEAT: :meth:`_carry_and_deform` (which knows THIS
+        step's actual mesh motion) runs AFTER composition transport in
+        :meth:`advance`. So the correction applied to THIS step's
+        advection necessarily uses LAST step's mesh velocity — a
+        one-step lag, the same standard Picard-style trade-off already
+        used elsewhere in this project for an analogous ordering
+        conflict (the discontinuity-capturing coefficient lagged at
+        ``phi_old`` in ``solver_supg.py``, so its own nonlinearity
+        doesn't stall Newton). Zero on the very first step, since the
+        mesh hasn't moved yet — the correct initial value.
+        """
+        self._mesh_disp_p1 = uw.discretisation.MeshVariable(
+            "mesh_disp_p1_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True)
+        self._mesh_velocity = uw.discretisation.MeshVariable(
+            "mesh_vel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+        self._mesh_vel_proj = uw.systems.Vector_Projection(self.mesh, self._mesh_velocity)
+        self._mesh_vel_proj.uw_function = self._mesh_disp_p1.sym
+        with self.mesh.access(self._mesh_disp_p1, self._mesh_velocity):
+            self._mesh_disp_p1.data[...] = 0.0
+            self._mesh_velocity.data[...] = 0.0
+        # Scratch space for consistent.u - mesh_velocity, at the velocity
+        # space's own degree. Only the MaterialCLS sync path needs actual
+        # DATA written here; the single-MeshVariable SUPG path instead
+        # uses self._mesh_velocity.sym directly in its V_fn expression
+        # (see _build_composition_transport), which stays current
+        # automatically — no explicit sync needed there.
+        self._adv_velocity_relative = uw.discretisation.MeshVariable(
+            "V_adv_rel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+
     def _build_composition_transport(self):
-        """Semi-Lagrangian transport of the material field by the consistent surface
-        velocity. Diffusion is negligible; a level-set distance field carries no
-        monotone clamp (it is not a bounded [0,1] field)."""
-        self._comp_ddt = uw.systems.ddt.SemiLagrangian(
-            self.mesh, self.composition.sym, self._adv_velocity.sym,
-            vtype=uw.VarType.SCALAR, degree=self.composition.degree, continuous=True,
-            varsymbol="phi", bcs=[], order=1, smoothing=0.0,
-            # old_frame_traceback must be FALSE on a per-step-deforming mesh
-            # (underworldcode/underworld3#423). The old-frame reach-back — introduced as
-            # the fix for the earlier high-Ra blow-up — is itself an exponential
-            # amplifier once the surface deformation squeezes the near-boundary cells
-            # (onset ~5% of radius): the record→trace→solve loop then grows both T
-            # extremes ~10% per CYCLE (worse at smaller dt), mesh-locked, until T is
-            # unbounded. A minimal reproducer with no free surface at all (prescribed
-            # velocity + a ±0.1%/step mesh wobble) shows the same runaway with old-frame
-            # ON at any theta and is bounded with it OFF. The standard ALE path is safe
-            # here because the hazards that motivated old-frame are covered by fixes
-            # landed since: departure feet are restored by the deform-aware
-            # return_coords_to_bounds, and the monotone clamp bounds the sample.
-            # Measured on this problem (rho_g 2e5): old-frame ON is unusable beyond
-            # ~5.4% deformation; OFF holds T in [0,1] to 1e-3 through 17% deformation.
-            monotone_mode="clamp", theta=0.5, old_frame_traceback=False,
-        )
-        self._comp_adv = uw.systems.AdvDiffusionSLCN(
-            self.mesh, u_Field=self.composition, V_fn=self._adv_velocity.sym,
-            order=1, DuDt=self._comp_ddt,
-        )
-        self._comp_adv.constitutive_model = uw.constitutive_models.DiffusionModel
+        """Transport of the material field by the consistent surface velocity.
+
+        MaterialCLS branch: no separate solver is built at all — the
+        MaterialCLS already owns one LevelSetSolver per explicit material.
+        If the materials are NOT yet built, FreeSurface points their
+        velocity at its own consistent surface velocity before anything
+        gets built (the ideal case — construct FreeSurface before reading
+        any material property). If they're ALREADY built — the common,
+        often unavoidable case when the same MaterialCLS also supplies
+        stokes.bodyforce/shear_viscosity_0, which must exist before `stokes`
+        (and hence FreeSurface, which reads stokes.bodyforce immediately)
+        can be constructed — reassigning `.velocity` now would be a no-op:
+        each material's own LevelSetSolver already baked its (then-current)
+        velocity into its compiled weak form at construction time. In that
+        case, IF the materials were given a genuine MeshVariable as
+        `velocity=` (not a bare sympy expression like `v.sym`), FreeSurface
+        instead keeps that variable's DATA in sync with its own consistent
+        surface velocity every step (:meth:`advance`, via
+        ``MaterialCLS.sync_velocity_from`` — see its docstring for why this
+        works even though reassigning `.velocity` itself does not).
+        Otherwise there is no fixed-identity field to update, and the
+        materials keep advecting with whatever velocity they were built
+        with — a warning says so every time it happens.
+
+        Either way ``self._comp_adv`` is left at None, a marker
+        :meth:`advance` uses to call ``self.composition.solve(dt)`` instead
+        of a single solve.
+
+        MaterialSwarm branch: no solver is built either, for a different
+        reason — particle advection is a METHOD CALL on the swarm, not a PDE
+        solve, so there is no weak form to compile, no history manager to
+        configure and no diffusivity or tolerance to set. All this branch
+        does is fix the velocity the particles will be integrated along and
+        work out, ONCE, which optional keywords this build's
+        ``advection`` actually accepts (checking the signature here rather
+        than catching TypeError at the call site, where a TypeError raised
+        *inside* advection would otherwise be mistaken for a bad keyword and
+        the particles advected a second time). See :meth:`_advect_swarm`.
+
+        Single-MeshVariable branch (unchanged from before MaterialCLS
+        support existed): diffusion is negligible; a level-set distance
+        field carries no monotone clamp (it is not a bounded [0,1] field).
+        See ``advection`` in the class docstring for the "slcn" vs "supg"
+        choice.
+        """
+        if self._comp_kind == "swarm":
+            # The velocity is the CONSISTENT surface velocity, in FULL -- not
+            # the ALE-relative (u - u_mesh) form the mesh-field branches use.
+            # Particles store absolute physical coordinates, so they must move
+            # at the material velocity; subtracting the mesh velocity would
+            # drag them backwards by exactly the mesh motion. Using
+            # `consistent` rather than `free` is what keeps a particle sitting
+            # ON the surface coincident with it -- the consistent solve is
+            # constrained so u.n = increment/dt there, which is precisely how
+            # far the mesh surface moves this step (see _solve_consistent).
+            self._swarm_V_fn = self._adv_velocity.sym
+
+            advect = getattr(self.composition, "advection", None)
+            if not callable(advect):
+                raise AttributeError(
+                    "FreeSurface: the MaterialSwarm `composition` has no "
+                    "callable `advection` method -- this build predates "
+                    "particle advection on material swarms, or the object "
+                    f"passed ({type(self.composition).__name__}) is not a "
+                    "MaterialSwarm."
+                )
+            # Probe the signature ONCE so the per-step call is a single clean
+            # invocation with only the keywords this build understands.
+            import inspect
+            try:
+                params = inspect.signature(advect).parameters
+            except (TypeError, ValueError):          # C-implemented / wrapped
+                params = {}
+            takes_kwargs = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+            if "order" in params or takes_kwargs:
+                self._swarm_adv_kwargs["order"] = self._swarm_advection_order
+            if self._swarm_restore_fn is not None and (
+                "restore_points_to_domain_func" in params or takes_kwargs
+            ):
+                self._swarm_adv_kwargs["restore_points_to_domain_func"] = (
+                    self._swarm_restore_fn
+                )
+            self._comp_adv = None
+            return
+
+        if self._is_multi_material:
+            self._composition_velocity_sync = False
+            if self.composition.built:
+                schemes = {s.advection for s in self.composition._cls_solvers.values()}
+                if "slcn" in schemes:
+                    warnings.warn(
+                        "FreeSurface: this MaterialCLS includes material(s) "
+                        f"using advection='slcn' (schemes present: "
+                        f"{sorted(schemes)}). The ALE mesh-velocity "
+                        "correction below (needed for SUPG-advected "
+                        "materials on this deforming mesh) is applied "
+                        "through MaterialCLS's single SHARED velocity "
+                        "field -- there is no way to correct only the "
+                        "SUPG-advected materials and leave the SLCN-"
+                        "advected ones alone. SLCN already handles "
+                        "deformation internally (its own coordinate-remap "
+                        "trace-back), so this OVER-corrects those specific "
+                        "materials. Prefer a uniform advection scheme "
+                        "across one MaterialCLS used under FreeSurface.",
+                        stacklevel=2,
+                    )
+                if getattr(self.composition, "_velocity_variable", None) is not None:
+                    # The fix: can't rebind the SYMBOL any already-built
+                    # LevelSetSolver compiled against, but writing new DATA
+                    # into that same variable (same identity) every step
+                    # works regardless of when it was last written. The
+                    # data written (advance()) is consistent.u MINUS the
+                    # (one-step-lagged) mesh velocity -- see
+                    # _build_mesh_velocity_tracking.
+                    self._composition_velocity_sync = True
+                else:
+                    warnings.warn(
+                        "FreeSurface: the MaterialCLS `composition` was "
+                        "already built before FreeSurface could point it at "
+                        "its own consistent surface velocity, AND it was "
+                        "constructed with a bare sympy expression for "
+                        "`velocity=` (e.g. v.sym) rather than a genuine "
+                        "MeshVariable -- there is no dedicated field "
+                        "FreeSurface can update in place instead. Its "
+                        "materials will keep advecting with whatever "
+                        "velocity they were originally built with, NOT "
+                        "FreeSurface's surface-consistent correction (and "
+                        "not the ALE mesh-velocity correction either). Pass "
+                        "a MeshVariable (not its .sym) as `velocity=` when "
+                        "constructing MaterialCLS to enable the in-place "
+                        "fix -- see MaterialCLS.sync_velocity_from.",
+                        stacklevel=2,
+                    )
+            else:
+                # Not yet built: a clean symbolic assignment, no per-step
+                # sync needed -- see the single-MeshVariable SUPG branch
+                # below for why this stays current automatically. Same
+                # mixed-scheme caveat as above applies if materials are
+                # later declared with per-material advection="slcn"; it
+                # isn't checkable yet here (nothing is built).
+                self.composition.velocity = self._adv_velocity.sym - self._mesh_velocity.sym
+            self._comp_adv = None
+            return
+
+        if self._advection == "supg":
+            # No trace-back here, so the deforming-mesh hazard documented below
+            # for old_frame_traceback on the SLCN path doesn't apply -- there is
+            # no "old frame" to reach back into. AdvDiffusion is a drop-in for
+            # AdvDiffusionSLCN (same .solve(timestep=dt), same
+            # .constitutive_model.Parameters.diffusivity API), so everything
+            # from self._comp_adv.tolerance down is unchanged for either branch.
+            #
+            # V_fn is the ALE-corrected RELATIVE velocity (consistent.u -
+            # mesh_velocity), not consistent.u alone -- see
+            # _build_mesh_velocity_tracking for why EulerianSUPG needs this
+            # and SemiLagrangian (the "slcn" branch, below) doesn't. Both
+            # are live symbols (self._adv_velocity.sym,
+            # self._mesh_velocity.sym), so this expression stays current
+            # automatically every solve -- no explicit per-step sync
+            # needed here (unlike the MaterialCLS branch above, whose
+            # solvers were already compiled before FreeSurface could get
+            # at them).
+            self._comp_adv = uw.systems.AdvDiffusion(
+                self.mesh, u_Field=self.composition,
+                V_fn=self._adv_velocity.sym - self._mesh_velocity.sym,
+                order=1, theta=0.5,
+            )
+        else:
+            self._comp_ddt = uw.systems.ddt.SemiLagrangian(
+                self.mesh, self.composition.sym, self._adv_velocity.sym,
+                vtype=uw.VarType.SCALAR, degree=self.composition.degree, continuous=True,
+                varsymbol="phi", bcs=[], order=1, smoothing=0.0,
+                # old_frame_traceback must be FALSE on a per-step-deforming mesh
+                # (underworldcode/underworld3#423). The old-frame reach-back — introduced as
+                # the fix for the earlier high-Ra blow-up — is itself an exponential
+                # amplifier once the surface deformation squeezes the near-boundary cells
+                # (onset ~5% of radius): the record→trace→solve loop then grows both T
+                # extremes ~10% per CYCLE (worse at smaller dt), mesh-locked, until T is
+                # unbounded. A minimal reproducer with no free surface at all (prescribed
+                # velocity + a ±0.1%/step mesh wobble) shows the same runaway with old-frame
+                # ON at any theta and is bounded with it OFF. The standard ALE path is safe
+                # here because the hazards that motivated old-frame are covered by fixes
+                # landed since: departure feet are restored by the deform-aware
+                # return_coords_to_bounds, and the monotone clamp bounds the sample.
+                # Measured on this problem (rho_g 2e5): old-frame ON is unusable beyond
+                # ~5.4% deformation; OFF holds T in [0,1] to 1e-3 through 17% deformation.
+                monotone_mode="clamp", theta=0.5, old_frame_traceback=False,
+            )
+            self._comp_adv = uw.systems.AdvDiffusionSLCN(
+                self.mesh, u_Field=self.composition, V_fn=self._adv_velocity.sym,
+                order=1, DuDt=self._comp_ddt,
+            )
+            self._comp_adv.constitutive_model = uw.constitutive_models.DiffusionModel
         self._comp_adv.constitutive_model.Parameters.diffusivity = 1.0e-7
         self._comp_adv.tolerance = 1.0e-4
         if self._conserve_integrand is not None:
@@ -915,9 +1320,25 @@ class FreeSurface:
         otherwise keep the surface near-flat and the solves ill-conditioned) — while the
         surface-motion cap still binds, so the mesh cannot be over-deformed and the
         surface-flow feedback cannot run away. Scale the advective step, never the
-        surface safety."""
+        surface safety.
+
+        With ``advection="supg"``, ``_comp_adv.estimate_dt()`` is called with
+        ``basis="resolution"`` explicitly: that class's default
+        (``basis="accuracy"``) returns a fundamentally different quantity (the
+        timestep for a target per-step CHANGE in the field, not a stability/
+        cell-crossing limit), which would silently corrupt the
+        ``min(dt_advect, dt_surface)`` combination below if left at its default.
+        ``basis="resolution"`` is the one that means the same thing as the
+        semi-Lagrangian solver's ``estimate_dt()``."""
         if self.composition is not None:
-            dt_advect = float(self._comp_adv.estimate_dt())
+            if self._comp_kind == "cls":
+                dt_advect = float(self.composition.estimate_dt(basis="resolution"))
+            elif self._comp_kind == "swarm":
+                dt_advect = self._velocity_cfl()
+            elif self._advection == "supg":
+                dt_advect = float(self._comp_adv.estimate_dt(basis="resolution"))
+            else:
+                dt_advect = float(self._comp_adv.estimate_dt())
         else:
             dt_advect = self._velocity_cfl()
         dt_advect *= float(advect_scale)
@@ -959,9 +1380,7 @@ class FreeSurface:
             shape, h_inf, u_n = self._apply_tangential_transport(shape, h_inf, u_n, dt)
 
         displacement = h_inf - shape
-        with np.errstate(divide="ignore", invalid="ignore"):
-            gamma = np.where(np.abs(displacement) > 1.0e-9, u_n / displacement, 0.0)
-        gamma = np.abs(gamma)  # relax toward equilibrium; L-stable for any rate
+        gamma = self._relaxation_rate(u_n, displacement)
         shape_new = h_inf + (shape - h_inf) * np.exp(-gamma * dt)
         # Total height change relative to the CURRENT mesh: the tangential transport
         # (shape - shape0) plus the normal relaxation (shape_new - shape).
@@ -969,10 +1388,52 @@ class FreeSurface:
 
         if self.composition is not None:
             self._solve_consistent(increment, dt)
-            self._comp_adv.solve(timestep=dt, zero_init_guess=False)
-            self._conserve_composition()
+            if self._comp_kind == "cls":
+                # Each material already conserves its own volume via its
+                # own LevelSetSolver's conserve_mass -- no separate
+                # _conserve_composition() step (that's validated at
+                # construction: conserve=None is required here).
+                if self._composition_velocity_sync:
+                    # Materials were already built when handed over (see
+                    # _build_composition_transport): keep their DEDICATED
+                    # velocity variable's data current every step, since
+                    # their compiled solvers can't be retargeted any other
+                    # way once built. ALE-corrected: consistent.u minus
+                    # the mesh velocity from the LAST _carry_and_deform
+                    # call (one-step lag -- see
+                    # _build_mesh_velocity_tracking's ordering caveat;
+                    # this step's own mesh motion isn't known until this
+                    # same advance() call reaches _carry_and_deform,
+                    # below). .array returns a TensorMeshArrayView, which
+                    # supports indexing/assignment (the pattern used
+                    # throughout this file, e.g. _solve_consistent's
+                    # `.array[...] = other.array`) but NOT direct binary
+                    # arithmetic between two whole views -- np.asarray()
+                    # first to get plain ndarrays for the subtraction.
+                    self._adv_velocity_relative.array[...] = (
+                        np.asarray(self._adv_velocity.array)
+                        - np.asarray(self._mesh_velocity.array)
+                    )
+                    self.composition.sync_velocity_from(self._adv_velocity_relative)
+                self.composition.solve(dt)
+            elif self._comp_kind == "swarm":
+                # Lagrangian: move the PARTICLES themselves, in absolute
+                # space, and do it BEFORE the mesh deforms -- the velocity
+                # they integrate is defined on the geometry the Stokes solves
+                # have just run on. Nothing is subtracted for mesh motion.
+                self._advect_swarm(dt)
+            else:
+                self._comp_adv.solve(timestep=dt, zero_init_guess=False)
+                self._conserve_composition()
 
         self._carry_and_deform(increment, dt)
+        if self._comp_kind == "swarm":
+            # The mesh has now moved underneath a particle population that did
+            # not move with it, so anything the swarm caches about where its
+            # particles sit is stale: cell ownership first, and then whatever
+            # it projects onto the mesh (the proxy fields the body force and
+            # the viscosity are built from).
+            self._sync_swarm_after_deform()
         if self.verbose:
             uw.pprint(
                 f"FreeSurface: |increment|={np.abs(increment).max():.3e} "
@@ -980,6 +1441,63 @@ class FreeSurface:
             )
 
     # -- step internals -------------------------------------------------------
+
+    def _relaxation_rate(self, u_n, displacement):
+        r"""ONE relaxation rate for the whole surface, by FE-trace-mass-weighted least
+        squares: :math:`\gamma = \oint w\,\dot h\,(h_\infty-h) / \oint w\,(h_\infty-h)^2`.
+
+        The exponential update is derived for a surface relaxing as a SINGLE mode, and
+        with one mode the pointwise ratio :math:`\dot h/(h_\infty-h)` is the same number
+        at every node — so this least-squares rate recovers it EXACTLY and the update
+        stays exact at any :math:`\Delta t` (the cosine topographic-relaxation benchmark
+        is unchanged by this function).
+
+        Under a multi-wavelength load it is not. A compact load beneath a stiff lid
+        excites a spectrum, each wavelength relaxing at its own rate, and
+        :math:`\dot h` then comes out spatially BROADER than :math:`h_\infty`, with
+        different zero crossings. Evaluating the ratio node by node there does not
+        approximate a rate; it manufactures structure that is in neither field:
+
+        * where :math:`\dot h = 0` but :math:`h_\infty \neq h`, the pointwise
+          :math:`\gamma` is zero, so :math:`e^{-\gamma\Delta t}=1` and that node is
+          FROZEN at its current height while both its neighbours relax past it — a
+          one-node spike, sign-flipped relative to the local trend. This is the
+          damaging case, and it is invisible to a guard placed on the denominator.
+        * where :math:`h_\infty \to h` the ratio has a pole, but that one is benign:
+          the node is driven to :math:`h_\infty`, which is where it already is.
+        * where the two fields disagree in sign — normal near a load's flanks, since
+          neighbouring surface points are mechanically coupled and a point may
+          legitimately move away from its own pointwise equilibrium — an ``abs()``
+          silently reverses the motion.
+
+        A single global rate cannot do any of these: no node can be frozen, no pole
+        exists, and the sign is set by the surface as a whole. It is a genuine
+        restriction — a surface whose parts really do relax at different rates (a lid
+        that thickens across the domain, say) is served by one average rate — but that
+        is the approximation the exponential update already assumes, made honestly and
+        in one place, rather than a per-node ratio that is unbounded where it is least
+        meaningful. Measured on Crameri (2012) Case 2: node-to-node curvature drops by
+        a factor of ten, 2.98e-6 to 2.97e-7 against a 1.1e-4 signal.
+
+        Reduction follows :meth:`_surface_mean`: owned-facet partial weights, counted
+        exactly once globally, so two scalar allreduces give the exact weighted rate
+        with no gather and no ordering, identical on every rank.
+        """
+        w = self._surface_weights_local()
+        if w.size:
+            num = float(np.dot(w * np.asarray(u_n, dtype=float), displacement))
+            den = float(np.dot(w * np.asarray(displacement, dtype=float), displacement))
+        else:
+            num = den = 0.0
+        comm = uw.mpi.comm
+        num = comm.allreduce(num, op=MPI.SUM)
+        den = comm.allreduce(den, op=MPI.SUM)
+        # den is a weighted sum of squares: zero only if the surface sits exactly at
+        # equilibrium everywhere, where a zero rate is the right answer.
+        gamma = abs(num / den) if den > 1.0e-300 else 0.0
+        if self.verbose:
+            uw.pprint(f"FreeSurface: gamma={gamma:.4e}  gamma*dt-safe (L-stable)")
+        return gamma
 
     def _current_shape(self):
         """The surface height anomaly (topography direction), mean-removed — read from
@@ -1140,6 +1658,58 @@ class FreeSurface:
             relax = 0.3  # full correction injects mesh-motion jitter (design note)
             self.composition.array[:, 0, 0] += relax * (current - self._conserve_target) / rate
 
+    def _advect_swarm(self, dt):
+        r"""Advect a ``MaterialSwarm``'s particles with the consistent surface velocity.
+
+        Three things set this apart from the mesh-field branches, and all three
+        follow from a particle holding an ABSOLUTE coordinate rather than a value
+        at a node:
+
+        *No ALE correction.* The velocity is the material velocity itself, not
+        :math:`\mathbf u - \mathbf u_{mesh}`. That relative form exists because an
+        Eulerian field lives at nodes that move underneath it (see
+        :meth:`_build_mesh_velocity_tracking`); a particle has no such frame, so
+        subtracting the mesh velocity would displace it backwards by exactly the
+        mesh motion every step.
+
+        *Consistent, not free.* :attr:`_adv_velocity` is the consistent solve's
+        velocity, whose surface-normal component is constrained to the realised
+        relaxed rate :math:`\Delta h/\Delta t`. A particle on the surface therefore
+        travels exactly as far as the surface does, and the free boundary stays a
+        material boundary. Advecting with the FREE velocity instead moves
+        near-surface particles at the un-relaxed rate — opening a gap below the lid,
+        or pushing particles through it, by a margin that compounds every step.
+
+        *Before the deform.* Called from :meth:`advance` while the mesh still holds
+        the geometry the Stokes solves ran on, so the velocity is sampled where it
+        is defined. :meth:`_carry_and_deform` moves the mesh immediately afterwards
+        and :meth:`_sync_swarm_after_deform` repairs the bookkeeping.
+        """
+        self.composition.advection(self._swarm_V_fn, dt, **self._swarm_adv_kwargs)
+
+    def _sync_swarm_after_deform(self):
+        """Re-establish particle bookkeeping after the mesh moved underneath it.
+
+        Two things can be stale once :meth:`_carry_and_deform` has run: which cell
+        owns each particle, and whatever the swarm projects onto the mesh (the proxy
+        fields ``rho``/``eta`` are built from, and which therefore set the NEXT
+        step's body force and viscosity). Both are repaired through whichever hook
+        this build exposes; a build that refreshes them inside ``Mesh.deform`` —
+        which is handed ``dt`` precisely so it can do ALE bookkeeping — exposes none
+        of these names and this is then a no-op, which is the correct outcome.
+        """
+        for hook in ("update_particle_owners", "_update_particle_owners",
+                     "update_particle_cells", "migrate"):
+            fn = getattr(self.composition, hook, None)
+            if callable(fn):
+                fn()
+                break
+        for hook in ("update_proxies", "_update_proxies", "rebuild_proxies"):
+            fn = getattr(self.composition, hook, None)
+            if callable(fn):
+                fn()
+                break
+
     def _carry_and_deform(self, increment, dt):
         """Carry the surface increment inward with the Laplacian diffuser and apply it
         as a mesh deformation along the topography direction (vertical on a box, radial
@@ -1158,5 +1728,15 @@ class FreeSurface:
             displacement = np.asarray(
                 function.evaluate(self._carry.sym[0], coords)
             ).flatten()
-        new_coords = coords + displacement[:, None] * self._normal_direction(coords)
+        disp_vec = displacement[:, None] * self._normal_direction(coords)
+        new_coords = coords + disp_vec
+        if self._track_mesh_velocity:
+            # THIS step's actual mesh motion, at the mesh's own (P1) node
+            # resolution, projected up to the velocity space -- consumed
+            # NEXT step (see _build_mesh_velocity_tracking's ordering
+            # caveat: this step's own composition transport, above,
+            # already ran before this method does).
+            target_shape = self._mesh_disp_p1.array.shape
+            self._mesh_disp_p1.array[...] = (disp_vec / dt).reshape(target_shape)
+            self._mesh_vel_proj.solve()
         self.mesh.deform(new_coords, dt=dt)
