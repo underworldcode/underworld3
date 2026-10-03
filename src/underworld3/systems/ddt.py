@@ -6090,12 +6090,13 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         if value not in ("cell", "global"):
             raise ValueError(f"reconstruction is 'cell' or 'global', not {value!r}")
         if value == "global":
-            if self.degree != 1:
-                raise NotImplementedError("the global projection is linear (P1); a degree "
+            if self.degree not in (1, 2):
+                raise NotImplementedError("the global projection is P1 or P2; a degree "
                                           f"{self.degree} forward-nodes history keeps reconstruction='cell'")
             if self._global_projector is None:
                 from underworld3.utilities.particle_projection import ParticleL2Projector
-                self._global_projector = ParticleL2Projector(self.mesh, rtol=_HISTORY_PROJECTION_TOLERANCE)
+                self._global_projector = ParticleL2Projector(self.mesh, degree=self.degree,
+                                                             rtol=_HISTORY_PROJECTION_TOLERANCE)
         self._reconstruction = value
 
     def _weights_of_launch(self):

@@ -80,12 +80,44 @@ def test_the_forward_nodes_global_projection_reproduces_a_linear_field_from_its_
     assert history._fit_overshoot < 1.0e-6
 
 
-def test_the_forward_nodes_global_projection_needs_a_linear_store():
+def test_a_quadratic_field_sampled_anywhere_in_the_cells_is_projected_exactly_at_degree_two():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, qdegree=3)
+    pj = ParticleL2Projector(mesh, degree=2)
+    pj._build()
+    ncell = pj._rows.shape[0]
+    rng = np.random.default_rng(11 + uw.mpi.rank)
+    lam = rng.dirichlet(np.ones(3), size=(ncell, 9))
+    X = np.einsum("cpi,cid->cpd", lam, pj._Xv).reshape(-1, 2)
+    cell = np.repeat(np.arange(ncell), 9)
+    w = np.repeat(pj.cell_measure / 9, 9)
+
+    def f(P):
+        return np.c_[1.0 + 2.0 * P[:, 0] - 3.0 * P[:, 1] + P[:, 0] ** 2 - 0.5 * P[:, 0] * P[:, 1],
+                     P[:, 1] ** 2 - P[:, 0]]
+
+    u = pj.project(X, f(X), w, cell, old=np.zeros((pj.n_local_rows, 2)), eps=1.0e-12)
+    assert np.abs(u - f(np.asarray(pj._var.coords))).max() < 1.0e-8
+    # the element mass matrix integrates to the cell measure
+    assert abs(pj._Me.sum() - pj.cell_measure.sum()) < 1.0e-12
+
+
+def test_the_forward_nodes_global_projection_reproduces_a_quadratic_velocity_from_its_launch_set():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, qdegree=3)
+    v = uw.discretisation.MeshVariable("U_fwn_q2", mesh, 2, degree=2)
+    P = np.asarray(v.coords)
+    v.data[:, 0] = 1.0 + P[:, 0] ** 2 - 0.5 * P[:, 0] * P[:, 1]
+    v.data[:, 1] = P[:, 1] ** 2 - P[:, 0]
+    history = uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, v.sym, sympy.Matrix([[0.0, 0.0]]), uw.VarType.VECTOR,
+                                                        degree=2, reconstruction="global")
+    history.update_pre_solve(0.1)
+    assert np.abs(np.asarray(history.psi_star[0].data) - np.asarray(v.data)).max() < 1.0e-6
+    assert history._fit_overshoot < 1.0e-6
+
+
+def test_the_global_projection_refuses_a_cubic_store():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
-    v = uw.discretisation.MeshVariable("U_fwn_p2", mesh, 2, degree=2)
-    with pytest.raises(NotImplementedError, match="degree 2"):
-        uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, v.sym, v.sym, uw.VarType.VECTOR, degree=2,
-                                                  reconstruction="global")
+    with pytest.raises(NotImplementedError, match="degree 3"):
+        ParticleL2Projector(mesh, degree=3)
 
 
 @pytest.mark.parametrize("reconstruction", ["cell", "global"])

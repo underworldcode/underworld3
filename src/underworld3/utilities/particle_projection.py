@@ -1,4 +1,4 @@
-r"""Global L2 projection of scattered, weighted values onto a continuous P1 field.
+r"""Global L2 projection of scattered, weighted values onto a continuous P1 or P2 field.
 
 Given points :math:`\mathbf{x}_p` with values :math:`v_p` and weights :math:`w_p`
 (each point's share of the domain), the continuous linear field
@@ -26,7 +26,7 @@ patch is sampled; :math:`\alpha K` (:math:`K` the stiffness matrix, :math:`\alph
 per cell, length squared) is the optional gradient penalty of the history
 projections' ``store_smoothing``.
 
-Simplex meshes. In parallel each point is contributed by the rank that owns its
+Simplex meshes; degree 2 on triangles. In parallel each point is contributed by the rank that owns its
 cell (the mesh is distributed without overlap); the shared nodes on a partition
 seam sum their contributions through PETSc's local-to-global ADD, so the system,
 and to the solver tolerance the answer, does not depend on the partition.
@@ -38,27 +38,49 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 
+# Dunavant's degree-4 rule on the triangle, in barycentric coordinates with the
+# weights summing to one: exact for the P2 mass matrix (degree 4) and stiffness
+_A1, _B1, _W1 = 0.445948490915965, 0.108103018168070, 0.223381589678011
+_A2, _B2, _W2 = 0.091576213509771, 0.816847572980459, 0.109951743655322
+_TRI_RULE = (
+    np.array([[_B1, _A1, _A1], [_A1, _B1, _A1], [_A1, _A1, _B1],
+              [_B2, _A2, _A2], [_A2, _B2, _A2], [_A2, _A2, _B2]]),
+    np.array([_W1, _W1, _W1, _W2, _W2, _W2]),
+)
+
+
 class ParticleL2Projector:
-    """Weighted least-squares projection of scattered values onto continuous P1.
+    """Weighted least-squares projection of scattered values onto continuous
+    P1 (any simplex mesh) or P2 (triangles).
 
     Parameters
     ----------
     mesh : Mesh
         A simplex mesh.
+    degree : int
+        1 or 2, the degree of the continuous field; its rows are the rows of
+        any continuous mesh variable of that degree on the mesh (vertices, then
+        for degree 2 the edges).
     rtol : float
         Relative tolerance of the conjugate-gradient solve.
     """
 
     instances = 0
 
-    def __init__(self, mesh, rtol=1.0e-12):
+    def __init__(self, mesh, degree=1, rtol=1.0e-12):
+        if degree not in (1, 2):
+            raise NotImplementedError(f"ParticleL2Projector projects onto P1 or P2, not degree {degree}")
+        if degree == 2 and mesh.dim != 2:
+            raise NotImplementedError("ParticleL2Projector: degree 2 is for triangles (2-D) only")
         ParticleL2Projector.instances += 1
         self.mesh = mesh
+        self.degree = int(degree)
         self.rtol = rtol
-        # the scalar layout the matrix and vectors live on; a P1 variable of any
-        # shape keeps its rows in the same vertex order (rows = section offsets)
+        # the scalar layout the matrix and vectors live on; a variable of this
+        # degree and any shape keeps its rows in the same point order (rows =
+        # section offsets over the vertices, then the edges)
         self._var = uw.discretisation.MeshVariable(
-            f"_pl2_{ParticleL2Projector.instances}", mesh, 1, degree=1, continuous=True)
+            f"_pl2_{ParticleL2Projector.instances}", mesh, 1, degree=self.degree, continuous=True)
         self._dm = None
 
     def _build(self):
@@ -81,8 +103,20 @@ class ParticleL2Projector:
                 raise NotImplementedError("ParticleL2Projector needs a simplex mesh")
             cells.append(verts)
         cells = np.asarray(cells, dtype=np.int64).reshape(-1, d + 1)
-        self._rows = np.array([[sec.getOffset(int(p)) for p in row] for row in cells],
-                              dtype=np.int32).reshape(-1, d + 1)
+        rows = [[sec.getOffset(int(p)) for p in row] for row in cells]
+        self._edge_pairs = None
+        if self.degree == 2:
+            # each cell's edges, as the local indices of the two vertices they join
+            e0, e1 = dm.getDepthStratum(1)
+            pairs = []
+            for c, verts in zip(range(c0, c1), cells):
+                edges = [p for p in dm.getTransitiveClosure(c)[0] if e0 <= p < e1]
+                local = {int(v): k for k, v in enumerate(verts)}
+                rows[c - c0].extend(sec.getOffset(int(e)) for e in edges)
+                pairs.append([[local[int(q)] for q in dm.getCone(int(e))] for e in edges])
+            self._edge_pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 3, 2)
+        self._rows = np.asarray(rows, dtype=np.int32).reshape(len(cells), -1)
+        self._nb = self._rows.shape[1]
         Xv = np.array([[coords[csec.getOffset(int(p)) // mesh.cdim, :d] for p in row] for row in cells])
         self._Xv = Xv
         self._x0 = Xv[:, 0, :] if cells.size else np.zeros((0, d))
@@ -91,12 +125,27 @@ class ParticleL2Projector:
         self._Tinv = np.linalg.inv(T) if cells.size else T
         measure = np.abs(np.linalg.det(T)) / (1.0 if d == 1 else 2.0 if d == 2 else 6.0) if cells.size else np.zeros(0)
         self.cell_measure = measure
-        # element matrices: consistent mass and stiffness of the linear simplex
+        # element matrices: consistent mass and stiffness, closed form for P1,
+        # by quadrature (exact) for P2
         nv = d + 1
-        base = (np.ones((nv, nv)) + np.eye(nv)) / ((d + 1) * (d + 2))
-        self._Me = measure[:, None, None] * base[None, :, :]
-        G = np.concatenate([-self._Tinv.sum(axis=1, keepdims=True), self._Tinv], axis=1)   # grad lambda, (nc, nv, d)
-        self._Ke = measure[:, None, None] * np.einsum("cid,cjd->cij", G, G)
+        self._G = np.concatenate([-self._Tinv.sum(axis=1, keepdims=True), self._Tinv], axis=1) \
+            if cells.size else np.zeros((0, nv, d))                                  # grad lambda, (nc, nv, d)
+        if self.degree == 1:
+            base = (np.ones((nv, nv)) + np.eye(nv)) / ((d + 1) * (d + 2))
+            self._Me = measure[:, None, None] * base[None, :, :]
+            self._Ke = measure[:, None, None] * np.einsum("cid,cjd->cij", self._G, self._G)
+        else:
+            lam_q, w_q = _TRI_RULE
+            ncell = cells.shape[0]
+            Me = np.zeros((ncell, self._nb, self._nb))
+            Ke = np.zeros((ncell, self._nb, self._nb))
+            for lam, wq in zip(lam_q, w_q):
+                L = np.broadcast_to(lam, (ncell, nv))
+                phi = self._basis_from_lambda(L, np.arange(ncell))                    # (nc, nb)
+                dphi = self._basis_gradient(L, np.arange(ncell))                      # (nc, nb, d)
+                Me += wq * measure[:, None, None] * phi[:, :, None] * phi[:, None, :]
+                Ke += wq * measure[:, None, None] * np.einsum("cid,cjd->cij", dphi, dphi)
+            self._Me, self._Ke = Me, Ke
         self._A = self._sub.createMatrix()
         self._A.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
         self._ksp = PETSc.KSP().create(comm=dm.comm)
@@ -118,6 +167,32 @@ class ParticleL2Projector:
         lam = np.einsum("nij,nj->ni", self._Tinv[cell], X[:, :d] - self._x0[cell])
         return np.concatenate([1.0 - lam.sum(axis=1, keepdims=True), lam], axis=1)
 
+    def _basis_from_lambda(self, lam, cell):
+        """The basis functions at points with barycentric coordinates ``lam``
+        (n, d+1) in cells ``cell``: (n, nb)."""
+        if self.degree == 1:
+            return lam
+        pairs = self._edge_pairs[cell]                                               # (n, 3, 2)
+        vertex = lam * (2.0 * lam - 1.0)
+        edge = 4.0 * lam[np.arange(len(cell))[:, None], pairs[:, :, 0]] * lam[np.arange(len(cell))[:, None], pairs[:, :, 1]]
+        return np.concatenate([vertex, edge], axis=1)
+
+    def _basis_gradient(self, lam, cell):
+        """Gradients of the basis functions in physical coordinates: (n, nb, d)."""
+        G = self._G[cell]                                                            # (n, d+1, d)
+        if self.degree == 1:
+            return G
+        pairs = self._edge_pairs[cell]
+        n = np.arange(len(cell))[:, None]
+        vertex = (4.0 * lam - 1.0)[:, :, None] * G
+        la, lb = lam[n, pairs[:, :, 0]], lam[n, pairs[:, :, 1]]
+        edge = 4.0 * (la[:, :, None] * G[n, pairs[:, :, 1]] + lb[:, :, None] * G[n, pairs[:, :, 0]])
+        return np.concatenate([vertex, edge], axis=1)
+
+    def basis(self, X, cell):
+        """The basis functions at points ``X`` in cells ``cell``: (n, nb)."""
+        return self._basis_from_lambda(self.barycentric(np.asarray(X, dtype=float), cell), cell)
+
     def project(self, X, values, weights, cell, old=None, eps=1.0e-8, alpha=None):
         """The projected field at the local rows, shape (n_local_rows, ncomponents).
 
@@ -134,12 +209,12 @@ class ParticleL2Projector:
         k = values.shape[1] if values.ndim == 2 else (np.asarray(old).shape[1] if old is not None else 1)
         values = values.reshape(len(X), k)
         ncell = self._rows.shape[0]
-        lam = self.barycentric(np.asarray(X, dtype=float), cell)
+        phi = self.basis(X, cell) if len(X) else np.zeros((0, self._nb))
         Me = np.zeros_like(self._Me)
-        Re = np.zeros((ncell, self._rows.shape[1], k))
+        Re = np.zeros((ncell, self._nb, k))
         w = np.asarray(weights, dtype=float)
-        np.add.at(Me, cell, w[:, None, None] * lam[:, :, None] * lam[:, None, :])
-        np.add.at(Re, cell, w[:, None, None] * lam[:, :, None] * values[:, None, :])
+        np.add.at(Me, cell, w[:, None, None] * phi[:, :, None] * phi[:, None, :])
+        np.add.at(Re, cell, w[:, None, None] * phi[:, :, None] * values[:, None, :])
         if eps > 0.0:
             Me = Me + eps * self._Me
             if old is not None:
