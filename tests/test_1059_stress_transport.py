@@ -809,11 +809,10 @@ def test_the_forward_fit_limiter_keeps_each_cell_inside_the_range_of_its_arrival
         keep = history._launch_cell != cell
         Xall = np.vstack([history._launch[keep], X])
         vall = np.vstack([history._launch_values[keep], values])
-        call = np.concatenate([history._launch_cell[keep], np.full(X.shape[0], cell)])
         w = history._launch_weights
         history._launch_weights = np.concatenate([w[keep], w[~keep]])
         try:
-            history._fit_arrivals(Xall, vall, cell=call)
+            history._fit_arrivals(Xall, vall)          # located, as a carry is
         finally:
             history._launch_weights = w
         ndof = history.psi_star[0].data.shape[0] // history._cell_measure.size

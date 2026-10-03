@@ -5449,6 +5449,7 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         units=None,
         store_smoothing: float = 0.0,
         fit_limiter: bool = False,
+        reconstruction: str = "cell",
         **_unsupported,
     ):
         super().__init__()
@@ -5515,6 +5516,12 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         # limit each cell's slope to the range of what arrived (see _fit_arrivals)
         self.fit_limiter = bool(fit_limiter)
         self._fit_overshoot, self._fit_overshoot_cells = 0.0, 0
+        self._global_projector = None
+        self._dof_lambda, self._dof_lambda_dm = None, None
+        # the pull towards the previous field, relative to the mass matrix, in
+        # the global projection: what keeps a node no arrival reached
+        self.global_eps = 1.0e-8
+        self.reconstruction = reconstruction
         self._flux_var = uw.discretisation.MeshVariable(
             f"flux_fwd_{inst}", mesh, (1, self.num_components), vtype=VarType.MATRIX,
             degree=1, continuous=True, varsymbol=rf"{{ F^{{\mathrm{{nodal}}}}_{{ [{inst}] }} }}")
@@ -5533,6 +5540,34 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         # one write, one PETSc flush (a per-column write is a collective
         # round trip per component)
         self._launch_var.data[:, :] = np.asarray(values).reshape(self._launch.shape[0], self.num_components)
+
+    @property
+    def reconstruction(self) -> str:
+        """How the arrivals become the field the weak form reads.
+
+        ``"cell"``: a weighted least-squares linear fit to the arrivals in each
+        cell (discontinuous; :attr:`fit_limiter` optionally bounds it).
+        ``"global"``: one L2 projection of every arrival onto the continuous P1
+        field, the arrivals as its quadrature points (see
+        :class:`~underworld3.utilities.particle_projection.ParticleL2Projector`);
+        no per-cell fit, and a node is interpolated from the arrivals on every
+        side of it. The store keeps its layout either way (the global field is
+        written to every cell's copy of a vertex), so the choice can change
+        between steps, after a restart included."""
+        return self._reconstruction
+
+    @reconstruction.setter
+    def reconstruction(self, value):
+        if value not in ("cell", "global"):
+            raise ValueError(f"reconstruction is 'cell' or 'global', not {value!r}")
+        if value == "global" and self.fit_limiter:
+            raise ValueError("fit_limiter applies to the per-cell fit (reconstruction='cell'), "
+                             "not the global projection")
+        if value == "global" and self._global_projector is None:
+            from underworld3.utilities.particle_projection import ParticleL2Projector
+            self._global_projector = ParticleL2Projector(self.mesh, rtol=_HISTORY_PROJECTION_TOLERANCE)
+            self._dof_lambda = None
+        self._reconstruction = value
 
     @property
     def state(self) -> "DDtForwardState":
@@ -5680,13 +5715,15 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         fit is scaled so that no dof leaves the range of the values that reached
         the cell; ``_fit_overshoot`` records, with or without it, the largest
         excursion of the unlimited fit beyond that range (relative to the
-        largest range) and ``_fit_overshoot_cells`` how many cells had one.
+        largest range) and ``_fit_overshoot_cells`` how many cells had one, for
+        the last carried fit.
         """
         mesh = self.mesh
         d = mesh.dim
         npar = d + 1
         ncell = self._cell_measure.size
         w = self._launch_weights
+        carried = cell is None
         if cell is None:
             # Ownership is by strict containment (face tolerance zero), not the
             # evaluation locator's slab: a point a hair across a seam face would
@@ -5697,6 +5734,10 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
                 return np.asarray(mesh._get_closest_local_cells_internal(P, tol=0.0), dtype=int).reshape(-1)
             X, (values, w), cell, self._n_relocated = _hand_arrivals_to_owners(
                 X, (values, w), strict)
+        if self.reconstruction == "global":
+            self._project_arrivals(np.asarray(X), np.asarray(values), np.asarray(w), np.asarray(cell, dtype=int),
+                                   inflow, carried)
+            return
         centroid = np.asarray(mesh._centroids)[:, :d]
         h = np.sqrt(self._cell_measure) if d == 2 else np.cbrt(self._cell_measure)
         # centred on the cell and scaled by its size, so the constant is c0 and the
@@ -5754,8 +5795,11 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         # overshoot of the fit beyond the arrivals' range, relative to the largest
         # range in the cell set (a diagnostic, recorded with or without the limiter)
         scale = max(float(spread.max()) if spread.size else 0.0, 1.0e-300)
-        self._fit_overshoot = float(excess.max()) / scale if excess.size else 0.0
-        self._fit_overshoot_cells = int(np.count_nonzero(excess.max(axis=1) > 1.0e-12 * scale)) if excess.size else 0
+        if carried:
+            # the carry's fit (the refit at the launch points after a commit
+            # does not overwrite it)
+            self._fit_overshoot = float(excess.max()) / scale if excess.size else 0.0
+            self._fit_overshoot_cells = int(np.count_nonzero(excess.max(axis=1) > 1.0e-12 * scale)) if excess.size else 0
         if self.fit_limiter and fit_ok.any():
             # Barth-Jespersen: keep the cell value at the centroid (clipped to the
             # range), scale the slope by the largest factor that keeps every dof
@@ -5774,6 +5818,68 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
             column = np.array(self.psi_star[0].data[:, k])
             column[rows_ok] = fitted[rows_ok, k]
             self.psi_star[0].data[:, k] = column
+
+    def _project_arrivals(self, X, values, w, cell, inflow, carried):
+        """The arrivals projected (L2, globally) onto the continuous P1 store:
+        no per-cell fit; every node is set by all the arrivals in its patch. A
+        boundary cell that received less than it holds is topped up with the
+        inflow value at its vertices, weighted by the shortfall, as the
+        per-cell fit does."""
+        mesh = self.mesh
+        d = mesh.dim
+        pj = self._global_projector
+        if pj._dm is not mesh.dm:
+            pj._build()
+        ncell = self._cell_measure.size
+        if self._inflow_value is not None and inflow is not None:
+            received = np.bincount(cell, weights=w, minlength=ncell)
+            deficit = np.clip(self._cell_measure - received, 0.0, None) * inflow
+            # evaluate is collective: every rank reads the inflow value at every
+            # boundary-cell vertex, whether or not any of its cells is short
+            bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
+            verts = pj._Xv[bcells].reshape(-1, d)
+            filled = np.column_stack([
+                _to_nondim_ndarray(uw.function.evaluate(self._inflow_record()[i, j], verts)).reshape(-1)
+                for (i, j) in self._components]).reshape(bcells.size, d + 1, self.num_components)
+            short = deficit[bcells] > 0.0
+            if short.any():
+                sel = bcells[short]
+                X = np.vstack([X[:, :d], pj._Xv[sel].reshape(-1, d)])
+                values = np.vstack([values, filled[short].reshape(-1, self.num_components)])
+                w = np.concatenate([w, np.repeat(deficit[sel] / (d + 1), d + 1)])
+                cell = np.concatenate([cell, np.repeat(sel, d + 1)])
+        # The store is discontinuous P1 with its dofs INSIDE each cell (not at
+        # the vertices): a dof takes the continuous field interpolated at its
+        # own position, and the previous vertex values are read back through
+        # each cell's own linear interpolant (then averaged over the cells
+        # sharing the vertex).
+        if self._dof_lambda is None or self._dof_lambda_dm is not mesh.dm:
+            dofs = np.asarray(self.psi_star[0].coords_nd).reshape(ncell, -1, mesh.cdim)[:, :, :d]
+            ndof = dofs.shape[1]
+            self._dof_lambda = pj.barycentric(dofs.reshape(-1, d), np.repeat(np.arange(ncell), ndof)).reshape(ncell, ndof, d + 1)
+            self._dof_lambda_inv = np.linalg.inv(self._dof_lambda)
+            self._dof_lambda_dm = mesh.dm
+        L = self._dof_lambda
+        store = np.asarray(self.psi_star[0].data).reshape(ncell, -1, self.num_components)
+        at_vertices = np.einsum("cij,cjk->cik", self._dof_lambda_inv, store)      # (cell, vertex, comp)
+        old = np.zeros((pj.n_local_rows, self.num_components))
+        count = np.zeros(pj.n_local_rows)
+        np.add.at(old, pj._rows.reshape(-1), at_vertices.reshape(-1, self.num_components))
+        np.add.at(count, pj._rows.reshape(-1), 1.0)
+        old /= np.maximum(count, 1.0)[:, None]
+        u = pj.project(X, values, w, cell, old=old, eps=self.global_eps)
+        self.psi_star[0].data[:, :] = np.einsum("cqi,cik->cqk", L, u[pj._rows]).reshape(-1, self.num_components)
+        if carried:
+            # a projection is not bounded: the largest excursion of the nodal
+            # field beyond the range of everything carried, relative to that range
+            comm = uw.mpi.comm
+            vmax = comm.allreduce(float(values.max()) if values.size else -np.inf, op=uw.MPI.MAX)
+            vmin = comm.allreduce(float(values.min()) if values.size else np.inf, op=uw.MPI.MIN)
+            umax = comm.allreduce(float(u.max()) if u.size else -np.inf, op=uw.MPI.MAX)
+            umin = comm.allreduce(float(u.min()) if u.size else np.inf, op=uw.MPI.MIN)
+            span = max(vmax - vmin, 1.0e-300)
+            self._fit_overshoot = max(umax - vmax, vmin - umin, 0.0) / span
+            self._fit_overshoot_cells = -1
 
     def initialise_history(self):
         """Start from the current field: its values at the launch points, and
