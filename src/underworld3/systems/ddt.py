@@ -5390,6 +5390,18 @@ class BackwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
             self._n_solves_completed += 1
 
 
+def _range_excursion(values, u):
+    """How far the reconstructed field ``u`` leaves the range of the carried
+    ``values``, over every rank, relative to that range: a projection is not
+    bounded, and this is the measure of how much it is not."""
+    comm = uw.mpi.comm
+    vmax = comm.allreduce(float(values.max()) if values.size else -np.inf, op=uw.MPI.MAX)
+    vmin = comm.allreduce(float(values.min()) if values.size else np.inf, op=uw.MPI.MIN)
+    umax = comm.allreduce(float(u.max()) if u.size else -np.inf, op=uw.MPI.MAX)
+    umin = comm.allreduce(float(u.min()) if u.size else np.inf, op=uw.MPI.MIN)
+    return max(umax - vmax, vmin - umin, 0.0) / max(vmax - vmin, 1.0e-300)
+
+
 class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     r"""Semi-Lagrangian history carried forward from a fixed set of launch
     points inside the cells, read by the weak form through a per-cell fit.
@@ -5870,15 +5882,7 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         u = pj.project(X, values, w, cell, old=old, eps=self.global_eps)
         self.psi_star[0].data[:, :] = np.einsum("cqi,cik->cqk", L, u[pj._rows]).reshape(-1, self.num_components)
         if carried:
-            # a projection is not bounded: the largest excursion of the nodal
-            # field beyond the range of everything carried, relative to that range
-            comm = uw.mpi.comm
-            vmax = comm.allreduce(float(values.max()) if values.size else -np.inf, op=uw.MPI.MAX)
-            vmin = comm.allreduce(float(values.min()) if values.size else np.inf, op=uw.MPI.MIN)
-            umax = comm.allreduce(float(u.max()) if u.size else -np.inf, op=uw.MPI.MAX)
-            umin = comm.allreduce(float(u.min()) if u.size else np.inf, op=uw.MPI.MIN)
-            span = max(vmax - vmin, 1.0e-300)
-            self._fit_overshoot = max(umax - vmax, vmin - umin, 0.0) / span
+            self._fit_overshoot = _range_excursion(values, u)
             self._fit_overshoot_cells = -1
 
     def initialise_history(self):
@@ -6004,7 +6008,8 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     instances = 0
 
     def __init__(self, mesh, psi_fn, V_fn, vtype=VarType.SCALAR, degree=1, varsymbol=None,
-                 order=1, theta=0.5, units=None, store_smoothing=0.0, **_unsupported):
+                 order=1, theta=0.5, units=None, store_smoothing=0.0, reconstruction="cell",
+                 **_unsupported):
         super().__init__()
         if order != 1:
             raise NotImplementedError("ForwardNodesSemiLagrangian carries one level; order must be 1")
@@ -6047,6 +6052,13 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         self._owned = _owned_rows(self.psi_star[0])
         self._n_relocated = 0
         self._n_v = 2
+        self._global_projector = None
+        self._launch_weights = None
+        self._fit_overshoot = 0.0
+        # the pull towards the previous field, relative to the mass matrix, in
+        # the global projection: what keeps a node no arrival reached
+        self.global_eps = 1.0e-8
+        self.reconstruction = reconstruction
         self._init_coefficient_expressions(1, self.theta, with_exp=True)
         self._register_with_default_model()
 
@@ -6057,6 +6069,55 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     @psi_fn.setter
     def psi_fn(self, new_fn):
         self._psi_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+
+    @property
+    def reconstruction(self) -> str:
+        """How the arrivals become the carried field.
+
+        ``"cell"``: a polynomial of the field's degree fitted to the arrivals in
+        each cell, then projected onto the continuous store. ``"global"``: one L2
+        projection of every arrival straight onto the store, the arrivals as the
+        quadrature points (see
+        :class:`~underworld3.utilities.particle_projection.ParticleL2Projector`):
+        no per-cell fit, each node interpolated from the arrivals on every side
+        of it. The global projection is linear, so it needs a degree-1 store.
+        Each launch point weighs its share of the cell it launched from; an
+        arrival on a face shared by several cells is counted once."""
+        return self._reconstruction
+
+    @reconstruction.setter
+    def reconstruction(self, value):
+        if value not in ("cell", "global"):
+            raise ValueError(f"reconstruction is 'cell' or 'global', not {value!r}")
+        if value == "global":
+            if self.degree != 1:
+                raise NotImplementedError("the global projection is linear (P1); a degree "
+                                          f"{self.degree} forward-nodes history keeps reconstruction='cell'")
+            if self._global_projector is None:
+                from underworld3.utilities.particle_projection import ParticleL2Projector
+                self._global_projector = ParticleL2Projector(self.mesh, rtol=_HISTORY_PROJECTION_TOLERANCE)
+        self._reconstruction = value
+
+    def _weights_of_launch(self):
+        """Each launch point's share of the domain: the lattice points share
+        their cell's measure, a node the measure of a cell that contains it; the
+        order is the launch order (owned nodes, then the lattice)."""
+        if self._launch_weights is None:
+            pj = self._global_projector
+            if pj._dm is not self.mesh.dm:
+                pj._build()
+            measure = pj.cell_measure
+            ncell = measure.size
+            n_lat = self._interior.shape[0] // max(ncell, 1)
+            lattice_w = np.repeat(measure / max(n_lat, 1), n_lat)
+            nodes = self._nodes()
+            point, cell, _ = self._projector.containing_cells(nodes)
+            node_cell = np.zeros(nodes.shape[0], dtype=int)
+            node_cell[point[::-1]] = cell[::-1]           # any containing cell (the first)
+            node_w = measure[node_cell] / max(n_lat, 1)
+            self._launch_weights = (node_w, lattice_w)
+        node_w, lattice_w = self._launch_weights
+        return np.concatenate([node_w[self._owned], lattice_w])
 
     @property
     def state(self) -> "DDtForwardNodesState":
@@ -6120,9 +6181,15 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         q, qcell, _ = pj.containing_cells(offered_X)
         own = (q >= mine_from) & (q < mine_from + n_mine)
         self._n_relocated = int(np.unique(q[~own]).size)
+        # how many cells, over every rank, each offered point was taken into:
+        # the global projection counts a point once, whatever it touches
+        count = np.bincount(q, minlength=offered_X.shape[0]).astype(float)
+        if uw.mpi.size > 1:
+            count = uw.mpi.comm.allreduce(count, op=uw.MPI.SUM)
         return (np.concatenate([X[point[keep]], offered_X[q]], axis=0),
                 np.concatenate([values[point[keep]], offered_v[q]], axis=0),
-                np.concatenate([cell[keep], qcell]))
+                np.concatenate([cell[keep], qcell]),
+                np.concatenate([np.ones(int(keep.sum())), count[q]]))
 
     def _reconstruct(self, arrivals, values, source):
         """Fit the arrivals in each cell at the field's degree, and project the
@@ -6131,7 +6198,19 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         reading one cell's fit would depend on which cell (and in parallel which
         rank) the node was located in. A cell nothing reached keeps the field it
         launched (``source``)."""
-        arrivals, values, cells = self._arrivals_by_cell(arrivals, values)
+        if self.reconstruction == "global":
+            # the weights travel with the values, as one more column
+            w = self._weights_of_launch()
+            arrivals, vw, cells, mult = self._arrivals_by_cell(arrivals, np.column_stack([values, w]))
+            values, w = vw[:, :-1], vw[:, -1] / mult
+            pj = self._global_projector
+            if pj._dm is not self.mesh.dm:
+                pj._build()
+            old = np.array(self.psi_star[0].data)
+            u = pj.project(arrivals[:, :self.mesh.dim], values, w, cells, old=old, eps=self.global_eps)
+            self._fit_overshoot = _range_excursion(values, u)
+            return u
+        arrivals, values, cells, _ = self._arrivals_by_cell(arrivals, values)
         launched = self._values_at(source, np.asarray(self._fit_var.coords_nd))
         self._fit_var.data[:, :] = self._projector.fit(arrivals, values, old=launched,
                                                        cell_local=True, cells=cells)

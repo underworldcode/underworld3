@@ -37,14 +37,15 @@ def test_a_node_no_point_reached_keeps_its_previous_value():
     assert np.abs(u - 7.0).max() < 1.0e-9
 
 
+@pytest.mark.parametrize("transport", ["forward_integration_points", "forward_nodes"])
 @pytest.mark.parametrize("reconstruction", ["cell", "global"])
-def test_both_reconstructions_carry_the_maxwell_shear_stress(reconstruction):
+def test_both_reconstructions_carry_the_maxwell_shear_stress(transport, reconstruction):
     # eta = G = dt = 1, wall speed 0.5: tau_xy = 1 - 2^-n after n steps
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5), cellSize=0.125, qdegree=3)
-    v = uw.discretisation.MeshVariable(f"U_pp_{reconstruction}", mesh, 2, degree=2)
-    p = uw.discretisation.MeshVariable(f"P_pp_{reconstruction}", mesh, 1, degree=1)
+    v = uw.discretisation.MeshVariable(f"U_pp_{transport[8]}{reconstruction}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_pp_{transport[8]}{reconstruction}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes.stress_transport = "forward_integration_points"
+    stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         stokes.Unknowns, order=1, integrator="bdf")
     cm = stokes.constitutive_model
@@ -61,6 +62,30 @@ def test_both_reconstructions_carry_the_maxwell_shear_stress(reconstruction):
         stokes.solve(timestep=1.0, zero_init_guess=False)
         xy = np.asarray(stokes.DFDt.psi_star[0].data)[:, 2]
         assert np.abs(xy - (1.0 - 0.5 ** n)).max() < 1.0e-6
+
+
+def test_the_forward_nodes_global_projection_reproduces_a_linear_field_from_its_launch_set():
+    """The forward-nodes history launched from the nodes and the interior lattice,
+    carried by a zero velocity (the arrivals are the launch points), projected
+    globally: a linear field comes back exactly at the nodes."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, qdegree=3)
+    x, y = mesh.X
+    T = uw.discretisation.MeshVariable("T_fwn_lin", mesh, 1, degree=1)
+    T.data[:, 0] = 1.0 + 2.0 * np.asarray(T.coords)[:, 0] - 3.0 * np.asarray(T.coords)[:, 1]
+    history = uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, T.sym, sympy.Matrix([[0.0, 0.0]]),
+                                                        reconstruction="global")
+    history.update_pre_solve(0.1)
+    expected = 1.0 + 2.0 * np.asarray(T.coords)[:, 0] - 3.0 * np.asarray(T.coords)[:, 1]
+    assert np.abs(np.asarray(history.psi_star[0].data)[:, 0] - expected).max() < 1.0e-6
+    assert history._fit_overshoot < 1.0e-6
+
+
+def test_the_forward_nodes_global_projection_needs_a_linear_store():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+    v = uw.discretisation.MeshVariable("U_fwn_p2", mesh, 2, degree=2)
+    with pytest.raises(NotImplementedError, match="degree 2"):
+        uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, v.sym, v.sym, uw.VarType.VECTOR, degree=2,
+                                                  reconstruction="global")
 
 
 @pytest.mark.parametrize("reconstruction", ["cell", "global"])
