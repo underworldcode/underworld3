@@ -30,7 +30,7 @@ def shear_box(relaxation, L2, dt, steps, tag):
     stokes.stress_transport = "backward_nodes"
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
-        stress_history="log_conformation", relaxation=relaxation, element="maxwell")
+        stress_history="log_conformation", relaxation=relaxation, element="jeffreys")
     cm = stokes.constitutive_model
     cm.Parameters.shear_viscosity_0 = 1.0
     cm.Parameters.shear_modulus = 1.0
@@ -79,18 +79,53 @@ def test_fene_p_with_infinite_extensibility_is_oldroyd_b():
     assert abs(xy - xy_ob) < 1e-8 and abs(n1 - n1_ob) < 1e-8
 
 
-def test_the_element_reports_the_parallel_dashpot():
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5, qdegree=3)
+def test_the_element_is_what_was_declared_and_a_maxwell_element_refuses_a_parallel_dashpot():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5), cellSize=0.5, qdegree=3)
     v = uw.discretisation.MeshVariable("U_elem", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P_elem", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=1, integrator="etd",
-                                                              objective_rate="upper_convected", element="jeffreys")
-    assert cm.element == "maxwell" and cm.relaxation == "linear"      # no parallel dashpot yet
-    cm.Parameters.solvent_viscosity = 0.5
-    assert cm.element == "jeffreys"
+    stokes.stress_transport = "backward_nodes"
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected", element="jeffreys")
+    cm = stokes.constitutive_model
+    assert cm.element == "jeffreys" and cm.relaxation == "linear"
     with pytest.raises(ValueError, match="element"):
         uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, element="burgers")
+    # undeclared, the element follows the solvent viscosity
+    cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=1, integrator="etd",
+                                                              objective_rate="upper_convected")
+    assert cm.element == "maxwell"
+    cm.Parameters.solvent_viscosity = 0.5
+    assert cm.element == "jeffreys"
+    # a declared Maxwell element given a parallel dashpot is refused at the first solve
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected", element="maxwell")
+    cm = stokes.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 1.0
+    cm.Parameters.solvent_viscosity = 0.5
+    stokes.add_dirichlet_bc((0.5, 0.0), "Top")
+    stokes.add_dirichlet_bc((-0.5, 0.0), "Bottom")
+    with pytest.raises(ValueError, match="parallel dashpot"):
+        stokes.solve(timestep=0.1)
+
+
+def test_fene_p_refuses_an_infinite_extensibility():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5), cellSize=0.5, qdegree=3)
+    v = uw.discretisation.MeshVariable("U_inf", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_inf", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.stress_transport = "backward_nodes"
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        stress_history="log_conformation", element="jeffreys", relaxation="fene_p")
+    cm = stokes.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 1.0
+    stokes.add_dirichlet_bc((0.5, 0.0), "Top")
+    stokes.add_dirichlet_bc((-0.5, 0.0), "Bottom")
+    with pytest.raises(ValueError, match="extensibility"):
+        stokes.solve(timestep=0.1)
 
 
 def test_fene_p_needs_the_log_conformation_etd_path():

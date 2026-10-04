@@ -368,8 +368,12 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         from underworld3.systems.ddt import BackwardNodesSemiLagrangian
         if isinstance(self.Unknowns.DuDt, BackwardNodesSemiLagrangian):
             from underworld3.discretisation.remesh import RemeshPolicy
-            u_Field.remesh_policy = RemeshPolicy.CARRY
-            u_Field._remesh_managed_by = self.Unknowns.DuDt
+            if getattr(u_Field, "_remesh_managed_by", None) is None:
+                u_Field.remesh_policy = RemeshPolicy.CARRY
+                u_Field._remesh_managed_by = self.Unknowns.DuDt
+            elif u_Field._remesh_managed_by is not self.Unknowns.DuDt:
+                warnings.warn(f"{u_Field.name} is already remesh-managed by "
+                              f"{type(u_Field._remesh_managed_by).__name__}; left as it is", stacklevel=2)
 
         # Diffusivity lives on the constitutive model, as for every scalar
         # solver; kappa = 0 until the user sets it.

@@ -5390,6 +5390,14 @@ class BackwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
             self._n_solves_completed += 1
 
 
+def _is_zero(value):
+    """True for a numeric zero (int, float, numpy or sympy); False for a field."""
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _range_excursion(values, u):
     """How far the reconstructed field ``u`` leaves the range of the carried
     ``values``, over every rank, relative to that range: a projection is not
@@ -5404,7 +5412,8 @@ def _range_excursion(values, u):
 
 class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
     r"""Semi-Lagrangian history carried forward from a fixed set of launch
-    points inside the cells, read by the weak form through a per-cell fit.
+    points inside the cells, read by the weak form through a per-cell fit or
+    one global projection (:attr:`reconstruction`).
 
     The carried field is known at the launch points, the mesh's integration
     points with their quadrature weights scaled by the cell measure. Each step
@@ -5473,8 +5482,8 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         if mesh.cdim != mesh.dim:
             raise NotImplementedError("ForwardIntegrationPointsSemiLagrangian fits in the embedding coordinates; no manifolds")
         if _unsupported:
-            warnings.warn(f"ForwardIntegrationPointsSemiLagrangian ignores {sorted(_unsupported)}: it has one level, "
-                          "a linear fit per cell and no smoothing or monotone option", stacklevel=2)
+            warnings.warn(f"ForwardIntegrationPointsSemiLagrangian ignores {sorted(_unsupported)}: it has one level "
+                          "and no monotone option (its smoothing is store_smoothing)", stacklevel=2)
         self.vtype = vtype
         self.mesh = mesh
         self.degree = 1
@@ -5526,7 +5535,7 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         self.flux_smoothing = 0.0
         self.store_smoothing = store_smoothing
         # limit each cell's slope to the range of what arrived (see _fit_arrivals)
-        self.fit_limiter = bool(fit_limiter)
+        self._fit_limiter = bool(fit_limiter)
         self._fit_overshoot, self._fit_overshoot_cells = 0.0, 0
         self._global_projector = None
         self._dof_lambda, self._dof_lambda_dm = None, None
@@ -5554,6 +5563,22 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         self._launch_var.data[:, :] = np.asarray(values).reshape(self._launch.shape[0], self.num_components)
 
     @property
+    def fit_limiter(self) -> bool:
+        """With ``reconstruction="cell"``: scale each cell's slope so no dof leaves
+        the range of the values that reached the cell (Barth-Jespersen on the
+        cell's own arrivals; it clips genuine gradients too, since a cell's
+        vertices lie outside its interior arrivals). Not an option of the global
+        projection."""
+        return self._fit_limiter
+
+    @fit_limiter.setter
+    def fit_limiter(self, value):
+        if value and getattr(self, "_reconstruction", "cell") == "global":
+            raise ValueError("fit_limiter applies to the per-cell fit (reconstruction='cell'), "
+                             "not the global projection")
+        self._fit_limiter = bool(value)
+
+    @property
     def reconstruction(self) -> str:
         """How the arrivals become the field the weak form reads.
 
@@ -5565,7 +5590,9 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         no per-cell fit, and a node is interpolated from the arrivals on every
         side of it. The store keeps its layout either way (the global field is
         written to every cell's copy of a vertex), so the choice can change
-        between steps, after a restart included."""
+        between steps. It is not part of the snapshot state: after a restart
+        the script sets ``reconstruction``, ``store_smoothing``,
+        ``fit_limiter``, ``bubble_penalty`` and ``global_eps`` again."""
         return self._reconstruction
 
     @reconstruction.setter
@@ -5676,7 +5703,8 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         super()._object_viewer()
         display(Latex(r"$\quad\psi = $ " + self.psi_fn._repr_latex_()))
         display(Latex(r"$\quad\mathbf{v} = $ " + sympy.Matrix(self.V_fn)._repr_latex_()))
-        display(Latex(r"$\quad$Carried forward from the integration points, fitted per cell"))
+        display(Latex(r"$\quad$Carried forward from the integration points, "
+                      + ("fitted per cell" if self.reconstruction == "cell" else "projected globally")))
 
     def _evaluate_at_launch(self, expr):
         """Every stored component of ``expr`` at the launch points, as columns,
@@ -5687,7 +5715,7 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
                 self.mesh, u_Field=self._flux_var, n_components=self.num_components)
             self._flux_projection.linear_solver(rtol=_HISTORY_PROJECTION_TOLERANCE)
         self._flux_projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in self._components]])
-        if self._store_smoothing > 0.0 and not (isinstance(self.flux_smoothing, (int, float)) and self.flux_smoothing == 0.0):
+        if self._store_smoothing > 0.0 and not _is_zero(self.flux_smoothing):
             raise ValueError("ForwardIntegrationPointsSemiLagrangian: set store_smoothing (c, alpha = c h^2) "
                              "or flux_smoothing (alpha), not both")
         self._flux_projection.smoothing = (self._store_smoothing_alpha() if self._store_smoothing > 0.0
@@ -5806,12 +5834,15 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         excess = np.where(fit_ok[:, None], np.clip(excess, 0.0, None), 0.0)
         # overshoot of the fit beyond the arrivals' range, relative to the largest
         # range in the cell set (a diagnostic, recorded with or without the limiter)
-        scale = max(float(spread.max()) if spread.size else 0.0, 1.0e-300)
+        comm = uw.mpi.comm
+        scale = max(comm.allreduce(float(spread.max()) if spread.size else 0.0, op=uw.MPI.MAX), 1.0e-300)
         if carried:
             # the carry's fit (the refit at the launch points after a commit
-            # does not overwrite it)
-            self._fit_overshoot = float(excess.max()) / scale if excess.size else 0.0
-            self._fit_overshoot_cells = int(np.count_nonzero(excess.max(axis=1) > 1.0e-12 * scale)) if excess.size else 0
+            # does not overwrite it), reduced over the ranks
+            local = float(excess.max()) if excess.size else 0.0
+            self._fit_overshoot = comm.allreduce(local, op=uw.MPI.MAX) / scale
+            n_over = int(np.count_nonzero(excess.max(axis=1) > 1.0e-12 * scale)) if excess.size else 0
+            self._fit_overshoot_cells = comm.allreduce(n_over, op=uw.MPI.SUM)
         if self.fit_limiter and fit_ok.any():
             # Barth-Jespersen: keep the cell value at the centroid (clipped to the
             # range), scale the slope by the largest factor that keeps every dof
@@ -5874,11 +5905,9 @@ class ForwardIntegrationPointsSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
         L = self._dof_lambda
         store = np.asarray(self.psi_star[0].data).reshape(ncell, -1, self.num_components)
         at_vertices = np.einsum("cij,cjk->cik", self._dof_lambda_inv, store)      # (cell, vertex, comp)
-        old = np.zeros((pj.n_local_rows, self.num_components))
-        count = np.zeros(pj.n_local_rows)
-        np.add.at(old, pj._rows.reshape(-1), at_vertices.reshape(-1, self.num_components))
-        np.add.at(count, pj._rows.reshape(-1), 1.0)
-        old /= np.maximum(count, 1.0)[:, None]
+        # the mean over the cells sharing a vertex, summed across seams so a
+        # seam vertex gets the same previous value on every rank
+        old = pj.average_cell_values_to_rows(at_vertices)
         u = pj.project(X, values, w, cell, old=old, eps=self.global_eps)
         self.psi_star[0].data[:, :] = np.einsum("cqi,cik->cqk", L, u[pj._rows]).reshape(-1, self.num_components)
         if carried:
@@ -6124,12 +6153,17 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
             measure = pj.cell_measure
             ncell = measure.size
             n_lat = self._interior.shape[0] // max(ncell, 1)
-            lattice_w = np.repeat(measure / max(n_lat, 1), n_lat)
             nodes = self._nodes()
+            # each cell shares its measure equally among its lattice points and
+            # the store's dofs it holds; a node accumulates a share from every
+            # cell that contains it. The weights launched from a cell then sum
+            # to its measure, so a fully covered cell reads as covered and the
+            # deficit fill starts when arrivals are missing, not before.
             point, cell, _ = self._projector.containing_cells(nodes)
-            node_cell = np.zeros(nodes.shape[0], dtype=int)
-            node_cell[point[::-1]] = cell[::-1]           # any containing cell (the first)
-            node_w = measure[node_cell] / max(n_lat, 1)
+            per_cell_dofs = np.bincount(cell, minlength=ncell).astype(float)
+            share = measure / (n_lat + np.maximum(per_cell_dofs, 1.0))
+            lattice_w = np.repeat(share, n_lat)
+            node_w = np.bincount(point, weights=share[cell], minlength=nodes.shape[0])
             self._launch_weights = (node_w, lattice_w)
         node_w, lattice_w = self._launch_weights
         return np.concatenate([node_w[self._owned], lattice_w])

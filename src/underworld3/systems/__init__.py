@@ -110,7 +110,7 @@ _FORMER_NAMES = {
                          "defaults differ: order 1 (was 2), rho 1 (was 0), p_continuous True (was False), "
                          "no velocity-history smoothing (was 1e-4); estimate_dt returns one number "
                          "(was a (diffusive, advective) pair); the order is fixed at construction "
-                         "(solve(order=) is refused) and flux_order is not an argument"),
+                         "(solve(order=) is refused, where an earlier composed solver dropped it) and flux_order is not an argument"),
     "NavierStokesSwarm": ("SNES_NavierStokes",
                           "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')",
                           "as for NavierStokesSLCN; a particle velocity history is velocity_transport='lagrangian'"),

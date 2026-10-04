@@ -145,6 +145,7 @@ def test_the_bubble_penalty_acts_on_the_quadratic_content_only():
     assert 1.5e-3 < errs[1000.0] < 3.0e-3            # the quadratic content of x^2 on h ~ 0.1 cells
 
 
+@pytest.mark.skipif(uw.mpi.size > 1, reason="selects rows by position; serial only")
 def test_the_deficit_fill_holds_an_emptied_cell_to_the_previous_field():
     """Half the cells receive no points at all: their rows take the previous
     field at full weight (not a 1e-8 pull), while the sampled half is fitted."""
@@ -169,6 +170,40 @@ def test_the_deficit_fill_holds_an_emptied_cell_to_the_previous_field():
     # with no points at all the previous field comes back exactly
     u0 = pj.project(np.zeros((0, 2)), np.zeros((0, 1)), np.zeros(0), np.zeros(0, dtype=int), old=old, eps=1.0e-8)
     assert np.abs(u0 - 3.0).max() < 1.0e-9
+
+
+def test_an_arrival_on_a_shared_face_is_counted_once():
+    """A point on a face shared by two cells is offered to both; the global
+    projection must weigh it once, so the multiplicity it comes back with is 2
+    and the weight split is w/2 per row."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+    T = uw.discretisation.MeshVariable("T_face", mesh, 1, degree=1)
+    history = uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, T.sym, sympy.Matrix([[0.0, 0.0]]),
+                                                        reconstruction="global")
+    pj = history._global_projector
+    pj._build()
+    # the midpoint of an interior edge: the edge of cell 0 whose two vertices
+    # are both inside the box
+    Xv = pj._Xv[0]
+    inner = [k for k in range(3) if all(1e-9 < c < 1 - 1e-9 for c in Xv[k])]
+    a, b = (inner + [k for k in range(3) if k not in inner])[:2]
+    X = 0.5 * (Xv[a] + Xv[b])[None, :]
+    arrivals, vw, cells, mult = history._arrivals_by_cell(X, np.array([[7.0, 3.0]]))
+    n_cells_sharing = len(np.unique(cells))
+    assert n_cells_sharing >= 1 and len(cells) == n_cells_sharing
+    assert np.all(mult == n_cells_sharing)
+    assert abs((vw[:, 1] / mult).sum() - 3.0) < 1e-12     # the weight column, split once over its takers
+
+
+def test_the_forward_nodes_launch_weights_sum_to_the_domain():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+    T = uw.discretisation.MeshVariable("T_w", mesh, 1, degree=1)
+    history = uw.systems.ddt.ForwardNodesSemiLagrangian(mesh, T.sym, sympy.Matrix([[0.0, 0.0]]),
+                                                        reconstruction="global")
+    w = history._weights_of_launch()
+    node_w, lattice_w = history._launch_weights
+    assert abs(node_w.sum() + lattice_w.sum() - history._global_projector.cell_measure.sum()) < 1e-12
+    assert w.shape[0] == int(history._owned.sum()) + history._interior.shape[0]
 
 
 def test_the_global_projection_refuses_a_cubic_store():

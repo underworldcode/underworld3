@@ -125,8 +125,10 @@ class ParticleL2Projector:
                 rows[c - c0].extend(sec.getOffset(int(e)) for e in edges)
                 pairs.append([[local[int(q)] for q in dm.getCone(int(e))] for e in edges])
             self._edge_pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 3, 2)
-        self._rows = np.asarray(rows, dtype=np.int32).reshape(len(cells), -1)
-        self._nb = self._rows.shape[1]
+        # the basis size comes from the degree, not from the data: a rank with no
+        # cells must still build (the setter and project() are collective)
+        self._nb = d + 1 + (3 if self.degree == 2 else 0)
+        self._rows = np.asarray(rows, dtype=np.int32).reshape(len(cells), self._nb)
         Xv = np.array([[coords[csec.getOffset(int(p)) // mesh.cdim, :d] for p in row] for row in cells])
         self._Xv = Xv
         self._x0 = Xv[:, 0, :] if cells.size else np.zeros((0, d))
@@ -275,6 +277,34 @@ class ParticleL2Projector:
             self._sub.localToGlobal(self._lb, self._gb, addv=PETSc.InsertMode.ADD_VALUES)
             self._gx.zeroEntries()
             self._ksp.solve(self._gb, self._gx)
+            if self._ksp.getConvergedReason() <= 0:
+                raise RuntimeError(f"ParticleL2Projector: the projection's solve did not converge "
+                                   f"(reason {self._ksp.getConvergedReason()}, {self._ksp.getIterationNumber()} "
+                                   "iterations); a row no point and no previous field reaches is singular")
             self._sub.globalToLocal(self._gx, self._lx)
             out[:, j] = self._lx.getArray()
         return out
+
+    def average_cell_values_to_rows(self, per_cell):
+        """The mean over the cells sharing each row of per-cell values at the
+        cell's rows, ``per_cell`` (ncell, nb, k), summed across partition seams
+        so a shared row gets the same mean on every rank: (n_local_rows, k)."""
+        if self._dm is not self.mesh.dm:
+            self._build()
+        per_cell = np.asarray(per_cell, dtype=float).reshape(self._rows.shape[0], self._nb, -1)
+        k = per_cell.shape[2]
+        out = np.zeros((self.n_local_rows, k))
+        for j in range(k + 1):
+            self._lb.zeroEntries()
+            b = self._lb.getArray()
+            src = per_cell[:, :, j].ravel() if j < k else np.ones(self._rows.size)
+            np.add.at(b, self._rows.ravel(), src)
+            self._lb.setArray(b)
+            self._gb.zeroEntries()
+            self._sub.localToGlobal(self._lb, self._gb, addv=PETSc.InsertMode.ADD_VALUES)
+            self._sub.globalToLocal(self._gb, self._lx)
+            if j < k:
+                out[:, j] = self._lx.getArray()
+            else:
+                count = np.maximum(self._lx.getArray(), 1.0)
+        return out / count[:, None]
