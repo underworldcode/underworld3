@@ -3574,9 +3574,15 @@ class _SmoothingLengthMixin:
     """
 
     def _set_smoothing(self, value):
-        """Store the smoothing coefficient alpha (units length squared)."""
-        self._needs_function_rewire = True
-        self._smoothing = sympify(value)
+        """Store the smoothing coefficient alpha (units length squared). A
+        rewire of the pointwise functions is requested only when the value
+        changes: the histories set the smoothing of their commit projections
+        every step, and an unconditional rewire regenerated the C source of the
+        committed flux each time (seconds a step, more for a large expression)."""
+        value = sympify(value)
+        if getattr(self, "_smoothing", None) is None or value != self._smoothing:
+            self._needs_function_rewire = True
+        self._smoothing = value
 
     def _get_smoothing_length(self):
         r"""Return :math:`L = \sqrt{\alpha}` (unit-aware, see mixin docstring)."""
