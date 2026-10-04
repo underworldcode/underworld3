@@ -75,21 +75,31 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
             - \nabla\cdot(\kappa\nabla\phi) = f
 
-    A drop-in replacement for :class:`~underworld3.systems.solvers.SNES_AdvectionDiffusion`
-    (``uw.systems.AdvDiffusionSLCN``): the constructor, ``order``, ``theta``,
-    ``f``, ``V_fn``, ``constitutive_model``, ``delta_t``, ``estimate_dt`` and
-    ``solve`` all keep the semi-Lagrangian solver's meaning, so a script changes
-    the class name and nothing else::
+    ``transport`` chooses how the history is carried: ``"eulerian"`` (the
+    default, above) or one of the semi-Lagrangian schemes
+    (``"backward_nodes"``, ``"backward_integration_points"``,
+    ``"forward_integration_points"``, ``"forward_nodes"``), in which case the
+    history manager carries the field along ``V_fn`` and the weak form has
+    neither an assembled advection nor a stabilisation::
 
-        adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+        adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1, transport="backward_nodes")
         adv.constitutive_model = uw.constitutive_models.DiffusionModel
         adv.constitutive_model.Parameters.diffusivity = 1.0e-3
         adv.add_dirichlet_bc(0.0, "Left")
         adv.solve(timestep=dt)
 
-    The arguments that only make sense for a trace-back
-    (``restore_points_func``, ``monotone_mode``, ``old_frame_traceback``,
-    ``DFDt``) are accepted and ignored with a warning.
+    Against the former ``AdvDiffusionSLCN`` (:class:`~underworld3.systems.solvers.SNES_AdvectionDiffusion`)
+    with the same history: ``order`` here is the order of the value history
+    (BDF2 at order 2, theta = 1) where the old solver kept BDF1 and raised the
+    flux rule's order; the stored-level flux is rebuilt from the carried field
+    with the current diffusivity (an integration-point store through its
+    continuous snapshot) rather than traced as a flux history; ``estimate_dt``
+    defaults to the cell-crossing time for a semi-Lagrangian transport and to
+    the accuracy estimate for the Eulerian one. The SUPG options
+    (``peclet_weight``, ``supg_weight``, ``tau_weights``) belong to
+    ``transport="eulerian"`` and are refused otherwise; ``restore_points_func``
+    and ``DFDt`` are accepted and ignored with a warning, and the forward
+    schemes warn and ignore ``monotone_mode`` and ``old_frame_traceback``.
 
     **Time schemes.** ``order`` and ``theta`` select the same schemes as for
     the semi-Lagrangian solver:
@@ -258,14 +268,19 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         transport: str = "eulerian",
     ):
         eulerian = transport == "eulerian"
-        if eulerian and not u_Field.continuous:
+        if not u_Field.continuous:
             raise ValueError(
-                "u_Field must be a continuous MeshVariable: the SUPG weak form "
-                "is continuous Galerkin."
+                "u_Field must be a continuous MeshVariable: the weak form is "
+                "continuous Galerkin (the diffusive flux has no jump terms), "
+                "whichever transport carries the history."
             )
         if DuDt is not None and not eulerian:
             raise ValueError("transport chooses the DuDt the solver builds; it cannot "
                              "apply to a DuDt that is supplied")
+        if not eulerian and peclet_weight != 4.0:
+            raise ValueError("peclet_weight is the SUPG weight's threshold; it applies to "
+                             "transport='eulerian' only (a semi-Lagrangian history assembles "
+                             "no advection and needs no stabilisation)")
         ignored = [name for name, value in (
             ("restore_points_func", restore_points_func),
             ("monotone_mode", monotone_mode if eulerian else None),
@@ -274,8 +289,12 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         ) if value]
         if ignored:
             warnings.warn(
-                f"AdvDiffusion ignores {', '.join(ignored)}: these configure "
-                "the semi-Lagrangian trace-back and the Eulerian scheme has none.",
+                f"AdvDiffusion ignores {', '.join(ignored)}: "
+                + ("these configure the semi-Lagrangian trace-back and the Eulerian scheme has none."
+                   if eulerian else
+                   "the history manager is built from `transport`; restore_points_func is not "
+                   "forwarded, and a flux history is not carried (the stored-level flux is rebuilt "
+                   "from the carried field)."),
                 stacklevel=2,
             )
         order = int(order)
@@ -340,6 +359,17 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             _check_supplied_manager(DuDt, order, theta)
             self.Unknowns.DuDt = DuDt
         self._theta = float(getattr(self.DuDt, "theta", theta))
+        self._transport = transport
+
+        # A field carried by a nodal trace-back on a mesh that moves is
+        # transferred by that trace-back (CARRY); re-interpolating it onto the
+        # new node positions AND subtracting the mesh velocity in the next
+        # trace-back would compensate the motion twice (the old solver's rule).
+        from underworld3.systems.ddt import BackwardNodesSemiLagrangian
+        if isinstance(self.Unknowns.DuDt, BackwardNodesSemiLagrangian):
+            from underworld3.discretisation.remesh import RemeshPolicy
+            u_Field.remesh_policy = RemeshPolicy.CARRY
+            u_Field._remesh_managed_by = self.Unknowns.DuDt
 
         # Diffusivity lives on the constitutive model, as for every scalar
         # solver; kappa = 0 until the user sets it.
@@ -478,6 +508,11 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             )
         if not hasattr(self.DuDt, "theta"):
             raise AttributeError(f"{type(self.DuDt).__name__} has no theta to set.")
+        # at theta = 1 an integration-point history returns literal zero
+        # weights for the stored level (the compiled form drops it), so a
+        # change across 1.0 is a change of form, not of a runtime constant
+        if (value == 1.0) != (self._theta == 1.0):
+            self._needs_function_rewire = True
         self._theta = value
         self.DuDt.theta = value
 
@@ -508,8 +543,27 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
 
     @V_fn.setter
     def V_fn(self, value):
-        self.DuDt.V_fn = _as_row_vector(value, self.mesh.dim)
+        value = _as_row_vector(value, self.mesh.dim)
+        self.DuDt.V_fn = value
+        # a semi-Lagrangian history's characteristic trace captured V_fn at
+        # its first step; tell it too
+        trace = getattr(self.DuDt, "_characteristics", None)
+        if trace is not None and hasattr(trace, "V_fn"):
+            trace.V_fn = value
         self.is_setup = False
+
+    @property
+    def transport(self) -> str:
+        """How the history is carried: ``"eulerian"`` (SUPG on the mesh) or a
+        semi-Lagrangian scheme (constructor choice)."""
+        return self._transport
+
+    def _supg_only(self, name):
+        from underworld3.systems.ddt import EulerianSUPG
+        if not isinstance(self.DuDt, EulerianSUPG):
+            raise ValueError(f"{name} belongs to the SUPG scheme (transport='eulerian'); "
+                             f"this solver carries its history by {type(self.DuDt).__name__}, "
+                             "which assembles no advection and has no stabilisation")
 
     @property
     def f(self):
@@ -526,24 +580,29 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     @property
     def peclet_weight(self) -> float:
         """The critical cell Péclet number of the weight (constructor choice; 0 = uniform)."""
+        self._supg_only("peclet_weight")
         return self.DuDt.peclet_weight
 
     @property
     def supg_weight(self) -> float:
         """Scale of the SUPG term: 1 (default) or 0 for plain Galerkin. No rebuild."""
+        self._supg_only("supg_weight")
         return self.DuDt.supg_weight
 
     @supg_weight.setter
     def supg_weight(self, value):
+        self._supg_only("supg_weight")
         self.DuDt.supg_weight = value
 
     @property
     def tau_weights(self):
         r"""The weights :math:`(C_t, C_u, C_\kappa)` of the three terms in :math:`\tau`."""
+        self._supg_only("tau_weights")
         return self.DuDt.tau_weights
 
     @tau_weights.setter
     def tau_weights(self, values):
+        self._supg_only("tau_weights")
         self.DuDt.tau_weights = values
 
     # ------------------------------------------------------------------
@@ -554,11 +613,14 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         r"""``(1, dim)`` flux :math:`\sum_k w_k\,\nabla\phi^{(k)}\cdot\kappa` from the constitutive tensor."""
         dim = self.mesh.dim
         c = self.constitutive_model.c
+        # a stored level without a derivative (the integration-point history)
+        # is read through its continuous snapshot, as in the Navier-Stokes solver
+        stand_in = self.DuDt._derivative_stand_ins()
         total = sympy.zeros(1, dim)
         for w, phi in zip(self.DuDt.spatial_weights(), self.DuDt.states()):
             if w == 0:
                 continue
-            grad = self.mesh.vector.gradient(phi[0])
+            grad = self.mesh.vector.gradient(sympy.Matrix(phi).xreplace(stand_in)[0])
             total = total + w * (grad * c)
         return total
 
@@ -596,9 +658,10 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     # ------------------------------------------------------------------
 
     @timing.routine_timer_decorator
-    def estimate_dt(self, fraction: float = 0.02, basis: str = "accuracy",
+    def estimate_dt(self, fraction: float = 0.02, basis: str = None,
                     direction_aware: bool = False, percentile: float = 0.0):
-        r"""A timestep for this scheme, chosen for accuracy.
+        r"""A timestep for this scheme: for accuracy on the Eulerian path, the
+        cell-crossing time for a semi-Lagrangian one.
 
         The implicit scheme has no stability limit, so the cell-crossing time
         the semi-Lagrangian solver reports says nothing about how large a step
@@ -627,10 +690,13 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         ----------
         fraction : float, default 0.02
             Allowed change of the field per step as a fraction of its range.
-        basis : {"accuracy", "resolution"}
+        basis : {"accuracy", "resolution"}, default by transport
             ``"resolution"`` returns the cell-crossing / diffusion time the
             semi-Lagrangian solver's ``estimate_dt`` returns, for scripts that
-            size the step in Courant numbers.
+            size the step in Courant numbers; it is the default for a
+            semi-Lagrangian transport, whose error is flat in the step
+            (``"accuracy"`` would return ``inf`` for a uniform start).
+            ``"accuracy"`` is the default for ``transport="eulerian"``.
         direction_aware, percentile
             Forwarded to the resolution estimate; ignored otherwise.
 
@@ -642,6 +708,8 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         """
         from mpi4py import MPI
 
+        if basis is None:
+            basis = "accuracy" if self._transport == "eulerian" else "resolution"
         if basis == "resolution":
             dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
                 self.constitutive_model.K, self.V_fn, self.mesh,

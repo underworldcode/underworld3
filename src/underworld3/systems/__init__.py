@@ -104,12 +104,23 @@ from .solve_report import SolveReport
 # Former names. One solver per equation, the transport chosen by argument:
 # NavierStokes(velocity_transport=...), AdvDiffusion(transport=...).
 _FORMER_NAMES = {
+    # former name: (the implementation it still returns, the replacement, what differs)
     "NavierStokesSLCN": ("SNES_NavierStokes",
-                         "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')"),
+                         "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')",
+                         "defaults differ: order 1 (was 2), rho 1 (was 0), p_continuous True (was False), "
+                         "no velocity-history smoothing (was 1e-4); estimate_dt returns one number "
+                         "(was a (diffusive, advective) pair); the order is fixed at construction "
+                         "(solve(order=) is refused) and flux_order is not an argument"),
     "NavierStokesSwarm": ("SNES_NavierStokes",
-                          "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')"),
+                          "uw.systems.NavierStokes(..., velocity_transport='backward_nodes')",
+                          "as for NavierStokesSLCN; a particle velocity history is velocity_transport='lagrangian'"),
     "AdvDiffusionSLCN": ("SNES_AdvectionDiffusion",
-                         "uw.systems.AdvDiffusion(..., transport='backward_nodes')"),
+                         "uw.systems.AdvDiffusion(..., transport='backward_nodes')",
+                         "order is the order of the value history (BDF2 at order 2, theta 1; the old "
+                         "solver kept BDF1 and raised the flux rule's order); the stored-level flux is "
+                         "rebuilt from the carried field, not traced; estimate_dt() defaults to the "
+                         "cell-crossing time for a semi-Lagrangian transport; the SUPG options are "
+                         "refused off the Eulerian path"),
 }
 
 
@@ -117,7 +128,9 @@ def __getattr__(name):
     if name in _FORMER_NAMES:
         import warnings
         from . import solvers
-        implementation, instead = _FORMER_NAMES[name]
-        warnings.warn(f"uw.systems.{name} is {instead}", FutureWarning, stacklevel=2)
+        implementation, instead, differs = _FORMER_NAMES[name]
+        warnings.warn(f"uw.systems.{name} is deprecated and still returns the old implementation "
+                      f"(solvers.{implementation}); use {instead}. Note: {differs}.",
+                      FutureWarning, stacklevel=2)
         return getattr(solvers, implementation)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

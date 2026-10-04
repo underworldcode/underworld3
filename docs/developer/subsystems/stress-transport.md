@@ -30,8 +30,8 @@ are accepted with a warning.
 |---|---|---|---|---|
 | `backward_nodes` (the default) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
 | `backward_integration_points` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
-| `forward_integration_points` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
-| `forward_nodes` | continuous, the history's degree, at its nodes | the stress projected onto that store, launched from its nodes and from a lattice inside each element, one forward trajectory a step; a per-cell fit at the history's degree read back at the nodes | measured on transport alone (rotating diffusing Gaussian, P2: 1.78e-2 against 2.52e-2 for `backward_nodes` over half a turn) | not yet measured on a stress benchmark; first order only; does not follow a moving mesh |
+| `forward_integration_points` | discontinuous P1 per cell | fixed launch set of interior points (the integration points), one forward trajectory a step; the arrivals are reconstructed per cell (`reconstruction="cell"`, a weighted linear fit) or by one global projection (`"global"`, see below); the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `store_smoothing` (Waters-King 1/16, dt 0.0125, c = 0.023: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171); the vortex-shedding cylinder at Re 200, Wi 0.5 with the global projection and no smoothing | with the per-cell fit, the same cell-scale mode as the integration-point history without smoothing, and an instability of the fit where the flow empties a cell (the rear stagnation point of the cylinder); first order only; does not cross a periodic seam or follow a moving mesh |
+| `forward_nodes` | continuous, the history's degree, at its nodes | the stress projected onto that store, launched from its nodes and from a lattice inside each element, one forward trajectory a step; the arrivals reconstructed per cell at the history's degree and projected, or by one global projection (`reconstruction="global"`, P1 or P2) | measured on transport alone (rotating diffusing Gaussian, P2: 1.78e-2 against 2.52e-2 for `backward_nodes` over half a turn); the vortex-shedding cylinder to t = 8 with both reconstructions | a P2 velocity carried this way sheds at St 0.26 against 0.30 for the SUPG momentum transport (not yet understood; a resolution question); first order only; does not follow a moving mesh |
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
@@ -92,8 +92,8 @@ make that so, and a new history has to respect them:
   neighbourhood (#682, 1.6% of a level set's volume at np 8).
 
 The same holds for the value histories of advection-diffusion
-(`AdvDiffusionSLCN(transport=...)`) and for the Navier-Stokes velocity history
-(`NavierStokesSLCN(velocity_transport=...)`; the forward integration-point fit
+(`AdvDiffusion(transport=...)`) and for the Navier-Stokes velocity history
+(`NavierStokes(velocity_transport=...)`; the forward integration-point fit
 is linear, so it refuses a P2 velocity).
 
 ## With inertia
@@ -127,7 +127,10 @@ gradient itself (the objective rate's) and a yielding viscosity need second
 derivatives and remain outside the residual.
 
 The former `NavierStokesSLCN` and `AdvDiffusionSLCN` still work, with a
-warning; `AdvDiffusion` takes `transport=` in the same way.
+deprecation warning that names the replacement and what differs (the
+defaults, the meaning of `order`, the form of `estimate_dt`); `AdvDiffusion`
+takes `transport=` in the same way, and the SUPG options of either solver are
+refused off the Eulerian path.
 
 ## The timestep is set by the wall strain rate, not the far-field Courant number
 
@@ -232,6 +235,42 @@ a quarter more error in the stress near a singular corner than storing the stres
 `SNES_NavierStokes` (the Navier-Stokes solver that reads its history directly as
 a flux) and the multi-material model refuse the log-conformation history.
 
+## The relaxation law: a linear spring or FENE-P
+
+The model names its three independent choices by their mechanics:
+`element` (the spring-dashpot arrangement: `"maxwell"`, or `"jeffreys"` with the
+parallel dashpot `solvent_viscosity`), `relaxation` (`"linear"`, the Hookean
+spring with a constant relaxation time, or `"fene_p"`) and `objective_rate`.
+UCM is maxwell + linear + upper-convected, Oldroyd-B jeffreys + linear +
+upper-convected, FENE-P jeffreys + fene_p + upper-convected.
+
+A linear spring extends without bound: in an extensional flow with
+$\lambda\dot\epsilon > 1/2$ the stress grows without limit, which on the
+cylinder wake happens between Wi 1 and 2 at Re 200, where the stress fills the
+wake with structure at the mesh scale on every mesh (it is the model, not the
+scheme). FENE-P relaxes at $f(c)/\lambda$ with
+$f = (L^2 - d)/(L^2 - \mathrm{tr}\,c)$ and carries the stress $G(f c - I)$, so
+the trace of the conformation stays below the extensibility
+`Parameters.extensibility` ($L^2$) and the stress saturates. The step is taken
+on the conformation with $f^*$ read from the record before the step (explicit,
+first order; carried as a nodal field so the matrix exponential of the record
+does not enter the compiled flux through the coefficients). Two things in the
+step differ from the linear spring: the stretching source acts on $G(c^* - I)$,
+which is the carried stress only for a linear spring; and the $f^*$ on the
+relaxation rate cancels against the $f^*$ on the stress for every source, so
+the sources keep their Oldroyd-B weights. Against the closed-form steady
+simple shear ($f^2 (f - 1) = 2\,\mathrm{Wi}^2/L^2$) the scheme is first order
+in $\Delta t/\lambda$; with infinite extensibility it is Oldroyd-B to 1e-8.
+It needs the log-conformation history, the exponential integrator at order 1
+and the upper-convected rate.
+
+```python
+cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+    stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+    stress_history="log_conformation", element="jeffreys", relaxation="fene_p")
+cm.Parameters.extensibility = 100.0
+```
+
 ## The recommended configuration
 
 Integration-point history, the step set by the wall strain rate
@@ -240,16 +279,65 @@ is a small fraction of the total, DEVSS off. That combination is characterised o
 Waters and King (regular and irregular meshes) and on the confined cylinder,
 admissible to Wi 0.6 and mildly indefinite at Wi 0.8. The coefficient 0.023 is
 the least that holds the mode on a regular mesh; 0.07 holds it on an irregular
-one as well and costs half a percent, so it is the recommended value. The forward flavour is the same scheme with a per-cell fit and interior
+one as well and costs half a percent, so it is the recommended value. The forward flavour is the same scheme with interior
 launch points, measured at 17 s a step against 28 on the cylinder, parallel by
-handing the arrivals that cross a seam to the rank that owns them; it needs its read-back smoothing (`DFDt.flux_smoothing = 0.023 * mesh.cell_size()**2`). Neither transports its memory without a cell-scale mode below Courant
-one on a Maxwell element: a version that did not ring turned out not to be
-transporting the memory at all.
+handing the arrivals that cross a seam to the rank that owns them; with the
+per-cell fit it needs the same store smoothing, with the global projection
+(below) none. The per-cell reconstructions do not transport their memory without
+a cell-scale mode below Courant one on a Maxwell element: a version that did not
+ring turned out not to be transporting the memory at all.
 
-## Store smoothing for the integration-point history below Courant one
+## Reconstructing the forward histories: a per-cell fit or one global projection
+
+A forward history knows its field at the points that arrived in each cell and
+has to turn them back into a field the weak form can read. The per-cell fit
+(`reconstruction="cell"`) fits a polynomial to the arrivals of each cell on its
+own. It is local and cheap, and it extrapolates: a cell's vertices lie outside
+its interior arrivals, so the fit always reaches beyond its data, by about a
+quarter of the carried range on the cylinder, and in a cell the flow has emptied
+(the rear stagnation point) a determined but ill-conditioned fit can put a value
+there that nothing carried. On the shedding cylinder that excursion grew from the
+background to three times the carried range in three steps and the solve failed;
+store smoothing at c = 0.07 held it, at the cost of a third of the drag.
+
+The global projection (`reconstruction="global"`,
+:class:`~underworld3.utilities.particle_projection.ParticleL2Projector`) is
+the ordinary L2 projection with the arrivals as its quadrature points: one
+weighted least-squares solve for the whole continuous field, each launch point
+weighing its share of the cell it left. A node is set by every arrival in the
+patch of cells around it, so it is interpolated rather than extrapolated; the
+share of a cell's measure that no arrival covers enters as finite-element mass
+with the previous field as its data, so a cell the flow has emptied is held by
+what it carried; and the system is summed across partition seams, so the answer
+does not depend on the partition (drag and lift at np 4 against serial to 5e-5
+over 24 steps of the cylinder, the momentum solve's own tolerance included). On
+the cylinder at Re 200, Wi 0.5 it runs to t = 8 with no smoothing and no limiter,
+the field's excursion beyond the carried range steady at 2-5%, and lands within
+8% in drag and 12% in lift of the Eulerian stress history at the same Strouhal
+number, where the smoothed per-cell fit was 35% low in drag.
+
+At degree 2 (the forward nodal history of a P2 velocity) the projection needs
+regularising: an edge dof belongs to two cells and is set by their quadratic
+content alone, so a thinned cell leaves it to a few arrivals, and the run failed
+in developed shedding. `bubble_penalty` penalises each edge dof's departure from
+the mean of its two vertices, in units of the bubble's own mass; the P1 part of
+the field is untouched. The data of a fully covered cell hold a bubble only
+weakly (the fit trades a cell's bubble against its neighbours), so a value of
+0.01 removes about a fifth of a resolved quadratic and 0.1 about three quarters;
+the cylinder ran to t = 8 at the equivalent of 0.56.
+
+```python
+stokes.DFDt.reconstruction = "global"     # either forward flavour
+ns.DuDt.reconstruction = "global"         # the forward nodal velocity history (P2)
+ns.DuDt.bubble_penalty = 0.1
+```
+
+## Store smoothing below Courant one
 
 The store cycle of the integration-point flavour, sample at the points then
-project, is a consistent-mass Galerkin transport of the carried stress. It has no
+project, is a consistent-mass Galerkin transport of the carried stress (the
+forward flavours have the same cycle and take the same `store_smoothing`; with
+the global projection it is unnecessary). It has no
 dissipation at the cell scale, so below Courant one a cell-scale mode grows from
 round-off at a rate $\gamma$ set by the elastic feedback: about 2.4 per unit time
 on the Maxwell Waters-King start-up, 1.8 with a solvent fraction of 0.2, and not

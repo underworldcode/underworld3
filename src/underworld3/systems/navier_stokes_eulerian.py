@@ -11,9 +11,12 @@ stabilised by the streamline-upwind Petrov-Galerkin term, the vector
 counterpart of :class:`~underworld3.systems.AdvDiffusion`. The time
 scheme is the same multistep family: Crank-Nicolson (the theta rule) at
 order 1, BDF2 at order 2, with the history held on the mesh by the
-Eulerian history manager. No stress history is carried: the viscous stress
-at an earlier level is rebuilt from the stored velocity level through the
-constitutive model.
+Eulerian history manager, or carried by a semi-Lagrangian scheme
+(``velocity_transport``). For a viscous fluid no stress history is carried:
+the viscous stress at an earlier level is rebuilt from the stored velocity
+level through the constitutive model. A viscoelastic model carries its stress
+history by the scheme ``stress_transport`` names, and the SUPG residual then
+includes the divergence of that memory stress.
 
 The advecting velocity :math:`\mathbf{a}` in :math:`(\mathbf{a}\cdot\nabla)\mathbf{u}^{n+1}`
 is a choice (``advection=``): ``"extrapolated"`` (default) uses
@@ -238,13 +241,21 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # solve: the extrapolation, or the latest Picard iterate) and the
         # level n-1 the extrapolation needs beyond what the history holds.
         u = self.Unknowns.u
-        self._a_var = uw.discretisation.MeshVariable(
-            f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
-            continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
-        self._u_prev = uw.discretisation.MeshVariable(
-            f"u_prev_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
-            continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
+        self._eulerian = velocity_transport == "eulerian"
+        self._velocity_transport = velocity_transport
+        # the extrapolation state belongs to the assembled-advection path only
+        self._a_var = self._u_prev = None
+        if self._eulerian:
+            self._a_var = uw.discretisation.MeshVariable(
+                f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
+                continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
+            self._u_prev = uw.discretisation.MeshVariable(
+                f"u_prev_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
+                continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
         self._history_primed = False
+        if not self._eulerian and peclet_weight != 4.0:
+            raise ValueError("peclet_weight is the SUPG weight's threshold; it applies to "
+                             "velocity_transport='eulerian' only")
 
         # The transport plugin: the history manager owns the time scheme, the
         # advecting velocity, the assembled advection and the stabilisation.
@@ -348,6 +359,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     @property
     def peclet_weight(self) -> float:
         """The critical cell Péclet number of the weight (0 = no Péclet weighting)."""
+        self._supg_only("peclet_weight")
         return self.DuDt.peclet_weight
 
     @property
@@ -385,19 +397,23 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     @property
     def supg_weight(self) -> float:
         """Weight of the SUPG term; 0 gives the plain Galerkin scheme."""
+        self._supg_only("supg_weight")
         return self.DuDt.supg_weight
 
     @supg_weight.setter
     def supg_weight(self, value):
+        self._supg_only("supg_weight")
         self.DuDt.supg_weight = value
 
     @property
     def tau_weights(self):
         """The three weights of tau: transient, advective, viscous."""
+        self._supg_only("tau_weights")
         return self.DuDt.tau_weights
 
     @tau_weights.setter
     def tau_weights(self, values):
+        self._supg_only("tau_weights")
         self.DuDt.tau_weights = values
 
     # ------------------------------------------------------------------
@@ -406,9 +422,21 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
     def _advecting_velocity(self):
         """The advecting velocity at the new level, as a ``(1, dim)`` row."""
-        if self._advection_mode == "implicit":
+        if self._advection_mode == "implicit" or self._a_var is None:
             return self.u.sym
         return self._a_var.sym
+
+    @property
+    def velocity_transport(self) -> str:
+        """How the velocity history is carried: ``"eulerian"`` (SUPG on the
+        mesh) or a semi-Lagrangian scheme (constructor choice)."""
+        return self._velocity_transport
+
+    def _supg_only(self, name):
+        if not self._eulerian:
+            raise ValueError(f"{name} belongs to the SUPG scheme (velocity_transport='eulerian'); "
+                             f"this solver carries its velocity history by {type(self.DuDt).__name__}, "
+                             "which assembles no advection and has no stabilisation")
 
     def _strong_residual(self, with_pressure=False):
         r"""The strong momentum residual of the time scheme, first derivatives only.
@@ -547,7 +575,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     def _prime_history(self):
         """First solve: the extrapolation level equals the current velocity."""
         if not self._history_primed:
-            self._u_prev.array[...] = self.u.array[...]
+            if self._u_prev is not None:
+                self._u_prev.array[...] = self.u.array[...]
             self._history_primed = True
 
     @timing.routine_timer_decorator
@@ -594,7 +623,11 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         the advecting velocity; with ``"implicit"`` the SNES solves the
         quadratic term by Newton iteration.
         """
-        for name in ("time", "order", "evalf", "_evalf", "homotopy"):
+        if "order" in kwargs:
+            raise ValueError("NavierStokes.solve(order=...) is not an option: the order of the "
+                             "time scheme is fixed at construction (the former NavierStokesSLCN "
+                             "read it per solve)")
+        for name in ("time", "evalf", "_evalf", "homotopy"):
             kwargs.pop(name, None)
         if kwargs:
             warnings.warn(f"NavierStokes.solve ignores {sorted(kwargs)}", stacklevel=2)
@@ -625,12 +658,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
         self._prime_history()
         u_n = np.array(self.u.array[...])
-        if self._advection_mode == "extrapolated":
+        if self._advection_mode == "extrapolated" and self._eulerian:
             self._set_advecting_velocity(2.0 * u_n - np.asarray(self._u_prev.array[...]))
         self.DuDt.update_pre_solve(dt, verbose=verbose)
 
         passes = 1
-        if self._advection_mode == "extrapolated":
+        if self._advection_mode == "extrapolated" and self._eulerian:
             n_picard = self._picard_iterations if picard_iterations is None else int(picard_iterations)
             passes += max(n_picard, 0)
         from mpi4py import MPI
@@ -668,7 +701,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
         # Shift the extrapolation level (the velocity this step started from),
         # then the history.
-        self._u_prev.array[...] = u_n
+        if self._u_prev is not None:
+            self._u_prev.array[...] = u_n
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True

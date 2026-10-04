@@ -186,9 +186,10 @@ def test_composed_advdiffusion_reachability(config):
     """The composed uw.systems.AdvDiffusion (#688) takes the history as its
     transport manager. With no spatial term on the old level (BDF2, or
     theta = 1) the integration-point history runs there and matches the SLCN
-    solver; with the Crank-Nicolson flux (theta = 0.5) the old level is
-    differentiated, which a delta field cannot supply, and the JIT guard
-    refuses with a clear message."""
+    solver; with the Crank-Nicolson flux (theta = 0.5) the old level's gradient
+    is read through the history's continuous snapshot (a delta field has no
+    derivative), where the SLCN solver traces a flux history, so the two agree
+    to the order of that difference."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.1, qdegree=3
     )
@@ -210,10 +211,6 @@ def test_composed_advdiffusion_reachability(config):
             adv.solve(timestep=0.1)
         return np.asarray(T.data[:, 0]).copy()
 
-    if config == "cn":
-        with pytest.raises(RuntimeError, match="integration-point"):
-            run(uw.systems.AdvDiffusion, {})
-        return
     kw = {"theta": theta} if order == 1 else {}
     T_composed = run(uw.systems.AdvDiffusion, kw)
     T_slcn = run(uw.systems.AdvDiffusionSLCN, {})

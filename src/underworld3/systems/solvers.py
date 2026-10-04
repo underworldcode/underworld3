@@ -480,8 +480,8 @@ def _value_history(transport, mesh, field, V_fn, vtype, order, nodal_options, re
     take them; ``common`` go to every scheme.
     """
     if transport not in _SEMI_LAGRANGIAN_TRANSPORTS:
-        raise ValueError(f"transport must be one of {tuple(_SEMI_LAGRANGIAN_TRANSPORTS)}, "
-                         f"not {transport!r}")
+        raise ValueError(f"transport must be 'eulerian' (the solver's own scheme) or one of "
+                         f"{tuple(_SEMI_LAGRANGIAN_TRANSPORTS)}, not {transport!r}")
     if transport == "backward_nodes":
         return BackwardNodesSemiLagrangian(
             mesh, field.sym, V_fn, vtype=vtype, degree=field.degree,
