@@ -82,6 +82,16 @@ class ParticleL2Projector:
         self._var = uw.discretisation.MeshVariable(
             f"_pl2_{ParticleL2Projector.instances}", mesh, 1, degree=self.degree, continuous=True)
         self._dm = None
+        #: Degree 2 only: the quadratic content of each cell, measured as each
+        #: edge dof's departure from the mean of its two vertices (the bubble),
+        #: is penalised at this fraction of the weight the data of a fully
+        #: covered cell give its bubbles (the bubble's own mass). The P1 part of
+        #: the field is untouched; the bubble is kept only where the arrivals
+        #: support it against a prior of that weight. An edge dof belongs to two
+        #: cells and is set by their quadratic content alone, so a cell the flow
+        #: has thinned leaves it to a few arrivals; the P1 vertex dofs, shared by
+        #: a whole patch, do not have this exposure.
+        self.bubble_penalty = 0.0
 
     def _build(self):
         """The cell-to-row map, the element matrices and the solver, for the mesh
@@ -146,6 +156,19 @@ class ParticleL2Projector:
                 Me += wq * measure[:, None, None] * phi[:, :, None] * phi[:, None, :]
                 Ke += wq * measure[:, None, None] * np.einsum("cid,cjd->cij", dphi, dphi)
             self._Me, self._Ke = Me, Ke
+            # the bubble operator: sum over the cell's edges of b b^T with
+            # b = e_edge - (e_a + e_b) / 2, scaled by the cell measure
+            B = np.zeros((ncell, self._nb, self._nb))
+            for k in range(3):
+                b = np.zeros((ncell, self._nb))
+                b[:, nv + k] = 1.0
+                np.put_along_axis(b, self._edge_pairs[:, k, 0:1], -0.5, axis=1)
+                np.put_along_axis(b, self._edge_pairs[:, k, 1:2], -0.5, axis=1)
+                B += b[:, :, None] * b[:, None, :]
+            # scaled by the L2 mass of one edge bubble, int (4 lam_a lam_b)^2 =
+            # (8/45) |cell|: bubble_penalty = 1 then weighs the prior as much as
+            # the data of a fully covered cell weigh its quadratic content
+            self._Bub = (8.0 / 45.0) * measure[:, None, None] * B
         self._A = self._sub.createMatrix()
         self._A.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
         self._ksp = PETSc.KSP().create(comm=dm.comm)
@@ -193,14 +216,23 @@ class ParticleL2Projector:
         """The basis functions at points ``X`` in cells ``cell``: (n, nb)."""
         return self._basis_from_lambda(self.barycentric(np.asarray(X, dtype=float), cell), cell)
 
-    def project(self, X, values, weights, cell, old=None, eps=1.0e-8, alpha=None):
+    def project(self, X, values, weights, cell, old=None, eps=1.0e-8, alpha=None, fill_deficit=True):
         """The projected field at the local rows, shape (n_local_rows, ncomponents).
 
         ``X`` (n, d), ``values`` (n, k), ``weights`` (n,) and ``cell`` (n,), the
         owning local cell of each point; ``old`` (n_local_rows, k), the previous
-        field, which unreached nodes keep; ``eps`` scales the pull towards it
-        relative to the finite-element mass matrix; ``alpha`` (ncell,) the
-        gradient penalty per cell."""
+        field; ``eps`` scales a weak pull towards it relative to the
+        finite-element mass matrix (what keeps a row no point reaches at all);
+        ``alpha`` (ncell,) the gradient penalty per cell.
+
+        With ``fill_deficit`` (and ``old``), the share of each cell's measure
+        that the arriving weights do not cover is supplied by the previous
+        field: that share enters as its finite-element mass with ``old`` as
+        the data. A cell the flow has emptied is then determined by what it
+        held, at full weight, rather than left to its neighbours and a
+        1e-8 pull; a fully covered cell is unchanged. The weights are the
+        points' shares of the domain, so the sum over a cell measures how
+        much of it was reached."""
         if self._dm is not self.mesh.dm:
             self._build()
         values = np.asarray(values, dtype=float)
@@ -215,12 +247,18 @@ class ParticleL2Projector:
         w = np.asarray(weights, dtype=float)
         np.add.at(Me, cell, w[:, None, None] * phi[:, :, None] * phi[:, None, :])
         np.add.at(Re, cell, w[:, None, None] * phi[:, :, None] * values[:, None, :])
-        if eps > 0.0:
-            Me = Me + eps * self._Me
+        pull = np.full(ncell, float(eps))
+        if fill_deficit and old is not None:
+            received = np.bincount(cell, weights=w, minlength=ncell)
+            pull = pull + np.clip(1.0 - received / np.maximum(self.cell_measure, 1.0e-300), 0.0, 1.0)
+        if np.any(pull > 0.0):
+            Me = Me + pull[:, None, None] * self._Me
             if old is not None:
-                Re = Re + eps * np.einsum("cij,cjk->cik", self._Me, np.asarray(old)[self._rows])
+                Re = Re + pull[:, None, None] * np.einsum("cij,cjk->cik", self._Me, np.asarray(old)[self._rows])
         if alpha is not None:
             Me = Me + np.asarray(alpha, dtype=float).reshape(-1)[:, None, None] * self._Ke
+        if self.degree == 2 and self.bubble_penalty > 0.0:
+            Me = Me + float(self.bubble_penalty) * self._Bub
         A = self._A
         A.zeroEntries()
         for c in range(ncell):

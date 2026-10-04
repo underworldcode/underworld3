@@ -6099,6 +6099,20 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
                                                              rtol=_HISTORY_PROJECTION_TOLERANCE)
         self._reconstruction = value
 
+    @property
+    def bubble_penalty(self) -> float:
+        """Degree 2 with the global projection: the weight, as a fraction of the
+        cell measure, of the prior that each cell's quadratic content is zero
+        (see :attr:`ParticleL2Projector.bubble_penalty`). Zero is the plain
+        least-squares fit."""
+        return self._global_projector.bubble_penalty if self._global_projector is not None else 0.0
+
+    @bubble_penalty.setter
+    def bubble_penalty(self, value):
+        if self._global_projector is None:
+            raise ValueError("bubble_penalty applies to reconstruction='global'")
+        self._global_projector.bubble_penalty = float(value)
+
     def _weights_of_launch(self):
         """Each launch point's share of the domain: the lattice points share
         their cell's measure, a node the measure of a cell that contains it; the
