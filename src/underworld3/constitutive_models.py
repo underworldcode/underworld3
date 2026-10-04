@@ -1691,7 +1691,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     def __init__(self, unknowns, order=1, integrator: str = "bdf",
                  material_name: str = None, objective_rate: str = "none",
-                 stress_history: str = "stress", convected_step: str = None):
+                 stress_history: str = "stress", convected_step: str = None,
+                 element: str = "maxwell", relaxation: str = "linear"):
         """Construct a viscoelastic-plastic flow model.
 
         Parameters
@@ -1748,6 +1749,36 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             stretching of the relaxation target is completed the same way).
             Default ``"linear"``, or ``"deformation"`` with the
             log-conformation history, which requires it.
+        element : {"maxwell", "jeffreys"}, default "maxwell"
+            The spring-dashpot arrangement, which fixes the linear response.
+            ``"maxwell"`` is the spring and dashpot in series (the upper-
+            convected Maxwell fluid with the upper-convected rate).
+            ``"jeffreys"`` adds a dashpot in parallel, ``Parameters.solvent_viscosity``
+            (Oldroyd-B with the upper-convected rate; in the mantle the
+            parallel dashpot is the steady-state creep alongside the transient
+            Maxwell element). A Burgers body (Maxwell in series with a
+            Kelvin-Voigt pair) would carry a second history and is not yet
+            implemented.
+        relaxation : {"linear", "fene_p"}, default "linear"
+            The element's relaxation law. ``"linear"`` is a Hookean spring:
+            constant relaxation time :math:`\lambda = \eta/G`, unbounded
+            extension, so in an extensional flow with
+            :math:`\lambda\dot\epsilon > 1/2` the stress grows without
+            limit. ``"fene_p"`` (finitely extensible, Peterlin closure)
+            relaxes at :math:`f(c)/\lambda` with
+            :math:`f = (L^2 - d)/(L^2 - \mathrm{tr}\,c)`, :math:`L^2` the
+            extensibility (``Parameters.extensibility``, dimensionless, the
+            mean square extension at which the spring stiffens without
+            bound), and carries the stress :math:`G(f c - I)`: the
+            conformation's trace stays below :math:`L^2` and the stress
+            saturates. The step is taken on the conformation with
+            :math:`f` read from the carried conformation (explicit, first
+            order); it needs the log-conformation history, the exponential
+            integrator at order 1 and the upper-convected rate. The three
+            choices, element, relaxation and ``objective_rate``, are
+            independent: UCM is maxwell + linear + upper-convected, Oldroyd-B
+            jeffreys + linear + upper-convected, FENE-P jeffreys + fene_p +
+            upper-convected.
         """
         if integrator not in ("bdf", "etd"):
             raise ValueError(
@@ -1789,6 +1820,33 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                                           "logarithm and exponential; 3-D is not implemented")
         self._stress_history = stress_history
         self._convected_step = convected_step
+        if element not in ("maxwell", "jeffreys"):
+            raise ValueError(f"element must be 'maxwell' or 'jeffreys', got {element!r}")
+        if relaxation not in ("linear", "fene_p"):
+            raise ValueError(f"relaxation must be 'linear' or 'fene_p', got {relaxation!r}")
+        if relaxation == "fene_p" and not (stress_history == "log_conformation" and integrator == "etd"
+                                           and order == 1):
+            raise NotImplementedError("relaxation='fene_p' takes its step on the conformation with the "
+                                      "relaxation rate f(c)/lambda: it needs stress_history='log_conformation', "
+                                      "integrator='etd' and order=1")
+        self._element = element
+        self._relaxation = relaxation
+        # FENE-P: the step in relaxation times, dt f(c*)/lambda, is a field
+        # (f* varies in space); it is evaluated at the nodes once per step and
+        # read by the weak form as a plain P1 field, so the matrix exponential of
+        # the record does not enter the compiled flux (and its Jacobian) a
+        # second time through the relaxation coefficient
+        self._fene_x = self._fene_f = None
+        if relaxation == "fene_p":
+            self._fene_x = uw.discretisation.MeshVariable(
+                f"fene_x_{id(self)}", unknowns.u.mesh, 1, degree=1, continuous=True,
+                varsymbol=r"{x_{\mathrm{FENE}}}")
+            # the spring factor f(c*) itself, the same way: the flux reads
+            # G (f* c* - I) with f* a field rather than a function of the record
+            self._fene_f = uw.discretisation.MeshVariable(
+                f"fene_f_{id(self)}", unknowns.u.mesh, 1, degree=1, continuous=True,
+                varsymbol=r"{f_{\mathrm{FENE}}}")
+            self._fene_f.data[:, 0] = 1.0
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -1891,6 +1949,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             lambda inner_self: 0,
             "Solvent viscosity in parallel with the Maxwell element (Oldroyd-B when non-zero)",
             units="Pa*s",
+        )
+        extensibility = api_tools.Parameter(
+            R"{L^2}",
+            lambda inner_self: sympy.oo,
+            "FENE-P extensibility: the mean square dumbbell extension at which the spring stiffens "
+            "without bound (relaxation='fene_p'); infinite is the Hookean, Oldroyd-B, dumbbell",
         )
 
         @property
@@ -2108,6 +2172,35 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._bdf_c2.sym = coeffs[2]
         self._bdf_c3.sym = coeffs[3]
 
+    def _relaxation_steps_sym(self):
+        r"""The step in relaxation times, :math:`x = \Delta t\,f(c^*)/\lambda`
+        (:math:`f = 1` for Oldroyd-B), as a sympy expression: for FENE-P the
+        nodal field :meth:`_refresh_fene_x` fills before each solve."""
+        if self._relaxation == "fene_p":
+            return self._fene_x.sym[0]
+        lam = self.Parameters.shear_viscosity_0 / self.Parameters.shear_modulus
+        return self.Parameters.dt_elastic / lam
+
+    def _spring_factor_sym(self):
+        r"""The spring factor of the step, :math:`f^*`, as the weak form reads
+        it: the nodal field for FENE-P, one for a linear spring."""
+        if self._relaxation == "fene_p":
+            return self._fene_f.sym[0]
+        return sympy.Integer(1)
+
+    def _refresh_fene_x(self):
+        r"""Evaluate :math:`\Delta t\,f(c^*)/\lambda` at the nodes of the FENE-P
+        step field from the carried conformation (explicit: the record as it
+        stands before the solve)."""
+        lam = self.Parameters.shear_viscosity_0 / self.Parameters.shear_modulus
+        f_sym = self._peterlin_sym(self._carried_conformation_sym(0))
+        from underworld3.systems.ddt import _to_nondim_ndarray
+        coords = np.asarray(self._fene_f.coords)
+        f_vals = np.asarray(_to_nondim_ndarray(uw.function.evaluate(f_sym, coords))).reshape(-1)
+        self._fene_f.data[:, 0] = f_vals
+        x_vals = np.asarray(_to_nondim_ndarray(uw.function.evaluate(self.Parameters.dt_elastic / lam, coords))).reshape(-1)
+        self._fene_x.data[:, 0] = x_vals * f_vals
+
     def _update_history_coefficients(self):
         """Pre-solve hook: refresh integrator coefficients.
 
@@ -2142,6 +2235,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             except (TypeError, ValueError):
                 dt_val = None
             self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+            if self._relaxation == "fene_p":
+                # the relaxation rate is f(c*)/lambda, a field: alpha = exp(-dt f*/lambda)
+                # with f* read from the carried conformation (explicit, first order)
+                self._refresh_fene_x()
+                self.Unknowns.DFDt._exp_alpha.sym = sympy.exp(-self._relaxation_steps_sym())
             if self._order == 1:
                 # ETD-1 reduction: φ = α makes the (φ-α)·ε̇* term zero
                 # AND turns (1-φ)·ε̇ into (1-α)·ε̇.
@@ -2179,21 +2277,80 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             raise NotImplementedError("convected_step='deformation' and the log-conformation history "
                                       "are first order only")
 
+    def _peterlin_sym(self, c):
+        r"""The FENE-P spring factor :math:`f(c) = (L^2 - d)/(L^2 - \mathrm{tr}\,c)`
+        of a conformation ``c`` (a sympy matrix); one for the Hookean dumbbell."""
+        if self._relaxation != "fene_p":
+            return sympy.Integer(1)
+        d = self.Unknowns.u.mesh.dim
+        L2 = self.Parameters.extensibility
+        return (L2 - d) / (L2 - sympy.Matrix(c).trace())
+
+    def _peterlin_np(self, c):
+        """:meth:`_peterlin_sym` on an array of conformations (n, d, d)."""
+        if self._relaxation != "fene_p":
+            return np.ones(c.shape[0])
+        d = c.shape[-1]
+        L2 = float(self.Parameters.extensibility.sym)
+        return (L2 - d) / (L2 - np.trace(c, axis1=1, axis2=2))
+
+    def _carried_conformation_sym(self, level=0):
+        r"""The carried conformation :math:`c^* = e^{\psi^*}` of the
+        log-conformation history at ``level``."""
+        return _expm_sym2(sympy.Matrix(self.Unknowns.DFDt.psi_star[level].sym))
+
+    def _carried_strain_sym(self, level=0):
+        r"""The carried elastic strain in stress units, :math:`G(c^* - I)`: what
+        the objective rate's source acts on. It is the carried stress itself for
+        a linear spring; for FENE-P, where :math:`\sigma^* = G(f c^* - I)`, it is
+        :math:`(\sigma^* + G I)/f^* - G I` (the convected derivative stretches
+        the conformation, not the stress, and in steady shear the difference is
+        the factor :math:`1/f` on the shear stress)."""
+        if self._stress_history == "stress" or self._relaxation != "fene_p":
+            return self._carried_stress_sym(level)
+        return (self._carried_conformation_sym(level) - sympy.eye(2)) * self.Parameters.shear_modulus
+
     def _carried_stress_sym(self, level=0):
         r"""The carried stress :math:`\sigma^*` of history level ``level``: the
-        stored level, or :math:`G(e^{\psi^*} - I)` for the log-conformation
-        history (the modulus as its expression, so a read of it carries units)."""
+        stored level, or :math:`G(f(c^*)\,c^* - I)` with :math:`c^* = e^{\psi^*}`
+        for the log-conformation history (:math:`f = 1` for Oldroyd-B; the
+        modulus as its expression, so a read of it carries units)."""
         stored = self.Unknowns.DFDt.psi_star[level].sym
         if self._stress_history == "stress":
             return stored
-        return (_expm_sym2(sympy.Matrix(stored)) - sympy.eye(2)) * self.Parameters.shear_modulus
+        c = self._carried_conformation_sym(level)
+        f = self._fene_f.sym[0] if self._relaxation == "fene_p" else sympy.Integer(1)
+        return (f * c - sympy.eye(2)) * self.Parameters.shear_modulus
 
     def encode_history(self, stress):
         r"""What the history stores for a stress: the stress, or
-        :math:`\log(\sigma/G + I)` for the log-conformation history."""
+        :math:`\log c` with :math:`f(c)\,c = \sigma/G + I` for the
+        log-conformation history. For FENE-P the trace of that relation,
+        :math:`f\,\mathrm{tr}\,c = s` with :math:`s = \mathrm{tr}\,\sigma/G + d`,
+        gives :math:`\mathrm{tr}\,c = s L^2 / (L^2 - d + s)` and hence :math:`f`
+        in closed form."""
         if self._stress_history == "stress":
             return stress
-        return _logm_sym2(sympy.Matrix(stress) / self.Parameters.shear_modulus + sympy.eye(2))
+        fc = sympy.Matrix(stress) / self.Parameters.shear_modulus + sympy.eye(2)
+        if self._relaxation == "fene_p":
+            # c = (sigma/G + I)/f with the spring factor of the step, the field
+            # f* read from the record before the solve: the same first-order lag
+            # the relaxation rate carries (the exact inverse, through the trace,
+            # is :meth:`_fene_exact_conformation`; inlined it repeats the whole
+            # stress expression inside its own trace and the compiled commit
+            # grows by an order of magnitude)
+            fc = fc / self._fene_f.sym[0]
+        return _logm_sym2(fc)
+
+    def _fene_exact_conformation(self, stress):
+        r"""The conformation of a FENE-P stress, exactly: from the trace of
+        :math:`f\,c = \sigma/G + I`, :math:`s = \mathrm{tr}\,\sigma/G + d`,
+        :math:`\mathrm{tr}\,c = s L^2/(L^2 - d + s)` and hence :math:`f`."""
+        d = self.Unknowns.u.mesh.dim
+        L2 = self.Parameters.extensibility
+        fc = sympy.Matrix(stress) / self.Parameters.shear_modulus + sympy.eye(d)
+        tr_c = fc.trace() * L2 / (L2 - d + fc.trace())
+        return fc * (L2 - tr_c) / (L2 - d)
 
     # The following should have no setters
     @property
@@ -2268,8 +2425,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 (1 - phi) * E
                 + (alpha / (2 * eta_raw)) * sigma_star
                 + (phi - alpha) * edot_star
-                # objective rate: the flux gains alpha * dt * S(sigma*)
-                + alpha * self.Parameters.dt_elastic * self._objective_term(sigma_star) / (2 * eta_raw)
+                # objective rate: the flux gains alpha * dt * f* * S(G (c* - I)). The
+                # step is taken on the conformation at the rate f*/lambda and the
+                # stress is G f* c: the f* on the relaxation cancels against the f*
+                # on the stress for every source, so the source keeps its Oldroyd-B
+                # weight alpha dt (= (1 - alpha) lambda to first order) and not
+                # alpha dt / f*, which the rate alone would give (f* = 1 for a
+                # linear spring)
+                + alpha * self.Parameters.dt_elastic * self._spring_factor_sym()
+                * self._objective_term(self._carried_strain_sym(0)) / (2 * eta_raw)
             )
             if self._convected_step == "deformation":
                 # The relaxation target is stretched during the step too. The
@@ -2281,10 +2445,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 # integrator's alpha, which is clamped to one in the elastic limit.
                 L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
                 lam = eta_raw / self.Parameters.shear_modulus
-                x = self.Parameters.dt_elastic / lam
+                x = self._relaxation_steps_sym()           # dt f*/lambda (f* = 1 for Oldroyd-B)
                 decay = sympy.exp(-x)
                 b = lam * (1 - (1 + x) * decay)
-                E_eff = E_eff + (b ** 2 / (1 - decay)) * L * L.T / (2 * lam)
+                # on the conformation the coefficient is b_c^2/(1-a) with b_c = b/f*;
+                # the stress multiplies by G f*, leaving b^2/((1-a) f*)
+                E_eff = E_eff + (b ** 2 / ((1 - decay) * self._spring_factor_sym())) * L * L.T / (2 * lam)
             self._E_eff.sym = E_eff
             return self._E_eff
 
@@ -2298,7 +2464,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # flux gains (eta/mu) S(sigma*) and E_eff gains S/(2 mu) with weight
         # ONE whatever the BDF order (the BDF weights belong to the time
         # derivative, not to the source; -c1 = 2 at order 2 would double it).
-        E += self._objective_term(self._carried_stress_sym(0)) / (2 * self.Parameters.shear_modulus)
+        E += self._objective_term(self._carried_strain_sym(0)) / (2 * self.Parameters.shear_modulus)
         self._E_eff.sym = E
         return self._E_eff
 
@@ -2346,7 +2512,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
             w, v = np.linalg.eigh(tau)
             c = v @ (np.exp(w)[:, :, None] * np.transpose(v, (0, 2, 1)))
-            tau = G[:, None, None] * (c - np.eye(tau.shape[-1])[None])
+            f = self._peterlin_np(c)
+            tau = G[:, None, None] * (f[:, None, None] * c - np.eye(tau.shape[-1])[None])
         return tau, points
 
     def max_elastic_timestep(self, safety: float = 0.3) -> float:
@@ -2420,9 +2587,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         tau, points = self._carried_stress()
         dim = tau.shape[-1]
         from underworld3.systems.ddt import _to_nondim_ndarray
-        G = np.asarray(_to_nondim_ndarray(
-            uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
-        c = tau / G[:, None, None] + np.eye(dim)[None, :, :]
+        if self._stress_history == "log_conformation":
+            # the conformation itself, from the record (the stress of a FENE-P
+            # element is G (f c - I), not G (c - I))
+            psi, _ = self.Unknowns.DFDt.carried_tensors()
+            w, v = np.linalg.eigh(psi)
+            c = v @ (np.exp(w)[:, :, None] * np.transpose(v, (0, 2, 1)))
+        else:
+            G = np.asarray(_to_nondim_ndarray(
+                uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
+            c = tau / G[:, None, None] + np.eye(dim)[None, :, :]
         ev = np.linalg.eigvalsh(c)                       # ascending per point
         lo = ev[:, 0]
         n_local = lo.size
@@ -2812,6 +2986,22 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if getattr(self, "_yield_softness_expr", None) is not None:
             self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
         self._reset()
+
+    @property
+    def element(self) -> str:
+        """The spring-dashpot arrangement as built: ``"jeffreys"`` whenever the
+        parallel dashpot (``Parameters.solvent_viscosity``) is non-zero,
+        ``"maxwell"`` otherwise, whatever was declared."""
+        try:
+            parallel = float(self.Parameters.solvent_viscosity.sym) != 0.0
+        except (TypeError, ValueError):
+            parallel = True
+        return "jeffreys" if parallel else "maxwell"
+
+    @property
+    def relaxation(self) -> str:
+        """The element's relaxation law: ``"linear"`` or ``"fene_p"``."""
+        return self._relaxation
 
     @property
     def requires_stress_history(self):
