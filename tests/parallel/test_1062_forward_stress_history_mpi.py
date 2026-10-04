@@ -29,8 +29,12 @@ def turned_over_maxwell_box(transport="forward_integration_points", steps=10, dt
     v = uw.discretisation.MeshVariable("U_to", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P_to", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    # "forward_nodes:global" names a reconstruction of the forward history
+    transport, _, reconstruction = transport.partition(":")
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=1)
+    if reconstruction:
+        stokes.DFDt.reconstruction = reconstruction
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     stokes.constitutive_model.Parameters.shear_modulus = 1.0 + 0.5 * sympy.sin(sympy.pi * x / Lx)
     stokes.constitutive_model.Parameters.dt_elastic = dt

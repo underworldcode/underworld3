@@ -6153,17 +6153,17 @@ class ForwardNodesSemiLagrangian(_StoreSmoothingMixin, _DDtBase):
             measure = pj.cell_measure
             ncell = measure.size
             n_lat = self._interior.shape[0] // max(ncell, 1)
-            nodes = self._nodes()
             # each cell shares its measure equally among its lattice points and
-            # the store's dofs it holds; a node accumulates a share from every
-            # cell that contains it. The weights launched from a cell then sum
-            # to its measure, so a fully covered cell reads as covered and the
-            # deficit fill starts when arrivals are missing, not before.
-            point, cell, _ = self._projector.containing_cells(nodes)
-            per_cell_dofs = np.bincount(cell, minlength=ncell).astype(float)
-            share = measure / (n_lat + np.maximum(per_cell_dofs, 1.0))
+            # the store's dofs on it; a dof accumulates a share from every cell
+            # that holds it, on every rank (summed across the seams, so a seam
+            # node launched by its owner carries the shares of the cells on
+            # both sides). The weights launched from a cell then sum to its
+            # measure, so a fully covered cell reads as covered and the deficit
+            # fill starts when arrivals are missing, not before.
+            share = measure / (n_lat + pj._nb)
             lattice_w = np.repeat(share, n_lat)
-            node_w = np.bincount(point, weights=share[cell], minlength=nodes.shape[0])
+            per_cell = np.broadcast_to(share[:, None, None], (ncell, pj._nb, 1))
+            node_w = pj.sum_cell_values_to_rows(per_cell)[:, 0]
             self._launch_weights = (node_w, lattice_w)
         node_w, lattice_w = self._launch_weights
         return np.concatenate([node_w[self._owned], lattice_w])

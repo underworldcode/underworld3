@@ -66,6 +66,9 @@ class ParticleL2Projector:
     """
 
     instances = 0
+    #: the covered fraction of a cell's measure below which the previous field
+    #: fills the shortfall (fully at zero)
+    FILL_BELOW = 0.5
 
     def __init__(self, mesh, degree=1, rtol=1.0e-12):
         if degree not in (1, 2):
@@ -227,14 +230,15 @@ class ParticleL2Projector:
         finite-element mass matrix (what keeps a row no point reaches at all);
         ``alpha`` (ncell,) the gradient penalty per cell.
 
-        With ``fill_deficit`` (and ``old``), the share of each cell's measure
-        that the arriving weights do not cover is supplied by the previous
-        field: that share enters as its finite-element mass with ``old`` as
-        the data. A cell the flow has emptied is then determined by what it
-        held, at full weight, rather than left to its neighbours and a
-        1e-8 pull; a fully covered cell is unchanged. The weights are the
-        points' shares of the domain, so the sum over a cell measures how
-        much of it was reached."""
+        With ``fill_deficit`` (and ``old``), a cell whose arriving weights
+        cover less than :attr:`FILL_BELOW` of its measure is held by the
+        previous field: the shortfall below that fraction enters as its
+        finite-element mass with ``old`` as the data, fully at zero coverage.
+        A cell the flow has emptied is then determined by what it held rather
+        than left to its neighbours and a 1e-8 pull; an ordinarily covered
+        cell, whose received weight fluctuates about its measure in a flow, is
+        unchanged. The weights are the points' shares of the domain, so the
+        sum over a cell measures how much of it was reached."""
         if self._dm is not self.mesh.dm:
             self._build()
         values = np.asarray(values, dtype=float)
@@ -251,8 +255,16 @@ class ParticleL2Projector:
         np.add.at(Re, cell, w[:, None, None] * phi[:, :, None] * values[:, None, :])
         pull = np.full(ncell, float(eps))
         if fill_deficit and old is not None:
+            # In a flow every cell's received weight fluctuates about its
+            # measure, so a fill of any shortfall would pull about half the cells
+            # a few percent towards the previous (un-advected) field each step: a
+            # lag that acts as diffusion (a quarter turn of a Gaussian lost 18% of
+            # its peak). The fill therefore starts at half the measure and is
+            # complete at zero: an ordinarily covered cell feels nothing, an
+            # emptied cell is held by what it carried.
             received = np.bincount(cell, weights=w, minlength=ncell)
-            pull = pull + np.clip(1.0 - received / np.maximum(self.cell_measure, 1.0e-300), 0.0, 1.0)
+            covered = received / np.maximum(self.cell_measure, 1.0e-300)
+            pull = pull + np.clip((self.FILL_BELOW - covered) / self.FILL_BELOW, 0.0, 1.0)
         if np.any(pull > 0.0):
             Me = Me + pull[:, None, None] * self._Me
             if old is not None:
@@ -282,6 +294,26 @@ class ParticleL2Projector:
                                    f"(reason {self._ksp.getConvergedReason()}, {self._ksp.getIterationNumber()} "
                                    "iterations); a row no point and no previous field reaches is singular")
             self._sub.globalToLocal(self._gx, self._lx)
+            out[:, j] = self._lx.getArray()
+        return out
+
+    def sum_cell_values_to_rows(self, per_cell):
+        """The sum over the cells sharing each row of per-cell values at the
+        cell's rows, ``per_cell`` (ncell, nb, k), summed across partition seams:
+        (n_local_rows, k), the same on every rank that holds the row."""
+        if self._dm is not self.mesh.dm:
+            self._build()
+        per_cell = np.asarray(per_cell, dtype=float).reshape(self._rows.shape[0], self._nb, -1)
+        k = per_cell.shape[2]
+        out = np.zeros((self.n_local_rows, k))
+        for j in range(k):
+            self._lb.zeroEntries()
+            b = self._lb.getArray()
+            np.add.at(b, self._rows.ravel(), per_cell[:, :, j].ravel())
+            self._lb.setArray(b)
+            self._gb.zeroEntries()
+            self._sub.localToGlobal(self._lb, self._gb, addv=PETSc.InsertMode.ADD_VALUES)
+            self._sub.globalToLocal(self._gb, self._lx)
             out[:, j] = self._lx.getArray()
         return out
 
