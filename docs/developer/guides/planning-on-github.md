@@ -89,6 +89,47 @@ gh project field-list 10 --owner underworldcode --format json \
    little left to add. Retired pages are listed, not deleted. Editing is restricted to
    collaborators.
 
+## Writing wiki pages
+
+**Structure.** Pages are organised by topic, with campaigns and benchmarks in their own
+hierarchies, never as one flat list:
+
+- *Topic pages* hold the understanding of one part of the code (Viscoelastic Constitutive
+  models, Transport histories, Particle-to-field projection, Solvers and multigrid). A topic
+  page carries the mathematics: the governing equations of each model and of the discrete
+  step, in LaTeX.
+- *Benchmarks* is an index by family (viscoelastic, viscoplastic, and so on). Each benchmark
+  type has its own page under its family, with the same sections: the problem (with its
+  equations), what the references report, our status (a table, reference against ours),
+  figures, what we claim and do not claim, the next target, History. A new benchmark gets a
+  new page and a row in its family's table on the index; a new family gets a new section.
+- *Campaign pages* log what was run and what came out, and link to the topic and benchmark
+  pages where the lessons and numbers are kept.
+- *Home* lists the topic pages, the benchmark index, the campaign pages and the process pages.
+
+Every page has a "What did not work, and why" section where there is anything to say, and a
+dated History at the foot.
+
+**Mathematics.** Write inline math as `` $`...`$ `` and display math in a fenced block whose
+info string is `math`:
+
+````markdown
+The relaxation time is $`\lambda = \eta_p/G`$, and
+
+```math
+f^2 (f - 1) = \frac{2\,\mathrm{Wi}^2}{L^2} .
+```
+````
+
+Plain `$...$` and `$$...$$` also render, but markdown processes them first and eats
+backslashes before punctuation: `\,` became a comma inside our equations. Use LaTeX, not
+unicode look-alikes (`f^2`, not `f²`; `\lambda`, not `λ`), in any formula.
+
+**Figures.** Commit image files under `images/` in the wiki repository and reference them as
+`![alt](images/name.png)`, with an italic caption line below saying what the reader should
+see. Generate figures from the campaign's data (the campaign scripts live in
+`github.com/lmoresi/uw3-campaigns`), and keep the generating script there.
+
 ## The orchestrator
 
 A planning session (the hub) owns routing and status: it moves Inbox items to Active,
