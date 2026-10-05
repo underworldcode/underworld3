@@ -1455,10 +1455,7 @@ setup(ext_modules=cythonize(ext_mods))
 
     # Create header top content.
     h_str = """
-typedef int PetscInt;
-typedef double PetscReal;
-typedef double PetscScalar;
-typedef int PetscBool;
+#include <petscsystypes.h>
 #include <math.h>
 
 // Adding missing function implementation
