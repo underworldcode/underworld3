@@ -391,6 +391,9 @@ class _Watchdog:
         # deadline instead of starting a new one. See _rearm_timer.
         self._reporter = None
         self._stop_reporter = _threading.Event()
+        # Guards the pair (self._reporter, self.cancelled) against a report in
+        # flight on the reporter thread racing cancel() on the main one.
+        self._reporter_lock = _threading.Lock()
         self._deadline = _time.monotonic() + float(seconds)
         # Set by cancel(). A report already running when the watchdog is
         # disarmed must not re-arm behind it: the caller is about to close the
@@ -537,7 +540,16 @@ class _Watchdog:
         described in ``arm``.
         """
         self._deadline = _time.monotonic() + self.seconds
-        if self._reporter is None:
+        # Under the lock, and refusing once cancelled. A report already in
+        # flight when cancel() runs can reach here after cancel() has cleared
+        # self._reporter and stopped waiting for the thread, and would then
+        # clear the stop event and start a replacement -- a reporter nobody
+        # holds, writing into a stream the caller is about to close. The
+        # `cancelled` test in report() is not enough on its own: it is read
+        # before cancel() sets it and acted on afterwards.
+        with self._reporter_lock:
+            if self.cancelled or self._reporter is not None:
+                return
             self._stop_reporter.clear()
             self._reporter = _threading.Thread(
                 target=self._reporter_loop, name="uw-watchdog", daemon=True)
@@ -570,7 +582,8 @@ class _Watchdog:
                     and _threading.current_thread() is _threading.main_thread()):
                 _signal.signal(_signal.SIGALRM, self._previous_sigalrm)
         self._stop_reporter.set()
-        reporter, self._reporter = self._reporter, None
+        with self._reporter_lock:
+            reporter, self._reporter = self._reporter, None
         if reporter is not None and reporter is not _threading.current_thread():
             reporter.join(timeout=5.0)
 
