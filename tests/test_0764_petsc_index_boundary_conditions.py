@@ -41,6 +41,10 @@ def test_couette_boundary_components_use_petsc_integer_width(explicit_components
         assert bc.components.dtype == np.dtype(PETSc.IntType)
         np.testing.assert_array_equal(bc.components, np.arange(dim))
 
+    stokes.petsc_use_pressure_nullspace = True
+    # The exact pressure is constant. Its Schur RHS is round-off (~6e-14)
+    # in parallel, so a purely relative subsolve asks for unattainable accuracy.
+    stokes.petsc_options["fieldsplit_pressure_ksp_atol"] = 1e-12
     stokes.tolerance = 1e-9
     stokes.solve()
     assert stokes.snes.getConvergedReason() > 0
