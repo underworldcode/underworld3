@@ -77,8 +77,12 @@ gh project field-list 10 --owner underworldcode --format json \
 5. **Detailed write-ups go in the repository**, under `docs/`, in a PR, or in a wiki page.
    The Project item carries one line pointing at them. A wiki page is edited in place and
    gets a dated History line saying what changed and why; it is written in our voice (what
-   we tried, why, what happened, what we do now) and keeps what did not work. Editing is
-   restricted to collaborators.
+   we tried, why, what happened, what we do now) and keeps what did not work. Topic pages
+   hold the understanding; a campaign page logs what was run and links to the topic pages
+   for the lessons. A campaign page is retired once its results are recorded or discounted;
+   a topic page graduates to `docs/` when it stops moving and is retired when there is
+   little left to add. Retired pages are listed, not deleted. Editing is restricted to
+   collaborators.
 
 ## The orchestrator
 
