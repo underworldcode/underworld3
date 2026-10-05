@@ -50,12 +50,17 @@ gh project field-list 10 --owner underworldcode --format json \
    quote line to its body and leave everything above it untouched:
 
    ```bash
-   gh project item-list 10 --owner underworldcode --limit 200 --format json \
-     --jq '.items[] | select(.title|startswith("<first words of the title>")) | {id, body: .content.body}'
-   gh project item-edit --id <item-id> --body "<existing body>
+   gh project item-list 10 --owner underworldcode --limit 300 --format json \
+     --jq '.items[] | select(.title|startswith("<first words of the title>")) | .content | {id, title, body}'
+   gh project item-edit --id <content-id> --title "<the same title>" --body "<existing body>
 
    > [2026-10-05 underworld3] What was done and where the write-up lives (PR, doc, commit)."
    ```
+
+   Two traps: the body edit takes the draft's *content* id (`.content.id`, prefixed `DI_`),
+   not the `PVTI_` item id that field edits take; and the title must be passed again or the
+   edit is refused. Field edits (`--field-id ... --single-select-option-id ...`) take the
+   `PVTI_` item id together with `--project-id`.
 
    For an issue item, comment on the issue (`gh issue comment <n> --body ...`). Do not
    change Status yourself unless the item is unambiguously finished; the orchestrator
