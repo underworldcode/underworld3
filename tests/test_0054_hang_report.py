@@ -174,14 +174,24 @@ def _wait_for(condition, what, cap=600.0, poll=0.25):
 def _dump_count(dumps, rank):
     """How many times this rank has dumped so far.
 
-    Counted by the "Current thread" line rather than the "Timeout (" header:
-    the watchdog dumps through faulthandler's signal handler (#661), which
-    writes no header, and there is exactly one such line per dump either way.
+    Counted by the line labelling the signalled thread's stack rather than by
+    the "Timeout (" header: the watchdog dumps through faulthandler's signal
+    handler (#661), which writes no header, and there is exactly one such
+    label per dump either way.
+
+    Both labels are counted because faulthandler writes a different one in
+    each thread mode -- "Current thread 0x..." when it walks every thread,
+    "Stack (most recent call first):" when it walks the signalled thread alone
+    (#793). Counting only the first is how this test came to sit out its whole
+    600 s cap when the watchdog stopped walking every thread: the dumps were
+    arriving, and nothing here could see them.
     """
     path = dumps / f"rank{rank:04d}.log"
     if not path.exists():
         return 0
-    return path.read_text(errors="replace").count("Current thread ")
+    text = path.read_text(errors="replace")
+    return text.count("Current thread ") + text.count(
+        "Stack (most recent call first):")
 
 
 def _run_until_the_evidence_exists(argv, ranks, environment, dumps, ready,

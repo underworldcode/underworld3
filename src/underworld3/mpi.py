@@ -461,9 +461,15 @@ class _Watchdog:
         # while any thread is starting or exiting reads freed memory and the
         # process dies inside dump_traceback. Measured against a thread
         # started and cancelled in a loop: 2 of 8 runs segfaulted with
-        # all_threads=True, 0 of 8 with it False. We lose the other threads'
-        # stacks; the one that matters, the thread sitting in the collective,
-        # is the one that takes the signal.
+        # all_threads=True, 0 of 8 with it False.
+        #
+        # Nothing is lost by it. This is the C path, and it exists for the
+        # one case the Python path cannot cover: a rank blocked inside MPI,
+        # where the thread in the collective is the thread that takes the
+        # signal and the only one worth naming. The labelled report from
+        # _stack_dump() still carries every thread, through
+        # sys._current_frames(), which holds the interpreter lock and so
+        # cannot read a half-built thread state.
         _faulthandler.register(_signal.SIGALRM, file=self.stream,
                                all_threads=False, chain=self.abort)
         self._handler_installed = True
@@ -627,10 +633,19 @@ def watch(seconds=300, stream=None, abort=False):
 
     Warnings
     --------
-    The report carries the stack of the thread that took the signal, which
-    on a stuck rank is the thread sitting in the collective. Other threads are
-    deliberately not dumped: reading their state races any thread that is
-    starting or exiting, and that crashes the process. To see a whole job at
+    Two reports land in *stream*, and they carry different things. The
+    labelled one, under a ``UW HANG WATCHDOG`` banner, is formatted in Python
+    from ``sys._current_frames()`` and carries EVERY thread, main thread
+    first. It needs the interpreter lock, so it is the one that goes missing
+    on a rank blocked inside MPI.
+
+    Behind it is an unlabelled ``Stack (most recent call first):`` block from
+    :mod:`faulthandler`, written by a C signal handler that needs no lock.
+    That is the report that arrives from a blocked rank, and it carries the
+    signalled thread only --- which on a stuck rank is the thread sitting in
+    the collective. It does not walk the other threads on purpose: reading
+    every thread state races any thread that is starting or exiting, and the
+    process then dies inside CPython's dump (#793). To see a whole job at
     once, or to supervise a run from outside it, use
     ``scripts/mpi_supervisor.py``.
 
