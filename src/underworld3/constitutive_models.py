@@ -1851,8 +1851,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             self._fene_x = uw.discretisation.MeshVariable(
                 f"fene_x_{tag}", unknowns.u.mesh, 1, degree=1, continuous=True,
                 varsymbol=r"{x_{\mathrm{FENE}}}")
-            # the spring factor f(c*) itself, the same way: the flux reads
-            # G (f* c* - I) with f* a field rather than a function of the record
+            # the spring factor f* itself, the same way: the strain source, the
+            # deformation term and the rate read it as a field rather than as a
+            # function of the record (the stress needs no f: it is G (e^psi - I))
             self._fene_f = uw.discretisation.MeshVariable(
                 f"fene_f_{tag}", unknowns.u.mesh, 1, degree=1, continuous=True,
                 varsymbol=r"{f_{\mathrm{FENE}}}")
@@ -2202,9 +2203,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         r"""Evaluate :math:`f^*` and :math:`\Delta t\,f^*/\lambda` at the nodes of
         the FENE-P fields from the record as it stands before the solve
         (explicit in the rate, first order): :math:`f^* = 1 + (\mathrm{tr}\,e^{\psi^*} - d)/L^2`."""
-        if self.Parameters.extensibility.sym is sympy.oo:
+        L2 = self.Parameters.extensibility.sym
+        if L2 is sympy.oo:
             raise ValueError("relaxation='fene_p' needs a finite Parameters.extensibility (L^2): "
                              "with it infinite the spring factor is 0/0")
+        d = self.Unknowns.u.mesh.dim
+        if L2.is_number and not L2 > d:
+            # f = 1 + (tr e^psi - d)/L^2 is positive for every SPD record only if
+            # L^2 > d; below that the decode divides by zero and the rate reverses
+            raise ValueError(f"relaxation='fene_p' needs Parameters.extensibility (L^2) above the "
+                             f"dimension {d}: a dumbbell at rest has tr c = {d}, got {L2}")
         lam = self.Parameters.shear_viscosity_0 / self.Parameters.shear_modulus
         f_sym = self._fene_spring_factor_of_record(self._carried_record_sym(0))
         from underworld3.systems.ddt import _to_nondim_ndarray
@@ -2293,7 +2301,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     def _peterlin_sym(self, c):
         r"""The FENE-P spring factor :math:`f(c) = (L^2 - d)/(L^2 - \mathrm{tr}\,c)`
-        of a conformation ``c`` (a sympy matrix); one for the Hookean dumbbell."""
+        of a conformation ``c`` (a sympy matrix); one for the Hookean dumbbell.
+        A check on the decode (the solver reads :meth:`_fene_spring_factor_of_record`)."""
         if self._relaxation != "fene_p":
             return sympy.Integer(1)
         d = self.Unknowns.u.mesh.dim
@@ -2303,14 +2312,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # given directly, where past L^2 f would turn negative. The denominator
         # is floored at one percent of L^2: f saturates at 100 (L^2 - d)/L^2
         return (L2 - d) / sympy.Max(L2 - sympy.Matrix(c).trace(), _FENE_FLOOR * L2)
-
-    def _peterlin_np(self, c):
-        """:meth:`_peterlin_sym` on an array of conformations (n, d, d)."""
-        if self._relaxation != "fene_p":
-            return np.ones(c.shape[0])
-        d = c.shape[-1]
-        L2 = float(self.Parameters.extensibility.sym)
-        return (L2 - d) / np.maximum(L2 - np.trace(c, axis1=1, axis2=2), _FENE_FLOOR * L2)
 
     def _carried_record_sym(self, level=0):
         r"""The decoded record :math:`e^{\psi^*}` of the log-conformation history
@@ -2383,23 +2384,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     def _fene_spring_factor_of_stress(self, stress):
         r"""The spring factor of a FENE-P stress, :math:`f = 1 + \mathrm{tr}\,\sigma/(G L^2)`:
-        the trace of :math:`f c = \sigma/G + I` with
-        :math:`f = (L^2 - d)/(L^2 - \mathrm{tr}\,c)` eliminates the conformation.
-
-        Floored at :math:`(L^2 - d)/L^2`, the factor of a conformation of zero
-        trace, which is the smallest any FENE-P stress has
-        (:math:`\mathrm{tr}\,\sigma/G = f\,\mathrm{tr}\,c - d \ge -d`). The stress a
-        step produces need not be one: the explicit stretching source acting on
-        a highly extended conformation in a compressive direction can take
-        :math:`\mathrm{tr}\,\sigma/G` below :math:`-d`, and without the floor
-        :math:`f` passes through zero and the conformation it implies is
-        unbounded (seen on the cylinder: the decoded stress rose 400-fold in one
-        step). Below the floor the stress is not a FENE-P stress; it is encoded
-        as the nearest one, through the floor on the logarithm."""
-        d = self.Unknowns.u.mesh.dim
-        L2 = self.Parameters.extensibility
-        f = 1 + sympy.Matrix(stress).trace() / (self.Parameters.shear_modulus * L2)
-        return sympy.Max(f, (L2 - d) / L2)
+        :meth:`_fene_spring_factor_of_record` of :math:`\sigma/G + I`. Exact for a
+        stress whose :math:`\sigma/G + I` is SPD (the decode of every record is one);
+        for any other matrix the record's logarithm floors the eigenvalues first
+        and the two differ."""
+        return self._fene_spring_factor_of_record(
+            sympy.Matrix(stress) / self.Parameters.shear_modulus + sympy.eye(self.Unknowns.u.mesh.dim))
 
     def _fene_exact_conformation(self, stress):
         r"""The conformation of a FENE-P stress, exactly: from the trace of
@@ -2651,7 +2641,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             w, v = np.linalg.eigh(psi)
             c = v @ (np.exp(w)[:, :, None] * np.transpose(v, (0, 2, 1)))
             if self._relaxation == "fene_p":
-                L2 = float(self.Parameters.extensibility.sym)
+                L2 = np.asarray(_to_nondim_ndarray(
+                    uw.function.evaluate(self.Parameters.extensibility.sym, points))).reshape(-1)
                 f = 1.0 + (np.trace(c, axis1=1, axis2=2) - dim) / L2
                 c = c / f[:, None, None]
         else:

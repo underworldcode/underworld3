@@ -111,6 +111,68 @@ def test_the_element_is_what_was_declared_and_a_maxwell_element_refuses_a_parall
         stokes.solve(timestep=0.1)
 
 
+def test_the_spring_factor_field_the_solver_reads_is_the_record_s():
+    """After the pre-solve refresh the nodal field f* equals 1 + (tr e^psi - d)/L^2
+    of the record at every node, and the carried strain the objective rate acts
+    on is G (c* - I) with c* = e^psi/f*: the field route into the weak form, not
+    the test-side algebra. The record is written directly (log of a chosen
+    f c), at a trace far from one so the factor is not trivially 1."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5, qdegree=3)
+    v = uw.discretisation.MeshVariable("U_fene_fld", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_fene_fld", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.stress_transport = "backward_nodes"
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        stress_history="log_conformation", relaxation="fene_p", element="jeffreys")
+    cm = stokes.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 2.0
+    cm.Parameters.dt_elastic = 0.1
+    cm.Parameters.extensibility = 10.0
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Top")
+    stokes.solve(timestep=0.1)                      # creates and commits the record once
+    record = cm.Unknowns.DFDt.psi_star[0]
+    fc = np.array([[6.0, 1.0], [1.0, 3.0]])         # tr 9 -> f = 1 + 7/10 = 1.7
+    w, q = np.linalg.eigh(fc)
+    psi = q @ np.diag(np.log(w)) @ q.T
+    assert record.data.shape[1] == 3                   # diagonal first, then xy (test_0066 pins the order)
+    record.data[:, :] = [psi[0, 0], psi[1, 1], psi[0, 1]]
+    cm._refresh_fene_x()
+    assert np.allclose(cm._fene_f.data, 1.7, atol=1e-10), cm._fene_f.data.min()
+    assert np.allclose(cm._fene_x.data, 0.1 * 1.7 / 0.5, atol=1e-10)   # dt f/lambda, lambda = 0.5
+    point = np.array([[0.5, 0.5]])
+    strain = cm._carried_strain_sym(0)
+    got = np.array([[float(np.asarray(uw.function.evaluate(strain[i, j], point)).reshape(-1)[0]) for j in range(2)]
+                    for i in range(2)])
+    assert np.abs(got - 2.0 * (fc / 1.7 - np.eye(2))).max() < 1e-8, got
+    stress = cm._carried_stress_sym(0)
+    got_s = np.array([[float(np.asarray(uw.function.evaluate(stress[i, j], point)).reshape(-1)[0]) for j in range(2)]
+                      for i in range(2)])
+    assert np.abs(got_s - 2.0 * (fc - np.eye(2))).max() < 1e-8, got_s
+
+
+def test_fene_p_refuses_an_extensibility_at_or_below_the_dimension():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5, qdegree=3)
+    v = uw.discretisation.MeshVariable("U_fene_small", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_fene_small", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.stress_transport = "backward_nodes"
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        stress_history="log_conformation", relaxation="fene_p", element="jeffreys")
+    cm = stokes.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 1.0
+    cm.Parameters.dt_elastic = 0.1
+    cm.Parameters.extensibility = 2.0
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Top")
+    with pytest.raises(ValueError, match="above the dimension"):
+        stokes.solve(timestep=0.1)
+
+
 def test_fene_p_refuses_an_infinite_extensibility():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5), cellSize=0.5, qdegree=3)
     v = uw.discretisation.MeshVariable("U_inf", mesh, 2, degree=2)
@@ -171,10 +233,10 @@ def test_the_fene_p_encoding_inverts_the_decoding():
     f_rec = cm._fene_spring_factor_of_record(record)
     assert abs(float(np.asarray(uw.function.evaluate(f_rec - f_exact, point)).reshape(-1)[0])) < 1e-10
     assert np.abs(at_point(record / f_rec) - at_point(c_exact)).max() < 1e-10
-    # and the conformation is admissible whatever the record: a stress trace of
-    # 50 L^2 (or a projection overshoot of the same size) decodes to tr c = 9.8
-    # of L^2 = 10, never past it
+    # and the conformation is admissible whatever the record: tr sigma/G of
+    # 50 L^2 (or a projection overshoot of the same size) decodes to
+    # tr c = 502/51 = 9.843 of L^2 = 10, never past it
     big = sympy.Matrix([[600.0, 0.0], [0.0, 400.0]])
     rb = _expm_sym2(cm.encode_history(big))
     c_big = at_point(rb / cm._fene_spring_factor_of_record(rb))
-    assert 9.7 < np.trace(c_big) < 10.0, np.trace(c_big)
+    assert abs(np.trace(c_big) - 502.0 / 51.0) < 1e-8, np.trace(c_big)

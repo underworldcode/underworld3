@@ -269,7 +269,11 @@ a capped spring put the record on the saturation floor (a record trace of 105
 with $L^2 = 100$ from a stress whose own conformation had 70; the step then
 alternated between the saturated and the free spring and the velocity solve
 stalled). $\log(f c)$ carries no bound, and every SPD record decodes to an
-admissible conformation. Only the relaxation rate keeps the lag. Against the closed-form steady
+admissible conformation. The stress decode carries no lag; the rate, the
+strain source and the deformation term read the pre-solve $f^*$. A FENE-P
+snapshot written before this record (2026-10-05) decodes under it with the
+stress short by the factor $f$, and nothing in the file tells the two apart.
+Against the closed-form steady
 simple shear ($f^2 (f - 1) = 2\,\mathrm{Wi}^2/L^2$) the scheme is first order
 in $\Delta t/\lambda$; with infinite extensibility it is Oldroyd-B to 1e-8.
 It needs the log-conformation history, the exponential integrator at order 1
