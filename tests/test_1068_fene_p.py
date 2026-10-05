@@ -53,11 +53,12 @@ def shear_box(relaxation, L2, dt, steps, tag):
 
 def test_fene_p_steady_shear_converges_to_the_closed_form_at_first_order():
     """Wi = 1, L^2 = 10: f = 1.1510 (f^2 (f - 1) = 0.2), tau_xy = 0.8688 eta gdot,
-    N1 = 1.5097 G. The spring factor is read from the record before the step, so
-    the scheme's steady state is first order in dt/lambda: measured errors
-    +0.0065 / +0.0095 at dt = 0.1 and +0.0032 / +0.0052 at dt = 0.05 (an earlier
-    form of the step kept one 1/f too many on the stretching source and sat
-    0.03 / 0.13 off at every dt)."""
+    N1 = 1.5097 G. The spring factor of the relaxation rate is read from the
+    record before the step, so the scheme's steady state is first order in
+    dt/lambda: measured errors +0.0068 / +0.0094 at dt = 0.1 and +0.0034 / +0.0051
+    at dt = 0.05 with the record log(f c) (+0.0065 / +0.0095 and +0.0032 / +0.0052
+    with the earlier record log c; an earlier form of the step kept one 1/f too
+    many on the stretching source and sat 0.03 / 0.13 off at every dt)."""
     xy_ref, n1_ref = steady_shear_fene_p(Wi=1.0, L2=10.0)
     assert abs(xy_ref - 0.8688) < 1e-3 and abs(n1_ref - 1.5097) < 1e-3
     xy1, n11 = shear_box("fene_p", 10.0, 0.1, 80, "fene_a")
@@ -162,9 +163,18 @@ def test_the_fene_p_encoding_inverts_the_decoding():
     c_exact = cm._fene_exact_conformation(sigma)
     f_exact = cm._peterlin_sym(c_exact)
     assert np.abs(at_point(f_exact * c_exact) - (np.array(sigma, dtype=float) / 2.0 + np.eye(2))).max() < 1e-10
-    # the history's encoding uses the spring factor of the step as a field: with
-    # that field holding the exact f, encode then decode gives sigma back
-    cm._fene_f.data[:, 0] = float(np.asarray(uw.function.evaluate(f_exact, point)).reshape(-1)[0])
-    c = _expm_sym2(cm.encode_history(sigma))
-    back = (cm._fene_f.sym[0] * c - sympy.eye(2)) * cm.Parameters.shear_modulus
-    assert np.abs(at_point(back) - np.array(sigma, dtype=float)).max() < 1e-8
+    # the record is log(f c) = log(sigma/G + I): its decode is the stress for
+    # both relaxation laws, and the conformation follows through the trace of
+    # the record, f = 1 + (tr e^psi - 2)/L^2, c = e^psi/f
+    record = _expm_sym2(cm.encode_history(sigma))
+    assert np.abs(at_point((record - sympy.eye(2)) * cm.Parameters.shear_modulus) - np.array(sigma, dtype=float)).max() < 1e-8
+    f_rec = cm._fene_spring_factor_of_record(record)
+    assert abs(float(np.asarray(uw.function.evaluate(f_rec - f_exact, point)).reshape(-1)[0])) < 1e-10
+    assert np.abs(at_point(record / f_rec) - at_point(c_exact)).max() < 1e-10
+    # and the conformation is admissible whatever the record: a stress trace of
+    # 50 L^2 (or a projection overshoot of the same size) decodes to tr c = 9.8
+    # of L^2 = 10, never past it
+    big = sympy.Matrix([[600.0, 0.0], [0.0, 400.0]])
+    rb = _expm_sym2(cm.encode_history(big))
+    c_big = at_point(rb / cm._fene_spring_factor_of_record(rb))
+    assert 9.7 < np.trace(c_big) < 10.0, np.trace(c_big)

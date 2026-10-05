@@ -258,7 +258,18 @@ does not enter the compiled flux through the coefficients). Two things in the
 step differ from the linear spring: the stretching source acts on $G(c^* - I)$,
 which is the carried stress only for a linear spring; and the $f^*$ on the
 relaxation rate cancels against the $f^*$ on the stress for every source, so
-the sources keep their Oldroyd-B weights. Against the closed-form steady
+the sources keep their Oldroyd-B weights. The record is $\log(\sigma/G + I)$,
+the same as for a linear spring; for FENE-P that is $\log(f c)$, not $\log c$,
+and the decode recovers the conformation through the trace,
+$f^* = 1 + (\mathrm{tr}\,e^{\psi^*} - d)/L^2$, $c^* = e^{\psi^*}/f^*$. The
+conformation is bounded and the nodal projection that commits the record is
+not: at a wall where $\log c$ jumps by 4 across one cell it overshoots by a
+factor 1.5 in $c$, which for a linear spring is a ringing of the stress and for
+a capped spring put the record on the saturation floor (a record trace of 105
+with $L^2 = 100$ from a stress whose own conformation had 70; the step then
+alternated between the saturated and the free spring and the velocity solve
+stalled). $\log(f c)$ carries no bound, and every SPD record decodes to an
+admissible conformation. Only the relaxation rate keeps the lag. Against the closed-form steady
 simple shear ($f^2 (f - 1) = 2\,\mathrm{Wi}^2/L^2$) the scheme is first order
 in $\Delta t/\lambda$; with infinite extensibility it is Oldroyd-B to 1e-8.
 It needs the log-conformation history, the exponential integrator at order 1
