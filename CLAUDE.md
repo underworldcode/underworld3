@@ -118,6 +118,19 @@ fail, CI reach, and the solver/transcript contracts — is in
 [`guides/adversarial-review.md`](docs/developer/guides/adversarial-review.md).
 Post the findings on the PR.
 
+**The review also decides issue state.** It lists the open issues in the
+territory the branch touches and returns one of three verdicts for each —
+closed by this branch, already fixed (closed on a probe run against
+`development`, pasted into the issue), or still live with one line saying
+which part. Refusing to close is a verdict, not a gap. Close on a probe,
+never on the word of a PR that merged nearby.
+
+**A finding the branch fixes is a commit, not an issue.** Only a finding we
+decide *not* to fix in this branch is filed, and the PR body then says which
+issues it leaves open. Filing one issue per finding *and* posting it on the PR
+is what built a 133-issue backlog: the comment was addressed on merge and the
+issue stayed.
+
 
 **Free-slip: prefer rotated strong free-slip.**
 `solver.add_rotated_freeslip_bc(conds, boundary, normal=None)`, value first
