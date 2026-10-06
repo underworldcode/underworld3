@@ -134,6 +134,7 @@ performance
 multigrid-preconditioning
 solver-iteration-callbacks
 complex-rheologies
+listric-fault-extension
 vep-transverse-isotropy-faults
 split-node-faults
 fault-networks
