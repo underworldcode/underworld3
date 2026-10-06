@@ -88,6 +88,16 @@ name. An anonymous float collapses into the assembled product and the
 transcript can only show the number. Examples in `docs/` name their
 coefficients.
 
+**A family's guide says what the family can do now.** The curated guides in
+`docs/developer/guides/` carry front matter naming the families they apply
+to, and `uw.capabilities()` lists them beside each family. A change to a
+solver family, a constitutive model, a history scheme or a boundary
+mechanism is reviewed against every guide that names it: the guide is
+updated in the same change, or the review says why it still holds. The AI
+skills in `.claude/skills` are symlinks to those pages;
+`tests/test_0030_capability_guides.py` fails on a copy, on a guide without
+front matter, and on a family name no class carries.
+
 ## Where the reviews live
 
 `docs/reviews/[YYYY-MM]/`, indexed by `docs/reviews/README.md`, and posted on
