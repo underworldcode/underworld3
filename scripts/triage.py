@@ -30,6 +30,16 @@ import time
 
 CLOSES = re.compile(r"(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d{2,4})", re.I)
 REF = re.compile(r"#(\d{2,4})")
+#: A fenced code block. Stripped before scanning for closing keywords, because
+#: a PR that PASTES this tool's own output has "closes #640, #747" in its body
+#: as sample text. Scanned naively, this script reported its own PR as closing
+#: seven issues it has nothing to do with.
+FENCE = re.compile(r"^```.*?^```", re.M | re.S)
+
+
+def prose(body):
+    """A PR body with its fenced code blocks removed."""
+    return FENCE.sub("", body or "")
 #: A failing test pytest named, e.g. "tests/test_1060_x.py::TestC::test_y".
 FAILED = re.compile(r"^FAILED\s+(\S+?)::(\S+?)(?:\[|\s|$)")
 
@@ -169,7 +179,7 @@ def main():
     # the reference is often to a neighbouring defect.
     probe = collections.defaultdict(set)
     for p in merged:
-        text = (p["body"] or "") + " " + p["title"]
+        text = prose(p["body"]) + " " + p["title"]
         for n in {int(m) for m in CLOSES.findall(text)}:
             if n in open_numbers:
                 probe[n].add(("closes", p["number"]))
@@ -194,7 +204,7 @@ def main():
         mergeable, ci = key
         group = buckets[key]
         closes = sorted({n for p in group
-                         for n in {int(m) for m in CLOSES.findall(p["body"] or "")}
+                         for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}
                          if n in open_numbers})
         tag = ", ".join(f"#{n}" for n in closes) or "nothing"
         print(f"  {mergeable:<12} CI {ci:<6} {len(group):>3}   closes {tag}")
@@ -206,7 +216,7 @@ def main():
                 print(f"      #{p['number']:<5} {size:>7}L {p['changedFiles']:>3}f "
                       f"behind {behind or '?':>4}  {p['title'][:52]}")
 
-    no_closes = [p for p in opn if not CLOSES.search(p["body"] or "")]
+    no_closes = [p for p in opn if not CLOSES.search(prose(p["body"]))]
     print(f"  {len(no_closes)} of {len(opn)} carry no Closes line")
 
     # ---- the one that cost ten days ---------------------------------------
