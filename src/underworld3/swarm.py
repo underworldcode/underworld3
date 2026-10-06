@@ -1842,28 +1842,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             return result
 
-    def _object_viewer(self):
-        """This will substitute specific information about this object"""
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        # feedback on this instance
-        #
-        display(
-            Markdown(
-                f"""**SwarmVariable:**
-  > symbol:  ${self.symbol}$\n
-  > shape:   ${self.shape}$\n
-  > proxy:   ${self._proxy}$\n
-  > proxy_location:  `{self._proxy_location}`\n
-  > proxy_degree:  ${self._proxy_degree}$\n
-  > proxy_continuous:  `{self._proxy_continuous}`\n
-  > type:    `{self.vtype.name}`"""
-            ),
-        )
-
-        display(self.data),
-        return
+    def describe(self, depth=4):
+        """What this swarm variable is, as data: its symbol, shape, type and
+        how it is proxied onto the mesh."""
+        from underworld3.utilities.describe import record
+        facts = {
+            "symbol": str(getattr(self, "symbol", "")),
+            "shape": str(getattr(self, "shape", "")),
+            "type": getattr(getattr(self, "vtype", None), "name", None),
+            "proxy": bool(getattr(self, "_proxy", False)),
+            "proxy location": str(getattr(self, "_proxy_location", "")),
+            "proxy degree": getattr(self, "_proxy_degree", None),
+            "proxy continuous": bool(getattr(self, "_proxy_continuous", True)),
+        }
+        return record("swarm_variable", getattr(self, "name", None),
+                      f"{facts['type'] or 'particle field'}, proxied at {facts['proxy location'] or 'nodes'}",
+                      facts=facts)
 
     def _resolve_stencil(self, nnn, order, n_particles):
         """Stencil size and reproduction order this rank can actually support.
@@ -3314,6 +3308,31 @@ class Swarm(Stateful, uw_object):
     """
 
     instances = 0
+
+    def describe(self, depth=4):
+        """What this swarm is, as data: its particle count and its mesh, with
+        its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"mesh": getattr(getattr(self, "mesh", None), "name", None)}
+        try:
+            facts["particles on this rank"] = int(self.local_size)
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            try:
+                variables = list(self.vars.values())
+            except Exception:
+                variables = []
+            for var in variables:
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = "particle swarm" + (f", {facts['particles on this rank']} particles on this rank"
+                                      if "particles on this rank" in facts else "")
+        return record("swarm", getattr(self, "name", None), summary, facts=facts, children=children)
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
@@ -5719,6 +5738,11 @@ class Swarm(Stateful, uw_object):
         for hook in list(getattr(self, "_pre_advection_hooks", ())):
             hook()
 
+        # The particle count before the move. advection() is collective, so
+        # the reduction is safe here; the count after the migrate at the end
+        # is what decides whether this step kept the particle set fixed.
+        n_before = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
         # during timestepping. Probably not needed - use global evaluation instead
@@ -5879,6 +5903,7 @@ class Swarm(Stateful, uw_object):
         if self.population_control is not None:
             self.repopulate(**self.population_control)
 
+        self._note_advection(delta_t_model, substeps, order, n_before)
         return
 
     def _characteristics_for(self, V_fn):
@@ -5891,6 +5916,29 @@ class Swarm(Stateful, uw_object):
             tr = CharacteristicTrace(self.mesh, V_fn, midtime_velocity=True)
             self._characteristics = tr
         return tr
+
+    def _note_advection(self, dt, substeps, order, n_before):
+        """Tell the model's open step that this swarm moved.
+
+        Recorded with the particle count before and after: a swarm that
+        quietly lost forty particles to the boundary is the kind of thing a
+        run should say.
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            n_after = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+            uw.get_default_model()._record_step_event(
+                "swarm_advect", f"{type(self).__name__}#{self.instance_number}",
+                part=f"{type(self).__name__}#{self.instance_number}",
+                dt=float(dt), substeps=int(substeps), order=int(order),
+                n_before=int(n_before), n_after=int(n_after),
+            )
+        except Exception:
+            # Charter S4 — sanctioned: the same rule as the history shift in
+            # systems/ddt.py. Noting that a swarm advected is a RECORD of work
+            # already done; failing to write it (no open model.step, no default
+            # model) must not undo the advection itself.
+            pass
 
     @timing.routine_timer_decorator
     def estimate_dt(self, V_fn):
@@ -5908,7 +5956,7 @@ class Swarm(Stateful, uw_object):
         vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
 
         # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
+        # consistent nondimensional values that match mesh._cell_radii
         # Note: .magnitude returns physical units, which would be wrong here
         if hasattr(vel, "units") and vel.units is not None:
             vel = uw.non_dimensionalise(vel)

@@ -27,6 +27,10 @@ def test_dg1_simplex_output(tmp_path, dim):
         "dg_tensor", mesh, degree=1, continuous=False, vtype=uw.VarType.TENSOR
     )
     pressure = uw.discretisation.MeshVariable("pressure", mesh, 1, degree=1)
+    vector = uw.discretisation.MeshVariable("dg_vector", mesh, dim, degree=1, continuous=False)
+    symmetric = uw.discretisation.MeshVariable(
+        "dg_symmetric", mesh, degree=1, continuous=False, vtype=uw.VarType.SYM_TENSOR
+    )
     rows = mesh._cell_node_indices(1, False).reshape(-1, dim + 1)
     coords = scalar.coords
     offsets = np.floor(coords[rows].mean(axis=1)[:, 0] * 7 + 1.0e-8)
@@ -36,12 +40,17 @@ def test_dg1_simplex_output(tmp_path, dim):
     tensor.array[:, 0, 1] = 3 + coords[:, 0]
     tensor.array[:, 1, 0] = -2 + coords[:, 1]
     tensor.array[:, 1, 1] = 5
+    vector.array[:, 0, :] = coords
+    symmetric.array[:] = 0
+    symmetric.array[:, 0, 0] = 2
+    symmetric.array[:, 1, 1] = 3
+    symmetric.array[:, 0, 1] = coords[:, 0]
     pressure.array[:, 0, 0] = pressure.coords[:, 0]
     mesh.write_timestep(
         "fields",
         0,
         outputPath=str(directory),
-        meshVars=[pressure, scalar, tensor],
+        meshVars=[pressure, scalar, tensor, vector, symmetric],
         petsc_reload=True,
     )
     reloaded_mesh = uw.discretisation.Mesh(str(directory / "fields.mesh.00000.h5"))
@@ -110,6 +119,16 @@ def test_dg1_simplex_output(tmp_path, dim):
         np.testing.assert_allclose(tensor_values[:, dim], -2 + points[:, 1], atol=1.0e-12)
         np.testing.assert_allclose(tensor_values[:, dim + 1], 5)
 
+    with h5py.File(directory / "fields.mesh.dg_vector.00000.h5", "r") as handle:
+        np.testing.assert_allclose(handle["fields/dg_vector"][:], points, atol=1.0e-12)
+    with h5py.File(directory / "fields.mesh.dg_symmetric.00000.h5", "r") as handle:
+        # Compact symmetric storage retains its native upper-triangle layout.
+        sym_values = handle["fields/dg_symmetric"][:]
+        assert sym_values.shape == (len(points), dim * (dim + 1) // 2)
+        np.testing.assert_allclose(sym_values[:, 0], 2)
+        np.testing.assert_allclose(sym_values[:, dim], points[:, 0], atol=1.0e-12)
+        np.testing.assert_allclose(sym_values[:, 1], 3)
+
     tree = ET.parse(directory / "fields.mesh.00000.xdmf")
     grids = tree.findall(".//Grid[@GridType='Uniform']")
     assert {grid.get("Name") for grid in grids} == {"domain", "DG1"}
@@ -117,7 +136,7 @@ def test_dg1_simplex_output(tmp_path, dim):
     assert grid.find("Topology/DataItem").text.strip().endswith("/viz/dg1/cells")
     assert grid.find("Geometry/DataItem").text.strip().endswith("/viz/dg1/coordinates")
     attributes = {attribute.get("Name"): attribute for attribute in grid.findall("Attribute")}
-    assert set(attributes) == {"dg_scalar", "dg_tensor"}
+    assert set(attributes) == {"dg_scalar", "dg_tensor", "dg_vector", "dg_symmetric"}
     for name, attribute in attributes.items():
         assert attribute.get("Center") == "Node"
         assert f"/fields/{name}" in attribute.find("DataItem").text

@@ -19,7 +19,8 @@ including registered meshes, variables, swarms, and Python-side state bearers.
 `Mesh.write_timestep()` is the standard mesh and mesh-variable output method.
 It writes one mesh HDF5 file and one HDF5 file per requested mesh variable.
 With `create_xdmf=True`, each variable file contains dimensional
-`/fields/coordinates` and `/fields/<name>` datasets. These arrays are the
+`/fields/<name>` values and their coordinates (stored once in the mesh file
+for simplex DG1). These arrays are the
 authoritative analysis output and are also used by
 `MeshVariable.read_timestep()`.
 
@@ -44,10 +45,10 @@ analysis arrays remain dimensional.
 XDMF reads P1 and DG0 values directly from `/fields`. Continuous P2 fields on
 triangles and tetrahedra use XDMF `Triangle_6` and `Tetrahedron_10`
 connectivity, including their edge nodes, so no P1 projection is stored. DG1
-keeps native interpolation coordinates and values under `/fields`, allowing
-`read_timestep()` to recover the solver field. For XDMF, the same element
-polynomial is evaluated at disconnected cell corners under `/visualization`,
-preserving jumps without averaging traces across shared edges or faces.
+stores exact element-corner values under `/fields` and shares disconnected
+cell geometry under `/viz/dg1` in the mesh file. `read_timestep()` reconstructs
+the same affine polynomial at the solver's interpolation nodes, preserving
+jumps without averaging traces across shared edges or faces.
 
 XDMF cannot represent every UW3 finite-element layout directly. Continuous P3+
 fields and unsupported P2 layouts receive one compact P1 dataset under
@@ -55,10 +56,9 @@ fields and unsupported P2 layouts receive one compact P1 dataset under
 DG0 dataset. Their exact dimensional values remain under `/fields`. Integration
 point fields are not supported by this writer.
 
-DG1 therefore has two representations because their coordinate sets serve
-different purposes: native `/fields` for analysis and coordinate reload, and an
-exact disconnected-corner `/visualization` representation for XDMF. Add
-`/restart/petsc` when PETSc-native restart is also required.
+DG1 uses the same field values for analysis, coordinate reload, and XDMF.
+Add `/restart/petsc` only when PETSc-native restart is also required. In ParaView,
+select the `DG1` block; avoid point-averaging filters that erase discontinuities.
 
 ```python
 mesh.write_timestep(

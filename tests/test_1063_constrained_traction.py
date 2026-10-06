@@ -30,8 +30,14 @@ ETA_B, RES = 1.0e6, 32
 
 
 def _solve():
+    # Keep the 32x32 fine mesh while providing geometric multigrid for the
+    # high-contrast augmented system; a single-level GAMG solve stalls on Gadi.
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(RES, RES), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=3
+        elementRes=(RES // 2, RES // 2),
+        refinement=1,
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        qdegree=3,
     )
     sol = A.SolCx(mesh, eta_A=1.0, eta_B=ETA_B, x_c=0.5, n=1)
 

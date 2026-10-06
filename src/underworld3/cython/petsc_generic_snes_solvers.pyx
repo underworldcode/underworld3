@@ -53,6 +53,16 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
+def _public_names(cls):
+    """The names ``uw.systems`` exports a solver class under."""
+    try:
+        systems = uw.systems
+    except AttributeError:
+        return []
+    return sorted(name for name, obj in vars(systems).items()
+                  if obj is cls and not name.startswith("SNES_"))
+
+
 def _jacobian_unwrap(expr):
     """Expand UWexpressions down to (but NOT including) constant atoms, for use
     as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
@@ -1352,17 +1362,343 @@ class SolverBaseClass(uw_object):
             """Coordinate system of the underlying mesh."""
             return inner_self._owning_solver.mesh.CoordinateSystem
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
+    def _transcript_identity(self):
+        """``(part, label)`` for this solver in a run transcript.
 
-        display(Markdown(fr"### Boundary Conditions"))
+        Name it by what it SOLVES, not by its auto-generated instance id: a
+        transcript reading ``Stokes(V) -> AdvDiffusion(T)`` is auditable, one
+        reading ``Solver_8_ -> Solver_14_`` is not.
 
-        display(Markdown(fr"This solver is formulated as {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
+        ``label`` is what gets printed; ``part`` is what a column keys on. A
+        rendered label is not an identity — two solvers that happen to render
+        the same would collapse into one part, and changing how the label is
+        built would silently re-partition every transcript ever written.
+        """
+        try:
+            unknown = self.u.name
+        except Exception:
+            unknown = "?"
+        return (f"{type(self).__name__}#{self.instance_number}",
+                f"{type(self).__name__}({unknown})")
 
-        return
+    def _record_solve_outcome(self, report):
+        """Write the outcome of the solve just finished onto its transcript event.
+
+        The ``solve`` event is recorded BEFORE the solve, because the order
+        operators ran in is the thing the transcript exists to preserve. The
+        outcome is only known afterwards, so it is attached to that same event
+        rather than appended as a second one: one solve, one row, carrying both
+        where it came in the sequence and how it went.
+
+        Without this a transcript says a run solved 300 times and nothing about
+        the fifty that diverged — which is the difference between a record of a
+        run and an account of it.
+        """
+        if report is None:
+            return
+        try:
+            model = uw.get_default_model()
+            part, _ = self._transcript_identity()
+            model._record_solve_outcome(part, report)
+        except Exception:
+            pass
+
+    def _constraint_mechanisms(self):
+        """Every way a constraint can have been put on this solver.
+
+        ONE enumeration, used by the mixed-mechanism guard and by
+        :meth:`describe`. A mechanism added later and not registered here
+        breaks the guard first, which is a loud failure — where a second list
+        kept for reporting would simply omit it from the description and say
+        nothing.
+        """
+        return {
+            "essential": list(getattr(self, "essential_bcs", None) or []),
+            "natural": list(getattr(self, "natural_bcs", None) or []),
+            "rotated_freeslip": list(getattr(self, "_rotated_freeslip_bcs", None) or []),
+            "fault_contact": list(getattr(self, "_fault_contact_faults", None) or []),
+            "multipliers": list(getattr(self, "_multipliers", None) or []),
+        }
+
+    #: The terms this solver is given, as ``(attribute, description)`` pairs,
+    #: in the order a reader should meet them. A subclass that sets this gets
+    #: :meth:`_declared_terms` for free; ``None`` means the solver has not
+    #: adopted the contract, which :meth:`describe` reports as such rather
+    #: than passing it off as "no terms". Inherited, so a derived solver
+    #: extends its parent's roster rather than restating it:
+    #: ``_solver_terms = SNES_Stokes._solver_terms + (("rho", "..."),)``.
+    #: Enforced by ``tests/test_0016_solver_description_contract.py``.
+    _solver_terms = None
+
+    def _declared_terms(self):
+        """The terms this solver was GIVEN, by the name they were given under.
+
+        The contract a solver satisfies so its description can say where a
+        residual came from. ``F0`` for Stokes is ``-bodyforce``; without this,
+        a description can show the assembled product and not that the user
+        wrote ``-rho0 * alpha * g * T * rhat``, nor which name to change.
+
+        Returns a list of ``{"name", "value", "description"}`` built from
+        :attr:`_solver_terms`, with the constitutive model's own terms
+        appended — the model is where most of the named physics lives, and a
+        solver that reported only its own attributes would stop at
+        ``constitutive_model`` as an opaque object.
+
+        Override only where the roster cannot express what was given; the
+        declaration is the intended path, so that adopting the contract is a
+        line of data rather than a method to keep in step with :meth:`describe`.
+        """
+        roster = type(self)._solver_terms
+        if roster is None:
+            return None
+
+        terms = []
+        for attribute, description in roster:
+            # A term can be a property that is not answerable yet — a solver
+            # described before it is configured, at collection time or in a
+            # notebook. Report that in place of the value; raising here would
+            # take out view() and the transcript for a solver that is merely
+            # incomplete.
+            try:
+                value = getattr(self, attribute, None)
+                value = getattr(value, "sym", value)
+            except Exception as exc:
+                value, description = None, f"{description} (unavailable: {exc})"
+            terms.append({
+                "name": attribute,
+                "value": value,
+                "description": description,
+            })
+
+        model = getattr(self, "constitutive_model", None)
+        if model is not None:
+            declared = getattr(model, "_declared_terms", None)
+            if callable(declared):
+                terms.extend(declared() or [])
+            else:
+                terms.append({
+                    "name": "constitutive_model",
+                    "value": None,
+                    "description": f"{type(model).__name__} "
+                                   f"(does not declare its terms)",
+                })
+        return terms
+
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The family: the equation it solves as the residual templates
+        declared on the class, the terms it is given, the conditions it
+        accepts, and its documentation — with no instance and no mesh."""
+        import inspect
+        from underworld3.utilities.describe import record
+        from underworld3.utilities._api_tools import Template
+
+        doc = (cls.__doc__ or "").strip()
+        facts = {}
+        public = _public_names(cls)
+        if public:
+            facts["public name"] = public[0] if len(public) == 1 else public
+        for base, what in (("SNES_Stokes_SaddlePt", "velocity and pressure, a saddle point"),
+                           ("SNES_MultiComponent", "several components"),
+                           ("SNES_Vector", "a vector field"), ("SNES_Scalar", "a scalar field")):
+            if any(b.__name__ == base for b in cls.__mro__):
+                facts["unknown"] = what
+                break
+        forms = {}
+        for name in ("F0", "F1", "PF0"):
+            declared = None
+            for base in cls.__mro__:
+                if name in base.__dict__:
+                    declared = base.__dict__[name]
+                    break
+            if declared is None:
+                continue
+            if isinstance(declared, Template):
+                forms[name] = {"symbol": declared.name, "latex": None, "text": None,
+                               "description": (declared.description or "").strip().split("\n")[0], "where": []}
+            elif isinstance(declared, property):
+                forms[name] = {"symbol": name, "latex": None, "text": None,
+                               "description": (declared.__doc__ or "").strip().split("\n")[0], "where": []}
+        terms = [{"name": attr, "symbol": None, "latex": None, "text": None, "units": None,
+                  "description": what, "where": []}
+                 for attr, what in (getattr(cls, "_solver_terms", None) or ())]
+        conditions = []
+        for method in sorted(m for m in dir(cls) if m.startswith("add_") and m.endswith("_bc")):
+            fn = getattr(cls, method, None)
+            conditions.append({"mechanism": method, "type": method[4:-3].replace("_", " "),
+                               "boundary": "any", "latex": None,
+                               "text": (getattr(fn, "__doc__", "") or "").strip().split("\n")[0] or None})
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__, *public)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("solver_family", cls.__name__, doc.split("\n")[0], documentation=doc or None,
+                      facts=facts, forms=forms or None, terms=terms or None,
+                      conditions=conditions or None, terms_declared=bool(terms))
+
+    def describe(self, depth=4):
+        """What this solver solves, as data.
+
+        The residual templates with their symbols and descriptions, the named
+        expressions they contain — expanded RECURSIVELY, so a constitutive
+        model written in terms of further named quantities is followed rather
+        than printed as one opaque value — and the boundary conditions.
+
+        One description, two consumers. :meth:`view` renders it for a reader
+        and the run transcript serialises it, so the equation a note quotes and
+        the equation the run recorded cannot drift apart.
+
+        Parameters
+        ----------
+        depth : int, default 4
+            How far to follow named expressions into each other. A cycle stops
+            at the symbol that repeats, whatever the depth.
+
+        Returns
+        -------
+        dict
+        """
+        import sympy
+
+        def unpack(expression, level, seen):
+            """Named expressions inside ``expression``, and inside those."""
+            out = []
+            if level > depth:
+                return out
+            try:
+                found = list(uw.function.fn_extract_expressions(expression))
+            except Exception:
+                return out
+            # A value that IS a named expression — Parameters.diffusivity set
+            # to the user's own uw.expression — contains no sub-expressions,
+            # so extraction returns nothing and the user's name, units and
+            # description would never appear. It is the child.
+            if (hasattr(expression, "symbol") and hasattr(expression, "sym")
+                    and not any(e is expression for e in found)):
+                found.append(expression)
+            for named in sorted(found, key=lambda e: str(getattr(e, "symbol", e))):
+                symbol = str(getattr(named, "symbol", named))
+                if symbol in seen:
+                    continue
+                seen.add(symbol)
+                value = getattr(named, "sym", None)
+                description = str(getattr(named, "description", "") or "")
+                out.append({
+                    "symbol": symbol,
+                    "latex": sympy.latex(value) if value is not None else None,
+                    "value": str(value) if value is not None else None,
+                    "units": (str(named.units)
+                              if getattr(named, "units", None) else None),
+                    "description": ("" if description == "No description provided"
+                                    else description),
+                    "where": unpack(value, level + 1, seen) if value is not None else [],
+                })
+            return out
+
+        forms, seen = {}, set()
+        for name in ("F0", "F1", "PF0"):
+            template = getattr(self, name, None)
+            if template is None:
+                continue
+            expression = getattr(template, "sym", None)
+            if expression is None:
+                continue
+            # The template's own symbol and docstring are the equation's
+            # published names; they belong beside its value.
+            declared = getattr(type(self), name, None)
+            forms[name] = {
+                "symbol": getattr(declared, "name", None),
+                "description": (getattr(declared, "__doc__", "") or "").strip().split("\n")[0],
+                "latex": sympy.latex(expression),
+                "text": str(expression),
+            }
+            forms[name]["where"] = unpack(expression, 1, seen)
+
+        mechanisms = self._constraint_mechanisms()
+        conditions = []
+        for kind in ("essential", "natural"):
+            for bc in mechanisms[kind]:
+                function = getattr(bc, "fn", None)
+                if function is None:
+                    function = getattr(bc, "fn_f", None)
+                conditions.append({
+                    "mechanism": kind,
+                    "type": str(getattr(bc, "type", kind)),
+                    "boundary": str(getattr(bc, "boundary", "?")),
+                    "latex": sympy.latex(function) if function is not None else None,
+                    "text": str(function) if function is not None else None,
+                })
+        # Rotated free-slip is applied by machinery outside the solver, but the
+        # solver holds what was asked for — so a description that skipped it
+        # would report "no boundary conditions" for a model whose entire
+        # boundary treatment is rotated.
+        datum = getattr(self, "_rotated_freeslip_datum", None) or {}
+        for boundary, normal in mechanisms["rotated_freeslip"]:
+            value = datum.get(boundary)
+            conditions.append({
+                "mechanism": "rotated_freeslip",
+                "type": "rotated free-slip" if value is None
+                        else "rotated normal datum",
+                "boundary": str(boundary),
+                "latex": sympy.latex(value) if value is not None else r"\mathbf{u}\cdot\hat{\mathbf{n}} = 0",
+                "text": str(value) if value is not None else "u . n = 0",
+                "normal": "mesh" if normal is None else str(normal),
+            })
+        for fault in mechanisms["fault_contact"]:
+            conditions.append({
+                "mechanism": "fault_contact",
+                "type": "fault contact",
+                "boundary": str(getattr(fault, "name", fault)),
+                "latex": None, "text": None,
+            })
+
+        terms = self._declared_terms()
+        described_terms = None
+        if terms is not None:
+            described_terms = []
+            for term in terms:
+                value = term.get("value")
+                described_terms.append({
+                    "name": term.get("name"),
+                    "description": term.get("description", ""),
+                    "latex": sympy.latex(value) if value is not None else None,
+                    "text": str(value) if value is not None else None,
+                    "where": unpack(value, 1, set()) if value is not None else [],
+                })
+
+        unknown = getattr(getattr(self, "u", None), "name", None)
+        dim = getattr(self.mesh, "dim", None)
+        summary = f"{type(self).__name__}" + (f" for {unknown}" if unknown else "") + (f", {dim}-D" if dim else "")
+        # what the solver contains: its constitutive model and its histories,
+        # each describing itself one level down
+        children = []
+        for child in (getattr(self, "constitutive_model", None),
+                      getattr(self, "DuDt", None), getattr(self, "DFDt", None)):
+            if child is None or not hasattr(child, "describe"):
+                continue
+            try:
+                children.append(child.describe(depth=max(depth - 1, 0)))
+            except Exception:
+                continue
+        return {
+            "kind": "solver",
+            "name": type(self).__name__,
+            "summary": summary,
+            "solver": type(self).__name__,
+            "unknown": unknown,
+            "dim": dim,
+            "cdim": getattr(self.mesh, "cdim", None),
+            "forms": forms,
+            "boundary_conditions": conditions,
+            "terms": described_terms,
+            "terms_declared": terms is not None,
+            "children": children,
+        }
+
+
 
     def _reset_rotated_solver_cache(self):
         """Release the rotated-free-slip cross-solve workspace (rotated_bc
@@ -1505,6 +1841,7 @@ class SolverBaseClass(uw_object):
         )
         self._solve_report = report
         self._solve_history.append(report)
+        self._record_solve_outcome(report)
         return report
 
     def _capture_rotated_report(self, info):
@@ -1548,6 +1885,7 @@ class SolverBaseClass(uw_object):
         )
         self._solve_report = report
         self._solve_history.append(report)
+        self._record_solve_outcome(report)
         return report
 
     def guard(self, *, wall_per_step):
@@ -2263,12 +2601,64 @@ class SolverBaseClass(uw_object):
         cdef double[::1] vals_view = np.ascontiguousarray(values, dtype=np.float64)
         CHKERRQ(PetscDSSetConstants(cds.ds, n_constants, <const PetscScalar*>&vals_view[0]))
 
-    def _update_constants(self):
+    def _update_constants(self, record=False):
         """Re-pack current UWexpression values and call PetscDSSetConstants.
 
         Called before each solve() to ensure constants are current without
         requiring JIT recompilation.
+
+        ``record=False`` suppresses the step-transcript entry. Pass it from any
+        site that pushes constants for its OWN assembly rather than to
+        dispatch a solve — otherwise the transcript reports one operator as two.
+        The rotated free-slip loop is such a site: it re-attaches the
+        auxiliary vector and re-packs before running its own manual Krylov
+        loop, after the public ``solve()`` has already announced itself.
         """
+        # Refresh mesh.t from the model clock first, so a time-dependent
+        # expression is repacked with the rest of the constants rather than
+        # needing its own hook (or a recompile) per timestep.
+        try:
+            self.mesh._sync_time_from_model()
+        except AttributeError:
+            pass
+
+        # Note the solve in the model's step transcript, if a step is open. This
+        # is the one place every solver passes through before solving, so one
+        # hook records them all, in order — but it is ALSO called by a
+        # Parameter change, the continuation alpha toggle, reaction assembly
+        # and residual-field evaluation, none of which is a solve. Only the
+        # solve() bodies pass record=True; a call from anywhere else must not
+        # write a solve event, or one solve reads as several in the record
+        # (found in review: 2-4 events per solve under continuation).
+        if record:
+            try:
+                part, label = self._transcript_identity()
+                model = uw.get_default_model()
+                # What it solves, not only that it solved: the residual is
+                # SymPy, so the weak form can be written into the transcript
+                # exactly as implemented. The run-time constants go with it:
+                # a parameter changed between solves does not rebuild the
+                # kernel, so its new value is what tells the record the
+                # equation is not the one it holds. The clock and the
+                # timesteps (the solver's and each history's \Delta t) are
+                # left out, or a time-dependent run with an adaptive step
+                # would re-record the whole description every step.
+                constants = None
+                try:
+                    from underworld3.utilities._jitextension import _pack_constants
+                    clock = getattr(self.mesh, "_t", None)
+                    packed = _pack_constants(self.constants_manifest)
+                    constants = {str(getattr(expr, "name", index)): float(packed[index])
+                                 for index, expr in self.constants_manifest
+                                 if expr is not clock
+                                 and not str(getattr(expr, "name", "")).startswith("\\Delta t")}
+                except Exception:
+                    constants = None
+                model._describe_part(self, part, label, constants=constants)
+                model._record_step_event("solve", label, part=part)
+            except Exception:
+                pass
+
         if not self.constants_manifest or self.dm is None:
             return
 
@@ -2387,7 +2777,7 @@ class SolverBaseClass(uw_object):
                 "with None / sympy.oo entries in 'conds' instead, e.g. "
                 "conds=(None, 5, 1.2)",
                 DeprecationWarning, stacklevel=3)
-            components = np.array(components, dtype=np.int32, ndmin=1)
+            components = np.array(components, dtype=PETSc.IntType, ndmin=1)
 
         elif components is None:
             cpts_list = []
@@ -2395,7 +2785,7 @@ class SolverBaseClass(uw_object):
                 if fn != sympy.oo and fn != -sympy.oo:
                     cpts_list.append(i)
 
-            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
+            components = np.array(cpts_list, dtype=PETSc.IntType, ndmin=1)
         else:
             raise TypeError("Unsupported BC 'components' argument")
 
@@ -3277,6 +3667,19 @@ class SolverBaseClass(uw_object):
         return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
                     scale=scale, normal=normal)
 
+    def boundary_flux_integral(self, boundary):
+        r"""Integrated scalar CBF flux through ``boundary``.
+
+        This is the direct integral diagnostic for quantities such as Nusselt
+        numbers. It sums the consistent scalar nodal reactions collectively,
+        avoiding pointwise de-smearing and a temporary flux MeshVariable. Use
+        :meth:`boundary_flux` or :meth:`boundary_flux_field` when nodal values
+        are required.
+        """
+        from underworld3.utilities.boundary_flux import boundary_flux_integral as _bfi
+        return _bfi(self, boundary)
+
+
 ## Specific to dimensionality
 
 
@@ -3619,8 +4022,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.createDS()
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -3881,8 +4284,8 @@ class SNES_Scalar(SolverBaseClass):
             return
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -4095,7 +4498,7 @@ class SNES_Scalar(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         # Pure-Neumann scalar problems: attach a constant nullspace
         # to the (now set-up) Jacobian. No-op unless
@@ -4138,50 +4541,6 @@ class SNES_Scalar(SolverBaseClass):
 
         return
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        f0 = self.F0.sym
-        F1 = self.F1.sym
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
-
-        # feedback on this instance
-        display(
-            Markdown(f"# Underworld / PETSc General Scalar Equation Solver"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-        )
-
-
-        exprs = uw.function.fn_extract_expressions(self.F0)
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
-
-        if len(exprs) != 0:
-            display(Markdown("*Where:*"))
-
-            for expr in exprs:
-                expr._object_viewer()
-
-
-        display(
-            Markdown(fr"# Boundary Conditions"),)
-
-        bc_table = "| Type   | Boundary | Expression | \n"
-        bc_table += "|:------------------------ | -------- | ---------- | \n"
-
-        for bc in self.essential_bcs:
-            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
-        for bc in self.natural_bcs:
-                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
-
-        display(Markdown(bc_table))
-
-        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 
 
@@ -4374,7 +4733,7 @@ class SNES_Vector(SolverBaseClass):
 
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
-                       normal=None, gamma=10.0, theta=1, mask=None,
+                       normal=None, gamma=12.5, theta=1, mask=None,
                        local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
@@ -4396,8 +4755,31 @@ class SNES_Vector(SolverBaseClass):
             terms — the same geometric-normal override as on the Stokes
             variant. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
-            Dimensionless stabilisation parameter.
+        gamma : float, default=12.5
+            Dimensionless stabilisation parameter. The penalty is
+            ``gamma*mu/h``, so this is calibrated against the definition of
+            ``h``. It was 10.0 while ``h`` came from a kd-tree of neighbouring
+            centroids; ``mesh.cell_size()`` is now PETSc's ``volume**(1/dim)``
+            (#694), and 12.5 is calibrated against THAT definition on the Zhong
+            spherical shell — the benchmark whose 0.2% response drifted to
+            2.4-5.7% when ``h`` was last redefined without recalibrating
+            (#734).
+
+            The shift in ``h`` is not one number: it changes sign with the
+            dimension. Measured as new/old per cell,
+
+              2-D simplex box (unstructured)   +12.2%
+              2-D simplex box (regular)         +6.1%   (closed form: 6.07%)
+              2-D annulus                      +10.0%
+              3-D simplex box                  -29.8%
+              3-D spherical shell              -33.3%
+
+            so ``h`` grows by about a tenth on 2-D triangles and SHRINKS by
+            about a third on tetrahedra. Since the penalty is ``gamma*mu/h``, no
+            single gamma can reproduce the old enforcement in both. 12.5 is the
+            3-D number; **a 2-D sweep against an independent benchmark has not
+            been done**, and if one is wanted it belongs with #734 rather than
+            in this docstring.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
         mask : sympy expression, optional
@@ -4537,7 +4919,7 @@ class SNES_Vector(SolverBaseClass):
         ])
 
         import numpy as np
-        components = np.arange(cdim, dtype=np.int32)
+        components = np.arange(cdim, dtype=PETSc.IntType)
 
         self.natural_bcs.append(BC(
             0, components, fn_f, fn_F, None,
@@ -4601,8 +4983,8 @@ class SNES_Vector(SolverBaseClass):
         ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
 
         for index,bc in enumerate(self.natural_bcs):
@@ -4926,8 +5308,8 @@ class SNES_Vector(SolverBaseClass):
             return
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -5143,7 +5525,7 @@ class SNES_Vector(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
@@ -5188,48 +5570,6 @@ class SNES_Vector(SolverBaseClass):
 
         return
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        f0 = self.F0.sym
-        F1 = self.F1.sym
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( F1 )+"$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( f0 )+"\\color{Black} = 0 $"
-
-        # feedback on this instance
-        display(
-            Markdown(f"# Underworld / PETSc General Vector Equation Solver"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-        )
-
-        exprs = uw.function.fn_extract_expressions(self.F0)
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
-
-        if len(exprs) != 0:
-            display(Markdown("*Where:*"))
-
-            for expr in exprs:
-                expr._object_viewer()
-
-        display(
-            Markdown(fr"# Boundary Conditions"),)
-
-        bc_table = "| Type   | Boundary | Expression | \n"
-        bc_table += "|:------------------------ | -------- | ---------- | \n"
-
-        for bc in self.essential_bcs:
-             bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
-        for bc in self.natural_bcs:
-                 bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
-
-        display(Markdown(bc_table))
-
-        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
 
 ### =================================
 
@@ -5408,8 +5748,8 @@ class SNES_MultiComponent(SolverBaseClass):
 
         self.dm.createDS()
 
-        cdef int ind=1
-        cdef int [::1] comps_view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view
         cdef DM cdm = self.dm
 
         for index, bc in enumerate(self.natural_bcs):
@@ -5695,8 +6035,8 @@ class SNES_MultiComponent(SolverBaseClass):
                 print(f"SNES_MultiComponent ({self.name}): SNES solver does not need to be rebuilt", flush=True)
             return
 
-        cdef int ind=1
-        cdef int [::1] comps_view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view
         cdef DM cdm = self.dm
         cdef DS ds = self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -5859,7 +6199,7 @@ class SNES_MultiComponent(SolverBaseClass):
         cmesh_lvec = self.mesh.lvec
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
-        self._update_constants()
+        self._update_constants(record=True)
 
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
@@ -5887,20 +6227,6 @@ class SNES_MultiComponent(SolverBaseClass):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        f0 = self.F0.sym
-        F1 = self.F1.sym
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex(F1) + "$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex(f0) + "\\color{Black} = 0 $"
-
-        display(
-            Markdown(f"# Underworld / PETSc General Multi-Component Solver ({self._n_components} components)"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-        )
 
 ### =================================
 
@@ -6273,10 +6599,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             mechanism is already in place and which one was refused.
         """
 
-        rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or []) + list(
-            getattr(self, "_fault_contact_faults", None) or []
-        )
-        multipliers = list(getattr(self, "_multipliers", None) or [])
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        multipliers = mechanisms["multipliers"]
 
         if adding == "solve":
             # The dispatch reads both lists, so it can only report the pair.
@@ -6591,7 +6916,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                      remove_mean=remove_mean)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
-                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
+                       gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -6628,9 +6953,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             Boundary unit normal used in the Nitsche consistency, symmetry,
             and pressure-coupling terms. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
+        gamma : float, default=12.5
             Dimensionless stabilisation parameter. Typical values 5--20
-            for P2 elements.
+            for P2 elements. The penalty is ``gamma*mu/h``, so this is
+            calibrated against the definition of ``h``: it was 10.0 while
+            ``h`` came from a kd-tree of neighbouring centroids, and moved
+            with ``mesh.cell_size()`` becoming PETSc's ``volume**(1/dim)``
+            (#694).
         theta : {-1, 0, 1}, default=1
             Symmetry parameter:
              1: symmetric (default — optimal convergence and solver efficiency)
@@ -6650,13 +6979,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             on every facet. Set ``False`` to restore the legacy global-h
             behaviour exactly.
 
-            The two coincide on **tensor** cells only. On a uniform **simplex**
-            mesh they differ by exactly :math:`\sqrt{2}` — for congruent
-            right-isosceles cells of legs :math:`h`, :meth:`Mesh.cell_size` is
-            :math:`2h/3` while :meth:`Mesh.get_min_radius` is
-            :math:`\sqrt{2}h/3` — so the penalty :math:`\gamma\mu/h` differs
-            between the two settings on the simplex meshes the free-slip and
-            fault models use. See ``tests/test_0010_cell_size_geometry.py``.
+            Since #694 both read the same quantity, PETSc's
+            :math:`\mathrm{volume}^{1/d}`, so this flag is now a choice between
+            the **local** cell and the **global minimum** and nothing else: on a
+            uniform mesh the two coincide exactly, for simplices as well as
+            tensor cells. They did not before — ``cell_size`` was a vertex-RMS
+            about the centroid and differed from ``get_min_radius`` by
+            :math:`\sqrt{2}` on simplices — so the flag silently rescaled the
+            penalty :math:`\gamma\mu/h` by cell type, which is how #734
+            happened. See ``tests/test_0010_cell_size_geometry.py``.
         g : sympy expression or float, optional
             Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
@@ -6755,12 +7086,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # local_h=False to restore the legacy single global-minimum scalar
         # (mesh.get_min_radius()).
         #
-        # The two coincide on TENSOR cells only. On a uniform SIMPLEX mesh --
-        # which is what the free-slip and fault models are built on -- they
-        # differ by exactly sqrt(2): on congruent right-isosceles cells of legs
-        # h, cell_size is 2h/3 and get_min_radius is sqrt(2)h/3. The penalty
-        # gamma*mu/h moves with that, so the two settings are NOT interchangeable
-        # there (see #734 and tests/test_0010_cell_size_geometry.py).
+        # Since #694 both read PETSc's volume**(1/dim), so this is a choice
+        # between the LOCAL cell and the GLOBAL minimum and nothing else -- on a
+        # uniform mesh they coincide exactly, simplices included. Before #694
+        # cell_size was a vertex-RMS about the centroid and differed from
+        # get_min_radius by sqrt(2) on simplices, so the flag silently rescaled
+        # gamma*mu/h by cell type (see #734 and
+        # tests/test_0010_cell_size_geometry.py).
         if local_h:
             h_sym = mesh.cell_size()
         else:
@@ -6832,7 +7164,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ])
 
         import numpy as np
-        components = np.arange(dim, dtype=np.int32)
+        components = np.arange(dim, dtype=PETSc.IntType)
 
         self.natural_bcs.append(BC(
             0, components, fn_f, fn_F, fn_p,
@@ -7738,58 +8070,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     # redundant uf0/uF1 aliases used below); settle one scheme rather than
     # adding new spellings.
 
-    def _object_viewer(self):
-        '''This will add specific information about this object to the generic class viewer
-        '''
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        uf0 = self.F0.sym
-        uF1 = self.F1.sym
-        pF0 = self.PF0.sym
-
-        if self.penalty.sym == 0:
-            uF1 = self.F1.sym.subs(self.penalty, self.penalty.sym)
-
-        eqF1 = "$\\tiny \\quad \\nabla \\cdot \\color{Blue}" + sympy.latex( uF1 )+"$ + "
-        eqf0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} \\color{DarkRed}" + sympy.latex( uf0 )+"\\color{Black} = 0 $"
-        eqp0 = "$\\tiny \\phantom{ \\quad \\nabla \\cdot} " + sympy.latex( pF0 ) + " = 0 $"
-
-        # feedback on this instance
-        display(
-            Markdown(f"# Underworld / PETSc General Saddle Point Equation Solver"),
-            Markdown(f"Primary problem: "),
-            Latex(eqF1), Latex(eqf0),
-            Markdown(f"Constraint: "),
-            Latex(eqp0 ),
-        )
-
-        exprs = uw.function.fn_extract_expressions(self.F0)
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.PF0))
-
-        if len(exprs) != 0:
-            display(Markdown("*Where:*"))
-
-            for expr in exprs:
-                expr._object_viewer()
-
-        display(
-            Markdown(fr"# Boundary Conditions"),)
-
-        bc_table = "| Type   | Boundary | Expression | \n"
-        bc_table += "|:------------------------ | -------- | ---------- | \n"
-
-        for bc in self.essential_bcs:
-            bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn.T)}  $ | \n"
-        for bc in self.natural_bcs:
-                bc_table += f"| **{bc.type}** | {bc.boundary} | ${sympy.latex(bc.fn_f.T)}  $ | \n"
-
-        display(Markdown(bc_table))
-
-        display(Markdown(fr"This solver is formulated as a {self.mesh.dim} dimensional problem with a {self.mesh.cdim} dimensional mesh"))
-
-        return
 
     def validate_solver(self):
         """Checks to see if the required properties have been set"""
@@ -8415,8 +8695,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
 
         for index,bc in enumerate(self.natural_bcs):
@@ -8462,15 +8742,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # u-row traction h·n and the uh Jacobian) and once for the multiplier
         # field (carries the h-row constraint n·u−g and the hu Jacobian).
         # Guarded: no-op for ordinary Stokes.
-        cdef int [::1] cbc_comps_view
-        cdef int [::1] cbc_hcomps_view
+        cdef PetscInt [::1] cbc_comps_view
+        cdef PetscInt [::1] cbc_hcomps_view
         for cbc in self._block_constraint_bcs:
             cbc_boundary = cbc.boundary
             cbc_value = mesh.boundaries[cbc_boundary].value
             ind = cbc_value
             cbc_fid_h = cbc.lam._solver_field_id
 
-            cbc_comps = np.arange(mesh.dim, dtype=np.int32)
+            cbc_comps = np.arange(mesh.dim, dtype=PETSc.IntType)
             cbc_comps_view = cbc_comps
             cbc.petsc_id_u = PetscDSAddBoundary_UW(cdm.dm,
                                 6,
@@ -8485,7 +8765,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <const PetscInt *> &ind,
                                 NULL, )
 
-            cbc_hcomps = np.array([0], dtype=np.int32)
+            cbc_hcomps = np.array([0], dtype=PETSc.IntType)
             cbc_hcomps_view = cbc_hcomps
             cbc.petsc_id_h = PetscDSAddBoundary_UW(cdm.dm,
                                 6,
@@ -8697,11 +8977,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     fidx |= set(extra_field[(p, f)])
                 if fidx:
                     fidx = sorted(fidx)
-                    Snew.setFieldConstraintIndices(p, f, np.array(fidx, dtype=np.int32))
+                    Snew.setFieldConstraintIndices(p, f, np.array(fidx, dtype=PETSc.IntType))
                     point_local.extend(field_offset + i for i in fidx)
                 field_offset += fdof
             if point_local:
-                Snew.setConstraintIndices(p, np.array(sorted(point_local), dtype=np.int32))
+                Snew.setConstraintIndices(p, np.array(sorted(point_local), dtype=PETSc.IntType))
 
         dm.setLocalSection(Snew)
         # Force the global-section rebuild (and fail fast if malformed); the
@@ -8720,8 +9000,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             return
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -9688,7 +9968,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 UW_DMSetTime(_time_dm_stokes.dm, t_nd)
             self.mesh.update_lvec()
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-            self._update_constants()
+            self._update_constants(record=True)
 
             # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
             # Re-check here: this path never reaches the instrumentation, so an armed
@@ -9741,7 +10021,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)

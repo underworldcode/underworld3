@@ -88,6 +88,7 @@ These settle the June-2026 drift (see `docs/reviews/2026-07/API-CONSISTENCY-REVI
 | Solver capabilities | Anything that configures or reads one solver is a METHOD on that solver, lazily importing its `utilities/*` implementation (the `boundary_flux` pattern) — never a free function as the documented entry point. |
 | Namespaces | Every user-facing module is exported from its subpackage `__init__`/`__all__` in the PR that creates it. No deep-import-only features. |
 | Docstrings | NumPy/Sphinx style with RST `:math:`. This SUPERSEDES the Markdown-for-pdoc prescription still printed in `UW3_Style_and_Patterns_Guide.md` — that section is wrong; do not follow it. |
+| Constants in symbolic forms | A number that enters a residual, a scheme or a constitutive law is EXACT where it is exact: `sympy.Rational(1, 2)` for a theta of one half, `sympy.Integer(4)` for a weight of four, never `0.5` or `4.0`. A float cannot cancel, and prints as `0.5` or `64.0` in the form the run records. A regulariser that keeps a denominator finite is `uw.maths.functions.vanishing`, which prints as :math:`\varepsilon`, never a literal `1e-30`. User-supplied floats are made exact at the boundary with `sympy.nsimplify(x, rational=True)`. |
 
 ## 7. Data Access
 

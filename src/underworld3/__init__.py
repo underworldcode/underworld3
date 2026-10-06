@@ -218,8 +218,19 @@ from .model import (
     create_model,
     get_default_model,
     reset_default_model,
+    read_transcript,
     ThermalConvectionConfig,
     create_thermal_convection_model,
+)
+from .utilities.describe import render, view
+from .utilities.capabilities import capabilities
+from .utilities.transcript_query import Transcript
+from .utilities.transcript_report import (
+    transcript_diagram,
+    transcript_flowchart,
+    transcript_table,
+    transcript_figure,
+    transcript_key,
 )
 from .parameters import ParameterRegistry, ParameterType
 from .materials import (

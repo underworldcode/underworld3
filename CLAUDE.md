@@ -103,6 +103,22 @@ they are about (`mesh-adaptation-architecture.md`), never whimsical ones.
 
 ## Rulings a session needs in hand
 
+**Capability guides are documentation, and a change to a family updates
+them.** Curated guidance lives in `docs/developer/guides/` with front matter
+naming the families it applies to (see the developer index, "Capability
+guides"); `uw.capabilities()` and the class-level `view()` list a guide beside
+its family, and the skills in `.claude/skills` are symlinks to those pages.
+Touching a solver, constitutive model, history scheme or boundary mechanism
+means checking every guide that names it, in the same change.
+
+**Adversarial review before the PR opens.** Every branch gets one before it
+becomes a PR, and again after any substantial post-review commit. The checklist —
+parallel rank asymmetry, frame and unit boundaries, determinism, tests that cannot
+fail, CI reach, and the solver/transcript contracts — is in
+[`guides/adversarial-review.md`](docs/developer/guides/adversarial-review.md).
+Post the findings on the PR.
+
+
 **Free-slip: prefer rotated strong free-slip.**
 `solver.add_rotated_freeslip_bc(conds, boundary, normal=None)`, value first
 (`conds=0` is free-slip). It enforces `v·n̂ = 0` to machine precision where

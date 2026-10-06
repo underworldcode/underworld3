@@ -44,6 +44,7 @@ from underworld3.utilities.nd_array_callback import (
 )
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
+from underworld3.utilities._io import _short_io_path
 
 # Mathematical operations moved to PersistentMeshVariable wrapper
 # from underworld3.utilities.mathematical_mixin import MathematicalMixin
@@ -570,34 +571,26 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._remesh_policy = RemeshPolicy(value)
 
-    def _object_viewer(self):
-        """This will substitute specific information about this object"""
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        # feedback on this instance
-
-        display(
-            Markdown(f"**MeshVariable:**"),
-            Markdown(
-                f"""\
-  > symbol:  ${self.symbol}$\n
-  > shape:   ${self.shape}$\n
-  > degree:  ${self.degree}$\n
-  > continuous:  `{self.continuous}`\n
-  > type:    `{self.vtype.name}`"""
-            ),
-            Markdown(f"**FE Data:**"),
-            Markdown(
-                f"""
-  > PETSc field id:  ${self.field_id}$ \n
-  > PETSc field name:   `{self.clean_name}` """
-            ),
-        )
-
-        display(self.array),
-
-        return
+    def describe(self, depth=4):
+        """What this variable is, as data: its symbol, shape, degree,
+        continuity, type and units, and the mesh it lives on."""
+        from underworld3.utilities.describe import record
+        import sympy
+        facts = {
+            "symbol": str(getattr(self, "symbol", "")),
+            "components": int(getattr(self, "num_components", 1)),
+            "shape": str(getattr(self, "shape", "")),
+            "degree": int(getattr(self, "degree", 0)),
+            "continuous": bool(getattr(self, "continuous", True)),
+            "type": getattr(getattr(self, "vtype", None), "name", None),
+            "mesh": getattr(getattr(self, "mesh", None), "name", None),
+        }
+        units = getattr(self, "units", None)
+        if units:
+            facts["units"] = str(units)
+        summary = (f"{facts['type'] or 'field'}, {facts['components']} component(s), "
+                   f"P{facts['degree']}{'' if facts['continuous'] else ' discontinuous'}")
+        return record("variable", getattr(self, "name", None), summary, facts=facts)
 
     def clone(self, name, varsymbol):
         """Create a copy of this variable with new name and symbol.
@@ -1014,22 +1007,23 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Ensure global vector is up-to-date before writing.
         self._sync_lvec_to_gvec()
 
-        viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
-        if index:
-            raise RuntimeError("Recording `index` not currently supported")
-            ## JM:To enable timestep recording, the following needs to be called.
-            ## I'm unsure if the corresponding xdmf functionality is enabled via
-            ## the PETSc xdmf script.
-            # PetscViewerHDF5PushTimestepping(cviewer)
-            # viewer.setTimestep(index)
+        with _short_io_path(filename) as io_filename:
+            viewer = PETSc.ViewerHDF5().create(io_filename, "a", comm=PETSc.COMM_WORLD)
+            if index:
+                raise RuntimeError("Recording `index` not currently supported")
+                ## JM:To enable timestep recording, the following needs to be called.
+                ## I'm unsure if the corresponding xdmf functionality is enabled via
+                ## the PETSc xdmf script.
+                # PetscViewerHDF5PushTimestepping(cviewer)
+                # viewer.setTimestep(index)
 
-        if name:
-            oldname = self._gvec.getName()
-            self._gvec.setName(name)
-        viewer(self._gvec)
-        if name:
-            self._gvec.setName(oldname)
-        viewer.destroy()
+            if name:
+                oldname = self._gvec.getName()
+                self._gvec.setName(name)
+            viewer(self._gvec)
+            if name:
+                self._gvec.setName(oldname)
+            viewer.destroy()
 
         ## Add variable unit metadata to the file
         import h5py, json
@@ -1136,15 +1130,16 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Ensure global vector is up-to-date before writing.
         self._sync_lvec_to_gvec()
 
-        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-        viewer(self._gvec)
-        viewer(gvec)
+        with _short_io_path(filename) as io_filename:
+            viewer = PETSc.ViewerHDF5().create(io_filename, "w", comm=PETSc.COMM_WORLD)
+            viewer(self._gvec)
+            viewer(gvec)
 
-        dmnew.restoreGlobalVec(gvec)
-        dmnew.restoreLocalVec(lvec)
+            dmnew.restoreGlobalVec(gvec)
+            dmnew.restoreLocalVec(lvec)
 
-        uw.mpi.barrier()
-        viewer.destroy()
+            uw.mpi.barrier()
+            viewer.destroy()
         dmfe.destroy()
 
         ## Add variable unit metadata to standalone file
@@ -1744,15 +1739,16 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
 
         old_name = self._gvec.getName()
-        viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
+        with _short_io_path(filename) as io_filename:
+            viewer = PETSc.ViewerHDF5().create(io_filename, "r", comm=PETSc.COMM_WORLD)
 
-        self._gvec.setName(data_name)
-        self._gvec.load(viewer)
-        self._gvec.setName(old_name)
+            self._gvec.setName(data_name)
+            self._gvec.load(viewer)
+            self._gvec.setName(old_name)
 
-        subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+            subdm.globalToLocal(self._gvec, self._lvec, addv=False)
 
-        viewer.destroy()
+            viewer.destroy()
         indexset.destroy()
         subdm.destroy()
 
@@ -1821,98 +1817,99 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         sectiondm = self.mesh.dm.clone()
-        viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
-        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-        if grouped_checkpoint and not same_layout:
-            viewer.pushGroup(checkpoint_group)
+        with _short_io_path(filename) as io_filename:
+            viewer = PETSc.ViewerHDF5().create(io_filename, "r", comm=PETSc.COMM_WORLD)
+            viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+            if grouped_checkpoint and not same_layout:
+                viewer.pushGroup(checkpoint_group)
 
-        old_mesh_name = self.mesh.dm.getName()
-        old_lvec_name = self._lvec.getName()
-        old_vec_name = self._gvec.getName()
+            old_mesh_name = self.mesh.dm.getName()
+            old_lvec_name = self._lvec.getName()
+            old_vec_name = self._gvec.getName()
 
-        try:
-            self.mesh.dm.setName("uw_mesh")
-            subdm.setName(data_name)
-            sectiondm.setName(data_name)
-            self._lvec.setName(data_name)
-            self._gvec.setName(data_name)
+            try:
+                self.mesh.dm.setName("uw_mesh")
+                subdm.setName(data_name)
+                sectiondm.setName(data_name)
+                self._lvec.setName(data_name)
+                self._gvec.setName(data_name)
 
-            if same_layout:
-                vector_group = (
-                    f"{checkpoint_group}/topologies/uw_mesh/dms/{data_name}/"
-                    f"vecs/{data_name}"
-                    if grouped_checkpoint
-                    else direct_vector_group
-                )
-                # A DM-associated Vec ignores the viewer group and redirects
-                # HDF5 I/O through /fields. A plain Vec reads the requested
-                # restart dataset when /fields is intentionally absent.
-                checkpoint_vec = PETSc.Vec().createMPI(
-                    (self._gvec.getLocalSize(), PETSc.DECIDE),
-                    comm=PETSc.COMM_WORLD,
-                )
-                checkpoint_vec.setName(data_name)
-                viewer.pushGroup(vector_group)
-                checkpoint_vec.load(viewer)
-                viewer.popGroup()
-                self._gvec.array[...] = checkpoint_vec.array_r
-                subdm.globalToLocal(self._gvec, self._lvec, addv=False)
-                checkpoint_vec.destroy()
-            else:
-                global_sf, local_sf = self.mesh.dm.sectionLoad(
-                    viewer, sectiondm, self.mesh.sf
-                )
-                loaded_gvec = sectiondm.createGlobalVec()
-                loaded_gvec.setName(data_name)
-                self.mesh.dm.globalVectorLoad(
-                    viewer, sectiondm, global_sf, loaded_gvec
-                )
-                loaded_lvec = sectiondm.createLocalVec()
-                sectiondm.globalToLocal(loaded_gvec, loaded_lvec, addv=False)
+                if same_layout:
+                    vector_group = (
+                        f"{checkpoint_group}/topologies/uw_mesh/dms/{data_name}/"
+                        f"vecs/{data_name}"
+                        if grouped_checkpoint
+                        else direct_vector_group
+                    )
+                    # A DM-associated Vec ignores the viewer group and redirects
+                    # HDF5 I/O through /fields. A plain Vec reads the requested
+                    # restart dataset when /fields is intentionally absent.
+                    checkpoint_vec = PETSc.Vec().createMPI(
+                        (self._gvec.getLocalSize(), PETSc.DECIDE),
+                        comm=PETSc.COMM_WORLD,
+                    )
+                    checkpoint_vec.setName(data_name)
+                    viewer.pushGroup(vector_group)
+                    checkpoint_vec.load(viewer)
+                    viewer.popGroup()
+                    self._gvec.array[...] = checkpoint_vec.array_r
+                    subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+                    checkpoint_vec.destroy()
+                else:
+                    global_sf, local_sf = self.mesh.dm.sectionLoad(
+                        viewer, sectiondm, self.mesh.sf
+                    )
+                    loaded_gvec = sectiondm.createGlobalVec()
+                    loaded_gvec.setName(data_name)
+                    self.mesh.dm.globalVectorLoad(
+                        viewer, sectiondm, global_sf, loaded_gvec
+                    )
+                    loaded_lvec = sectiondm.createLocalVec()
+                    sectiondm.globalToLocal(loaded_gvec, loaded_lvec, addv=False)
 
-                source_section = sectiondm.getSection()
-                target_section = subdm.getSection()
-                source_array = loaded_lvec.array_r
-                target_array = self._lvec.array
-                p_start, p_end = target_section.getChart()
+                    source_section = sectiondm.getSection()
+                    target_section = subdm.getSection()
+                    source_array = loaded_lvec.array_r
+                    target_array = self._lvec.array
+                    p_start, p_end = target_section.getChart()
 
-                for point in range(p_start, p_end):
-                    target_dof = target_section.getDof(point)
-                    if target_dof == 0:
-                        continue
+                    for point in range(p_start, p_end):
+                        target_dof = target_section.getDof(point)
+                        if target_dof == 0:
+                            continue
 
-                    source_dof = source_section.getDof(point)
-                    if source_dof < target_dof:
-                        raise RuntimeError(
-                            f"Checkpoint section has {source_dof} dofs for point "
-                            f"{point}, but target variable requires {target_dof}."
+                        source_dof = source_section.getDof(point)
+                        if source_dof < target_dof:
+                            raise RuntimeError(
+                                f"Checkpoint section has {source_dof} dofs for point "
+                                f"{point}, but target variable requires {target_dof}."
+                            )
+
+                        source_offset = source_section.getOffset(point)
+                        target_offset = target_section.getOffset(point)
+                        target_array[target_offset : target_offset + target_dof] = (
+                            source_array[source_offset : source_offset + target_dof]
                         )
 
-                    source_offset = source_section.getOffset(point)
-                    target_offset = target_section.getOffset(point)
-                    target_array[target_offset : target_offset + target_dof] = (
-                        source_array[source_offset : source_offset + target_dof]
-                    )
-
-                loaded_lvec.destroy()
-                loaded_gvec.destroy()
-                if global_sf is not None:
-                    global_sf.destroy()
-                if local_sf is not None:
-                    local_sf.destroy()
-                self._sync_lvec_to_gvec()
-        finally:
-            self._lvec.setName(old_lvec_name)
-            self._gvec.setName(old_vec_name)
-            if old_mesh_name is not None:
-                self.mesh.dm.setName(old_mesh_name)
-            if grouped_checkpoint and not same_layout:
-                viewer.popGroup()
-            viewer.popFormat()
-            viewer.destroy()
-            sectiondm.destroy()
-            indexset.destroy()
-            subdm.destroy()
+                    loaded_lvec.destroy()
+                    loaded_gvec.destroy()
+                    if global_sf is not None:
+                        global_sf.destroy()
+                    if local_sf is not None:
+                        local_sf.destroy()
+                    self._sync_lvec_to_gvec()
+            finally:
+                self._lvec.setName(old_lvec_name)
+                self._gvec.setName(old_vec_name)
+                if old_mesh_name is not None:
+                    self.mesh.dm.setName(old_mesh_name)
+                if grouped_checkpoint and not same_layout:
+                    viewer.popGroup()
+                viewer.popFormat()
+                viewer.destroy()
+                sectiondm.destroy()
+                indexset.destroy()
+                subdm.destroy()
 
         # The mesh-wide auxiliary vector packs every registered field and may
         # still contain values from before this reload. Force the next residual
