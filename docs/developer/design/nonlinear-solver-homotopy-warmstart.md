@@ -67,26 +67,32 @@ every nonlinear solver; layers 2–3 build on it.
 ### Layer 1 — automatic warm-start (all nonlinear solvers)
 
 ```{warning}
-**Implementation status (#791, 2026-09-25).** As originally landed, this layer did not do what
-it specifies. The warm-up and `solve(picard=N)` ran SNES `nrichardson` with no nonlinear
+**Implementation status (#791, 2026-09-26).** As originally landed, this layer did not do what
+it specifies: the warm-up and `solve(picard=N)` ran SNES `nrichardson` with no nonlinear
 preconditioner — `x <- x - lambda F(x)`, a residual step with no linear solve — which is not a
-Picard step and is nearly inert. It is now corrected, with the semantics the rotated free-slip
-path already had:
+Picard step and is nearly inert. It is now implemented as specified:
 
-- `consistent_jacobian=False`: every iteration uses the frozen tangent, so `picard` is
-  satisfied by the solve itself.
-- `"continuation"`: `picard=N` guarantees at least N frozen-tangent iterations (stage 1, α=0).
-- `True`: `picard>0` raises on a nonlinear residual (no frozen tangent is compiled).
+- `consistent_jacobian=True`: `solve(picard=N)` takes exactly N Picard steps, then Newton, and a
+  cold start takes one automatically (`picard=-1` disables it). The Jacobian is compiled in the
+  blended form J_p + alpha (J_n - J_p); alpha = 0 is the Picard step, alpha = 1 Newton, no
+  recompile to switch.
+- `"continuation"`: ONE solve with alpha keyed on the residual. alpha leaves 0 at
+  F = 0.1 F_ref and reaches 1 at F = 5e-4 F_ref, linear in log F, never decreasing, with
+  F_ref = ||F(u=0)|| (one residual evaluation). `l2` line search for that solve; stop at
+  `tolerance` x F_ref. `picard=N` holds alpha = 0 for the first N iterations. A warm start
+  enters the ramp at the alpha its residual calls for — keyed on the solve's own starting
+  residual instead, a warm start re-ran the whole Picard phase (763 vs 10 iterations on the
+  hard notch). Measured on the notch and a power-law variant, this converges cases where pure
+  Newton and the former two-stage continuation both fail (eta_bg 5e24; power law n = 5); it
+  still stalls where the blended iteration oscillates at intermediate alpha (refinement 2;
+  power law n = 3 with yield). The rotated-free-slip path keeps its own two-phase loop.
+- `False`: every iteration is already a Picard step.
 
-The **automatic** cold-start warm-up is removed rather than repaired — it was never a Picard step,
-so nothing is lost. When the rest state is exactly zero (homogeneous essential BCs, no stress
-history) Newton's first iteration from rest IS the Picard step (verified to < 1e-6 in
-`tests/test_1068_picard_warmup_is_a_frozen_tangent_step.py`). A boundary-driven problem does NOT
-have this property — the Dirichlet values yield the driven layer immediately (first steps measured
-45% apart on a sheared box) — nor does a stress-history model; for those, a genuine Picard entry is
-`consistent_jacobian="continuation"` with `solve(picard=N)`. The Rules and cold/warm text below
-describe the ORIGINAL design intent of an automatic entry, which is not what the code now does.
-Measurements quoted elsewhere for "opening Picard steps" were of the nrichardson sweep.
+Measured on a boundary-driven sheared box: without the warm-up, pure Newton stalls on step size
+(CONVERGED_SNORM_RELATIVE at ||F|| = 4.5e-5, whatever the tolerance); with it, Newton converges on
+the residual to machine precision in fewer iterations (`tests/test_1068_picard_warmup_is_a_frozen_tangent_step.py`).
+Measurements quoted elsewhere for "opening Picard steps" before 2026-09-26 were of the nrichardson
+sweep.
 ```
 
 A single **Picard (frozen-coefficient) step is a general cold-start warm-up**. It is

@@ -141,7 +141,11 @@ class SolverBaseClass(uw_object):
 
         # Jacobian tangent selection — validated property, see the
         # consistent_jacobian docstring below for the mode semantics.
-        self.consistent_jacobian = False
+        # DEFAULT = the consistent (Newton) tangent (Louis, 2026-10-05): every Jacobian is
+        # assembled anyway; Picard is only the ONE automatic frozen-tangent step a cold
+        # start takes before Newton (see solve()). False (Picard throughout) and
+        # "continuation" (the residual-keyed blend) remain explicit choices.
+        self.consistent_jacobian = True
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
         # Created LAZILY (see _get_newton_alpha) only when continuation is used,
@@ -449,15 +453,18 @@ class SolverBaseClass(uw_object):
         dispatch; the residual is never affected, so the converged solution
         always satisfies the exact constitutive law.
 
-        ``False`` (default)
+        ``False``
             Differentiate the residual flux *as wrapped* — the effective
-            viscosity is frozen, giving a Picard / defect-correction tangent.
-            Bit-identical to the long-standing behaviour. Globally robust;
-            load-bearing for the tuned hard-yield viscoplastic paths.
-        ``True``
+            viscosity is frozen, giving a Picard / defect-correction tangent at
+            every iteration. The default until 2026-10-05; now an explicit choice.
+        ``True`` (default)
             Unwrap the flux before differentiation so the tangent captures
-            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
-            the solution; its yield kink can stall the line search far from it.
+            :math:`\partial\eta/\partial(\nabla v)` (full Newton). A COLD start
+            takes one automatic Picard step first (``solve(picard=...)`` adjusts
+            it); a warm start takes none. With the smooth yield law that is now
+            the model default the yield kink is gone; far from the solution a
+            pressure-dependent yield still needs ``newton_pressure_coupling`` /
+            ``"continuation"`` (see the campaign notes).
         ``"continuation"``
             Picard :math:`\rightarrow` Newton. Blend
             :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
@@ -4229,6 +4236,12 @@ class SNES_Scalar(SolverBaseClass):
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-1
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
+        # Krylov restart 100, not PETSc's 30 (Louis, 2026-10-05). The cost is memory
+        # (two vectors per iteration for FGMRES) and a general problem rarely runs past
+        # 30 anyway; the gain is that a near-null mode of the operator — a yielded layer's
+        # mechanism mode on the notch — stalls FGMRES(30) completely (rate 1.000) and is
+        # resolved by FGMRES(100) (188 its). Recorded in solve_report.config["ksp"].
+        self.petsc_options["ksp_gmres_restart"] = 100
 
     @timing.routine_timer_decorator
     def _setup_discretisation(self, verbose=False):
@@ -5068,6 +5081,12 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-1
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
+        # Krylov restart 100, not PETSc's 30 (Louis, 2026-10-05). The cost is memory
+        # (two vectors per iteration for FGMRES) and a general problem rarely runs past
+        # 30 anyway; the gain is that a near-null mode of the operator — a yielded layer's
+        # mechanism mode on the notch — stalls FGMRES(30) completely (rate 1.000) and is
+        # resolved by FGMRES(100) (188 its). Recorded in solve_report.config["ksp"].
+        self.petsc_options["ksp_gmres_restart"] = 100
 
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
@@ -6100,6 +6119,12 @@ class SNES_MultiComponent(SolverBaseClass):
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["ksp_rtol"] = self._tolerance * 1.0e-1
         self.petsc_options["ksp_atol"] = self._tolerance * 1.0e-6
+        # Krylov restart 100, not PETSc's 30 (Louis, 2026-10-05). The cost is memory
+        # (two vectors per iteration for FGMRES) and a general problem rarely runs past
+        # 30 anyway; the gain is that a near-null mode of the operator — a yielded layer's
+        # mechanism mode on the notch — stalls FGMRES(30) completely (rate 1.000) and is
+        # resolved by FGMRES(100) (188 its). Recorded in solve_report.config["ksp"].
+        self.petsc_options["ksp_gmres_restart"] = 100
 
     @timing.routine_timer_decorator
     def _setup_discretisation(self, verbose=False):
@@ -7925,6 +7950,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # preconditioning and weakly-indefinite coarse operators; issue #147).
         self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_velocity_ksp_max_it"] = 200
+        # Krylov restart 100, not PETSc's 30 (Louis, 2026-10-05). The cost is memory
+        # (two vectors per iteration for FGMRES) and a general problem rarely runs past
+        # 30 anyway; the gain is that a near-null mode of the operator — a yielded layer's
+        # mechanism mode on the notch — stalls FGMRES(30) completely (rate 1.000) and is
+        # resolved by FGMRES(100) (188 its). Recorded in solve_report.config["ksp"].
+        self.petsc_options["ksp_gmres_restart"] = 100
+        self.petsc_options[f"fieldsplit_velocity_ksp_gmres_restart"] = 100
         # The velocity BLOCK's preconditioner is not set here. `strategy` used to
         # write the whole GAMG bundle plus `pc_mg_type=kaskade`, and every one of
         # those writes was DEAD: `_apply_preconditioner_options` runs later (at

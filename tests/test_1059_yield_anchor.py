@@ -113,8 +113,10 @@ def test_yield_anchor_removes_the_power_mean_degenerate_basin():
 
 @pytest.mark.level_1
 @pytest.mark.tier_a
-def test_anchor_rejects_nonsense_and_defaults_to_onset():
+def test_anchor_rejects_nonsense_and_defaults_to_yield():
+    # default anchor "yield" since 2026-10-05: the smooth default law is exact at the
+    # yield point and never below the hard Min ("onset" made it weaker than stated)
     c = _model()
-    assert c.yield_anchor == "onset"
+    assert c.yield_anchor == "yield"
     with pytest.raises(ValueError):
         c.yield_anchor = "middle"

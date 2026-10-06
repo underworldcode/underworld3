@@ -1008,7 +1008,7 @@ class ViscousFlowModel(Constitutive_Model):
     def _yield_offset_for_anchor(self):
         r"""The sqrt soft-min offset that pins the chosen anchor, symbolic in δ."""
         delta = self._yield_softness_expr
-        if getattr(self, "_yield_anchor", "onset") == "yield":
+        if getattr(self, "_yield_anchor", "yield") == "yield":
             return delta / 2
         return (-1 + sympy.sqrt(1 + delta**2)) / 2
 
@@ -1095,7 +1095,7 @@ class ViscousFlowModel(Constitutive_Model):
         :math:`f = \eta_{ve} / \eta_{pl}` for the overstress ratio (so :math:`f = 1` is
         the yield point and :math:`f < 1` is unyielded):
 
-        ``"onset"`` (default, historical)
+        ``"onset"`` (the default until 2026-10-05)
             Pins the unyielded limit :math:`f \to 0`, where :math:`\eta = \eta_{ve}`
             exactly. The curve then sits BELOW the exact law at and above the yield
             point — the sqrt family undershoots for :math:`f < 2` (at
@@ -1108,7 +1108,7 @@ class ViscousFlowModel(Constitutive_Model):
             problem's overstress ratio is O(1), because then the smoothed problem is
             WEAKER than the sharp one it is supposed to be an easy version of.
 
-        ``"yield"``
+        ``"yield"`` (default)
             Pins :math:`f = 1`, so :math:`\tau/\tau_y = 1` exactly at the yield point
             for every δ and the curve is :math:`\ge` the exact law everywhere — a
             genuine approach from above, which is the safe direction for a homotopy
@@ -1121,7 +1121,7 @@ class ViscousFlowModel(Constitutive_Model):
             both decaying to 1 as :math:`\delta \to 0`. The power-mean bound is why its
             entry δ is O(1) and not O(10).
         """
-        return getattr(self, "_yield_anchor", "onset")
+        return getattr(self, "_yield_anchor", "yield")
 
     @yield_anchor.setter
     def yield_anchor(self, value):
@@ -1502,12 +1502,18 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         )
 
         # Yield-combination mode (see _combine_yield on the base class). Default
-        # "min" = the exact hard Min(η_0, η_yield) this model has always used, so the
-        # default behaviour is unchanged. Opt into "softmin" (+ yield_smoother /
-        # yield_softness) for the δ-parameterised smooth-min homotopy.
-        self._yield_mode = "min"
-        self._yield_softness = 0.0        # δ; 0 ⇒ exact Min
+        # DEFAULT = the smooth yield law (Louis, 2026-10-05): the exact hard Min is no
+        # longer the default. The kink broke the consistent tangent at the yield corner
+        # (and sympy's fuzzy comparisons on UWexpressions), and every hard case in the
+        # Spiegelman campaign had to set these by hand. The "yield" anchor keeps
+        # tau/tau_y = 1 exactly at the yield point and the law >= the exact one
+        # everywhere; delta = 0.1 rounds the corner over f in [0.9, 1.1] and stiffens
+        # unyielded material by at most ~3% just below yield. yield_mode = "min" with
+        # yield_softness = 0 is still available, as an explicit choice.
+        self._yield_mode = "softmin"
+        self._yield_softness = 0.1        # δ (sqrt family: width of the rounding in f)
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
+        self._yield_anchor = "yield"      # exact at the yield point; law >= exact Min
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
 
@@ -1843,6 +1849,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         self._order = order
         self._yield_mode = "softmin"  # "min", "harmonic", "smooth", or "softmin"
+        self._yield_anchor = "yield"  # exact at the yield point (default since 2026-10-05)
         self._yield_softness = 0.1  # δ parameter for "softmin" mode
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)

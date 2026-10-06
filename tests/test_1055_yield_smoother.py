@@ -157,8 +157,10 @@ def test_yield_softness_runtime_no_recompile():
 @pytest.mark.level_1
 @pytest.mark.tier_a
 def test_dp_model_smoother_optin():
-    """The non-elastic Drucker–Prager model defaults to exact hard Min and can opt
-    into the δ soft-min / power-mean homotopy (its new capability)."""
+    """The non-elastic Drucker–Prager model defaults to the SMOOTH yield law (since
+    2026-10-05: softmin, sqrt, anchor "yield", delta 0.1 — exact at the yield point and
+    >= the hard Min elsewhere); the exact hard Min and the power-mean homotopy are
+    explicit choices."""
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
     v = uw.discretisation.MeshVariable("Udp", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("Pdp", mesh, 1, degree=1)
@@ -166,9 +168,21 @@ def test_dp_model_smoother_optin():
     cm = uw.constitutive_models.ViscoPlasticFlowModel(s.Unknowns)
     s.constitutive_model = cm
 
-    # default: exact hard Min
-    assert cm.yield_mode == "min"
+    # default: the smooth law, exact at the yield point, never below the hard Min
+    assert cm.yield_mode == "softmin"
     assert cm.yield_smoother == "sqrt"
+    assert cm.yield_anchor == "yield"
+    assert cm.yield_softness == 0.1
+    for eta_ve, eta_pl in [(1.0, 2.0), (2.0, 1.0), (0.3, 5.0), (1.0, 1.0)]:
+        comb = cm._combine_yield(sympy.Float(eta_ve), sympy.Float(eta_pl))
+        val = float(unwrap_expression(comb, mode="nondimensional"))
+        assert val >= min(eta_ve, eta_pl) - 1.0e-12, (eta_ve, eta_pl, val)
+        if eta_ve == eta_pl:
+            assert abs(val - eta_ve) < 1.0e-12          # pinned at the yield point
+        assert val <= 2.0 * min(eta_ve, eta_pl) + 1.0e-12   # the sqrt family's bound
+
+    # the exact hard Min remains an explicit choice
+    cm.yield_mode = "min"
     for eta_ve, eta_pl in [(1.0, 2.0), (2.0, 1.0), (0.3, 5.0)]:
         comb = cm._combine_yield(sympy.Float(eta_ve), sympy.Float(eta_pl))
         val = float(unwrap_expression(comb, mode="nondimensional"))
@@ -177,6 +191,7 @@ def test_dp_model_smoother_optin():
     # opt into the power-mean homotopy: undershoots Min under the onset anchor
     cm.yield_mode = "softmin"
     cm.yield_anchor = "onset"                 # the side under test; not the default
+    cm.yield_softness = 0.0                   # the singular limit the setter guards
     cm.yield_smoother = "powermean"           # bumps δ→1
     assert cm.yield_softness == 1.0
     for eta_ve, eta_pl in [(1.0, 2.0), (5.0, 0.3), (1e25, 1e21)]:

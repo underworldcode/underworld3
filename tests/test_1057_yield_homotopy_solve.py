@@ -272,9 +272,13 @@ def test_homotopy_rescues_a_solve_the_cold_start_cannot_do():
     """
     import numpy as np
 
-    # (a) the direct cold solve of the sharp law FAILS
+    # (a) the direct cold solve of the sharp law under the FROZEN tangent FAILS. Pinned to
+    # consistent_jacobian=False: with the Newton default (2026-10-05, one automatic cold
+    # Picard step then Newton) this cold hard-Min solve CONVERGES (reason 3), so the
+    # baseline the homotopy is measured against is the Picard-throughout solve.
     mesh, cold, cm_cold = _yielding_box("c", 0.30)
     cm_cold.yield_mode = "min"
+    cold.consistent_jacobian = False
     cold.solve()
     cold_reason = int(cold.snes.getConvergedReason())
 

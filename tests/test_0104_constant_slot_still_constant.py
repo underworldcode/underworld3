@@ -39,6 +39,12 @@ def _build(initial):
     poisson.add_dirichlet_bc(0.0, "Top")
     poisson.add_dirichlet_bc(0.0, "Bottom")
     poisson.petsc_options.delValue("ksp_monitor")
+    # Frozen tangent on purpose: under the consistent default (2026-10-05) the first solve
+    # whose flux has become field-dependent takes the automatic Picard warm-up, and
+    # compiling the blended Jacobian for it rewires the kernel — which repacks the slot
+    # correctly and so never reaches the staleness check this file pins. The check is
+    # about the constants manifest, not the tangent; hold the tangent still.
+    poisson.consistent_jacobian = False
     return uw, poisson, T, m
 
 

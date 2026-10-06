@@ -1,6 +1,6 @@
 ---
 name: nonlinear-solver
-description: How to make a hard nonlinear Stokes solve (Drucker-Prager / yield-stress viscoplastic) CONVERGE reliably in Underworld3 the way the working recipe actually does it — a Picard entry where one is genuinely needed (`consistent_jacobian="continuation"` + `picard=N` — there is NO automatic one, #791) plus a MULTI-SOLVE δ-continuation (constant δ per solve, warm-start the next, sharper δ), the consistent-Newton tangent, and a non-symmetry-safe multigrid smoother. Reach for THIS when a viscoplastic solve stalls / diverges and you are about to hand-tune PETSc options, ramp δ, or "just add a monitor". It carries the CONFIG TRAP LIST — the setup mistakes that each produce a different failure a few steps in — and the one thing you must NOT do (ramp δ inside a single SNES solve). For the yield-law maths and which tangent per model, see `plasticity-solvers`.
+description: How to make a hard nonlinear Stokes solve (Drucker-Prager / yield-stress viscoplastic) CONVERGE reliably in Underworld3 the way the working recipe actually does it — a Picard warm-up (`solve(picard=N)`: N real Picard steps then Newton; one is automatic on a cold start) plus a MULTI-SOLVE δ-continuation (constant δ per solve, warm-start the next, sharper δ), the consistent-Newton tangent, and a non-symmetry-safe multigrid smoother. Reach for THIS when a viscoplastic solve stalls / diverges and you are about to hand-tune PETSc options, ramp δ, or "just add a monitor". It carries the CONFIG TRAP LIST — the setup mistakes that each produce a different failure a few steps in — and the one thing you must NOT do (ramp δ inside a single SNES solve). For the yield-law maths and which tangent per model, see `plasticity-solvers`.
 ---
 
 # nonlinear-solver
@@ -20,14 +20,11 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
 ## The recipe (what actually converges)
 
 1. **Warm start.** Start the continuation at **large δ**, where the yield surface is
-   smooth and the problem is easy. If a Picard entry is needed, it must be asked for:
-   `consistent_jacobian="continuation"` with `solve(picard=N)` gives N frozen-tangent
-   (defect-correction) iterations before Newton. From a *warm* iterate, take **no**
-   Picard step (it wastes the good quadratic start). ⚠️ #791: the former "automatic
-   Picard step" on a cold start was an nrichardson residual sweep, not a Picard step,
-   and has been removed. With homogeneous BCs and no stress history, Newton's first
-   step from rest coincides with the Picard step anyway; a boundary-driven or
-   stress-history problem gets no such entry (measured 45% apart on a sheared box).
+   smooth and the problem is easy, and take a few **Picard steps** into the Newton
+   basin: `solve(picard=N)` — N successive-substitution steps (linear Stokes solves with
+   the viscosity frozen), then Newton. A cold start takes one automatically. From a
+   *warm* iterate, take **no** Picard step (it wastes the good quadratic start).
+   ⚠️ #791: before 2026-09-26 the "Picard step" was an nrichardson residual sweep.
    A cold `v=0` start is safe on its own terms: `ε̇=0` makes `η_pl` infinite, which
    the soft-min carries to the viscous branch (see the trap list for the one form
    that must be written carefully).
@@ -50,8 +47,7 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
    and the surviving evidence), and the driver's documented cold-start
    guarantee does not currently hold (issue #473: entry can fail on a
    pressure-dependent yield, and the step control is effectively one-shot).
-   Newton (with `"continuation"` + `picard=N` where a Picard entry is needed) handles
-   the standard cases without it.
+   Newton with its Picard warm-up (`solve(picard=N)`) handles the standard cases without it.
 
 3. **Consistent-Newton tangent** for non-elastic DP (`consistent_jacobian=True`);
    **Picard** for elastic VEP — see `plasticity-solvers` for the per-model table.
@@ -104,26 +100,33 @@ mesh-mover — the `is_setup=False` hook); kept through coefficient changes (vis
 δ, BC values, time step). A **diverged** solve leaves it `False`, so the next solve
 auto-cold-starts rather than warming off a corrupted iterate.
 
-There is **no automatic Picard step** on a cold start (#791 — the former one was an
-nrichardson residual sweep and has been removed). For a genuine Picard entry:
+On a **cold** Stokes solve under the **consistent-Newton tangent**, ONE Picard step is
+taken automatically (a real one — #791 replaced the former nrichardson sweep).
 
 ```python
-stokes.consistent_jacobian = "continuation"
-stokes.solve(picard=3)         # >= 3 frozen-tangent iterations, then Newton
+stokes.consistent_jacobian = True
+stokes.solve()                 # cold -> one Picard step, then Newton
+stokes.solve(picard=3)         # the recipe: three Picard steps, then Newton
+stokes.solve(picard=-1)        # no warm-up
 if stokes.has_solution:
     ...
 ```
 
-Under `consistent_jacobian=True`, `solve(picard=N)` raises on a nonlinear residual (no
-frozen tangent is compiled); under `False` every iteration is already a Picard step.
+Under `False` every iteration is already a Picard step. Under `"continuation"` the whole
+Picard→Newton passage is ONE solve: α is set each iteration from the residual relative to
+‖F(u=0)‖ (0 until 0.1, 1 from 5e-4, linear in log F between, never decreasing), with an
+`l2` line search and a stop at `tolerance`·‖F(u=0)‖; `picard=N` holds α = 0 for the first N
+iterations. Tunables: `continuation_alpha_start`, `continuation_newton_at`,
+`continuation_linesearch`. This is the robust choice for a hard cold start AND for warm
+continuation steps (δ, η, BC changes) — a warm start enters the ramp near α = 1.
 
 ---
 
 ## Implementation status (this line of work)
 
-- **Layer 1a — DONE (revised by #791):** `has_solution`. The cold-start "Picard
-  warm-up" was an nrichardson sweep and is removed; Picard entry is explicit via
-  `"continuation"` + `picard=N` (test `test_1068`).
+- **Layer 1a — DONE (corrected by #791):** `has_solution` + cold consistent-Newton
+  Picard warm-up, now a real Picard step (blended kernel at α=0); `solve(picard=N)` for
+  N steps (tests `test_0201`, `test_1068`).
 - **Layer 1b — DONE:** `zero_init_guess` is tri-state — `None` (default) auto-detects
   from `has_solution`, `True` forces fresh, `False` insists on warm. Note warm and cold
   agree only to the *convergence tolerance*, not bitwise.
@@ -136,7 +139,7 @@ frozen tangent is compiled); under `False` every iteration is already a Picard s
   continuation, returning the march summary. The doctrine that made this the
   recommended entry point was retracted (unit-scaling error — see
   `plasticity-solvers`), and its cold-start guarantee is broken (issue #473);
-  use it after Newton (with an explicit Picard entry) and grid sequencing have failed.
+  use it after Newton + Picard warm-up and grid sequencing have failed.
 
 ---
 
