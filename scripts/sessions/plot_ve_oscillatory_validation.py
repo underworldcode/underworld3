@@ -10,8 +10,8 @@ Maxwell analytical solution including startup transient:
 Results are saved as .npz checkpoint files for re-analysis.
 
 Usage:
-    python tests/plot_ve_oscillatory_validation.py
-    python tests/plot_ve_oscillatory_validation.py --replot   # replot from saved data
+    python scripts/sessions/plot_ve_oscillatory_validation.py
+    python scripts/sessions/plot_ve_oscillatory_validation.py --replot   # replot from saved data
 """
 
 import numpy as np

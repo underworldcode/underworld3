@@ -76,6 +76,17 @@ The code review process serves to:
 
 ## Review Process Workflow
 
+### Phase 0: Adversarial review (before the PR opens)
+
+Run the pass described in [adversarial-review.md](adversarial-review.md): an
+independent attempt to refute the change, aimed at the failure modes this
+codebase produces — rank asymmetry, frame and unit boundaries, determinism,
+tests that cannot fail, CI reach, and the contracts a change must not quietly
+leave. Fix what it finds, then open the PR and post the findings on it.
+
+Every PR, including one-line bug fixes and docs-only changes; again after any
+substantial post-review commit.
+
 ### Phase 1: Preparation
 
 1. **Author**: Prepare change materials

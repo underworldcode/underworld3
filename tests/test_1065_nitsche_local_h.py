@@ -152,7 +152,7 @@ def _box_wobble(X0, amp):
 # --------------------------------------------------------------------------
 def test_cell_size_is_local_per_cell():
     """``mesh.cell_size()`` is a per-cell field equal to each cell's
-    own-vertex RMS size (``mesh._cell_radii``), not the single global minimum."""
+    per-cell size (``mesh._cell_radii``, PETSc's ``volume**(1/dim)``), not the single global minimum."""
     mesh = _graded_box()
     h = mesh.cell_size()  # sympy symbol -> backed by a P0 field
     field = np.asarray(mesh._cell_size_variable.array[:, 0, 0]).reshape(-1)
@@ -225,7 +225,7 @@ def test_cell_size_tracks_deformation():
 # --------------------------------------------------------------------------
 # 3. local-h still solves free-slip correctly (back-compat / correctness)
 # --------------------------------------------------------------------------
-def _solve_freeslip(mesh, method, gamma=10.0):
+def _solve_freeslip(mesh, method, gamma=12.5):
     v = uw.discretisation.MeshVariable(
         "U", mesh, mesh.dim, degree=2, vtype=uw.VarType.VECTOR)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
