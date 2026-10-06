@@ -56,7 +56,7 @@ class YieldHomotopyControl:
 
 @dataclass(frozen=True)
 class RateStrengtheningControl:
-    """How to ladder one model's DECLARED plastic rate strengthening.
+    """How to ladder one constitutive model's declared plastic rate strengthening.
 
     Built by ``constitutive_model._rate_strengthening_control()``; ``None`` when the model
     states no ``plastic_rate_strengthening``. The model owns the meaning (``eta_pl ->
@@ -71,22 +71,24 @@ class RateStrengtheningControl:
         The ``consistent_jacobian`` value the model pairs with its yield law.
     scale, parameter
         The ``m`` atom and the ``eta_reg`` parameter, for diagnostics.
-    onset_expr
-        Per-cell ``(eta_ve - tau_y/(2 edot_II))/eta_reg``; its maximum over the domain at
-        the current fields is the viscous limit a ladder starts from.
+    probe_terms
+        Cell-wise expressions the ladder reads to place its first rungs (see
+        ``ViscousFlowModel._rate_strengthening_probe_terms``), or ``None`` when the
+        model does not provide them; the ladder then needs an explicit ``scale0``.
     """
     set_scale: Callable[[float], None]
     tangent: Any
     scale: Optional[Any] = None
     parameter: Optional[Any] = None
-    onset_expr: Optional[Any] = None
+    probe_terms: Optional[dict] = None
 
 
 def rate_strengthening_continuation(
     solver,
     control=None,
     scale0=None,
-    scale_big=1.0e6,
+    scale_big=None,
+    entry_factor=1.0e3,
     down=0.5,
     rung_tangent="continuation",
     entry_maxit=60,
@@ -106,6 +108,9 @@ def rate_strengthening_continuation(
     (``consistent_jacobian="continuation"``) on every rung is 3-4x cheaper than Newton
     with a blend fallback, which is why it is the rung tangent here.
 
+    ViscoPlasticFlowModel only: the elastic models advance a stress history on every
+    solve, so a ladder of solves has to be driven around one history update by hand.
+
     Parameters
     ----------
     solver
@@ -113,10 +118,14 @@ def rate_strengthening_continuation(
     control : RateStrengtheningControl, optional
         Defaults to ``solver.constitutive_model._rate_strengthening_control()``.
     scale0 : float, optional
-        First rung. Default: the viscous limit found generically — one solve at
-        ``scale_big`` (effectively unyielded), then ``0.95 * max(onset_expr)`` over the
-        domain; if that is ``<= 1`` the stated problem does not yield beyond its onset
-        and the ladder is one solve.
+        First rung. Default: the viscous limit found from the fields — one solve at the
+        entry multiplier (``scale_big``), at which nothing yields, then ``0.95 *`` the
+        largest ``m`` at which a cell still yields there. If that is ``<= 1`` the stated
+        problem does not yield beyond its onset and the ladder is one solve.
+    scale_big : float, optional
+        The entry multiplier. Default ``entry_factor * max(eta_ve / eta_reg)`` over the
+        domain, so that ``m * eta_reg`` exceeds the viscous branch everywhere whatever the
+        model's own ratio of the two scales.
     down : float
         Multiplicative step in ``m`` per rung (adapted: a cheap rung widens it, a
         laboured one narrows it); the last rung is clamped to exactly 1.
@@ -130,10 +139,19 @@ def rate_strengthening_continuation(
     -------
     dict
         ``scale0``, ``rungs`` (list of ``(m, reason, its)``), ``reached_one``,
-        ``converged``, ``reason``.
+        ``converged``, ``reason``, ``message``. A ladder that stops above ``m = 1`` leaves
+        the model at ``m = 1`` (as stated), the fields at the last converged rung, and
+        warns.
     """
+    import math
+    import warnings
+
     if not (0.0 < down < 1.0):
         raise ValueError(f"down must satisfy 0 < down < 1, got {down}")
+    if getattr(getattr(solver, "Unknowns", None), "DFDt", None) is not None:
+        raise NotImplementedError(
+            "the rate-strengthening ladder runs several solves and would advance a stress "
+            "history each time; drive it yourself around one history update")
     cm = getattr(solver, "constitutive_model", None)
     if control is None:
         control = cm._rate_strengthening_control() if cm is not None and hasattr(cm, "_rate_strengthening_control") else None
@@ -142,8 +160,10 @@ def rate_strengthening_continuation(
             "rate_strengthening_continuation needs a constitutive model that STATES a "
             "plastic_rate_strengthening (Parameters.plastic_rate_strengthening > 0); the "
             "scale is the model's, not a solver default.")
-    if getattr(getattr(solver, "Unknowns", None), "DFDt", None) is not None:
-        raise NotImplementedError("the rate-strengthening ladder runs several solves and would advance a stress history each time; drive it yourself around one history update")
+    if scale0 is None and control.probe_terms is None:
+        raise NotImplementedError(
+            f"{type(cm).__name__} does not provide the terms the ladder reads to find the "
+            f"viscous limit; pass scale0 explicitly")
 
     saved_probe = solver._difficulty_probe
     saved_probe_maxit = solver._difficulty_max_it
@@ -156,8 +176,18 @@ def rate_strengthening_continuation(
     rungs = []
     reason = 0
     reached_one = False
+    message = None
     try:
         if scale0 is None:
+            terms = control.probe_terms
+            if scale_big is None:
+                visc, reg = _cell_values(solver, (terms["viscous"], terms["eta_reg"]))
+                scale_big = entry_factor * _masked_max_ratio(visc, reg)
+                if not (math.isfinite(scale_big) and scale_big > 0.0):
+                    message = (f"the entry multiplier could not be found from the fields "
+                               f"(max(eta_ve/eta_reg) = {scale_big / entry_factor:g})")
+                    return dict(scale0=None, rungs=rungs, reached_one=False, converged=False,
+                                reason=0, message=message)
             # the viscous limit, found from the fields rather than from the problem
             control.set_scale(float(scale_big))
             solver.is_setup = False
@@ -168,16 +198,22 @@ def rate_strengthening_continuation(
             reason = int(solver.snes.getConvergedReason())
             rungs.append((float(scale_big), reason, int(solver.snes.getIterationNumber())))
             if reason <= 0:
-                if verbose:
-                    uw.pprint(f"  [rate-strengthening] the viscous-limit solve (m={scale_big:g}) failed (reason={reason})")
-                return dict(scale0=None, rungs=rungs, reached_one=False, converged=False, reason=reason)
-            m_star = _max_over_domain(solver, control.onset_expr)
+                message = f"the viscous-limit solve (m={scale_big:g}) failed (reason={reason})"
+                return dict(scale0=None, rungs=rungs, reached_one=False, converged=False,
+                            reason=reason, message=message)
+            num, den = _cell_values(solver, (terms["onset_num"], terms["onset_den"]))
+            m_star = _masked_max_ratio(num, den)
+            if math.isnan(m_star) or m_star == math.inf:
+                message = f"the viscous limit could not be read from the fields (m* = {m_star})"
+                return dict(scale0=None, rungs=rungs, reached_one=False, converged=False,
+                            reason=0, message=message)
             scale0 = 0.95 * m_star if m_star > 1.0 else 1.0
             if verbose:
                 uw.pprint(f"  [rate-strengthening] viscous limit m*={m_star:.4g}; ladder starts at m={scale0:.4g}")
         m = max(float(scale0), 1.0)
         step = float(down)
-        u_good, p_good = u.data.copy(), p.data.copy()
+        import numpy as np
+        u_good, p_good = np.array(u.array), np.array(p.array)
         failures = 0
         first = not rungs
         while len(rungs) < max_steps:
@@ -196,7 +232,7 @@ def rate_strengthening_continuation(
             rungs.append((m, reason, nit))
             first = False
             if reason > 0:
-                u_good[...] = u.data; p_good[...] = p.data
+                u_good[...] = u.array; p_good[...] = p.array
                 if verbose:
                     uw.pprint(f"  [rate-strengthening] m={m:<10.4g} its={nit:3d} -> converged")
                 if m <= 1.0:
@@ -209,49 +245,87 @@ def rate_strengthening_continuation(
                 m = max(m * step, 1.0)
             else:
                 with uw.synchronised_array_update("rate_strengthening revert"):
-                    u.data[...] = u_good; p.data[...] = p_good
+                    u.array[...] = u_good
+                    p.array[...] = p_good
                 solver._record_convergence_status(converged=True)
                 failures += 1
                 if failures > retries:
-                    if verbose:
-                        uw.pprint(f"  [rate-strengthening] m={m:<10.4g} its={nit:3d} -> failed (reason={reason}); giving up above m=1")
+                    message = f"m={m:.4g} failed (reason={reason}) after {retries} retries"
                     break
                 step = min(step ** 0.5, 0.95)
-                last_ok = max((r[0] for r in rungs if r[1] > 0), default=m / step)
+                # retry from the LAST converged rung — the state just restored
+                last_ok = next((r[0] for r in reversed(rungs) if r[1] > 0), m / step)
                 m = max(last_ok * step, 1.0)
                 if verbose:
                     uw.pprint(f"  [rate-strengthening] failed (reason={reason}); retrying at m={m:.4g}")
+        else:
+            message = f"max_steps={max_steps} rungs used, last converged m={rungs[-1][0]:.4g}" if rungs else None
     finally:
         solver._difficulty_probe = saved_probe
         solver._difficulty_max_it = saved_probe_maxit
         solver._resume_abs_target = saved_resume
         solver.consistent_jacobian = saved_tangent
         if not reached_one:
-            # leave the model as it was stated, never at an intermediate m
+            # leave the model as it was stated, never at an intermediate m; the next
+            # solve repacks the constant, so no repack is attempted here (it would
+            # mask the exception that brought us to this block)
             control.set_scale(saved_scale)
-            try:
-                solver._update_constants()
-            except Exception:
-                pass
+    if not reached_one:
+        message = message or "the ladder stopped above m = 1"
+        if verbose:
+            uw.pprint(f"  [rate-strengthening] {message}; the model is back at m={saved_scale:g}")
+        warnings.warn(
+            f"[{solver.name}] rate-strengthening ladder did not reach the stated problem: "
+            f"{message}. The fields are the last converged rung's; the model is back at "
+            f"m={saved_scale:g}.", RuntimeWarning, stacklevel=2)
     return dict(scale0=scale0, rungs=rungs, reached_one=reached_one,
-                converged=bool(reached_one and reason > 0), reason=reason)
+                converged=bool(reached_one and reason > 0), reason=reason, message=message)
 
 
-def _max_over_domain(solver, expr):
-    """Maximum of a cell-wise expression over the mesh (P0 projection; rank-safe)."""
+def _cell_values(solver, exprs):
+    """Cell averages (P0 projections) of ``exprs`` on this rank's cells.
+
+    One P0 variable and one projector per solver, created on first use and reused, so
+    every rank creates the same objects in the same order. Raises if a projection
+    fails rather than returning the previous contents of the variable.
+    """
     import numpy as np
-    mesh = solver.mesh
-    var = uw.discretisation.MeshVariable(f"_rs_onset_{id(solver)}", mesh, 1, degree=0, continuous=False)
-    proj = uw.systems.Projection(mesh, var)
-    proj.uw_function = expr
-    proj.petsc_options.delValue("ksp_monitor")
-    proj.solve()
-    local = float(np.max(np.asarray(var.data))) if var.data.shape[0] else -np.inf
-    try:
-        from mpi4py import MPI
-        return float(MPI.COMM_WORLD.allreduce(local, op=MPI.MAX))
-    except Exception:
-        return local
+    probe = getattr(solver, "_rate_strengthening_probe", None)
+    if probe is None:
+        mesh = solver.mesh
+        var = uw.discretisation.MeshVariable(
+            f"rs_probe_{solver.instance_number}", mesh, 1, degree=0, continuous=False)
+        proj = uw.systems.Projection(mesh, var)
+        proj.petsc_options.delValue("ksp_monitor")
+        probe = solver._rate_strengthening_probe = (var, proj)
+    var, proj = probe
+    values = []
+    for expr in exprs:
+        proj.uw_function = expr
+        proj.solve()
+        if proj.snes.getConvergedReason() <= 0:
+            raise RuntimeError(
+                f"rate-strengthening probe projection failed "
+                f"(reason={proj.snes.getConvergedReason()}) for {expr}")
+        values.append(np.asarray(var.array).reshape(-1).copy())
+    return values
+
+
+def _masked_max_ratio(num, den):
+    """Global ``max(num / den)`` over cells with ``den > 0`` (collective).
+
+    ``-inf`` when no cell on any rank qualifies; NaN if any qualifying value is NaN.
+    """
+    import numpy as np
+    from mpi4py import MPI
+    num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
+    ok = den > 0.0
+    ratio = num[ok] / den[ok]
+    # NaN is reduced as its own flag: MPI.MAX compares with >, which drops a NaN
+    if int(uw.mpi.comm.allreduce(int(np.isnan(ratio).any()), op=MPI.MAX)):
+        return float("nan")
+    local = float(np.max(ratio)) if ratio.size else -np.inf
+    return float(uw.mpi.comm.allreduce(local, op=MPI.MAX))
 
 
 def yield_continuation(

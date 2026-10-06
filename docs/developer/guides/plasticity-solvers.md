@@ -90,12 +90,14 @@ rescue, and grid sequencing are.
 
 ## Which tangent for which model (measured)
 
-`solver.consistent_jacobian` takes `False` | `True` | `"continuation"`:
+`solver.consistent_jacobian` takes `False` | `True` | `"continuation"`; the default is
+`True` for every solver class since 2026-10-05, so a model that wants the frozen tangent
+must ask for it:
 
 | Model | Use | Why |
 |-------|-----|-----|
 | `ViscoPlasticFlowModel` (non-elastic) | **`True`** (Newton) | Quadratic near the solution; a cold start takes one Picard step automatically — use `solve(picard=N)` for more. |
-| `ViscoElasticPlasticFlowModel` (VEP) | **`False`** (Picard) | The consistent yield tangent over the elastic stress-history block makes the Jacobian **indefinite → `DIVERGED_LINEAR_SOLVE`**. Picard is contractive. |
+| `ViscoElasticPlasticFlowModel` (VEP) | **`False`** (Picard), set explicitly | The consistent yield tangent over the elastic stress-history block makes the Jacobian **indefinite → `DIVERGED_LINEAR_SOLVE`**. Picard is contractive. (The review of PR #794 found `test_1052`'s loading-through-yield converging under the Newton default with the smooth law, nl = 1 per step; the measurement below predates the smooth default.) |
 | `TransverseIsotropicVEPFlowModel` (TI-VEP) | **`False`** (Picard) | Same as VEP (elastic). |
 | Any, far from the solution | **`"continuation"`** | One solve: α (0 Picard → 1 Newton) set each iteration from F/‖F(u=0)‖ — leaves 0 at 0.1, reaches 1 at 5e-4 — with an `l2` line search (`bt` stops the Picard end). Warm starts enter at the α their residual calls for. Converged the hard notch (η_bg 5e24, also at δ 0.1) and a power law n = 5 where pure Newton fails; 3–9x fewer KSP than cold Newton where both converge. Known stall: the blended iteration oscillates at α ≈ 0.4–0.6 (notch at refinement 2; power law n = 3 with yield). |
 
@@ -137,8 +139,11 @@ If you want a *rounded* yield law at all (as physics or as a formulation choice)
 the substrate is three model properties; δ is a `constants[]` atom, so changing it
 never recompiles:
 
-- **`yield_mode`**: `"softmin"` (DEFAULT since 2026-10-05: `sqrt` smoother, `"yield"` anchor, δ = 0.1 — the exact hard `Min` is no longer the default), `"min"` (exact hard `Min`, explicit choice), `"softmin"` (the
-  δ-parameterised family below), `"harmonic"` (a **distinct physical model**, a
+- **`yield_mode`**: `"softmin"`, the δ-parameterised family below (DEFAULT since
+  2026-10-05: `sqrt` smoother, `"onset"` anchor, δ = 0.1 — the viscous branch and
+  the plastic limit exact, the yield point itself 4.5 % under-stressed, the yielded
+  tangent ≥ −1e-4 of the viscous one); `"min"` (exact hard `Min`, an explicit choice,
+  the default until 2026-10-05); `"harmonic"` (a **distinct physical model**, a
   parallel blend — not an approximation to `Min`).
 - **`yield_smoother`**: `"sqrt"` or `"powermean"`. **δ is NOT the same parameter
   in the two families**: the power mean's sharpness is `s = 1/(δ + 0.001)`, so
@@ -147,11 +152,15 @@ never recompiles:
   δ = 0 lands within 0.07 % of `Min` — an order of magnitude inside a 1e-8 solver
   tolerance.
 - **`yield_anchor`**: which point is pinned to the exact law — the SIDE of `Min`
-  belongs to the anchor, not the family. `"onset"` (default, historical) is exact
-  on the unyielded branch but sits BELOW `Min` at and above yield — a *weaker*
-  problem than the sharp one. `"yield"` pins τ/τ_y = 1 exactly and sits on-or-above
-  `Min` everywhere; the cost is stiffer unyielded material (bounded ×2 sqrt,
-  ×2^δ powermean, both → 1 as δ → 0).
+  belongs to the anchor, not the family. `"onset"` (default) is exact on the
+  unyielded branch but sits BELOW `Min` at and above yield — a *weaker* problem than
+  the sharp one, by 4.5 % at the yield point at δ = 0.1 and by a third at δ = 64.
+  `"yield"` pins τ/τ_y = 1 exactly and sits on-or-above `Min` everywhere; the cost is
+  stiffer unyielded material EVERYWHERE below yield, not just near it (×1/(1 − δ/2)
+  for sqrt — 5 % at δ = 0.1; ×2^δ for powermean), and for sqrt a stress that falls back
+  to τ_y from 1.033 τ_y above yield, i.e. a NEGATIVE yielded tangent (−0.029 of the
+  viscous slope at δ = 0.1). A δ-march entry, not a single-solve law; it was refused
+  as the default in review (PR #794).
 
 **If you march δ toward the sharp law, the only sound discipline is multi-solve:**
 hold δ constant for a full solve to tolerance, warm-start the next smaller δ,
@@ -166,7 +175,42 @@ measured, it never has.
 
 ---
 
+## Declared regularisation: `plastic_rate_strengthening`
+
+A yielded cell's consistent tangent has no modulus along its own strain-rate direction
+(perfect plasticity), so a yielded layer is a near-null mechanism mode of the velocity
+block (Spiegelman notch: Rayleigh quotient 1.8e-7). The model can state a
+regularisation for it:
+
+```python
+cm.Parameters.plastic_rate_strengthening = 1.0e19      # eta_reg, units of viscosity
+```
+
+The law becomes `eta_pl -> tau_y / (2 edot_II) + m * eta_reg` on ViscoPlastic, VEP and
+TI-VEP. It floors the plastic viscosity AND adds `2 m eta_reg` to the tangent along the
+flow in every yielded cell. Its scale is the model's: there is no universal
+dimensionless value (a 1 % overstress on the notch is 20 x sigma_y in a convective lid),
+which is why the default is 0 (no term) and a pressure-dependent yield stress under the
+consistent tangent without it warns. `m` (`rate_strengthening_scale`, default 1) is a
+`constants[]` multiplier, so changing it is a repack, not a recompile.
+
+`stokes.solve(homotopy="rate_strengthening")` ladders `m` from the viscous limit down to
+exactly 1 (ViscoPlastic only — the elastic models would advance their stress history on
+every rung): one solve at an entry multiplier `1e3 x max(eta_ve / eta_reg)` at which
+nothing yields, then the largest `m` at which a cell still yields there, read from the
+fields, then rungs down to `m = 1`, each warm-started, failed rungs retried from the last
+converged one. A ladder that stops above 1 leaves the model at `m = 1`, the fields at
+the last converged rung, and warns. The summary carries `scale0`, `rungs`,
+`reached_one`, `converged`. Measured on the notch: the equivalent ladder keeps the
+velocity block healthy on every rung and reaches a converged state no single solve
+could.
+
 ## Floors
+
+- With `plastic_rate_strengthening` stated, the viscosity floor is redundant on the
+  plastic branch wherever `m * eta_reg >= shear_viscosity_min`; the floor remains a
+  safeguard for the creep branch. `yield_stress_min` (the POSITIVE residual strength in
+  tension) is a statement of the yield law and stays.
 
 - **`shear_viscosity_min`** (default `-oo` = off) is applied through
   `uw.maths.smooth_max`, but the default rounding scale is zero under
@@ -191,7 +235,7 @@ measured, it never has.
 | `DIVERGED_LINEAR_SOLVE`, 0 iters, VEP | consistent Newton over the elastic block → indefinite | Picard (`consistent_jacobian=False`) |
 | `DIVERGED_LINEAR_SOLVE` at nl=0 with a viscosity floor set | δ→0 leaves the floor's `Max` corner exact | set `viscosity_min_rounding` |
 | Newton stalls with no divergence reason | admissible uselessness — steps accepted, residual flat | revert to best iterate, Picard block (`solve(picard=N)` or `"continuation"`); consider grid sequencing |
-| Converges but σ sits **below** τ_y | a fixed δ>0 soft-min under the default `"onset"` anchor is a WEAKER law | that is the modelling choice you made — use `yield_anchor="yield"`, or δ→0 / `yield_mode="min"` for the exact surface |
+| Converges but σ sits **below** τ_y | a fixed δ>0 soft-min under the default `"onset"` anchor is a WEAKER law (4.5 % at the yield point at δ = 0.1) | that is the modelling choice you made — a smaller δ, or `yield_mode="min"` for the exact surface (`yield_anchor="yield"` reaches τ_y but stiffens every unyielded cell and softens above yield) |
 | Linear (~20-iter) convergence | Picard tangent when you wanted Newton | `consistent_jacobian=True` on a non-elastic model (see "Confirm" above) |
 
 ---

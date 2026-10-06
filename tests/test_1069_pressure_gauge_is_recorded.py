@@ -60,7 +60,7 @@ def test_gauge_facts_are_in_the_solve_config_open_domain():
     assert g["pressure_nullspace_attached"] is False
     assert g["pressure_in_rheology"] is True
     assert g["pressure_dirichlet_bcs"] == []
-    assert "restart" in s.solve_report.config["ksp"]
+    assert s.solve_report.config["ksp"]["restart"] == 100
 
 
 def test_closed_box_with_pressure_dependent_viscosity_and_nullspace_warns():
@@ -106,3 +106,24 @@ def test_transcript_event_carries_the_gauge_and_the_tangent():
     recorded = [e for e in entry.events
                 if e["kind"] == "warning" and "GAUGE" in str(e.get("message", ""))]
     assert recorded, "the gauge warning was not recorded in the step"
+
+
+def test_krylov_restart_default_is_in_force_and_leaves_a_user_value_alone():
+    """Restart 100 is set at construction for the outer KSP (every class) and the Stokes
+    velocity split. It was first written inside the `tolerance` / `strategy` setters, so
+    a Stokes solver kept FGMRES(30) unless `strategy` was assigned, and a `tolerance`
+    assignment overwrote a user's own restart."""
+    from petsc4py import PETSc
+    opts = PETSc.Options()
+    s = _box("rs", closed=False, pressure_dependent=False, nullspace=False)
+    pfx = s.petsc_options_prefix
+    assert opts.getInt(pfx + "ksp_gmres_restart") == 100
+    assert opts.getInt(pfx + "fieldsplit_velocity_ksp_gmres_restart") == 100
+    s.petsc_options["ksp_gmres_restart"] = 30
+    s.tolerance = 1.0e-7
+    assert opts.getInt(pfx + "ksp_gmres_restart") == 30
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    T = uw.discretisation.MeshVariable("Trs", mesh, 1, degree=1)
+    pois = uw.systems.Poisson(mesh, u_Field=T)
+    assert opts.getInt(pois.petsc_options_prefix + "ksp_gmres_restart") == 100

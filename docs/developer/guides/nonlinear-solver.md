@@ -1,6 +1,6 @@
 ---
 name: nonlinear-solver
-description: How to make a hard nonlinear Stokes solve (Drucker-Prager / yield-stress viscoplastic) CONVERGE reliably in Underworld3 the way the working recipe actually does it — a Picard warm-up (`solve(picard=N)`: N real Picard steps then Newton; one is automatic on a cold start) plus a MULTI-SOLVE δ-continuation (constant δ per solve, warm-start the next, sharper δ), the consistent-Newton tangent, and a non-symmetry-safe multigrid smoother. Reach for THIS when a viscoplastic solve stalls / diverges and you are about to hand-tune PETSc options, ramp δ, or "just add a monitor". It carries the CONFIG TRAP LIST — the setup mistakes that each produce a different failure a few steps in — and the one thing you must NOT do (ramp δ inside a single SNES solve). For the yield-law maths and which tangent per model, see `plasticity-solvers`.
+description: How to make a hard nonlinear Stokes solve (Drucker-Prager / yield-stress viscoplastic) CONVERGE reliably in Underworld3 the way the working recipe actually does it — a Picard warm-up (`solve(picard=N)` gives N real Picard steps then Newton, and one is automatic on a cold start) plus a MULTI-SOLVE δ-continuation (constant δ per solve, warm-start the next, sharper δ), the consistent-Newton tangent, and a non-symmetry-safe multigrid smoother. Reach for THIS when a viscoplastic solve stalls / diverges and you are about to hand-tune PETSc options, ramp δ, or "just add a monitor". It carries the CONFIG TRAP LIST — the setup mistakes that each produce a different failure a few steps in — and the one thing you must NOT do (ramp δ inside a single SNES solve). For the yield-law maths and which tangent per model, see `plasticity-solvers`.
 families: [Stokes, ViscoPlasticFlowModel]
 kind: recipe
 ---
@@ -81,7 +81,8 @@ case felt like whack-a-mole. Check them first.
 
 | Trap | Symptom | Fix |
 |---|---|---|
-| **Perfect plasticity's consistent tangent is SINGULAR along the flow**: on the hard-`Min` plastic branch η = τ_y/2ε̇_II, so 2η + 2η′ε̇_II = 0 — the velocity block is symmetric but semi-definite in every yielded cell. (An earlier version of this row blamed *asymmetry*; that is wrong for any η(ε̇_II) law — the rank-one term η′ ε̇⊗ε̇/ε̇_II is symmetric. Pressure-dependent yield adds a non-symmetric v–p coupling, not a non-symmetric velocity block. Corrected 2026-08-26, maintainer review.) | benign while yielded cells are few (the viscous neighbours regularise); with a large yielded fraction the velocity sub-solve caps out and Newton stalls at ~1e-3, no failure reason | give the plastic branch a positive tangent: a small δ soft-min (`yield_mode="softmin"`, powermean, `yield_anchor="yield"`), a rounded viscosity floor, or rate-strengthening ξ; Picard converges regardless (full 2η stiffness) but is linear-rate. The FMG bundle's `gmres`+`sor` smoother is Newton-safe either way |
+| **A pressure-dependent yield stress makes the Newton Schur complement INDEFINITE far from the solution**: the consistent tangent differentiates η by p, so J_vp is no longer −Bᵀ (Spiegelman notch at η_bg 5e24: 41% off, 40 of 1968 Schur eigenvalues change sign). In the basin of convergence the full tangent is benign again (no wrong-sign eigenvalues, no negative pivots). | fieldsplit Schur diverges at ~0.99 per iteration even with the velocity block solved exactly; `DIVERGED_LINEAR_SOLVE` on the first Newton steps of a cold Drucker-Prager solve | `newton_pressure_coupling=False` (the Newton velocity block with the frozen pressure column, a partial tangent with the standard saddle-point structure) on the approach, or `consistent_jacobian="continuation"`; the default keeps the full tangent, which is right once inside the basin |
+| **Perfect plasticity's consistent tangent is SINGULAR along the flow**: on the hard-`Min` plastic branch η = τ_y/2ε̇_II, so 2η + 2η′ε̇_II = 0 — the velocity block is symmetric but semi-definite in every yielded cell. (An earlier version of this row blamed *asymmetry*; that is wrong for any η(ε̇_II) law — the rank-one term η′ ε̇⊗ε̇/ε̇_II is symmetric. Pressure-dependent yield adds a non-symmetric v–p coupling, not a non-symmetric velocity block. Corrected 2026-08-26, maintainer review.) | benign while yielded cells are few (the viscous neighbours regularise); with a large yielded fraction the velocity sub-solve caps out and Newton stalls at ~1e-3, no failure reason | give the plastic branch a positive tangent: the declared `Parameters.plastic_rate_strengthening` (η_reg adds 2η_reg along the flow in every yielded cell; its scale is the model's), a rounded viscosity floor (clips only the fastest cells). The default soft-min (sqrt, `"onset"`, δ = 0.1) does NOT do it — its yielded tangent is ≥ −1e-4 of the viscous one, still effectively singular; the sqrt law under `yield_anchor="yield"` is negative (−0.029). Picard converges regardless (full 2η stiffness) but is linear-rate. The FMG bundle's `gmres`+`sor` smoother is Newton-safe either way |
 | `preconditioner="fmg"` (vs explicit `pc_type=mg` + manual mg opts) | outer KSP "converges" in **1 iteration** → no real Newton correction → stall → `DIVERGED_LINE_SEARCH` | use explicit `pc_type=mg` with the smoother opts above; bound the outer KSP (`ksp_max_it`~80) so a hostile step fails fast |
 | Cold plastic start `v=0`, or any rigid/unyielded point | `DIVERGED_FNORM_NAN` at iteration 0 | **Not** a div/0: `ε̇=0` gives `η_pl=+inf`, which `Min` and the sqrt soft-min carry correctly to the viscous branch. Only a soft-min form that computes `η_ve·η_pl/(η_ve+η_pl)` breaks (`inf/inf`). Fixed in the power-mean; if you hand-roll a blend, write the harmonic mean as `η_ve/(1+η_ve/η_pl)`. **Do not reach for a strain-rate floor** — it hides this rather than fixing it |
 | LU velocity block with all-Dirichlet-ish BC | pressure nullspace singular | attach the Stokes nullspace / avoid a bare LU there |
@@ -102,17 +103,33 @@ mesh-mover — the `is_setup=False` hook); kept through coefficient changes (vis
 δ, BC values, time step). A **diverged** solve leaves it `False`, so the next solve
 auto-cold-starts rather than warming off a corrupted iterate.
 
-On a **cold** Stokes solve under the **consistent-Newton tangent**, ONE Picard step is
-taken automatically (a real one — #791 replaced the former nrichardson sweep).
+`consistent_jacobian=True` (the consistent Newton tangent) is the DEFAULT for every
+solver class since 2026-10-05. On a **cold** solve ONE Picard step is taken
+automatically (a real one — #791 replaced the former nrichardson sweep), in Stokes and
+in the Scalar, Vector and MultiComponent solvers alike. No automatic step is taken for a
+`ksponly` (linear) solve, for a flux whose coefficient does not depend on the unknowns
+(the two tangents coincide), or on the rotated free-slip and fault-contact paths, which
+run their own loops; an explicit `picard=N` on the rotated path stages N Picard
+iterations then Newton on the same blended Jacobian. A warm start takes none.
 
 ```python
-stokes.consistent_jacobian = True
 stokes.solve()                 # cold -> one Picard step, then Newton
 stokes.solve(picard=3)         # the recipe: three Picard steps, then Newton
 stokes.solve(picard=-1)        # no warm-up
 if stokes.has_solution:
     ...
 ```
+
+The warm-up runs inside the solve's own contracts: update callbacks, the
+`guard(wall_per_step=...)` deadline, an `estimate_difficulty` cap (the steps count
+against it), and the report. `solve_report.nl_its`, `ksp_its` and the history include
+the warm-up, the reduction is measured from the cold residual, and
+`solve_report.config["tangent"]["picard_warmup_its"]` says how many steps were taken.
+The Newton stage that follows stops at `tolerance`·‖F(u_cold)‖, where one uninterrupted
+solve would.
+
+Changing `consistent_jacobian` or `newton_pressure_coupling` after a solve recompiles the
+Jacobian on the next one; the report always describes the tangent that ran.
 
 Under `False` every iteration is already a Picard step. Under `"continuation"` the whole
 Picard→Newton passage is ONE solve: α is set each iteration from the residual relative to
@@ -121,6 +138,28 @@ Picard→Newton passage is ONE solve: α is set each iteration from the residual
 iterations. Tunables: `continuation_alpha_start`, `continuation_newton_at`,
 `continuation_linesearch`. This is the robust choice for a hard cold start AND for warm
 continuation steps (δ, η, BC changes) — a warm start enters the ramp near α = 1.
+
+### What the solve records (`solve_report.config`)
+
+Every solve records the configuration that actually ran, read from the live PETSc
+objects at the call: SNES type and tolerances, line search, outer KSP (with its Krylov
+`restart`) and the fieldsplit sub-solvers, the tangent (`consistent_jacobian`,
+`newton_pressure_coupling`, α where the blended Jacobian is live), and for Stokes the
+pressure `gauge` (nullspace requested / attached, whether the rheology reads p, pressure
+Dirichlet BCs, natural boundaries) and the yield-law `regularisation` (mode, smoother,
+anchor, δ, `plastic_rate_strengthening` and its ladder multiplier). The step transcript's
+solve event carries `tangent`, `gauge` and `regularisation`, so a run can be debugged from
+the record without a live process.
+
+Two warnings come from the same facts, once per solve: a mean-pressure nullspace with a
+viscosity that reads p (the yield law then sees a gauge-fixed pressure), and a
+pressure-dependent yield stress under the consistent tangent with no stated
+`plastic_rate_strengthening` (see `plasticity-solvers`).
+
+The Krylov restart is 100 by default (outer KSP of every solver, and the Stokes velocity
+split), not PETSc's 30: a yielded layer gives the Newton velocity block a near-null
+mechanism mode that FGMRES(30) cannot resolve at all (rate 1.000) and FGMRES(100) does.
+A user's own `ksp_gmres_restart` is left alone.
 
 ---
 

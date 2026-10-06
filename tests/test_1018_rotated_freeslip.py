@@ -918,7 +918,8 @@ def _powerlaw_stokes(mesh, prefix, amp=2.0, nexp=3.0, cj=None):
     """A genuinely NONLINEAR Stokes: power-law viscosity eta = eps_II^(1/n - 1)
     (smooth, so Newton/Picard iterates robustly), driven by a horizontally-varying
     vertical body force so there is real shear. ``cj`` sets ``consistent_jacobian``
-    (None=default frozen/Picard, True=consistent Newton, "continuation"=staged)."""
+    (None = the solver default, consistent Newton since 2026-10-05; False = frozen/
+    Picard; True = consistent Newton; "continuation" = staged)."""
     x, y = mesh.X
     v = uw.discretisation.MeshVariable(prefix + "v", mesh, mesh.dim, degree=2, continuous=True)
     p = uw.discretisation.MeshVariable(prefix + "p", mesh, 1, degree=1, continuous=False)
@@ -962,12 +963,14 @@ def plaw_box_ref():
 
 
 def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
-    """Default (frozen/Picard) tangent through the rotated path: genuinely iterates
-    and converges to the native essential nonlinear free-slip answer (both impose
-    v_n=0 — identical discrete problem), with machine-zero wall-normal flow on every
-    wall. Exercises the rotated constraint INSIDE the nonlinear iteration."""
+    """Frozen (Picard) tangent through the rotated path: genuinely iterates and
+    converges to the native essential nonlinear free-slip answer (both impose v_n=0 —
+    identical discrete problem), with machine-zero wall-normal flow on every wall.
+    Exercises the rotated constraint INSIDE the nonlinear iteration. Pinned to
+    consistent_jacobian=False: the default is Newton since 2026-10-05, and this is the
+    rotated path's only frozen-tangent nonlinear test."""
     mesh, vE, _ = plaw_box_ref
-    s, vR, pR = _powerlaw_stokes(mesh, "nlP")           # default (Picard) tangent
+    s, vR, pR = _powerlaw_stokes(mesh, "nlP", cj=False)  # frozen (Picard) tangent
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(0, wall)
     s.solve()

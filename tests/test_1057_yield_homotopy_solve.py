@@ -262,13 +262,15 @@ def _yielding_box(tag, tau_y, cellSize=0.2):
 
 @pytest.mark.level_2
 def test_homotopy_rescues_a_solve_the_cold_start_cannot_do():
-    """THE user-level guarantee: ``solve(homotopy=True)`` converges on a genuinely
-    yielding problem where a direct cold solve of the sharp law does not.
+    """``solve(homotopy=True)`` converges on a genuinely yielding problem where a direct
+    cold solve of the sharp law under the FROZEN (Picard) tangent does not.
 
-    This is a CAPABILITY test, deliberately asserting both halves on the same problem,
-    so the feature cannot silently regress into "runs without error but no longer
-    rescues anything". At tau_y = 0.30 (~45% of the domain yielding) the cold hard-Min
-    solve gives DIVERGED_MAX_IT; the march settles near 1e-4 and converges.
+    A CAPABILITY test, asserting both halves on the same problem, so the feature cannot
+    silently regress into "runs without error but no longer rescues anything". At
+    tau_y = 0.30 (~45% of the domain yielding) the cold hard-Min Picard solve gives
+    DIVERGED_MAX_IT; the march settles near 1e-4 and converges. Since 2026-10-05 the
+    DEFAULT cold solve (one Picard step, then Newton) converges on this box too, so the
+    rescue is measured against the Picard-throughout solve, not the default one.
     """
     import numpy as np
 

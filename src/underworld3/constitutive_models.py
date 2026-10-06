@@ -54,6 +54,39 @@ from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
 from underworld3.function import expression as public_expression
 
+
+def _parameter_is_zero(par):
+    """True when a constitutive parameter is exactly zero: ``0``, ``0.0``, a units
+    quantity of zero, or an expression that unwraps to zero. ``None`` counts as zero.
+
+    The one test every "is this term stated?" decision uses. ``sympy.Float(0.0) == 0``
+    is False (SymPy >= 1.13), so ``== 0`` / ``!= 0`` on a parameter's ``.sym`` gives
+    different answers for ``0`` and ``0.0``; ``is_zero`` does not.
+    """
+    if par is None:
+        return True
+    from underworld3.function.expressions import unwrap_expression
+    try:
+        value = unwrap_expression(par, mode="nondimensional")
+        value = getattr(value, "magnitude", value)
+        return sympy.sympify(value).is_zero is True
+    except (TypeError, ValueError, AttributeError, sympy.SympifyError):
+        # an expression we cannot reduce to a number is a stated (non-zero) term
+        return False
+
+
+def _plastic_rate_strengthening_parameter():
+    """The declared plastic rate strengthening, shared by every yielding model's
+    Parameters (ViscoPlastic, ViscoElasticPlastic, TransverseIsotropicVEP)."""
+    import underworld3.utilities._api_tools as api_tools
+    return api_tools.Parameter(
+        R"{\eta_{\mathrm{reg}}}",
+        lambda inner_self: 0,
+        "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + m eta_reg (a stated "
+        "regularisation; floors the plastic viscosity AND its tangent modulus; 0 = no term)",
+        units="Pa*s",
+    )
+
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 
@@ -1075,9 +1108,17 @@ class ViscousFlowModel(Constitutive_Model):
     def _yield_offset_for_anchor(self):
         r"""The sqrt soft-min offset that pins the chosen anchor, symbolic in δ."""
         delta = self._yield_softness_expr
-        if getattr(self, "_yield_anchor", "yield") == "yield":
+        if getattr(self, "_yield_anchor", "onset") == "yield":
             return delta / 2
         return (-1 + sympy.sqrt(1 + delta**2)) / 2
+
+    def _with_rate_strengthening(self, viscosity_yield, parameters):
+        """``viscosity_yield + m * eta_reg`` when the model states a plastic rate
+        strengthening, else ``viscosity_yield`` unchanged (no term compiled)."""
+        eta_reg = getattr(parameters, "plastic_rate_strengthening", None)
+        if _parameter_is_zero(eta_reg):
+            return viscosity_yield
+        return viscosity_yield + self._get_rate_strengthening_scale() * eta_reg
 
     def _get_rate_strengthening_scale(self):
         r"""The homotopy multiplier on ``plastic_rate_strengthening`` as a ``constants[]`` atom.
@@ -1085,7 +1126,7 @@ class ViscousFlowModel(Constitutive_Model):
         The law is ``eta_pl -> tau_y/(2 edot_II) + m * eta_reg`` with ``m = 1`` the stated
         problem. A ladder in ``m`` from a large value (effectively viscous) down to 1 is an
         approach from above that ends at the problem as stated; ``m`` is a rampable
-        constant, so each rung is a repack and not a recompile. Louis, 2026-10-05: the
+        constant, so each rung is a repack and not a recompile. The
         regularisation is a DECLARED parameter with its scale stated per model — there is
         no universal dimensionless value.
         """
@@ -1107,17 +1148,19 @@ class ViscousFlowModel(Constitutive_Model):
 
     @rate_strengthening_scale.setter
     def rate_strengthening_scale(self, value):
+        # No _reset(): m is a constants[] atom and the next solve repacks it. A reset
+        # would force a JIT rewire on every rung (measured 5.2 s against 0.23 s per rung
+        # on a 0.25 box). Before the atom exists the value is read when it is created.
         self._rate_strengthening_scale = float(value)
         if getattr(self, "_rate_strengthening_scale_expr", None) is not None:
             self._rate_strengthening_scale_expr.sym = sympy.Float(self._rate_strengthening_scale)
-        self._reset()
 
     def _rate_strengthening_control(self):
         """How the solver ladders the declared rate strengthening (``m`` from the viscous
         limit down to 1). ``None`` when the model states no ``plastic_rate_strengthening``."""
         from underworld3.systems.yield_continuation import RateStrengtheningControl
         eta_reg = getattr(self.Parameters, "plastic_rate_strengthening", None)
-        if eta_reg is None or eta_reg.sym == 0:
+        if _parameter_is_zero(eta_reg):
             return None
 
         def set_scale(value):
@@ -1128,21 +1171,24 @@ class ViscousFlowModel(Constitutive_Model):
             tangent=self._yield_homotopy_tangent,
             scale=self._get_rate_strengthening_scale(),
             parameter=eta_reg,
-            onset_expr=self._rate_strengthening_onset_expr(),
+            probe_terms=self._rate_strengthening_probe_terms(),
         )
 
-    def _rate_strengthening_onset_expr(self):
-        r"""Per cell, the multiplier ``m`` at which the cell just stops yielding at the
-        CURRENT fields: ``(eta_ve - tau_y/(2 edot_II)) / eta_reg``. Its maximum over the
-        domain is the viscous limit a ladder should start from (generic: needs only the
-        model's own branches, no problem knowledge)."""
-        inner = self.Parameters
-        eta_reg = inner.plastic_rate_strengthening
-        tau = inner.yield_stress
-        if inner.yield_stress_min.sym != -sympy.oo:
-            tau = self._apply_floor(tau, inner.yield_stress_min)
-        edot = self._strainrate_inv_II + (inner.strainrate_inv_II_min if inner.strainrate_inv_II_min.sym != 0 else 0)
-        return (inner.shear_viscosity_0 - tau / (2 * edot)) / eta_reg
+    def _rate_strengthening_probe_terms(self):
+        r"""Cell-wise terms the rate-strengthening ladder reads to place its rungs, or
+        ``None`` when this model does not provide them (the ladder then needs an
+        explicit ``scale0``).
+
+        Returns a dict of expressions: ``viscous`` and ``eta_reg`` (their ratio, at any
+        state, sets an entry ``m`` at which nothing yields), and ``onset_num`` /
+        ``onset_den``, :math:`2\dot\varepsilon_{II}\eta_{ve} - \tau_y` and
+        :math:`2\dot\varepsilon_{II}\eta_{reg}`, whose ratio is the ``m`` at which a cell
+        just stops yielding at the current fields. Kept as a numerator/denominator pair
+        so a rigid cell (zero strain rate) or a material with no regularisation (zero
+        ``eta_reg``) gives finite values that the ladder masks, instead of an infinite
+        or undefined quotient inside the kernel.
+        """
+        return None
 
     def _get_yield_offset(self):
         """The offset constant atom (lazily created alongside δ)."""
@@ -1162,9 +1208,15 @@ class ViscousFlowModel(Constitutive_Model):
         :math:`f = \eta_{ve} / \eta_{pl}` for the overstress ratio (so :math:`f = 1` is
         the yield point and :math:`f < 1` is unyielded):
 
-        ``"onset"`` (the default until 2026-10-05)
+        ``"onset"`` (default)
             Pins the unyielded limit :math:`f \to 0`, where :math:`\eta = \eta_{ve}`
-            exactly. The curve then sits BELOW the exact law at and above the yield
+            exactly, so a material that never yields gives the viscous answer. At the
+            default δ = 0.1 the sqrt law under-stresses the yield point by 4.5%
+            (:math:`\tau/\tau_y = 0.955` at :math:`f = 1`), recovers the plastic limit
+            :math:`\tau \to \tau_y` from within 0.04%, and its tangent above yield is
+            at least :math:`-10^{-4}` of the viscous one — perfect plasticity to within
+            rounding, made positive by any ``plastic_rate_strengthening``. For a large
+            homotopy δ the curve sits well BELOW the exact law at and above the yield
             point — the sqrt family undershoots for :math:`f < 2` (at
             :math:`\delta = 64`, :math:`\eta/\eta_{ve} = 0.80` at :math:`f = 0.5` where
             the exact law gives 1.0, and the yield point itself is a third
@@ -1175,7 +1227,7 @@ class ViscousFlowModel(Constitutive_Model):
             problem's overstress ratio is O(1), because then the smoothed problem is
             WEAKER than the sharp one it is supposed to be an easy version of.
 
-        ``"yield"`` (default)
+        ``"yield"``
             Pins :math:`f = 1`, so :math:`\tau/\tau_y = 1` exactly at the yield point
             for every δ and the curve is :math:`\ge` the exact law everywhere — a
             genuine approach from above, which is the safe direction for a homotopy
@@ -1186,9 +1238,15 @@ class ViscousFlowModel(Constitutive_Model):
             arguments are equal. The cost is stiffened unyielded material, bounded by a
             factor 2 for the sqrt family and by :math:`2^{\delta}` for the power mean,
             both decaying to 1 as :math:`\delta \to 0`. The power-mean bound is why its
-            entry δ is O(1) and not O(10).
+            entry δ is O(1) and not O(10). The stiffening is not confined to the corner:
+            the sqrt law is :math:`1/(1 - \delta/2)` times the viscous one for EVERY
+            :math:`f \ll 1` (5% at δ = 0.1), and above yield its stress falls back to
+            :math:`\tau_y` from :math:`1.033\,\tau_y` at :math:`f = 1.2`, so the
+            yielded tangent is NEGATIVE (−0.029 of the viscous slope at δ = 0.1); the
+            power mean's plastic limit is :math:`2^{\delta}\tau_y`, not :math:`\tau_y`.
+            Use it for a δ march's entry, not as a single-solve law.
         """
-        return getattr(self, "_yield_anchor", "yield")
+        return getattr(self, "_yield_anchor", "onset")
 
     @yield_anchor.setter
     def yield_anchor(self, value):
@@ -1524,10 +1582,16 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
     .. math::
 
-        \eta_\mathrm{eff} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+        \eta_\mathrm{eff} = \operatorname{softmin}_\delta\left(\eta_0,
+            \frac{\tau_y}{2\dot{\varepsilon}_{II}} + m\,\eta_\mathrm{reg}\right)
 
     and :math:`\tau_y` is the yield stress and :math:`\dot{\varepsilon}_{II}`
-    is the second invariant of the strain rate.
+    is the second invariant of the strain rate. The combination is the δ-smoothed
+    minimum by default (sqrt family, ``"onset"`` anchor, δ = 0.1: see
+    :attr:`yield_mode`); ``yield_mode="min"`` gives the exact ``min``.
+    :math:`\eta_\mathrm{reg}` is the declared ``plastic_rate_strengthening``
+    (default 0, no term) and :math:`m` its homotopy multiplier
+    (``rate_strengthening_scale``, 1 = as stated).
 
     Parameters
     ----------
@@ -1569,18 +1633,20 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         )
 
         # Yield-combination mode (see _combine_yield on the base class). Default
-        # DEFAULT = the smooth yield law (Louis, 2026-10-05): the exact hard Min is no
+        # DEFAULT = the smooth yield law (since 2026-10-05): the exact hard Min is no
         # longer the default. The kink broke the consistent tangent at the yield corner
         # (and sympy's fuzzy comparisons on UWexpressions), and every hard case in the
-        # Spiegelman campaign had to set these by hand. The "yield" anchor keeps
-        # tau/tau_y = 1 exactly at the yield point and the law >= the exact one
-        # everywhere; delta = 0.1 rounds the corner over f in [0.9, 1.1] and stiffens
-        # unyielded material by at most ~3% just below yield. yield_mode = "min" with
-        # yield_softness = 0 is still available, as an explicit choice.
+        # Spiegelman campaign had to set these by hand. The "onset" anchor keeps the
+        # viscous branch exact (a material that never yields is unchanged) and the
+        # plastic limit exact; delta = 0.1 under-stresses the yield point itself by
+        # 4.5% and leaves the yielded tangent at >= -1e-4 of the viscous one. (The
+        # "yield" anchor was tried as the default and refused in review: 5% stiffer
+        # unyielded material everywhere and a negative yielded tangent.) yield_mode =
+        # "min" with yield_softness = 0 is still available, as an explicit choice.
         self._yield_mode = "softmin"
         self._yield_softness = 0.1        # δ (sqrt family: width of the rounding in f)
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
-        self._yield_anchor = "yield"      # exact at the yield point; law >= exact Min
+        self._yield_anchor = "onset"      # exact viscous branch and plastic limit
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
 
@@ -1633,13 +1699,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Strain rate invariant minimum value",
             units="1/s",
         )
-        plastic_rate_strengthening = api_tools.Parameter(
-            R"{\eta_{\mathrm{reg}}}",
-            lambda inner_self: 0,
-            "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + eta_reg (a stated "
-            "regularisation; floors the plastic viscosity AND its tangent modulus)",
-            units="Pa*s",
-        )
+        plastic_rate_strengthening = _plastic_rate_strengthening_parameter()
 
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
@@ -1650,9 +1710,11 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         r"""Effective viscosity with plastic yielding.
 
         .. math::
-            \eta_{\mathrm{eff}} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+            \eta_{\mathrm{eff}} = \operatorname{softmin}_\delta\left(\eta_0,
+                \frac{\tau_y}{2\dot{\varepsilon}_{II}} + m\,\eta_\mathrm{reg}\right)
 
-        where :math:`\dot{\varepsilon}_{II}` is the second invariant of strain rate.
+        where :math:`\dot{\varepsilon}_{II}` is the second invariant of strain rate
+        (see the class docstring for the combination and the regularisation).
         """
         inner_self = self.Parameters
         # detect if values we need are defined or are placeholder symbols
@@ -1698,13 +1760,11 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # every yielded element (a static viscosity floor clips only the fastest cells and
         # leaves the tangent at zero elsewhere — the mechanism mode of a yielded layer).
         # Scale stated by the model; m is the homotopy multiplier, 1 = as stated.
-        if getattr(inner_self, "plastic_rate_strengthening", None) is not None and inner_self.plastic_rate_strengthening.sym != 0:
-            viscosity_yield = viscosity_yield + self._get_rate_strengthening_scale() * inner_self.plastic_rate_strengthening
+        viscosity_yield = self._with_rate_strengthening(viscosity_yield, inner_self)
 
-        # Combine the viscous and plastic (yield) viscosities. The default
-        # yield_mode="min" gives the exact hard Min(η_0, η_yield); yield_mode="softmin"
-        # opts into the δ-parameterised smooth-min (sqrt or powermean family) for a
-        # scalable homotopy toward the sharp yield surface.
+        # Combine the viscous and plastic (yield) viscosities: the δ-parameterised
+        # smooth-min by default (see yield_mode / yield_smoother / yield_anchor);
+        # yield_mode="min" gives the exact hard Min(η_0, η_yield).
         effective_viscosity = self._combine_yield(
             inner_self.shear_viscosity_0, viscosity_yield
         )
@@ -1730,15 +1790,35 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         can march it. See :meth:`_yield_homotopy_control`."""
         return True
 
+    def _rate_strengthening_probe_terms(self):
+        # See ViscousFlowModel._rate_strengthening_probe_terms: the same floors as
+        # the viscosity above, so the ladder reads the law the solve runs.
+        inner_self = self.Parameters
+        tau = inner_self.yield_stress
+        if inner_self.yield_stress_min.sym != -sympy.oo:
+            tau = self._apply_floor(tau, inner_self.yield_stress_min)
+        edot = self._strainrate_inv_II
+        if not _parameter_is_zero(inner_self.strainrate_inv_II_min):
+            edot = edot + inner_self.strainrate_inv_II_min
+        eta_reg = inner_self.plastic_rate_strengthening
+        return dict(
+            viscous=inner_self.shear_viscosity_0,
+            eta_reg=eta_reg,
+            onset_num=2 * edot * inner_self.shear_viscosity_0 - tau,
+            onset_den=2 * edot * eta_reg,
+        )
+
     @property
     def yield_mode(self):
         r"""How the viscous and plastic (yield) viscosities are combined.
 
-        - ``"min"`` (default): exact hard ``Min(η_0, η_yield)`` — the sharp yield
-          surface this model has always used.
+        - ``"softmin"`` (default since 2026-10-05): the δ-parameterised smooth-min
+          (family set by ``yield_smoother``, pinned by ``yield_anchor``, rounded by
+          ``yield_softness``; default sqrt, "onset", δ = 0.1) — smooth enough for the
+          consistent tangent, and the scale of a homotopy toward the sharp surface.
+        - ``"min"``: exact hard ``Min(η_0, η_yield)`` — the sharp yield surface this
+          model used until 2026-10-05; its kink breaks the Newton tangent at yield.
         - ``"harmonic"``: ``1/(1/η_0 + 1/η_yield)`` — a smooth blend.
-        - ``"softmin"``: the δ-parameterised smooth-min (family set by
-          ``yield_smoother``), for a scalable homotopy toward the sharp surface.
         """
         return self._yield_mode
 
@@ -1898,7 +1978,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         self._order = order
         self._yield_mode = "softmin"  # "min", "harmonic", "smooth", or "softmin"
-        self._yield_anchor = "yield"  # exact at the yield point (default since 2026-10-05)
+        self._yield_anchor = "onset"  # exact viscous branch and plastic limit
         self._yield_softness = 0.1  # δ parameter for "softmin" mode
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
@@ -2007,13 +2087,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Strain rate invariant minimum value",
             units="1/s",
         )
-        plastic_rate_strengthening = api_tools.Parameter(
-            R"{\eta_{\mathrm{reg}}}",
-            lambda inner_self: 0,
-            "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + eta_reg (a stated "
-            "regularisation; floors the plastic viscosity AND its tangent modulus)",
-            units="Pa*s",
-        )
+        plastic_rate_strengthening = _plastic_rate_strengthening_parameter()
 
         def __init__(
             inner_self,
@@ -2471,8 +2545,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             )
         else:
             viscosity_yield = yield_stress / (2 * strainrate_inv_II)
-        if getattr(parameters, "plastic_rate_strengthening", None) is not None and parameters.plastic_rate_strengthening.sym != 0:
-            viscosity_yield = viscosity_yield + self._get_rate_strengthening_scale() * parameters.plastic_rate_strengthening   # see ViscoPlasticFlowModel.viscosity
+        viscosity_yield = self._with_rate_strengthening(viscosity_yield, parameters)
 
         return viscosity_yield
 
@@ -2599,8 +2672,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             ``η_ve / g(f)`` where ``g(f) ≈ max(1, f)`` with smoothing
             parameter δ (``yield_softness``, default 0.1).  Approaches
             exact Min as δ → 0; smooth derivatives at the kink.
-            Recommended default: gets within ~2 % of the true yield
-            surface while avoiding the SNES kink penalties of ``"min"``.
+            Recommended default: with the "onset" anchor it under-stresses the
+            yield point itself by 4.5 % and recovers the plastic limit to
+            0.04 %, while avoiding the SNES kink penalties of ``"min"``.
         ``"harmonic"``: parallel blending — ``1/(1/η_ve + 1/η_pl)``.
             Smooth but undershoots τ_y for soft materials.
         ``"min"``: sharp cutoff — ``Min(η_ve, η_pl)``.
@@ -3524,13 +3598,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             lambda inner_self: 0,
             "Strain rate invariant minimum value", units="1/s",
         )
-        plastic_rate_strengthening = api_tools.Parameter(
-            R"{\eta_{\mathrm{reg}}}",
-            lambda inner_self: 0,
-            "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + eta_reg (a stated "
-            "regularisation; floors the plastic viscosity AND its tangent modulus)",
-            units="Pa*s",
-        )
+        plastic_rate_strengthening = _plastic_rate_strengthening_parameter()
 
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
@@ -3893,8 +3961,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             )
         else:
             viscosity_yield = tau_y / (2 * gamma_dot_abs)
-        if getattr(parameters, "plastic_rate_strengthening", None) is not None and parameters.plastic_rate_strengthening.sym != 0:
-            viscosity_yield = viscosity_yield + self._get_rate_strengthening_scale() * parameters.plastic_rate_strengthening   # see ViscoPlasticFlowModel.viscosity
+        viscosity_yield = self._with_rate_strengthening(viscosity_yield, parameters)
 
         return viscosity_yield
 

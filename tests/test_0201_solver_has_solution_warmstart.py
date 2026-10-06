@@ -11,8 +11,8 @@ Contract under test (design:
     cold-starts rather than warming off a stale iterate.
   * It survives a coefficient-only change (a new viscosity value), so parameter
     continuation and time-stepping warm-start correctly.
-  * A cold start under the consistent-Newton tangent takes one Picard step,
-    then Newton, converges and sets the flag. (Before #791 that step was an
+  * A cold start under the consistent-Newton tangent converges and sets the
+    flag; a LINEAR flux takes no automatic Picard step (a nonlinear one takes one). (Before #791 that step was an
     nrichardson residual sweep; the Picard contract itself is tested in
     test_1068.)
 
@@ -205,7 +205,7 @@ def test_cold_warmstart_under_consistent_newton_converges():
     stokes.add_essential_bc((0.0, None), "Right")
 
     stokes.consistent_jacobian = True
-    stokes.solve()  # cold: one Picard step, then Newton
+    stokes.solve()  # cold, linear flux: Newton directly, no Picard step
     assert stokes._picard_stages is None, (
         f"a linear flux took an automatic Picard step: {stokes._picard_stages}")
     assert stokes.snes.getConvergedReason() > 0

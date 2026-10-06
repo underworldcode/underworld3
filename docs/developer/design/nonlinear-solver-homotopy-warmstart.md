@@ -197,9 +197,15 @@ domain in the softened region. The cost of `"yield"` is stiffened unyielded mate
 bounded by 2 for the sqrt family and by $2^{\delta}$ for the power mean; that bound is
 why the power mean's entry δ is O(1) while the sqrt family's is O(10).
 
-The default is `"onset"` because it is the historical law, not because it is the better
-one. Changing it alters results for every existing `yield_mode="softmin"` user, so it is
-a separate maintainer decision.
+The default is `"onset"`, and since 2026-10-05 it is also the default for the default
+`"softmin"` law. `"yield"` was tried as that default and refused in review (PR #794):
+for the sqrt family the stiffening is not confined to the corner — every unyielded cell
+is $1/(1-\delta/2)$ stiffer (5 % at δ = 0.1, so a model that never yields changes its
+answer) — and above yield the stress falls back to $\tau_y$ from $1.033\,\tau_y$, a
+negative yielded tangent (−0.029 of the viscous slope). Under `"onset"` both limits are
+exact and the yielded tangent is $\ge -10^{-4}$ of the viscous one. The approach from
+above that `"yield"` was meant to provide is the declared `plastic_rate_strengthening`
+ladder (`solve(homotopy="rate_strengthening")`).
 
 ### Layer 3 — smoother as a consistent-Newton consequence
 

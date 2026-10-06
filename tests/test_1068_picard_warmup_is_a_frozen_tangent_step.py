@@ -43,7 +43,7 @@ def _yielding_box(tag, tangent, tau_y=0.30, cellSize=0.25):
     cm.Parameters.yield_stress = tau_y
     # These fixtures pin the frozen-tangent semantics on the EXACT hard Min, the law whose
     # kink makes the warm-up necessary. Since 2026-10-05 the model default is the smooth
-    # law (softmin, anchor "yield", delta 0.1), under which pure Newton converges here.
+    # law (softmin, sqrt, anchor "onset", delta 0.1), under which pure Newton converges here.
     cm.yield_mode = "min"
     s.bodyforce = sympy.Matrix([[0.0, -2.0 * sympy.cos(sympy.pi * x)]])
     s.add_essential_bc((sympy.oo, 0.0), "Top")
@@ -379,3 +379,62 @@ def test_partial_newton_converges_to_the_frozen_tangent_answer():
     assert sP.solve_report.converged, str(sP.solve_report)
     dv = np.abs(np.asarray(vP.data) - np.asarray(vF.data)).max()
     assert dv < 1.0e-4 * np.abs(np.asarray(vF.data)).max(), dv
+
+
+# ---- the warm-up inside the solve's contracts (review of PR #794) ---------------------
+
+def test_the_newton_stage_is_anchored_to_the_cold_residual():
+    """After the warm-up, Newton stops where an uninterrupted solve would: at
+    tolerance x ||F(u_cold)||, not a further tolerance below the post-warm-up residual.
+    Without the anchor a secretly-linear yielding box (tau_y far above any stress),
+    which converges in 2 Newton iterations without the warm-up, stagnated on step size
+    (SNORM_RELATIVE) after it. The report counts the warm-up and measures the
+    reduction from the cold residual."""
+    s, _ = _driven_box("anc", True, tau_y=1.0e4)
+    s.solve(zero_init_guess=True)
+    assert s._picard_stages == dict(picard_iterations=1), s._picard_stages
+    r = s.solve_report
+    assert str(r.reason_str) in FNORM, r.reason_str
+    assert r.config["tangent"]["picard_warmup_its"] == 1
+    # The one Picard step solves this secretly-linear problem, so the anchored Newton
+    # stage has nothing to do: the solve is that ONE step, counted in the report (the
+    # report used to show only the Newton solve's iterations). Before the anchor, Newton
+    # took 5 more iterations and stopped on SNORM.
+    assert r.nl_its == 1, r.nl_its
+    assert r.reduction <= s.tolerance * (1.0 + 1.0e-9), r.reduction
+
+
+def test_force_setup_is_not_read_as_picard():
+    """`picard` follows every other argument of the Scalar/Vector/MultiComponent solve():
+    five subclasses pass `_force_setup` positionally, and with `picard` second it landed
+    there — a forced Picard warm-up and a blended-kernel compile on a LINEAR
+    advection-diffusion solve."""
+    uw.reset_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    x, y = mesh.X
+    T = uw.discretisation.MeshVariable("T_fs", mesh, 1, degree=2)
+    adv = uw.systems.AdvDiffusion(mesh, T, sympy.Matrix([[-y, x]]))
+    for b in ("Left", "Right", "Top", "Bottom"):
+        adv.add_dirichlet_bc(0.0, b)
+    adv.solve(timestep=0.01, _force_setup=True)
+    assert adv._picard_stages is None, adv._picard_stages
+    assert adv._picard_blend is False
+
+
+def test_changing_the_tangent_recompiles_it():
+    """The tangent is compiled into the Jacobian, so changing consistent_jacobian or
+    newton_pressure_coupling after a solve marks a rewire; without it the next solve ran
+    the old tangent while the report recorded the new one. alpha is per solver: a shared
+    container let one solver's warm-up move another solver's tangent."""
+    s, _ = _driven_box("tg", True)
+    s.solve(zero_init_guess=True)
+    assert s._needs_function_rewire is False
+    s.consistent_jacobian = False
+    assert s._needs_function_rewire is True
+    s.solve(zero_init_guess=False)
+    assert s._needs_function_rewire is False
+    s.newton_pressure_coupling = False
+    assert s._needs_function_rewire is True
+    s2, _ = _driven_box("tg2", True)
+    assert s._get_newton_alpha() is not s2._get_newton_alpha()
