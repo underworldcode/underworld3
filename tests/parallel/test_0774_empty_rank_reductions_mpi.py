@@ -1,7 +1,7 @@
 """Parallel regression tests for issue #405 — reductions on a zero-cell rank.
 
 A rank that owns NO CELLS used to raise a rank-local ``ValueError`` from an
-unguarded local reduction (``self._radii.min()`` and friends) while its
+unguarded local reduction (``self._cell_radii.min()`` and friends) while its
 populated peers sat in the matching collective. The job then hung or aborted
 asymmetrically. Every global quantity computed from rank-local data must
 instead reduce across ranks, with the starved rank contributing the identity
@@ -34,10 +34,11 @@ pytestmark = [
     pytest.mark.tier_a,
 ]
 
-# Cell is 1.0 wide x 0.5 tall; the characteristic length UW3 reports is the
-# centroid-to-corner half-diagonal. Analytic, so this is a real oracle rather
-# than a recorded number.
-SERIAL_RADIUS = math.sqrt(0.5 ** 2 + 0.25 ** 2)
+# Cell is 1.0 wide x 0.5 tall, so its area is 0.5 and the characteristic
+# length UW3 reports is area**(1/2). Analytic, so this is a real oracle rather
+# than a recorded number. (It was the centroid-to-corner half-diagonal before
+# the cell size came from PETSc's DMPlexComputeGeometryFVM, issue #694.)
+SERIAL_RADIUS = (1.0 * 0.5) ** (1.0 / 2.0)
 
 
 def _starved_box():
@@ -89,7 +90,7 @@ def test_negative_control_rank_local_minimum_would_be_caught():
     """
     mesh = _starved_box()
 
-    radii = np.asarray(mesh._radii).reshape(-1)
+    radii = np.asarray(mesh._cell_radii).reshape(-1)
     rank_local_min = float(radii.min()) if radii.size else float("inf")
     gathered = uw.mpi.comm.allgather(rank_local_min)
 

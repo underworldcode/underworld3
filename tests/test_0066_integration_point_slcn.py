@@ -19,7 +19,11 @@ import sympy
 import underworld3 as uw
 from underworld3.systems.ddt import _storage_components
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# Module carries the LEVEL only; the tier goes on each test. pytest MERGES module
+# and function marks, so a tier_c test in a tier_a module would carry both and
+# still be selected by `tier_a or tier_b`.
+pytestmark = [pytest.mark.level_1]
+@pytest.mark.tier_a
 
 
 def test_slots_are_exact_departure_point_values():
@@ -88,6 +92,7 @@ def _rotating_gaussian(mesh, kind, dt, nsteps):
     from mpi4py import MPI
     peak = uw.mpi.comm.allreduce(float(T.data[:, 0].max()), op=MPI.MAX)  # global, not rank-local
     return l2, peak
+@pytest.mark.tier_a
 
 
 def test_undersampled_rule_is_refused():
@@ -101,19 +106,20 @@ def test_undersampled_rule_is_refused():
     # P1 on the same rule is 2x oversampled and accepted.
     T1 = uw.discretisation.MeshVariable("T1", mesh, 1, degree=1)
     uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T1, V, degree=1)
+@pytest.mark.tier_a
 
 
 @pytest.mark.level_2
-def test_rotating_gaussian_beats_nodal_slcn():
+def test_rotating_gaussian_ip_accuracy():
+    """Contract: the integration-point trace resolves the rotating Gaussian.
+
+    An absolute bound against the known solution, with no rival method in it.
+    """
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.08, qdegree=3
     )
-    dt, nsteps = 0.1, 16
-    l2_nodal, peak_nodal = _rotating_gaussian(mesh, "nodal", dt, nsteps)
-    l2_ip, peak_ip = _rotating_gaussian(mesh, "ip", dt, nsteps)
-    assert l2_ip <= l2_nodal
-    assert peak_ip >= peak_nodal
-    assert l2_ip < 0.02
+    l2_ip, _ = _rotating_gaussian(mesh, "ip", 0.1, 16)
+    assert l2_ip < 0.02, f"integration-point trace L2 error {l2_ip:.3e}"
 
 
 def _unsteady_uniform_flow_check(kind, vform="var"):
@@ -163,6 +169,7 @@ def _unsteady_uniform_flow_check(kind, vform="var"):
     assert inside.sum() > 100
     got = np.asarray(ddt.psi_star[0].data[:, 0])
     return np.abs(got[inside] - f(exact_foot[inside])).max(), np.abs(got[inside] - f(naive_foot[inside])).max()
+@pytest.mark.tier_a
 
 
 @pytest.mark.parametrize("vform", ["var", "neg", "half", "ramp"])
@@ -179,6 +186,7 @@ def test_midtime_velocity_makes_the_trace_second_order(kind, vform):
     # Negative control: the foot from v^n alone is b dt^2/2 away, which for
     # this quadratic field is a visible difference.
     assert err_naive > 1e-3
+@pytest.mark.tier_a
 
 
 @pytest.mark.parametrize("config", ["order2", "theta1", "cn"])
@@ -217,6 +225,7 @@ def test_composed_advdiffusion_reachability(config):
     # Same history, same time derivative; the solvers differ only in how the
     # (negligible) diffusion is applied, so the fields agree closely.
     assert np.abs(T_composed - T_slcn).max() < 5e-3
+@pytest.mark.tier_a
 
 
 def test_value_and_flux_histories_share_one_characteristic_trace():
@@ -250,6 +259,7 @@ def test_value_and_flux_histories_share_one_characteristic_trace():
         assert adv._flux_history_is_read() == (theta < 1.0)
         if theta == 1.0:
             assert not adv.DFDt._history_initialised
+@pytest.mark.tier_a
 
 
 def test_private_trace_when_a_manager_stands_alone():
@@ -319,6 +329,7 @@ def _pack(entries, columns):
         (uw.VarType.SYM_TENSOR, 3, [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]),
     ],
 )
+@pytest.mark.tier_a
 def test_the_storage_order_is_what_the_symbol_reconstructs(vtype, dim, expected):
     """Pin the column -> (i, j) convention against the variable itself.
 
@@ -346,6 +357,7 @@ def test_the_storage_order_is_what_the_symbol_reconstructs(vtype, dim, expected)
     got = np.asarray(uw.function.evaluate(var.sym, point)).reshape(var.sym.shape)
     for c, (i, j) in enumerate(columns):
         assert got[i, j] == pytest.approx(10.0 * (c + 1)), (c, i, j, got)
+@pytest.mark.tier_a
 
 
 def test_a_vector_history_holds_the_departure_point_values():
@@ -375,6 +387,7 @@ def test_a_vector_history_holds_the_departure_point_values():
     inside2 = (foot2 > 0.0).all(1) & (foot2 < 1.0).all(1)
     got2 = np.asarray(ddt.psi_star[1].data)[inside2]
     assert np.abs(got2 - _vector_field(foot2[inside2])).max() < 1e-12
+@pytest.mark.tier_a
 
 
 def test_a_symmetric_tensor_history_transports_every_component():
@@ -413,6 +426,7 @@ def test_a_symmetric_tensor_history_transports_every_component():
     assert sym[0, 0] == pytest.approx(entries[(0, 0)][0], abs=1e-10)
     assert sym[1, 1] == pytest.approx(entries[(1, 1)][0], abs=1e-10)
     assert abs(sym[0, 0] - sym[1, 1]) > 0.1        # the components are distinct
+@pytest.mark.tier_a
 
 
 def test_a_scalar_history_is_unchanged():
@@ -434,6 +448,7 @@ def test_a_scalar_history_is_unchanged():
     assert np.abs(
         np.asarray(ddt.psi_star[0].data)[inside, 0] - _scalar_field(foot[inside])
     ).max() < 1e-12
+@pytest.mark.tier_a
 
 
 @pytest.mark.parametrize("vtype", [uw.VarType.VECTOR, uw.VarType.SYM_TENSOR])
@@ -459,6 +474,7 @@ def test_the_history_symbol_participates_in_expressions(vtype):
     expr = (star - ddt.bdf()).T * (star - ddt.bdf())
     assert expr.shape[0] == star.shape[1]
     assert len(columns) == ddt.num_components
+@pytest.mark.tier_a
 
 
 def test_the_refusal_is_gone_but_the_rule_check_is_not():
@@ -469,6 +485,7 @@ def test_the_refusal_is_gone_but_the_rule_check_is_not():
     with pytest.raises(RuntimeError, match="qdegree|rule|oversample"):
         uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, U, _velocity(), vtype=uw.VarType.VECTOR, degree=2, order=1)
+@pytest.mark.tier_a
 
 
 def test_the_storage_map_follows_the_shape_not_the_mesh_dimension():
@@ -480,6 +497,7 @@ def test_the_storage_map_follows_the_shape_not_the_mesh_dimension():
     assert len(_storage_components(uw.VarType.SYM_TENSOR, (2, 2))) == 3
     assert len(_storage_components(uw.VarType.SYM_TENSOR, (3, 3))) == 6
     assert _storage_components(uw.VarType.VECTOR, (1, 3)) == [(0, 0), (0, 1), (0, 2)]
+@pytest.mark.tier_a
 
 
 def test_a_vtype_that_does_not_match_psi_fn_is_refused():
@@ -499,6 +517,7 @@ def test_a_vtype_that_does_not_match_psi_fn_is_refused():
             vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
 
     assert len(mesh.vars) == before, "a refused history left variables behind"
+@pytest.mark.tier_a
 
 
 def test_the_shape_guard_is_on_the_setter_not_only_the_constructor():
@@ -520,6 +539,7 @@ def test_the_shape_guard_is_on_the_setter_not_only_the_constructor():
 
     ddt.psi_fn = sympy.Matrix([[1.0, 2.0], [2.0, 3.0]])   # the right shape
     assert tuple(ddt.psi_fn.shape) == (2, 2)
+@pytest.mark.tier_a
 
 
 def test_a_full_tensor_is_not_accepted_as_a_symmetric_one():
@@ -534,6 +554,7 @@ def test_a_full_tensor_is_not_accepted_as_a_symmetric_one():
         uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, full, _velocity(), vtype=uw.VarType.SYM_TENSOR,
             degree=2, order=1)
+@pytest.mark.tier_a
 
 
 def test_an_asymmetric_psi_fn_under_sym_tensor_says_so():

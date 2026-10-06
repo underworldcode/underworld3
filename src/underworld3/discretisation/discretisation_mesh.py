@@ -1385,13 +1385,16 @@ class Mesh(Stateful, uw_object):
         self._Gamma.y._ccodestr = "petsc_n[1]"
         self._Gamma.z._ccodestr = "petsc_n[2]"
 
-        # Time coordinate — PETSc passes this as petsc_t to all pointwise
-        # functions. Solvers set dm.time before each solve via solve(time=t).
-        # Users reference it as mesh.t in expressions (e.g. V0 * sympy.sin(omega * mesh.t))
-        from ..utilities.unit_aware_coordinates import TimeSymbol
-
-        self._t = TimeSymbol("t")
-        self._t._units = None  # patched below by _patch_time_units
+        # Time coordinate. This is a live-rampable ``constants[]`` atom, NOT
+        # PETSc's ``petsc_t``: the high-level solve() wrappers never set
+        # petsc_t, so an expression built on it evaluated to zero inside every
+        # solve (silently — a time-dependent BC was identically zero). Time is
+        # owned by the orchestration model; ``mesh.t`` reads that clock.
+        # ``_sync_time_from_model`` repacks it before each solve, from the
+        # solver's ``_update_constants``, so no kernel is recompiled per step.
+        self._t = uw.expression(
+            r"t", 0.0, "model time — the clock on uw.get_default_model().tracker"
+        )
 
         # Add unit awareness to coordinate symbols if mesh has units or model has scales
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
@@ -1764,7 +1767,46 @@ class Mesh(Stateful, uw_object):
 
         uw.pprint("\n")
 
-    def view(self, level=0):
+    def describe(self, depth=4):
+        """What this mesh is, as data: dimension, coordinate system, size,
+        units and boundaries, with its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"dimension": self.dim, "coordinate dimension": self.cdim}
+        try:
+            facts["coordinate system"] = self.CoordinateSystem.coordinate_type.name
+        except Exception:
+            pass
+        try:
+            nstart, nend = self.dm.getHeightStratum(0)
+            facts["cells"] = int(nend - nstart)
+        except Exception:
+            pass
+        units = getattr(self, "units", None)
+        if units:
+            facts["coordinate units"] = str(units)
+        try:
+            facts["boundaries"] = [b.name for b in self.boundaries]
+        except Exception:
+            pass
+        try:
+            Q = self.quality()
+            if Q.get("element") == "2D-simplex":
+                facts["cell quality"] = (f"q_min {Q['q_min']:.3f}, mean {Q['q_mean']:.2f}, "
+                                         f"{Q['n_q_lt_0p3']} cells below 0.3")
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            for var in list(self.vars.values()):
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = f"{self.dim}-D mesh" + (f", {facts['cells']} cells" if "cells" in facts else "")
+        return record("mesh", getattr(self, "name", None), summary, facts=facts, children=children)
+
+    def view(self, level=0, format=None):
         """
         Displays mesh information at different levels.
 
@@ -1778,87 +1820,12 @@ class Mesh(Stateful, uw_object):
         import numpy as np
 
         if level == 0:
-            uw.pprint(f"\n")
-            uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
-
-            # Display coordinate units if set
-            if hasattr(self, "units") and self.units is not None:
-                uw.pprint(f"Coordinate units: {self.units}\n")
-                uw.pprint(f"  Access unit-aware coordinates via: mesh.X.coords\n")
-                uw.pprint(f"  Query units with: uw.get_units(mesh.X.coords)\n")
-
-            # Display length scale for non-dimensionalization
-            if hasattr(self, "_length_scale"):
-                if self._length_scale != 1.0:
-                    uw.pprint(
-                        f"Length scale (non-dimensionalization): {self._length_scale} {self._length_units}\n"
-                    )
-                else:
-                    uw.pprint(f"Length scale: 1.0 (no scaling)\n")
-
-            # Display coordinate system information
-            coord_sys = self.CoordinateSystem
-            coord_type = coord_sys.coordinate_type
-            uw.pprint(f"Coordinate system: {coord_type.name}\n")
-
-            # Show available coordinate accessors
-            accessors = ["mesh.X.coords (Cartesian)"]  # Always available
-            if coord_sys._spherical_accessor is not None:
-                if self.dim == 2:
-                    accessors.append("mesh.X.spherical (r, θ)")
-                else:
-                    accessors.append("mesh.X.spherical (r, θ, φ)")
-            if coord_sys._geo_accessor is not None:
-                accessors.append("mesh.X.geo (lon, lat, depth)")
-
-            uw.pprint(f"Coordinate access:\n")
-            for acc in accessors:
-                uw.pprint(f"  • {acc}\n")
-
-            # Only if notebook and serial
-            if uw.is_notebook and uw.mpi.size == 1:
+            # every rank describes (the cell-quality summary is a collective);
+            # the renderer prints on rank 0 only
+            from underworld3.utilities.describe import view as _view
+            _view(self, format=format)
+            if uw.is_notebook() and uw.mpi.size == 1:
                 uw.visualisation.plot_mesh(self, window_size=(600, 400))
-
-            # Total number of cells
-            nstart, nend = self.dm.getHeightStratum(0)
-            num_cells = nend - nstart
-
-            uw.pprint(f"Number of cells: {num_cells}\n")
-
-            # Cell-quality summary (the conditioning-relevant tail;
-            # full metrics + per-cell arrays via mesh.quality()).
-            try:
-                Q = self.quality()
-                if Q.get("element") == "2D-simplex":
-                    uw.pprint(
-                        f"Cell quality: q_min={Q['q_min']:.3f} "
-                        f"mean={Q['q_mean']:.2f} | poor(q<0.3): "
-                        f"{Q['n_q_lt_0p3']} | worst aspect "
-                        f"{Q['aspect_max']:.1f} | max size-jump "
-                        f"{Q['sizejump_max']:.1f}\n")
-                    if Q["n_q_lt_0p2"] > 0:
-                        uw.pprint(
-                            f"  ! {Q['n_q_lt_0p2']} cell(s) "
-                            f"q<0.2 (near-degenerate — solver "
-                            f"conditioning hazard)\n")
-                else:
-                    uw.pprint(
-                        f"Cell quality: vol_min/mean="
-                        f"{Q['vol_min_over_mean']:.3f} "
-                        f"(2-D triangle mesh needed for shape "
-                        f"metrics)\n")
-                uw.pprint("  (full metrics: mesh.quality())\n")
-            except Exception:
-                pass
-
-            self._print_variable_table()
-
-            ## Boundary information — sizes are omitted at level 0, so no
-            ## collective gathers are needed (they were dead results here).
-            self._print_boundary_table(with_sizes=False)
-
-            uw.pprint(f"Use view(1) to view detailed mesh information.\n")
-
         elif level == 1:
             if uw.mpi.rank == 0:
                 print(f"\n")
@@ -2840,12 +2807,10 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
-        (
-            self._min_size,
-            self._radii,
-            self._centroids,
-            self._search_lengths,
-        ) = self._get_mesh_sizes()
+        # `_min_size` and `_search_lengths` used to be unpacked here and were
+        # never read anywhere in src/ or tests/ -- the kd-tree loop computed
+        # three distance statistics per cell and two were discarded.
+        self._cell_radii, self._centroids = self._get_cell_radii()
 
         # Skip self-copy when hierarchy is trivial (issue #96 investigation)
         if self.dm is not self.dm_hierarchy[-1]:
@@ -3234,8 +3199,8 @@ class Mesh(Stateful, uw_object):
 
         Returns the ``.sym`` of a cell-constant (degree-0, discontinuous)
         scalar MeshVariable holding each cell's characteristic length (the
-        RMS distance of its vertices from their own centroid). This is a
-        purely cell-local quantity, independent of the MPI partition. Unlike
+        ``volume**(1/dim)`` equivalent radius, i.e. ``self._cell_radii``,
+        which comes from PETSc and is independent of the MPI partition). Unlike
         the single *global* scalar from :meth:`get_min_radius` (the smallest
         cell anywhere), this varies cell to cell, so a stabilisation that
         scales as :math:`1/h` — e.g. the Nitsche free-slip penalty
@@ -3301,27 +3266,45 @@ class Mesh(Stateful, uw_object):
     def _assemble_cell_size(self, var):
         """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
 
-        Uses the cell-geometry characteristic lengths ``self._cell_radii`` computed by
-        :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
+        Uses the per-cell characteristic lengths ``self._cell_radii`` computed
+        by :meth:`_get_cell_radii` on the *current* geometry. A degree-0
         discontinuous variable's local DOFs and ``self._cell_radii`` are BOTH
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
-        This is deliberately a purely RANK-LOCAL operation (no ``var.coords``
-        access, no collective): mixing a rank-local fast path with a
-        collective fallback would diverge across ranks and deadlock, because
-        ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
-        # Own-cell radii fix #687 without changing the legacy kd-tree radii
-        # used by global timestep estimates, adaptivity, and mesh relaxation.
+        This routine has TWO collectives in it and therefore no early return,
+        which is the opposite of what its previous docstring claimed (#698):
+
+        * the first ``var.data`` access lazily reaches ``MeshVariable._set_vec``,
+          which calls ``dm.createSubDM`` and ``createGlobalVector``;
+        * assigning into ``var.data`` fires the array's write-back callback,
+          ``pack_raw_data_to_petsc``.
+
+        A rank owning no cells used to short-circuit on ``radii.size == 0`` and
+        return before either, while its populated peers made both. Measured on a
+        region submesh at np=8 with cells per rank ``[12, 11, 0, 19, 0, 0, 0, 0]``:
+        the populated ranks sat in ``pack_raw_data_to_petsc`` and the job never
+        finished. A starved rank now walks the same path writing a zero-length
+        slice.
+
+        ``var.coords`` is still deliberately not read: it triggers the collective
+        ``_get_coords_for_basis``, and reading it only on some ranks would put a
+        third conditional collective back in."""
+        # `_cell_radii` is PETSc's volume**(1/dim), a property of each cell, so
+        # the values here do not depend on the partition -- and neither does the
+        # Nitsche penalty gamma*mu/h that consumes them under the default
+        # local_h=True. It was a kd-tree distance to the nearest centroid among
+        # THIS RANK's centroids, which near a seam could simply be absent (#694).
+        # There is NO early return here, and that is the point. Both steps below
+        # are collective, so a rank owning no cells has to walk through them
+        # writing nothing rather than skipping them (#698).
+        data = var.data                                   # allocates: createSubDM + createGlobalVector
         radii = numpy.asarray(self._cell_radii).reshape(-1)
-        # Empty partition (no local cells): nothing to fill on this rank.
-        if radii.size == 0 or var.data.shape[0] == 0:
-            return
-        # Assign over the common length. In practice these match exactly (same
-        # local cell set / ordering); the slice only guards a stray off-by-ghost
-        # mismatch without ever taking a collective path on a subset of ranks.
-        n = min(var.data.shape[0], radii.shape[0])
-        var.data[:n, 0] = radii[:n]
+
+        # `n` is 0 on a starved rank. The assignment still fires the array's
+        # write-back callback, which is the second collective.
+        n = min(data.shape[0], radii.shape[0])
+        data[:n, 0] = radii[:n]
 
     @property
     def Gamma_P1(self):
@@ -4557,29 +4540,59 @@ class Mesh(Stateful, uw_object):
 
     @property
     def t(self):
-        r"""Symbolic time coordinate.
+        r"""Symbolic model time.
 
-        PETSc passes a time value (``petsc_t``) to all pointwise residual
-        and Jacobian functions. Use ``mesh.t`` in expressions to reference
-        this time without forcing JIT recompilation each timestep.
+        A live-rampable ``constants[]`` atom carrying the clock owned by the
+        orchestration model, ``uw.get_default_model().tracker.time``. Every
+        solver repacks it from that clock immediately before solving, so an
+        expression built on ``mesh.t`` follows time with no JIT recompilation
+        per step.
 
-        The low-level PETSc solver accepts ``time=t`` to set the value
-        of ``petsc_t`` for pointwise functions. If not provided, ``petsc_t``
-        defaults to 0. Note: the high-level Python ``solve()`` wrappers
-        do not yet pass ``time=`` through — set it directly via
-        ``UW_DMSetTime`` at the Cython level if needed.
+        Maintain the clock as part of the timestepping loop (see
+        ``docs/developer/guides/HOW-TO-WRITE-UW3-SCRIPTS.md``). A script that
+        never advances it leaves ``mesh.t`` at zero.
 
-        When the scaling system is active, ``mesh.t`` carries time units
-        (derived from the model's time scale) so that dimensional analysis
-        works correctly in expressions.
+        A dimensional clock is non-dimensionalised on the way in, so the value
+        the kernels see is always in solver units.
+
+        .. note::
+            Assign it as part of an expression rather than bare. A boundary
+            condition takes a Matrix / array form, and a bare atom handed to a
+            scalar setter is stored by value.
 
         Examples
         --------
         >>> omega = 2 * np.pi / period
         >>> stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
-        >>> stokes.solve(time=current_time)   # sets petsc_t before SNES
+        >>> model.tracker.time = 1.5 * uw.quantity(1, "Myr")
+        >>> stokes.solve()                    # mesh.t picks the clock up
         """
         return self._t
+
+    def _sync_time_from_model(self):
+        """Repack ``mesh.t`` from the model clock. Called by every solver's
+        ``_update_constants`` immediately before a solve, so an expression
+        containing ``mesh.t`` sees the current time without a rebuild.
+
+        Silent no-op when the model has no clock: ``mesh.t`` then stays at
+        whatever it was last set to (0.0 for a fresh mesh), which is the
+        behaviour a script that never advances a clock already expects.
+        """
+        try:
+            model = uw.get_default_model()
+            time = model.tracker.time
+        except Exception:
+            return
+        if time is None:
+            return
+        try:
+            if hasattr(time, "magnitude") or hasattr(time, "_pint_qty"):
+                time = float(uw.non_dimensionalise(time))
+            self._t.sym = sympy.sympify(float(time))
+        except Exception:
+            # A clock we cannot reduce to a number is not worth failing a
+            # solve over; leave mesh.t as it stands.
+            return
 
     @property
     def nullspace_rotations(self):
@@ -4918,11 +4931,31 @@ class Mesh(Stateful, uw_object):
             exists. If ``True``, write an indexed mesh file for this timestep.
         create_xdmf
             Write ParaView/XDMF-compatible datasets and companion XDMF file.
+            DG1 on full-dimensional triangles/tetrahedra uses a separate grid
+            with independent vertices per cell, preserving jumps without
+            smoothing. Visualization-only arrays live under ``/dg1`` in the
+            variable files; native checkpoint and reload data are unchanged.
+            Higher-order discontinuous and non-simplex DG visualization are
+            not supported (use ``create_xdmf=False`` for native-only output).
         petsc_reload
             Write PETSc DMPlex section/vector metadata for reload with
             ``MeshVariable.read_checkpoint()``.
 
         """
+        if create_xdmf:
+            for var in meshVars or []:
+                integration_point = getattr(var, "is_integration_point", False)
+                if integration_point or (not var.continuous and var.degree > 0):
+                    if (
+                        var.degree != 1 or not self.isSimplex
+                        or self.dim not in (2, 3) or self.cdim != self.dim
+                        or integration_point
+                    ):
+                        raise NotImplementedError(
+                            "DG XDMF supports degree-one fields on full-dimensional "
+                            "triangle/tetrahedron meshes only; use create_xdmf=False "
+                            "for native-only checkpoints."
+                        )
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
@@ -5249,7 +5282,12 @@ class Mesh(Stateful, uw_object):
 
         - ``name``: stable string identifier for the mesh.
         - ``mesh_version``: current ``_mesh_version`` integer.
-        - ``coords``: deformed mesh coordinates (numpy array).
+        - ``coords``: deformed mesh coordinates, in MODEL UNITS — the
+          representation :meth:`_deform_mesh` writes back. ``mesh.X.coords``
+          is the unit-aware view and returns metres when a model declares a
+          length scale; capturing that and restoring it through
+          ``_deform_mesh`` would multiply the mesh by the length scale on
+          every restore, silently and without changing any array's shape.
         - ``vars``: ``{var.clean_name: gvec_array.copy()}`` for every
           mesh variable on this mesh.
 
@@ -5257,7 +5295,7 @@ class Mesh(Stateful, uw_object):
         section / DM-topology data sufficient to rebuild the DM on
         restore.
         """
-        coords = numpy.asarray(self.X.coords).copy()
+        coords = numpy.asarray(self._coords).copy()
         var_arrays: dict[str, numpy.ndarray] = {}
         for var in self.vars.values():
             var._sync_lvec_to_gvec()
@@ -5302,7 +5340,7 @@ class Mesh(Stateful, uw_object):
             )
 
         coords = numpy.asarray(payload["coords"])
-        expected_shape = numpy.asarray(self.X.coords).shape
+        expected_shape = numpy.asarray(self._coords).shape
         if coords.shape != expected_shape:
             raise SnapshotInvalidatedError(
                 f"mesh {self.name!r}: coordinate shape changed "
@@ -6975,56 +7013,44 @@ class Mesh(Stateful, uw_object):
         """
         return (uw.mpi.size > 1) and (self._location_capability() != "none")
 
-    def _get_mesh_sizes(self, verbose=False):
-        """
-        Cache own-cell radii for cell_size and return legacy kd-tree radii.
+    def _get_cell_radii(self):
+        """Each cell's characteristic length, and the cell centroids.
 
-        Own-cell sizes use current DM vertices, so neither partition-local
-        neighbours nor stale coordinate views affect stabilization (#687).
-        Legacy radii remain unchanged for their other consumers.
-        """
+        The length is PETSc's ``volume**(1/dim)`` from
+        ``DMPlexComputeGeometryFVM``. A cell's volume is a property of that
+        cell, so this cannot depend on how the mesh was partitioned — which is
+        the point.
 
+        It replaces a kd-tree of THIS RANK's centroids queried with each cell's
+        vertices. Near a partition boundary the true nearest centroid can belong
+        to a cell owned by another rank and be absent from the tree, so the
+        answer moved with the rank count: per-cell by 3.3e-03 at np=2 and
+        4.1e-03 at np=4, `get_max_radius()` by 4.9% at np=8, `get_mean_radius()`
+        at every rank count, and `mesh.cell_size()` with them -- which scales
+        the Nitsche penalty under the DEFAULT ``local_h=True`` (#569, #687,
+        #694).
+
+        The FVM routine had been abandoned with a note that it "does not
+        compute all cells". That does not reproduce: measured on 2-D simplex,
+        2-D quad, 3-D tetrahedra, 3-D hexahedra and a deformed mesh, it returns
+        one finite positive value per local cell and is bit-identical across
+        rank counts in every case. (The note also named ``DMPlexGetMinRadius``,
+        which is a different call and is not used here.)
+        """
+        from underworld3.cython import petsc_discretisation
+
+        radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+
+        # The FVM centroids are discarded: `_get_coords_for_basis(0, False)` is
+        # the degree-0 coordinate array the rest of the mesh indexes by cell,
+        # and mixing the two orderings would misalign every per-cell lookup.
         centroids = self._get_coords_for_basis(0, False)
-        centroids_kd_tree = uw.kdtree.KDTree(centroids)
 
-        import numpy as np
-
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        pStart, pEnd = self.dm.getDepthStratum(0)
-        cell_length = np.empty(centroids.shape[0])
-        cell_min_r = np.empty(centroids.shape[0])
-        cell_r = np.empty(centroids.shape[0])
-        cell_radii = np.empty(centroids.shape[0])
-        coordinate_section = self.dm.getCoordinateDM().getLocalSection()
-        vertex_coordinates = self.dm.getCoordinatesLocal().array
-
-        for cell in range(cEnd - cStart):
-            cell_num_points = self.dm.getConeSize(cell)
-            cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
-            # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_coords = self._coords[cell_points - pStart]
-
-            distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
-
-            cell_length[cell] = np.sqrt(distsq.max())
-            cell_r[cell] = np.sqrt(distsq.mean())
-            cell_min_r[cell] = np.sqrt(distsq.min())
-
-            # A hex has six faces but eight vertices: select the vertex
-            # stratum, not a cone-sized suffix of its transitive closure.
-            closure = self.dm.getTransitiveClosure(cStart + cell)[0]
-            vertices = closure[(closure >= pStart) & (closure < pEnd)]
-            offsets = np.array([coordinate_section.getOffset(int(v)) for v in vertices])
-            own_coords = vertex_coordinates[offsets[:, None] + np.arange(self.cdim)]
-            delta = own_coords - own_coords.mean(axis=0)
-            cell_radii[cell] = np.sqrt(np.mean(np.sum(delta ** 2, axis=1)))
-
-        self._cell_radii = cell_radii
-        return cell_min_r, cell_r, centroids, cell_length
+        return radii, centroids
 
     # ==========
 
-    # Deprecated in favour of _get_mesh_sizes (above)
+    # Deprecated in favour of _get_cell_radii (above)
     def _get_mesh_centroids(self):
         """
         Obtain and cache the (local) mesh centroids using underworld swarm technology.
@@ -7114,7 +7140,7 @@ class Mesh(Stateful, uw_object):
         import numpy as np
         from mpi4py import MPI
 
-        radii = np.asarray(self._radii).reshape(-1)
+        radii = np.asarray(self._cell_radii).reshape(-1)
         local_min = float(radii.min()) if radii.size else float("inf")
         if uw.mpi.size > 1:
             local_min = uw.mpi.comm.allreduce(local_min, op=MPI.MIN)
@@ -7136,7 +7162,7 @@ class Mesh(Stateful, uw_object):
         import numpy as np
         from mpi4py import MPI
 
-        radii = np.asarray(self._radii).reshape(-1)
+        radii = np.asarray(self._cell_radii).reshape(-1)
         local_max = float(radii.max()) if radii.size else float("-inf")
         if uw.mpi.size > 1:
             local_max = uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
@@ -7155,15 +7181,22 @@ class Mesh(Stateful, uw_object):
         this is the canonical "mesh length" API. Use this anywhere you
         need a representative h0 (smoothing-length defaults, diffusion-
         stability heuristics, problem-scale normalisation) rather than
-        reaching for the rank-local ``self._radii`` array, which gives
-        different answers on different MPI ranks and leaks downstream
-        (e.g. into JIT C source via per-rank pointwise-function inputs).
+        reducing a per-rank array by hand, which gives different answers on
+        different MPI ranks and leaks downstream (e.g. into JIT C source via
+        per-rank pointwise-function inputs).
+
+        The value is the same at every RANK COUNT as well as on every rank:
+        ``self._cell_radii`` is PETSc's ``volume**(1/dim)``, a property of each
+        cell rather than of the partition. That was not true while these
+        reduced over a kd-tree of this rank's centroids -- an allreduce made
+        the answer agree across ranks without making it agree across rank
+        counts, and ``get_max_radius()`` moved 4.9% at np=8 (#694).
         """
 
         import numpy as np
         from mpi4py import MPI
 
-        radii = np.asarray(self._radii)
+        radii = np.asarray(self._cell_radii)
         local_sum = float(radii.sum())
         local_n = int(radii.size)
         if uw.mpi.size > 1:
@@ -9673,6 +9706,8 @@ def _write_compat_groups(mesh, var, var_h5_path):
     Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
     ViewerHDF5) for continuous variables, and
     ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
+    DG1 uses ``/dg1`` with disconnected simplex vertices and nodal traces,
+    never the one-value-per-cell compatibility path.
     PETSc handles all parallel I/O natively.
 
     Vertex coordinates are also written to ``/vertex_fields/coordinates``
@@ -9690,8 +9725,9 @@ def _write_compat_groups(mesh, var, var_h5_path):
     """
     import underworld3 as uw
 
-    is_cell = (not var.continuous) or (var.degree == 0)
-    group = "cell_fields" if is_cell else "vertex_fields"
+    is_dg1 = not var.continuous and var.degree == 1
+    is_cell = var.degree == 0
+    group = "dg1" if is_dg1 else ("cell_fields" if is_cell else "vertex_fields")
 
     # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
     # automatically during var.write().  Remove any pre-existing group so
@@ -9709,13 +9745,28 @@ def _write_compat_groups(mesh, var, var_h5_path):
         var_h5_path, "a", comm=PETSc.COMM_WORLD,
     )
 
-    if is_cell:
+    if is_dg1:
+        from underworld3.function.field_projection import _write_dg1_to_viewer
+        _write_dg1_to_viewer(var, viewer)
+    elif is_cell:
         uw.function.write_cell_field_to_viewer(var, viewer)
     else:
         uw.function.write_vertices_to_viewer(var, viewer)
         uw.function.write_coordinates_to_viewer(mesh, viewer)
 
     viewer.destroy()
+
+    if is_dg1:
+        # Only topology is generated on rank zero; field values and vertices
+        # were written collectively by PETSc in the same owned-cell order.
+        if uw.mpi.rank == 0:
+            with h5py.File(var_h5_path, "a") as f:
+                nvertices = f["dg1/vertices"].shape[0]
+                ncorners = mesh.dim + 1
+                f["dg1"].create_dataset(
+                    "cells", data=numpy.arange(nvertices, dtype=numpy.int64).reshape(-1, ncorners)
+                )
+        uw.mpi.barrier()
 
 
 def checkpoint_xdmf(
@@ -9843,6 +9894,13 @@ def checkpoint_xdmf(
     header += """
 ]>"""
 
+    dg_vars = [var for var in meshVars if not var.continuous and var.degree == 1]
+    collection_start = (
+        '<Grid Name="fields" GridType="Collection" CollectionType="Spatial">'
+        f'<Time Value="{index}"/>'
+        if dg_vars else ""
+    )
+    collection_end = "</Grid>" if dg_vars else ""
     xdmf_start = f"""
 <Xdmf>
   <Domain Name="domain">
@@ -9859,6 +9917,7 @@ def checkpoint_xdmf(
       &MeshData;:/{geomPath}/vertices
     </DataItem>
     <!-- ============================================================ -->
+      {collection_start}
       <Grid Name="domain" GridType="Uniform">
         <Topology
            TopologyType="{topology_type}"
@@ -9903,6 +9962,8 @@ def checkpoint_xdmf(
 
     attributes = ""
     for var in meshVars:
+        if not var.continuous and var.degree == 1:
+            continue
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
 
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
@@ -9987,8 +10048,54 @@ def checkpoint_xdmf(
     """
         attributes += var_attribute
 
+    dg_grid = ""
+    if dg_vars:
+        first = dg_vars[0]
+        first_filename = filename + f".mesh.{first.clean_name}.{index:05}.h5"
+        with h5py.File(first_filename, "r") as f:
+            dg_cells = f["dg1/cells"].shape
+            dg_points = f["dg1/vertices"].shape
+        if dg_cells != (numCells, numCorners) or dg_points != (numCells * numCorners, spaceDim):
+            raise ValueError("DG1 visualization topology does not match the checkpoint mesh")
+        dg_grid = f"""
+    <Grid Name="DG1" GridType="Uniform">
+      <Topology TopologyType="{topology_type}" NumberOfElements="{numCells}">
+        <DataItem Format="HDF" NumberType="Int" Precision="8" Dimensions="{numCells} {numCorners}">
+          &{first.clean_name}_Data;:/dg1/cells
+        </DataItem>
+      </Topology>
+      <Geometry GeometryType="{geomType}">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dg_points[0]} {spaceDim}">
+          &{first.clean_name}_Data;:/dg1/vertices
+        </DataItem>
+      </Geometry>
+"""
+        for var in dg_vars:
+            var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+            with h5py.File(var_filename, "r") as f:
+                shape = f["dg1/values"].shape
+            if shape[0] != dg_points[0]:
+                raise ValueError(f"DG1 visualization size mismatch for {var.clean_name}")
+            components = shape[1] if len(shape) == 2 else 1
+            if var.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR):
+                kind = "Tensor"
+            elif var.vtype == uw.VarType.MATRIX:
+                kind = "Matrix"
+            else:
+                kind = "Scalar" if components == 1 else "Vector"
+            dimensions = " ".join(str(value) for value in shape)
+            dg_grid += f"""
+      <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
+          &{var.clean_name}_Data;:/dg1/values
+        </DataItem>
+      </Attribute>
+"""
+        dg_grid += "    </Grid>"
     xdmf_end = f"""
     </Grid>
+    {dg_grid}
+    {collection_end}
   </Domain>
 </Xdmf>
     """

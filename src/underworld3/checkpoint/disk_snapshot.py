@@ -770,7 +770,8 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
 #
 # Serialisation is *generic over dataclass fields* — no per-class
 # special code. Handled value types: None, bool, int, float, str,
-# numpy.ndarray, list (JSON-encoded), dict (recursive subgroup). Other
+# numpy.ndarray, list (JSON-encoded), dict (recursive subgroup),
+# dimensional quantities (magnitude + unit string). Other
 # types (notably sympy expressions in DDtSymbolicState.psi_star) are
 # marked with `<field>_skipped` and not round-tripped — documented as
 # a v1.x limitation; consumers either use a non-Symbolic DDt flavor
@@ -788,6 +789,40 @@ def _is_h5_attr_scalar(value: Any) -> bool:
     ) or isinstance(value, (bool, str))
 
 
+_MAGNITUDE_SUFFIX = "__magnitude"
+_UNITS_SUFFIX = "__units"
+
+
+def _is_quantity(value: Any) -> bool:
+    """A dimensional value, duck-typed.
+
+    ``uw.quantity`` returns a ``UWQuantity``, which is NOT a
+    ``pint.Quantity`` subclass, so an isinstance test against either would
+    miss one of them. Both carry ``magnitude`` and ``units``.
+    """
+    return hasattr(value, "magnitude") and hasattr(value, "units")
+
+
+def _write_quantity(h5group, name: str, value: Any) -> None:
+    """Store a dimensional value as magnitude + unit string.
+
+    The magnitude goes through the ordinary dispatch (attr for a scalar,
+    dataset for an array), so an array-valued quantity round-trips too.
+    """
+    h5group.attrs[name + _UNITS_SUFFIX] = str(value.units)
+    _serialise_field(h5group, name + _MAGNITUDE_SUFFIX, np.asarray(value.magnitude).item()
+                     if np.ndim(value.magnitude) == 0 else np.asarray(value.magnitude))
+
+
+def _read_quantity(h5group, name: str) -> Any:
+    """Inverse of :func:`_write_quantity`."""
+    units = h5group.attrs[name + _UNITS_SUFFIX]
+    if isinstance(units, bytes):
+        units = units.decode()
+    magnitude = _deserialise_field(h5group, name + _MAGNITUDE_SUFFIX, None)
+    return uw.quantity(magnitude, str(units))
+
+
 def _serialise_field(h5group, name: str, value: Any) -> None:
     """Write a Python value into an HDF5 group as attr/dataset/subgroup.
 
@@ -797,6 +832,7 @@ def _serialise_field(h5group, name: str, value: Any) -> None:
       - attr `<name>__json` for JSON-encodable lists / nested simple structures
       - dataset `<name>` for numpy arrays
       - subgroup `<name>` for dict values, recursing
+      - attrs `<name>__magnitude` + `<name>__units` for dimensional values
       - attr `<name>__skipped` = '<type>' for anything else
     """
     if value is None:
@@ -807,6 +843,9 @@ def _serialise_field(h5group, name: str, value: Any) -> None:
         return
     if isinstance(value, str):
         h5group.attrs[name] = value
+        return
+    if _is_quantity(value):
+        _write_quantity(h5group, name, value)
         return
     if isinstance(value, np.ndarray):
         if name in h5group:
@@ -860,6 +899,21 @@ def _group_to_dict(h5group) -> dict:
             out[k] = _group_to_dict(item)
         else:
             out[k] = np.asarray(item[...])
+
+    # Fold `<name>__magnitude` + `<name>__units` back into one dimensional
+    # value. Done as a post-pass because the two halves may arrive from
+    # different loops above (a scalar magnitude is an attr, an array
+    # magnitude a dataset).
+    for units_key in [k for k in out if k.endswith(_UNITS_SUFFIX)]:
+        base = units_key[: -len(_UNITS_SUFFIX)]
+        magnitude_key = base + _MAGNITUDE_SUFFIX
+        if magnitude_key not in out:
+            continue
+        units = out.pop(units_key)
+        magnitude = out.pop(magnitude_key)
+        if isinstance(units, bytes):
+            units = units.decode()
+        out[base] = uw.quantity(magnitude, str(units))
     return out
 
 
@@ -885,6 +939,9 @@ def _deserialise_field(h5group, name: str, fallback: Any) -> Any:
 
     if (name + "__json") in h5group.attrs:
         return json.loads(h5group.attrs[name + "__json"])
+
+    if (name + _UNITS_SUFFIX) in h5group.attrs:
+        return _read_quantity(h5group, name)
 
     if (name + "__skipped") in h5group.attrs:
         # Skipped at write time — keep the current value rather than

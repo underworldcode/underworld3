@@ -713,7 +713,7 @@ def follow_metric(
             mesh, T,
             refinement=2.0, coarsening=2.0,
             metric="gradient-uniform",
-            gradient_smoothing_length=2.0 * mesh._radii.mean(),
+            gradient_smoothing_length=2.0 * mesh.get_mean_radius(),
         )
 
     See Also

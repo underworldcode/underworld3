@@ -270,6 +270,40 @@ class Constitutive_Model(uw_object):
     _class_instance_counts = {}
 
     @timing.routine_timer_decorator
+    def _declared_terms(self):
+        """The parameters this model was given, by the name they were set under.
+
+        Enumerated from ``Parameters`` so every constitutive model satisfies
+        the contract without writing it out; a model whose terms need a better
+        account overrides this.
+        """
+        import types
+
+        parameters = getattr(self, "Parameters", None)
+        if parameters is None:
+            return []
+
+        terms, seen = [], set()
+        for name in sorted(a for a in dir(parameters) if not a.startswith("_")):
+            try:
+                value = getattr(parameters, name)
+            except Exception:
+                continue
+            # `dir()` sees anything bound into the namespace, including the
+            # module imports that leak into it.
+            if isinstance(value, types.ModuleType) or callable(value):
+                continue
+            key = str(value)
+            if key in seen:
+                continue            # `viscosity` and `shear_viscosity_0` alias
+            seen.add(key)
+            terms.append({
+                "name": f"{type(self).__name__}.{name}",
+                "value": getattr(value, "sym", value),
+                "description": "constitutive parameter",
+            })
+        return terms
+
     def __init__(self, unknowns, material_name: str = None):
         """
         Initialize a constitutive model.
@@ -711,15 +745,93 @@ class Constitutive_Model(uw_object):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The family: its parameters, with symbol, units and description,
+        from the descriptors on its ``_Parameters`` class, and its
+        documentation — with no instance."""
+        from underworld3.utilities.describe import record
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+        doc = (cls.__doc__ or "").strip()
+        terms = []
+        params = getattr(cls, "_Parameters", None)
+        if params is not None:
+            seen = set()
+            for base in params.__mro__:
+                for key, attr in base.__dict__.items():
+                    if isinstance(attr, ExpressionDescriptor) and key not in seen:
+                        seen.add(key)
+                        terms.append({"name": key, "symbol": getattr(attr, "name", None), "latex": None,
+                                      "text": None, "units": getattr(attr, "units", None),
+                                      "description": (getattr(attr, "description", "") or "").strip(),
+                                      "where": []})
+        facts = {}
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("constitutive_model_family", cls.__name__, doc.split("\n")[0],
+                      documentation=doc or None, facts=facts or None, terms=terms or None)
 
-        display(
-            Markdown(
-                rf"This consititutive model is formulated for {self.dim} dimensional equations"
-            )
-        )
+    def describe(self, depth=4):
+        """What this constitutive model is, as data: its parameters as terms,
+        with the named expressions inside each followed to ``depth``, and
+        the flux it defines as a form where it can be formed."""
+        import sympy
+        from underworld3.utilities.describe import record, term
+
+        def unpack(expression, level, seen):
+            out = []
+            if level > depth or expression is None:
+                return out
+            try:
+                found = list(uw.function.fn_extract_expressions(expression))
+            except Exception:
+                return out
+            for named in sorted(found, key=lambda e: str(getattr(e, "symbol", e))):
+                symbol = str(getattr(named, "symbol", named))
+                if symbol in seen:
+                    continue
+                seen.add(symbol)
+                entry = term(symbol, named)
+                entry["where"] = unpack(getattr(named, "sym", None), level + 1, seen)
+                out.append(entry)
+            return out
+
+        terms = []
+        params = getattr(self, "Parameters", None)
+        if params is not None:
+            from underworld3.utilities._api_tools import ExpressionDescriptor
+            names = []
+            for cls in type(params).__mro__:
+                for key, attr in cls.__dict__.items():
+                    if isinstance(attr, ExpressionDescriptor) and key not in names:
+                        names.append(key)          # a property is an alias of one of these
+            for name in names:
+                try:
+                    value = getattr(params, name)
+                except Exception:
+                    continue
+                if not (hasattr(value, "sym") and hasattr(value, "symbol")):
+                    continue
+                entry = term(name, value)
+                entry["where"] = unpack(value.sym, 1, set())
+                terms.append(entry)
+        forms = {}
+        try:
+            flux = self.flux
+            forms["flux"] = {"symbol": r"\mathbf{F}", "description": "the flux this model defines",
+                             "latex": sympy.latex(flux), "text": str(flux), "where": []}
+        except Exception:
+            pass
+        doc = (type(self).__doc__ or "").strip().split("\n")[0]
+        return record("constitutive_model", type(self).__name__, doc,
+                      facts={"dimension": getattr(self, "dim", None)},
+                      terms=terms, forms=forms or None)
+
 
 
 class ViscousFlowModel(Constitutive_Model):
@@ -930,17 +1042,6 @@ class ViscousFlowModel(Constitutive_Model):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta_\textrm{eff} = $ " + sympy.sympify(self.viscosity.sym)._repr_latex_()
-            )
-        )
 
     # --- Yield soft-min smoother (shared by the visco-plastic subclasses) -----------
     # The δ soft-min regularisation and the smooth-min FAMILY selection live on the
@@ -1612,24 +1713,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         return correction
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta_\textrm{0} = $"
-                + sympy.sympify(self.Parameters.shear_viscosity_0.sym)._repr_latex_()
-            ),
-            Latex(
-                r"$\quad\tau_\textrm{y} = $"
-                + sympy.sympify(self.Parameters.yield_stress.sym)._repr_latex_(),
-            ),
-        )
-
-        return
 
 
 #: Smallest conformation eigenvalue the log-conformation history takes the
@@ -2945,38 +3028,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     #     return edot_inv_II
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        # super()._object_viewer()
-
-        display(Markdown(r"### Viscous deformation"))
-        display(
-            Latex(
-                r"$\quad\eta_\textrm{0} = $ "
-                + sympy.sympify(self.Parameters.shear_viscosity_0.sym)._repr_latex_()
-            ),
-        )
-
-        display(Markdown(r"#### Elastic deformation"))
-        display(
-            Latex(
-                r"$\quad\mu = $ " + sympy.sympify(self.Parameters.shear_modulus.sym)._repr_latex_(),
-            ),
-            Latex(
-                r"$\quad\Delta t_e = $ "
-                + sympy.sympify(self.Parameters.dt_elastic.sym)._repr_latex_(),
-            ),
-        )
-
-        display(Markdown(r"#### Plastic deformation"))
-        display(
-            Latex(
-                r"$\quad\tau_\textrm{y} = $ "
-                + sympy.sympify(self.Parameters.yield_stress.sym)._repr_latex_(),
-            )
-            ## Todo: add all the other properties in here
-        )
 
     @property
     def yield_mode(self):
@@ -3238,17 +3289,6 @@ class DiffusionModel(Constitutive_Model):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
-        )
-
-        return
 
 
 # AnisotropicDiffusionModel: expects a diffusivity vector and builds a diagonal tensor.
@@ -3309,15 +3349,6 @@ class AnisotropicDiffusionModel(DiffusionModel):
         self._c = self.Parameters.diffusivity
         self._is_setup = True
 
-    def _object_viewer(self):
-        from IPython.display import Latex, display
-
-        super()._object_viewer()
-
-        diagonal = self.Parameters.diffusivity.diagonal()
-        latex_entries = ", ".join([sympy.latex(k) for k in diagonal])
-        kappa_latex = r"\kappa = \mathrm{diag}\left(" + latex_entries + r"\right)"
-        display(Latex(r"$\quad " + kappa_latex + r"$"))
 
 
 class GenericFluxModel(Constitutive_Model):
@@ -3390,14 +3421,6 @@ class GenericFluxModel(Constitutive_Model):
         #     raise RuntimeError("Flux expression has not been set.")
         return self.Parameters.flux
 
-    def _object_viewer(self):
-        from IPython.display import display, Latex
-
-        super()._object_viewer()
-        if self.flux is not None:
-            display(Latex(r"$\vec{q} = " + sympy.latex(self.flux) + "$"))
-        else:
-            display(Latex(r"No flux expression set."))
 
 
 class DarcyFlowModel(Constitutive_Model):
@@ -3523,17 +3546,6 @@ class DarcyFlowModel(Constitutive_Model):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
-        )
-
-        return
 
     @property
     def flux(self):
@@ -3747,20 +3759,6 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.shear_viscosity_0)._repr_latex_()))
-        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.shear_viscosity_1)._repr_latex_()))
-        display(
-            Latex(
-                r"$\quad\hat{\mathbf{n}} = $ "
-                + sympy.sympify(self.Parameters.director.T)._repr_latex_()
-            )
-        )
 
 
 class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
@@ -5237,15 +5235,3 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         # Return harmonic average
         return 1 / combined_inv_K
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        display(Markdown(f"**Multi-Material Model**: {len(self._constitutive_models)} materials"))
-
-        for i, model in enumerate(self._constitutive_models):
-            display(Markdown(f"**Material {i}**: {type(model).__name__}"))
-
-        if self.flux is not None:
-            display(Latex(r"$\mathbf{f}_{\text{composite}} = " + sympy.latex(self.flux) + "$"))
