@@ -119,6 +119,18 @@ on the PR with its evidence:
 | **Already fixed** | it was fixed earlier and nobody closed it | a probe run against `development`, pasted into the issue as the closing comment, showing the behaviour the issue describes no longer happens |
 | **Still live** | the branch passes through it and leaves it | one line saying which part still reproduces, so the next session does not re-derive it |
 
+**`fixed-in-development` carries an issue from merge to release.** GitHub
+closes a linked issue when its PR reaches the *default* branch, which here is
+`main`, while the work merges to `development`. Merges to `main` are
+infrequent, so between the two an issue is fixed and still open and nothing
+says so. Across the project's life 139 declared closes produced only 5 that
+slipped, so the mechanism works — it just works at release time. Label the
+issue at merge, and the release closes everything carrying the label in one
+pass. Closing it at merge instead is a reasonable choice for a defect nobody
+outside is waiting on, but it reads as a lie to anyone running the release.
+`scripts/triage.py` lists every issue a merged PR declared that is neither
+closed nor labelled.
+
 **Refusing to close is a verdict, not a gap.** A branch that touches the
 territory of an issue and does not fix it says so, in a line. The failure this
 replaces is silence: the fix lands, the issue reads as familiar to anyone who
