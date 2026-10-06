@@ -126,6 +126,13 @@ knows the PR work, and nothing ever goes back to adjudicate it. Measured over
 2026-09: 61 issues filed, 19 closed, and a random sample of five found two
 already fixed on `development` and still open.
 
+`python scripts/triage.py` does the cross-referencing this needs: open issues
+referenced by a merged PR (candidates to probe, not verdicts), the PR queue by
+mergeable x CI with what each bucket closes, and red PRs whose failing tests no
+longer exist on `development`. `--verbose` lists every row. Run it at the start
+of a session -- the reason the sweep was not being done is that it was
+expensive.
+
 **Close on a probe, never on a claim.** "PR #NNN fixed this" is not evidence —
 a PR that merged in the territory of an issue very often addressed its
 neighbour. The probe goes in the issue so any close can be audited and
