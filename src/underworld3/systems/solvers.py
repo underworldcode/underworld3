@@ -1655,10 +1655,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             All defaulted.
         """
 
-        if homotopy not in (False, None, True) and homotopy != "rate_strengthening":
-            raise ValueError(
-                f"homotopy must be False, True (the yield-softness march) or "
-                f"'rate_strengthening' (the declared regularisation ladder), got {homotopy!r}")
+        from underworld3.cython.generic_solvers import _check_homotopy_value
+        _check_homotopy_value(homotopy)
         if homotopy:
             # Each δ-step re-enters this method with homotopy=False, so per-solve
             # arguments are forwarded to EVERY step of the march rather than dropped.

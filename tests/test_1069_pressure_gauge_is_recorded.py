@@ -127,3 +127,56 @@ def test_krylov_restart_default_is_in_force_and_leaves_a_user_value_alone():
     T = uw.discretisation.MeshVariable("Trs", mesh, 1, degree=1)
     pois = uw.systems.Poisson(mesh, u_Field=T)
     assert opts.getInt(pois.petsc_options_prefix + "ksp_gmres_restart") == 100
+
+
+def _live_restart(ksp, tmp_path, tag):
+    """The restart the LIVE KSP runs with (petsc4py has no getter): from its view."""
+    import re
+    from petsc4py import PETSc
+    f = tmp_path / f"ksp_{tag}.txt"
+    viewer = PETSc.Viewer().createASCII(str(f))
+    ksp.view(viewer)
+    viewer.destroy()
+    m = re.search(r"restart=(\d+)", f.read_text())
+    return int(m.group(1)) if m else None
+
+
+def test_krylov_restart_reaches_the_live_solver(tmp_path):
+    """The option database is not the solver: a KSPSetType after setFromOptions (the
+    single-field custom-P FMG route) re-created the Krylov context at PETSc's 30 while
+    the database and the report said 100. Checked on the live objects after a solve:
+    default Stokes (outer and velocity split) and an FMG Poisson."""
+    s = _box("lv", closed=False, pressure_dependent=False, nullspace=False)
+    s.solve()
+    assert _live_restart(s.snes.getKSP(), tmp_path, "stokes") == 100
+    vel = s.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
+    assert _live_restart(vel, tmp_path, "vel") == 100
+    uw.reset_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5, refinement=2)
+    T = uw.discretisation.MeshVariable("Tlv", mesh, 1, degree=1)
+    pois = uw.systems.Poisson(mesh, u_Field=T)
+    pois.constitutive_model = uw.constitutive_models.DiffusionModel
+    pois.constitutive_model.Parameters.diffusivity = 1.0
+    pois.f = 1.0
+    pois.add_dirichlet_bc(0.0, "Bottom")
+    pois.preconditioner = "fmg"
+    pois.solve()
+    assert _live_restart(pois.snes.getKSP(), tmp_path, "pois_fmg") == 100
+
+
+def test_switching_on_a_pressure_dependent_yield_is_seen_by_the_record():
+    """Solve with a constant yield stress, then switch on Drucker-Prager and solve WARM:
+    the record and the gauge warning must see the new rheology. The cached symbolic
+    facts survived the rebuild (a warm solve's plan never reads them, and the read after
+    the build hit the old dict): measured pressure_in_rheology=False and no warning,
+    while the kernel had changed."""
+    s = _box("sw", closed=True, pressure_dependent=False, nullspace=True)
+    s.solve()
+    assert s.solve_report.config["gauge"]["pressure_in_rheology"] is False
+    cm = s.constitutive_model
+    cm.Parameters.yield_stress = 0.3 + 0.3 * sympy.sqrt(s.p.sym[0] ** 2 + 1.0e-2)
+    cm.Parameters.plastic_rate_strengthening = 0.05
+    with pytest.warns(RuntimeWarning, match="GAUGE-fixed pressure"):
+        s.solve(zero_init_guess=False)
+    assert s.solve_report.config["gauge"]["pressure_in_rheology"] is True

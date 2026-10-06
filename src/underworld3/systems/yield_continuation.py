@@ -165,121 +165,139 @@ def rate_strengthening_continuation(
             f"{type(cm).__name__} does not provide the terms the ladder reads to find the "
             f"viscous limit; pass scale0 explicitly")
 
+    import numpy as np
+
     saved_probe = solver._difficulty_probe
     saved_probe_maxit = solver._difficulty_max_it
     saved_resume = solver._resume_abs_target
     saved_tangent = solver.consistent_jacobian
     saved_scale = cm.rate_strengthening_scale
+    saved_has_solution = bool(solver.has_solution)
+    u, p = solver.Unknowns.u, solver.Unknowns.p
+    # The state the ladder started from: restored if no rung converges, so a failed
+    # ladder never leaves a non-solution in the fields marked as one.
+    u_start, p_start = np.array(u.array), np.array(p.array)
     if rung_tangent is not None:
         solver.consistent_jacobian = rung_tangent if control.tangent is True else control.tangent
-    u, p = solver.Unknowns.u, solver.Unknowns.p
     rungs = []
-    reason = 0
-    reached_one = False
-    message = None
-    try:
-        if scale0 is None:
+    state = dict(reason=0, reached_one=False, message=None, scale0=scale0)
+
+    def _solve_rung(m, first, budget):
+        control.set_scale(m)
+        if first:
+            solver.is_setup = False
+        else:
+            solver._update_constants()
+        solver._difficulty_probe = True
+        solver._difficulty_max_it = budget
+        solver._resume_abs_target = None
+        solver.solve(zero_init_guess=not solver.has_solution, **dict(solve_kwargs or {}))
+        reason = int(solver.snes.getConvergedReason())
+        rungs.append((float(m), reason, int(solver.snes.getIterationNumber())))
+        return reason
+
+    def _ladder():
+        # returns with state["message"] set when it stops above m = 1
+        nonlocal scale_big
+        if state["scale0"] is None:
             terms = control.probe_terms
             if scale_big is None:
                 visc, reg = _cell_values(solver, (terms["viscous"], terms["eta_reg"]))
                 scale_big = entry_factor * _masked_max_ratio(visc, reg)
-                if not (math.isfinite(scale_big) and scale_big > 0.0):
-                    message = (f"the entry multiplier could not be found from the fields "
-                               f"(max(eta_ve/eta_reg) = {scale_big / entry_factor:g})")
-                    return dict(scale0=None, rungs=rungs, reached_one=False, converged=False,
-                                reason=0, message=message)
+            if not (math.isfinite(float(scale_big)) and float(scale_big) > 0.0):
+                state["message"] = f"the entry multiplier is not a positive finite number (m = {scale_big})"
+                return
             # the viscous limit, found from the fields rather than from the problem
-            control.set_scale(float(scale_big))
-            solver.is_setup = False
-            solver._difficulty_probe = True
-            solver._difficulty_max_it = entry_maxit
-            solver._resume_abs_target = None
-            solver.solve(zero_init_guess=not solver.has_solution, **dict(solve_kwargs or {}))
-            reason = int(solver.snes.getConvergedReason())
-            rungs.append((float(scale_big), reason, int(solver.snes.getIterationNumber())))
-            if reason <= 0:
-                message = f"the viscous-limit solve (m={scale_big:g}) failed (reason={reason})"
-                return dict(scale0=None, rungs=rungs, reached_one=False, converged=False,
-                            reason=reason, message=message)
+            state["reason"] = _solve_rung(float(scale_big), True, entry_maxit)
+            if state["reason"] <= 0:
+                state["message"] = (f"the viscous-limit solve (m={float(scale_big):g}) failed "
+                                    f"(reason={state['reason']})")
+                return
             num, den = _cell_values(solver, (terms["onset_num"], terms["onset_den"]))
             m_star = _masked_max_ratio(num, den)
             if math.isnan(m_star) or m_star == math.inf:
-                message = f"the viscous limit could not be read from the fields (m* = {m_star})"
-                return dict(scale0=None, rungs=rungs, reached_one=False, converged=False,
-                            reason=0, message=message)
-            scale0 = 0.95 * m_star if m_star > 1.0 else 1.0
+                state["message"] = f"the viscous limit could not be read from the fields (m* = {m_star})"
+                return
+            state["scale0"] = 0.95 * m_star if m_star > 1.0 else 1.0
             if verbose:
-                uw.pprint(f"  [rate-strengthening] viscous limit m*={m_star:.4g}; ladder starts at m={scale0:.4g}")
-        m = max(float(scale0), 1.0)
+                uw.pprint(f"  [rate-strengthening] viscous limit m*={m_star:.4g}; "
+                          f"ladder starts at m={state['scale0']:.4g}")
+        m = max(float(state["scale0"]), 1.0)
         step = float(down)
-        import numpy as np
-        u_good, p_good = np.array(u.array), np.array(p.array)
+        u_good, p_good = None, None
+        if rungs and rungs[-1][1] > 0:
+            u_good, p_good = np.array(u.array), np.array(p.array)
         failures = 0
         first = not rungs
         while len(rungs) < max_steps:
-            control.set_scale(m)
-            if first:
-                solver.is_setup = False
-            else:
-                solver._update_constants()
             budget = entry_maxit if first else step_maxit
-            solver._difficulty_probe = True
-            solver._difficulty_max_it = budget
-            solver._resume_abs_target = None
-            solver.solve(zero_init_guess=not solver.has_solution, **dict(solve_kwargs or {}))
-            reason = int(solver.snes.getConvergedReason())
-            nit = int(solver.snes.getIterationNumber())
-            rungs.append((m, reason, nit))
+            reason = state["reason"] = _solve_rung(m, first, budget)
+            nit = rungs[-1][2]
             first = False
             if reason > 0:
-                u_good[...] = u.array; p_good[...] = p.array
+                u_good, p_good = np.array(u.array), np.array(p.array)
                 if verbose:
                     uw.pprint(f"  [rate-strengthening] m={m:<10.4g} its={nit:3d} -> converged")
                 if m <= 1.0:
-                    reached_one = True
-                    break
+                    state["reached_one"] = True
+                    return
                 if nit <= max(2, budget // 5):
                     step = max(step * step, 0.05)
                 elif nit >= 0.8 * budget:
                     step = min(step ** 0.5, 0.95)
                 m = max(m * step, 1.0)
-            else:
-                with uw.synchronised_array_update("rate_strengthening revert"):
-                    u.array[...] = u_good
-                    p.array[...] = p_good
-                solver._record_convergence_status(converged=True)
-                failures += 1
-                if failures > retries:
-                    message = f"m={m:.4g} failed (reason={reason}) after {retries} retries"
-                    break
-                step = min(step ** 0.5, 0.95)
-                # retry from the LAST converged rung — the state just restored
-                last_ok = next((r[0] for r in reversed(rungs) if r[1] > 0), m / step)
-                m = max(last_ok * step, 1.0)
-                if verbose:
-                    uw.pprint(f"  [rate-strengthening] failed (reason={reason}); retrying at m={m:.4g}")
-        else:
-            message = f"max_steps={max_steps} rungs used, last converged m={rungs[-1][0]:.4g}" if rungs else None
+                continue
+            # a failed rung: back to the last converged state (or the start)
+            back_u, back_p = (u_good, p_good) if u_good is not None else (u_start, p_start)
+            with uw.synchronised_array_update("rate_strengthening revert"):
+                u.array[...] = back_u
+                p.array[...] = back_p
+            solver._record_convergence_status(
+                converged=True if u_good is not None else saved_has_solution)
+            failures += 1
+            if failures > retries:
+                state["message"] = f"m={m:.4g} failed (reason={reason}) after {retries} retries"
+                return
+            step = min(step ** 0.5, 0.95)
+            # retry from the LAST converged rung — the state just restored
+            last_ok = next((r[0] for r in reversed(rungs) if r[1] > 0), m / step)
+            m = max(last_ok * step, 1.0)
+            if verbose:
+                uw.pprint(f"  [rate-strengthening] failed (reason={reason}); retrying at m={m:.4g}")
+        state["message"] = (f"max_steps={max_steps} rungs used, last converged m="
+                            f"{next((r[0] for r in reversed(rungs) if r[1] > 0), float('nan')):.4g}")
+
+    try:
+        _ladder()
     finally:
         solver._difficulty_probe = saved_probe
         solver._difficulty_max_it = saved_probe_maxit
         solver._resume_abs_target = saved_resume
         solver.consistent_jacobian = saved_tangent
-        if not reached_one:
+        if not state["reached_one"]:
             # leave the model as it was stated, never at an intermediate m; the next
             # solve repacks the constant, so no repack is attempted here (it would
             # mask the exception that brought us to this block)
             control.set_scale(saved_scale)
-    if not reached_one:
-        message = message or "the ladder stopped above m = 1"
+    if not state["reached_one"]:
+        if not any(r[1] > 0 for r in rungs):
+            # nothing converged: the fields go back to where the ladder started
+            with uw.synchronised_array_update("rate_strengthening restore"):
+                u.array[...] = u_start
+                p.array[...] = p_start
+            solver._record_convergence_status(converged=saved_has_solution)
+        message = state["message"] or "the ladder stopped above m = 1"
+        state["message"] = message
         if verbose:
             uw.pprint(f"  [rate-strengthening] {message}; the model is back at m={saved_scale:g}")
         warnings.warn(
             f"[{solver.name}] rate-strengthening ladder did not reach the stated problem: "
-            f"{message}. The fields are the last converged rung's; the model is back at "
-            f"m={saved_scale:g}.", RuntimeWarning, stacklevel=2)
-    return dict(scale0=scale0, rungs=rungs, reached_one=reached_one,
-                converged=bool(reached_one and reason > 0), reason=reason, message=message)
+            f"{message}. The fields are the last converged rung's (or the starting state if "
+            f"none converged); the model is back at m={saved_scale:g}.",
+            RuntimeWarning, stacklevel=2)
+    return dict(scale0=state["scale0"], rungs=rungs, reached_one=state["reached_one"],
+                converged=bool(state["reached_one"] and state["reason"] > 0),
+                reason=state["reason"], message=state["message"])
 
 
 def _cell_values(solver, exprs):
@@ -381,9 +399,12 @@ def yield_continuation(
         ``ViscousFlowModel.yield_anchor``. Applies to BOTH families. Default (``None``)
         leaves the model's own choice. ``"yield"`` keeps the stress exact at the yield
         point for every δ and puts the law on or above the exact one throughout;
-        ``"onset"`` (the historical default) is exact on the unyielded branch but sits
+        ``"onset"`` (the model default) is exact on the unyielded branch but sits
         BELOW the exact law at and above the yield point, which makes the entry problem
-        WEAKER than the sharp problem it is supposed to lead to.
+        WEAKER than the sharp problem it is supposed to lead to. The march therefore
+        runs under ``"onset"`` unless ``anchor="yield"`` is passed; for an approach
+        from above, pass it (or use the declared ``plastic_rate_strengthening``
+        ladder, ``solve(homotopy="rate_strengthening")``).
     delta0 : float, optional
         Starting (smooth) δ. Defaults to the family's own entry (``control.delta0``),
         because δ is NOT the same parameter in the two families — see

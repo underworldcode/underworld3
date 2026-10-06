@@ -1261,6 +1261,7 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = False
             self._needs_bc_reregister = False
             self._needs_function_rewire = False
+            self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         else:
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
@@ -1352,8 +1353,11 @@ class SolverBaseClass(uw_object):
 
         Recomputed whenever a rewire is pending or the solver is not set up (a
         constitutive-parameter change sets ``_needs_function_rewire``; a new model or
-        new terms clear ``is_setup``); otherwise the value from the last computation
-        stands. The facts cached here (flux linearity, pressure in the rheology) cost a
+        new terms clear ``is_setup``), and dropped wherever ``_build`` consumes a
+        rewire or completes a setup — a warm solve's plan never reads the cache, so
+        without the drop the read after the build saw the facts from before the change
+        (measured: a viscous model switched to Drucker-Prager recorded
+        ``pressure_in_rheology=False`` and fired no warning). The facts cached here (flux linearity, pressure in the rheology) cost a
         symbolic unwrap-and-differentiate — measured 3.7 s per call on a 16x8 VEP box —
         which a time step must not pay on every warm solve.
         """
@@ -2125,14 +2129,19 @@ class SolverBaseClass(uw_object):
             pass
         notes = cfg.pop("_warnings", ())
         self._numerics_at_solve = cfg
+        self._emit_solve_notes(notes)
+        return cfg
+
+    def _emit_solve_notes(self, notes):
+        """Emit formulation warnings noted by :meth:`_snapshot_model_facts`, once per
+        solve (retries and re-entries snapshot again), attributed to the caller."""
         warned = getattr(self, "_warned_this_solve", None)
         if warned is None:
             warned = self._warned_this_solve = set()
         for msg in notes:
-            if msg not in warned:           # retries and re-entries snapshot again
+            if msg not in warned:
                 warned.add(msg)
                 _warn_from_caller(msg)
-        return cfg
 
     def _snapshot_model_facts(self, cfg):
         """Add formulation facts to the solve configuration snapshot (``solve_report.config``).
@@ -2296,7 +2305,7 @@ class SolverBaseClass(uw_object):
         except Exception:
             # Sanctioned: formulation facts are a record; none is recorded on failure
             pass
-        config.pop("_warnings", None)
+        self._emit_solve_notes(config.pop("_warnings", ()))
         report = SolveReport(
             reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
             nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
@@ -2850,12 +2859,16 @@ class SolverBaseClass(uw_object):
             self._picard_warmup_record = dict(
                 nl_its=its, ksp_its=int(self.snes.getLinearSolveIterations()), history=hist)
             if reason < 0 and reason != int(PETSc.SNES.ConvergedReason.DIVERGED_MAX_IT):
-                import warnings
                 from underworld3.systems.solve_report import reason_string
-                warnings.warn(
-                    f"[{self.name}] the Picard warm-up step ended {reason_string(reason)} "
-                    f"({reason}); Newton continues from its iterate.",
-                    RuntimeWarning, stacklevel=2)
+                inst = getattr(self, "_instrumentation", None)
+                if inst is not None and getattr(inst, "deadline_expired", False):
+                    _warn_from_caller(
+                        f"[{self.name}] the wall-clock deadline expired during the Picard "
+                        f"warm-up ({reason_string(reason)}); the solve stops there.")
+                else:
+                    _warn_from_caller(
+                        f"[{self.name}] the Picard warm-up step ended {reason_string(reason)} "
+                        f"({reason}); Newton continues from its iterate.")
             if verbose:
                 uw.pprint(f"Picard warm-up: {its} frozen-tangent step(s), reason={reason}")
         finally:
@@ -3045,6 +3058,7 @@ class SolverBaseClass(uw_object):
                self._current_jit_cache_key == self._last_jit_cache_key:
                 self._update_constants()
                 self.is_setup = True
+                self._form_facts = None     # forms (re)built: cached symbolic facts are stale
                 if hasattr(self, "constitutive_model") and \
                    self.constitutive_model is not None and \
                    hasattr(self.constitutive_model, "_solver_is_setup"):
@@ -3065,6 +3079,7 @@ class SolverBaseClass(uw_object):
             self._setup_solver(verbose, _rewire_only=True)
 
             self.is_setup = True
+            self._form_facts = None     # forms (re)built: cached symbolic facts are stale
 
             # _last_jit_cache_key must track "which bundle the solver is
             # currently wired for", not "what the last full-build was".
@@ -3168,6 +3183,7 @@ class SolverBaseClass(uw_object):
         self._setup_solver(verbose)
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
 
         # Record cache key after full build — used by the fast path
         # on subsequent _build() calls to detect constants-only changes.
@@ -4961,6 +4977,7 @@ class SNES_Scalar(SolverBaseClass):
             UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
@@ -6029,6 +6046,7 @@ class SNES_Vector(SolverBaseClass):
 
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
 
@@ -6756,6 +6774,7 @@ class SNES_MultiComponent(SolverBaseClass):
             UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
@@ -10078,6 +10097,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._setup_region_ds()
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
     def set_active_region(self, region_label_name, region_label_value):

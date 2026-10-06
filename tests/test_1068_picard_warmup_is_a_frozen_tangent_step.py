@@ -438,3 +438,30 @@ def test_changing_the_tangent_recompiles_it():
     assert s._needs_function_rewire is True
     s2, _ = _driven_box("tg2", True)
     assert s._get_newton_alpha() is not s2._get_newton_alpha()
+
+
+def test_a_flux_made_nonlinear_after_a_solve_takes_the_cold_warmup():
+    """Linear viscosity first (no warm-up: the tangents coincide), then a viscosity that
+    depends on the velocity, solved warm and then cold: the cold solve must take the
+    automatic Picard step. The cached linearity verdict survived the rebuild and the
+    step was skipped on a nonlinear model."""
+    uw.reset_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+    v = uw.discretisation.MeshVariable("Vfl", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Pfl", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    s.add_essential_bc((1.0, 0.0), "Top")
+    s.add_essential_bc((0.0, 0.0), "Bottom")
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options.delValue("ksp_monitor")
+    s.tolerance = 1.0e-6
+    s.solve(zero_init_guess=True)
+    assert s._picard_stages is None
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0 + 5.0 * v.sym.dot(v.sym)
+    s.solve(zero_init_guess=False)
+    assert s._picard_stages is None          # warm: no warm-up by design
+    s.solve(zero_init_guess=True)
+    assert s._picard_stages == dict(picard_iterations=1), s._picard_stages
