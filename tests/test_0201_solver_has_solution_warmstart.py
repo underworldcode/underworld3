@@ -1,5 +1,5 @@
 """Layer 1a of the nonlinear-solver warm-start / homotopy design:
-``solver.has_solution`` and cold starts under the consistent-Newton tangent.
+``solver.has_solution`` and the automatic cold-start Picard warm-up.
 
 Contract under test (design:
 ``docs/developer/design/nonlinear-solver-homotopy-warmstart.md``, Layer 1):
@@ -11,10 +11,10 @@ Contract under test (design:
     cold-starts rather than warming off a stale iterate.
   * It survives a coefficient-only change (a new viscosity value), so parameter
     continuation and time-stepping warm-start correctly.
-  * A cold start under the consistent-Newton tangent converges and sets the
-    flag. (The former automatic "Picard warm-up" on this path was an nrichardson
-    residual sweep and has been removed — #791; the Picard contract itself is
-    tested in test_1068.)
+  * A cold start under the consistent-Newton tangent takes one Picard step,
+    then Newton, converges and sets the flag. (Before #791 that step was an
+    nrichardson residual sweep; the Picard contract itself is tested in
+    test_1068.)
 
 These are cheap serial checks on the public API — the hard-case δ-continuation
 that motivates the design is validated separately against the Spiegelman study.
@@ -187,8 +187,10 @@ def test_repeated_default_solve_agrees_to_solver_tolerance():
 
 
 def test_cold_warmstart_under_consistent_newton_converges():
-    """A cold consistent-Newton Stokes solve must converge and set has_solution.
-    (No warm-up runs on this path any more — #791.)"""
+    """A cold consistent-Newton Stokes solve converges and sets has_solution. Since
+    2026-10-05 the automatic Picard warm-up is taken only when the flux's coefficient
+    depends on the unknowns; this viscosity is constant, so no warm-up runs (the frozen
+    and consistent tangents coincide). The nonlinear case is pinned in test_1068."""
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
     )
@@ -203,6 +205,8 @@ def test_cold_warmstart_under_consistent_newton_converges():
     stokes.add_essential_bc((0.0, None), "Right")
 
     stokes.consistent_jacobian = True
-    stokes.solve()  # cold: Newton straight from rest
+    stokes.solve()  # cold: one Picard step, then Newton
+    assert stokes._picard_stages is None, (
+        f"a linear flux took an automatic Picard step: {stokes._picard_stages}")
     assert stokes.snes.getConvergedReason() > 0
     assert stokes.has_solution is True

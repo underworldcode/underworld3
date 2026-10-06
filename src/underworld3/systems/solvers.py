@@ -1591,7 +1591,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         order=None,
         picard: int = 0,
         divergence_retries: int = 0,
-        homotopy: bool = False,
+        homotopy=False,
         homotopy_options: dict = None,
     ):
         """Solve the Stokes system, with optional viscoelastic stress history.
@@ -1674,6 +1674,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                     "picard. Use homotopy_options={'entry_maxit': ...} to size the "
                     "first solve."
                 )
+            if isinstance(homotopy, str) and homotopy == "rate_strengthening":
+                from underworld3.systems.yield_continuation import rate_strengthening_continuation
+                options = dict(homotopy_options or {})
+                options.setdefault("verbose", verbose)
+                options.setdefault("solve_kwargs", inner)
+                return rate_strengthening_continuation(self, **options)
             return self._solve_yield_homotopy(
                 homotopy_options, verbose=verbose, solve_kwargs=inner
             )

@@ -1012,6 +1012,71 @@ class ViscousFlowModel(Constitutive_Model):
             return delta / 2
         return (-1 + sympy.sqrt(1 + delta**2)) / 2
 
+    def _get_rate_strengthening_scale(self):
+        r"""The homotopy multiplier on ``plastic_rate_strengthening`` as a ``constants[]`` atom.
+
+        The law is ``eta_pl -> tau_y/(2 edot_II) + m * eta_reg`` with ``m = 1`` the stated
+        problem. A ladder in ``m`` from a large value (effectively viscous) down to 1 is an
+        approach from above that ends at the problem as stated; ``m`` is a rampable
+        constant, so each rung is a repack and not a recompile. Louis, 2026-10-05: the
+        regularisation is a DECLARED parameter with its scale stated per model — there is
+        no universal dimensionless value.
+        """
+        value = getattr(self, "_rate_strengthening_scale", 1.0)
+        if getattr(self, "_rate_strengthening_scale_expr", None) is None:
+            self._rate_strengthening_scale_expr = expression(
+                R"{m_{\mathrm{reg}}}",
+                sympy.Float(value),
+                "Homotopy multiplier on the plastic rate strengthening (1 = the stated problem)",
+            )
+        else:
+            self._rate_strengthening_scale_expr.sym = sympy.Float(value)
+        return self._rate_strengthening_scale_expr
+
+    @property
+    def rate_strengthening_scale(self):
+        """Multiplier ``m`` on ``Parameters.plastic_rate_strengthening``; 1 = as stated."""
+        return getattr(self, "_rate_strengthening_scale", 1.0)
+
+    @rate_strengthening_scale.setter
+    def rate_strengthening_scale(self, value):
+        self._rate_strengthening_scale = float(value)
+        if getattr(self, "_rate_strengthening_scale_expr", None) is not None:
+            self._rate_strengthening_scale_expr.sym = sympy.Float(self._rate_strengthening_scale)
+        self._reset()
+
+    def _rate_strengthening_control(self):
+        """How the solver ladders the declared rate strengthening (``m`` from the viscous
+        limit down to 1). ``None`` when the model states no ``plastic_rate_strengthening``."""
+        from underworld3.systems.yield_continuation import RateStrengtheningControl
+        eta_reg = getattr(self.Parameters, "plastic_rate_strengthening", None)
+        if eta_reg is None or eta_reg.sym == 0:
+            return None
+
+        def set_scale(value):
+            self.rate_strengthening_scale = value
+
+        return RateStrengtheningControl(
+            set_scale=set_scale,
+            tangent=self._yield_homotopy_tangent,
+            scale=self._get_rate_strengthening_scale(),
+            parameter=eta_reg,
+            onset_expr=self._rate_strengthening_onset_expr(),
+        )
+
+    def _rate_strengthening_onset_expr(self):
+        r"""Per cell, the multiplier ``m`` at which the cell just stops yielding at the
+        CURRENT fields: ``(eta_ve - tau_y/(2 edot_II)) / eta_reg``. Its maximum over the
+        domain is the viscous limit a ladder should start from (generic: needs only the
+        model's own branches, no problem knowledge)."""
+        inner = self.Parameters
+        eta_reg = inner.plastic_rate_strengthening
+        tau = inner.yield_stress
+        if inner.yield_stress_min.sym != -sympy.oo:
+            tau = self._apply_floor(tau, inner.yield_stress_min)
+        edot = self._strainrate_inv_II + (inner.strainrate_inv_II_min if inner.strainrate_inv_II_min.sym != 0 else 0)
+        return (inner.shear_viscosity_0 - tau / (2 * edot)) / eta_reg
+
     def _get_yield_offset(self):
         """The offset constant atom (lazily created alongside δ)."""
         if getattr(self, "_yield_offset_expr", None) is None:
@@ -1495,6 +1560,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Strain rate invariant minimum value",
             units="1/s",
         )
+        plastic_rate_strengthening = api_tools.Parameter(
+            R"{\eta_{\mathrm{reg}}}",
+            lambda inner_self: 0,
+            "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + eta_reg (a stated "
+            "regularisation; floors the plastic viscosity AND its tangent modulus)",
+            units="Pa*s",
+        )
 
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
@@ -1548,6 +1620,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             )
         else:
             viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
+        # The declared rate strengthening: eta_pl -> eta_pl + m * eta_reg. It floors the
+        # plastic viscosity AND the tangent modulus along the strain-rate direction in
+        # every yielded element (a static viscosity floor clips only the fastest cells and
+        # leaves the tangent at zero elsewhere — the mechanism mode of a yielded layer).
+        # Scale stated by the model; m is the homotopy multiplier, 1 = as stated.
+        if getattr(inner_self, "plastic_rate_strengthening", None) is not None and inner_self.plastic_rate_strengthening.sym != 0:
+            viscosity_yield = viscosity_yield + self._get_rate_strengthening_scale() * inner_self.plastic_rate_strengthening
 
         # Combine the viscous and plastic (yield) viscosities. The default
         # yield_mode="min" gives the exact hard Min(η_0, η_yield); yield_mode="softmin"
@@ -1785,7 +1864,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # Persistent container for the yield-limited VEP effective viscosity
         # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
         # combined coefficient is stored INSIDE this atom so the c-tensor
-        # bakes a wrapped atom and the default (Picard) tangent stays frozen;
+        # bakes a wrapped atom and the frozen (Picard, consistent_jacobian=False) tangent stays frozen;
         # only _jacobian_unwrap (Newton) sees the strain-rate dependence of
         # the yield law. Same freezing contract as the TI classes (#457/#493).
         self._vep_eff_viscosity = expression(
@@ -1871,6 +1950,13 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             lambda inner_self: 0,
             "Strain rate invariant minimum value",
             units="1/s",
+        )
+        plastic_rate_strengthening = api_tools.Parameter(
+            R"{\eta_{\mathrm{reg}}}",
+            lambda inner_self: 0,
+            "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + eta_reg (a stated "
+            "regularisation; floors the plastic viscosity AND its tangent modulus)",
+            units="Pa*s",
         )
 
         def __init__(
@@ -2274,7 +2360,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # Store the combined coefficient INSIDE the persistent container (the
         # ViscoPlasticFlowModel._plastic_eff_viscosity pattern) so the
         # c-tensor bakes ONE wrapped atom: sympy.diff treats it as a constant
-        # and the default (Picard) tangent stays frozen; only the Newton path
+        # and the frozen (Picard) tangent stays frozen; only the Newton path
         # (_jacobian_unwrap) sees the yield law's strain-rate dependence.
         # (Same freezing contract as the TI classes — issue #457 / PR #493.)
         self._vep_eff_viscosity._sym = effective_viscosity
@@ -2329,6 +2415,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             )
         else:
             viscosity_yield = yield_stress / (2 * strainrate_inv_II)
+        if getattr(parameters, "plastic_rate_strengthening", None) is not None and parameters.plastic_rate_strengthening.sym != 0:
+            viscosity_yield = viscosity_yield + self._get_rate_strengthening_scale() * parameters.plastic_rate_strengthening   # see ViscoPlasticFlowModel.viscosity
 
         return viscosity_yield
 
@@ -2825,7 +2913,7 @@ class GenericFluxModel(Constitutive_Model):
 
             Stores the raw sympy expression directly. Previously each component
             was wrapped in a UWexpression via ``validate_parameters`` — and the
-            default (Picard) tangent differentiates the flux WITHOUT unwrapping
+            frozen (Picard, consistent_jacobian=False) tangent differentiates the flux WITHOUT unwrapping
             (frozen-coefficient semantics; unwrap-before-differentiate runs only
             on the consistent-Newton path). An opaque wrapper holding the ENTIRE
             flux therefore has zero derivative w.r.t. the unknown and its
@@ -3156,7 +3244,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
         # Bake the WRAPPED Parameter atoms into the tensor, exactly like the
         # isotropic ViscousFlowModel path. sympy.diff treats a UWexpression
-        # atom as a constant, so the default (Picard) tangent stays genuinely
+        # atom as a constant, so the frozen (Picard) tangent stays genuinely
         # frozen even when eta_0/eta_1 depend on strain rate; only the Newton
         # path (_jacobian_unwrap) exposes that dependence. Baking `.sym`
         # (unwrapped contents) here silently un-froze the TI Picard tangent —
@@ -3464,6 +3552,13 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             R"{\dot\varepsilon_{II,\mathrm{min}}}",
             lambda inner_self: 0,
             "Strain rate invariant minimum value", units="1/s",
+        )
+        plastic_rate_strengthening = api_tools.Parameter(
+            R"{\eta_{\mathrm{reg}}}",
+            lambda inner_self: 0,
+            "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + eta_reg (a stated "
+            "regularisation; floors the plastic viscosity AND its tangent modulus)",
+            units="Pa*s",
         )
 
         def __init__(inner_self, _owning_model):
@@ -3827,6 +3922,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             )
         else:
             viscosity_yield = tau_y / (2 * gamma_dot_abs)
+        if getattr(parameters, "plastic_rate_strengthening", None) is not None and parameters.plastic_rate_strengthening.sym != 0:
+            viscosity_yield = viscosity_yield + self._get_rate_strengthening_scale() * parameters.plastic_rate_strengthening   # see ViscoPlasticFlowModel.viscosity
 
         return viscosity_yield
 

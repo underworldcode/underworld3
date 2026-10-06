@@ -1679,6 +1679,17 @@ class Model(PintNativeModelMixin, BaseModel):
                 event["deadline_expired"] = True
             if getattr(report, "bounded", False):
                 event["bounded"] = True
+            # Formulation facts the solve ran under (solve_report.config, #806): the
+            # tangent in force and, for Stokes, the pressure gauge. These are what a
+            # reader needs to debug the MODEL from the transcript alone — which
+            # pressure a pressure-dependent yield law saw, whether a mean was
+            # projected out, which tangent produced the step — without a live
+            # process to introspect.
+            config = getattr(report, "config", None) or {}
+            for key in ("tangent", "gauge"):
+                facts = config.get(key)
+                if facts:
+                    event[key] = dict(facts)
             return
 
     def _record_warning(self, message, category, filename, lineno) -> None:
