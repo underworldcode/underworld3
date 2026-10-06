@@ -545,34 +545,26 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._remesh_policy = RemeshPolicy(value)
 
-    def _object_viewer(self):
-        """This will substitute specific information about this object"""
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        # feedback on this instance
-
-        display(
-            Markdown(f"**MeshVariable:**"),
-            Markdown(
-                f"""\
-  > symbol:  ${self.symbol}$\n
-  > shape:   ${self.shape}$\n
-  > degree:  ${self.degree}$\n
-  > continuous:  `{self.continuous}`\n
-  > type:    `{self.vtype.name}`"""
-            ),
-            Markdown(f"**FE Data:**"),
-            Markdown(
-                f"""
-  > PETSc field id:  ${self.field_id}$ \n
-  > PETSc field name:   `{self.clean_name}` """
-            ),
-        )
-
-        display(self.array),
-
-        return
+    def describe(self, depth=4):
+        """What this variable is, as data: its symbol, shape, degree,
+        continuity, type and units, and the mesh it lives on."""
+        from underworld3.utilities.describe import record
+        import sympy
+        facts = {
+            "symbol": str(getattr(self, "symbol", "")),
+            "components": int(getattr(self, "num_components", 1)),
+            "shape": str(getattr(self, "shape", "")),
+            "degree": int(getattr(self, "degree", 0)),
+            "continuous": bool(getattr(self, "continuous", True)),
+            "type": getattr(getattr(self, "vtype", None), "name", None),
+            "mesh": getattr(getattr(self, "mesh", None), "name", None),
+        }
+        units = getattr(self, "units", None)
+        if units:
+            facts["units"] = str(units)
+        summary = (f"{facts['type'] or 'field'}, {facts['components']} component(s), "
+                   f"P{facts['degree']}{'' if facts['continuous'] else ' discontinuous'}")
+        return record("variable", getattr(self, "name", None), summary, facts=facts)
 
     def clone(self, name, varsymbol):
         """Create a copy of this variable with new name and symbol.
