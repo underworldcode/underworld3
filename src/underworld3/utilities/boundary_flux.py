@@ -783,6 +783,57 @@ def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None)
     return xs, (np.column_stack(cols) if nodes else np.zeros((0, ncomp)))
 
 
+def boundary_flux_integral(solver, boundary):
+    r"""Return the integrated scalar flux through ``boundary``.
+
+    For a scalar solver, summing the consistent nodal reactions on the queried
+    boundary gives :math:`\int_\Gamma F\cdot\hat n\,d\Gamma` directly because
+    the boundary basis is a partition of unity. The raw reactions are partial
+    on partition-cut nodes, so the final sum is collective across ranks.
+
+    This path is intended for integral diagnostics such as Nusselt numbers. It
+    avoids pointwise boundary-mass recovery and a temporary MeshVariable. Use
+    :meth:`boundary_flux` or :meth:`boundary_flux_field` when nodal values are
+    required.
+
+    Call collectively after solving a continuous scalar problem with an
+    essential boundary condition on the queried boundary. The sign is the
+    raw CBF residual sign, identical to ``boundary_flux``; no mean is removed
+    and no area normalization is applied. For a mean flux divide by the
+    boundary area. At intersections of driven boundaries a nodal reaction
+    includes both contributions, so this is not a facet-separated flux there.
+    """
+    dm = solver.dm
+    if dm.getLocalSection().getFieldComponents(0) != 1:
+        raise ValueError(
+            "boundary_flux_integral requires a scalar solver field; use "
+            "boundary_flux(..., normal=...) for vector traction."
+        )
+    nodes, lsec, _csec, _cvec, _v0, _v1, _edge_nodes = _boundary_field_nodes(
+        solver, boundary, field_id=0
+    )
+    # A rank may share a boundary node without holding a labelled facet.
+    # Propagate membership through the point SF before summing raw reactions.
+    boundary_points = np.zeros(dm.getChart()[1], dtype=np.int32)
+    for point, _slot, _coordinate in nodes:
+        boundary_points[point] = 1
+    if dm.comm.size > 1:
+        sf = dm.getPointSF()
+        roots = boundary_points.copy()
+        sf.reduceBegin(MPI.INT32_T, boundary_points, roots, MPI.MAX)
+        sf.reduceEnd(MPI.INT32_T, boundary_points, roots, MPI.MAX)
+        sf.bcastBegin(MPI.INT32_T, roots, boundary_points, MPI.MAX)
+        sf.bcastEnd(MPI.INT32_T, roots, boundary_points, MPI.MAX)
+        np.maximum(boundary_points, roots, out=boundary_points)
+    ra = np.asarray(solver._assemble_volume_reaction()).ravel()
+    local_integral = sum(
+        float(np.sum(ra[lsec.getFieldOffset(point, 0):
+                        lsec.getFieldOffset(point, 0) + lsec.getFieldDof(point, 0)]))
+        for point in np.flatnonzero(boundary_points)
+    )
+    return float(dm.comm.tompi4py().allreduce(local_integral, op=MPI.SUM))
+
+
 def write_boundary_scalar_field(solver, field, value_by_key, dim):
     """Write ``value_by_key`` (coordinate-key → scalar) onto a scalar MeshVariable
     ``field`` at the matching nodes; interior nodes untouched. Returns ``field``.
