@@ -350,3 +350,43 @@ def write_cell_field_to_viewer(
     mesh_var._sync_lvec_to_gvec()
     data = mesh_var._gvec.array.reshape(-1, nc).copy()
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
+
+
+def _write_dg1_to_viewer(mesh_var, viewer):
+    """Write owned simplex cells with independent physical vertices and DG1 traces.
+
+    Coordinate-section cell maps preserve element ownership and node ordering;
+    no point location, coordinate matching, or inter-element averaging is used.
+    Interior DG interpolation nodes define an affine polynomial, evaluated at
+    that same cell's physical vertices. Native checkpoint vectors are untouched.
+    """
+    mesh = mesh_var.mesh
+    if (
+        mesh_var.continuous or mesh_var.degree != 1 or not mesh.isSimplex
+        or mesh.dim not in (2, 3) or mesh.cdim != mesh.dim
+    ):
+        raise NotImplementedError("DG1 XDMF requires a full-dimensional triangle/tetrahedron mesh")
+    cstart, cend = mesh.dm.getHeightStratum(0)
+    owned = np.ones(cend - cstart, dtype=bool)
+    # Serial DMPlex may have an unset point SF; no cells are ghosts there.
+    if mesh.dm.comm.getSize() > 1:
+        _, leaves, remote = mesh.dm.getPointSF().getGraph()
+        if leaves is None:
+            leaves = np.arange(len(remote))
+        leaves = np.asarray(leaves)
+        owned[leaves[(leaves >= cstart) & (leaves < cend)] - cstart] = False
+    rows = mesh._cell_node_indices(1, False).reshape(-1, mesh.dim + 1)[owned]
+    vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, mesh.dim + 1)[owned]
+    corners = mesh._get_coords_for_basis(1, True)[vertex_rows]
+    # Closure order is arbitrary; give VTK positively oriented simplices.
+    negative = np.linalg.det((corners[:, 1:] - corners[:, :1]).transpose(0, 2, 1)) < 0
+    corners[negative] = corners[negative][:, [0, 2, 1] if mesh.dim == 2 else [0, 2, 1, 3]]
+    nodes = mesh_var.coords[rows]
+    coefficients = mesh_var._lvec.array.reshape(-1, mesh_var.num_components)[rows]
+    matrix = (nodes[:, 1:] - nodes[:, :1]).transpose(0, 2, 1)
+    local = np.linalg.solve(matrix, (corners - nodes[:, :1]).transpose(0, 2, 1))
+    weights = np.concatenate((1 - local.sum(axis=1, keepdims=True), local), axis=1)
+    values = np.einsum("cij,cik->cjk", weights, coefficients).reshape(-1, mesh_var.num_components)
+    values = _repack_tensor_to_paraview(values, mesh_var.vtype, mesh.dim)
+    _write_vec_to_group(viewer, corners.reshape(-1, mesh.cdim), "vertices", "/dg1", PETSc.COMM_WORLD)
+    _write_vec_to_group(viewer, values, "values", "/dg1", PETSc.COMM_WORLD)

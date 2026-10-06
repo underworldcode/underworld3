@@ -1,6 +1,6 @@
 """Quick validation script for the VE shear box test.
 
-Run with: pixi run -e amr-dev python tests/run_ve_shear_validation.py
+Run with: pixi run -e amr-dev python scripts/sessions/run_ve_shear_validation.py
 """
 
 import time as timer

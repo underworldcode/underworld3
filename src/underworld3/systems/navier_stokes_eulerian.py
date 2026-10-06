@@ -148,6 +148,10 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
       extrapolation level are mesh variables the solver owns.
     """
 
+    _solver_terms = SNES_Stokes._solver_terms + (
+        ("rho", "density multiplying the inertial terms"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
