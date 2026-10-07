@@ -69,6 +69,44 @@ def _warn_from_caller(message, category=RuntimeWarning):
         warnings.warn(message, category, stacklevel=3)
 
 
+def _reaches(expr, targets):
+    """True when ``expr`` reaches any of ``targets``, following each UWexpression into
+    its contents. Every node is visited once.
+
+    Unwrapping an expression and then searching it rebuilds the shared expression
+    graph as a tree, which is exponential in the nesting. Measured on the Spiegelman
+    notch (Drucker-Prager yield, residual strength, viscosity floor, smooth yield law):
+    the unwrap-and-differentiate linearity test ran for hours, and the unwrap-and-search
+    pressure test for minutes. This walk is linear in the size of the graph.
+    """
+    from underworld3.function.expressions import UWexpression
+    targets = set(targets)
+    if not targets:
+        return False
+    seen = set()
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        key = id(e)
+        if key in seen:
+            continue
+        seen.add(key)
+        if isinstance(e, (sympy.MatrixBase, sympy.NDimArray)):
+            stack.extend(e)
+            continue
+        if not isinstance(e, sympy.Basic):
+            continue
+        if e in targets:
+            return True
+        if isinstance(e, UWexpression):
+            inner = getattr(e, "_sym", None)
+            if isinstance(inner, sympy.Basic) or isinstance(inner, (sympy.MatrixBase, sympy.NDimArray)):
+                stack.append(inner)
+            continue
+        stack.extend(e.args)
+    return False
+
+
 def _check_homotopy_value(homotopy):
     """``solve(homotopy=...)`` takes False, True or "rate_strengthening"; anything else
     (a misspelt string is truthy) would silently run the δ march."""
@@ -1377,10 +1415,12 @@ class SolverBaseClass(uw_object):
         Picard step would be a second linear solve of the same operator for nothing
         (and, through the blended kernel it compiles, a different code path — measured:
         it diverged a linear constrained Stokes solve that Newton and Picard each solve
-        in one iteration). Test: unwrap the flux and differentiate it by each gradient
-        symbol; if any of those derivatives still contains an unknown (velocity,
-        gradient or pressure symbol), the coefficient is unknown-dependent. A spatially
-        varying coefficient passes as linear, as it should. Scope: the flux F1 by the
+        in one iteration). Test, on the WRAPPED flux: the coefficient is
+        unknown-dependent if any named sub-expression in it (the viscosity, the yield
+        stress) reaches an unknown — velocity, gradient or pressure symbol — searched
+        by :func:`_reaches` rather than unwrapped (see there for why), or if the flux
+        differentiated by a gradient symbol still carries an unknown at top level. A
+        spatially varying coefficient passes as linear, as it should. Scope: the flux F1 by the
         gradient only — a nonlinear F0 (source) term, or F1 = grad u + b(u), reads as
         linear here; that is what the guard needs (the warm-up changes the TANGENT of
         the flux) but not a general linearity test.
@@ -1405,15 +1445,23 @@ class SolverBaseClass(uw_object):
             grads = list(sympy.Matrix(L)) if L is not None else []
             if not unknowns or not grads:
                 return False
-            expr = sympy.Array(_jacobian_unwrap(sympy.Array(F1.sym)))
+            # The WRAPPED flux: its named sub-expressions (the viscosity, the yield
+            # stress) are atoms here, so this is small. (1) Any named sub-expression that
+            # reaches an unknown makes the coefficient unknown-dependent; (2) the top
+            # level, differentiated by each gradient symbol, must carry no unknown.
+            from underworld3.function.expressions import UWexpression
+            flux = sympy.Array(F1.sym)
+            named = [a for a in flux.atoms(sympy.Symbol) if isinstance(a, UWexpression)]
+            if any(_reaches(a, unknowns) for a in named):
+                return False
             for g in grads:
-                d = sympy.Array(sympy.diff(expr, g))
+                d = sympy.Array(sympy.diff(flux, g))
                 if any(sympy.sympify(e).has(*unknowns) for e in sympy.flatten(d.tolist())):
                     return False
             return True
         except Exception:
-            # Sanctioned: a flux we cannot differentiate symbolically is treated as
-            # nonlinear, so the cold start keeps the documented Layer-1 Picard step.
+            # Sanctioned: a flux we cannot analyse is treated as nonlinear, so the cold
+            # start keeps the documented Layer-1 Picard step.
             return False
 
     def _snes_is_linear(self):
@@ -8442,8 +8490,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             expr = pick(cm)
             if expr is None:
                 return False
-            expr = _unwrap_expression(sympy.sympify(expr), mode="symbolic_keep_constants")
-            return bool(sympy.sympify(expr).has(psym[0]))
+            return _reaches(expr, {psym[0]})
         except Exception:
             # Sanctioned: an expression we cannot unwrap is recorded as unknown (None),
             # and neither pressure warning fires on an unknown.
