@@ -263,6 +263,7 @@ docs/reviews/
 | Review | Component | Tests | Pass Rate | Date | Status |
 |--------|-----------|-------|-----------|------|--------|
 | Nonlinear defaults and η_reg ([2026-10](2026-10/nonlinear-defaults-794-adversarial-review.md), PR #794) | Solvers/Constitutive | adversarial, 2 rounds | Passing | 2026-10-06 | Fixes on branch |
+| JIT setup cost ([2026-10](2026-10/jit-setup-cost-823-adversarial-review.md), #823) | JIT/Solvers | adversarial, 3 rounds | Passing | 2026-10-07 | Fixes on branch |
 | Units System (2026-02) | Units/Scaling | 60+ | Passing | 2026-02-01 | Approved (2026-03-10) |
 | Data Access (2026-02) | Array/Math Interface | 75+ | Passing | 2026-02-01 | Approved (2026-03-10) |
 | Reduction Operations | Mesh/Swarm Arrays | 5 | ✅ 100% | 2025-10-25 | ✅ Approved |

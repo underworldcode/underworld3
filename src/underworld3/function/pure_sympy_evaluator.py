@@ -255,6 +255,10 @@ def evaluate_pure_sympy(expr, coords, coord_symbols=None):
     - Caches lambdified functions for repeated evaluations
     - ~10,000x faster than sympy.subs() for many points
     """
+    from underworld3.utilities._jitextension import _without_dirac_deltas
+
+    expr = _without_dirac_deltas(expr, "evaluate")
+
     # Ensure coords is 2D numpy array
     coords_array = np.asarray(coords, dtype=np.float64)
     if coords_array.ndim == 1:

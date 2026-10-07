@@ -38,6 +38,23 @@ Unwrap UWexpressions to their underlying SymPy expressions for compilation.
 .. autofunction:: underworld3.function.unwrap
 ```
 
+### diff_wrt_field
+
+Differentiate with respect to a field value or gradient, keeping the field's realness.
+Use it, not `sympy.diff`, for a hand-written tangent or `flux_jacobian`.
+
+```{eval-rst}
+.. autofunction:: underworld3.function.diff_wrt_field
+```
+
+### derive_by_array_wrt_field
+
+`sympy.derive_by_array` through `diff_wrt_field`.
+
+```{eval-rst}
+.. autofunction:: underworld3.function.derive_by_array_wrt_field
+```
+
 ## Quantities and Units
 
 ### UWQuantity

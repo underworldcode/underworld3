@@ -1101,6 +1101,18 @@ class ViscousFlowModel(Constitutive_Model):
                 self._yield_offset_for_anchor(),
                 "Yield soft-min offset; tracks δ so the chosen anchor is exact",
             )
+            # The power mean's sharpness, held as its own atom like the offset. δ is
+            # floored SMOOTHLY (+0.001, not Max()) so 1/δ stays finite as δ → 0 (a Max
+            # on the δ atom triggers an unsupported symbolic numeric comparison).
+            # Written inline, the exponent -1/(δ + 0.001) has a sum in its
+            # denominator, and SymPy then evaluates im() of the whole base each time
+            # it builds a**(-s) (its test for a power of E): 40 s of the notch Newton
+            # source, 0.1 s with the atom (#823).
+            self._yield_sharpness_expr = expression(
+                R"{s_{y}}",
+                1 / (self._yield_softness_expr + sympy.Rational(1, 1000)),
+                "Power-mean soft-min sharpness s = 1/(δ + 0.001); tracks δ",
+            )
         else:
             self._yield_softness_expr.sym = sympy.Float(delta_value)
         return self._yield_softness_expr
@@ -1196,6 +1208,11 @@ class ViscousFlowModel(Constitutive_Model):
             self._get_yield_softness()
         return self._yield_offset_expr
 
+    def _get_yield_sharpness(self):
+        """The power-mean sharpness atom ``s = 1/(δ + 0.001)`` (created alongside δ)."""
+        self._get_yield_softness()
+        return self._yield_sharpness_expr
+
     @property
     def yield_anchor(self):
         r"""Which point of the ``"softmin"`` yield law is pinned to the exact ``Min``.
@@ -1269,6 +1286,7 @@ class ViscousFlowModel(Constitutive_Model):
         # (#490).
         self._yield_offset_expr = None
         self._yield_softness_expr = None
+        self._yield_sharpness_expr = None
         self._reset()
 
     def _combine_yield(self, eta_ve, eta_pl):
@@ -1306,10 +1324,8 @@ class ViscousFlowModel(Constitutive_Model):
         delta = self._get_yield_softness()
         f = eta_ve / eta_pl
         if smoother == "powermean":
-            # Soft-min of order -s in an overflow-safe harmonic-normalised form. δ is
-            # floored SMOOTHLY (+ε, not Max()) so 1/δ stays finite as δ→0 (a Max on
-            # the δ atom triggers an unsupported symbolic numeric comparison).
-            s = 1 / (delta + sympy.Float(0.001))
+            # Soft-min of order -s in an overflow-safe harmonic-normalised form.
+            s = self._get_yield_sharpness()
             a = 1 + f
             b = 1 + 1 / f
             # Harmonic mean written as eta_ve/(1+f), NOT eta_ve*eta_pl/(eta_ve+eta_pl).
@@ -1649,6 +1665,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         self._yield_anchor = "onset"      # exact viscous branch and plastic limit
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
+        self._yield_sharpness_expr = None  # power-mean sharpness atom (created lazily)
 
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
@@ -1983,6 +2000,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
+        self._yield_sharpness_expr = None  # power-mean sharpness atom (created lazily)
 
         # Timestep — set by the solver before each solve(). Not a user parameter.
         # Initialised to oo (viscous limit). The solver overwrites this with the

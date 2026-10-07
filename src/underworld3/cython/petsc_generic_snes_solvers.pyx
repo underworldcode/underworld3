@@ -51,6 +51,7 @@ from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
+from underworld3.function._function import diff_wrt_field, derive_by_array_wrt_field
 
 
 _DEFAULT_KRYLOV_RESTART = 100
@@ -167,11 +168,35 @@ def _jacobian_unwrap(expr):
         # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
         # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
         # derivatives), ... — all singular in value or derivative at a
-        # zero-argument state
-        return e.replace(
-            lambda n: (n.is_Pow and n.exp.is_Rational
-                       and n.exp.q == 2 and n.args[0].free_symbols),
-            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+        # zero-argument state.
+        # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
+        # identity: the unwrapped flux repeats its shared sub-expressions as the same
+        # object, and `replace` walked every occurrence (measured 16 s of a 108 s
+        # notch compile, #823).
+        memo = {}
+
+        def guard(n):
+            hit = memo.get(id(n))
+            if hit is not None:
+                return hit[1]
+            out = n
+            args = getattr(n, "args", None)
+            if args:
+                new_args = tuple(guard(a) for a in args)
+                if any(a is not b for a, b in zip(args, new_args)) and args != new_args:
+                    out = n.func(*new_args)
+                    # replace(simultaneous=True): a rebuild that collapses to one of
+                    # the changed arguments is not matched again
+                    if any(out == a and a != b for a, b in zip(args, new_args)):
+                        memo[id(n)] = (n, out)
+                        return out
+                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
+                        and out.args[0].free_symbols):
+                    out = sympy.Pow(out.args[0] + eps2, out.exp)
+            memo[id(n)] = (n, out)
+            return out
+
+        return guard(e)
 
     f = lambda e: _guard_sqrts(
         _unwrap_expression(e, mode="symbolic_keep_constants"))
@@ -501,10 +526,14 @@ class SolverBaseClass(uw_object):
         """Which measured smoother regime this solver's strategy asks for.
 
         ``solver.strategy`` is the named intent ("I want speed" / "I want this to
-        converge"); the values live in ``utilities.multigrid_options``. Solvers with
-        no strategy axis get the robust default. See
-        :func:`multigrid_options.geometric_mg_bundle` for the measurements."""
-        return "fast" if getattr(self, "_strategy", "default") == "fast" else "robust"
+        converge" / "I need the solver off the list of suspects"); the values live in
+        ``utilities.multigrid_options``. Solvers with no strategy axis get the robust
+        default. See :func:`multigrid_options.geometric_mg_bundle` for the
+        measurements."""
+        strategy = getattr(self, "_strategy", "default")
+        if strategy in ("fast", "bulletproof"):
+            return strategy
+        return "robust"
 
     def _push_managed_option(self, key, value):
         """Write a PETSc option UW3 owns, recording that we wrote it.
@@ -1455,7 +1484,7 @@ class SolverBaseClass(uw_object):
             if any(_reaches(a, unknowns) for a in named):
                 return False
             for g in grads:
-                d = sympy.Array(sympy.diff(flux, g))
+                d = sympy.Array(diff_wrt_field(flux, g))
                 if any(sympy.sympify(e).has(*unknowns) for e in sympy.flatten(d.tolist())):
                     return False
             return True
@@ -3438,7 +3467,7 @@ class SolverBaseClass(uw_object):
                 "with None / sympy.oo entries in 'conds' instead, e.g. "
                 "conds=(None, 5, 1.2)",
                 DeprecationWarning, stacklevel=3)
-            components = np.array(components, dtype=np.int32, ndmin=1)
+            components = np.array(components, dtype=PETSc.IntType, ndmin=1)
 
         elif components is None:
             cpts_list = []
@@ -3446,7 +3475,7 @@ class SolverBaseClass(uw_object):
                 if fn != sympy.oo and fn != -sympy.oo:
                     cpts_list.append(i)
 
-            components = np.array(cpts_list, dtype=np.int32, ndmin=1)
+            components = np.array(cpts_list, dtype=PETSc.IntType, ndmin=1)
         else:
             raise TypeError("Unsupported BC 'components' argument")
 
@@ -4328,6 +4357,19 @@ class SolverBaseClass(uw_object):
         return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
                     scale=scale, normal=normal)
 
+    def boundary_flux_integral(self, boundary):
+        r"""Integrated scalar CBF flux through ``boundary``.
+
+        This is the direct integral diagnostic for quantities such as Nusselt
+        numbers. It sums the consistent scalar nodal reactions collectively,
+        avoiding pointwise de-smearing and a temporary flux MeshVariable. Use
+        :meth:`boundary_flux` or :meth:`boundary_flux_field` when nodal values
+        are required.
+        """
+        from underworld3.utilities.boundary_flux import boundary_flux_integral as _bfi
+        return _bfi(self, boundary)
+
+
 ## Specific to dimensionality
 
 
@@ -4670,8 +4712,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.createDS()
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -4837,12 +4879,44 @@ class SNES_Scalar(SolverBaseClass):
         f0_jac = self._jacobian_source(f0)
         F1_jac = self._jacobian_source(F1, self._newton_flux(F1))
 
-        G0 = sympy.derive_by_array(f0_jac, U)
-        G1 = sympy.derive_by_array(f0_jac, L)
-        G2 = sympy.derive_by_array(F1_jac, U)
-        G3 = sympy.derive_by_array(F1_jac, L)
+        # Explicit-index Jacobian construction. `sympy.derive_by_array` is
+        # dx-FIRST (the derivative indices lead), so `derive_by_array(F1, L)`
+        # yields [dg][df] = dF1[dg]/dL[df] — the TRANSPOSE of the g3 PETSc
+        # wants. For a scalar unknown that is invisible whenever the flux
+        # tensor is symmetric (every shipped model: scalar kappa, and
+        # AnisotropicDiffusionModel's diagonal kappa), and wrong as soon as it
+        # is not. Same defect as issue #457 in the Stokes/vector tangents,
+        # fixed there by PR #493; this is the solver that conversion missed
+        # (#747). Layout contract:
+        # docs/developer/subsystems/petsc-jacobian-layout.md
+        #
+        # derive_by_array carries a second hazard these loops avoid: handed a
+        # flux built from a matrix-valued symbol it returns an array whose
+        # .shape disagrees with its backing store, which surfaces later as a
+        # bare IndexError from sympy internals naming nothing useful.
+        #
+        # Shapes are unchanged from the previous form, so the JIT sees the same
+        # flat sequences: G0 (1,1), G1 (cdim,1), G2 (1,cdim), G3 (cdim,cdim).
+        # Only G3's index order moves.
+        Uc = U[0]
+        G0 = sympy.zeros(1, 1)
+        G0[0, 0] = diff_wrt_field(f0_jac[0], Uc)
 
-        # Re-organise if needed / make hashable
+        # G1[df, 0] = d f0 / d L[df]
+        G1 = sympy.zeros(cdim, 1)
+        for df in range(cdim):
+            G1[df, 0] = diff_wrt_field(f0_jac[0], L[df])
+
+        # G2[0, df] = d F1[df] / d U
+        G2 = sympy.zeros(1, cdim)
+        for df in range(cdim):
+            G2[0, df] = diff_wrt_field(F1_jac[df], Uc)
+
+        # G3[df, dg] = d F1[df] / d L[dg]
+        G3 = sympy.zeros(cdim, cdim)
+        for df in range(cdim):
+            for dg in range(cdim):
+                G3[df, dg] = diff_wrt_field(F1_jac[df], L[dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -4872,8 +4946,8 @@ class SNES_Scalar(SolverBaseClass):
                 bd_F0  = sympy.Array(bc.fn_f)
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
                 
-                G0 = sympy.derive_by_array(bd_F0, U)
-                G1 = sympy.derive_by_array(bd_F0, L)
+                G0 = derive_by_array_wrt_field(bd_F0, U)
+                G1 = derive_by_array_wrt_field(bd_F0, L)
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(1, 1)) 
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim, 1))
@@ -4932,8 +5006,8 @@ class SNES_Scalar(SolverBaseClass):
             return
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -5580,7 +5654,7 @@ class SNES_Vector(SolverBaseClass):
         ])
 
         import numpy as np
-        components = np.arange(cdim, dtype=np.int32)
+        components = np.arange(cdim, dtype=PETSc.IntType)
 
         self.natural_bcs.append(BC(
             0, components, fn_f, fn_F, None,
@@ -5644,8 +5718,8 @@ class SNES_Vector(SolverBaseClass):
         ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
 
         for index,bc in enumerate(self.natural_bcs):
@@ -5813,21 +5887,21 @@ class SNES_Vector(SolverBaseClass):
         G0 = sympy.zeros(Nc, Nc)
         for fc in range(Nc):
             for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
+                G0[fc, gc] = diff_wrt_field(f0_jac_list[fc], U_list[gc])
 
         # G1[fc*Nc + gc, df]             = ∂f0[fc] / ∂L[gc, df]
         G1 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(cdim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
+                    G1[fc * Nc + gc, df] = diff_wrt_field(f0_jac_list[fc], L[gc, df])
 
         # G2[fc*Nc + gc, df]             = ∂F1[fc, df] / ∂U[gc]
         G2 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(cdim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
+                    G2[fc * Nc + gc, df] = diff_wrt_field(F1_jac[fc, df], U_list[gc])
 
         # G3[fc*Nc + gc, df*cdim + dg]    = ∂F1[fc, df] / ∂L[gc, dg]
         G3 = sympy.zeros(Nc * Nc, cdim * cdim)
@@ -5835,7 +5909,7 @@ class SNES_Vector(SolverBaseClass):
             for gc in range(Nc):
                 for df in range(cdim):
                     for dg in range(cdim):
-                        G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
+                        G3[fc * Nc + gc, df * cdim + dg] = diff_wrt_field(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -5878,9 +5952,9 @@ class SNES_Vector(SolverBaseClass):
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -5910,9 +5984,9 @@ class SNES_Vector(SolverBaseClass):
                     for fc in range(Nc):
                         for gc in range(Nc):
                             for df in range(cdim):
-                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
+                                bd_G2[fc * Nc + gc, df] = diff_wrt_field(bd_F1_jac[fc, df], U_list[gc])
                                 for dg in range(cdim):
-                                    bd_G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
+                                    bd_G3[fc * Nc + gc, df * cdim + dg] = diff_wrt_field(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -5969,8 +6043,8 @@ class SNES_Vector(SolverBaseClass):
             return
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -6422,8 +6496,8 @@ class SNES_MultiComponent(SolverBaseClass):
 
         self.dm.createDS()
 
-        cdef int ind=1
-        cdef int [::1] comps_view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view
         cdef DM cdm = self.dm
 
         for index, bc in enumerate(self.natural_bcs):
@@ -6582,21 +6656,21 @@ class SNES_MultiComponent(SolverBaseClass):
         G0 = sympy.zeros(Nc, Nc)
         for fc in range(Nc):
             for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
+                G0[fc, gc] = diff_wrt_field(f0_jac_list[fc], U_list[gc])
 
         #  G1[fc*Nc + gc, df]          = ∂f0[fc] / ∂L[gc, df]
         G1 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(cdim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
+                    G1[fc * Nc + gc, df] = diff_wrt_field(f0_jac_list[fc], L[gc, df])
 
         #  G2[fc*Nc + gc, df]          = ∂F1[fc, df] / ∂U[gc]
         G2 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(cdim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
+                    G2[fc * Nc + gc, df] = diff_wrt_field(F1_jac[fc, df], U_list[gc])
 
         #  G3[fc*Nc + gc, df*cdim + dg] = ∂F1[fc, df] / ∂L[gc, dg]
         G3 = sympy.zeros(Nc * Nc, cdim * cdim)
@@ -6604,7 +6678,7 @@ class SNES_MultiComponent(SolverBaseClass):
             for gc in range(Nc):
                 for df in range(cdim):
                     for dg in range(cdim):
-                        G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
+                        G3[fc * Nc + gc, df * cdim + dg] = diff_wrt_field(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -6640,9 +6714,9 @@ class SNES_MultiComponent(SolverBaseClass):
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -6668,9 +6742,9 @@ class SNES_MultiComponent(SolverBaseClass):
                     for fc in range(Nc):
                         for gc in range(Nc):
                             for df in range(cdim):
-                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
+                                bd_G2[fc * Nc + gc, df] = diff_wrt_field(bd_F1_jac[fc, df], U_list[gc])
                                 for dg in range(cdim):
-                                    bd_G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
+                                    bd_G3[fc * Nc + gc, df * cdim + dg] = diff_wrt_field(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -6709,8 +6783,8 @@ class SNES_MultiComponent(SolverBaseClass):
                 print(f"SNES_MultiComponent ({self.name}): SNES solver does not need to be rebuilt", flush=True)
             return
 
-        cdef int ind=1
-        cdef int [::1] comps_view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view
         cdef DM cdm = self.dm
         cdef DS ds = self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
@@ -7854,7 +7928,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ])
 
         import numpy as np
-        components = np.arange(dim, dtype=np.int32)
+        components = np.arange(dim, dtype=PETSc.IntType)
 
         self.natural_bcs.append(BC(
             0, components, fn_f, fn_F, fn_p,
@@ -8065,7 +8139,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def strategy(self):
         """
         What this solve should optimise for — the named intent over the
-        multigrid smoother's two measured regimes.
+        multigrid smoother's measured regimes.
 
         - ``"default"``, ``"robust"``: ``gmres``/4 smoothing. Survives an operator a
           stationary smoother stalls on: Spiegelman notch (:math:`\eta` contrast
@@ -8078,6 +8152,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
           hierarchy depth tested (x1.16, x1.30, x1.82 at 2, 3, 4 levels) while taking
           more iterations. It gives up the regime ``"robust"`` exists for, so it is
           an opt-in.
+        - ``"bulletproof"``: ``gmres``/8 smoothing preconditioned by **additive
+          Schwarz**, whose subdomain solves invert the local coupling directly rather
+          than relying on the operator being close to symmetric or elliptic. Slower
+          per sweep, and it exists to take the linear solve OFF the list of suspects.
+          When a run misbehaves and the solver, the transport scheme and the mesh
+          resolution are all candidates, run it again under ``"bulletproof"``: if the
+          answer is unchanged, the fault is not in the linear algebra. Measured on
+          creeping Oldroyd-B past a confined cylinder (Wi 0.4, three levels), where
+          ``"robust"`` spent 26947 s on one step and reached a drag of -4642 while
+          ``"bulletproof"`` took 115 s and stayed finite — and produced the same
+          wrong drag as every other smoother, which is what identified the real fault
+          as the under-resolved elastic layer rather than the solve.
 
         ``"default"`` is ``"robust"``: the failure it avoids is worse than the cost it
         carries, and it carries that cost exactly where the problem is easy.
@@ -8122,10 +8208,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @strategy.setter
     def strategy(self, value):
-        if value not in ("default", "robust", "fast"):
+        if value not in ("default", "robust", "fast", "bulletproof"):
             raise ValueError(
                 f"Unknown solver strategy {value!r}: "
-                "expected 'default', 'robust', or 'fast'."
+                "expected 'default', 'robust', 'fast', or 'bulletproof'."
             )
         # 'fast' and 'robust' now select a real smoother variant, via
         # `_mg_smoother_variant` -> `multigrid_options.geometric_mg_bundle`. They were
@@ -9033,18 +9119,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         _f0_flat = sympy.Array(F0_jac).reshape(dim)
 
         # Jacobian blocks are built with MATRIX-LEVEL diffs: one
-        # ``sympy.diff(<whole block matrix>, var)`` call per derivative
-        # variable instead of per-entry ``diff`` loops. Measured ~1.7x faster
-        # on large (monster-viscosity) fluxes — the batched elementwise diff
-        # reuses the derivative work across the block's shared subexpressions —
-        # and produces bit-identical entries (verified against the loop form).
+        # ``diff_wrt_field(<whole block matrix>, var)`` call per derivative
+        # variable instead of per-entry loops. Measured with ``sympy.diff`` ~1.7x
+        # faster on large (monster-viscosity) fluxes — the batched elementwise
+        # diff reuses the derivative work across the block's shared
+        # subexpressions — and bit-identical to the loop form. (#823 routed it
+        # through diff_wrt_field, measured no slower.)
         # The flat PETSc [fc, gc, df, dg] layout is preserved by assigning each
         # variable's matrix derivative into its slots below.
 
         # uu_G0[fc, gc]                  = dF0[fc] / dU[gc]
         G0 = sympy.zeros(Nc, Nc)
         for gc in range(Nc):
-            dF0_dU = sympy.diff(_f0_flat, U_list[gc])
+            dF0_dU = diff_wrt_field(_f0_flat, U_list[gc])
             for fc in range(Nc):
                 G0[fc, gc] = dF0_dU[fc]
 
@@ -9052,14 +9139,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         G1 = sympy.zeros(Nc * Nc, dim)
         for gc in range(Nc):
             for dg in range(dim):
-                dF0_dL = sympy.diff(_f0_flat, L[gc, dg])
+                dF0_dL = diff_wrt_field(_f0_flat, L[gc, dg])
                 for fc in range(Nc):
                     G1[fc * Nc + gc, dg] = dF0_dL[fc]
 
         # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
         G2 = sympy.zeros(Nc * Nc, dim)
         for gc in range(Nc):
-            dF1_dU = sympy.diff(F1_for_jac, U_list[gc])
+            dF1_dU = diff_wrt_field(F1_for_jac, U_list[gc])
             for fc in range(Nc):
                 for df in range(dim):
                     G2[fc * Nc + gc, df] = dF1_dU[fc, df]
@@ -9068,7 +9155,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         G3 = sympy.zeros(Nc * Nc, dim * dim)
         for gc in range(Nc):
             for dg in range(dim):
-                dF1_dL = sympy.diff(F1_for_jac, L[gc, dg])
+                dF1_dL = diff_wrt_field(F1_for_jac, L[gc, dg])
                 for fc in range(Nc):
                     for df in range(dim):
                         G3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
@@ -9087,14 +9174,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # up_G0[fc, 0]                   = dF0[fc] / dp
         G0 = sympy.zeros(dim, 1)
-        dF0_dp = sympy.diff(_f0_flat, p_scalar)
+        dF0_dp = diff_wrt_field(_f0_flat, p_scalar)
         for fc in range(dim):
             G0[fc, 0] = dF0_dp[fc]
 
         # up_G1[fc, dg]                  = dF0[fc] / d(dp/dx_dg)
         G1 = sympy.zeros(dim, dim)
         for dg in range(dim):
-            dF0_dGp = sympy.diff(_f0_flat, Gp[0, dg])
+            dF0_dGp = diff_wrt_field(_f0_flat, Gp[0, dg])
             for fc in range(dim):
                 G1[fc, dg] = dF0_dGp[fc]
 
@@ -9105,7 +9192,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         F1_for_up = F1_for_jac if self.newton_pressure_coupling \
             else sympy.Array(F1).reshape(dim, dim)
         G2 = sympy.zeros(dim, dim)
-        dF1_dp = sympy.diff(F1_for_up, p_scalar)
+        dF1_dp = diff_wrt_field(F1_for_up, p_scalar)
         for fc in range(dim):
             for df in range(dim):
                 G2[fc, df] = dF1_dp[fc, df]
@@ -9113,7 +9200,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # up_G3[fc*dim + df, dg]         = dF1[fc, df] / d(dp/dx_dg)
         G3 = sympy.zeros(dim * dim, dim)
         for dg in range(dim):
-            dF1_dGp = sympy.diff(F1_for_up, Gp[0, dg])
+            dF1_dGp = diff_wrt_field(F1_for_up, Gp[0, dg])
             for fc in range(dim):
                 for df in range(dim):
                     G3[fc * dim + df, dg] = dF1_dGp[fc, df]
@@ -9127,8 +9214,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(PF0_jac, self.u.sym)
-        G1 = sympy.derive_by_array(PF0_jac, self.Unknowns.L)
+        G0 = derive_by_array_wrt_field(PF0_jac, self.u.sym)
+        G1 = derive_by_array_wrt_field(PF0_jac, self.Unknowns.L)
         # (there is no FP1 flux term, so the pu_G2 / pu_G3 blocks are empty)
 
         self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
@@ -9156,7 +9243,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         for mvar, eps in zip(self._multipliers, self._multiplier_screening):
             h_F0 = sympy.ImmutableDenseMatrix(sympy.Array([eps * mvar.sym[0]]).reshape(1))
             hh_G0 = sympy.ImmutableMatrix(
-                sympy.derive_by_array(sympy.Array([eps * mvar.sym[0]]), mvar.sym).reshape(1, 1)
+                derive_by_array_wrt_field(sympy.Array([eps * mvar.sym[0]]), mvar.sym).reshape(1, 1)
             )
             self._h_F0.append(h_F0)
             self._hh_G0.append(hh_G0)
@@ -9189,14 +9276,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 G0 = sympy.zeros(dim, dim)
                 for fc in range(dim):
                     for gc in range(dim):
-                        G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
+                        G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
 
                 # uu_G1[fc*dim + gc, dg] = d bd_F0[fc] / dL[gc, dg]
                 G1 = sympy.zeros(dim * dim, dim)
                 for fc in range(dim):
                     for gc in range(dim):
                         for dg in range(dim):
-                            G1[fc * dim + gc, dg] = sympy.diff(bd_f0_list[fc], L[gc, dg])
+                            G1[fc * dim + gc, dg] = diff_wrt_field(bd_f0_list[fc], L[gc, dg])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1)
@@ -9205,13 +9292,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 # up_G0[fc, 0]          = d bd_F0[fc] / dp
                 G0 = sympy.zeros(dim, 1)
                 for fc in range(dim):
-                    G0[fc, 0] = sympy.diff(bd_f0_list[fc], p_scalar)
+                    G0[fc, 0] = diff_wrt_field(bd_f0_list[fc], p_scalar)
 
                 # up_G1[fc, dg]         = d bd_F0[fc] / d(dp/dx_dg)
                 G1 = sympy.zeros(dim, dim)
                 for fc in range(dim):
                     for dg in range(dim):
-                        G1[fc, dg] = sympy.diff(bd_f0_list[fc], Gp[0, dg])
+                        G1[fc, dg] = diff_wrt_field(bd_f0_list[fc], Gp[0, dg])
 
                 bc.fns["up_G0"] = sympy.ImmutableMatrix(G0)
                 bc.fns["up_G1"] = sympy.ImmutableMatrix(G1)
@@ -9234,7 +9321,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     for fc in range(dim):
                         for gc in range(dim):
                             for df in range(dim):
-                                G2[fc * dim + gc, df] = sympy.diff(
+                                G2[fc * dim + gc, df] = diff_wrt_field(
                                     bd_F1_jac[fc, df], U_list[gc]
                                 )
 
@@ -9244,7 +9331,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                         for gc in range(dim):
                             for df in range(dim):
                                 for dg in range(dim):
-                                    G3[fc * dim + gc, df * dim + dg] = sympy.diff(
+                                    G3[fc * dim + gc, df * dim + dg] = diff_wrt_field(
                                         bd_F1_jac[fc, df], L[gc, dg]
                                     )
 
@@ -9256,14 +9343,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     G2 = sympy.zeros(dim, dim)
                     for fc in range(dim):
                         for df in range(dim):
-                            G2[fc, df] = sympy.diff(bd_F1[fc, df], p_scalar)
+                            G2[fc, df] = diff_wrt_field(bd_F1[fc, df], p_scalar)
 
                     # up_G3[fc*dim + df, dg] = d bd_F1[fc, df] / d(dp/dx_dg)
                     G3 = sympy.zeros(dim * dim, dim)
                     for fc in range(dim):
                         for df in range(dim):
                             for dg in range(dim):
-                                G3[fc * dim + df, dg] = sympy.diff(
+                                G3[fc * dim + df, dg] = diff_wrt_field(
                                     bd_F1[fc, df], Gp[0, dg]
                                 )
 
@@ -9279,8 +9366,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     bc.fns["p_f0"] = sympy.ImmutableDenseMatrix(bd_PF0)
                     fns_bd_residual += [bc.fns["p_f0"]]
 
-                    G0 = sympy.derive_by_array(bd_PF0, self.Unknowns.u.sym)
-                    G1 = sympy.derive_by_array(bd_PF0, self.Unknowns.L)
+                    G0 = derive_by_array_wrt_field(bd_PF0, self.Unknowns.u.sym)
+                    G1 = derive_by_array_wrt_field(bd_PF0, self.Unknowns.L)
                     bc.fns["pu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
                     bc.fns["pu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim*dim))
                     fns_bd_jacobian += [bc.fns["pu_G0"], bc.fns["pu_G1"]]
@@ -9336,17 +9423,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             G0 = sympy.zeros(dim, dim)
             for fc in range(dim):
                 for gc in range(dim):
-                    G0[fc, gc] = sympy.diff(fn_f[fc], U_list[gc])
+                    G0[fc, gc] = diff_wrt_field(fn_f[fc], U_list[gc])
             cbc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
             fns_bd_jacobian += [cbc.fns["uu_G0"]]
 
             # uh (0, h):  ∂fn_f/∂h = n  — mirror the up_G0 (velocity,scalar) shape
-            G0 = sympy.derive_by_array(sympy.Array(fn_f), H)
+            G0 = derive_by_array_wrt_field(sympy.Array(fn_f), H)
             cbc.fns["uh_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
             fns_bd_jacobian += [cbc.fns["uh_G0"]]
 
             # hu (h, 0):  ∂fn_h/∂u = n  — mirror the pu_G0 (scalar,velocity) shape
-            G0 = sympy.derive_by_array(fn_h, self.Unknowns.u.sym)
+            G0 = derive_by_array_wrt_field(fn_h, self.Unknowns.u.sym)
             cbc.fns["hu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
             fns_bd_jacobian += [cbc.fns["hu_G0"]]
 
@@ -9499,8 +9586,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
 
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
 
         for index,bc in enumerate(self.natural_bcs):
@@ -9546,15 +9633,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # u-row traction h·n and the uh Jacobian) and once for the multiplier
         # field (carries the h-row constraint n·u−g and the hu Jacobian).
         # Guarded: no-op for ordinary Stokes.
-        cdef int [::1] cbc_comps_view
-        cdef int [::1] cbc_hcomps_view
+        cdef PetscInt [::1] cbc_comps_view
+        cdef PetscInt [::1] cbc_hcomps_view
         for cbc in self._block_constraint_bcs:
             cbc_boundary = cbc.boundary
             cbc_value = mesh.boundaries[cbc_boundary].value
             ind = cbc_value
             cbc_fid_h = cbc.lam._solver_field_id
 
-            cbc_comps = np.arange(mesh.dim, dtype=np.int32)
+            cbc_comps = np.arange(mesh.dim, dtype=PETSc.IntType)
             cbc_comps_view = cbc_comps
             cbc.petsc_id_u = PetscDSAddBoundary_UW(cdm.dm,
                                 6,
@@ -9569,7 +9656,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <const PetscInt *> &ind,
                                 NULL, )
 
-            cbc_hcomps = np.array([0], dtype=np.int32)
+            cbc_hcomps = np.array([0], dtype=PETSc.IntType)
             cbc_hcomps_view = cbc_hcomps
             cbc.petsc_id_h = PetscDSAddBoundary_UW(cdm.dm,
                                 6,
@@ -9781,11 +9868,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     fidx |= set(extra_field[(p, f)])
                 if fidx:
                     fidx = sorted(fidx)
-                    Snew.setFieldConstraintIndices(p, f, np.array(fidx, dtype=np.int32))
+                    Snew.setFieldConstraintIndices(p, f, np.array(fidx, dtype=PETSc.IntType))
                     point_local.extend(field_offset + i for i in fidx)
                 field_offset += fdof
             if point_local:
-                Snew.setConstraintIndices(p, np.array(sorted(point_local), dtype=np.int32))
+                Snew.setConstraintIndices(p, np.array(sorted(point_local), dtype=PETSc.IntType))
 
         dm.setLocalSection(Snew)
         # Force the global-section rebuild (and fail fast if malformed); the
@@ -9804,8 +9891,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             return
 
         # set functions
-        cdef int ind=1
-        cdef int [::1] comps_view  # for numpy memory view
+        cdef PetscInt ind=1
+        cdef PetscInt [::1] comps_view  # for numpy memory view
         cdef DM cdm = self.dm
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
