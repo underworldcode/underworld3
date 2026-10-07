@@ -406,6 +406,17 @@ The compile time is not shown separately: it counts every module the solve build
 VEP's history projections among them), and on these fixtures it is 1–4 s on either
 route, never slower on the graph.
 
+**The callbacks run about ten times faster; the assembly is mostly not callbacks.**
+`assembly_split.py` times the notch's assembly at a solved state (minimum of 30), then
+swaps the law for a constant viscosity on the same mesh, fields and boundary
+conditions and times it again; the difference is the cost of the law's callbacks. Per
+quadrature point and per Jacobian assembly, which builds the Jacobian and its
+preconditioner as two matrices, the callbacks cost 3.1 µs on the tree and 0.29 µs on the
+graph, 30% and 4% of the assembly; per residual, 300 ns and 63 ns. The rest of the
+assembly, about 150–165 ms here, is the finite-element machinery, the same on both
+routes, so on the notch the assembly can gain at most a third. A law with more named
+layers, or a three-dimensional `G3` with 81 entries, gives the callbacks a larger share.
+
 **The operators agree to round-off.** `route_assemble.py` assembles the residual and the
 Jacobian on each route at the same state — rest (zero velocity, boundary values
 imposed), the tree's final state and the graph's final state — and compares them entry
