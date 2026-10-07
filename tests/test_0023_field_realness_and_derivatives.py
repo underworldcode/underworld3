@@ -275,3 +275,47 @@ def test_parameters_given_with_units_are_known_real():
     unknown = [a for a in held if a.is_extended_real is not True]
     assert not unknown, unknown
 
+
+def test_the_power_mean_sharpness_follows_the_softness():
+    """The power mean's sharpness s = 1/(delta + 0.001) is its own constant atom (an
+    inline -1/(delta + 0.001) exponent made SymPy evaluate im() of the whole base on
+    every rebuild: 40 s of the notch Newton source, #823). It must follow delta: a
+    solve after changing delta equals a fresh model built at that delta."""
+
+    def yielding_box(name, delta):
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        v = uw.discretisation.MeshVariable("V" + name, mesh, 2, degree=2)
+        p = uw.discretisation.MeshVariable("P" + name, mesh, 1, degree=1)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+        cm = stokes.constitutive_model
+        cm.Parameters.shear_viscosity_0 = 1.0
+        cm.Parameters.yield_stress = 0.8
+        cm.yield_mode = "softmin"
+        cm.yield_smoother = "powermean"
+        cm.yield_softness = delta
+        stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+        stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+        stokes.tolerance = 1.0e-10
+        stokes.consistent_jacobian = True
+        return stokes, v
+
+    uw.reset_default_model()
+    ramped, v_ramped = yielding_box("0023s", 1.0)
+    from underworld3.cython.generic_solvers import _jacobian_unwrap
+    from underworld3.utilities._jitextension import _unique_symbols
+
+    sharpness = ramped.constitutive_model._get_yield_sharpness()
+    assert sharpness in _unique_symbols(_jacobian_unwrap(ramped.constitutive_model.flux))
+    ramped.solve()
+    assert ramped.snes.getConvergedReason() > 0
+    at_one = np.array(v_ramped.array)
+    ramped.constitutive_model.yield_softness = 0.25
+    ramped.solve(zero_init_guess=False)
+    fresh, v_fresh = yielding_box("0023f", 0.25)
+    fresh.solve()
+    assert ramped.snes.getConvergedReason() > 0 and fresh.snes.getConvergedReason() > 0
+    assert np.max(np.abs(np.asarray(v_ramped.array) - np.asarray(v_fresh.array))) < 1.0e-7
+    # and the softness matters here, or the comparison could not fail
+    assert np.max(np.abs(at_one - np.asarray(v_fresh.array))) > 1.0e-3
