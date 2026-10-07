@@ -103,3 +103,28 @@ def build(name, **kwargs):
     stokes, admissible = BUILDERS[name](**kwargs)
     stokes.consistent_jacobian = True
     return stokes, admissible
+
+
+def prepare_solve(stokes, name):
+    """Boundary conditions and the initial guess for a solve of fixture ``name``;
+    returns the keyword arguments for ``stokes.solve``.
+
+    The box fixtures become a lid-driven box (shear everywhere, yielding at the lid
+    corners) started from simple shear, the lid's own profile: an uncapped power law
+    is singular at rest. The notch carries its own conditions and starts from rest.
+    """
+    import numpy as np
+
+    if name == "notch":
+        return {"zero_init_guess": True}
+    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Left")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Right")
+    v0 = np.zeros_like(stokes.u.array)
+    v0[:, 0, 0] = stokes.u.coords[:, 1]
+    stokes.u.array[...] = v0
+    kwargs = {"zero_init_guess": False}
+    if name in ("vep", "ti"):
+        kwargs["timestep"] = 0.1
+    return kwargs

@@ -22,6 +22,7 @@ import fixtures   # noqa: E402
 params = uw.Params(
     uw_fixture=uw.Param("notch", description="box | powerlaw | linear | vep | ti | notch"),
     uw_profile=uw.Param(0, description="1 = cProfile the setup and print the hotspots"),
+    uw_dump=uw.Param("", description="write the canonicalised header to this path"),
 )
 fixture = str(params.uw_fixture)
 stokes, _ = fixtures.build(fixture)
@@ -38,6 +39,9 @@ def timed_generate(*a, **k):
     header = header.replace(modname, "__MOD__").replace(diag["randstr"], "__RS__")
     seen["header md5"] = hashlib.md5(header.encode()).hexdigest()[:10]
     seen["header bytes"] = len(header)
+    if str(params.uw_dump):
+        with open(os.path.expanduser(str(params.uw_dump)), "w") as fh:
+            fh.write(header)
     return modname, codeguys, diag
 
 

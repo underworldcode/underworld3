@@ -101,8 +101,12 @@ def test_memoised_unwrap_is_the_fixed_point(laws, mode):
         assert sympy.srepr(new) == sympy.srepr(old), (name, mode)
 
 
-def test_the_jacobian_sqrt_guard_matches_replace(laws):
+def test_the_jacobian_sqrt_guard_matches_replace(laws, monkeypatch):
+    """The expanded-tree route's guard. The graph route guards each node body
+    instead; test_0024 holds it to this one by value."""
     from underworld3.cython.generic_solvers import _jacobian_unwrap
+
+    monkeypatch.setenv("UW_JIT_GRAPH", "0")
 
     eps2 = sympy.Float(1.0e-36)
 

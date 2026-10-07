@@ -6,6 +6,7 @@ from xmlrpc.client import boolean
 import sympy
 import underworld3
 import underworld3.timing as timing
+from underworld3.utilities import _jit_graph
 from collections import namedtuple
 from dataclasses import dataclass
 from pathlib import Path
@@ -447,6 +448,12 @@ def _extract_constants(all_fns, mesh):
         else:
             _collect_constant_atoms(fn, constant_exprs, is_constant_expr, UWexpression)
 
+    return _manifest_from(constant_exprs)
+
+
+def _manifest_from(constant_exprs):
+    """The ``constants[]`` manifest of a set of constant atoms: ``(manifest,
+    subs_map)``, slots ordered by name, then creation order."""
     if not constant_exprs:
         return [], {}
 
@@ -821,7 +828,15 @@ def getext(
     # Extract constant UWexpressions that are routed through PETSc's
     # constants[] array. Value changes don't affect the C source — they
     # only alter what we pass to PetscDSSetConstants at solve time.
-    constants_manifest, constants_subs_map = _extract_constants(callbacks.flat(), mesh)
+    if _jit_graph.enabled():
+        # The graph route (#823, tier 2): lower every callback once, and take the
+        # manifest from the constant leaves of what was lowered.
+        lowered_fns = _jit_graph.lower_callbacks(callbacks.flat(), mesh)
+        constants_manifest, constants_subs_map = _manifest_from(
+            _jit_graph.constant_leaves(lowered_fns))
+    else:
+        lowered_fns = None
+        constants_manifest, constants_subs_map = _extract_constants(callbacks.flat(), mesh)
 
     if debug and underworld3.mpi.rank == 0:
         if constants_manifest:
@@ -842,6 +857,7 @@ def getext(
         verbose=verbose,
         debug=debug,
         debug_name=debug_name,
+        lowered_fns=lowered_fns,
     )
     gen_randstr = diag["randstr"]
 
@@ -1098,6 +1114,7 @@ def generate_c_source(
     verbose: Optional[bool] = False,
     debug: Optional[bool] = False,
     debug_name=None,
+    lowered_fns=None,
 ):
     """Generate the setup.py / C header / Cython wrapper for a JIT bundle.
 
@@ -1118,6 +1135,10 @@ def generate_c_source(
         Variables that map to PETSc primary variable arrays (``petsc_u[]``).
     constants_subs_map : dict, optional
         Mapping from UWexpression → ``_JITConstant`` placeholder.
+    lowered_fns : list of sympy.Matrix, optional
+        The callbacks lowered onto the shared graph (``_jit_graph.lower_callbacks``),
+        one per entry of ``callbacks.flat()``. When given, each kernel is emitted as
+        temporaries and outputs instead of being unwrapped and printed whole.
 
     Returns
     -------
@@ -1353,11 +1374,20 @@ def generate_c_source(
     underworld3._libdirs.clear()
     underworld3._libfiles.clear()
 
+    def _spell(leaf):
+        # the C a kernel reads for a leaf of the graph
+        placeholder = constants_subs_map.get(leaf) if constants_subs_map else None
+        return placeholder._ccodestr if placeholder is not None else printer.doprint(leaf)
+
     eqns = []
     for index, fn in enumerate(fns):
 
         # Save original for debugging
         fn_original = fn
+        temporaries = ()
+        if lowered_fns is not None:
+            temporaries, fn = _jit_graph.emit(
+                lowered_fns[index], _spell, constants_subs_map or {})
 
         # --- Gate the UW lowering (issue #302 pipeline) on the presence of
         # UW-expression atoms. Plain-sympy components — the derivative
@@ -1368,7 +1398,7 @@ def generate_c_source(
         from underworld3.function.expressions import UWexpression as _UWexpr
         from underworld3.function.expressions import UWDerivativeExpression as _UWderiv
 
-        _needs_lowering = (
+        _needs_lowering = lowered_fns is None and (
             isinstance(fn, (_UWexpr, _UWderiv))
             # `has` is a bare traversal (no atom-set build) — the atoms()
             # form built a set of every node, which cost seconds per 100k-node
@@ -1425,7 +1455,9 @@ def generate_c_source(
                         f"(issue #302)."
                     )
 
-        if isinstance(fn, sympy.vector.Vector):
+        if lowered_fns is not None:
+            pass    # shaped by _jit_graph.lower_callbacks
+        elif isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
         elif isinstance(fn, sympy.vector.Dyadic):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0 : mesh.dim]
@@ -1441,7 +1473,10 @@ def generate_c_source(
         # We recover _ccodestr from the coordinate's _id attribute.
         from sympy.vector.scalar import BaseScalar
 
-        free_syms = tuple(_stable_sorted(fn.free_symbols))
+        free_syms = fn.free_symbols
+        for _t, _body in temporaries:
+            free_syms = free_syms | _body.free_symbols
+        free_syms = tuple(_stable_sorted(free_syms))
         for sym in free_syms:
             if isinstance(sym, BaseScalar) and not hasattr(sym, '_ccodestr'):
                 idx = sym._id[0]  # 0, 1, or 2 for x, y, z
@@ -1508,7 +1543,21 @@ def generate_c_source(
         # Semantics-preserving: temps are exact aliases of repeated
         # subexpressions, so the generated kernel evaluates identical values.
         # Opt in with UW_JIT_CSE=1 (default is off to preserve original behavior).
-        if os.environ.get("UW_JIT_CSE") in ("1", "true", "True", "yes", "YES"):
+        if temporaries:
+            # the graph route: one temporary per distinct computation, then the
+            # outputs in terms of them (#823)
+            _temp_code = []
+            for _t, _body in temporaries:
+                _code = printer.doprint(_body)
+                if _code.startswith("// Not supported in C:"):
+                    _temp_code = None
+                    eqn = ("eqn_" + str(index), _code)
+                    break
+                _temp_code.append(f"const double {_t._ccodestr} = {_code};")
+            if _temp_code is not None:
+                eqn = ("eqn_" + str(index),
+                       "\n".join(_temp_code) + "\n" + printer.doprint(fn, out))
+        elif lowered_fns is None and os.environ.get("UW_JIT_CSE") in ("1", "true", "True", "yes", "YES"):
             from sympy.simplify.cse_main import cse
             from sympy.vector.scalar import BaseScalar
 

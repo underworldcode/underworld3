@@ -134,8 +134,16 @@ def _jacobian_unwrap(expr):
 
         return guard(e)
 
-    f = lambda e: _guard_sqrts(
-        _unwrap_expression(e, mode="symbolic_keep_constants"))
+    from underworld3.utilities import _jit_graph
+    if _jit_graph.enabled():
+        # The graph route (#823, tier 2): each non-constant atom becomes its guarded
+        # node instead of being expanded, and the derivative passes through it by
+        # the chain rule. The guard is applied in each node body and at the top level.
+        graph = _jit_graph.KernelGraph()
+        f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
+    else:
+        f = lambda e: _guard_sqrts(
+            _unwrap_expression(e, mode="symbolic_keep_constants"))
     if isinstance(expr, sympy.MatrixBase):
         return expr.applyfunc(f)
     if isinstance(expr, sympy.NDimArray):
