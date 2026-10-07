@@ -164,6 +164,10 @@ def test_no_solver_differentiates_with_plain_sympy_diff():
     every other test here until a law put an Abs or a sign of a field in its flux."""
     src = pathlib.Path(__file__).parents[1] / "src" / "underworld3"
     sources = [src / "cython" / "petsc_generic_snes_solvers.pyx",
+               # The flux laws, which is where this test's own stated risk gets
+               # written: a law that puts an Abs or a sign of a field in its
+               # flux is authored here, not in the solvers.
+               src / "constitutive_models.py",
                *sorted((src / "systems").glob("*.py"))]
     for path in sources:
         text = path.read_text()
