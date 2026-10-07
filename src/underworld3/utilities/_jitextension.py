@@ -376,6 +376,12 @@ class _JITConstant(sympy.Symbol):
     Identity without ordering is a parallel abort; ordering without identity is
     a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
     pins each one separately.
+
+    A slot holds a C double, so it is built ``real`` (real and finite) for SymPy's
+    simplification (#823). Declared at construction, not by a class handler: SymPy
+    shares one assumptions knowledge base between Symbols with the same declared
+    assumptions, so a handler's answer could be pre-empted by a plain Symbol's cached
+    ``None``.
     """
 
     __slots__ = ("_const_index", "_ccodestr")
@@ -385,7 +391,7 @@ class _JITConstant(sympy.Symbol):
         # slot; see the class docstring on why the name alone is not enough
         # and _hashable_content alone is not either.
         suffix = "" if name is None else f"_{name}"
-        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}")
+        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}", real=True)
         obj._const_index = index
         obj._ccodestr = f"constants[{index}]"
         return obj
@@ -1216,6 +1222,20 @@ def generate_c_source(
 
     printer = c_code_printers["c99"]({"user_functions": custom_functions})
 
+    # A DiracDelta is printed as its value away from the zero of its argument, 0.
+    # It appears when a kink is differentiated twice: the coordinates are real, so
+    # sqrt((x - a)**2) is Abs(x - a), and its second derivative is
+    # 2*DiracDelta(x - a). A pointwise kernel cannot carry a distribution, so it is
+    # dropped, and said so, because a DiracDelta written on purpose (a point source)
+    # is lost the same way.
+    dropped_deltas = []
+
+    def _print_DiracDelta(expr, **kwargs):
+        dropped_deltas.append(expr)
+        return "0.0"
+
+    printer._print_DiracDelta = _print_DiracDelta
+
     # Purge libary/header dictionaries. These will be repopulated
     # when `doprint` is called below. This ensures that we only link
     # in libraries where needed.
@@ -1443,6 +1463,18 @@ def generate_c_source(
                 f"The decription of the JIT component that failed:\n {fn}"
             )
         eqns.append(eqn)
+
+    if dropped_deltas:
+        import warnings
+
+        warnings.warn(
+            f"JIT: {len(dropped_deltas)} DiracDelta term(s) compiled as 0, their value "
+            f"away from the zero of the argument (first: {dropped_deltas[0]}). This is "
+            f"what differentiating a kink such as Abs(x - a) twice gives. A point "
+            f"source has to be applied as a point load, not as a DiracDelta in a "
+            f"pointwise function.",
+            stacklevel=2,
+        )
 
     MODNAME = "fn_ptr_ext_" + str(name)
 
