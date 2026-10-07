@@ -793,6 +793,27 @@ class UWQuantity:
         except (TypeError, ValueError):
             return sympy.sympify(self._value)
 
+    @property
+    def is_extended_real(self):
+        """True when the value is real (or :math:`\\pm\\infty`), as SymPy's assumption.
+
+        A UW expression holding this quantity reports its realness from here. Without
+        it every constitutive parameter given with units was "not known real", and
+        SymPy evaluated each power over a sum containing one in the complex plane:
+        36 s of the 43 s Newton source on the Spiegelman notch (#823).
+        """
+        if isinstance(self._value, sympy.Basic):
+            return self._value.is_extended_real
+        return bool(np.isrealobj(self._value))
+
+    @property
+    def is_finite(self):
+        """True when the value is finite, as SymPy's assumption (``yield_stress = oo``
+        is real but not finite)."""
+        if isinstance(self._value, sympy.Basic):
+            return self._value.is_finite
+        return bool(np.all(np.isfinite(self._value)))
+
     def __float__(self):
         """Convert to float."""
         return float(self._value)

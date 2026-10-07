@@ -306,3 +306,42 @@ def test_a_dirac_delta_compiles_as_zero_and_says_so():
         with_delta = solve(1 + sympy.diff(kink, x, 2) * sympy.sin(sympy.pi * y), "U0022a")
     without = solve(sympy.Integer(1), "U0022b")
     assert np.array_equal(with_delta, without)
+
+
+def test_parameters_given_with_units_are_known_real():
+    """A UW expression reports realness from its content, and a parameter given with
+    units holds a UWQuantity, which had no realness to report. Every power over a sum
+    containing one was then evaluated in the complex plane: 36 s of the 43 s Newton
+    source on the Spiegelman notch (#823). A UWQuantity is real when its value is."""
+    from underworld3.cython.generic_solvers import _jacobian_unwrap
+    from underworld3.function.expressions import UWexpression
+    from underworld3.utilities._jitextension import _unique_symbols
+
+    uw.reset_default_model()
+    orchestration_model = uw.get_default_model()
+    orchestration_model.set_reference_quantities(
+        domain_depth=uw.quantity(100, "km"),
+        material_viscosity=uw.quantity(1e21, "Pa*s"),
+        lithostatic_pressure=uw.quantity(1e8, "Pa"),
+    )
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    v = uw.discretisation.MeshVariable("V0022u", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P0022u", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    params = stokes.constitutive_model.Parameters
+    params.shear_viscosity_0 = uw.quantity(1e24, "Pa*s")
+    params.shear_viscosity_min = uw.quantity(1e20, "Pa*s")
+    params.yield_stress = uw.quantity(1e8, "Pa")
+    params.yield_stress_min = uw.quantity(0, "Pa")
+
+    for value in (uw.quantity(1e24, "Pa*s"), uw.quantity(0, "Pa")):
+        assert value.is_extended_real is True and value.is_finite is True
+    assert uw.quantity(float("inf"), "Pa").is_finite is False
+
+    flux = _jacobian_unwrap(stokes.constitutive_model.flux)
+    held = [a for a in _unique_symbols(flux) if isinstance(a, UWexpression)]
+    assert held, "the Newton flux keeps its constant parameters as atoms"
+    unknown = [a for a in held if a.is_extended_real is not True]
+    assert not unknown, unknown
