@@ -50,20 +50,13 @@ def _petsc_include_dirs():
     compiler's default path, which is why CI built; a custom PETSc build does not, and
     there every JIT compile failed with "'petscsystypes.h' file not found".
     """
-    try:
-        import petsc4py
+    import petsc4py
 
-        info = petsc4py.get_config()
-    except Exception:
-        # Sanctioned: no petsc4py configuration to read; the compiler's own search
-        # path is all there is (the conda-forge case)
-        return []
-    petsc_dir, petsc_arch = info.get("PETSC_DIR", ""), info.get("PETSC_ARCH", "")
-    if not petsc_dir:
-        return []
-    candidates = [Path(petsc_dir) / "include"]
-    if petsc_arch:
-        candidates.append(Path(petsc_dir) / petsc_arch / "include")
+    info = petsc4py.get_config()
+    candidates = [Path(info["PETSC_DIR"]) / "include"]
+    # PETSC_ARCH is empty for a prefix install, which has no arch directory
+    if info.get("PETSC_ARCH"):
+        candidates.append(Path(info["PETSC_DIR"]) / info["PETSC_ARCH"] / "include")
     return [str(c) for c in candidates if c.is_dir()]
 
 
