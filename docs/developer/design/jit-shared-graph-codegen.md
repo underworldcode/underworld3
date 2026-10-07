@@ -400,7 +400,7 @@ session's seven solver processes, so the times are indicative. Tree first, graph
 | generated C, all modules of the solve | 4.0 MB / 22 KB | 380 KB / 40 KB | 104 KB / 16 KB | 42 KB / 31 KB | 28 KB / 14 KB | 10.7 KB, byte-identical |
 | Jacobian assembly, ms | 180 / 132 | 2.40 / 2.19 | 1.58 / 1.45 | 2.23 / 2.22 | 1.48 / 1.40 | 1.39 / 1.44 |
 | residual assembly, ms | 21.4 / 18.7 | 0.62 / 0.59 | 0.35 / 0.33 | 0.61 / 0.60 | 0.32 / 0.32 | 0.33 / 0.33 |
-| Newton iterations, nonlinear / linear | 75 / 496 and 57 / 386 | 6 / 6, both | 30 / 30, both (limit) | 2 / 2, both | 16 / 16, both | 1 / 1, both |
+| Newton iterations, nonlinear / linear | 75 / 496 and 57 / 386 (see below) | 6 / 6, both | 30 / 30, both (limit) | 2 / 2, both | 16 / 16, both | 1 / 1, both |
 
 The compile time is not shown separately: it counts every module the solve builds (the
 VEP's history projections among them), and on these fixtures it is 1–4 s on either
@@ -424,7 +424,18 @@ better. On the notch both converge, the tree in 75 Newton iterations and the gra
 $2\times10^{-4}$ of the largest pressure, consistent with the tolerance. The two
 residual histories agree to $10^{-9}$ for four iterations and part from the fifth: the
 notch's Newton iteration amplifies differences at the level of round-off, and the
-operators that drive it agree at that level at three states.
+operators that drive it agree at that level at three states. Changing the body force by
+$\pm1$ to $\pm7\times10^{-12}$ of itself shows how far: over 17 such solves per route,
+the tree converged in 60 to 111 iterations (median 75) and once failed to converge in
+300, and the graph converged every time, in 43 to 86 (median 69). The two distributions
+are the same within the sample; the notch's iteration count is a property of the
+problem, not of the route.
+
+**The test suite passes on the graph route.** Every serial batch of `scripts/test.sh`
+(tier A and B, levels 1 to 3) run with `UW_JIT_GRAPH=1`: 3,023 passed, none failed. The
+first run found two defects, both in the fault-network laws and both fixed with a test:
+a repeated Piecewise condition shared as a node (a value, which Piecewise refuses as a
+condition), and a coordinate leaf without the C name the mesh sets.
 
 **The source is canonical.** On the notch, box and VEP fixtures the graph route's C is
 byte-identical under `PYTHONHASHSEED` 0, 1 and 2; `test_0024` checks that a law
@@ -463,7 +474,7 @@ surfaced; in the graph it cannot arise, or arises only in one body:
 | SymPy's automatic algebra on an expanded base is slow (`im()` inside `Pow.__new__`, 40 s on the notch) | a constant atom added to the power-mean law; realness for unit-carrying parameters | bases are bodies, not trees | graph lowering took 0.04 s on every tier 1 commit, including those where the library took 40 s |
 | realness turns `sqrt(x**2)` into `Abs`, whose derivative with respect to a field SymPy leaves unevaluated | a stand-in derivative at 49 call sites | body partials are taken against real dummies | with plain `sympy.diff` at every solver site, the Drucker–Prager floor law fails to compile on the tree route and solves on the graph route |
 | manifest and C built by two walks (#302) | two consistency guards and `_reveal_constants` | one walk | by construction; manifests identical on all fixtures |
-| generated C that differs between ranks (#752, open) | rank 0's source adopted | canonical emission | byte-identical under hash seeds 0–2 (notch, box, VEP), after a preamble and when re-declared (`test_0024`); ranks not yet tested |
+| generated C that differs between ranks (#752, open) | rank 0's source adopted | canonical emission | byte-identical under hash seeds 0–2 (notch, box, VEP), after a preamble and when re-declared (`test_0024`). Across ranks untested: the #752 fixture (`rank_agreement_752.py`, np = 2) disagreed in 0 of 10 runs on either route, against about 2 in 10 before tier 1, so it no longer reproduces the defect |
 | field symbols given their C names by mutating their classes, in an order that matters | `ccode_patch_fns`, the coordinate recovery block | an explicit map from leaf to C | not yet: steps 2–3 still spell leaves through the patched printer; the map belongs to step 4 |
 | generated C too large to read or to compile (#547) | opt-in CSE, lower optimisation flags | one line per named quantity | 22 KB against 4.0 MB for the notch's whole solve |
 
