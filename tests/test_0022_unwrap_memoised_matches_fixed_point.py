@@ -129,6 +129,27 @@ def test_the_identity_walk_finds_the_same_symbols(laws):
             assert _unique_symbols(e) == set(e.atoms(sympy.Symbol)), name
 
 
+def test_the_shared_xreplace_matches_xreplace(laws):
+    """The constants[] substitution in the JIT lowering visits each node object once;
+    it must build exactly what xreplace builds, the generated C and the cache key
+    both depend on it."""
+    from underworld3.utilities._jitextension import _xreplace_shared, _unique_symbols
+
+    swapped = 0
+    for name, expr in laws:
+        unwrapped = _unwrap_each(expr, lambda e: ex.unwrap_expression(
+            e, mode="symbolic_keep_constants"))
+        held = sorted((a for a in _unique_symbols(unwrapped)
+                       if isinstance(a, ex.UWexpression)), key=str)
+        if not held:
+            continue                    # k(u) = 1 + u**2 has no parameter to swap
+        rule = {a: sympy.Symbol(f"slot_{k}") for k, a in enumerate(held)}
+        assert sympy.srepr(_xreplace_shared(unwrapped, rule)) == \
+            sympy.srepr(unwrapped.xreplace(rule)), name
+        swapped += 1
+    assert swapped >= 7               # the VP (three laws, viscosity and flux) and VEP
+
+
 def test_each_atom_is_tested_for_constancy_once(monkeypatch):
     """The cost that #823 removed: the fixed-point passes asked whether each atom was
     a constant on every pass, and each answer was itself a full unwrap. On a chain of

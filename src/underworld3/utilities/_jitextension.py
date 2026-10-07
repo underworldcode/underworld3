@@ -328,7 +328,7 @@ def prepare_for_cache_key(fn, constants_subs_map):
     if constants_subs_map and fn_structural is not None:
         try:
             if hasattr(fn_structural, "xreplace"):
-                fn_structural = fn_structural.xreplace(constants_subs_map)
+                fn_structural = _xreplace_shared(fn_structural, constants_subs_map)
         except Exception:
             pass
 
@@ -479,19 +479,81 @@ def _extract_constants(all_fns, mesh):
     return manifest, subs_map
 
 
-def _warn_dirac_deltas_dropped(deltas, where):
-    """Say, once and on rank 0, that ``deltas`` were evaluated as 0 by ``where``."""
-    if not deltas or underworld3.mpi.rank != 0:
+def _xreplace_shared(expr, rule):
+    """``expr.xreplace(rule)`` (a sympy expression or Matrix), visiting each node
+    OBJECT once.
+
+    A compiled kernel repeats its shared sub-expressions as the same object (the
+    memoised unwrap inserts one object wherever an atom occurs, #823), and
+    ``xreplace`` rebuilds every occurrence: 4.3 s of the notch C generation for the
+    constants[] substitution alone. The result is the same expression.
+    """
+    memo = {}
+
+    def walk(e):
+        hit = memo.get(id(e))
+        if hit is not None:
+            return hit[1]
+        if e in rule:
+            out = rule[e]
+        elif isinstance(e, sympy.Basic) and e.args:
+            new_args = tuple(walk(a) if isinstance(a, sympy.Basic) else a for a in e.args)
+            changed = any(n is not a for n, a in zip(new_args, e.args))
+            out = e.func(*new_args) if changed else e
+        else:
+            out = e
+        memo[id(e)] = (e, out)
+        return out
+
+    if isinstance(expr, sympy.MatrixBase):
+        return expr.applyfunc(walk)
+    return walk(expr)
+
+
+def _holds_instance(expr, types):
+    """Whether ``expr`` holds a node of ``types``, visiting each node object once."""
+    from sympy.tensor.array import NDimArray
+
+    seen = {}
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen[id(e)] = e
+        if isinstance(e, types):
+            return True
+        if isinstance(e, (sympy.MatrixBase, NDimArray)):
+            stack.extend(e)
+        elif isinstance(e, sympy.Basic):
+            stack.extend(e.args)
+    return False
+
+
+def _warn_dirac_deltas_dropped(deltas, where, collective=False):
+    """Say that ``deltas`` were evaluated as 0 by ``where``, at the user's own call.
+
+    The message names the count, not the delta, so a time loop warns once per call
+    site. A ``collective`` caller (the JIT, which every rank runs) warns on rank 0
+    only; an evaluation is rank-local and warns wherever it runs.
+    """
+    if not deltas or (collective and underworld3.mpi.rank != 0):
         return
+    import sys
     import warnings
 
+    # the first frame outside the underworld3 package: the user's call
+    package = os.path.dirname(underworld3.__file__) + os.sep
+    frame, level = sys._getframe(1), 2   # stacklevel 2 is the frame that called this
+    while frame is not None and frame.f_code.co_filename.startswith(package):
+        frame, level = frame.f_back, level + 1
     warnings.warn(
         f"{where}: {len(deltas)} DiracDelta term(s) taken as 0, their value away from "
-        f"the zero of the argument (first: {deltas[0]}). A DiracDelta comes from "
-        f"differentiating a step once (a Heaviside or sign of the unknown in a Newton "
-        f"tangent, which then leaves out the jump) or a kink twice (Abs(x - a) in a "
-        f"manufactured source). A point source has to be applied as a point load.",
-        stacklevel=3,
+        f"the zero of the argument. A DiracDelta comes from differentiating a step "
+        f"once (a Heaviside or sign of the unknown in a Newton tangent, which then "
+        f"leaves out the jump) or a kink twice (Abs(x - a) in a manufactured source). "
+        f"A point source has to be applied as a point load.",
+        stacklevel=level,
     )
 
 
@@ -1265,6 +1327,17 @@ def generate_c_source(
 
     printer._print_DiracDelta = _print_DiracDelta
 
+    # SymPy's code printer rewrites re(UnevaluatedExpr(<real>)) with a whole-tree
+    # replace on every kernel it prints (2.9 s of the notch C generation). Field values
+    # and coordinates are real (#823), so a kernel seldom holds any re() at all; the
+    # rewrite runs only when one is there.
+    handle_unevaluated = printer._handle_UnevaluatedExpr
+
+    def _handle_UnevaluatedExpr(expr):
+        return handle_unevaluated(expr) if _holds_instance(expr, sympy.re) else expr
+
+    printer._handle_UnevaluatedExpr = _handle_UnevaluatedExpr
+
     # Purge libary/header dictionaries. These will be repopulated
     # when `doprint` is called below. This ensures that we only link
     # in libraries where needed.
@@ -1332,7 +1405,7 @@ def generate_c_source(
             #          These survive into C code as constants[i]
             if constants_subs_map and fn is not None:
                 try:
-                    fn = fn.xreplace(constants_subs_map) if hasattr(fn, 'xreplace') else fn
+                    fn = _xreplace_shared(fn, constants_subs_map) if hasattr(fn, 'xreplace') else fn
                 except Exception:
                     pass
 
@@ -1493,7 +1566,7 @@ def generate_c_source(
             )
         eqns.append(eqn)
 
-    _warn_dirac_deltas_dropped(dropped_deltas, "JIT")
+    _warn_dirac_deltas_dropped(dropped_deltas, "JIT", collective=True)
 
     MODNAME = "fn_ptr_ext_" + str(name)
 

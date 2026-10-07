@@ -80,6 +80,9 @@ def test_derivatives_with_respect_to_a_field_keep_its_realness():
     held = sympy.Derivative(u.sym[0] ** 2, x)
     assert diff_wrt_field(held, u.sym[0]) == sympy.diff(held, u.sym[0]) != 0
     assert diff_wrt_field(3, u.sym[0]) == 0
+    # ... and a field Abs beside a held Derivative still differentiates to its sign
+    beside = sympy.Abs(u.sym[0] - c) + sympy.Derivative(x ** 2 * c, x)
+    assert diff_wrt_field(beside, u.sym[0]) == sympy.sign(u.sym[0] - c)
     # the array form has derive_by_array's layout: [i, j] = d f[j] / d dx[i]
     f = sympy.Array([u.sym[0] ** 2, sympy.Abs(u.sym[0] - c)])
     dx = sympy.Array([u.sym[0], c])
@@ -159,11 +162,13 @@ def test_no_solver_differentiates_with_plain_sympy_diff():
     """Every Jacobian in the solvers differentiates with respect to fields, so every
     one must go through diff_wrt_field. A site written with sympy.diff would pass
     every other test here until a law put an Abs or a sign of a field in its flux."""
-    source = (pathlib.Path(__file__).parents[1] / "src" / "underworld3" / "cython"
-              / "petsc_generic_snes_solvers.pyx").read_text()
-    for plain in ("sympy.diff(", "sympy.derive_by_array(", ".diff(self.", ".diff(U", ".diff(L"):
-        assert plain not in source, plain
-    assert source.count("diff_wrt_field(") >= 38
+    src = pathlib.Path(__file__).parents[1] / "src" / "underworld3"
+    sources = [src / "cython" / "petsc_generic_snes_solvers.pyx",
+               *sorted((src / "systems").glob("*.py"))]
+    for path in sources:
+        text = path.read_text()
+        for plain in ("sympy.diff(", "sympy.derive_by_array("):
+            assert plain not in text, (path.name, plain)
 
 
 def test_newton_through_a_step_of_the_unknown_compiles_without_the_jump():
@@ -224,10 +229,13 @@ def test_a_dirac_delta_compiles_as_zero_and_says_so():
     points = np.array([[0.1, 0.5], [0.3, 0.5], [0.8, 0.2]])
     T = uw.discretisation.MeshVariable("T0023e", mesh, 1, degree=1)
     T.array[...] = 2.0
-    for f, expected in ((1 + sympy.diff(kink, x, 2), 1.0),
-                        (T.sym[0] * (1 + sympy.diff(kink, x, 2)), 2.0)):
-        with pytest.warns(UserWarning, match="DiracDelta"):
-            values = uw.function.evaluate(f, points)
+    for f, expected, rbf in ((1 + sympy.diff(kink, x, 2), 1.0, False),
+                             (T.sym[0] * (1 + sympy.diff(kink, x, 2)), 2.0, False),
+                             (2 + T.sym[0].diff(x) * sympy.diff(kink, x, 2), 2.0, True)):
+        with pytest.warns(UserWarning, match="DiracDelta") as record:
+            values = uw.function.evaluate(f, points, rbf=rbf)
+        # attributed to this call, not to a frame inside underworld3
+        assert record[0].filename == __file__
         assert np.asarray(values).shape == (len(points), 1, 1)
         assert np.allclose(np.asarray(values).ravel(), expected, rtol=1.0e-12)
 
@@ -311,8 +319,11 @@ def test_the_power_mean_sharpness_follows_the_softness():
     ramped.solve()
     assert ramped.snes.getConvergedReason() > 0
     at_one = np.array(v_ramped.array)
+    compiled = ramped._current_jit_cache_key
     ramped.constitutive_model.yield_softness = 0.25
     ramped.solve(zero_init_guess=False)
+    # delta (and s with it) is a constants[] value: changing it does not recompile
+    assert ramped._current_jit_cache_key == compiled
     fresh, v_fresh = yielding_box("0023f", 0.25)
     fresh.solve()
     assert ramped.snes.getConvergedReason() > 0 and fresh.snes.getConvergedReason() > 0

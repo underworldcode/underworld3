@@ -221,28 +221,6 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def _holds_derivative(expr):
-    """Whether ``expr`` holds an unevaluated ``sympy.Derivative``, visiting each node
-    object once (an unwrapped law repeats its shared sub-expressions as one object,
-    so ``expr.has`` would walk the expanded tree)."""
-    from sympy.tensor.array import NDimArray
-
-    seen = {}
-    stack = [expr]
-    while stack:
-        e = stack.pop()
-        if id(e) in seen:
-            continue
-        seen[id(e)] = e
-        if isinstance(e, sympy.Derivative):
-            return True
-        if isinstance(e, (sympy.MatrixBase, NDimArray)):
-            stack.extend(e)
-        elif isinstance(e, sympy.Basic):
-            stack.extend(e.args)
-    return False
-
-
 def diff_wrt_field(expr, wrt):
     r"""Partial derivative :math:`\partial f / \partial u` of ``expr`` with respect
     to a field value or a field gradient component ``wrt``.
@@ -259,7 +237,9 @@ def diff_wrt_field(expr, wrt):
 
     ``wrt`` that is a Symbol (a coordinate, a parameter) goes to ``sympy.diff``
     unchanged. So does an ``expr`` holding an unevaluated ``Derivative``, which the
-    swap would hide from the variable it differentiates by.
+    swap would hide from the variable it differentiates by; the
+    :math:`\partial u/\partial u` that SymPy then leaves beside a ``sign`` is set
+    to 1.
 
     Parameters
     ----------
@@ -269,26 +249,58 @@ def diff_wrt_field(expr, wrt):
         A mesh-variable value such as ``T.sym[0]``, a gradient component such as
         ``T.sym[0].diff(mesh.N.x)``, or any SymPy variable.
 
+    Returns
+    -------
+    sympy.Expr or sympy.Matrix
+        The derivative, the same shape as ``expr``.
+
     Examples
     --------
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25)
+    >>> T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
     >>> c = sympy.Symbol("c", real=True)
     >>> uw.function.diff_wrt_field(sympy.Abs(T.sym[0] - c), T.sym[0])
     sign(-c + T(N.x, N.y))
     """
     if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)):
         expr = sympy.sympify(expr)
-    if not isinstance(wrt, sympy.core.function.AppliedUndef) or _holds_derivative(expr):
+    from underworld3.utilities._jitextension import _holds_instance
+
+    if not isinstance(wrt, sympy.core.function.AppliedUndef):
         return sympy.diff(expr, wrt)
+    if _holds_instance(expr, sympy.Derivative):
+        # SymPy's own path, so the held Derivative still sees what it differentiates
+        # by; the d(u)/d(u) it then leaves next to an Abs or sign of u is 1
+        return sympy.diff(expr, wrt).xreplace(
+            {sympy.Derivative(wrt, wrt, evaluate=False): sympy.S.One})
     stand_in = sympy.Dummy("xi", real=True) if wrt.is_real else sympy.Dummy("xi")
     return sympy.diff(expr.xreplace({wrt: stand_in}), stand_in).subs(stand_in, wrt)
 
 
 def derive_by_array_wrt_field(expr, dx):
-    r"""``sympy.derive_by_array(expr, dx)`` through :func:`diff_wrt_field`.
+    r"""``sympy.derive_by_array(expr, dx)`` through :func:`diff_wrt_field`: every
+    derivative of ``expr`` with respect to every entry of ``dx``, keeping the
+    fields' realness.
 
-    Entry ``[i..., j...]`` of the result is
-    :math:`\partial\, \mathrm{expr}[j...] / \partial\, dx[i...]`, the layout of
-    ``sympy.derive_by_array``.
+    Parameters
+    ----------
+    expr : sympy.Expr, sympy.Matrix, sympy.Array or list
+        The expression or array of expressions to differentiate.
+    dx : sympy.Matrix, sympy.Array or list
+        The variables: field values, gradient components (``solver.Unknowns.L``)
+        or SymPy symbols.
+
+    Returns
+    -------
+    sympy.Array
+        Entry ``[i..., j...]`` is
+        :math:`\partial\, \mathrm{expr}[j...] / \partial\, dx[i...]`, the layout
+        of ``sympy.derive_by_array``; its shape is ``dx.shape + expr.shape``.
+
+    Examples
+    --------
+    >>> F1 = sympy.Array(stokes.F1.sym)
+    >>> G = uw.function.derive_by_array_wrt_field(F1, stokes.Unknowns.L)
     """
     from sympy.tensor.array import ImmutableDenseNDimArray, NDimArray
     from sympy.tensor.array.arrayop import Flatten
@@ -989,6 +1001,9 @@ def _clement_to_work_variable(expr, mesh, derivfns):
     import underworld3 as uw
     import sympy
     from underworld3.function.gradient_evaluation import compute_clement_gradient_at_nodes
+    from underworld3.utilities._jitextension import _without_dirac_deltas
+
+    expr = _without_dirac_deltas(expr, "evaluate")
 
     # Get work variable (scalar, P1)
     if not hasattr(mesh, '_clement_work_scalar'):

@@ -1077,7 +1077,7 @@ class ViscousFlowModel(Constitutive_Model):
             # source, 0.1 s with the atom (#823).
             self._yield_sharpness_expr = expression(
                 R"{s_{y}}",
-                1 / (self._yield_softness_expr + sympy.Float(0.001)),
+                1 / (self._yield_softness_expr + sympy.Rational(1, 1000)),
                 "Power-mean soft-min sharpness s = 1/(δ + 0.001); tracks δ",
             )
         else:
