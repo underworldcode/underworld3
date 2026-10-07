@@ -44,11 +44,17 @@ def prose(body):
 FAILED = re.compile(r"^FAILED\s+(\S+?)::(\S+?)(?:\[|\s|$)")
 
 BASE = "development"
-#: Merges to `main` are infrequent, so GitHub's own issue-closing (which fires
-#: only on a default-branch merge) lags reality by a release. An issue whose fix
-#: is on `development` carries this label until then: closing it would be a lie
-#: to anyone running the release, and leaving it bare loses the fact entirely.
-FIXED_LABEL = "fixed-in-development"
+#: An issue whose fix lives in a PR carries this until the fix is released.
+#: Two situations share it, and both are invisible without it. A PR merged to
+#: `development` has not closed its issue, because GitHub closes on a
+#: DEFAULT-branch merge and that is `main`, which this project reaches
+#: infrequently. And a PR that has not merged at all may hold the only fix
+#: there is -- #785 carries the fix for #783 and #784 and cannot merge,
+#: because its base branch has no PR of its own.
+#:
+#: The label does not say which of the two, or which PR. That belongs in the
+#: issue and in this tool's output, where it can be kept true; a label cannot.
+FIXED_LABEL = "fixed-in-PR"
 
 
 def sh(*args, check=True, tries=1):
@@ -224,13 +230,13 @@ def main():
     no_closes = [p for p in opn if not CLOSES.search(prose(p["body"]))]
     print(f"  {len(no_closes)} of {len(opn)} carry no Closes line")
 
-    # ---- the gap between "merged" and "released" ---------------------------
-    # GitHub closes a linked issue when the PR reaches the DEFAULT branch, and
-    # this project's default branch is `main` while the work merges to
-    # `development`. Across the project's life 139 declared closes produced 5
-    # that slipped, so the mechanism does work -- but it works at release time,
-    # and releases are rare. Between a merge and a release an issue is fixed
-    # and still open, and nothing says so unless somebody labels it.
+    # ---- issues whose fix is already written ------------------------------
+    # Two ways an open issue can already be fixed, and neither is visible
+    # anywhere. A PR merged to `development` has not closed it, because GitHub
+    # closes on a DEFAULT-branch merge and that is `main` (139 declared closes
+    # across the project's life, 5 slipped -- release-gated, not broken). And
+    # an UNMERGED PR can hold the only fix: #785 carries #783 and #784 and
+    # cannot merge, its base branch having no PR of its own.
     labels = {i["number"]: {l["name"] for l in i["labels"]} for i in iss}
     declared = {}
     for p in merged:
@@ -238,14 +244,18 @@ def main():
             continue
         for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}:
             if n in open_numbers:
-                declared.setdefault(n, []).append(p["number"])
+                declared.setdefault(n, []).append((p["number"], "merged"))
+    for p in opn:
+        for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}:
+            if n in open_numbers:
+                declared.setdefault(n, []).append((p["number"], "open"))
     limbo = {n: v for n, v in declared.items() if FIXED_LABEL not in labels.get(n, ())}
-    print(f"\nFIXED BUT STILL OPEN  (a merged PR declared it; `{FIXED_LABEL}` not applied)")
+    print(f"\nFIX ALREADY WRITTEN  (a PR declares it; `{FIXED_LABEL}` not applied)")
     if not limbo:
-        print(f"  none -- every declared close is either closed or labelled")
+        print("  none -- every declared fix is closed or labelled")
     for n in sorted(limbo):
-        src = ", ".join(f"#{p}" for p in sorted(limbo[n]))
-        print(f"  #{n:<5} declared by {src:<14} {titles[n][:58]}")
+        src = ", ".join(f"#{p} ({st})" for p, st in sorted(limbo[n]))
+        print(f"  #{n:<5} {src:<26} {titles[n][:52]}")
     if limbo:
         print("\n  Probe each. Three outcomes, and the third is why this is a list")
         print("  of candidates rather than a list of fixes:")
@@ -257,10 +267,12 @@ def main():
         print("  #611 is the standing example of the third: #656 was credited with")
         print("  closing it, and the hang is handled by a --deselect in scripts/test.sh")
         print("  at the very rank count the issue reports.")
+        print("  A PR marked (open) is the commoner case here -- the fix is written")
+        print("  and cannot land. Label the issue; the work is on the PR.")
     carrying = [n for n, ls in labels.items() if FIXED_LABEL in ls]
     if carrying:
-        print(f"\n  {len(carrying)} issue(s) already carry `{FIXED_LABEL}` and close at "
-              f"the next release:")
+        print(f"\n  {len(carrying)} issue(s) carry `{FIXED_LABEL}`; the release closes "
+              f"the ones whose PR has merged:")
         print("    " + " ".join(f"#{n}" for n in sorted(carrying)))
 
     # ---- the one that cost ten days ---------------------------------------
