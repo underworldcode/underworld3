@@ -29,6 +29,9 @@ params = uw.Params(
     uw_tol=uw.Param(1.0e-8, description="SNES relative tolerance"),
     uw_assemble=uw.Param(20, description="residual and Jacobian assemblies to time"),
     uw_out=uw.Param("~/+Simulations/jit_graph/tier2", description="output directory"),
+    uw_force_scale=uw.Param(0.0, description="relative change of the body force, to "
+                            "measure how the Newton path responds to round-off-sized changes"),
+    uw_label=uw.Param("", description="suffix for the output file"),
 )
 route = "graph" if _jit_graph.enabled() else "tree"
 fixture = str(params.uw_fixture)
@@ -38,6 +41,8 @@ stokes, _ = fixtures.build(fixture)
 stokes.consistent_jacobian = {"newton": True, "picard": False,
                               "continuation": "continuation"}[tangent]
 solve_kwargs = fixtures.prepare_solve(stokes, fixture)
+if float(params.uw_force_scale):
+    stokes.bodyforce = stokes.bodyforce * (1 + float(params.uw_force_scale))
 stokes.tolerance = float(params.uw_tol)
 stokes.petsc_options["snes_max_it"] = int(params.uw_maxit)
 if "ksp_monitor" in stokes.petsc_options:
@@ -113,7 +118,7 @@ print(f"[{fixture} {tangent} {route}] assembly at the solution: residual {1e3 * 
 
 out = os.path.expanduser(str(params.uw_out))
 os.makedirs(out, exist_ok=True)
-np.savez(os.path.join(out, f"{fixture}_{tangent}_{route}.npz"),
+np.savez(os.path.join(out, f"{fixture}_{tangent}{params.uw_label}_{route}.npz"),
          v=np.asarray(stokes.u.array), p=np.asarray(stokes.p.array),
          X=np.asarray(X.array).copy(),
          history=np.asarray(r.history, dtype=float),

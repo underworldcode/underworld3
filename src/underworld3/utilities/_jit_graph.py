@@ -279,10 +279,13 @@ class KernelGraph:
 
     def make_node(self, body):
         """The node for ``body``, one per distinct body. A body that is a number, a
-        single leaf, a single node, or reads no leaf is returned as itself."""
+        single leaf, a single node, or reads no leaf is returned as itself, and so is a
+        condition (a node is a value; a Piecewise refuses one as its condition)."""
         global _nodes_made
 
         body = sympy.sympify(body)
+        if not isinstance(body, sympy.Expr):
+            return body
         if not self._splitting:
             body = self._split_shared(body)
         if body.is_Atom or isinstance(body, (AppliedUndef, BaseScalar)):

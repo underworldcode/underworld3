@@ -1,8 +1,11 @@
 # Generating JIT kernels from the shared expression graph
 
-**Status**: Proposed, 2026-10-07. Tier 2 of [#823](https://github.com/underworldcode/underworld3/issues/823).
-Tier 1 ([#830](https://github.com/underworldcode/underworld3/pull/830),
-`bugfix/jit-setup-cost-823`) is the fix for today and lands first: the memoised
+**Status**: Proposed, 2026-10-07. Staging steps 2 and 3 implemented behind the private
+switch `UW_JIT_GRAPH=1` on `feature/jit-graph-codegen`, 2026-10-08, and measured against
+tier 1 end to end ({ref}`jit-graph-in-the-library`).
+Tier 2 of [#823](https://github.com/underworldcode/underworld3/issues/823).
+Tier 1 ([#830](https://github.com/underworldcode/underworld3/pull/830), merged
+2026-10-07) is the fix for today: the memoised
 unwrap, realness for field values, coordinates and constant slots, derivatives with
 respect to fields through `uw.function.diff_wrt_field`, and the power-mean sharpness as
 an atom of its own. Tier 2 is the design we would have chosen from the start, and tier
@@ -220,14 +223,17 @@ which SymPy does not merge, and on a power law over a named invariant, with $n$ 
 constant atom or as the number 3, both routes give a finite Newton tangent at a state of
 rest, equal entry for entry.
 
-### One lowering per setup, read back by `getext()`
+### Each lowering is read back by `getext()` from its nodes
 
-`_setup_pointwise_functions` creates one lowering context, and `_jacobian_unwrap` builds
-its nodes in it. Each node class holds its body and its context, so `getext()` reads
-every body from the nodes it is handed and needs no new argument. `getext()` lowers the
-remaining atoms — those of the residual and the Picard blocks — in the same way; a
-caller that is not a solver (`Integral`, `CellWiseIntegral`, `BdIntegral`) gets a
-context of its own.
+Each call of `_jacobian_unwrap` lowers its source in a context of its own, and
+`getext()` lowers the remaining atoms — those of the residual and the Picard blocks — in
+another. Each node class holds its body and its context, so `getext()` reads every body
+from the nodes it is handed and needs no new argument, and a caller that is not a solver
+(`Integral`, `CellWiseIntegral`, `BdIntegral`) needs no change. An atom lowered in two
+contexts is two nodes in Python and one temporary in C, because emission merges
+temporaries by the C they compute. The solvers are therefore unchanged apart from
+`_jacobian_unwrap`; one context per setup would only save the constancy test of an atom
+that both lowerings meet.
 
 `getext()` no longer runs `unwrap_expression` over a whole kernel. Its present phases —
 reveal the constants, substitute them, unwrap the rest — become: lower atoms to nodes,
@@ -372,20 +378,82 @@ cancellation leaves rounding noise and the tangent is finite but meaningless. Th
 singular there. The notch cannot reach it — its material fraction is a P0 field holding
 exactly 0 or 1 — but a model with a projected or higher-degree material field could.
 
+(jit-graph-in-the-library)=
+## In the library, against tier 1
+
+Steps 2 and 3 are implemented on `feature/jit-graph-codegen`
+(`src/underworld3/utilities/_jit_graph.py`, with branches in `getext()`,
+`generate_c_source()`, `_jacobian_unwrap` and the two unwrappers), selected by
+`UW_JIT_GRAPH=1`. Unset, every path is tier 1's. Both routes therefore run on one build,
+and each fixture is run once per route in a fresh process with the JIT cache off
+(`scripts/sessions/jit_graph/route_ab.py`): the solver's whole pointwise setup, a Newton
+solve, then the residual and the Jacobian assembled repeatedly at the solution. The
+fixtures are those of the prototype, with the box ones solved as a lid-driven box
+started from simple shear; the notch is solved from rest to a relative tolerance of
+$10^{-6}$. Apple clang `-O3`, macOS, single runs on a machine shared with another
+session's seven solver processes, so the times are indicative. Tree first, graph second:
+
+| | notch | VEP | box | TI VEP | power law | linear |
+|---|---|---|---|---|---|---|
+| pointwise setup, s | 15.9 / 2.5 | 3.4 / 2.3 | 2.5 / 1.8 | 1.5 / 1.5 | 1.5 / 1.3 | 1.2 / 1.0 |
+| of which C generation, s | 8.6 / 0.23 | 0.61 / 0.21 | 0.33 / 0.10 | 0.17 / 0.14 | 0.05 / 0.04 | 0.02 / 0.01 |
+| generated C, all modules of the solve | 4.0 MB / 22 KB | 380 KB / 40 KB | 104 KB / 16 KB | 42 KB / 31 KB | 28 KB / 14 KB | 10.7 KB, byte-identical |
+| Jacobian assembly, ms | 180 / 132 | 2.40 / 2.19 | 1.58 / 1.45 | 2.23 / 2.22 | 1.48 / 1.40 | 1.39 / 1.44 |
+| residual assembly, ms | 21.4 / 18.7 | 0.62 / 0.59 | 0.35 / 0.33 | 0.61 / 0.60 | 0.32 / 0.32 | 0.33 / 0.33 |
+| Newton iterations, nonlinear / linear | 75 / 496 and 57 / 386 | 6 / 6, both | 30 / 30, both (limit) | 2 / 2, both | 16 / 16, both | 1 / 1, both |
+
+The compile time is not shown separately: it counts every module the solve builds (the
+VEP's history projections among them), and on these fixtures it is 1–4 s on either
+route, never slower on the graph.
+
+**The operators agree to round-off.** `route_assemble.py` assembles the residual and the
+Jacobian on each route at the same state — rest (zero velocity, boundary values
+imposed), the tree's final state and the graph's final state — and compares them entry
+by entry. On every fixture, at every state, and for the Newton, Picard and continuation
+tangents, no Jacobian entry differs from the other route's by more than $5.1\times10^{-16}$
+of the largest entry in its row, and the sparsity patterns are identical. Residuals
+agree to $10^{-14}$ of their largest entry, except at converged states, where the
+residual is itself round-off ($10^{-13}$). The uncapped power law is singular at rest:
+both routes give a non-finite residual there, in the same 126 entries.
+
+**The solves agree, and the notch's iteration count is not a property of the route.** On
+every fixture but the notch, both routes take the same path: equal nonlinear and linear
+iteration counts, residual histories equal to $10^{-5}$ and solutions to $10^{-11}$ or
+better. On the notch both converge, the tree in 75 Newton iterations and the graph in
+57, to solutions that agree to $8\times10^{-7}$ of the largest velocity and
+$2\times10^{-4}$ of the largest pressure, consistent with the tolerance. The two
+residual histories agree to $10^{-9}$ for four iterations and part from the fifth: the
+notch's Newton iteration amplifies differences at the level of round-off, and the
+operators that drive it agree at that level at three states.
+
+**The source is canonical.** On the notch, box and VEP fixtures the graph route's C is
+byte-identical under `PYTHONHASHSEED` 0, 1 and 2; `test_0024` checks that a law
+declared after a preamble of unrelated objects and declared twice emits the same
+header.
+
+**The stand-in derivative is no longer load-bearing.** `plain_diff_probe.py` replaces
+`diff_wrt_field` and `derive_by_array_wrt_field` in the solvers by plain `sympy.diff`
+and `sympy.derive_by_array` and runs the Newton solve that motivated them (the
+Drucker–Prager yield with a yield-stress floor at softness 0). The tree route fails in
+the C printer, on the `Derivative` SymPy leaves beside the `Abs`; the graph route
+converges, because every `Abs` sits in a node body, whose partials are taken against
+real dummies.
+
 ## Against tier 1: no slower, more robust, less code
 
 Tier 1 is the competitor. Each criterion is measured against it, not against the code
 before it.
 
-**No slower.** On every fixture so far, every stage is as fast or faster: lowering,
-differentiating and emitting the notch's Newton block take 0.5 s against 9 s, the C is
-6.6 KB against 3.2 MB, and the kernel runs in about an eighth of the time. On a
-constant-viscosity Stokes the two routes emit byte-identical C, because a constant law
-has no node to lower. On a small power law the graph spends 0.02 s more differentiating
-(0.09 s against 0.07 s), and the run time of its small kernels is equal within the
-noise of a loaded machine. The claim needs the benchmark plan's measurement: an idle
-machine, the minimum of repeated runs, the library's whole setup end to end, on Linux
-as well as macOS.
+**No slower.** In the library, end to end, every stage on every fixture is as fast or
+faster: the notch's pointwise setup takes 2.5 s against 15.9 s, its C is 22 KB against
+4.0 MB, and its Jacobian assembles in 132 ms against 180 ms. A constant-viscosity Stokes
+emits byte-identical C, because a constant law has no node to lower. The assembly gain
+is smaller than the prototype's kernel timings suggested (an eighth of the time per
+call) because the pointwise kernel is one part of the assembly, beside quadrature and
+the element loop. Still to measure: an idle machine with repeated runs, Linux with gcc
+(whose default `-fmath-errno` keeps it from merging repeated `pow`, `exp` and `sqrt`
+calls, which the graph's temporaries do for every named quantity), a three-dimensional fixture,
+and the small kernels of `Integral` and `BdIntegral`.
 
 **More robust.** Each failure class below needed a patch in tier 1, placed where it
 surfaced; in the graph it cannot arise, or arises only in one body:
@@ -393,26 +461,31 @@ surfaced; in the graph it cannot arise, or arises only in one body:
 | failure class | tier 1 | graph | shown |
 |---|---|---|---|
 | SymPy's automatic algebra on an expanded base is slow (`im()` inside `Pow.__new__`, 40 s on the notch) | a constant atom added to the power-mean law; realness for unit-carrying parameters | bases are bodies, not trees | graph lowering took 0.04 s on every tier 1 commit, including those where the library took 40 s |
-| realness turns `sqrt(x**2)` into `Abs`, whose derivative with respect to a field SymPy leaves unevaluated | a stand-in derivative at 49 call sites | body partials are taken against real dummies | the graph differentiated the Drucker–Prager floor law cleanly with plain `sympy.diff` where the library failed |
+| realness turns `sqrt(x**2)` into `Abs`, whose derivative with respect to a field SymPy leaves unevaluated | a stand-in derivative at 49 call sites | body partials are taken against real dummies | with plain `sympy.diff` at every solver site, the Drucker–Prager floor law fails to compile on the tree route and solves on the graph route |
 | manifest and C built by two walks (#302) | two consistency guards and `_reveal_constants` | one walk | by construction; manifests identical on all fixtures |
-| generated C that differs between ranks (#752, open) | rank 0's source adopted | canonical emission | byte-identical under hash seeds, preambles and re-declaration; ranks not yet tested |
-| field symbols given their C names by mutating their classes, in an order that matters | `ccode_patch_fns`, the coordinate recovery block | an explicit map from leaf to C | by construction |
-| generated C too large to read or to compile (#547) | opt-in CSE, lower optimisation flags | one line per named quantity | 6.6 KB against 3.2 MB on the notch |
+| generated C that differs between ranks (#752, open) | rank 0's source adopted | canonical emission | byte-identical under hash seeds 0–2 (notch, box, VEP), after a preamble and when re-declared (`test_0024`); ranks not yet tested |
+| field symbols given their C names by mutating their classes, in an order that matters | `ccode_patch_fns`, the coordinate recovery block | an explicit map from leaf to C | not yet: steps 2–3 still spell leaves through the patched printer; the map belongs to step 4 |
+| generated C too large to read or to compile (#547) | opt-in CSE, lower optimisation flags | one line per named quantity | 22 KB against 4.0 MB for the notch's whole solve |
 
 The graph brings one failure class tier 1 does not have: it cannot cancel a quantity
 against its own reciprocal across a name.
 
-**Less code, less global state.** By line ranges in `_jitextension.py`, the graph
-replaces about 530 lines — `_reveal_constants`, `_extract_constants` and
-`_collect_constant_atoms`, the two consistency guards, the global `_ccode` patching and
-the coordinate recovery, the expanded-tree lowering, the opt-in CSE path, the
-identity-walk scans that exist for large trees, and the dead `prepare_for_cache_key` and
-`_createext` — with about 360: one lowering module, a leaf-to-C map, a manifest built
-from the leaves, and node expansion in two unwrappers. Several tier 1 measures become
-belt-and-braces rather than load-bearing: the stand-in derivative at every call site,
-realness for unit-carrying parameters, and the patch to SymPy's private
-`BaseScalar._prop_handler` table, the last of which we would want to remove. These
-counts are estimates until the change exists; the PR that makes it shows them.
+**Less global state, not less code.** The earlier estimate here (530 lines replaced by
+360) does not survive the implementation. The lowering module is 442 lines, about a
+third of them docstrings, and the branches it needs elsewhere about 60. Step 4 deletes
+about 390 lines of the tree route: `_reveal_constants`, the scanning half of
+`_extract_constants`, `_collect_constant_atoms`, `_xreplace_shared`, `_unique_symbols`,
+the tree lowering and its two consistency guards in `generate_c_source`, the coordinate
+recovery, the opt-in CSE path, the tree guard in `_jacobian_unwrap`, and the unused
+`prepare_for_cache_key` and `_createext`. Replacing the class patching of
+`ccode_patch_fns` (148 lines with its comments) by a map from leaf to C would remove
+about 100 more. The line count comes out about even. What changes is where the
+correctness lives: in one module whose every risk has a test that fails when the
+mechanism is broken (`test_0024`, each test checked against a mutation of the lowering),
+instead of in patches at the places each failure surfaced. The stand-in derivative at
+49 call sites becomes belt-and-braces, as the probe above shows; so would realness for
+unit-carrying parameters and the patch to SymPy's private `BaseScalar._prop_handler`
+table, which we would want to remove — neither is yet shown.
 
 ## Results agree to round-off, not bit for bit
 
@@ -531,7 +604,9 @@ repository; the notch is the one exception, and its driver is named.
    expanded and print as before. Nodes exist only inside `getext()`.
 3. `_jacobian_unwrap` builds nodes instead of expanding, so nodes reach the solver's
    blocks; in the same change the two unwrappers learn to expand them and `test_0022`'s
-   two tree-shaped tests are rewritten.
+   tree-shaped guard test is pinned to the tree route.
+
+   Steps 2 and 3 are implemented together behind `UW_JIT_GRAPH=1` (2026-10-08).
 4. The expanded route and the switch are removed, together with the two functions that
    mirror it and have no callers (`prepare_for_cache_key`, `_createext`), and
    `jit-cache.md`, `expressions-functions.md` and `jacobian-consistent-tangent.md` are

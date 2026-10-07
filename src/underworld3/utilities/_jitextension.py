@@ -1377,7 +1377,21 @@ def generate_c_source(
     def _spell(leaf):
         # the C a kernel reads for a leaf of the graph
         placeholder = constants_subs_map.get(leaf) if constants_subs_map else None
-        return placeholder._ccodestr if placeholder is not None else printer.doprint(leaf)
+        if placeholder is not None:
+            return placeholder._ccodestr
+        if isinstance(leaf, sympy.vector.scalar.BaseScalar):
+            # a coordinate may be a fresh instance, or a UWCoordinate SymPy's cache
+            # handed back for its equal base scalar, without the name the mesh set:
+            # recover it from the coordinate's index and system, as the coordinate
+            # recovery below does for the printer
+            try:
+                return leaf._ccodestr
+            except AttributeError:
+                idx, system = leaf._id[0], str(leaf._id[1])
+                leaf._ccodestr = (f"petsc_n[{idx}]" if "Gamma" in system
+                                  else f"petsc_x[{idx}]")
+                return leaf._ccodestr
+        return printer.doprint(leaf)
 
     eqns = []
     for index, fn in enumerate(fns):

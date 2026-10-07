@@ -265,3 +265,24 @@ def test_the_manifest_from_the_leaves_is_the_scanned_manifest(box):
     leaves, _ = _manifest_from(jg.constant_leaves(jg.lower_callbacks(fns, mesh)))
     assert [e for _, e in leaves] == [e for _, e in scanned]
     assert len(scanned) == 3     # c4 is a slot of its own; c3 is folded into it
+
+
+def test_a_repeated_condition_stays_a_condition(box):
+    """A condition that repeats inside one body (two Piecewise on the same test) is
+    shared by the body's common sub-expression split; it must stay a Boolean, not
+    become a node, which Piecewise refuses as a condition (the fault-network laws,
+    test_0850 and test_0851)."""
+    mesh, T, v = box
+    x = mesh.N.x
+    u = T.sym[0]
+    a = uw.expression(r"a_{0024i}",
+                      sympy.Piecewise((u, x > 0.5), (u ** 2, True))
+                      + sympy.Piecewise((2 * u, x > 0.5), (u ** 3, True)),
+                      "two branches on one test")
+    lowered = jg.KernelGraph().lower(a * u)
+    tree = ex.unwrap_expression(a * u, mode="symbolic_keep_constants")
+    for xv in (0.2, 0.8):
+        n = _numbers([tree, diff_wrt_field(tree, u)])
+        n[x] = sympy.Float(xv)
+        for t, g in ((tree, lowered), (diff_wrt_field(tree, u), diff_wrt_field(lowered, u))):
+            assert abs(_value(g, n) - _value(t, n)) <= 1.0e-12 * abs(_value(t, n))
