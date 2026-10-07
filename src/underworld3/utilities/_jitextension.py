@@ -41,6 +41,32 @@ def _stable_sorted(iterable):
     return sorted(iterable, key=_stable_sort_key)
 
 
+def _petsc_include_dirs():
+    """PETSc's own include directories, from petsc4py's configuration.
+
+    The generated callback header includes ``<petscsystypes.h>`` (#813), so the JIT
+    build needs PETSc's headers: ``$PETSC_DIR/include`` and, for ``petscconf.h``,
+    ``$PETSC_DIR/$PETSC_ARCH/include``. A conda-forge PETSc puts them on the
+    compiler's default path, which is why CI built; a custom PETSc build does not, and
+    there every JIT compile failed with "'petscsystypes.h' file not found".
+    """
+    try:
+        import petsc4py
+
+        info = petsc4py.get_config()
+    except Exception:
+        # Sanctioned: no petsc4py configuration to read; the compiler's own search
+        # path is all there is (the conda-forge case)
+        return []
+    petsc_dir, petsc_arch = info.get("PETSC_DIR", ""), info.get("PETSC_ARCH", "")
+    if not petsc_dir:
+        return []
+    candidates = [Path(petsc_dir) / "include"]
+    if petsc_arch:
+        candidates.append(Path(petsc_dir) / petsc_arch / "include")
+    return [str(c) for c in candidates if c.is_dir()]
+
+
 def _petsc_build_env():
     """Return a subprocess environment with PETSc's C/C++ compilers set.
 
@@ -1441,7 +1467,7 @@ ext_mods = [Extension(
 setup(ext_modules=cythonize(ext_mods))
 """.format(
         NAME=MODNAME,
-        HEADERS=list(_stable_sorted(underworld3._incdirs.keys())),
+        HEADERS=list(_stable_sorted(underworld3._incdirs.keys())) + _petsc_include_dirs(),
         LIBDIRS=list(_stable_sorted(underworld3._libdirs.keys())),
         LIBFILES=list(_stable_sorted(underworld3._libfiles.keys())),
         EXTRA_COMPILE_ARGS=extra_compile_args,
