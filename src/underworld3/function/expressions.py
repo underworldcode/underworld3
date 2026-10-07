@@ -199,6 +199,83 @@ def _unwrap_expression_once(expr, mode='nondimensional'):
     return expr
 
 
+def _unwrap_expression_complete(expr, mode):
+    r"""Complete expansion of every UW atom in ``expr`` (the ``depth=None`` case).
+
+    Each UW atom is expanded ONCE, memoised by identity, with the same rule as
+    :func:`_unwrap_atom`, including the same truly-constant predicate for
+    ``'symbolic_keep_constants'``, also memoised. Each expression is then rebuilt in
+    ONE ``xreplace`` pass. The result is the fixed point that repeated
+    :func:`_unwrap_expression_once` passes reach, structurally identical, with two
+    exceptions where the passes were wrong. An unevaluated ``Derivative`` of a UW
+    atom whose content depends on the differentiation variable: ``subs`` returned
+    ``Subs(Derivative(a*T, x), a, x**2)``, i.e. :math:`x^2\,\partial T/\partial x`,
+    where this returns ``Derivative(x**2*T, x)``, the derivative of the content, as
+    ``uw.function.derivative`` does. And a cyclic expression: the passes stopped
+    after 100 with a meaningless result, where this raises ``ValueError``.
+
+    Why not repeated ``subs`` passes (#823): each pass traverses and re-canonicalises
+    the whole growing tree, and in keep-constants mode every atom on every pass ran
+    ``_is_truly_constant``, itself a full unwrap. On the Spiegelman notch viscosity, a
+    130-node graph with 18 named sub-expressions that expands to a 9,913-node tree,
+    that took 563 s; this takes 0.11 s. Repeated sub-expressions in the result are the
+    same Python object, which identity-memoised walks downstream exploit.
+    """
+    from underworld3.coordinates import UWCoordinate
+
+    uw_types = (UWexpression, UWQuantity, UWCoordinate)
+    expanded = {}       # id(atom) -> (atom, expansion); the atom is held so its id stays valid
+    constant = {}       # id(atom) -> (atom, bool)
+    in_progress = set()
+
+    def is_truly_constant(atom):
+        hit = constant.get(id(atom))
+        if hit is None:
+            from underworld3.utilities._jitextension import _is_truly_constant
+            hit = constant[id(atom)] = (atom, _is_truly_constant(atom, UWexpression))
+        return hit[1]
+
+    def expand_atom(atom):
+        hit = expanded.get(id(atom))
+        if hit is not None:
+            return hit[1]
+        if id(atom) in in_progress:
+            raise ValueError(f"cyclic expression: {atom} contains itself")
+        in_progress.add(id(atom))
+        try:
+            if (mode == 'symbolic_keep_constants' and isinstance(atom, UWexpression)
+                    and not isinstance(atom, UWCoordinate)):
+                # _unwrap_atom's keep-constants rule, with the predicate memoised
+                result = atom if is_truly_constant(atom) else expand(atom.sym)
+            else:
+                one_level = _unwrap_atom(atom, mode)
+                result = atom if one_level is atom else expand(one_level)
+        finally:
+            in_progress.discard(id(atom))
+        expanded[id(atom)] = (atom, result)
+        return result
+
+    def expand(e):
+        if isinstance(e, UWQuantity) and not isinstance(e, UWexpression):
+            return _unwrap_atom(e, mode)
+        if isinstance(e, uw_types):
+            return expand_atom(e)
+        if not hasattr(e, 'free_symbols'):
+            return e
+        mapping = {}
+        for sym in e.free_symbols:
+            if isinstance(sym, uw_types):
+                replacement = expand_atom(sym)
+                if replacement is not sym:
+                    # as subs() did: a value that cannot be sympified (a units
+                    # quantity in 'symbolic' mode) raises SympifyError here; a sympy
+                    # object comes back as the same object, so sharing is kept
+                    mapping[sym] = sympy.sympify(replacement)
+        return e.xreplace(mapping) if mapping else e
+
+    return expand(expr)
+
+
 def unwrap_expression(expr, mode='nondimensional', depth=None):
     """
     Unified unwrapping of UW expressions.
@@ -228,17 +305,8 @@ def unwrap_expression(expr, mode='nondimensional', depth=None):
     else:
         return sympy.sympify(expr)
 
-    # Fixed-point iteration (or depth-limited)
     if depth is None:
-        result = working
-        result_next = _unwrap_expression_once(result, mode)
-        iteration = 0
-        max_iterations = 100  # Safety limit
-        while result is not result_next and iteration < max_iterations:
-            result = result_next
-            result_next = _unwrap_expression_once(result, mode)
-            iteration += 1
-        return result
+        return _unwrap_expression_complete(working, mode)
     else:
         result = working
         for _ in range(depth):

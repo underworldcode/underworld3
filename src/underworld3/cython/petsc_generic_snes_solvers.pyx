@@ -103,11 +103,35 @@ def _jacobian_unwrap(expr):
         # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
         # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
         # derivatives), ... — all singular in value or derivative at a
-        # zero-argument state
-        return e.replace(
-            lambda n: (n.is_Pow and n.exp.is_Rational
-                       and n.exp.q == 2 and n.args[0].free_symbols),
-            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+        # zero-argument state.
+        # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
+        # identity: the unwrapped flux repeats its shared sub-expressions as the same
+        # object, and `replace` walked every occurrence (measured 16 s of a 108 s
+        # notch compile, #823).
+        memo = {}
+
+        def guard(n):
+            hit = memo.get(id(n))
+            if hit is not None:
+                return hit[1]
+            out = n
+            args = getattr(n, "args", None)
+            if args:
+                new_args = tuple(guard(a) for a in args)
+                if any(a is not b for a, b in zip(args, new_args)) and args != new_args:
+                    out = n.func(*new_args)
+                    # replace(simultaneous=True): a rebuild that collapses to one of
+                    # the changed arguments is not matched again
+                    if any(out == a and a != b for a, b in zip(args, new_args)):
+                        memo[id(n)] = (n, out)
+                        return out
+                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
+                        and out.args[0].free_symbols):
+                    out = sympy.Pow(out.args[0] + eps2, out.exp)
+            memo[id(n)] = (n, out)
+            return out
+
+        return guard(e)
 
     f = lambda e: _guard_sqrts(
         _unwrap_expression(e, mode="symbolic_keep_constants"))

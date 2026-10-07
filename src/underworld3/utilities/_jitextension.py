@@ -473,6 +473,36 @@ def _extract_constants(all_fns, mesh):
     return manifest, subs_map
 
 
+def _unique_symbols(expr):
+    """The Symbol atoms of ``expr`` (a sympy expression, Matrix or Array): the same set
+    as ``expr.atoms(sympy.Symbol)``, found by visiting each node OBJECT once.
+
+    ``atoms`` walks every occurrence of every node. An unwrapped constitutive law
+    repeats its shared sub-expressions as the SAME Python object (the memoised unwrap
+    inserts one object wherever an atom occurs, #823), so an identity walk is
+    proportional to the shared graph rather than the expanded tree: measured on the
+    Spiegelman notch kernels, ``atoms`` was 35 s of a 108 s compile.
+    """
+    # keyed by id, holding the object so that no id is reused while the walk runs
+    seen = {}
+    found = set()
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen[id(e)] = e
+        if isinstance(e, (sympy.MatrixBase, sympy.NDimArray)):
+            stack.extend(e)
+            continue
+        if isinstance(e, sympy.Symbol):
+            found.add(e)
+            continue
+        if isinstance(e, sympy.Basic):
+            stack.extend(e.args)
+    return found
+
+
 def _is_truly_constant(expr, UWexpression):
     """Check if a UWexpression resolves to a pure constant (no spatial deps).
 
@@ -535,7 +565,7 @@ def _collect_constant_atoms(expr, result_set, is_constant_expr, UWexpression):
         return
 
     # Check all UWexpression atoms
-    for atom in _stable_sorted(expr.atoms(sympy.Symbol)):
+    for atom in _stable_sorted(_unique_symbols(expr)):
         if isinstance(atom, UWexpression) and _is_truly_constant(atom, UWexpression):
             result_set.add(atom)
         elif isinstance(atom, UWexpression):
@@ -1237,7 +1267,7 @@ def generate_c_source(
             # C source must never disagree (issue #302).
             if constants_subs_map is not None and hasattr(fn, 'atoms'):
                 unmanifested = [
-                    a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                    a.name for a in _stable_sorted(_unique_symbols(fn))
                     if isinstance(a, _UWexpr)
                     and _is_truly_constant(a, _UWexpr)
                     and a not in constants_subs_map
@@ -1264,7 +1294,7 @@ def generate_c_source(
             # slot and is about to be baked — refuse rather than freeze the
             # parameter silently (issue #302).
             if constants_subs_map and hasattr(fn, 'atoms'):
-                baked = [a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                baked = [a.name for a in _stable_sorted(_unique_symbols(fn))
                          if a in constants_subs_map]
                 if baked:
                     raise RuntimeError(
@@ -1524,9 +1554,9 @@ cdef extern from "cy_ext.h" nogil:
     fn_counter = 0
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "  res", fn_counter)
+        debug_str = debugging_text(randstr, fns[fn_counter], "  res", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], residual_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
         fn_counter += 1
@@ -1538,9 +1568,9 @@ cdef extern from "cy_ext.h" nogil:
     # but we leave this separate in case it changes in later PETSc implementations
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "  ebc", fn_counter)
+        debug_str = debugging_text(randstr, fns[fn_counter], "  ebc", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], residual_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
         fn_counter += 1
@@ -1549,10 +1579,10 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_1 = eqn_index_1 + count_jacobian_sig
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "  jac", fn_counter)
+        debug_str = debugging_text(randstr, fns[fn_counter], "  jac", fn_counter) if debug else ""
 
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], jacobian_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], jacobian_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], jacobian_sig)
         fn_counter += 1
@@ -1560,9 +1590,9 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_residual_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdres", fn_counter)
+        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdres", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], bd_residual_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], bd_residual_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_residual_sig)
         fn_counter += 1
@@ -1570,9 +1600,9 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_jacobian_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdjac", fn_counter)
+        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdjac", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_jacobian_sig)
         fn_counter += 1
