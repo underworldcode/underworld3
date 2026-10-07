@@ -479,6 +479,38 @@ def _extract_constants(all_fns, mesh):
     return manifest, subs_map
 
 
+def _warn_dirac_deltas_dropped(deltas, where):
+    """Say, once and on rank 0, that ``deltas`` were evaluated as 0 by ``where``."""
+    if not deltas or underworld3.mpi.rank != 0:
+        return
+    import warnings
+
+    warnings.warn(
+        f"{where}: {len(deltas)} DiracDelta term(s) taken as 0, their value away from "
+        f"the zero of the argument (first: {deltas[0]}). A DiracDelta comes from "
+        f"differentiating a step once (a Heaviside or sign of the unknown in a Newton "
+        f"tangent, which then leaves out the jump) or a kink twice (Abs(x - a) in a "
+        f"manufactured source). A point source has to be applied as a point load.",
+        stacklevel=3,
+    )
+
+
+def _without_dirac_deltas(expr, where):
+    """``expr`` with every DiracDelta replaced by 0, warning if there were any.
+
+    The rule for every path that turns an expression into numbers: the JIT (through
+    its printer), ``uw.function.evaluate`` and the field evaluator (through lambdify).
+    A pointwise evaluation cannot carry a distribution.
+    """
+    if not hasattr(expr, "atoms"):
+        return expr
+    deltas = sorted(expr.atoms(sympy.DiracDelta), key=sympy.default_sort_key)
+    if not deltas:
+        return expr
+    _warn_dirac_deltas_dropped(deltas, where)
+    return expr.xreplace({d: sympy.S.Zero for d in deltas})
+
+
 def _unique_symbols(expr):
     """The Symbol atoms of ``expr`` (a sympy expression, Matrix or Array): the same set
     as ``expr.atoms(sympy.Symbol)``, found by visiting each node OBJECT once.
@@ -1222,12 +1254,9 @@ def generate_c_source(
 
     printer = c_code_printers["c99"]({"user_functions": custom_functions})
 
-    # A DiracDelta is printed as its value away from the zero of its argument, 0.
-    # It appears when a kink is differentiated twice: the coordinates are real, so
-    # sqrt((x - a)**2) is Abs(x - a), and its second derivative is
-    # 2*DiracDelta(x - a). A pointwise kernel cannot carry a distribution, so it is
-    # dropped, and said so, because a DiracDelta written on purpose (a point source)
-    # is lost the same way.
+    # A DiracDelta is printed as 0, its value away from the zero of its argument, by
+    # the rule every evaluation path shares (_without_dirac_deltas). Done in the
+    # printer so that one made while lowering (cse, temporaries) is caught too.
     dropped_deltas = []
 
     def _print_DiracDelta(expr, **kwargs):
@@ -1464,17 +1493,7 @@ def generate_c_source(
             )
         eqns.append(eqn)
 
-    if dropped_deltas:
-        import warnings
-
-        warnings.warn(
-            f"JIT: {len(dropped_deltas)} DiracDelta term(s) compiled as 0, their value "
-            f"away from the zero of the argument (first: {dropped_deltas[0]}). This is "
-            f"what differentiating a kink such as Abs(x - a) twice gives. A point "
-            f"source has to be applied as a point load, not as a DiracDelta in a "
-            f"pointwise function.",
-            stacklevel=2,
-        )
+    _warn_dirac_deltas_dropped(dropped_deltas, "JIT")
 
     MODNAME = "fn_ptr_ext_" + str(name)
 

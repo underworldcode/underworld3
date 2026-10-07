@@ -192,7 +192,7 @@ class UnderworldFunction(sympy.Function):
         # point. An undefined function is complex to SymPy by default, so every power
         # with a symbolic exponent made it work out real and imaginary parts before
         # combining powers (#823). Differentiate WITH RESPECT TO these through
-        # _diff_wrt_field: sympy.diff swaps them for an assumption-free Dummy.
+        # diff_wrt_field: sympy.diff swaps them for an assumption-free Dummy.
         options.setdefault("real", True)
         ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), _uw_id=uw_id, **options)
         # Grab weakref to meshvar.
@@ -221,21 +221,45 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 
-def _diff_wrt_field(expr, wrt):
+def _holds_derivative(expr):
+    """Whether ``expr`` holds an unevaluated ``sympy.Derivative``, visiting each node
+    object once (an unwrapped law repeats its shared sub-expressions as one object,
+    so ``expr.has`` would walk the expanded tree)."""
+    from sympy.tensor.array import NDimArray
+
+    seen = {}
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen[id(e)] = e
+        if isinstance(e, sympy.Derivative):
+            return True
+        if isinstance(e, (sympy.MatrixBase, NDimArray)):
+            stack.extend(e)
+        elif isinstance(e, sympy.Basic):
+            stack.extend(e.args)
+    return False
+
+
+def diff_wrt_field(expr, wrt):
     r"""Partial derivative :math:`\partial f / \partial u` of ``expr`` with respect
     to a field value or a field gradient component ``wrt``.
 
-    This is ``sympy.diff(expr, wrt)`` with one difference. SymPy differentiates
-    with respect to anything that is not a Symbol by replacing it with a stand-in
-    ``Dummy``, differentiating, and substituting back. Its stand-in carries no
-    assumptions, so a real field becomes complex while it is being differentiated.
-    Here the stand-in carries the field's realness. Without it, an ``Abs`` that
-    realness made out of :math:`\sqrt{g^2}` (Drucker-Prager with a yield-stress
-    floor) leaves :math:`\partial u / \partial u` unevaluated, and every power
-    takes the complex-plane rules.
+    Use this, not ``sympy.diff``, to differentiate with respect to a mesh variable
+    (writing a Newton tangent or a ``flux_jacobian``). Field values are declared
+    real, so SymPy writes :math:`\sqrt{g^2}` as :math:`|g|`. ``sympy.diff``
+    differentiates with respect to anything that is not a Symbol by swapping it for
+    a stand-in ``Dummy`` with no assumptions, differentiating and substituting back,
+    so the field is complex while it is differentiated: :math:`|u - c|` gives
+    :math:`\mathrm{sign}(u - c)\,\partial u/\partial u` with the last factor left
+    unevaluated, which cannot be compiled. Here the stand-in carries the field's
+    realness; otherwise it is the same swap.
 
     ``wrt`` that is a Symbol (a coordinate, a parameter) goes to ``sympy.diff``
-    unchanged.
+    unchanged. So does an ``expr`` holding an unevaluated ``Derivative``, which the
+    swap would hide from the variable it differentiates by.
 
     Parameters
     ----------
@@ -248,17 +272,19 @@ def _diff_wrt_field(expr, wrt):
     Examples
     --------
     >>> c = sympy.Symbol("c", real=True)
-    >>> _diff_wrt_field(sympy.sqrt((c + T.sym[0]) ** 2), T.sym[0])
-    sign(c + T(N.x, N.y))
+    >>> uw.function.diff_wrt_field(sympy.Abs(T.sym[0] - c), T.sym[0])
+    sign(-c + T(N.x, N.y))
     """
-    if not isinstance(wrt, sympy.core.function.AppliedUndef):
+    if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)):
+        expr = sympy.sympify(expr)
+    if not isinstance(wrt, sympy.core.function.AppliedUndef) or _holds_derivative(expr):
         return sympy.diff(expr, wrt)
     stand_in = sympy.Dummy("xi", real=True) if wrt.is_real else sympy.Dummy("xi")
     return sympy.diff(expr.xreplace({wrt: stand_in}), stand_in).subs(stand_in, wrt)
 
 
-def _derive_by_array_wrt_field(expr, dx):
-    r"""``sympy.derive_by_array(expr, dx)`` through :func:`_diff_wrt_field`.
+def derive_by_array_wrt_field(expr, dx):
+    r"""``sympy.derive_by_array(expr, dx)`` through :func:`diff_wrt_field`.
 
     Entry ``[i..., j...]`` of the result is
     :math:`\partial\, \mathrm{expr}[j...] / \partial\, dx[i...]`, the layout of
@@ -271,10 +297,10 @@ def _derive_by_array_wrt_field(expr, dx):
     if isinstance(expr, (list, tuple, sympy.MatrixBase, NDimArray)):
         expr = (expr.as_immutable() if isinstance(expr, NDimArray)
                 else ImmutableDenseNDimArray(expr))
-        return type(expr)([[_diff_wrt_field(y, x) for y in Flatten(expr)]
+        return type(expr)([[diff_wrt_field(y, x) for y in Flatten(expr)]
                            for x in Flatten(dx)], dx.shape + expr.shape)
     expr = sympy.sympify(expr)
-    return ImmutableDenseNDimArray([_diff_wrt_field(expr, x) for x in Flatten(dx)],
+    return ImmutableDenseNDimArray([diff_wrt_field(expr, x) for x in Flatten(dx)],
                                    dx.shape)
 
 
@@ -334,6 +360,9 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
     import random
     from sympy import lambdify
     from sympy.vector import CoordSys3D
+    from underworld3.utilities._jitextension import _without_dirac_deltas
+
+    expr = _without_dirac_deltas(expr, "evaluate")
 
     # 1. Replace mesh variables with random symbol placeholders
     varfns_symbols = {}

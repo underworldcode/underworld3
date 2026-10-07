@@ -108,8 +108,15 @@ for fc in range(Nc):
     for gc in range(Nc):
         for df in range(dim):
             for dg in range(dim):
-                G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1[fc, df], L[gc, dg])
+                G3[fc * Nc + gc, df * dim + dg] = uw.function.diff_wrt_field(
+                    F1[fc, df], L[gc, dg])
 ```
+
+Differentiate with `uw.function.diff_wrt_field`, never plain `sympy.diff`. Field
+values and gradients are declared real, so SymPy writes $\sqrt{g^2}$ as $|g|$;
+`sympy.diff` differentiates with respect to a field through a stand-in with no
+assumptions and leaves `sign(g)*Derivative(u, u)` unevaluated, which cannot be
+compiled (#823).
 
 Row index `fc * Nc + gc`, col index `df * dim + dg`. Row-major flatten
 gives `((fc * Nc + gc) * dim + df) * dim + dg` — PETSc's expected index.
@@ -210,7 +217,9 @@ consumers.
 
 When writing a new class that registers a `PetscDSSetJacobian` callback:
 
-1. **Use the explicit-index pattern from `SNES_MultiComponent` — always.**
+1. **Use the explicit-index pattern from `SNES_MultiComponent` — always,** with
+   every entry differentiated by `uw.function.diff_wrt_field` (or
+   `uw.function.derive_by_array_wrt_field` for a whole array), not `sympy.diff`.
    It reads like the PETSc documentation and is robust against sympy
    convention drift. There is no remaining in-repo
    `derive_by_array + permutedims` Jacobian path to copy from, by design:

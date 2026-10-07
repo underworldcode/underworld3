@@ -20,7 +20,7 @@ from mpi4py import MPI
 
 import underworld3 as uw
 from underworld3 import function
-from underworld3.function._function import _diff_wrt_field
+from underworld3.function._function import diff_wrt_field
 from underworld3.coordinates import CoordinateSystemType
 
 
@@ -822,7 +822,7 @@ class FreeSurface:
         self._comp_adv.tolerance = 1.0e-4
         if self._conserve_integrand is not None:
             self._conserve_area = uw.maths.Integral(self.mesh, self._conserve_integrand)
-            shift_rate = _diff_wrt_field(self._conserve_integrand, self.composition.sym[0])
+            shift_rate = diff_wrt_field(self._conserve_integrand, self.composition.sym[0])
             self._conserve_rate = uw.maths.Integral(self.mesh, shift_rate)
             self._conserve_target = float(self._conserve_area.evaluate())
 
