@@ -551,17 +551,18 @@ def _pack_constants(manifest):
                 # catastrophic: a zero diffusivity or viscosity diverges, and
                 # nothing says why.
                 #
-                # The usual cause is a nested atom that has been ramped.
-                # `(1 + T**2)**(-m) + 1` is the NUMBER 2 while m is zero, so it
-                # banks as one constant; ramp m and it depends on T again, but
-                # the kernel still expects a scalar.
+                # The usual cause is a constant atom whose content has been
+                # replaced by one that reads a field (c.sym = 1 + T**2) without
+                # a rebuild: the kernel still expects a scalar. (Constancy is
+                # decided by structure, so an atom ramped inside an expression,
+                # (1 + T**2)**(-m), keeps its own slot and ramps; #823.)
                 raise RuntimeError(
                     f"constants[] slot {idx} ({uw_expr.name!r}) no longer "
                     f"reduces to a number, so the compiled kernel — which "
                     f"treats it as a scalar constant — is out of date.\n"
                     f"  current content: {str(getattr(uw_expr, '_sym', uw_expr))[:160]}\n"
-                    f"This usually means an atom nested inside it has been "
-                    f"ramped, and the expression has stopped being constant. "
+                    f"This usually means its content was replaced by an "
+                    f"expression that reads a field or a coordinate. "
                     f"Force a rebuild before solving again:\n"
                     f"    solver.is_setup = False\n"
                     f"    solver._needs_function_rewire = True\n"

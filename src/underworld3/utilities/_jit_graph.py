@@ -174,11 +174,16 @@ class KernelGraph:
 
     # ------------------------------------------------------------------ leaves
     def is_constant(self, atom):
-        """Whether a UWexpression is a ``constants[]`` leaf: the rule of
-        ``_is_truly_constant`` (its complete non-dimensional value reads no
-        coordinate, so no field either), decided bottom-up over the atoms it reads,
-        once per atom. ``_is_truly_constant`` unwraps each atom completely, which costs
-        the size of the expanded tree under it, for every atom."""
+        """Whether a UWexpression is a ``constants[]`` leaf: its content reads no
+        coordinate (so no field either) and no non-constant atom, decided bottom-up
+        over the atoms it reads, once per atom.
+
+        This is decided by structure. ``_is_truly_constant`` decides by value, after
+        a complete unwrap: it also calls ``(1 + T**2)**(-m) + 1`` a constant while
+        ``m`` is zero, and that slot stops being one when ``m`` ramps. Here such an
+        atom is a node reading ``T`` and ``m``'s slot, and ``m`` ramps without a
+        recompile. A complete unwrap per atom also costs the size of the expanded
+        tree under it, for every atom."""
         hit = self._const.get(id(atom))
         if hit is not None:
             return hit[1]

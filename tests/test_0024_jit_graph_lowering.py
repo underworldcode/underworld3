@@ -406,10 +406,12 @@ def test_a_matrix_or_vector_valued_atom_is_expanded_in_place(box):
 
 
 def test_constancy_is_decided_on_the_graph(box, monkeypatch):
-    """Whether an atom is a constant is decided bottom-up on the graph, with the rule
-    of ``_is_truly_constant``, not by that function: it unwraps an atom completely, a
-    full expansion of everything under it, for every atom, which costs 2**depth on a
-    law whose every layer reads the one below twice."""
+    """Whether an atom is a constant is decided bottom-up on the graph, by structure,
+    not by ``_is_truly_constant``: that unwraps an atom completely, a full expansion of
+    everything under it, for every atom, which costs 2**depth on a law whose every
+    layer reads the one below twice. The two agree except where a constant's current
+    value collapses an expression to a number: ``(1 + T**2)**(-m) + 1`` at ``m = 0``
+    is a node reading ``m``, so ``m`` ramps (test_0104)."""
     import underworld3.utilities._jitextension as jx
 
     mesh, T, v = box
@@ -426,6 +428,10 @@ def test_constancy_is_decided_on_the_graph(box, monkeypatch):
     ]
     expected = [jx._is_truly_constant(a, ex.UWexpression) for a in atoms]
     assert expected == [True, True, False, False, True, True], expected
+    m = uw.expression(r"m_{0024n}", 0, "zero for now")
+    collapsing = uw.expression(r"p_{0024n}", (1 + u ** 2) ** (-m) + 1, "2 while m is 0")
+    assert jx._is_truly_constant(collapsing, ex.UWexpression)
+    assert not jg.KernelGraph().is_constant(collapsing)
 
     calls = []
     original = jx._is_truly_constant

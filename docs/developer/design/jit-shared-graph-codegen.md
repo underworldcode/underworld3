@@ -283,8 +283,11 @@ unconvertible symbols and integration-point derivatives.
 
 The manifest is the set of constant atoms among the leaves of the emitted kernels,
 tested with the same predicate (`_is_truly_constant`, memoised once per lowering) and
-ordered by the same key (name, then creation order). It contains every slot today's
-manifest contains. It can contain more: where the tree cancels a constant across a name
+ordered by the same key (name, then creation order). It contains every slot the tier 1
+manifest contained, with one exception: where a constant's value collapsed an enclosing
+expression to a number (`(1 + T**2)**(-m) + 1` at `m = 0`), tier 1 gave the expression
+one slot, which stopped being constant when `m` ramped; the graph gives `m` its slot
+and compiles the expression, so `m` ramps (`test_0104`). It can contain more: where the tree cancels a constant across a name
 boundary ($A = c\,x$, then $A/c$), the graph keeps it, and the constant keeps its slot.
 An extra slot is harmless — it is packed and read — but each one must be traced to such
 a cancellation. The prototype finds none on its two fixtures, and the benchmark adds a
@@ -440,6 +443,15 @@ the Mac does not show the effect. On the same server the #752 fixture agreed acr
 ranks in all 10 runs at np = 3 and at np = 4 on both routes, and
 `tests/parallel/ptest_jit_cache.py` passed at np = 4 on both.
 
+**After step 4, against the improved JIT.** With the tree route gone, the comparison is a
+build of this branch against a build of `development` with tier 1 and `-fno-math-errno`
+(#834), on the Mac, where clang sets no `errno` anyway. The notch's pointwise setup is
+1.95 s against 16.6 s, its C 21.8 KB against 4.0 MB, its Jacobian assembly 122 ms
+against 184 ms; per quadrature point its Jacobian callbacks cost 0.49 µs against 2.67 µs
+and its residual callbacks 107 ns against 188 ns. Linear Stokes emits byte-identical C;
+the other fixtures take the same solver path, with setup and assembly equal or faster
+within a few per cent.
+
 **The operators agree to round-off.** `route_assemble.py` assembles the residual and the
 Jacobian on each route at the same state — rest (zero velocity, boundary values
 imposed), the tree's final state and the graph's final state — and compares them entry
@@ -471,7 +483,7 @@ first run found two defects, both in the fault-network laws, each fixed with a u
 in `test_0024`: a repeated Piecewise condition shared as a node (a value, which
 Piecewise refuses as a condition), and a coordinate leaf without the C name the mesh
 sets. After step 4 removed the tree route: 3,082 passed, none failed; and again after the
-second review's fixes: SUITE_FINAL.
+second review's fixes: 2,910 passed, none failed.
 
 **The source is canonical.** On the notch, box and VEP fixtures the graph route's C is
 byte-identical under `PYTHONHASHSEED` 0, 1 and 2; `test_0024` checks that a law

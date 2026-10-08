@@ -1,15 +1,17 @@
-"""A constants[] slot that stops being constant must say so, not pack a zero.
+"""A rampable constant in exponent position ramps; a constants[] slot that stops
+being constant says so, not pack a zero.
 
-An expression is given a ``constants[]`` slot because it resolved to a single
-number when the kernel was compiled. Ramping an atom nested inside it can make
-it depend on position again — the compiled kernel still reads a scalar, and
-packing a zero into that slot hands the solve a zero coefficient. Silent, and
-catastrophic: a zero diffusivity diverges and nothing says why.
+The "rampable constant in exponent position does not ramp" report: with the atom at
+zero, the ENCLOSING expression ``(1 + T**2)**(-m) + 1`` is the number 2. When the JIT
+decided constancy by the atom's current value, that expression banked as one
+constants[] slot, and ramping ``m`` left the kernel reading a scalar where the law
+depends on position again. The JIT now decides constancy by structure (#823, tier 2):
+the expression reads a field, so it is compiled as a quantity reading ``T`` and the
+``m`` slot, and ``m`` ramps without a recompile.
 
-This is the failure behind the "rampable constant in exponent position does not
-ramp" report. The atom is not compiled out; the ENCLOSING expression collapses
-to a number while the atom is zero, banks as one constant, and then stops being
-one.
+A slot can still stop being constant: a constant atom whose content is replaced by one
+that reads a field, without a rebuild. Packing a zero into it would hand the solve a
+zero coefficient, silently; it must raise.
 """
 
 import numpy as np
@@ -42,25 +44,49 @@ def _build(initial):
     return uw, poisson, T, m
 
 
-def test_a_slot_that_stops_being_constant_raises():
+def _mean_after_fresh_build(value):
+    uw, poisson, T, m = _build(value)
+    poisson.solve(zero_init_guess=True)
+    return float(np.asarray(T.data)[:, 0].mean())
+
+
+def test_an_atom_in_exponent_position_ramps_without_a_rebuild():
     uw, poisson, T, m = _build(0.0)
     poisson.solve(zero_init_guess=True)
+    # m has a slot of its own: the collapsing expression is not banked as one
+    assert m in [expr for _, expr in poisson.constants_manifest]
+    compiled = poisson._current_jit_cache_key
 
-    # Compiled while the whole expression was the number 2, so the diffusivity
-    # banks as a single scalar slot. (It is named for the parameter wrapper,
-    # not for the inner expression — the collector stops at the outermost thing
-    # that is truly constant and does not recurse past it.)
+    ramped = {}
+    for value in (0.5, 1.0):
+        m.sym = sympy.sympify(value)
+        poisson.solve(zero_init_guess=True)
+        assert poisson._current_jit_cache_key == compiled, "ramping m recompiled"
+        ramped[value] = float(np.asarray(T.data)[:, 0].mean())
+    assert ramped[0.5] != pytest.approx(ramped[1.0])
+    for value, mean in ramped.items():
+        assert mean == pytest.approx(_mean_after_fresh_build(value), rel=1.0e-10), value
+
+
+def _slot_that_stops_being_constant():
+    uw, poisson, T, m = _build(0.0)
+    c = uw.expression(r"c_slot", 1.0, "a constant coefficient")
+    poisson.constitutive_model.Parameters.diffusivity = c
+    poisson.solve(zero_init_guess=True)
+    # one slot: the diffusivity parameter, whose content is c
     assert len(poisson.constants_manifest) == 1
+    c.sym = 1.0 + T.sym[0] ** 2       # now reads the field; the kernel reads a slot
+    return poisson
 
-    m.sym = sympy.sympify(0.5)  # now depends on T again
+
+def test_a_slot_that_stops_being_constant_raises():
+    poisson = _slot_that_stops_being_constant()
     with pytest.raises(RuntimeError, match="no longer.*reduces to a number"):
         poisson.solve(zero_init_guess=True)
 
 
 def test_the_message_names_the_slot_and_says_how_to_recover():
-    uw, poisson, T, m = _build(0.0)
-    poisson.solve(zero_init_guess=True)
-    m.sym = sympy.sympify(0.5)
+    poisson = _slot_that_stops_being_constant()
     with pytest.raises(RuntimeError) as excinfo:
         poisson.solve(zero_init_guess=True)
     message = str(excinfo.value)
