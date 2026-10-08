@@ -4717,9 +4717,11 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self._push_managed_option("ksp_type", "gmres")
-        # A vector unknown: mesh.dim components per node, which GAMG has to be
-        # told. See multigrid_options._gamg_settings.
-        self._pc_block_size = self.mesh.dim
+        # A vector unknown: one component per EMBEDDING dimension (cdim) at each
+        # node, which GAMG has to be told. On a volume mesh cdim == dim; on a
+        # manifold (dim < cdim) the vector lives in the embedding space. See
+        # multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.cdim
         for key, value in multigrid_options.gamg_bundle(
                 block_size=self._pc_block_size).settings.items():
             self._push_managed_option(key, value)
@@ -4741,7 +4743,7 @@ class SNES_Vector(SolverBaseClass):
         # here we only auto-create the default unknown when none was supplied)
         if u_Field is None:
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh,
-                        num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._obj_count),
+                        num_components=mesh.cdim, varname="Uv{}".format(SNES_Vector._obj_count),
                         vtype=uw.VarType.VECTOR, degree=degree )
 
 
@@ -5033,7 +5035,11 @@ class SNES_Vector(SolverBaseClass):
         options.setValue("private_{}_u_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
         options.setValue("private_{}_u_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
 
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
+        # The FE carries cdim components: the unknown MeshVariable is sized by the
+        # embedding dimension, and the residual / Jacobian blocks below are too.
+        # (A dim-component FE against a cdim-component variable was the manifold
+        # vector-FE gap: a Vec-size mismatch on SphericalManifold.)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.cdim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         self.petsc_fe_u.setName("_vector_unknown_")

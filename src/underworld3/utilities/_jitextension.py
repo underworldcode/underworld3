@@ -1426,9 +1426,9 @@ def generate_c_source(
                     )
 
         if isinstance(fn, sympy.vector.Vector):
-            fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
+            fn = fn.to_matrix(mesh.N)[0 : mesh.cdim, 0]
         elif isinstance(fn, sympy.vector.Dyadic):
-            fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0 : mesh.dim]
+            fn = fn.to_matrix(mesh.N)[0 : mesh.cdim, 0 : mesh.cdim]
         else:
             fn = sympy.Matrix([fn])
 
