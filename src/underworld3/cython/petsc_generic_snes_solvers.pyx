@@ -9088,9 +9088,22 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Mirror velocity_->0_ and pressure_->1_, but DON'T clobber any
         # fieldsplit_0_*/fieldsplit_1_* the user set explicitly (so the grouped
         # [p,h] block PC can be overridden directly).
+        #
+        # The velocity block size is NOT mirrored when coupled fields share
+        # split 0: their DOFs interleave with the velocity's, so the split is
+        # not node-blocked in velocity components. A block size there is wrong
+        # (it groups a coupled DOF with a velocity component), and wherever a
+        # rank's split-0 size is odd PETSc refuses it on that rank only, which
+        # leaves the other ranks waiting in a collective.
+        #
+        # TODO(BUG): with multipliers only (split 0 = velocity), the mirrored
+        # fieldsplit_0_mat_block_size survives _withdraw_block_size_if_not_node_blocked,
+        # which removes only the fieldsplit_velocity_ key. Not reproduced yet.
         allopts = opts.getAll()
         for key, val in list(allopts.items()):
             mirrored = None
+            if self._coupled_fields and key == "fieldsplit_velocity_mat_block_size":
+                continue
             if key.startswith("fieldsplit_velocity_"):
                 mirrored = "fieldsplit_0_" + key[len("fieldsplit_velocity_"):]
             elif key.startswith("fieldsplit_pressure_"):

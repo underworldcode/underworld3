@@ -29,12 +29,11 @@ def _driven_stokes(viscosity=1):
     stokes.add_dirichlet_bc((1.0, 0.0), "Top")
     stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
     stokes.add_dirichlet_bc((0.0, 0.0), "Left")
-    stokes.add_dirichlet_bc((0.0, 0.0), "Right")
-    # A closed box fixes the pressure only up to a constant, so declare it.
-    # Without the null space, LU of the singular system lets the constant drift
-    # from one Newton step to the next: measured with one MUMPS build at -2.3e14,
-    # where the residual cannot be resolved below |F| ~ 2.
-    stokes.petsc_use_pressure_nullspace = True
+    # The right wall is traction-free, which fixes the pressure. A closed box leaves
+    # its constant free, and LU of that singular system lets the constant drift
+    # between Newton steps until the residual cannot be resolved below |F| ~ 2:
+    # measured with one MUMPS build serially (-2.3e14), and with another at np = 3
+    # in one run of five even with the pressure null space declared (2026-10-09).
     return mesh, stokes
 
 
@@ -270,4 +269,30 @@ def test_two_way_coupling_converges_with_the_default_fieldsplit_solver():
     stokes.solve()
     assert stokes.snes.getConvergedReason() > 0
     assert stokes.snes.getFunctionNorm() < 1.0e-6
-    assert chi.array.max() > 1.0                     # driven, not trivially zero
+    assert chi.max() > 1.0      # driven, not trivially zero (global max: collective)
+
+
+@pytest.mark.tier_b
+def test_default_fieldsplit_with_a_coupled_field_has_no_velocity_block_size():
+    # Split 0 holds the velocity AND the coupled field, so it is not node-blocked in
+    # velocity components and must not inherit the velocity block size of 2. Holding
+    # chi on the left wall makes split 0's size odd (705 DOFs) on one process: with the
+    # block size carried over, PETSc refused it ("Local size 705 not compatible with
+    # block size 2"). In parallel the same refusal hit only the ranks whose share was
+    # odd, and the rest hung in a collective (np = 3, 2026-10-09).
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3)
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    chi = _scalar_field(mesh, "chi_blocks")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + 0.5 * chi.sym[0] ** 2
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    stokes.consistent_jacobian = True
+    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Left")
+    stokes.add_coupled_dirichlet_bc(0.0, "Left", chi)
+    stokes.solve()
+    assert "fieldsplit_0_mat_block_size" not in stokes.petsc_options.getAll()
+    assert stokes.snes.getConvergedReason() > 0
+    assert stokes.snes.getFunctionNorm() < 1.0e-6
