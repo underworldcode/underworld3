@@ -33,8 +33,8 @@ stokes.petsc_options["snes_max_it"] = 0
 X_state = np.load(os.path.expanduser(str(params.uw_state)))["X"]
 
 
-def timed_assembly(label):
-    stokes.solve(**kwargs)              # (re)builds the kernels; no iteration
+def timed_assembly(label, solve_kwargs):
+    stokes.solve(**solve_kwargs)        # (re)builds the kernels; no iteration
     snes = stokes.snes
     X = snes.getSolution()
     X.array[:] = X_state
@@ -59,7 +59,7 @@ def timed_assembly(label):
     return t_res, t_jac
 
 
-law = timed_assembly("law")
+law = timed_assembly("law", kwargs)
 
 # quadrature points of the velocity block
 dm = stokes.mesh.dm
@@ -71,7 +71,11 @@ cm = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model = cm
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes.is_setup = False
-floor = timed_assembly("constant viscosity")
+# the constant law has no stress history: a viscoelastic fixture's history store and its
+# timestep go with the old law
+stokes.Unknowns.DFDt = None
+floor = timed_assembly("constant viscosity",
+                       {k: v for k, v in kwargs.items() if k != "timestep"})
 
 print(f"[{fixture} {route}] {c1 - c0} cells x {nq} quadrature points = {points}")
 for name, a, b in (("residual", law[0], floor[0]), ("Jacobian", law[1], floor[1])):
