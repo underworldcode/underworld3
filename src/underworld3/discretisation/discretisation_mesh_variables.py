@@ -1620,6 +1620,10 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
+        # TODO(BUG): on a manifold mesh (dim < cdim, e.g. SphericalManifold) the
+        # default DMPlex-migration path below segfaults inside PETSc; the
+        # in-place same_layout=True path round-trips exactly. Found 2026-10-09
+        # (thin-sheet work, test_1078 uses same_layout=True), not fixed.
         if same_layout:
             import h5py
 

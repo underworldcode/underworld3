@@ -316,7 +316,8 @@ def write_coordinates_to_viewer(
         Dataset name (default ``coordinates``).
     """
     coord_gvec = mesh.dm.getCoordinates()
-    coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
+    # one coordinate per EMBEDDING dimension (a surface mesh in three-space)
+    coords = coord_gvec.array.reshape(-1, mesh.cdim).copy()
     _write_vec_to_group(viewer, coords, name, group, PETSc.COMM_WORLD)
 
 

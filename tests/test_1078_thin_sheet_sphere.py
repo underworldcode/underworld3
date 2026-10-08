@@ -139,3 +139,22 @@ def test_a_manifold_sheet_refuses_a_semi_lagrangian_history():
     with pytest.raises(ValueError, match="manifold"):
         sheet.stress_transport = "semi_lagrangian"
     sheet.stress_transport = "eulerian"
+
+
+@pytest.mark.tier_b
+def test_reloadable_checkpoint_round_trips_on_a_manifold(tmp_path):
+    """write_timestep(petsc_reload=True) writes the coordinates with one
+    component per embedding dimension; it used to reshape them by the
+    topological dimension and fail on a surface mesh. The written vector
+    reloads exactly."""
+    sphere = _sphere(0.3)
+    v = uw.discretisation.MeshVariable("v", sphere, 3, degree=2)
+    v.array[:, 0, :] = v.coords
+    sphere.write_timestep("manifold", 0, outputPath=str(tmp_path), meshVars=[v],
+                          petsc_reload=True)
+    w = uw.discretisation.MeshVariable("w", sphere, 3, degree=2)
+    # the in-place reload (same mesh object); the DMPlex-migration path
+    # segfaults on a manifold mesh (TODO(BUG) in read_checkpoint)
+    w.read_checkpoint(str(tmp_path / "manifold.mesh.v.00000.h5"), data_name="v",
+                      same_layout=True)
+    assert np.abs(w.array[:, 0, :] - w.coords).max() < 1.0e-12
