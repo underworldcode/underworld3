@@ -417,6 +417,25 @@ assembly, about 150–165 ms here, is the finite-element machinery, the same on 
 routes, so on the notch the assembly can gain at most a third. A law with more named
 layers, or a three-dimensional `G3` with 81 entries, gives the callbacks a larger share.
 
+**On Linux with gcc the verdict holds, and gcc's `-fmath-errno` explains part of the
+tree's cost on some laws.** On a Linux server (2× Xeon Gold 6240R, the environment's
+gcc 14.3 at the default `-O3 -g0`, so with gcc's `-fmath-errno`; the machine fully
+loaded by other jobs, a noise floor of about ±10%), the five self-contained fixtures take
+identical solver paths on both routes. Setup falls from 10.3 to 8.8 s (box) and from
+12.0 to 4.8 s (VEP); the Jacobian assembly ratios, graph to tree, are 0.87 (box), 0.94
+(VEP, power law), 1.00 (TI) and 1.04 (linear, byte-identical C, so noise). Per
+quadrature point, the box's Jacobian callbacks cost 8.2 µs on the tree and about 1 µs
+on the graph, the noise floor of the subtraction. With `-fno-math-errno`, which lets gcc
+treat `sqrt`, `pow` and `exp` as pure and merge repeated calls, the box's tree callbacks
+fall to 2.8 µs (reproduced in a reverse-order repeat) and the graph's do not move. The
+VEP's do not move on either route (tree 2.7–3.1 µs, graph 0.7–1.0 µs). So on gcc, part
+of the tree's cost is repeated math calls that the flag alone would recover for tier 1;
+the rest, and all of it in the VEP, is repeated arithmetic that only computing each
+named quantity once removes. Apple clang does not set `errno` by default, which is why
+the Mac does not show the effect. On the same server the #752 fixture agreed across
+ranks in all 10 runs at np = 3 and at np = 4 on both routes, and
+`tests/parallel/ptest_jit_cache.py` passed at np = 4 on both.
+
 **The operators agree to round-off.** `route_assemble.py` assembles the residual and the
 Jacobian on each route at the same state — rest (zero velocity, boundary values
 imposed), the tree's final state and the graph's final state — and compares them entry
@@ -472,10 +491,9 @@ faster: the notch's pointwise setup takes 2.5 s against 15.9 s, its C is 22 KB a
 emits byte-identical C, because a constant law has no node to lower. The assembly gain
 is smaller than the prototype's kernel timings suggested (an eighth of the time per
 call) because the pointwise kernel is one part of the assembly, beside quadrature and
-the element loop. Still to measure: an idle machine with repeated runs, Linux with gcc
-(whose default `-fmath-errno` keeps it from merging repeated `pow`, `exp` and `sqrt`
-calls, which the graph's temporaries do for every named quantity), a three-dimensional fixture,
-and the small kernels of `Integral` and `BdIntegral`.
+the element loop. On Linux with gcc the ratios are the same (below). Still to measure:
+an idle machine with repeated runs, a three-dimensional fixture, and the small kernels
+of `Integral` and `BdIntegral`.
 
 **More robust.** Each failure class below needed a patch in tier 1, placed where it
 surfaced; in the graph it cannot arise, or arises only in one body:
