@@ -229,6 +229,27 @@ cdef PetscDSJacobianFn _jacobian_fn(PtrContainer ext, index, fn):
         return NULL
     return ext.fns_jacobian[index[fn]]
 
+
+cdef _add_essential_boundary(DM cdm, PtrContainer ext, ext_dict, bc, PetscInt field_id,
+                             PetscInt label_value):
+    """Register one essential (Dirichlet) condition on DM field ``field_id``;
+    returns PETSc's id for it."""
+    cdef PetscInt [::1] comps_view = bc.components
+    cdef PetscInt ind = label_value
+    fn_index = ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
+    return PetscDSAddBoundary_UW(cdm.dm,
+                        5,   # DM_BC_ESSENTIAL_FIELD
+                        str(bc.boundary+f"{bc.components}").encode('utf8'),
+                        str(bc.boundary).encode('utf8'),
+                        field_id,
+                        bc.components.shape[0],
+                        <const PetscInt *> &comps_view[0],
+                        <void (*)() noexcept>ext.fns_bcs[fn_index],
+                        NULL,
+                        1,
+                        <const PetscInt *> &ind,
+                        NULL, )
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -7167,6 +7188,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # that reads it is guarded by `if self._coupled_fields:` so that the
         # emitted DS and C source are bit-identical to the 2-field solver.
         self._coupled_fields = []
+        self._coupled_essential_bcs = []
         # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
         # add_rotated_freeslip_bc; when non-empty, solve() delegates to
         # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
@@ -7500,6 +7522,36 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         self._needs_function_rewire = True
         return field
+
+    def add_coupled_dirichlet_bc(self, conds, boundary, field):
+        r"""Fix the value of a coupled field on a boundary.
+
+        Parameters
+        ----------
+        conds : float, sympy expression or sequence
+            The prescribed value, one entry per component of ``field`` (``None``
+            leaves a component free). Numbers are taken as non-dimensional.
+        boundary : str
+            Name of the boundary label.
+        field : MeshVariable
+            A field registered with :meth:`add_coupled_field`.
+
+        Example
+        -------
+        A Cosserat micro-rotation held at zero on a wall::
+
+            stokes.add_coupled_dirichlet_bc(0.0, "Bottom", omega)
+        """
+        if not any(c.field is field for c in self._coupled_fields):
+            raise ValueError(
+                f"add_coupled_dirichlet_bc(): {field.name} is not a coupled field "
+                f"of this solver; register it with add_coupled_field first")
+        # add_condition parses and stores the condition; its field id is
+        # resolved at discretisation, when the coupled field gets its DM id.
+        # (-1: no velocity / pressure rescaling of numeric values.)
+        self.add_condition(-1, "dirichlet", conds, boundary)
+        self._coupled_essential_bcs.append((field, self.essential_bcs.pop()))
+        self.is_setup = False
 
     def _coupled_momentum_flux(self):
         """The coupled fields' contribution to the momentum flux (zero without them)."""
@@ -9661,6 +9713,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # PetscSection — see _constrain_interior_multipliers_in_section — so no
         # extra compiled essential-BC value is needed here.)
         bc_value_fns = [x.fn for x in self.essential_bcs]
+        if self._coupled_essential_bcs:
+            bc_value_fns = bc_value_fns + [bc.fn for _, bc in self._coupled_essential_bcs]
 
         _getext_result = getext(
             self.mesh,
@@ -9894,31 +9948,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 print(" - fn:         {} ".format(bc.fn))
                 print(flush=True)
 
-
-            boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
-            ind = value
+            petsc_id = _add_essential_boundary(cdm, ext, self.ext_dict, bc, bc.f_id, value)
+            self.essential_bcs[index] = bc._replace(PETScID=petsc_id, boundary_label_val=value)
 
-            # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
-            # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
-            bc_type = 5
-            fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
-            num_constrained_components = bc.components.shape[0]
-            comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
-                                bc_type,
-                                str(boundary+f"{bc.components}").encode('utf8'),
-                                str(boundary).encode('utf8'),
-                                bc.f_id,  # field ID in the DM
-                                num_constrained_components,
-                                <const PetscInt *> &comps_view[0],
-                                <void (*)() noexcept>ext.fns_bcs[fn_index],
-                                NULL,
-                                1,
-                                <const PetscInt *> &ind,
-                                NULL, )
-
-            self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
+        # Essential conditions on coupled fields, on each field's DM id.
+        # Guarded: no-op for ordinary Stokes.
+        for index, (field, bc) in enumerate(self._coupled_essential_bcs):
+            value = mesh.boundaries[bc.boundary].value
+            petsc_id = _add_essential_boundary(cdm, ext, self.ext_dict, bc,
+                                               field._solver_field_id, value)
+            self._coupled_essential_bcs[index] = (
+                field, bc._replace(PETScID=petsc_id, boundary_label_val=value))
 
 
         # Boundary-only multiplier reduction (block-constrained Stokes) is applied
