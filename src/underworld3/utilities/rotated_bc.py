@@ -83,6 +83,12 @@ def _warn_if_ksp_diverged(ksp, kind):
 # PETSc section field ids of the Stokes saddle unknowns (fixed by the solver's
 # DM field registration order: velocity first, pressure second).
 _VELOCITY_FIELD = 0
+
+#: Boundary spec name for the tangency constraint of a sheet on a manifold:
+#: ``(SHEET_TANGENCY, normal)`` in ``solver._rotated_freeslip_bcs`` constrains
+#: ``u . n = 0`` at EVERY velocity node, with the analytic surface normal, so a
+#: velocity carried in the embedding space stays in the tangent plane.
+SHEET_TANGENCY = "__sheet_tangency__"
 _PRESSURE_FIELD = 1
 
 
@@ -102,6 +108,62 @@ def _point_coord(dm, dim, cvec, csec, v0, v1, q):
     clo = dm.getTransitiveClosure(q)[0]
     verts = [int(c) for c in clo if v0 <= c < v1]
     return np.mean([cvec[csec.getOffset(v) // dim] for v in verts], axis=0)
+
+
+def _normal_source(solver, normal, boundary):
+    """``(sym_fn, const_normal)`` for an analytic / constant normal spec: a
+    lambdified numpy callable of ``mesh.X`` for a sympy normal (unwrapped first,
+    so a curvilinear ``unit_e_0`` reduces to mesh coordinates), or the constant
+    vector; ``(None, None)`` for the geometric facet normal."""
+    cdim = solver.mesh.cdim
+    if normal is None:
+        return None, None
+    if isinstance(normal, sympy.Matrix):
+        from underworld3.function.expressions import unwrap
+        comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
+                                      return_self=False))
+                 for k in range(cdim)]
+        stray = set().union(*[c.free_symbols for c in comps]) \
+            - set(solver.mesh.X)
+        if stray:
+            raise ValueError(
+                f"analytic normal for boundary '{boundary}' contains "
+                f"symbols {sorted(map(str, stray))} that are not mesh "
+                "coordinates — express it in mesh.X (e.g. radial X/|X|).")
+        return sympy.lambdify(list(solver.mesh.X), comps, "numpy"), None
+    return None, np.asarray(normal, dtype=float).ravel()
+
+
+def _manifold_velocity_nodes(solver, normal):
+    """Every DMPlex point carrying velocity DOFs, each with the analytic unit
+    normal of the surface at its coordinate — the sheet-tangency constraint of
+    a velocity carried in the embedding space of a manifold mesh. The normal is
+    a function of the node coordinate, so every rank computes the same value
+    and nothing is reduced."""
+    if normal is None:
+        raise ValueError(
+            "the sheet-tangency constraint needs the analytic surface normal "
+            "(e.g. mesh.CoordinateSystem.unit_e_0 on a sphere); a manifold has "
+            "no facet normal to fall back on.")
+    dm = solver.dm
+    cdim = solver.mesh.cdim
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    v0, v1 = dm.getDepthStratum(0)
+    lsec = dm.getLocalSection()
+    sym_fn, const_normal = _normal_source(solver, normal, SHEET_TANGENCY)
+    pStart, pEnd = lsec.getChart()
+    nodes = []
+    for q in range(pStart, pEnd):
+        if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
+            continue
+        if sym_fn is not None:
+            ne = np.asarray(sym_fn(*_point_coord(dm, cdim, cvec, csec, v0, v1, q)),
+                            dtype=float).ravel()
+        else:
+            ne = const_normal.copy()
+        nodes.append((q, ne / (np.linalg.norm(ne) + 1e-30)))
+    return nodes
 
 
 def _boundary_velocity_nodes(solver, boundary, normal=None):
@@ -176,7 +238,7 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     only rescale it (and by a rank-count-dependent factor).
     """
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
@@ -203,24 +265,7 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     # whose UWexpressions hide the Cartesian coordinates behind ``r`` etc.) reduces
     # to pure mesh.X before lambdify — otherwise the generated function references
     # the curvilinear symbol by bare name and dies with a NameError at call time.
-    sym_fn = None
-    const_normal = None
-    if normal is not None:
-        if isinstance(normal, sympy.Matrix):
-            from underworld3.function.expressions import unwrap
-            comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
-                                          return_self=False))
-                     for k in range(dim)]
-            stray = set().union(*[c.free_symbols for c in comps]) \
-                - set(solver.mesh.X)
-            if stray:
-                raise ValueError(
-                    f"analytic normal for boundary '{boundary}' contains "
-                    f"symbols {sorted(map(str, stray))} that are not mesh "
-                    "coordinates — express it in mesh.X (e.g. radial X/|X|).")
-            sym_fn = sympy.lambdify(list(solver.mesh.X), comps, "numpy")
-        else:
-            const_normal = np.asarray(normal, dtype=float).ravel()
+    sym_fn, const_normal = _normal_source(solver, normal, boundary)
 
     nacc = {}                                    # velocity node → Σ_f measure · n̂_f
     for f in facets:
@@ -285,7 +330,7 @@ def _sum_facet_normals_across_ranks(solver, contribs):
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
     """
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     if dm.comm.getSize() == 1:
         return contribs
 
@@ -381,7 +426,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
     dm = solver.dm
     lsec = dm.getLocalSection()
     l2g = dm.getLGMap()
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
 
     # gather all normals per velocity node across the boundaries (and, per node, the
     # datum of the boundary it came from — the surface's ũ_n for a prescribed-normal
@@ -391,7 +436,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
     for spec in boundaries:
         name, normal = _boundary_spec(spec)
         dspec = None if datum_specs is None else datum_specs.get(name)
-        for q, nrm in _boundary_velocity_nodes(solver, name, normal=normal):
+        nodes = (_manifold_velocity_nodes(solver, normal) if name == SHEET_TANGENCY
+                 else _boundary_velocity_nodes(solver, name, normal=normal))
+        for q, nrm in nodes:
             node_normals.setdefault(q, []).append(nrm)
             if dspec is not None:
                 node_dspec.setdefault(q, dspec)
@@ -2268,7 +2315,7 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     triangular P1/P2 traces are supported in 3D.
     """
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
     # solve driver (the final ``computeFunction`` residual; for a linear residual
     # this equals the assembled A·u−b exactly).
@@ -2326,7 +2373,7 @@ def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
     fn = sympy.sympify(fn)
     dm = solver.dm
     comm = dm.comm.tompi4py()
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     rc = solve_result["reaction"]
     rstart, rend = rc.getOwnershipRange()
     rcl = dm.getLocalVec()
@@ -2399,7 +2446,7 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     safe: the recovery is partition-independent and the write is local (each rank fills
     its own boundary nodes, matched by coordinate to the recovery output).
     """
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     xs, sig = boundary_normal_traction(solver, boundary, solve_result, mass=mass)
     # σ_nn is already mean-removed (the ρg·h gauge); topography h = -σ_nn / (Δρ g).
     def key(c):
@@ -2413,7 +2460,8 @@ def _rigid_rotation_modes(solver):
     """The Cartesian rigid-body rotation mode(s) as composite GLOBAL vectors
     (velocity DOFs only, zero pressure): ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
     k=x,y,z in 3D — a spherical shell with free-slip on both boundaries has all
-    THREE. Parallel-safe: built via localToGlobal on the velocity sub-DM, so
+    THREE, and so does a sheet on the surface of a sphere (embedding dimension
+    three), whose tangency constraint every Killing field satisfies. Parallel-safe: built via localToGlobal on the velocity sub-DM, so
     shared nodes are handled by PETSc, not double-counted. The vectors are
     borrowed from the DM pool — every one must go back via
     ``dm.restoreGlobalVec``. COLLECTIVE: all ranks build the same mode list."""
@@ -2421,7 +2469,7 @@ def _rigid_rotation_modes(solver):
     v = solver.Unknowns.u
     c = v.coords
     saved = v.data.copy()
-    if solver.mesh.dim == 2:
+    if solver.mesh.cdim == 2:
         fields = [np.column_stack([-c[:, 1], c[:, 0]])]
     else:
         x, y, z = c[:, 0], c[:, 1], c[:, 2]

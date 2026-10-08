@@ -84,12 +84,36 @@ def _sheet_normal(mesh):
         "or a spherical manifold (CoordinateSystemType.SPHERICAL) is supported.")
 
 
+def _facet_normal_field(mesh):
+    r"""Unit normal of each (flat) cell of a manifold mesh as a cell-wise
+    constant vector field, built once per mesh.
+
+    The strain rate the assembler sees is the gradient along the flat facets,
+    so the in-plane projector has to use the facet's own normal: with the
+    analytic normal of the true surface a rigid rotation (a Killing field,
+    zero strain on the sphere) keeps a spurious strain of order :math:`h`
+    (measured: 0.7% of the velocity at h = 0.25). The sign of the normal does
+    not enter :math:`\mathbf{n}\mathbf{n}^T`.
+    """
+    field = getattr(mesh, "_sheet_facet_normal", None)
+    if field is None:
+        import numpy as np
+        field = uw.discretisation.MeshVariable(
+            "sheet_facet_normal", mesh, mesh.cdim, degree=0, continuous=False)
+        c_start, c_end = mesh.dm.getHeightStratum(0)
+        normals = np.array([mesh.dm.computeCellGeometryFVM(c)[2] for c in range(c_start, c_end)])
+        normals /= np.linalg.norm(normals, axis=1)[:, None]
+        field.array[:, 0, :] = normals
+        mesh._sheet_facet_normal = field
+    return field
+
+
 def _tangent_projector(mesh):
-    r""":math:`\mathbf{P} = \mathbf{I} - \hat{\mathbf{n}}\hat{\mathbf{n}}^T`
-    (the identity on a flat mesh), ``(cdim, cdim)``."""
-    n = _sheet_normal(mesh)
-    if n is None:
+    r""":math:`\mathbf{P} = \mathbf{I} - \mathbf{n}\mathbf{n}^T` with the
+    facet normal of the cell (the identity on a flat mesh), ``(cdim, cdim)``."""
+    if mesh.dim == mesh.cdim:
         return sympy.eye(mesh.cdim)
+    n = sympy.Matrix(_facet_normal_field(mesh).sym).reshape(1, mesh.cdim)
     return sympy.eye(mesh.cdim) - n.T * n
 
 
@@ -179,6 +203,14 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         )
         self._needs_function_rewire = True
         self._constitutive_model = None
+        # On a manifold the velocity is carried in the embedding space; its
+        # tangency u . n = 0 is a strong rotated constraint at every node (the
+        # same per-node rotation as rotated free-slip and the split-node fault
+        # pairs, so faults compose with it). Registering it routes solve()
+        # through the rotated path.
+        if mesh.dim < mesh.cdim:
+            from underworld3.utilities.rotated_bc import SHEET_TANGENCY
+            self._rotated_freeslip_bcs.append((SHEET_TANGENCY, _sheet_normal(mesh)))
         # Last-seen effective order of the stress history (it ramps over the
         # opening steps); a change rewires the pointwise functions.
         self._prev_effective_order = None
@@ -230,8 +262,9 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
 
     @property
     def tangent_projector(self):
-        r""":math:`\mathbf{P} = \mathbf{I} - \hat{\mathbf{n}}\hat{\mathbf{n}}^T`;
-        the identity on a flat mesh."""
+        r""":math:`\mathbf{P} = \mathbf{I} - \mathbf{n}\mathbf{n}^T` with the
+        cell's facet normal; the identity on a flat mesh. The tangency
+        constraint at the nodes uses the analytic normal of the surface."""
         return self._P
 
     # ------------------------------------------------------------------

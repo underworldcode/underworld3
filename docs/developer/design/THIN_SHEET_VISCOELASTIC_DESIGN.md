@@ -58,13 +58,26 @@ mesh). Templates: `F1 = L (τ + tr τ P)`, `F0 = -f + c u`.
 
 The velocity is carried in the embedding space (3 components on a
 `SphericalManifold`, `dim=2`, `cdim=3`). PETSc already supplies the surface
-gradient (pseudo-inverse Jacobian) in the derivative index; the outer projection
-in $\dot{\boldsymbol\varepsilon}_s$ supplies the curvature term
-$-\mathbf u\cdot\nabla_s\hat{\mathbf n}$. Tangency $\mathbf u\cdot\hat{\mathbf n}=0$
-is imposed STRONGLY at every node through the per-node rotation of
-`utilities/rotated_bc.py` (the same machinery as rotated free-slip and the
-split-node fault constraint, so faults compose with it). A penalty was used only
-to probe feasibility and is not an API.
+gradient along the flat facets in the derivative index; the outer projection in
+$\dot{\boldsymbol\varepsilon}_s$ supplies the curvature term
+$-\mathbf u\cdot\nabla_s\hat{\mathbf n}$. Two normals are involved and they
+are deliberately different:
+
+- the **projector** uses the facet's own normal (a cell-wise constant field
+  built once per mesh). The gradient is taken along the flat facet, so a rigid
+  rotation — a Killing field, strain-free on the sphere — is strain-free in the
+  discrete form only with the facet normal; with the analytic normal it keeps a
+  spurious strain of order $h$ (measured 0.7% of the velocity at $h = 0.25$);
+- the **tangency constraint** $\mathbf u\cdot\hat{\mathbf n}=0$ uses the
+  analytic normal of the surface, imposed strongly at every node through the
+  per-node rotation of `utilities/rotated_bc.py` (`SHEET_TANGENCY`, the same
+  machinery as rotated free-slip and the split-node fault constraint, so faults
+  compose with it). The nodes lie on the sphere, so a rigid rotation is exactly
+  admissible and is reproduced to solver tolerance.
+
+A penalty was used only to probe feasibility and is not an API. The toroidal
+manufactured solution converges at second order (the flat-facet geometry limit
+for P2) with tangency at machine precision.
 
 Vector solves on a manifold needed four `dim → cdim` corrections (the manifold
 vector-FE gap): the `SNES_Vector` FE component count, its PC block size and
