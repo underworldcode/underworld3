@@ -139,13 +139,76 @@ def _global_extent(dm):
     return float((-box[cdim:] - box[:cdim]).max())
 
 
+class _Chord:
+    """A straight segment A -> B of a planar polyline."""
+
+    def __init__(self, A, B):
+        self.A, self.B = A, B
+        self.d = B - A
+        self.dd = float(self.d @ self.d)
+        self.nrm = np.array([-self.d[1], self.d[0]])
+
+    def foot(self, X):
+        u = np.clip(((X - self.A) @ self.d) / self.dd, 0.0, 1.0)
+        return self.A + u[:, None] * self.d
+
+    def distance(self, X):
+        return np.linalg.norm(X - self.foot(X), axis=1)
+
+    def side(self, X):
+        """Zero on the line, opposite signs either side."""
+        return (X - self.A) @ self.nrm
+
+    def within(self, F):
+        """Points of the line between A and B, not on its infinite extension:
+        a polyline is a chain of finite segments."""
+        u = ((F - self.A) @ self.d) / self.dd
+        return (u >= 0.0) & (u <= 1.0)
+
+
+class _GreatCircleArc:
+    """The short great-circle arc A -> B about the origin: a segment of a
+    polyline on a sphere. A polyline given with three coordinates is read this
+    way — the surface meshes this module cuts are spheres centred on the
+    origin (``SphericalManifold``). The plane through A, B and the origin plays
+    the part of the chord's line; a point is on the arc when it lies in that
+    plane between the end points."""
+
+    def __init__(self, A, B):
+        self.A, self.B = A, B
+        m = np.cross(A, B)
+        self.m = m / np.linalg.norm(m)
+
+    def within(self, F):
+        return ((np.cross(self.A, F) @ self.m) >= 0.0) & ((np.cross(F, self.B) @ self.m) >= 0.0)
+
+    def foot(self, X):
+        # drop the out-of-plane component and keep the point's own radius, so
+        # a vertex moved onto the arc stays on its sphere
+        Fp = X - np.outer(X @ self.m, self.m)
+        radius = np.linalg.norm(X, axis=1) / np.maximum(np.linalg.norm(Fp, axis=1), 1e-300)
+        Fp = Fp * radius[:, None]
+        inside = self.within(Fp)
+        nearer_A = np.linalg.norm(X - self.A, axis=1) <= np.linalg.norm(X - self.B, axis=1)
+        end = np.where(nearer_A[:, None], self.A, self.B)
+        return np.where(inside[:, None], Fp, end)
+
+    def distance(self, X):
+        return np.linalg.norm(X - self.foot(X), axis=1)
+
+    def side(self, X):
+        return X @ self.m
+
+
 def _segments(lines):
-    """Every (A, B) segment of every polyline."""
+    """Every segment of every polyline: chords of a planar polyline, great-circle
+    arcs of one given on a sphere (three coordinates)."""
     for pts in lines:
-        pts = np.asarray(pts, dtype=float)[:, :2]
+        pts = np.asarray(pts, dtype=float)
+        kind = _GreatCircleArc if pts.shape[1] == 3 else _Chord
         for A, B in zip(pts[:-1], pts[1:]):
             if np.any(B != A):
-                yield A, B
+                yield kind(A, B)
 
 
 def _distance_to_lines(X, lines):
@@ -155,10 +218,8 @@ def _distance_to_lines(X, lines):
     attracting vertices beyond its own end.
     """
     best = np.full(len(X), np.inf)
-    for A, B in _segments(lines):
-        d = B - A
-        u = np.clip(((X - A) @ d) / (d @ d), 0.0, 1.0)
-        best = np.minimum(best, np.linalg.norm(X - (A + u[:, None] * d), axis=1))
+    for seg in _segments(lines):
+        best = np.minimum(best, seg.distance(X))
     return best
 
 
@@ -166,10 +227,8 @@ def _project_onto_lines(X, lines):
     """The nearest point of the polylines to each point."""
     best = np.full(len(X), np.inf)
     out = X.copy()
-    for A, B in _segments(lines):
-        d = B - A
-        u = np.clip(((X - A) @ d) / (d @ d), 0.0, 1.0)
-        foot = A + u[:, None] * d
+    for seg in _segments(lines):
+        foot = seg.foot(X)
         dist = np.linalg.norm(X - foot, axis=1)
         closer = dist < best
         best = np.where(closer, dist, best)
@@ -191,23 +250,17 @@ def _crossing_parameters(X, ends, lines, on_line):
     """
     P, Q = X[ends[:, 0]], X[ends[:, 1]]
     touches = on_line[ends[:, 0]] | on_line[ends[:, 1]]
-
     t = np.full(len(P), np.nan)
     multiply_crossed = np.zeros(len(P), dtype=bool)
-    for A, B in _segments(lines):
-        d = B - A
-        nrm = np.array([-d[1], d[0]])
-        sP, sQ = (P - A) @ nrm, (Q - A) @ nrm
+    for seg in _segments(lines):
+        sP, sQ = seg.side(P), seg.side(Q)
         straddles = (sP * sQ < 0.0) & ~touches
-
         with np.errstate(invalid="ignore", divide="ignore"):
             tk = np.where(straddles, sP / (sP - sQ), np.nan)
-        # The crossing must lie between A and B, not merely on the infinite line
-        # through them: a polyline is a chain of finite segments.
-        foot = P + tk[:, None] * (Q - P)
-        u = ((foot - A) @ d) / (d @ d)
-        hit = straddles & (u >= 0.0) & (u <= 1.0)
-
+        # The crossing must lie between the segment's ends, not merely on the
+        # infinite line (or great circle) through them.
+        foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
+        hit = straddles & seg.within(foot)
         multiply_crossed |= hit & np.isfinite(t)
         t = np.where(hit, tk, t)
     return t, np.flatnonzero(multiply_crossed)
@@ -401,21 +454,38 @@ def _minimal_face_vertices(X, cell_verts, point):
     any size — which embedded meshes need, their cell sizes differing by an
     order of magnitude either side of a zone skin.
     """
-    A = X[cell_verts[:, 0], :2]
-    B = X[cell_verts[:, 1], :2]
-    C = X[cell_verts[:, 2], :2]
-    v0, v1, v2 = C - A, B - A, np.asarray(point, dtype=float)[:2] - A
-    den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
-    # A degenerate cell has no interior to be inside of; it cannot hold the
-    # point and must not divide.
-    alive = np.abs(den) > 0.0
-    den = np.where(alive, den, 1.0)
-    lc = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / den
-    lb = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / den
-    la = 1.0 - lb - lc
-
+    A = X[cell_verts[:, 0]]
+    B = X[cell_verts[:, 1]]
+    C = X[cell_verts[:, 2]]
+    point = np.asarray(point, dtype=float)
     tol = 1e-9
-    inside = np.flatnonzero(alive & (la >= -tol) & (lb >= -tol) & (lc >= -tol))
+    if X.shape[1] == 2:
+        v0, v1, v2 = C - A, B - A, point[:2] - A
+        den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+        alive = np.abs(den) > 0.0
+        den = np.where(alive, den, 1.0)
+        lc = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / den
+        lb = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / den
+        la = 1.0 - lb - lc
+        inside = np.flatnonzero(alive & (la >= -tol) & (lb >= -tol) & (lc >= -tol))
+    else:
+        # a surface cell in three dimensions: barycentric coordinates of the
+        # point's projection onto the cell's plane, the point no further from
+        # that plane than the cell's own size
+        e1, e2, v = B - A, C - A, point - A
+        g11, g12, g22 = (e1 * e1).sum(1), (e1 * e2).sum(1), (e2 * e2).sum(1)
+        r1, r2 = (v * e1).sum(1), (v * e2).sum(1)
+        den = g11 * g22 - g12 * g12
+        alive = den > 0.0
+        den = np.where(alive, den, 1.0)
+        lb = (r1 * g22 - r2 * g12) / den
+        lc = (r2 * g11 - r1 * g12) / den
+        la = 1.0 - lb - lc
+        n = np.cross(e1, e2)
+        area2 = np.maximum(np.linalg.norm(n, axis=1), 1e-300)
+        height = np.abs((v * n).sum(1)) / area2
+        near = height < 0.5 * np.sqrt(area2)
+        inside = np.flatnonzero(alive & near & (la >= -tol) & (lb >= -tol) & (lc >= -tol))
     if not len(inside):
         return np.empty(0, dtype=np.int64)
     # One containing cell settles it; the first keeps the answer independent
@@ -439,10 +509,26 @@ def _cell_quality(X, cell_verts):
     P = X[cell_verts]
     e = np.stack([P[:, 2] - P[:, 1], P[:, 0] - P[:, 2], P[:, 1] - P[:, 0]],
                  axis=1)
-    twice_area = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
-                  - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+    twice_area = _signed_twice_areas(P)
     return 2.0 * np.sqrt(3.0) * twice_area / np.maximum(
         (e ** 2).sum(axis=(1, 2)), np.finfo(float).tiny)
+
+
+def _signed_twice_areas(P):
+    """Twice the signed area of each triangle ``P[:, 0:3]``: the planar cross
+    product in two dimensions; on a surface mesh in three, the cell normal
+    against the outward direction (the centroid's, the surface being a sphere
+    about the origin). A mesh is wound one way throughout, so the convention
+    is read off the majority and an inverted cell is one against it."""
+    if P.shape[2] == 2:
+        return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+                - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+    n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    c = P.sum(axis=1)
+    signed = (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
+    if (signed < 0.0).sum() > 0.5 * len(signed):
+        signed = -signed
+    return signed
 
 
 def _cell_edge_counts(dm, crossed_edges, on_line_vertices):
@@ -546,15 +632,15 @@ def cell_areas(dm):
     X = _coords(dm)
     vS, _vE = dm.getDepthStratum(0)
     cS, cE = dm.getHeightStratum(0)
-    out = np.empty(cE - cS)
+    rings = []
     for c in range(cS, cE):
         ring = []
         for e, o in zip(dm.getCone(c), dm.getConeOrientation(c)):
             a, b = (int(v) - vS for v in dm.getCone(e))
             ring.append(a if o >= 0 else b)
-        p, q, r = X[ring[0]], X[ring[1]], X[ring[2]]
-        out[c - cS] = 0.5 * ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]))
-    return out
+        rings.append(ring[:3])
+    P = X[np.asarray(rings, dtype=np.int64)] if rings else np.empty((0, 3, X.shape[1]))
+    return 0.5 * _signed_twice_areas(P)
 
 
 def min_angles(dm):
@@ -872,7 +958,8 @@ def pull_vertex_onto(dm, targets):
     dm : PETSc.DMPlex
         **Not modified.** The pull is returned as a new mesh.
     targets : array_like
-        An ``(N, 2)`` array of points, or one point.
+        An ``(N, cdim)`` array of points, or one point — three coordinates on
+        a sphere surface mesh.
 
     Returns
     -------
@@ -906,7 +993,8 @@ def pull_vertex_onto(dm, targets):
     scale = _global_extent(dm)
     cell_verts = _cell_vertices(dm)
 
-    for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :2]:
+    cdim = X.shape[1]
+    for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :cdim]:
         # Candidates are the vertices of the smallest face CONTAINING the
         # target, not every vertex in the mesh. The nearest vertex overall can
         # belong to a neighbouring cell, and moving it leaves the containing
@@ -919,7 +1007,7 @@ def pull_vertex_onto(dm, targets):
         face = _minimal_face_vertices(X, cell_verts, t)
         held = len(face) > 0
         candidates = face if held else np.arange(len(X))
-        d = np.linalg.norm(X[candidates, :2] - t, axis=1)
+        d = np.linalg.norm(X[candidates] - t, axis=1)
         # Reduced as (outside, distance, x, y) so both decisions ride one
         # reduction: tuples compare lexicographically, so MIN prefers ANY rank
         # that holds a containing cell over every rank that does not, then the
@@ -933,16 +1021,15 @@ def pull_vertex_onto(dm, targets):
         # containment rule, kept because a target off the mesh still has to
         # land somewhere.
         local = ((0 if held else 1, float(d.min()),
-                  *X[candidates[int(d.argmin())], :2])
-                 if d.size else (1, np.inf, np.inf, np.inf))
-        _outside, _dist, tx, ty = uw.mpi.comm.allreduce(local, op=MPI.MIN)
+                  *X[candidates[int(d.argmin())]])
+                 if d.size else (1, np.inf, *([np.inf] * cdim)))
+        reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
 
         # Move it by POSITION, not by index: the chosen vertex may be a ghost
         # here and an owned point there, and both copies have to end up in the
         # same place without a star-forest exchange.
-        hit = np.flatnonzero(np.linalg.norm(X[:, :2] - np.array([tx, ty]),
-                                            axis=1) < 1e-12 * scale)
-        arr[hit, :2] = t
+        hit = np.flatnonzero(np.linalg.norm(X - np.array(reduced[2:]), axis=1) < 1e-12 * scale)
+        arr[hit] = t
 
     out = dm.clone()
     _set_coordinates(out, np.arange(len(arr)), arr)

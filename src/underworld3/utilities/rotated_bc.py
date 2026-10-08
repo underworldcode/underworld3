@@ -433,6 +433,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # solve; None for free-slip).
     node_normals = {}
     node_dspec = {}
+    node_specs = {}
     for spec in boundaries:
         name, normal = _boundary_spec(spec)
         dspec = None if datum_specs is None else datum_specs.get(name)
@@ -440,12 +441,26 @@ def build_rotation(solver, boundaries, datum_specs=None):
                  else _boundary_velocity_nodes(solver, name, normal=normal))
         for q, nrm in nodes:
             node_normals.setdefault(q, []).append(nrm)
+            node_specs.setdefault(q, set()).add(name)
             if dspec is not None:
                 node_dspec.setdefault(q, dspec)
 
     # Split-fault contact pairs (fault_contact.add_frictionless_fault_bc):
     # their 2·dim mean/jump blocks widen the widest row of Q.
     fault_names = getattr(solver, "_fault_contact_faults", [])
+    # On a surface mesh every node carries the sheet-tangency constraint; a
+    # paired fault node takes it through its PAIR block instead (the mean and
+    # jump rows along the surface normal), so it leaves the wall-block set.
+    manifold = solver.mesh.dim < solver.mesh.cdim
+    pair_nodes_by_fault = {}
+    if fault_names and manifold:
+        from underworld3.utilities import fault_contact
+        for fname in fault_names:
+            pair_nodes_by_fault[fname] = fault_contact._fault_pair_nodes(solver, fname)
+            for q_plus, q_minus, _nrm in pair_nodes_by_fault[fname]:
+                for q in (q_plus, q_minus):
+                    if q in node_normals and node_specs[q] <= {SHEET_TANGENCY}:
+                        del node_normals[q]
 
     # Distributed Q with the assembled operator's ROW layout. Q is identity except a
     # per-node dim×dim orthonormal block; because a node's dim velocity components
@@ -557,8 +572,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
         problem = None
         try:
             for fname in fault_names:
-                for q_plus, q_minus, nrm in fault_contact._fault_pair_nodes(
-                        solver, fname):
+                for q_plus, q_minus, nrm in (pair_nodes_by_fault.get(fname)
+                                              or fault_contact._fault_pair_nodes(solver, fname)):
                     if q_plus in node_normals or q_minus in node_normals:
                         raise ValueError(
                             f"fault {fname!r} shares a node with a rotated "
@@ -570,7 +585,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
                     # specific in-plane directions carry no physics: both
                     # slip rows are free (frictionless) or enter through
                     # |V| (laws).
-                    frame = [nrm] + fault_contact._tangent_frame(nrm)
+                    frame = fault_contact._pair_frame(solver, q_plus, nrm)
                     gp, gm = [], []
                     for q, rows in ((q_plus, gp), (q_minus, gm)):
                         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
@@ -599,6 +614,12 @@ def build_rotation(solver, boundaries, datum_specs=None):
                                 Q.setValue(row, gm[j],
                                            sgn * s2 * float(e[j]))
                     normal_rows.append(gm[0])      # [v]·n̂ = 0, datum 0
+                    if manifold:
+                        # both sides tangent to the surface: the jump and the
+                        # mean along the surface normal (the frame's last
+                        # vector) are pinned; the slip row stays free
+                        normal_rows.append(gm[2])
+                        normal_rows.append(gp[2])
         except (RuntimeError, ValueError) as err:
             problem = str(err)
         fault_contact._collective_raise(problem)

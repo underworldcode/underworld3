@@ -183,7 +183,7 @@ def _fault_chain(dm, fault_edges, X, vS, shared, pStart, orientation=None):
     # side is the LEFT of the directed line the USER drew, not of the
     # coordinate-order tip rule.
     if orientation is not None and len(chain) >= 2:
-        d = np.asarray(orientation, dtype=float).ravel()[:2]
+        d = np.asarray(orientation, dtype=float).ravel()[:X.shape[1]]
         if float((X[chain[-1] - vS] - X[chain[0] - vS]) @ d) < 0.0:
             chain.reverse()
     return None, chain
