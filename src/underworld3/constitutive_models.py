@@ -1749,7 +1749,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     """
 
     def __init__(self, unknowns, order=1, integrator: str = "bdf",
-                 material_name: str = None):
+                 material_name: str = None, objective_rate: str = "none"):
         """Construct a viscoelastic-plastic flow model.
 
         Parameters
@@ -1796,6 +1796,17 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 f"VEP where it produces global runaway). Got order={order}."
             )
         self._integrator = integrator
+        if objective_rate not in ("none", "upper_convected", "jaumann"):
+            raise ValueError(
+                f"objective_rate must be 'none', 'upper_convected' or 'jaumann', got {objective_rate!r}")
+        # Which objective stress rate the carried stress obeys. "none" transports
+        # the components as a passive tensor (a linear Maxwell fluid carried by
+        # the flow); "upper_convected" adds L.sigma + sigma.L^T, which makes
+        # the element the UCM / Oldroyd-B fluid; "jaumann" adds W.sigma -
+        # sigma.W (co-rotational). The term is taken on the carried stress and
+        # the CURRENT velocity gradient, so it is linear in the unknown and
+        # first order in time.
+        self._objective_rate = objective_rate
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -1892,6 +1903,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             lambda inner_self: sympy.oo,
             "Shear modulus",
             units="Pa",
+        )
+        solvent_viscosity = api_tools.Parameter(
+            R"{\eta_s}",
+            lambda inner_self: 0,
+            "Solvent viscosity in parallel with the Maxwell element (Oldroyd-B when non-zero)",
+            units="Pa*s",
         )
 
         @property
@@ -2196,6 +2213,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def E_eff(self):
         r"""Effective strain rate including elastic-history coupling.
 
+        With an objective rate the newest level also contributes the explicit
+        source :math:`S(\sigma^*)/(2\mu)` (see :meth:`_objective_term`).
+
         For BDF integration:
 
         .. math::
@@ -2239,6 +2259,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 (1 - phi) * E
                 + (alpha / (2 * eta_raw)) * sigma_star
                 + (phi - alpha) * edot_star
+                # objective rate: the flux gains alpha * dt * S(sigma*)
+                + alpha * self.Parameters.dt_elastic * self._objective_term(sigma_star) / (2 * eta_raw)
             )
             return self._E_eff
 
@@ -2247,8 +2269,133 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
         for i in range(DDt.order):
             E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
+        # objective rate on the newest level, explicit and first order: the
+        # constitutive law is sigma + (eta/mu)(Dsigma/Dt - S) = 2 eta E, so the
+        # flux gains (eta/mu) S(sigma*) and E_eff gains S/(2 mu) with weight
+        # ONE whatever the BDF order (the BDF weights belong to the time
+        # derivative, not to the source; -c1 = 2 at order 2 would double it).
+        E += self._objective_term(DDt.psi_star[0].sym) / (2 * self.Parameters.shear_modulus)
         self._E_eff.sym = E
         return self._E_eff
+
+    def _objective_term(self, sigma):
+        r"""The stretching / rotation source of the chosen objective rate,
+        :math:`S(\sigma)`, on the carried stress with the current velocity
+        gradient :math:`L_{ij} = \partial u_i / \partial x_j`: zero for
+        ``"none"``, :math:`L\sigma + \sigma L^T` for ``"upper_convected"``,
+        :math:`W\sigma - \sigma W` with :math:`W = (L - L^T)/2` for
+        ``"jaumann"``. Symmetric whenever ``sigma`` is."""
+        dim = self.Unknowns.u.mesh.dim
+        if self._objective_rate == "none":
+            return sympy.zeros(dim, dim)
+        sigma = sympy.Matrix(sigma)
+        L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
+        if self._objective_rate == "upper_convected":
+            return L * sigma + sigma * L.T
+        W = (L - L.T) / 2
+        return W * sigma - sigma * W
+
+    # ----- Health of the carried stress (#768) -----
+
+    def _carried_stress(self):
+        """The carried polymer stress as tensors at its own points, non-dimensional.
+        Only the trace-back histories carry one tensor per point; a particle
+        history does not, and is refused rather than misread."""
+        DDt = self.Unknowns.DFDt
+        if DDt is None:
+            raise RuntimeError("the model has no stress history yet: assign it to a solver and solve once")
+        if not hasattr(DDt, "carried_tensors"):
+            raise NotImplementedError(f"{type(DDt).__name__} does not expose the carried stress as "
+                                      "one tensor per point; the conformation check reads a "
+                                      "per-point tensor history (the trace-back flavours)")
+        return DDt.carried_tensors()
+
+    def max_elastic_timestep(self, safety: float = 0.3) -> float:
+        r"""The largest step the explicit stretching term tolerates:
+        ``safety`` divided by the largest strain rate anywhere.
+
+        The objective-rate source :math:`L\sigma^* + \sigma^* L^T` is taken on
+        the carried stress with the current gradient, so over one step it
+        stretches the conformation by about :math:`(1 + \Delta t\,\dot\gamma)^2`
+        before relaxation acts. With :math:`\Delta t\,\dot\gamma` of order one
+        that update loses the positive-definiteness of the conformation in the
+        first step (measured on the confined cylinder at Courant one on the
+        far-field mesh, where the wall shear rate is ten times the far-field
+        one), and no operator split recovers it. A run should take
+        ``dt = min(courant_dt, model.max_elastic_timestep())``; 0.3 keeps the
+        conformation positive on the cylinder to Wi 0.6. Like ``estimate_dt``,
+        the value is a physical time when reference scales are active and a
+        plain number otherwise, so the two can be compared directly.
+
+        The strain-rate measure is :math:`\dot\gamma = \sqrt{2\,\mathbf{D}:\mathbf{D}}`,
+        the shear rate in simple shear, read from the continuous projection of
+        the strain rate (what ``evaluate`` returns for a gradient) at the points
+        of the carried stress. That projection sits a little below the per-cell
+        gradient at a wall, which the safety factor covers. Reduced over
+        ranks. ``inf`` when there is no objective rate (nothing stretches) or
+        no flow; a velocity that is not finite raises rather than returning
+        a silent ``nan``.
+        """
+        if self._objective_rate == "none":
+            return float("inf")
+        E = sympy.Matrix(self.Unknowns.E)
+        rate = sympy.sqrt(2 * (E.T * E).trace())
+        _, points = self._carried_stress()
+        # evaluate is collective: every rank calls it, with its own (possibly empty) points
+        from underworld3.systems.ddt import _to_nondim_ndarray
+        values = np.asarray(_to_nondim_ndarray(uw.function.evaluate(rate, points))).reshape(-1)
+        local = float(np.abs(values).max()) if values.size else 0.0
+        finite = bool(np.all(np.isfinite(values))) if values.size else True
+        peak = float(uw.mpi.comm.allreduce(local, op=uw.MPI.MAX))
+        finite = bool(uw.mpi.comm.allreduce(finite, op=uw.MPI.LAND))
+        if not finite:
+            raise RuntimeError("max_elastic_timestep: the strain rate is not finite")
+        if peak == 0.0:
+            return float("inf")
+        dt = float(safety) / peak
+        try:
+            return uw.dimensionalise(dt, {"[time]": 1})
+        except Exception:
+            return dt
+
+    def conformation_min_eigenvalue(self):
+        r"""Smallest eigenvalue of the conformation :math:`c = \sigma^*/G + I` on
+        the carried polymer stress, with where it is and how much of the field
+        is below zero.
+
+        An Oldroyd-B or Maxwell stress is :math:`G(c - I)` with :math:`c`
+        positive-definite, so the most compressive eigenvalue of the polymer
+        stress is bounded by :math:`-G`. The symmetric part of the momentum
+        tangent stays positive exactly as long as that holds. A negative value
+        here is a discretisation defect (the step against the local strain rate,
+        or a wall-layer excess of the nodal history), and it separates a solve
+        that has lost its preconditioner from one that has lost its problem:
+        the first is a solver setting, the second is not.
+
+        Returns a dict: ``min`` and ``max`` (reduced over ranks),
+        ``fraction_negative``, and ``where``, the coordinates of the minimum on
+        any rank whose local minimum is the global one (``None`` on the others).
+        Non-dimensional throughout. Needs a per-point stress history.
+        """
+        tau, points = self._carried_stress()
+        dim = tau.shape[-1]
+        from underworld3.systems.ddt import _to_nondim_ndarray
+        G = np.asarray(_to_nondim_ndarray(
+            uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
+        c = tau / G[:, None, None] + np.eye(dim)[None, :, :]
+        ev = np.linalg.eigvalsh(c)                       # ascending per point
+        lo = ev[:, 0]
+        n_local = lo.size
+        local_min = float(lo.min()) if n_local else float("inf")
+        local_max = float(ev[:, -1].max()) if n_local else float("-inf")
+        n_neg = int((lo < 0.0).sum())
+        comm = uw.mpi.comm
+        gmin = float(comm.allreduce(local_min, op=uw.MPI.MIN))
+        gmax = float(comm.allreduce(local_max, op=uw.MPI.MAX))
+        n_all = int(comm.allreduce(n_local, op=uw.MPI.SUM))
+        n_neg_all = int(comm.allreduce(n_neg, op=uw.MPI.SUM))
+        where = tuple(float(x) for x in points[int(lo.argmin())]) if (n_local and local_min == gmin) else None
+        return {"min": gmin, "max": gmax, "fraction_negative": (n_neg_all / n_all) if n_all else 0.0, "where": where}
 
     @property
     def E_eff_inv_II(self):
@@ -2472,8 +2619,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         wrapped effective viscosity (``ve_effective_viscosity`` for BDF,
         raw ``η`` for ETD-2 since the time factor is in ``E_eff``).
         """
+        solvent = 2 * self.Parameters.solvent_viscosity * self.Unknowns.E
         if not self.is_elastic or self.Unknowns.DFDt is None:
-            return 2 * self.viscosity * self.grad_u
+            return 2 * self.viscosity * self.grad_u + solvent
 
         # ETD-1 (order=1) uses the same E_eff machinery but with φ=α, so
         # forcing_star is not required (the (φ-α)·ε̇* term zeros out).
@@ -2484,12 +2632,23 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             and self.Unknowns.DFDt.forcing_star is None
         ):
             raise RuntimeError(
-                "integrator='etd' requires a SemiLagrangian DDt with "
-                "with_forcing_history=True. The auto-DDt creation path "
+                "integrator='etd' at order 2 needs a stress history with a "
+                "forcing slot (with_forcing_history=True: the nodal or the "
+                "integration-point flavour). The auto-DDt creation path "
                 "reads stress_history_ddt_kwargs — re-create the solver/"
                 "model so the kwargs propagate."
             )
 
+        return 2 * self.viscosity * self.E_eff.sym + solvent
+
+    @property
+    def history_flux(self):
+        """The stress the history carries: the Maxwell element's own stress,
+        without the solvent's Newtonian part. The momentum flux is
+        :attr:`flux` = this + 2 eta_s E; committing the total would put the
+        solvent stress into the memory and feed it back a step later."""
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return 2 * self.viscosity * self.grad_u
         return 2 * self.viscosity * self.E_eff.sym
 
     # def eff_edot(self):
