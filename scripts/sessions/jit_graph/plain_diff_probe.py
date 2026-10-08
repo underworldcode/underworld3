@@ -5,16 +5,19 @@ Swaps ``diff_wrt_field`` / ``derive_by_array_wrt_field`` in the solvers for plai
 ``sympy.diff`` / ``sympy.derive_by_array`` and runs the Newton solve that motivated the
 stand-in: the Drucker-Prager yield with a yield-stress floor at softness 0, whose floor
 ``(a + b + sqrt((a - b)**2)) / 2`` becomes an ``Abs`` of the pressure once fields are
-real (``test_0023``). The route is chosen by ``UW_JIT_GRAPH``.
+real (``test_0023``). The route is chosen by the build: run it in a build of this branch
+(graph) and in a build of development (tree).
 """
+import importlib.util
+
 import sympy
 import underworld3 as uw
 import underworld3.cython.generic_solvers as gs
-from underworld3.utilities import _jit_graph
 
 gs.diff_wrt_field = lambda e, w: sympy.diff(e, w)
 gs.derive_by_array_wrt_field = lambda e, dx: sympy.derive_by_array(e, dx)
-route = "graph" if _jit_graph.enabled() else "tree"
+route = ("graph" if importlib.util.find_spec("underworld3.utilities._jit_graph")
+         else "tree")   # the route is the build's: this branch, or development
 
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                          cellSize=0.25)

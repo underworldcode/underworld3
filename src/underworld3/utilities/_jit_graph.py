@@ -14,12 +14,9 @@ differentiates and prints. This module keeps the graph instead:
 - the emitter writes one C temporary per distinct computation, ordered and merged by a
   hash of the C it computes, so the generated source is a function of the mathematics
   and of the kernel's data layout alone.
-
-Selected by the private development switch ``UW_JIT_GRAPH=1`` while both routes exist.
 """
 import hashlib
 import itertools
-import os
 
 import sympy
 from sympy.core.function import AppliedUndef, UndefinedFunction
@@ -29,11 +26,6 @@ from sympy.vector.scalar import BaseScalar
 _EPS2 = sympy.Float(1.0e-36)
 _serial = itertools.count(1)
 _nodes_made = False
-
-
-def enabled():
-    """Whether the graph route is selected (``UW_JIT_GRAPH=1``)."""
-    return os.environ.get("UW_JIT_GRAPH", "").lower() in ("1", "true", "yes")
 
 
 def nodes_exist():
@@ -83,6 +75,17 @@ class _KernelNode(AppliedUndef):
         raise RuntimeError(
             f"JIT: node {self.func.__name__} reached the C printer; every node must be "
             f"emitted as a temporary (a defect in the graph lowering, #823)")
+
+
+class _CName(sympy.Symbol):
+    """A leaf written as the C the kernel reads: ``petsc_u[3]``, ``petsc_x[0]``,
+    ``constants[2]``."""
+
+    def __new__(cls, text):
+        return sympy.Symbol.__new__(cls, text, real=True)
+
+    def _ccode(self, printer):
+        return self.name
 
 
 class _Temporary(sympy.Symbol):
@@ -424,22 +427,31 @@ def emission_order(outputs, spell):
     return order, key
 
 
-def emit(fn, spell, constants_rule):
-    """``fn`` (a lowered Matrix) as temporaries and outputs.
+def emit(fn, spell):
+    """``fn`` (a lowered Matrix) as temporaries and outputs, ready to print.
 
     Returns ``(temporaries, outputs)``: ``temporaries`` is a list of
     ``(_Temporary, body)`` in the order to write them, and ``outputs`` is ``fn`` with
-    each node application replaced by its temporary. Constant atoms are replaced by
-    ``constants_rule`` (their ``constants[]`` placeholders) in both.
+    each node application replaced by its temporary. In both, every leaf is replaced
+    by a ``_CName`` holding ``spell(leaf)``.
     """
     order, key = emission_order(list(fn), spell)
+    spelt = {}
+
+    def rule_for(e, temp_of):
+        rule = {c: temp_of[key[c]] for c in e.atoms(_KernelNode)}
+        for leaf in e.free_symbols | e.atoms(AppliedUndef):
+            if leaf in rule or isinstance(leaf, (_KernelNode, _Temporary)):
+                continue
+            hit = spelt.get(leaf)
+            if hit is None:
+                hit = spelt[leaf] = _CName(spell(leaf))
+            rule[leaf] = hit
+        return rule
+
     temp_of, temporaries = {}, []
     for i, (k, body) in enumerate(order):
         t = _Temporary(i)
-        rule = {c: temp_of[key[c]] for c in body.atoms(_KernelNode)}
-        rule.update(constants_rule)
-        temporaries.append((t, body.xreplace(rule)))
+        temporaries.append((t, body.xreplace(rule_for(body, temp_of))))
         temp_of[k] = t
-    rule = {app: temp_of[key[app]] for app in fn.atoms(_KernelNode)}
-    rule.update(constants_rule)
-    return temporaries, fn.xreplace(rule)
+    return temporaries, fn.xreplace(rule_for(fn, temp_of))

@@ -50,7 +50,6 @@ class _StrategyName(str):
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
-from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 from underworld3.function._function import diff_wrt_field, derive_by_array_wrt_field
 
 
@@ -65,24 +64,24 @@ def _public_names(cls):
 
 
 def _jacobian_unwrap(expr):
-    """Expand UWexpressions down to (but NOT including) constant atoms, for use
-    as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
+    r"""The Newton source of a residual flux: each non-constant UWexpression
+    replaced by its GUARDED node (``underworld3.utilities._jit_graph``), so that the
+    Jacobian derivative passes through it by the chain rule.
 
-    Applied element-wise over a sympy ``Matrix``/``Array`` so atoms embedded in
-    the residual flux are reached. Non-constant UWexpressions (e.g. the
-    effective viscosity ``Min(eta0, tau_y/2/eps_II)``) are expanded so the
-    derivative sees their field / grad-v dependence and forms the full Newton
-    tangent. Truly-constant atoms (``eta0``, ``tau_y``, ...) are kept as the
-    *same* symbol object so the JIT ``constants[]`` runtime-update mechanism is
-    preserved — the keep-constants predicate is shared with
-    ``getext()._extract_constants`` so the two cannot drift apart.
+    Applied element-wise over a sympy ``Matrix``/``Array``. A node is an applied
+    function of the leaves its value depends on (field values and gradients,
+    coordinates, constant atoms), and its ``fdiff`` is the partial derivative of its
+    body with respect to that argument: the derivative of the effective viscosity
+    ``Min(eta0, tau_y/2/eps_II)`` with respect to grad v reaches the yield switch
+    (full Newton), where an opaque atom would freeze it (a Picard / defect-correction
+    tangent). Truly-constant atoms (``eta0``, ``tau_y``, ...) stay the same symbol
+    objects, so they keep their ``constants[]`` slots.
 
-    This is a no-op for constant-viscosity problems (eta has no grad-v
-    dependence), so those Jacobians stay bit-identical.
+    No-op for constant-viscosity problems (eta has no grad-v dependence).
 
-    The unwrapped result is additionally made DIFFERENTIATION-SAFE: any
-    ``sqrt(g)`` whose argument carries non-constant symbols becomes
-    ``sqrt(g + 1e-36)``. Differentiating a bare invariant
+    The source is DIFFERENTIATION-SAFE: in every node body and at the top level,
+    each half-integer power whose base has free symbols gets ``+1e-36`` in its base.
+    Differentiating a bare invariant
     :math:`\dot\varepsilon_{II} = \sqrt{g}` produces
     :math:`\partial\sqrt{g}/\partial L = \dot\varepsilon/(2\dot\varepsilon_{II})`
     — the DIRECTION of the strain rate, which is 0/0 at a state of rest —
@@ -94,56 +93,15 @@ def _jacobian_unwrap(expr):
     guard makes the derivative exactly zero at the singular point and
     perturbs it by under one part in 1e24 at any resolvable strain rate.
     The RESIDUAL is never routed through here, and the default (Picard)
-    tangent never calls this function, so both remain bit-identical.
+    tangent never calls this function.
 
-    See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+    See ``docs/developer/design/jit-shared-graph-codegen.md`` and
+    ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
     """
-    eps2 = sympy.Float(1.0e-36)
-
-    def _guard_sqrts(e):
-        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
-        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
-        # derivatives), ... — all singular in value or derivative at a
-        # zero-argument state.
-        # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
-        # identity: the unwrapped flux repeats its shared sub-expressions as the same
-        # object, and `replace` walked every occurrence (measured 16 s of a 108 s
-        # notch compile, #823).
-        memo = {}
-
-        def guard(n):
-            hit = memo.get(id(n))
-            if hit is not None:
-                return hit[1]
-            out = n
-            args = getattr(n, "args", None)
-            if args:
-                new_args = tuple(guard(a) for a in args)
-                if any(a is not b for a, b in zip(args, new_args)) and args != new_args:
-                    out = n.func(*new_args)
-                    # replace(simultaneous=True): a rebuild that collapses to one of
-                    # the changed arguments is not matched again
-                    if any(out == a and a != b for a, b in zip(args, new_args)):
-                        memo[id(n)] = (n, out)
-                        return out
-                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
-                        and out.args[0].free_symbols):
-                    out = sympy.Pow(out.args[0] + eps2, out.exp)
-            memo[id(n)] = (n, out)
-            return out
-
-        return guard(e)
-
     from underworld3.utilities import _jit_graph
-    if _jit_graph.enabled():
-        # The graph route (#823, tier 2): each non-constant atom becomes its guarded
-        # node instead of being expanded, and the derivative passes through it by
-        # the chain rule. The guard is applied in each node body and at the top level.
-        graph = _jit_graph.KernelGraph()
-        f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
-    else:
-        f = lambda e: _guard_sqrts(
-            _unwrap_expression(e, mode="symbolic_keep_constants"))
+
+    graph = _jit_graph.KernelGraph()
+    f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
     if isinstance(expr, sympy.MatrixBase):
         return expr.applyfunc(f)
     if isinstance(expr, sympy.NDimArray):

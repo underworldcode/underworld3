@@ -6,15 +6,16 @@ conditions and times the same assemblies again. The constant law's callbacks cos
 few nanoseconds, so its time is the assembly machinery (element loop, tabulation,
 quadrature, insertion); the difference is the fixture's callbacks. Divided by the
 number of quadrature points, it is the callbacks' cost per point. The route is chosen
-by ``UW_JIT_GRAPH``.
+by the build: run it in a build of this branch
+(graph) and in a build of development (tree).
 """
+import importlib.util
 import os
 import sys
 import time
 
 import numpy as np
 import underworld3 as uw
-from underworld3.utilities import _jit_graph
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures   # noqa: E402
@@ -25,7 +26,8 @@ params = uw.Params(
                       description="route_ab .npz whose X is the state"),
     uw_repeat=uw.Param(20, description="assemblies timed"),
 )
-route = "graph" if _jit_graph.enabled() else "tree"
+route = ("graph" if importlib.util.find_spec("underworld3.utilities._jit_graph")
+         else "tree")   # the route is the build's: this branch, or development
 fixture = str(params.uw_fixture)
 stokes, _ = fixtures.build(fixture)
 kwargs = fixtures.prepare_solve(stokes, fixture)

@@ -1,5 +1,8 @@
-"""The memoised unwrap, the memoised sqrt guard and the identity-walk symbol scan (#823)
-give exactly what the algorithms they replace gave.
+"""The memoised unwrap (#823) gives exactly what the algorithm it replaces gave.
+
+(The memoised sqrt guard, the identity-walk symbol scan and the shared xreplace were
+tested here too; they went with the expanded-tree JIT route, and the graph route's
+guard is held to the guarded tree by test_0024.)
 
 The old ``unwrap_expression`` iterated ``subs`` passes to a fixed point, and in
 ``symbolic_keep_constants`` mode ran ``_is_truly_constant`` (itself a full unwrap) for every
@@ -99,59 +102,6 @@ def test_memoised_unwrap_is_the_fixed_point(laws, mode):
             continue
         new = _unwrap_each(expr, lambda e: ex.unwrap_expression(e, mode=mode))
         assert sympy.srepr(new) == sympy.srepr(old), (name, mode)
-
-
-def test_the_jacobian_sqrt_guard_matches_replace(laws, monkeypatch):
-    """The expanded-tree route's guard. The graph route guards each node body
-    instead; test_0024 holds it to this one by value."""
-    from underworld3.cython.generic_solvers import _jacobian_unwrap
-
-    monkeypatch.setenv("UW_JIT_GRAPH", "0")
-
-    eps2 = sympy.Float(1.0e-36)
-
-    def old_guard(e):
-        return e.replace(
-            lambda n: (n.is_Pow and n.exp.is_Rational and n.exp.q == 2
-                       and n.args[0].free_symbols),
-            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
-
-    for name, expr in laws:
-        new = _jacobian_unwrap(expr)
-        old = _unwrap_each(expr, lambda e: old_guard(
-            _fixed_point_unwrap(e, "symbolic_keep_constants")))
-        assert sympy.srepr(new) == sympy.srepr(old), name
-
-
-def test_the_identity_walk_finds_the_same_symbols(laws):
-    from underworld3.utilities._jitextension import _unique_symbols
-
-    for name, expr in laws:
-        for e in (expr, ex.unwrap_expression(expr, mode="nondimensional")
-                  if not isinstance(expr, sympy.MatrixBase)
-                  else expr.applyfunc(lambda a: ex.unwrap_expression(a, mode="nondimensional"))):
-            assert _unique_symbols(e) == set(e.atoms(sympy.Symbol)), name
-
-
-def test_the_shared_xreplace_matches_xreplace(laws):
-    """The constants[] substitution in the JIT lowering visits each node object once;
-    it must build exactly what xreplace builds, the generated C and the cache key
-    both depend on it."""
-    from underworld3.utilities._jitextension import _xreplace_shared, _unique_symbols
-
-    swapped = 0
-    for name, expr in laws:
-        unwrapped = _unwrap_each(expr, lambda e: ex.unwrap_expression(
-            e, mode="symbolic_keep_constants"))
-        held = sorted((a for a in _unique_symbols(unwrapped)
-                       if isinstance(a, ex.UWexpression)), key=str)
-        if not held:
-            continue                    # k(u) = 1 + u**2 has no parameter to swap
-        rule = {a: sympy.Symbol(f"slot_{k}") for k, a in enumerate(held)}
-        assert sympy.srepr(_xreplace_shared(unwrapped, rule)) == \
-            sympy.srepr(unwrapped.xreplace(rule)), name
-        swapped += 1
-    assert swapped >= 7               # the VP (three laws, viscosity and flux) and VEP
 
 
 def test_each_atom_is_tested_for_constancy_once(monkeypatch):

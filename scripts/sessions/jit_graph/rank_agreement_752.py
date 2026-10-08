@@ -4,7 +4,8 @@ A power-law transversely isotropic Stokes on an annulus with rotated free-slip, 
 law of ``tests/test_0022_rotated_adjoint.py`` (adjoint branches), whose JIT source
 differed across ranks in about one np=2 run in five on development. Builds the
 kernels and reports, on rank 0, whether ``_agree_source_across_ranks`` saw different
-hashes. The route is chosen by ``UW_JIT_GRAPH``. Run under ``mpirun -n 2``.
+hashes. The route is chosen by the build: run it in a build of this branch
+(graph) and in a build of development (tree). Run under ``mpirun -n 2``.
 """
 import sympy
 import underworld3 as uw

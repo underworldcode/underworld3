@@ -1,7 +1,7 @@
 """End-to-end A/B of the two JIT routes on one fixture (#823, tier 2).
 
-The route is chosen by the environment, so one build serves both: ``UW_JIT_GRAPH=1`` is
-the graph route, unset is the expanded tree (tier 1). Run once per route, then
+The route is the build's: run once in a build of this branch (the graph route) and once
+in a build of development (the expanded tree, tier 1), then
 ``route_ab_compare.py`` on the two ``.npz`` files.
 
 Records the whole pointwise setup (generation and compile separately), the size of the
@@ -10,6 +10,7 @@ residual history), and the time of repeated residual and Jacobian assemblies at 
 converged state. Run with ``UW_JIT_CACHE=0 UW_NO_USAGE_METRICS=1``.
 """
 import hashlib
+import importlib.util
 import os
 import sys
 import time
@@ -17,7 +18,6 @@ import time
 import numpy as np
 import underworld3 as uw
 import underworld3.utilities._jitextension as jx
-from underworld3.utilities import _jit_graph
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures   # noqa: E402
@@ -33,7 +33,8 @@ params = uw.Params(
                             "measure how the Newton path responds to round-off-sized changes"),
     uw_label=uw.Param("", description="suffix for the output file"),
 )
-route = "graph" if _jit_graph.enabled() else "tree"
+route = ("graph" if importlib.util.find_spec("underworld3.utilities._jit_graph")
+         else "tree")   # the route is the build's: this branch, or development
 fixture = str(params.uw_fixture)
 tangent = str(params.uw_tangent)
 

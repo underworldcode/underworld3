@@ -145,7 +145,19 @@ def test_a_changed_body_is_lowered_afresh_without_clearing_the_cache(box):
     assert jg.expand_nodes(diff_wrt_field(second, u)) == 3 * c2 * u ** 2 + c1
 
 
-def test_the_guarded_lowering_is_the_guarded_tree(box, monkeypatch):
+def _guarded_tree(e):
+    """The expanded-tree Newton source the graph replaced: every non-constant atom
+    expanded, then 1e-36 added to the base of every half-integer power with free
+    symbols, by SymPy's own replace."""
+    eps2 = sympy.Float(1.0e-36)
+    tree = ex.unwrap_expression(e, mode="symbolic_keep_constants")
+    return tree.replace(
+        lambda n: (n.is_Pow and n.exp.is_Rational and n.exp.q == 2
+                   and n.args[0].free_symbols),
+        lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+
+
+def test_the_guarded_lowering_is_the_guarded_tree(box):
     """The Newton source on the graph (the sqrt guard in each node body) evaluates to
     the guarded tree, and so does its tangent, including at a state of rest where the
     unguarded tangent is 0/0."""
@@ -162,9 +174,7 @@ def test_the_guarded_lowering_is_the_guarded_tree(box, monkeypatch):
     cm.Parameters.yield_stress_min = uw.expression(r"\tau_{0024e}", 0.01)
     flux = sympy.Matrix(stokes.F1.sym)
 
-    monkeypatch.setenv("UW_JIT_GRAPH", "0")
-    tree = _jacobian_unwrap(flux)
-    monkeypatch.setenv("UW_JIT_GRAPH", "1")
+    tree = flux.applyfunc(_guarded_tree)
     graph = _jacobian_unwrap(flux)
     assert graph.atoms(jg._KernelNode), "the Newton source was not lowered"
 
@@ -182,9 +192,9 @@ def test_the_guarded_lowering_is_the_guarded_tree(box, monkeypatch):
                     assert abs(vg - vt) <= 1.0e-12 * max(abs(vt), 1.0), (state, i, j)
 
 
-def _header(solver, monkeypatch, route):
-    """The generated header of ``solver`` on ``route``, with the module name and the
-    symbol prefix canonicalised as ``getext`` canonicalises them."""
+def _header(solver, monkeypatch):
+    """The generated header of ``solver``, with the module name and the symbol prefix
+    canonicalised as ``getext`` canonicalises them."""
     import underworld3.utilities._jitextension as jx
 
     seen = {}
@@ -197,7 +207,6 @@ def _header(solver, monkeypatch, route):
         return modname, codeguys, diag
 
     monkeypatch.setattr(jx, "generate_c_source", keep)
-    monkeypatch.setenv("UW_JIT_GRAPH", route)
     solver.is_setup = False
     solver._setup_pointwise_functions()
     return seen["h"]
@@ -222,7 +231,7 @@ def test_the_emitted_source_does_not_depend_on_what_came_before(monkeypatch):
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
-    first = _header(_poisson("0024f", mesh), monkeypatch, "1")
+    first = _header(_poisson("0024f", mesh), monkeypatch)
     for k in range(7):
         uw.expression(rf"junk_{{0024f,{k}}}", float(k), "preamble")
     other = uw.meshing.UnstructuredSimplexBox(
@@ -230,12 +239,14 @@ def test_the_emitted_source_does_not_depend_on_what_came_before(monkeypatch):
     uw.discretisation.MeshVariable("J0024f", other, 1, degree=1)
     mesh2 = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
-    second = _header(_poisson("0024f", mesh2), monkeypatch, "1")
+    second = _header(_poisson("0024f", mesh2), monkeypatch)
     assert first == second
     assert "uwt_0" in first, "the kernel has no temporaries: nothing was lowered"
 
 
-def test_a_law_with_no_named_quantity_emits_the_tree_route_source(monkeypatch):
+def test_a_law_with_no_named_quantity_has_no_temporaries(monkeypatch):
+    """A constant law has no node to lower: its kernels are the outputs alone, as the
+    expanded tree printed them."""
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
@@ -244,13 +255,14 @@ def test_a_law_with_no_named_quantity_emits_the_tree_route_source(monkeypatch):
     pois.constitutive_model = uw.constitutive_models.DiffusionModel
     pois.constitutive_model.Parameters.diffusivity = 1.0
     pois.f = 2.0
-    assert _header(pois, monkeypatch, "0") == _header(pois, monkeypatch, "1")
+    header = _header(pois, monkeypatch)
+    assert "out[0]" in header and "uwt_" not in header
 
 
-def test_the_manifest_from_the_leaves_is_the_scanned_manifest(box):
-    """The constants the lowered kernels read are the constants the expressions hold,
-    in the same slots."""
-    from underworld3.utilities._jitextension import _extract_constants, _manifest_from
+def test_the_manifest_is_the_constants_the_kernels_read(box):
+    """Every constant atom a lowered kernel reads, at any depth, has a slot, ordered by
+    name; a constant inside a constant is folded into its holder's slot."""
+    from underworld3.utilities._jitextension import _extract_constants
 
     mesh, T, v = box
     u = T.sym[0]
@@ -261,10 +273,9 @@ def test_the_manifest_from_the_leaves_is_the_scanned_manifest(box):
     a = uw.expression(r"a_{0024h}", c1 * u + c4 * u ** 2, "inner")
     b = uw.expression(r"b_{0024h}", a / (c2 + a ** 2), "outer")
     fns = (b, sympy.Matrix([[b * u, a]]))
-    scanned, _ = _extract_constants(fns, mesh)
-    leaves, _ = _manifest_from(jg.constant_leaves(jg.lower_callbacks(fns, mesh)))
-    assert [e for _, e in leaves] == [e for _, e in scanned]
-    assert len(scanned) == 3     # c4 is a slot of its own; c3 is folded into it
+    manifest, placeholders = _extract_constants(fns, mesh)
+    assert [e for _, e in manifest] == [c1, c2, c4]
+    assert len(set(placeholders.values())) == 3
 
 
 def test_a_repeated_condition_stays_a_condition(box):

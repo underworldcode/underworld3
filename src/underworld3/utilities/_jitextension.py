@@ -251,7 +251,7 @@ class JITCallbackSet:
         """Concatenate all slots into a single ordered tuple.
 
         The ordering (residual, bcs, jacobian, bd_residual, bd_jacobian)
-        matches what ``_createext()`` expects.
+        matches what ``generate_c_source()`` expects.
         """
         return self.residual + self.bcs + self.jacobian + self.bd_residual + self.bd_jacobian
 
@@ -275,68 +275,9 @@ class JITCallbackSet:
 
     @property
     def counts(self):
-        """Lengths of each slot, for ``_createext()`` offset calculation."""
+        """Lengths of each slot, for the offsets in ``generate_c_source()``."""
         return (len(self.residual), len(self.bcs), len(self.jacobian),
                 len(self.bd_residual), len(self.bd_jacobian))
-
-
-def _reveal_constants(fn):
-    """Expand non-constant UWexpressions to fixpoint, KEEPING truly-constant
-    atoms symbolic — so constants nested at ANY depth surface as atoms.
-
-    This must run BEFORE the ``constants[]`` substitution: a top-level
-    ``xreplace`` cannot see a constant hidden inside a nested UWexpression
-    (every ``Parameters.*`` value is template-wrapped in one), so nested
-    constants were silently folded to C literals while the manifest still
-    listed them as live — issue #302. The keep-constants predicate here is
-    the same ``_is_truly_constant`` used to build the manifest, so the set
-    of atoms revealed is exactly the set the manifest routes to
-    ``constants[]``.
-    """
-    from underworld3.function.expressions import (
-        unwrap_expression,
-        UWDerivativeExpression,
-    )
-
-    if fn is None:
-        return fn
-    if isinstance(fn, UWDerivativeExpression):
-        fn = fn.doit()
-    if isinstance(fn, sympy.MatrixBase):
-        return fn.applyfunc(
-            lambda e: unwrap_expression(e, mode='symbolic_keep_constants'))
-    return unwrap_expression(fn, mode='symbolic_keep_constants')
-
-
-def prepare_for_cache_key(fn, constants_subs_map):
-    """Prepare a single expression for JIT cache hashing.
-
-    Three-phase process (mirrors the codegen lowering in ``_createext`` so
-    the cache key and the generated C agree — issue #302):
-    1. Reveal nested constants (``_reveal_constants``).
-    2. Substitute manifested constants with ``_JITConstant`` placeholders
-       so that changing a constant's *value* does not invalidate the cache.
-    3. Unwrap the remaining UW atoms to pure SymPy so the hash is
-       deterministic.
-    """
-    # Phase 1: reveal constants nested inside other UWexpressions. Loud on
-    # failure, exactly like the codegen path — a silent fallback here would
-    # hash constant VALUES into the cache key and force a recompile on
-    # every ramp (adversarial-review finding).
-    fn_structural = _reveal_constants(fn)
-
-    # Phase 2: Substitute constants with _JITConstant placeholders
-    if constants_subs_map and fn_structural is not None:
-        try:
-            if hasattr(fn_structural, "xreplace"):
-                fn_structural = _xreplace_shared(fn_structural, constants_subs_map)
-        except Exception:
-            pass
-
-    # Phase 3: Unwrap remaining (non-constant) expressions
-    return underworld3.function.expressions.unwrap(
-        fn_structural, keep_constants=False, return_self=False
-    )
 
 
 # ============================================================================
@@ -409,46 +350,19 @@ class _JITConstant(sympy.Symbol):
 
 
 def _extract_constants(all_fns, mesh):
-    """Extract constant UWexpressions from a list of pre-unwrap functions.
-
-    Scans all expressions for UWexpression atoms where is_constant_expr()
-    is True (no spatial/field dependencies). Assigns deterministic indices
-    sorted by expression name for MPI consistency.
-
-    Parameters
-    ----------
-    all_fns : tuple of sympy expressions
-        The raw (pre-unwrap) function list.
-    mesh : underworld3.discretisation.Mesh
-        The mesh (currently unused, reserved for future mesh.t support).
+    """The ``constants[]`` manifest of a list of callback expressions: the constant
+    atoms their lowered kernels read (``_jit_graph``), ordered as ``_manifest_from``
+    orders them.
 
     Returns
     -------
     list of (int, UWexpression)
         Ordered mapping from constants[] index to UWexpression reference.
     dict
-        Mapping from UWexpression to _JITConstant symbol for substitution.
+        Mapping from UWexpression to _JITConstant symbol.
     """
-    from underworld3.function.expressions import (
-        is_constant_expr,
-        extract_expressions,
-        UWexpression,
-    )
-
-    constant_exprs = set()
-
-    for fn in all_fns:
-        if fn is None:
-            continue
-
-        # Handle Matrix expressions
-        if isinstance(fn, sympy.MatrixBase):
-            for elem in fn:
-                _collect_constant_atoms(elem, constant_exprs, is_constant_expr, UWexpression)
-        else:
-            _collect_constant_atoms(fn, constant_exprs, is_constant_expr, UWexpression)
-
-    return _manifest_from(constant_exprs)
+    lowered = _jit_graph.lower_callbacks([fn for fn in all_fns if fn is not None], mesh)
+    return _manifest_from(_jit_graph.constant_leaves(lowered))
 
 
 def _manifest_from(constant_exprs):
@@ -484,37 +398,6 @@ def _manifest_from(constant_exprs):
         subs_map[expr] = jit_const
 
     return manifest, subs_map
-
-
-def _xreplace_shared(expr, rule):
-    """``expr.xreplace(rule)`` (a sympy expression or Matrix), visiting each node
-    OBJECT once.
-
-    A compiled kernel repeats its shared sub-expressions as the same object (the
-    memoised unwrap inserts one object wherever an atom occurs, #823), and
-    ``xreplace`` rebuilds every occurrence: 4.3 s of the notch C generation for the
-    constants[] substitution alone. The result is the same expression.
-    """
-    memo = {}
-
-    def walk(e):
-        hit = memo.get(id(e))
-        if hit is not None:
-            return hit[1]
-        if e in rule:
-            out = rule[e]
-        elif isinstance(e, sympy.Basic) and e.args:
-            new_args = tuple(walk(a) if isinstance(a, sympy.Basic) else a for a in e.args)
-            changed = any(n is not a for n, a in zip(new_args, e.args))
-            out = e.func(*new_args) if changed else e
-        else:
-            out = e
-        memo[id(e)] = (e, out)
-        return out
-
-    if isinstance(expr, sympy.MatrixBase):
-        return expr.applyfunc(walk)
-    return walk(expr)
 
 
 def _holds_instance(expr, types):
@@ -580,36 +463,6 @@ def _without_dirac_deltas(expr, where):
     return expr.xreplace({d: sympy.S.Zero for d in deltas})
 
 
-def _unique_symbols(expr):
-    """The Symbol atoms of ``expr`` (a sympy expression, Matrix or Array): the same set
-    as ``expr.atoms(sympy.Symbol)``, found by visiting each node OBJECT once.
-
-    ``atoms`` walks every occurrence of every node. An unwrapped constitutive law
-    repeats its shared sub-expressions as the SAME Python object (the memoised unwrap
-    inserts one object wherever an atom occurs, #823), so an identity walk is
-    proportional to the shared graph rather than the expanded tree: measured on the
-    Spiegelman notch kernels, ``atoms`` was 35 s of a 108 s compile.
-    """
-    # keyed by id, holding the object so that no id is reused while the walk runs
-    seen = {}
-    found = set()
-    stack = [expr]
-    while stack:
-        e = stack.pop()
-        if id(e) in seen:
-            continue
-        seen[id(e)] = e
-        if isinstance(e, (sympy.MatrixBase, sympy.NDimArray)):
-            stack.extend(e)
-            continue
-        if isinstance(e, sympy.Symbol):
-            found.add(e)
-            continue
-        if isinstance(e, sympy.Basic):
-            stack.extend(e.args)
-    return found
-
-
 def _is_truly_constant(expr, UWexpression):
     """Check if a UWexpression resolves to a pure constant (no spatial deps).
 
@@ -654,31 +507,6 @@ def _is_truly_constant(expr, UWexpression):
             return False
 
     return True
-
-
-def _collect_constant_atoms(expr, result_set, is_constant_expr, UWexpression):
-    """Recursively collect constant UWexpression atoms from an expression."""
-
-    if isinstance(expr, UWexpression):
-        if _is_truly_constant(expr, UWexpression):
-            result_set.add(expr)
-            return  # Don't recurse into constant expressions
-        # Non-constant UWexpression: check its inner sym for nested constants
-        if hasattr(expr, '_sym') and expr._sym is not None:
-            _collect_constant_atoms(expr._sym, result_set, is_constant_expr, UWexpression)
-        return
-
-    if not hasattr(expr, 'atoms'):
-        return
-
-    # Check all UWexpression atoms
-    for atom in _stable_sorted(_unique_symbols(expr)):
-        if isinstance(atom, UWexpression) and _is_truly_constant(atom, UWexpression):
-            result_set.add(atom)
-        elif isinstance(atom, UWexpression):
-            # Non-constant UWexpression: recurse into its sym
-            if hasattr(atom, '_sym') and atom._sym is not None:
-                _collect_constant_atoms(atom._sym, result_set, is_constant_expr, UWexpression)
 
 
 def _pack_constants(manifest):
@@ -828,15 +656,11 @@ def getext(
     # Extract constant UWexpressions that are routed through PETSc's
     # constants[] array. Value changes don't affect the C source — they
     # only alter what we pass to PetscDSSetConstants at solve time.
-    if _jit_graph.enabled():
-        # The graph route (#823, tier 2): lower every callback once, and take the
-        # manifest from the constant leaves of what was lowered.
-        lowered_fns = _jit_graph.lower_callbacks(callbacks.flat(), mesh)
-        constants_manifest, constants_subs_map = _manifest_from(
-            _jit_graph.constant_leaves(lowered_fns))
-    else:
-        lowered_fns = None
-        constants_manifest, constants_subs_map = _extract_constants(callbacks.flat(), mesh)
+    # Each callback is lowered onto the shared graph of named quantities once
+    # (``_jit_graph``, #823); the manifest is the constant leaves of what was lowered.
+    lowered_fns = _jit_graph.lower_callbacks(callbacks.flat(), mesh)
+    constants_manifest, constants_subs_map = _manifest_from(
+        _jit_graph.constant_leaves(lowered_fns))
 
     if debug and underworld3.mpi.rank == 0:
         if constants_manifest:
@@ -1051,6 +875,157 @@ def getext(
     )
 
 
+class _Unspellable(Exception):
+    """A leaf the kernel has no C for."""
+
+
+class _Refusal:
+    """A leaf that has a meaning but no C in a weak form, with the reason."""
+
+    def __init__(self, message):
+        self.message = message
+
+
+_IP_DERIVATIVE_REFUSAL = _Refusal(
+    "derivative of an integration-point "
+    "variable has no meaning (the field is defined only at the "
+    "quadrature points), so the gradient here would be a silent "
+    "zero. This is refused in a WEAK FORM only, where the "
+    "discretisation is yours to choose: build the variable with "
+    "proxy_location='cells' instead, whose level sets are a "
+    "least-squares polynomial per cell and differentiate directly. "
+    "uw.function.evaluate() of the same derivative does answer: as "
+    "a query it recovers the gradient from a per-cell fit for you."
+)
+
+
+def _leaf_spellings(mesh, primary_field_list):
+    """The C a kernel reads for each mesh-variable leaf, keyed by the leaf's class.
+
+    For a 2-D velocity and pressure in the primary arrays: ``V_x -> petsc_u[0]``,
+    ``V_y -> petsc_u[1]``, ``P -> petsc_u[2]``, ``V_x_x -> petsc_u_x[0]``, ...,
+    ``P_y -> petsc_u_x[5]``. Every field of the mesh is entered first, from the
+    auxiliary arrays (``petsc_a``), at its own field's component offset in the DM
+    (``_aux_component_offsets``: a dropped variable's field stays in the DM and keeps
+    its slots); the primary fields then replace their entries with ``petsc_u``.
+    Gradients run to ``cdim``, the embedded dimension, so a manifold mesh's third
+    partial is wired too. The gradient of an integration-point variable is a
+    ``_Refusal``.
+    """
+    from underworld3 import VarType
+
+    spellings = {}
+
+    def enter(varlist, prefix, component_offsets=None):
+        u_i = 0          # component
+        u_x_i = 0        # gradient component
+        for var in varlist:
+            if component_offsets is not None:
+                u_i = component_offsets[var.field_id]
+                u_x_i = u_i * mesh.cdim
+            if var.vtype == VarType.SCALAR:
+                components = [var.fn]
+            elif var.vtype in (VarType.VECTOR, VarType.TENSOR, VarType.SYM_TENSOR,
+                               VarType.MATRIX):
+                components = list(var.sym_1d)
+            else:
+                raise RuntimeError(
+                    f"Unsupported type {var.vtype} for code generation. "
+                    f"Please contact developers.")
+            ip = getattr(var, "is_integration_point", False)
+            for component in components:
+                spellings[type(component)] = f"{prefix}[{u_i}]"
+                u_i += 1
+                for ind in range(mesh.cdim):
+                    # _diff[ind] is the gradient component's class
+                    spellings[component._diff[ind]] = (
+                        _IP_DERIVATIVE_REFUSAL if ip else f"{prefix}_x[{u_x_i}]")
+                    u_x_i += 1
+
+    enter(_stable_sorted(mesh.vars.values()), "petsc_a",
+          component_offsets=_aux_component_offsets(mesh))
+    enter(primary_field_list, "petsc_u")
+    return spellings
+
+
+def _spell_leaf(leaf, spellings, constants_subs_map):
+    """The C for one leaf: a constants[] slot, a field value or gradient
+    (``spellings``), a coordinate or boundary normal, or a symbol that names its own
+    C (the time, ``petsc_t``). Raises ``_Unspellable`` for anything else."""
+    from sympy.core.function import AppliedUndef
+    from sympy.vector.scalar import BaseScalar
+
+    placeholder = constants_subs_map.get(leaf) if constants_subs_map else None
+    if placeholder is not None:
+        return placeholder._ccodestr
+    if isinstance(leaf, BaseScalar):
+        # the mesh names its coordinates; a fresh instance, or a UWCoordinate that
+        # SymPy's cache returned for its equal base scalar, is named from its index
+        # and system
+        try:
+            text = leaf._ccodestr
+        except AttributeError:
+            text = None
+        if isinstance(text, str):
+            return text
+        idx, system = leaf._id[0], str(leaf._id[1])
+        return f"petsc_n[{idx}]" if "Gamma" in system else f"petsc_x[{idx}]"
+    if isinstance(leaf, AppliedUndef):
+        entry = spellings.get(type(leaf))
+        if entry is None:
+            raise _Unspellable(leaf)
+        if isinstance(entry, _Refusal):
+            raise RuntimeError(f"{type(leaf).__name__}: {entry.message}")
+        return entry
+    text = getattr(leaf, "_ccodestr", None)
+    if isinstance(text, str) and hasattr(leaf, "_ccode"):
+        return text
+    raise _Unspellable(leaf)
+
+
+def _unconvertible_message(symbols, index, fn_original):
+    details = []
+    for sym in symbols:
+        detail = f"  - {sym} (type: {type(sym).__name__})"
+        if hasattr(sym, "units"):
+            detail += f" [has units: {sym.units}]"
+        if hasattr(sym, "value"):
+            detail += f" [value: {sym.value}]"
+        details.append(detail)
+    return (
+        f"\n{'=' * 70}\n"
+        f"JIT COMPILATION ERROR: Expression contains unconvertible symbols\n"
+        f"{'=' * 70}\n\n"
+        f"The following symbols could not be converted to C code:\n"
+        + "\n".join(details) + "\n\n"
+        f"This usually means:\n"
+        f"  1. A UWexpression or UWQuantity was not properly expanded\n"
+        f"  2. An arithmetic operation failed (e.g., Matrix * UWexpression)\n"
+        f"  3. A symbolic function is missing from the expression tree\n"
+        f"  4. A field that belongs to another mesh, or to no mesh\n\n"
+        f"Expression index: {index}\n"
+        f"Original expression: {fn_original}\n\n"
+        f"TIP: Check that all expression operations (*, /, +, -) produce\n"
+        f"valid SymPy expressions. For example, ensure scalar * Matrix\n"
+        f"and not Matrix * scalar when using UWexpression objects.\n"
+        f"{'=' * 70}"
+    )
+
+
+def _print_kernel(printer, temporaries, outputs, out):
+    """The C body of one kernel: a ``const double`` per temporary, in order, then
+    the outputs. A SymPy function the printer cannot write returns its
+    ``// Not supported in C:`` text, which the caller refuses."""
+    lines = []
+    for t, body in temporaries:
+        code = printer.doprint(body)
+        if code.startswith("// Not supported in C:"):
+            return code
+        lines.append(f"const double {t._ccodestr} = {code};")
+    lines.append(printer.doprint(outputs, out))
+    return "\n".join(lines)
+
+
 @timing.routine_timer_decorator
 def _aux_component_offsets(mesh):
     """Component offset of every field of the mesh DM, keyed by field id.
@@ -1134,11 +1109,13 @@ def generate_c_source(
     primary_field_list : list
         Variables that map to PETSc primary variable arrays (``petsc_u[]``).
     constants_subs_map : dict, optional
-        Mapping from UWexpression → ``_JITConstant`` placeholder.
+        Mapping from UWexpression → ``_JITConstant`` placeholder; built from the
+        lowered callbacks when not given.
     lowered_fns : list of sympy.Matrix, optional
         The callbacks lowered onto the shared graph (``_jit_graph.lower_callbacks``),
-        one per entry of ``callbacks.flat()``. When given, each kernel is emitted as
-        temporaries and outputs instead of being unwrapped and printed whole.
+        one per entry of ``callbacks.flat()``; lowered here when not given. Each
+        kernel is emitted as one C temporary per distinct computation, then its
+        outputs.
 
     Returns
     -------
@@ -1158,154 +1135,14 @@ def generate_c_source(
     count_residual_sig, count_bc_sig, count_jacobian_sig, \
         count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
 
-    # `_ccode` patching
-    def ccode_patch_fns(varlist, prefix_str, component_offsets=None):
-        """
-        This function patches uw functions with the necessary ccode
-        routines for the code printing.
+    if lowered_fns is None:
+        lowered_fns = _jit_graph.lower_callbacks(fns, mesh)
+    if constants_subs_map is None:
+        _, constants_subs_map = _manifest_from(_jit_graph.constant_leaves(lowered_fns))
 
-        For a `varlist` consisting of 2d velocity & pressure variables,
-        for example, it'll generate routines which write the following,
-        where `prefix_str="petsc_u"`:
-            V_x   : "petsc_u[0]"
-            V_y   : "petsc_u[1]"
-            P     : "petsc_u[2]"
-            V_x_x : "petsc_u_x[0]"
-            V_x_y : "petsc_u_x[1]"
-            V_y_x : "petsc_u_x[2]"
-            V_y_y : "petsc_u_x[3]"
-            P_x   : "petsc_u_x[4]"
-            P_y   : "petsc_u_x[5]"
-
-        Params
-        ------
-        varlist: list
-            The variables to patch. Note that *all* the variables in the
-            corresponding `PetscDM` must be included. They must also be
-            ordered according to their `field_id`.
-        prefix_str: str
-            The string prefix to write.
-        component_offsets: dict, optional
-            Component offset of every field in the DM, by ``field_id``
-            (see ``_aux_component_offsets``). When given, each variable
-            is patched from ITS OWN field's offset instead of a running
-            count over ``varlist``: a field whose Python variable has
-            been dropped stays in the DM and still occupies its slots,
-            so a running count would shift every later variable onto
-            the wrong data.
-        """
-        u_i = 0  # variable increment
-        u_x_i = 0  # variable gradient increment
-        lambdafunc = lambda self, printer: self._ccodestr
-
-        def _no_derivative(self, printer):
-            # An integration-point variable has no gradient (its tabulated
-            # derivative is identically zero), so a derivative of its symbol
-            # in a weak form would be a silent zero. Refuse at code generation.
-            raise RuntimeError(
-                f"{self.__class__.__name__}: derivative of an integration-point "
-                "variable has no meaning (the field is defined only at the "
-                "quadrature points), so the gradient here would be a silent "
-                "zero. This is refused in a WEAK FORM only, where the "
-                "discretisation is yours to choose: build the variable with "
-                "proxy_location='cells' instead, whose level sets are a "
-                "least-squares polynomial per cell and differentiate directly. "
-                "uw.function.evaluate() of the same derivative does answer: as "
-                "a query it recovers the gradient from a per-cell fit for you."
-            )
-
-        for var in varlist:
-            is_ip = getattr(var, "is_integration_point", False)
-            dfunc = _no_derivative if is_ip else lambdafunc
-            if component_offsets is not None:
-                u_i = component_offsets[var.field_id]
-                u_x_i = u_i * mesh.cdim
-            if var.vtype == VarType.SCALAR:
-                # monkey patch this guy into the function
-                type(var.fn)._ccodestr = f"{prefix_str}[{u_i}]"
-                type(var.fn)._ccode = lambdafunc
-                u_i += 1
-                # Now patch the gradient components. The gradient of a
-                # field on the mesh lives in the embedded coordinate
-                # space (cdim-dim), so iterate to cdim — not dim. For
-                # volume meshes ``dim == cdim`` so this is unchanged;
-                # for manifold meshes (e.g. SphericalManifold dim=2,
-                # cdim=3) the third partial ``f_{,2}`` exists and
-                # needs to be wired to ``u_x[2]``.
-                for ind in range(mesh.cdim):
-                    # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
-                    var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                    var.fn._diff[ind]._ccode = dfunc
-                    u_x_i += 1
-            elif (
-                var.vtype == VarType.VECTOR
-                or var.vtype == VarType.TENSOR
-                or var.vtype == VarType.SYM_TENSOR
-                or var.vtype == VarType.MATRIX
-            ):
-                # Pull out individual sub components
-                for comp in var.sym_1d:
-                    # monkey patch
-                    type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
-                    type(comp)._ccode = lambdafunc
-                    u_i += 1
-                    # Iterate to cdim (embedded coord dim) — see the
-                    # scalar branch above for the dim != cdim reason.
-                    for ind in range(mesh.cdim):
-                        # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
-                        comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                        comp._diff[ind]._ccode = dfunc
-                        u_x_i += 1
-            else:
-                raise RuntimeError(
-                    f"Unsupported type {var.vtype} for code generation. Please contact developers."
-                )
-
-    # Patch in `_code` methods. Note that the order here
-    # is important, as the secondary call will overwrite
-    # those patched in the first call.
-
-    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a",
-                    component_offsets=_aux_component_offsets(mesh))
-    ccode_patch_fns(primary_field_list, "petsc_u")
-
-    # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
-    # make sure each component points to the correct PETSc data
-
-    ## This is set up in the mesh at the moment but this does seem to be the wrong place
-
-    # mesh.N.x._ccodestr = "petsc_x[0]"
-    # mesh.N.y._ccodestr = "petsc_x[1]"
-    # mesh.N.z._ccodestr = "petsc_x[2]"
-
-    # # Surface integrals also have normal vector information as petsc_n
-
-    # mesh.Gamma_N.x._ccodestr = "petsc_n[0]"
-    # mesh.Gamma_N.y._ccodestr = "petsc_n[1]"
-    # mesh.Gamma_N.z._ccodestr = "petsc_n[2]"
-
-    def _basescalar_ccode(self, printer):
-        """C code for coordinate symbols, with fallback for new instances.
-
-        sympy.simplify() may create new BaseScalar/UWCoordinate instances
-        that lack _ccodestr. We recover it from the coordinate's _id attribute
-        which stores (index, system_name).
-        """
-        if hasattr(self, '_ccodestr'):
-            return self._ccodestr
-        # Fallback: compute from _id
-        idx = self._id[0]
-        system_name = str(self._id[1])
-        if 'Gamma' in system_name:
-            return f"petsc_n[{idx}]"
-        else:
-            return f"petsc_x[{idx}]"
-
-    type(mesh.N.x)._ccode = _basescalar_ccode
-    # Gamma base scalars (un-normalised face normal) — ensure ccode is registered
-    Gamma_scalars = mesh._Gamma.base_scalars()
-    if type(Gamma_scalars[0]) is not type(mesh.N.x):
-        type(Gamma_scalars[0])._ccode = _basescalar_ccode
+    # The C a kernel reads for each leaf of the graph: an explicit map, built for
+    # this compile, instead of C names patched onto the field classes (#823).
+    spellings = _leaf_spellings(mesh, primary_field_list)
 
     # Create a custom functions replacement dictionary.
     # Note that this dictionary is really just to appease Sympy,
@@ -1374,246 +1211,28 @@ def generate_c_source(
     underworld3._libdirs.clear()
     underworld3._libfiles.clear()
 
-    def _spell(leaf):
-        # the C a kernel reads for a leaf of the graph
-        placeholder = constants_subs_map.get(leaf) if constants_subs_map else None
-        if placeholder is not None:
-            return placeholder._ccodestr
-        if isinstance(leaf, sympy.vector.scalar.BaseScalar):
-            # a coordinate may be a fresh instance, or a UWCoordinate SymPy's cache
-            # handed back for its equal base scalar, without the name the mesh set:
-            # recover it from the coordinate's index and system, as the coordinate
-            # recovery below does for the printer
-            try:
-                return leaf._ccodestr
-            except AttributeError:
-                idx, system = leaf._id[0], str(leaf._id[1])
-                leaf._ccodestr = (f"petsc_n[{idx}]" if "Gamma" in system
-                                  else f"petsc_x[{idx}]")
-                return leaf._ccodestr
-        return printer.doprint(leaf)
-
     eqns = []
-    for index, fn in enumerate(fns):
+    for index, fn_original in enumerate(fns):
+        unspellable = []
 
-        # Save original for debugging
-        fn_original = fn
-        temporaries = ()
-        if lowered_fns is not None:
-            temporaries, fn = _jit_graph.emit(
-                lowered_fns[index], _spell, constants_subs_map or {})
+        def spell(leaf):
+            try:
+                return _spell_leaf(leaf, spellings, constants_subs_map)
+            except _Unspellable:
+                unspellable.append(leaf)
+                return f"?{sympy.srepr(leaf)}"
 
-        # --- Gate the UW lowering (issue #302 pipeline) on the presence of
-        # UW-expression atoms. Plain-sympy components — the derivative
-        # blocks, which dominate the expression size — have no UW atoms, so
-        # the reveal / validate / xreplace / unwrap pipeline (≈5 full
-        # traversals per component) would be pure overhead: skip it entirely
-        # when there is nothing to lower.
-        from underworld3.function.expressions import UWexpression as _UWexpr
-        from underworld3.function.expressions import UWDerivativeExpression as _UWderiv
-
-        _needs_lowering = lowered_fns is None and (
-            isinstance(fn, (_UWexpr, _UWderiv))
-            # `has` is a bare traversal (no atom-set build) — the atoms()
-            # form built a set of every node, which cost seconds per 100k-node
-            # Jacobian component (measured ~20 s on a large collision model).
-            or (hasattr(fn, "has") and fn.has(_UWexpr))
-            or not isinstance(fn, (sympy.MatrixBase, sympy.MatrixExpr))
-        )
-        if _needs_lowering:
-            # Phase 1: reveal constants nested inside other UWexpressions, so
-            #          the substitution below can reach them. A top-level
-            #          xreplace missed constants inside template-wrapped
-            #          parameters and baked them as C literals while the
-            #          manifest listed them.
-            fn = _reveal_constants(fn)
-
-            # A truly-constant atom the manifest does NOT know about would be
-            # silently folded to a literal in phase 3 — the manifest and the
-            # C source must never disagree (issue #302).
-            if constants_subs_map is not None and hasattr(fn, 'atoms'):
-                unmanifested = [
-                    a.name for a in _stable_sorted(_unique_symbols(fn))
-                    if isinstance(a, _UWexpr)
-                    and _is_truly_constant(a, _UWexpr)
-                    and a not in constants_subs_map
-                ]
-                if unmanifested:
-                    raise RuntimeError(
-                        f"JIT constants manifest is incomplete: constant expression(s) "
-                        f"{unmanifested} appear in a kernel but have no constants[] "
-                        f"slot — they would be baked into the C source (issue #302)."
-                    )
-
-            # Phase 2: Substitute constant UWexpressions with _JITConstant symbols
-            #          These survive into C code as constants[i]
-            if constants_subs_map and fn is not None:
-                try:
-                    fn = _xreplace_shared(fn, constants_subs_map) if hasattr(fn, 'xreplace') else fn
-                except Exception:
-                    pass
-
-            # Phase 3: Unwrap remaining non-constant UWexpressions to numerical values
-            fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
-
-            # A manifested constant surviving to here bypassed its constants[]
-            # slot and is about to be baked — refuse rather than freeze the
-            # parameter silently (issue #302).
-            if constants_subs_map and hasattr(fn, 'atoms'):
-                baked = [a.name for a in _stable_sorted(_unique_symbols(fn))
-                         if a in constants_subs_map]
-                if baked:
-                    raise RuntimeError(
-                        f"Manifested constant(s) {baked} were not routed through "
-                        f"constants[] and would be baked into the C source "
-                        f"(issue #302)."
-                    )
-
-        if lowered_fns is not None:
-            pass    # shaped by _jit_graph.lower_callbacks
-        elif isinstance(fn, sympy.vector.Vector):
-            fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
-        elif isinstance(fn, sympy.vector.Dyadic):
-            fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0 : mesh.dim]
-        else:
-            fn = sympy.Matrix([fn])
-
-        # === COORDINATE SYMBOL RECOVERY ===
-        # When sympy.simplify() manipulates expressions containing coordinate
-        # symbols (BaseScalar/UWCoordinate), it may create NEW instances that
-        # lack the _ccodestr attribute set during mesh initialization.
-        # This commonly occurs with coordinate-dependent constitutive models
-        # (e.g., TransverseIsotropicFlowModel with a radial director).
-        # We recover _ccodestr from the coordinate's _id attribute.
-        from sympy.vector.scalar import BaseScalar
-
-        free_syms = fn.free_symbols
-        for _t, _body in temporaries:
-            free_syms = free_syms | _body.free_symbols
-        free_syms = tuple(_stable_sorted(free_syms))
-        for sym in free_syms:
-            if isinstance(sym, BaseScalar) and not hasattr(sym, '_ccodestr'):
-                idx = sym._id[0]  # 0, 1, or 2 for x, y, z
-                system_name = str(sym._id[1])
-                if 'Gamma' in system_name:
-                    sym._ccodestr = f"petsc_n[{idx}]"
-                else:
-                    sym._ccodestr = f"petsc_x[{idx}]"
-
-        # === JIT VALIDATION GATEWAY ===
-        # Check for symbols that cannot be converted to C code.
-        # Expected symbols (coordinates) have _ccodestr attribute set.
-        # Unexpected symbols indicate malformed expressions from user code.
-        unconvertible_symbols = []
-        for sym in free_syms:
-            # Check if this symbol can be converted to C code
-            if not hasattr(sym, '_ccodestr'):
-                unconvertible_symbols.append(sym)
-
-        if unconvertible_symbols:
-            # Build a helpful error message
-            sym_details = []
-            for sym in unconvertible_symbols:
-                detail = f"  - {sym} (type: {type(sym).__name__})"
-                if hasattr(sym, 'units'):
-                    detail += f" [has units: {sym.units}]"
-                if hasattr(sym, 'value'):
-                    detail += f" [value: {sym.value}]"
-                sym_details.append(detail)
-
-            raise RuntimeError(
-                f"\n{'='*70}\n"
-                f"JIT COMPILATION ERROR: Expression contains unconvertible symbols\n"
-                f"{'='*70}\n\n"
-                f"The following symbols could not be converted to C code:\n"
-                + "\n".join(sym_details) + "\n\n"
-                f"This usually means:\n"
-                f"  1. A UWexpression or UWQuantity was not properly expanded\n"
-                f"  2. An arithmetic operation failed (e.g., Matrix * UWexpression)\n"
-                f"  3. A symbolic function is missing from the expression tree\n\n"
-                f"Expression index: {index}\n"
-                f"Original expression: {fn_original}\n"
-                f"After unwrap: {fn}\n\n"
-                f"TIP: Check that all expression operations (*, /, +, -) produce\n"
-                f"valid SymPy expressions. For example, ensure scalar * Matrix\n"
-                f"and not Matrix * scalar when using UWexpression objects.\n"
-                f"{'='*70}"
-            )
+        temporaries, fn = _jit_graph.emit(lowered_fns[index], spell)
+        if unspellable:
+            raise RuntimeError(_unconvertible_message(
+                _stable_sorted(set(unspellable)), index, fn_original))
 
         if verbose:
-            print("Processing JIT {:4d} / {}".format(index, fn))
-            # Enhanced debugging output for remaining (valid) free symbols
-            if free_syms:
-                print("  Free symbols (all convertible):")
-                for sym in free_syms:
-                    print(f"    - {sym} (type: {type(sym).__name__}, _ccodestr: {getattr(sym, '_ccodestr', 'N/A')})")
+            # the kernel as mathematics (named quantities as nodes); the C is in the header
+            print("Processing JIT {:4d} / {}".format(index, lowered_fns[index]))
 
         out = sympy.MatrixSymbol("out", *fn.shape)
-
-        # CSE before printing: shared subexpressions become ``double xN = ...;``
-        # temps evaluated in dependency order, so the generated C — and hence
-        # the codegen time, gcc memory/time, and .so size — collapses on large
-        # expressions (measured: monster Jacobian output ~460k nodes -> ~30k).
-        # Semantics-preserving: temps are exact aliases of repeated
-        # subexpressions, so the generated kernel evaluates identical values.
-        # Opt in with UW_JIT_CSE=1 (default is off to preserve original behavior).
-        if temporaries:
-            # the graph route: one temporary per distinct computation, then the
-            # outputs in terms of them (#823)
-            _temp_code = []
-            for _t, _body in temporaries:
-                _code = printer.doprint(_body)
-                if _code.startswith("// Not supported in C:"):
-                    _temp_code = None
-                    eqn = ("eqn_" + str(index), _code)
-                    break
-                _temp_code.append(f"const double {_t._ccodestr} = {_code};")
-            if _temp_code is not None:
-                eqn = ("eqn_" + str(index),
-                       "\n".join(_temp_code) + "\n" + printer.doprint(fn, out))
-        elif lowered_fns is None and os.environ.get("UW_JIT_CSE") in ("1", "true", "True", "yes", "YES"):
-            from sympy.simplify.cse_main import cse
-            from sympy.vector.scalar import BaseScalar
-
-            _repl, _red = cse([fn])
-            if _repl:
-                # cse may mint NEW coordinate instances (BaseScalar /
-                # UWCoordinate wrappers) that lack the mesh-set _ccodestr;
-                # recover it from their _id (same scheme as the
-                # COORDINATE SYMBOL RECOVERY above).
-                def _patch_coords(expr):
-                    for _sym in set(expr.free_symbols):
-                        _target = getattr(_sym, "_original_base_scalar", _sym)
-                        if isinstance(_target, BaseScalar) and not hasattr(
-                            _target, "_ccodestr"
-                        ):
-                            _idx = _target._id[0]
-                            _sys = str(_target._id[1])
-                            _target._ccodestr = (
-                                f"petsc_n[{_idx}]"
-                                if "Gamma" in _sys
-                                else f"petsc_x[{_idx}]"
-                            )
-
-                for _t_sym, _t_expr in _repl:
-                    _patch_coords(_t_expr)
-                _patch_coords(_red[0])
-
-                _temp_code = "\n".join(
-                    "double {} = {};".format(
-                        printer.doprint(t_sym), printer.doprint(t_expr)
-                    )
-                    for t_sym, t_expr in _repl
-                )
-                _red_code = printer.doprint(_red[0], out)
-                if _red_code.startswith("// Not supported in C:"):
-                    eqn = ("eqn_" + str(index), _red_code)
-                else:
-                    eqn = ("eqn_" + str(index), _temp_code + "\n" + _red_code)
-            else:
-                eqn = ("eqn_" + str(index), printer.doprint(fn, out))
-        else:
-            eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+        eqn = ("eqn_" + str(index), _print_kernel(printer, temporaries, fn, out))
 
         if eqn[1].startswith("// Not supported in C:"):
             spliteqn = eqn[1].split("\n")
@@ -1961,67 +1580,3 @@ def compile_and_load(modname, codeguys, verbose=False):
         )
 
     return module, tmpdir
-
-
-@timing.routine_timer_decorator
-def _createext(
-    name,
-    mesh: underworld3.discretisation.Mesh,
-    callbacks: JITCallbackSet,
-    primary_field_list,
-    constants_subs_map: Optional[dict] = None,
-    verbose: Optional[bool] = False,
-    debug: Optional[bool] = False,
-    debug_name=None,
-):
-    """Thin wrapper: generate source, compile, stash in ``_ext_dict[name]``.
-
-    Retained for backwards compatibility with :func:`getext`. New code
-    should call :func:`generate_c_source` and :func:`compile_and_load`
-    directly — splitting the two phases is what makes cache keys on the
-    generated C source possible.
-    """
-    modname, codeguys, diag = generate_c_source(
-        name,
-        mesh,
-        callbacks,
-        primary_field_list,
-        constants_subs_map=constants_subs_map,
-        verbose=verbose,
-        debug=debug,
-        debug_name=debug_name,
-    )
-    module, tmpdir = compile_and_load(modname, codeguys, verbose=verbose)
-    _ext_dict[name] = module
-
-    if underworld3.mpi.rank == 0 and verbose:
-        randstr = diag["randstr"]
-        print(f"Location of compiled module: {str(tmpdir)}")
-        print(f"{randstr} Equation count - {diag['eqn_count']}", flush=True)
-        print(
-            f"{randstr}   {diag['count_residual_sig']:5d}    residuals: "
-            f"{diag['residual_equations'][0]}:{diag['residual_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_bc_sig']:5d}   boundaries: "
-            f"{diag['boundary_equations'][0]}:{diag['boundary_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_jacobian_sig']:5d}    jacobians: "
-            f"{diag['jacobian_equations'][0]}:{diag['jacobian_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_bd_residual_sig']:5d} boundary_res: "
-            f"{diag['boundary_residual_equations'][0]}:{diag['boundary_residual_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_bd_jacobian_sig']:5d} boundary_jac: "
-            f"{diag['boundary_jacobian_equations'][0]}:{diag['boundary_jacobian_equations'][1]}",
-            flush=True,
-        )
-
-    return

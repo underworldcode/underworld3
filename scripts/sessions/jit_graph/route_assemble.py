@@ -1,16 +1,16 @@
 """Assemble the residual and the Jacobian of one fixture at a given state, on the route
-the environment selects (``UW_JIT_GRAPH=1`` or unset), and save them (#823, tier 2).
+the build provides (this branch: graph; development: tree), and save them (#823, tier 2).
 
 Two runs at the same state, one per route, are compared by
 ``route_assemble_compare.py``. The state is the SNES solution vector: ``zero`` (rest,
 with the boundary values), or the ``X`` saved by ``route_ab.py``.
 """
+import importlib.util
 import os
 import sys
 
 import numpy as np
 import underworld3 as uw
-from underworld3.utilities import _jit_graph
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fixtures   # noqa: E402
@@ -22,7 +22,8 @@ params = uw.Params(
     uw_tag=uw.Param("zero", description="label for the output file"),
     uw_out=uw.Param("~/+Simulations/jit_graph/tier2/assemble", description="output directory"),
 )
-route = "graph" if _jit_graph.enabled() else "tree"
+route = ("graph" if importlib.util.find_spec("underworld3.utilities._jit_graph")
+         else "tree")   # the route is the build's: this branch, or development
 fixture, tangent = str(params.uw_fixture), str(params.uw_tangent)
 
 stokes, _ = fixtures.build(fixture)
