@@ -28,7 +28,7 @@ CASES = [(t, 1) for t in ("semi_lagrangian", "integration_point", "forward", "la
     + [(t, 2) for t in ("semi_lagrangian", "integration_point", "eulerian")]
 
 
-def _shear_box(transport, order, with_units):
+def _shear_box(transport, order, with_units, **model_options):
     uw.reset_default_model()
     if with_units:
         uw.get_default_model().set_reference_quantities(
@@ -40,7 +40,8 @@ def _shear_box(transport, order, with_units):
     p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1, units="Pa" if with_units else None)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.stress_transport = transport
-    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=order)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=order, **model_options)
     parameters = stokes.constitutive_model.Parameters
     if with_units:
         parameters.shear_viscosity_0 = uw.quantity(1.0e21, "Pa*s")
@@ -83,3 +84,23 @@ def test_units_model_history_is_the_nondimensional_history(transport, order):
     value_pa = float(uw.units.Quantity(float(np.asarray(carried).reshape(-1)[0]), carried.units).to("Pa").magnitude)
     expected_pa = plain_xy * STRESS_SCALE_PA
     assert abs(value_pa - expected_pa) < 1.0e-6 * abs(expected_pa), (transport, order, value_pa, expected_pa)
+
+
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "forward"])
+def test_units_model_log_conformation_history(transport):
+    """The log-conformation record is dimensionless: the same in both runs; the
+    stress the model reads from it, G (exp(psi) - I), is in Pa."""
+    options = dict(objective_rate="upper_convected", stress_history="log_conformation")
+    plain = _shear_box(transport, 1, False, **options)
+    plain_store = np.array(plain.DFDt.psi_star[0].data)
+    plain_xy = float(np.asarray(uw.function.evaluate(
+        plain.constitutive_model.stress_star.sym[0, 1], ORIGIN)).reshape(-1)[0])
+
+    stokes = _shear_box(transport, 1, True, **options)
+    store = np.asarray(stokes.DFDt.psi_star[0].data)
+    assert np.abs(store - plain_store).max() < 1.0e-6 * np.abs(plain_store).max(), transport
+
+    carried = uw.function.evaluate(stokes.constitutive_model.stress_star.sym[0, 1], ORIGIN)
+    value_pa = float(uw.units.Quantity(float(np.asarray(carried).reshape(-1)[0]), carried.units).to("Pa").magnitude)
+    expected_pa = plain_xy * STRESS_SCALE_PA
+    assert abs(value_pa - expected_pa) < 1.0e-6 * abs(expected_pa), (transport, value_pa, expected_pa)

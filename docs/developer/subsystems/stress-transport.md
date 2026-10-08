@@ -67,7 +67,8 @@ with the current velocity gradient, so over one step it stretches the conformati
 by about $(1 + \Delta t\,\dot\gamma)^2$ before relaxation acts. When
 $\Delta t\,\dot\gamma$ is of order one that update loses the positive-definiteness
 of the conformation $c = \sigma^*/G + I$ in the first step, and no arrangement of
-the split recovers it. On the confined cylinder at Courant one on the far-field
+the split recovers it. That is the default, linear step; the deformation step
+below does not have the limit. On the confined cylinder at Courant one on the far-field
 mesh the wall shear rate is ten times the far-field one: every history lost the
 conformation at the cylinder top in step one, the nodal history then ran away and
 the solve hung, and the integration-point history gave out at Wi 0.6. At a step
@@ -100,6 +101,67 @@ modes apart: a solve that has lost its preconditioner (the non-symmetric,
 co-rotational part of the tangent grows with $|W||\sigma^*|/G$ and is a solver
 setting) from a solve that has lost its problem (nothing recovers it). Print this
 line every step on a new problem.
+
+## Past the conformation limit: the deformation step and the log-conformation history
+
+Two things lose the conformation at a re-entrant corner or a stagnation point at
+high Weissenberg number, and each has its own remedy.
+
+**The step.** Written in the conformation, the linear upper-convected BDF-1 step is
+
+$$c\,(1 + \Delta t/\lambda) = c^* + \Delta t\,(L c^* + c^* L^T) + (\Delta t/\lambda)\,I,$$
+
+the deformation $F c^* F^T$ with $F = I + \Delta t\,L$ less its second-order term
+$\Delta t^2 L c^* L^T$. Dropping that term is what makes the step indefinite once
+$\Delta t\,|L|$ is of order one. `convected_step="deformation"` keeps it: the
+step is $F c^* F^T + (\Delta t/\lambda) I$, positive-definite for any step and
+any velocity gradient, and still first order. With the exponential integrator the
+stretching of the relaxation target is completed to a product the same way. The
+relaxation itself needs nothing: it is linear in $c$. `max_elastic_timestep`
+returns no limit for this step.
+
+**The store.** A history stores the stress at its own points and hands it back by
+interpolation, projection or a per-cell fit. Near a corner singularity those
+undershoot, and a linear fit extrapolates to the cell edges; the stress they return
+can be indefinite although every stored value is not.
+`stress_history="log_conformation"` stores $\psi = \log c$ and the model reads
+$\sigma^* = G(e^{\psi^*} - I)$, which is a conformation whatever was done to
+$\psi$. It implies the deformation step. Every flavour transports the stored
+tensor by pure advection, so none of them changes; the step is still taken on $c$,
+so neither integrator changes.
+
+```python
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+    stokes.Unknowns, order=1, objective_rate="upper_convected",
+    stress_history="log_conformation")
+```
+
+The store then holds the dimensionless $\psi$. Read the carried stress through the
+model (`constitutive_model.stress_star`, in pascals in a units model) or
+`stokes.tau` (a projection of it); `DFDt.psi_star` is the raw record. The inflow
+datum is given as a stress and stored through the same encoding;
+`set_initial_history` takes stored values. The health check reports
+`fraction_floored`, where the logarithm's floor ($10^{-12}$, reached only by
+round-off after a positive-definite step) acted on the record.
+
+Measured on the cross-slot (creeping UCM, full resolution, forward history): the
+linear step with the stress stored stalls or hangs at every De from 0.5
+($\lambda U/H$, $H$ the half-width); with the log-conformation history the
+conformation stays above 0.33 everywhere, and a seeded run finds the purely
+elastic pitchfork, the symmetric state stable at De 0.65 and unstable at 0.8,
+onset near 0.71.
+
+Limits: first order only (the second-order schemes combine history levels with
+negative weights); the log-conformation history is 2-D only (closed-form 2x2
+logarithm and exponential); `objective_rate="upper_convected"` only. A
+geodynamic viscoelastic-plastic model with no objective rate carries stresses
+that are not conformations (compression beyond $G$ is legitimate there), so
+neither option applies to it. The deformation term makes the momentum equation
+quadratic in the velocity gradient: a solve at $\Delta t\,|L| \sim 1$ everywhere
+needs a starting velocity, as every step after the first has. The log costs about
+a quarter more error in the stress near a singular corner than storing the stress.
+`SNES_NavierStokes` (the Navier-Stokes solver that reads its history directly as
+a flux) and the multi-material model refuse the log-conformation history.
 
 ## The recommended configuration
 
