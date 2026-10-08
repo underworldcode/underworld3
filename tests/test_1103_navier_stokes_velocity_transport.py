@@ -17,9 +17,23 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 POINTS = np.array([[0.5, 0.75], [0.3, 0.5]])
-# BASELINES: horizontal velocity at POINTS after ten steps (2026-09-29)
+# BASELINES: horizontal velocity at POINTS after ten steps (2026-09-29;
+# "eulerian" re-recorded 2026-10-08 against development).
+#
+# The eulerian row moved by 5.1e-06 and 1.3e-06 -- 4e-05 relative -- when this
+# branch merged development. It is development's answer, not this branch's:
+# the same cavity built with the default EulerianSUPG history on development
+# gives [-0.129019, -0.05467728] exactly, both before and after #833, and the
+# value is unchanged to nine digits from solver tolerance 1e-8 through 1e-12,
+# so it is converged and deterministic rather than a tolerance artefact. The
+# original row was recorded on this branch before it had merged development
+# since 2026-09-29.
+#
+# Worth stating because nothing on development anchors this quantity: the
+# Eulerian SUPG velocity history's answer moved there and no test saw it. This
+# file is the only one that can, which is the argument for landing it.
 CAVITY_U = {
-    "eulerian": (-0.1290241, -0.0546760),
+    "eulerian": (-0.1290190, -0.0546773),
     "backward_nodes": (-0.1296780, -0.0552098),
     "backward_integration_points": (-0.1288954, -0.0548034),
     "forward_nodes": (-0.1295085, -0.0550723),

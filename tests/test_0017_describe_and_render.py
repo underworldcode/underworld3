@@ -157,8 +157,15 @@ def test_every_family_describes_itself_at_the_class_level(capsys):
         d = cls.describe_class()
         assert d["kind"] == "constitutive_model_family" and {t["name"] for t in d["terms"]}
     assert "yield_stress" in {t["name"] for t in uw.constitutive_models.ViscoPlasticFlowModel.describe_class()["terms"]}
+    # `SemiLagrangian` is a factory over (trace, launch); its class-level
+    # description is the default scheme's, which is what it builds when neither
+    # is given. The scheme reports its own name, not the factory's.
     d = uw.systems.ddt.SemiLagrangian.describe_class()
-    assert d["kind"] == "history_family" and d["facts"]["scheme"] == "SemiLagrangian"
+    assert d["kind"] == "history_family"
+    assert d["facts"]["scheme"] == "BackwardNodesSemiLagrangian"
+    assert (uw.systems.ddt.SemiLagrangian.describe_class()
+            is not uw.systems.ddt.ForwardNodesSemiLagrangian.describe_class), \
+        "the factory must not shadow another scheme's description"
 
 
 def test_the_capabilities_catalogue_is_the_families_in_one_record(capsys):
@@ -171,6 +178,6 @@ def test_the_capabilities_catalogue_is_the_families_in_one_record(capsys):
     full = uw.capabilities("solvers", detail="full")
     assert full["children"][0]["children"][0].get("documentation")
     uw.view(uw.capabilities("histories"))
-    assert "SemiLagrangian" in capsys.readouterr().out
+    assert "BackwardNodesSemiLagrangian" in capsys.readouterr().out
     with pytest.raises(ValueError):
         uw.capabilities("nothing")

@@ -6538,6 +6538,20 @@ def SemiLagrangian(mesh, psi_fn, V_fn, vtype=VarType.SCALAR, *, trace="backward"
     return scheme(mesh, psi_fn, V_fn, vtype, **kwargs)
 
 
+# `SemiLagrangian` is a factory, not a class, so it does not inherit the
+# class-level description API that every other family carries. Code and docs
+# written against the old class still call `SemiLagrangian.describe_class()`
+# and `.view()` -- `docs/advanced/semi-lagrangian-time-integration.md` among
+# them -- and `tests/test_0017_describe_and_render.py` requires every family to
+# answer at the class level. Both delegate to the default scheme, which is what
+# `SemiLagrangian(...)` with no `trace`/`launch` builds.
+SemiLagrangian.describe_class = _SEMI_LAGRANGIAN_SCHEMES[("backward", "nodes")].describe_class
+SemiLagrangian.view = _SEMI_LAGRANGIAN_SCHEMES[("backward", "nodes")].view
+#: The schemes the factory can build, for a caller that wants to describe one
+#: it is not asking for.
+SemiLagrangian.schemes = dict(_SEMI_LAGRANGIAN_SCHEMES)
+
+
 _RENAMED = {
     "IntegrationPointSemiLagrangian": "BackwardIntegrationPointsSemiLagrangian",
     "ForwardSemiLagrangian": "ForwardIntegrationPointsSemiLagrangian",
