@@ -1,0 +1,95 @@
+# Thin viscoelastic sheet with faults — flat and on the sphere
+
+**Status**: In progress (started 2026-10-08). Branch `feature/thin-sheet`.
+
+## Goal
+
+A vertically averaged (thin-sheet) model of the lithosphere carrying faults, on a
+flat 2-D mesh and on the surface of a sphere, with a Maxwell viscoelastic
+rheology and a viscous substrate. Headline result: the loading, slip and
+postseismic relaxation of a strike-slip fault in a viscoelastic sheet, flat first
+and then on the sphere.
+
+## The sheet
+
+With thickness $L$, tangential velocity $\mathbf u$ and the plane-stress closure
+$\sigma_{nn} = 0$ on the dynamic stress, the pressure of an incompressible
+material is eliminated: $p = \tau_{nn} = -\operatorname{tr}_s\boldsymbol\tau$, so
+
+$$
+\boldsymbol\sigma = \boldsymbol\tau + \operatorname{tr}(\boldsymbol\tau)\,\mathbf P,
+\qquad \mathbf P = \mathbf I - \hat{\mathbf n}\hat{\mathbf n}^T,
+\qquad
+-\nabla_s\cdot(L\boldsymbol\sigma) + c\,\mathbf u = \mathbf f .
+$$
+
+$\boldsymbol\tau$ is any deviatoric constitutive law of the in-plane strain rate
+$\dot{\boldsymbol\varepsilon}_s = \mathbf P\,\mathrm{sym}(\nabla_s\mathbf u)\,\mathbf P$
+— Newtonian, Maxwell (the stress history is the in-plane deviatoric stress;
+$\tau_{nn}$ follows from the trace), or yielding. $c$ is a basal drag
+($\eta_a/h_a$ for a viscous substrate); $\mathbf f$ a force per unit area.
+
+Consequences used as hard baselines:
+
+- uniaxial stretch with free lateral edges: $\sigma_{xx} = 3\eta\dot\varepsilon$ (Trouton);
+- rigid motion: $\boldsymbol\sigma = 0$ exactly;
+- Maxwell uniaxial loading: $\sigma = 3\eta\dot\varepsilon\,(1 - e^{-t\mu/\eta})$;
+- a fault in a thin sheet: Barr & Houseman (1996) Appendix (A10)–(A13) — the
+  plane-strain (A1)–(A9) solution is already in `underworld3.analytic`; the
+  thin-sheet one is to be added beside it;
+- stress diffusion with basal drag after imposed slip (Elsasser; Lehner, Li &
+  Rice 1981).
+
+Not in the first round (recorded so they are not forgotten): thickness
+evolution $\dot L = -L\,\nabla_s\cdot\mathbf u$ with the gravitational potential
+energy gradient (England & McKenzie's Argand number); yield in the sheet, whose
+invariant must include $\tau_{nn} = -\operatorname{tr}\boldsymbol\tau$ (the
+plane-strain code omits it).
+
+## Implementation
+
+`uw.systems.ThinSheet` (`systems/thin_sheet.py`) is an `SNES_Vector`: there is
+no pressure unknown, so no saddle point. Its inner `_Unknowns` hands the
+constitutive model the projected strain rate through `Unknowns.E` (the VEP model
+already reads it; `ViscousFlowModel.grad_u` now does too — identical on a volume
+mesh). Templates: `F1 = L (τ + tr τ P)`, `F0 = -f + c u`.
+
+### On the sphere
+
+The velocity is carried in the embedding space (3 components on a
+`SphericalManifold`, `dim=2`, `cdim=3`). PETSc already supplies the surface
+gradient (pseudo-inverse Jacobian) in the derivative index; the outer projection
+in $\dot{\boldsymbol\varepsilon}_s$ supplies the curvature term
+$-\mathbf u\cdot\nabla_s\hat{\mathbf n}$. Tangency $\mathbf u\cdot\hat{\mathbf n}=0$
+is imposed STRONGLY at every node through the per-node rotation of
+`utilities/rotated_bc.py` (the same machinery as rotated free-slip and the
+split-node fault constraint, so faults compose with it). A penalty was used only
+to probe feasibility and is not an API.
+
+Vector solves on a manifold needed four `dim → cdim` corrections (the manifold
+vector-FE gap): the `SNES_Vector` FE component count, its PC block size and
+default unknown, `maths/vector_calculus` (component count), and the
+`sympy.vector` truncation in `_jitextension`.
+
+### Faults on the sphere (Phase 5)
+
+The split-node pipeline is topological and survives; what has to generalise is
+geometry: great-circle crossings in `line_cut`, cell orientation by the outward
+normal in `reconnect`, the contact frame $\{\hat\nu = \hat r\times\hat t,\ \hat t,\
+\hat r\}$ in `fault_contact` (PETSc's FVM edge normal is wrong for `cdim=3`), and
+the `mesh.dim` strides in `rotated_bc`, whose rigid-rotation gauge must offer the
+three Killing fields. `mesh.adapt` (NVB) runs on the manifold already; refined
+vertices need snapping back to the sphere.
+
+## Phases
+
+0. Feasibility probes (sheet operator on S² with penalty and with the strong
+   rotation; NVB adapt on S²; splitting an arc) — scratch, not committed.
+1. Flat viscous `ThinSheet` + tests (`tests/test_1075_thin_sheet.py`).
+2. Viscoelastic sheet (Maxwell; small-strain non-advected history for fault
+   problems; Elsasser check).
+3. Faults in the flat sheet (rotated/fault BCs hoisted off the saddle class; a
+   vector-only branch of the rotated solve; BH96 thin-sheet solution).
+4. Sheet on the sphere with strong tangency and the Killing null space.
+5. Faults on the sphere.
+6. Results and examples.

@@ -54,6 +54,7 @@ from underworld3.cython.generic_solvers import (
 from .solvers import SNES_Poisson as Poisson
 from .solvers import SNES_Darcy as SteadyStateDarcy
 from .solvers import SNES_Stokes as Stokes
+from .thin_sheet import SNES_ThinSheet as ThinSheet
 from .solvers import SNES_Stokes_Constrained as Stokes_Constrained
 from .solvers import SNES_VE_Stokes as VE_Stokes
 from .solvers import SNES_Projection as Projection

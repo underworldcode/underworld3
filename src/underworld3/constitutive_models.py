@@ -975,13 +975,9 @@ class ViscousFlowModel(Constitutive_Model):
             \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
             + \frac{\partial u_j}{\partial x_i}\right)
         """
-        mesh = self.Unknowns.u.mesh
-
-        return mesh.vector.strain_tensor(self.Unknowns.u.sym)
-
-        # ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
-        # edot = (ddu + ddu.T) / 2
-        # return edot
+        # The solver owns the kinematics: Unknowns.E is sym(grad u) on a volume
+        # mesh and the in-plane (projected) strain rate on a thin sheet.
+        return sympy.Matrix(self.Unknowns.E)
 
     @property
     def plastic_fraction(self):
