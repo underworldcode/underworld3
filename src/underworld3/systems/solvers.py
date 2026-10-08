@@ -492,6 +492,300 @@ class _ConstitutiveModelStateMixin:
     CM_is_setup = constitutive_model_is_setup
 
 
+class _StressHistoryMixin:
+    """The viscoelastic stress history, shared by every solver whose
+    constitutive model carries one (Stokes, the thin sheet).
+
+    A model with ``requires_stress_history`` gets a history manager
+    (``Unknowns.DFDt``) from :meth:`_create_stress_history_ddt`; a solve then
+    runs :meth:`_stress_history_prepare` before the build,
+    :meth:`_stress_history_advance` once per step before the momentum solve,
+    and :meth:`_stress_history_post_solve` after it. The DEVSS hook is a no-op
+    here; the Stokes solver, which carries the split, overrides it.
+    """
+
+    def _devss_refresh(self, verbose=False):
+        """No DEVSS split on this solver."""
+        return
+
+    @property
+    def stress_transport(self) -> str:
+        """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
+        (default), ``"integration_point"``, ``"forward"``, ``"lagrangian"`` or
+        ``"eulerian"``.
+
+        ``"forward"`` carries the stress from a fixed set of launch points inside
+        the cells (the integration points), one forward trajectory a step, and
+        fits the arrivals per cell; the constitutive flux is read at the launch
+        points through a continuous P1 projection. It holds the Maxwell
+        start-up below Courant one where the integration-point history rings
+        (see :class:`~underworld3.systems.ddt.ForwardSemiLagrangian`).
+
+        The semi-Lagrangian history traces the stress back along characteristics
+        and stores it on a nodal field, which the assembler then interpolates to
+        the integration points: two interpolations a step. ``"integration_point"``
+        traces back to the integration points themselves and holds the history
+        there, so it carries one evaluation error and needs no projection. The
+        Eulerian one transports the stress on the grid with the same
+        streamline-upwind stabilisation the Eulerian solvers use, and gives the
+        same answer on any partition. ``"lagrangian"`` carries the stress on a
+        swarm of material points the solver creates and advects, reading the
+        constitutive flux at the particles each step and never projecting it
+        back to the mesh: no numerical diffusion of the history, at the cost of
+        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`). The default
+        is ``"semi_lagrangian"``. Set
+        it before the constitutive model is assigned: assigning the model
+        creates the history, and the choice cannot change after that.
+        """
+        return getattr(self, "_stress_transport", "semi_lagrangian")
+
+    @stress_transport.setter
+    def stress_transport(self, value):
+        value = str(value)
+        if value not in ("semi_lagrangian", "integration_point", "forward",
+                         "lagrangian", "eulerian"):
+            raise ValueError(
+                "stress_transport must be 'semi_lagrangian', 'integration_point', "
+                f"'forward', 'lagrangian' or 'eulerian', not {value!r}.")
+        if self.Unknowns.DFDt is not None:
+            raise RuntimeError(
+                "the stress history already exists: set stress_transport before the "
+                "constitutive model that asks for one.")
+        self._stress_transport = value
+
+
+    def _stress_history_prepare(self, timestep, _force_setup=False):
+        """Set the elastic timestep and the flags a rebuild depends on.
+
+        Runs BEFORE the solver is built. The effective order of the stress
+        history ramps over the opening steps, and when it changes the compiled
+        functions must be rewired; setting that flag after the build has already
+        decided whether to set up leaves the managed multigrid block asking a
+        preconditioner for sub-solvers it has not created (#727).
+        """
+        # dt_elastic must always equal the solve timestep. The constitutive
+        # model's VE formulas (eta_eff, stress history terms) all reference
+        # Parameters.dt_elastic. If it differs from the actual timestep,
+        # the stress computation is inconsistent with the time integration.
+        self.constitutive_model.Parameters.dt_elastic = timestep
+        # The integrator coefficients must be current BEFORE the history is
+        # first carried: a trace-back history initialises its first level from
+        # the constitutive flux of the velocity it finds, and with the
+        # exponential integrator that flux read the viscous-limit coefficients
+        # (alpha = phi = 0) until the update that used to follow the carry
+        # (#740). The BDF coefficients are refreshed again after the carry, as
+        # before, since they read the step history the carry updates.
+        self.constitutive_model._update_history_coefficients()
+
+        if _force_setup:
+            self._needs_function_rewire = True
+
+        # Re-setup when effective_order changes (DDt history ramp-up)
+        _current_eff_order = self.constitutive_model.effective_order
+        if _current_eff_order != self._prev_effective_order:
+            self._needs_function_rewire = True
+            self.constitutive_model._solver_is_setup = False
+        self._prev_effective_order = _current_eff_order
+
+        if not self.constitutive_model._solver_is_setup:
+            self._needs_function_rewire = True
+            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
+            # D starts from the velocity as it is now, so the DEVSS pair
+            # cancels on the first step as it does on every later one.
+            self._devss_refresh()
+
+    def _stress_history_advance(self, timestep, verbose=False, evalf=False):
+        """Carry the stress history to where the momentum solve will read it.
+
+        Runs AFTER the solver is built, and once per step: a solver that takes
+        several passes over the momentum equation (the Navier-Stokes one, with
+        its Picard corrections) must not advance the history once per pass.
+        """
+        if uw.mpi.rank == 0 and verbose:
+            print("Stokes solver - carry the stress history", flush=True)
+
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
+                                   store_result=False)
+        # Uniform pre-solve coefficient hook: VEP delegates to
+        # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
+        # α, φ on the DDt via _update_exp_coefficients(). No isinstance
+        # checks at the solver layer.
+        self.constitutive_model._update_history_coefficients()
+
+    def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
+        """Commit the stress the solve produced and shift the history levels."""
+        # The history manager places the new stress in level 0 and shifts the
+        # levels. A particle-carried history does that itself in its post-solve,
+        # by evaluating the new stress at its own particles.
+        if not self.DFDt.commits_flux_in_post_solve:
+            self.DFDt.commit_flux_to_history(_history_record(self.constitutive_model), verbose=verbose)
+
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self._devss_refresh(verbose=verbose)
+
+        # Uniform post-solve hook for any extra integrator-state storage.
+        # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
+        # forcing_star with current ε̇^{n+1} so the next step's history
+        # term has access to ε̇ⁿ.
+        self.constitutive_model._update_history_post_solve()
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+    def _create_stress_history_ddt(self, order=2):
+        """Create DFDt for stress history tracking (VE/VEP models).
+
+        Called automatically when a constitutive model with
+        ``requires_stress_history = True`` is assigned. Can also be called
+        explicitly to pre-create the DFDt with a specific order.
+        :attr:`stress_transport` chooses which flavour carries it.
+
+        Constitutive models can inject extra SemiLagrangian kwargs via the
+        ``stress_history_ddt_kwargs`` property — used e.g. by
+        ``MaxwellExponentialFlowModel`` to set ``with_forcing_history=True``.
+        """
+        if self.Unknowns.DFDt is not None:
+            return  # already created
+
+        self._order = order
+        # Constitutive model may request extra SemiLagrangian kwargs (e.g.
+        # with_forcing_history for ETD-2 integration).
+        cm = getattr(self, "constitutive_model", None)
+        ddt_kwargs = {}
+        if cm is not None:
+            ddt_kwargs = dict(getattr(cm, "stress_history_ddt_kwargs", {}))
+
+        common = dict(
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self.u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+            verbose=self.verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0001,
+            # the history carries a stress (the flux handed over at construction
+            # is a zero placeholder, so it cannot say so itself), or the
+            # dimensionless log-conformation of one
+            units=uw.units.Pa if getattr(cm, "_stress_history", "stress") == "stress" else None,
+        )
+        if self.stress_transport == "integration_point":
+            unsupported = set(ddt_kwargs) - {"with_forcing_history"}
+            if unsupported:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(unsupported)}, which the integration-point flavour "
+                    "does not provide; use stress_transport='semi_lagrangian'.")
+            self.Unknowns.DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.cdim, self.mesh.cdim),
+                self.u.sym,
+                **ddt_kwargs,
+                **{k: v for k, v in common.items() if k != "smoothing"},
+            )
+        elif self.stress_transport == "forward":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which the forward flavour does not provide; "
+                    "use stress_transport='semi_lagrangian' for it.")
+            self.Unknowns.DFDt = uw.systems.ddt.ForwardSemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.cdim, self.mesh.cdim),
+                self.u.sym,
+                vtype=common["vtype"], varsymbol=common["varsymbol"], order=order,
+                units=common["units"],
+            )
+        elif self.stress_transport == "lagrangian":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
+                    "not provide; use stress_transport='semi_lagrangian' for it.")
+            # Order 1 BDF only for now: the particle flavour has no exponential
+            # coefficients (it is built with_exp=False), and order 2 is not yet
+            # validated. Refuse cleanly rather than crash inside the first solve.
+            if getattr(cm, "_integrator", "bdf") != "bdf":
+                raise NotImplementedError(
+                    "the particle Lagrangian stress history supports the BDF "
+                    "integrator only; use stress_transport='semi_lagrangian' for the "
+                    "exponential one.")
+            if order > 1:
+                raise NotImplementedError(
+                    "the particle Lagrangian stress history is first order for now; "
+                    "use stress_transport='semi_lagrangian' for order 2.")
+            # The solver owns the swarm: Lagrangian creates and populates it, and
+            # carries the stress on it. Lagrangian_Swarm (a user-supplied swarm)
+            # stays available by passing DFDt= to the constructor.
+            # A cells proxy (discontinuous, reconstructed from the particles in
+            # each cell) is what the particle history is validated on
+            # (test_0070); the continuous nodal store the mesh flavours use is
+            # not the right target for a swarm-carried field.
+            lag_common = {k: v for k, v in common.items() if k != "continuous"}
+            self.Unknowns.DFDt = uw.systems.ddt.Lagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.cdim, self.mesh.cdim),
+                self.u.sym,
+                continuous=False,
+                proxy_location="cells",
+                **lag_common,
+            )
+        elif self.stress_transport == "eulerian":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which only the semi-Lagrangian flavour "
+                    "provides; use stress_transport='semi_lagrangian' for it.")
+            self.Unknowns.DFDt = uw.systems.ddt.EulerianSUPG(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.cdim, self.mesh.cdim),
+                self.u.sym,
+                transport_on_update=True,
+                **common,
+            )
+        else:
+            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.cdim, self.mesh.cdim),
+                self.u.sym,
+                **ddt_kwargs,
+                **common,
+            )
+        # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
+        # history term — without snapshot substitution the projection of
+        # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
+        # yield admits the wrong fixed point under timestep change.
+        self.Unknowns.DFDt.enable_source_snapshot()
+        # the history stores the model's encoding of a stress; an inflow datum
+        # is given as a stress and stored through the same encoding
+        self.Unknowns.DFDt._encode = getattr(cm, "encode_history", None)
+
+    @property
+    def tau(self):
+        r"""Deviatoric stress from the most recent solve.
+
+        When stress history is active (VEP), returns ``psi_star[0]`` which
+        contains the actual projected stress; a log-conformation history is
+        decoded into a projected stress variable. Otherwise falls through to
+        the base class lazy projection.
+        """
+        if self.Unknowns.DFDt is not None:
+            cm = self.constitutive_model
+            if getattr(cm, "_stress_history", "stress") == "stress":
+                return self.DFDt.psi_star[0]
+            if getattr(self, "_tau_decoded", None) is None:
+                self._tau_decoded = uw.discretisation.MeshVariable(
+                    "tau_decoded", self.mesh, (self.mesh.cdim, self.mesh.cdim),
+                    vtype=uw.VarType.SYM_TENSOR, degree=self.DFDt.psi_star[0].degree,
+                    continuous=True, units=uw.units.Pa if uw.get_default_model().has_units() else None)
+                self._tau_decode = uw.systems.Tensor_Projection(self.mesh, self._tau_decoded)
+                self._tau_decode.smoothing = 0.0
+            self._tau_decode.uw_function = cm._carried_stress_sym(0)
+            self._tau_decode.solve()
+            return self._tau_decoded
+        return super().tau
+
+
 class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
     r"""Poisson equation solver.
 
@@ -1373,7 +1667,7 @@ def _penalty_value(penalty_expression):
         return float("nan")      # symbolic: not a number, so not zero
 
 
-class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
+class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     r"""
     Stokes equation solver for incompressible viscous flow.
 
@@ -1566,51 +1860,6 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         if F1_source is not None and linesearch is not None:
             self.petsc_options["snes_linesearch_type"] = linesearch
 
-    @property
-    def stress_transport(self) -> str:
-        """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
-        (default), ``"integration_point"``, ``"forward"``, ``"lagrangian"`` or
-        ``"eulerian"``.
-
-        ``"forward"`` carries the stress from a fixed set of launch points inside
-        the cells (the integration points), one forward trajectory a step, and
-        fits the arrivals per cell; the constitutive flux is read at the launch
-        points through a continuous P1 projection. It holds the Maxwell
-        start-up below Courant one where the integration-point history rings
-        (see :class:`~underworld3.systems.ddt.ForwardSemiLagrangian`).
-
-        The semi-Lagrangian history traces the stress back along characteristics
-        and stores it on a nodal field, which the assembler then interpolates to
-        the integration points: two interpolations a step. ``"integration_point"``
-        traces back to the integration points themselves and holds the history
-        there, so it carries one evaluation error and needs no projection. The
-        Eulerian one transports the stress on the grid with the same
-        streamline-upwind stabilisation the Eulerian solvers use, and gives the
-        same answer on any partition. ``"lagrangian"`` carries the stress on a
-        swarm of material points the solver creates and advects, reading the
-        constitutive flux at the particles each step and never projecting it
-        back to the mesh: no numerical diffusion of the history, at the cost of
-        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`). The default
-        is ``"semi_lagrangian"``. Set
-        it before the constitutive model is assigned: assigning the model
-        creates the history, and the choice cannot change after that.
-        """
-        return getattr(self, "_stress_transport", "semi_lagrangian")
-
-    @stress_transport.setter
-    def stress_transport(self, value):
-        value = str(value)
-        if value not in ("semi_lagrangian", "integration_point", "forward",
-                         "lagrangian", "eulerian"):
-            raise ValueError(
-                "stress_transport must be 'semi_lagrangian', 'integration_point', "
-                f"'forward', 'lagrangian' or 'eulerian', not {value!r}.")
-        if self.Unknowns.DFDt is not None:
-            raise RuntimeError(
-                "the stress history already exists: set stress_transport before the "
-                "constitutive model that asks for one.")
-        self._stress_transport = value
-
     # ----- DEVSS: stabilising a discontinuous elastic stress -----
 
     @property
@@ -1698,212 +1947,6 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             self._devss_D.array[:, i, j] = values
             if i != j:
                 self._devss_D.array[:, j, i] = values
-
-    def _stress_history_prepare(self, timestep, _force_setup=False):
-        """Set the elastic timestep and the flags a rebuild depends on.
-
-        Runs BEFORE the solver is built. The effective order of the stress
-        history ramps over the opening steps, and when it changes the compiled
-        functions must be rewired; setting that flag after the build has already
-        decided whether to set up leaves the managed multigrid block asking a
-        preconditioner for sub-solvers it has not created (#727).
-        """
-        # dt_elastic must always equal the solve timestep. The constitutive
-        # model's VE formulas (eta_eff, stress history terms) all reference
-        # Parameters.dt_elastic. If it differs from the actual timestep,
-        # the stress computation is inconsistent with the time integration.
-        self.constitutive_model.Parameters.dt_elastic = timestep
-        # The integrator coefficients must be current BEFORE the history is
-        # first carried: a trace-back history initialises its first level from
-        # the constitutive flux of the velocity it finds, and with the
-        # exponential integrator that flux read the viscous-limit coefficients
-        # (alpha = phi = 0) until the update that used to follow the carry
-        # (#740). The BDF coefficients are refreshed again after the carry, as
-        # before, since they read the step history the carry updates.
-        self.constitutive_model._update_history_coefficients()
-
-        if _force_setup:
-            self._needs_function_rewire = True
-
-        # Re-setup when effective_order changes (DDt history ramp-up)
-        _current_eff_order = self.constitutive_model.effective_order
-        if _current_eff_order != self._prev_effective_order:
-            self._needs_function_rewire = True
-            self.constitutive_model._solver_is_setup = False
-        self._prev_effective_order = _current_eff_order
-
-        if not self.constitutive_model._solver_is_setup:
-            self._needs_function_rewire = True
-            self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
-            # D starts from the velocity as it is now, so the DEVSS pair
-            # cancels on the first step as it does on every later one.
-            self._devss_refresh()
-
-    def _stress_history_advance(self, timestep, verbose=False, evalf=False):
-        """Carry the stress history to where the momentum solve will read it.
-
-        Runs AFTER the solver is built, and once per step: a solver that takes
-        several passes over the momentum equation (the Navier-Stokes one, with
-        its Picard corrections) must not advance the history once per pass.
-        """
-        if uw.mpi.rank == 0 and verbose:
-            print("Stokes solver - carry the stress history", flush=True)
-
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
-                                   store_result=False)
-        # Uniform pre-solve coefficient hook: VEP delegates to
-        # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
-        # α, φ on the DDt via _update_exp_coefficients(). No isinstance
-        # checks at the solver layer.
-        self.constitutive_model._update_history_coefficients()
-
-    def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
-        """Commit the stress the solve produced and shift the history levels."""
-        # The history manager places the new stress in level 0 and shifts the
-        # levels. A particle-carried history does that itself in its post-solve,
-        # by evaluating the new stress at its own particles.
-        if not self.DFDt.commits_flux_in_post_solve:
-            self.DFDt.commit_flux_to_history(_history_record(self.constitutive_model), verbose=verbose)
-
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-        self._devss_refresh(verbose=verbose)
-
-        # Uniform post-solve hook for any extra integrator-state storage.
-        # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
-        # forcing_star with current ε̇^{n+1} so the next step's history
-        # term has access to ε̇ⁿ.
-        self.constitutive_model._update_history_post_solve()
-
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-
-    def _create_stress_history_ddt(self, order=2):
-        """Create DFDt for stress history tracking (VE/VEP models).
-
-        Called automatically when a constitutive model with
-        ``requires_stress_history = True`` is assigned. Can also be called
-        explicitly to pre-create the DFDt with a specific order.
-        :attr:`stress_transport` chooses which flavour carries it.
-
-        Constitutive models can inject extra SemiLagrangian kwargs via the
-        ``stress_history_ddt_kwargs`` property — used e.g. by
-        ``MaxwellExponentialFlowModel`` to set ``with_forcing_history=True``.
-        """
-        if self.Unknowns.DFDt is not None:
-            return  # already created
-
-        self._order = order
-        # Constitutive model may request extra SemiLagrangian kwargs (e.g.
-        # with_forcing_history for ETD-2 integration).
-        cm = getattr(self, "constitutive_model", None)
-        ddt_kwargs = {}
-        if cm is not None:
-            ddt_kwargs = dict(getattr(cm, "stress_history_ddt_kwargs", {}))
-
-        common = dict(
-            vtype=uw.VarType.SYM_TENSOR,
-            degree=self.u.degree - 1,
-            continuous=True,
-            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-            verbose=self.verbose,
-            bcs=None,
-            order=order,
-            smoothing=0.0001,
-            # the history carries a stress (the flux handed over at construction
-            # is a zero placeholder, so it cannot say so itself), or the
-            # dimensionless log-conformation of one
-            units=uw.units.Pa if getattr(cm, "_stress_history", "stress") == "stress" else None,
-        )
-        if self.stress_transport == "integration_point":
-            unsupported = set(ddt_kwargs) - {"with_forcing_history"}
-            if unsupported:
-                raise NotImplementedError(
-                    f"{type(cm).__name__} asks its stress history for "
-                    f"{sorted(unsupported)}, which the integration-point flavour "
-                    "does not provide; use stress_transport='semi_lagrangian'.")
-            self.Unknowns.DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                **ddt_kwargs,
-                **{k: v for k, v in common.items() if k != "smoothing"},
-            )
-        elif self.stress_transport == "forward":
-            if ddt_kwargs:
-                raise NotImplementedError(
-                    f"{type(cm).__name__} asks its stress history for "
-                    f"{sorted(ddt_kwargs)}, which the forward flavour does not provide; "
-                    "use stress_transport='semi_lagrangian' for it.")
-            self.Unknowns.DFDt = uw.systems.ddt.ForwardSemiLagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                vtype=common["vtype"], varsymbol=common["varsymbol"], order=order,
-                units=common["units"],
-            )
-        elif self.stress_transport == "lagrangian":
-            if ddt_kwargs:
-                raise NotImplementedError(
-                    f"{type(cm).__name__} asks its stress history for "
-                    f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
-                    "not provide; use stress_transport='semi_lagrangian' for it.")
-            # Order 1 BDF only for now: the particle flavour has no exponential
-            # coefficients (it is built with_exp=False), and order 2 is not yet
-            # validated. Refuse cleanly rather than crash inside the first solve.
-            if getattr(cm, "_integrator", "bdf") != "bdf":
-                raise NotImplementedError(
-                    "the particle Lagrangian stress history supports the BDF "
-                    "integrator only; use stress_transport='semi_lagrangian' for the "
-                    "exponential one.")
-            if order > 1:
-                raise NotImplementedError(
-                    "the particle Lagrangian stress history is first order for now; "
-                    "use stress_transport='semi_lagrangian' for order 2.")
-            # The solver owns the swarm: Lagrangian creates and populates it, and
-            # carries the stress on it. Lagrangian_Swarm (a user-supplied swarm)
-            # stays available by passing DFDt= to the constructor.
-            # A cells proxy (discontinuous, reconstructed from the particles in
-            # each cell) is what the particle history is validated on
-            # (test_0070); the continuous nodal store the mesh flavours use is
-            # not the right target for a swarm-carried field.
-            lag_common = {k: v for k, v in common.items() if k != "continuous"}
-            self.Unknowns.DFDt = uw.systems.ddt.Lagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                continuous=False,
-                proxy_location="cells",
-                **lag_common,
-            )
-        elif self.stress_transport == "eulerian":
-            if ddt_kwargs:
-                raise NotImplementedError(
-                    f"{type(cm).__name__} asks its stress history for "
-                    f"{sorted(ddt_kwargs)}, which only the semi-Lagrangian flavour "
-                    "provides; use stress_transport='semi_lagrangian' for it.")
-            self.Unknowns.DFDt = uw.systems.ddt.EulerianSUPG(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                transport_on_update=True,
-                **common,
-            )
-        else:
-            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                **ddt_kwargs,
-                **common,
-            )
-        # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
-        # history term — without snapshot substitution the projection of
-        # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
-        # yield admits the wrong fixed point under timestep change.
-        self.Unknowns.DFDt.enable_source_snapshot()
-        # the history stores the model's encoding of a stress; an inflow datum
-        # is given as a stress and stored through the same encoding
-        self.Unknowns.DFDt._encode = getattr(cm, "encode_history", None)
 
     @timing.routine_timer_decorator
     @memprobe.instrument("Stokes.solve")
@@ -2114,31 +2157,6 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         ("bodyforce", "body force per unit volume; F0 is its negative"),
         ("penalty", "augmented-Lagrangian grad-div penalty (0 = off)"),
     )
-
-    @property
-    def tau(self):
-        r"""Deviatoric stress from the most recent solve.
-
-        When stress history is active (VEP), returns ``psi_star[0]`` which
-        contains the actual projected stress; a log-conformation history is
-        decoded into a projected stress variable. Otherwise falls through to
-        the base class lazy projection.
-        """
-        if self.Unknowns.DFDt is not None:
-            cm = self.constitutive_model
-            if getattr(cm, "_stress_history", "stress") == "stress":
-                return self.DFDt.psi_star[0]
-            if getattr(self, "_tau_decoded", None) is None:
-                self._tau_decoded = uw.discretisation.MeshVariable(
-                    "tau_decoded", self.mesh, (self.mesh.dim, self.mesh.dim),
-                    vtype=uw.VarType.SYM_TENSOR, degree=self.DFDt.psi_star[0].degree,
-                    continuous=True, units=uw.units.Pa if uw.get_default_model().has_units() else None)
-                self._tau_decode = uw.systems.Tensor_Projection(self.mesh, self._tau_decoded)
-                self._tau_decode.smoothing = 0.0
-            self._tau_decode.uw_function = cm._carried_stress_sym(0)
-            self._tau_decode.solve()
-            return self._tau_decoded
-        return super().tau
 
     # =========================================================================
     # PETSc Residual Templates

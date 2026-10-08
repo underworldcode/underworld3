@@ -49,7 +49,7 @@ from underworld3.function import expression
 from underworld3.systems import SNES_Vector
 from underworld3.utilities._api_tools import Template
 
-from .solvers import _ConstitutiveModelStateMixin
+from .solvers import _ConstitutiveModelStateMixin, _StressHistoryMixin
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 
@@ -93,7 +93,7 @@ def _tangent_projector(mesh):
     return sympy.eye(mesh.cdim) - n.T * n
 
 
-class SNES_ThinSheet(_ConstitutiveModelStateMixin, SNES_Vector):
+class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vector):
     r"""Vertically averaged thin sheet (plane stress), viscous or viscoelastic.
 
     Solves
@@ -179,6 +179,50 @@ class SNES_ThinSheet(_ConstitutiveModelStateMixin, SNES_Vector):
         )
         self._needs_function_rewire = True
         self._constitutive_model = None
+        # Last-seen effective order of the stress history (it ramps over the
+        # opening steps); a change rewires the pointwise functions.
+        self._prev_effective_order = None
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = None,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose: bool = False,
+        evalf: bool = False,
+        divergence_retries: int = 0,
+    ):
+        """Solve the sheet momentum balance; with a viscoelastic constitutive
+        model, carry the stress history across the step first.
+
+        Parameters
+        ----------
+        timestep : float
+            Required when the constitutive model carries a stress history: the
+            elastic timestep of the Maxwell element.
+        zero_init_guess, verbose, divergence_retries
+            As for :meth:`SNES_Vector.solve`.
+        evalf : bool, default False
+            Numerical evaluation during the history carry.
+        """
+        if self.Unknowns.DFDt is None:
+            super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
+                          divergence_retries=divergence_retries)
+            return
+        if timestep is None:
+            raise ValueError(
+                "timestep is required for a viscoelastic sheet: call "
+                "sheet.solve(timestep=dt)")
+        self._stress_history_prepare(timestep, _force_setup=_force_setup)
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+        self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
+        super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
+                      divergence_retries=divergence_retries)
+        self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
 
     # ------------------------------------------------------------------
     # geometry
