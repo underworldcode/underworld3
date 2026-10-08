@@ -2400,7 +2400,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         ``"none"``, :math:`L\sigma + \sigma L^T` for ``"upper_convected"``,
         :math:`W\sigma - \sigma W` with :math:`W = (L - L^T)/2` for
         ``"jaumann"``. Symmetric whenever ``sigma`` is."""
-        dim = self.Unknowns.u.mesh.dim
+        # the carried stress has one component per embedding dimension
+        dim = self.Unknowns.u.mesh.cdim
         if self._objective_rate == "none":
             return sympy.zeros(dim, dim)
         sigma = sympy.Matrix(sigma)

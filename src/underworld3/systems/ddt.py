@@ -1809,7 +1809,9 @@ class Eulerian(_DDtBase):
                     self.mesh, self.psi_star[0], verbose=False
                 )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
-            dim = self.mesh.dim
+            # a tensor history has one index per EMBEDDING dimension (a 3x3
+            # stress on a sheet in three-space)
+            dim = self.mesh.cdim
             if self.vtype == uw.VarType.SYM_TENSOR:
                 Nc = math.comb(dim + 1, 2)  # 3 in 2D, 6 in 3D
                 self._psi_star_indep_indices = [
@@ -2190,7 +2192,7 @@ class EulerianSUPG(Eulerian):
 
     @V_fn.setter
     def V_fn(self, value):
-        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.dim)
+        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.cdim)
 
     @property
     def integrator(self) -> str:
@@ -2200,7 +2202,7 @@ class EulerianSUPG(Eulerian):
         """The velocity carrying the unknown at ``states()[level]``."""
         if level == 0 or not self.V_fn_history:
             return self.V_fn
-        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.dim)
+        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.cdim)
 
     @property
     def tau_shape(self) -> str:
@@ -2530,7 +2532,7 @@ class CharacteristicTrace:
 
     def _new_level(self, k):
         snap = uw.discretisation.MeshVariable(
-            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.dim,
+            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.cdim,
             degree=self.velocity_degree(), continuous=True,
             varsymbol=rf"{{ V^{{ (n-{k}) }}_{{ [{self.instance_number}] }} }}",
             units=self.velocity_units(),
@@ -2556,7 +2558,7 @@ class CharacteristicTrace:
     def _evaluate_into(self, level):
         vals = uw.function.evaluate(self.V_matrix(), np.asarray(level["var"].coords_nd))
         vals = _to_nondim_ndarray(vals, units=self.velocity_units())
-        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.cdim)
 
     def initialise_levels(self, n):
         """Every cached level ``1 .. n-1`` <- ``V_fn`` now (a history starting
@@ -2611,7 +2613,7 @@ class CharacteristicTrace:
             v_at_pts = np.asarray(v_result)
             v_at_pts = v_at_pts[:, 0, :] if v_at_pts.ndim == 3 else v_at_pts
         out = _to_nondim_ndarray(v_at_pts, units=uw.get_units(self.V_fn))
-        return np.asarray(out).reshape(coords.shape[0], self.mesh.dim)
+        return np.asarray(out).reshape(coords.shape[0], self.mesh.cdim)
 
     # -- the steps and the trace -----------------------------------------------
 

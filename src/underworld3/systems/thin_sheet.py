@@ -211,6 +211,12 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         if mesh.dim < mesh.cdim:
             from underworld3.utilities.rotated_bc import SHEET_TANGENCY
             self._rotated_freeslip_bcs.append((SHEET_TANGENCY, _sheet_normal(mesh)))
+            # A stress history on a surface mesh is carried on the grid (the
+            # streamline-upwind transport the Eulerian solvers use): the
+            # semi-Lagrangian trace-back leaves the faceted surface and is not
+            # validated there. Measured: a Killing field stays exact (3e-10)
+            # over the steps with the grid history.
+            self._stress_transport = "eulerian"
         # Last-seen effective order of the stress history (it ramps over the
         # opening steps); a change rewires the pointwise functions.
         self._prev_effective_order = None

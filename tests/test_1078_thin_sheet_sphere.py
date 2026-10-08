@@ -100,3 +100,31 @@ def test_manufactured_toroidal_solution_converges_at_second_order():
     order = np.log(errors[0.2] / errors[0.1]) / np.log(2.0)
     assert errors[0.1] < 3.0e-3, errors
     assert order > 1.7, f"order {order:.2f}: {errors}"
+
+
+@pytest.mark.tier_b
+def test_a_maxwell_sheet_keeps_a_rigid_rotation_stress_free():
+    """With the grid-carried stress history, the Killing field stays the exact
+    solution step after step and the carried stress stays at round-off."""
+    sphere = _sphere(0.25)
+    X = sphere.X
+    x, y, z = X[0], X[1], X[2]
+    omega = sympy.Matrix([[sympy.Rational(1, 3), sympy.Rational(-1, 2), sympy.Rational(2, 7)]])
+    rot = sympy.Matrix([[omega[1] * z - omega[2] * y,
+                         omega[2] * x - omega[0] * z,
+                         omega[0] * y - omega[1] * x]])
+    sheet = uw.systems.ThinSheet(sphere)
+    sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        sheet.Unknowns, order=1, integrator="etd")
+    sheet.constitutive_model.Parameters.shear_viscosity_0 = 10
+    sheet.constitutive_model.Parameters.shear_modulus = 1
+    sheet.basal_drag = 2
+    sheet.bodyforce = list(2 * rot)
+    sheet.tolerance = 1.0e-9
+    c = sheet.u.coords
+    exact = np.cross(np.array([1 / 3, -1 / 2, 2 / 7]), c)
+    for _ in range(4):
+        sheet.solve(timestep=0.1, zero_init_guess=False)
+        assert np.abs(sheet.u.array[:, 0, :] - exact).max() < 1.0e-7
+        assert np.abs(np.asarray(sheet.tau.array)).max() < 1.0e-7
+        assert _leak(sheet) < 1.0e-13

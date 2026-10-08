@@ -1787,7 +1787,8 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self.vtype != uw.VarType.SYM_TENSOR:
             return self._sym.reshape(1, len(self._sym))
         else:
-            if self.mesh.dim == 2:
+            # Voigt order of a tensor with one index per EMBEDDING dimension
+            if self.mesh.cdim == 2:
                 return sympy.Matrix(
                     [
                         self._sym[0, 0],
@@ -1808,22 +1809,23 @@ class _BaseMeshVariable(Stateful, uw_object):
                 ).T
 
     def _data_layout(self, i, j=None):
-        # mapping
+        # mapping; vectors and tensors carry one component per EMBEDDING
+        # dimension (cdim), which is what sizes the layout on a manifold mesh
 
         if self.vtype == uw.VarType.SCALAR:
             return 0
         if self.vtype == uw.VarType.VECTOR:
             if i < 0 or j < 0:
-                return self.mesh.dim
+                return self.mesh.cdim
             else:
                 if j is None:
                     return i
                 elif i == 0:
                     return j
                 else:
-                    raise IndexError(f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} ")
+                    raise IndexError(f"Vectors have shape {self.mesh.cdim} or {(1, self.mesh.cdim)} ")
         if self.vtype == uw.VarType.TENSOR:
-            if self.mesh.dim == 2:
+            if self.mesh.cdim == 2:
                 if i < 0 or j < 0:
                     return 4
                 else:
@@ -1835,7 +1837,7 @@ class _BaseMeshVariable(Stateful, uw_object):
                     return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
 
         if self.vtype == uw.VarType.SYM_TENSOR:
-            if self.mesh.dim == 2:
+            if self.mesh.cdim == 2:
                 if i < 0 or j < 0:
                     return 3
                 else:
