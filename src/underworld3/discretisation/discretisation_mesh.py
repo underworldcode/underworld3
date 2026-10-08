@@ -3523,7 +3523,8 @@ class Mesh(Stateful, uw_object):
         * **analytic** (default) — the closure installed by the mesh constructor
           (radial on an annulus/sphere, face clamps on a box). Cheap and exact **while
           the boundary keeps the shape it was written for**.
-        * **general facet restore** (once :meth:`deform` has moved the geometry) — the
+        * **general facet restore** (once :meth:`deform` has moved the geometry, and for
+          any mesh with no analytic closure at all — every mesh read from a file) — the
           nearest point on the mesh's CURRENT boundary facets, with an outward-normal
           side test (:meth:`_facet_return_coords_to_bounds`).
 
@@ -3538,7 +3539,14 @@ class Mesh(Stateful, uw_object):
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
         """
-        if getattr(self, "_geometry_deformed", False):
+        if (getattr(self, "_geometry_deformed", False)
+                or self._analytic_return_coords_to_bounds is None):
+            # No analytic closure means a mesh built from a file (every gmsh mesh), which
+            # is where the benchmark geometries live. Without this they returned None and
+            # a trace-back foot leaving through an inlet was never restored: it fell
+            # through to the evaluator's distance-weighted fallback, which is both slow
+            # and wrong. The general restore already handles that case, and returns
+            # interior points untouched, so it is the right fallback rather than nothing.
             return self._facet_return_coords_to_bounds
         return self._analytic_return_coords_to_bounds
 
@@ -3558,7 +3566,13 @@ class Mesh(Stateful, uw_object):
             return cache[1], cache[2]
 
         cdim = self.cdim
-        facets, opp = _boundary_facets(self, cdim)
+        # The DM's boundary label separates domain faces from partition faces;
+        # the topological search (a facet in exactly one local cell) cannot, and
+        # on a distributed mesh would restore every foot crossing a rank seam to
+        # that seam. Only a mesh without the label falls back to the search.
+        facets, opp = self._labelled_boundary_facets()
+        if facets is None:
+            facets, opp = _boundary_facets(self, cdim)
         if facets is None:                      # non-simplicial: no general restore
             self._bnd_restore_cache = (stamp, None, None)
             return None, None
@@ -3575,6 +3589,31 @@ class Mesh(Stateful, uw_object):
         n[flip] *= -1.0
         self._bnd_restore_cache = (stamp, fpts, n)
         return fpts, n
+
+    def _labelled_boundary_facets(self):
+        """Boundary facets and the opposite cell vertex from the DM's own
+        ``All_Boundaries`` label: ``(facets, opp)`` as :func:`_boundary_facets`
+        returns them (vertex indices in point order), or ``(None, None)`` when
+        the label is absent or the mesh is not simplicial."""
+        dm = self.dm
+        if not dm.hasLabel("All_Boundaries"):
+            return None, None
+        label = dm.getLabel("All_Boundaries")
+        d = self.dim
+        f0, f1 = dm.getHeightStratum(1)
+        v0, v1 = dm.getDepthStratum(0)
+        facets, opp = [], []
+        for f in range(f0, f1):
+            if dm.getSupportSize(f) != 1 or label.getValue(f) == -1:
+                continue
+            fverts = [p for p in dm.getTransitiveClosure(f)[0] if v0 <= p < v1]
+            cverts = [p for p in dm.getTransitiveClosure(dm.getSupport(f)[0])[0] if v0 <= p < v1]
+            if len(fverts) != d or len(cverts) != d + 1:
+                return None, None
+            facets.append([p - v0 for p in fverts])
+            opp.append([p for p in cverts if p not in fverts][0] - v0)
+        return (numpy.array(facets, dtype=int).reshape(-1, d),
+                numpy.array(opp, dtype=int).reshape(-1))
 
     def _facet_return_coords_to_bounds(self, coords):
         """General restore: snap points lying OUTSIDE the current boundary to just inside
@@ -3599,8 +3638,10 @@ class Mesh(Stateful, uw_object):
         owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
         nvec = nrm[owner]
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
+        # get_min_radius is collective: read it on every rank, not only on the
+        # ranks that have a point to restore
+        eps = 1.0e-3 * float(self.get_min_radius())
         if numpy.any(outside):
-            eps = 1.0e-3 * float(self.get_min_radius())
             pts[outside] = closest[outside] - eps * nvec[outside]
         return pts
 

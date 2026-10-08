@@ -69,6 +69,7 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
+from .solvers import SNES_AdvectionDiffusion_Swarm as AdvDiffusionSwarm
 # The generic names are the composing solvers: the transport (assembled SUPG
 # advection, or a semi-Lagrangian history) is the DDt manager they hold.
 from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_Composed as AdvDiffusion
@@ -94,6 +95,7 @@ from .solver_health import SubSolveReport
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
 from .ddt import IntegrationPointSemiLagrangian as IntegrationPointSemiLagrangian_DDt
+from .ddt import ForwardSemiLagrangian as ForwardSemiLagrangian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
 from .ddt import EulerianSUPG as EulerianSUPG_DDt
