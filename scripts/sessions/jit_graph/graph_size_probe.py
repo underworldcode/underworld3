@@ -1,5 +1,5 @@
-"""Size of a kernel's shared graph of named sub-expressions against the tree the
-current JIT expands it into (#823). Builds the campaign notch model, does NOT solve,
+"""Size of a kernel's shared graph of named sub-expressions against the tree the tier 1
+JIT expanded it into (#823). Builds the campaign notch model, does NOT solve,
 and never expands: the expanded size is counted by dynamic programming over the graph.
 """
 import os, sys, time

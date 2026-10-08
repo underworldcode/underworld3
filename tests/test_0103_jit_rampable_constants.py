@@ -145,6 +145,11 @@ def test_same_named_placeholders_order_deterministically():
     between MPI ranks and the cross-rank hash check aborts the run, on roughly
     half of launches. This test is the deterministic proxy: distinct sort keys,
     and a sum that canonicalises the same however it is written.
+
+    Since #823 the placeholders no longer reach the generated C: the graph writes
+    each constant leaf as ``constants[i]`` directly, in canonical order, and
+    ``test_0105`` holds the C to one hash under every seed. This test keeps the
+    placeholders' own semantics, which code that substitutes them relies on.
     """
     import sympy
     from underworld3.utilities._jitextension import _JITConstant

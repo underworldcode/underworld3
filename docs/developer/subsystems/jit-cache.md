@@ -38,7 +38,8 @@ processes.
 `getext()` lowers each callback onto the shared graph of named quantities
 (`src/underworld3/utilities/_jit_graph.py`, design note
 `docs/developer/design/jit-shared-graph-codegen.md`): each non-constant `UWexpression`
-becomes one C temporary, evaluated once per quadrature point, and the Newton tangent is
+becomes one C temporary, evaluated once per kernel call (a matrix-valued atom is
+expanded in place), and the Newton tangent is
 formed through those quantities by the chain rule. The temporaries are ordered and merged
 by a hash of the C each computes, with every leaf written as the C the kernel reads
 (`petsc_u[3]`, `petsc_x[0]`, `constants[2]`). The generated source, and so the key below,

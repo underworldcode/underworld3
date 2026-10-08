@@ -81,7 +81,9 @@ if profiler:
         "subs": ("sympy/core/basic.py", "subs"),
         "as_real_imag (Pow)": ("sympy/core/power.py", "as_real_imag"),
         "_jacobian_unwrap": ("underworld3/cython/petsc_generic_snes_solvers", "_jacobian_unwrap"),
-        "_extract_constants": ("underworld3/utilities/_jitextension.py", "_extract_constants"),
+        "_extract_constants (tier 1 build)": ("underworld3/utilities/_jitextension.py", "_extract_constants"),
+        "lower_callbacks (graph build)": ("underworld3/utilities/_jit_graph.py", "lower_callbacks"),
+        "emit (graph build)": ("underworld3/utilities/_jit_graph.py", "emit"),
         "compile_and_load": ("underworld3/utilities/_jitextension.py", "compile_and_load"),
     }
     for label, (path, func) in groups.items():

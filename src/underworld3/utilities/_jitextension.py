@@ -1,5 +1,6 @@
 from typing import Optional
 import os
+import re
 import shutil
 import subprocess
 from xmlrpc.client import boolean
@@ -290,16 +291,20 @@ class JITCallbackSet:
 # ============================================================================
 
 class _JITConstant(sympy.Symbol):
-    r"""Symbol subclass that renders as ``constants[i]`` in generated C code.
+    r"""A ``constants[]`` slot of the manifest: the placeholder each manifested
+    constant maps to, carrying its C, ``constants[i]``.
 
-    Used by the JIT compiler to route constant UWexpressions through PETSc's
-    ``PetscDSSetConstants()`` mechanism instead of baking values as C literals.
+    Constant UWexpressions are routed through PETSc's ``PetscDSSetConstants()``
+    instead of being baked as C literals. The graph lowering (#823) writes each
+    constant leaf as ``constants[i]`` from this placeholder; the placeholder itself
+    no longer appears in the expressions that are printed, so its identity and
+    ordering below now matter to code that substitutes it into an expression (as
+    ``test_0103`` does), not to the generated C, whose order is canonical.
 
     Two constants may legitimately share a display name — every
     ``ViscousFlowModel`` calls its viscosity :math:`\eta`, so a two-material
     model has two of them — and each needs its own ``constants[]`` slot. Two
-    separate SymPy properties have to hold for that to work, and they are not
-    the same property:
+    separate SymPy properties hold for that, and they are not the same property:
 
     **Identity** — the slot index is in ``_hashable_content``, and the symbol
     is built with ``Symbol.__xnew__`` to bypass SymPy's ``(cls, name)``
@@ -311,13 +316,10 @@ class _JITConstant(sympy.Symbol):
     **Ordering** — the slot index is also in the NAME. ``_hashable_content``
     does nothing for ``Symbol.sort_key()``, which is derived from the name, so
     two same-named placeholders sort equal; term order inside an ``Add`` then
-    falls back to hash order, which is randomised per process. The generated C
-    then differs between MPI ranks and ``getext``'s cross-rank hash check
-    aborts the run — intermittently, since it depends on the hash seed.
+    falls back to hash order, which is randomised per process. (When the
+    placeholders were printed, that made the generated C differ between MPI ranks.)
 
-    Identity without ordering is a parallel abort; ordering without identity is
-    a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
-    pins each one separately.
+    ``tests/test_0103_jit_rampable_constants.py`` pins each one separately.
 
     A slot holds a C double, so it is built ``real`` (real and finite) for SymPy's
     simplification (#823). Declared at construction, not by a class handler: SymPy
@@ -362,6 +364,11 @@ def _extract_constants(all_fns, mesh):
         Mapping from UWexpression to _JITConstant symbol.
     """
     lowered = _jit_graph.lower_callbacks([fn for fn in all_fns if fn is not None], mesh)
+    return _manifest_from(_jit_graph.constant_leaves(lowered))
+
+
+def _manifest_of(lowered):
+    """``(manifest, subs_map)`` of callbacks already lowered (``_jit_graph``)."""
     return _manifest_from(_jit_graph.constant_leaves(lowered))
 
 
@@ -497,11 +504,6 @@ def _is_truly_constant(expr, UWexpression):
             return False
         if isinstance(sym, sympy.Function):
             return False
-        # UnderworldFunction symbols have _ccodestr pointing to petsc arrays
-        if hasattr(sym, '_ccodestr') and not isinstance(sym, _JITConstant):
-            ccode = sym._ccodestr
-            if 'petsc_u' in ccode or 'petsc_a' in ccode or 'petsc_x' in ccode or 'petsc_n' in ccode:
-                return False
         # Other UWexpressions that didn't fully unwrap — not constant
         if isinstance(sym, UWexpression):
             return False
@@ -659,8 +661,7 @@ def getext(
     # Each callback is lowered onto the shared graph of named quantities once
     # (``_jit_graph``, #823); the manifest is the constant leaves of what was lowered.
     lowered_fns = _jit_graph.lower_callbacks(callbacks.flat(), mesh)
-    constants_manifest, constants_subs_map = _manifest_from(
-        _jit_graph.constant_leaves(lowered_fns))
+    constants_manifest, constants_subs_map = _manifest_of(lowered_fns)
 
     if debug and underworld3.mpi.rank == 0:
         if constants_manifest:
@@ -677,11 +678,11 @@ def getext(
         mesh,
         callbacks,
         primary_field_list,
-        constants_subs_map=constants_subs_map,
+        lowered_fns,
+        constants_subs_map,
         verbose=verbose,
         debug=debug,
         debug_name=debug_name,
-        lowered_fns=lowered_fns,
     )
     gen_randstr = diag["randstr"]
 
@@ -710,10 +711,12 @@ def getext(
     # rank-0-compiles/others-load protocol would break.
     #
     # Agreement used to be REQUIRED here, and a mismatch was a hard error. It
-    # fires in practice: the lowering above is not yet deterministic across
-    # ranks (#752), and a Stokes solve with a power-law transversely isotropic
-    # viscosity trips it in roughly half of np=2 runs. What we measured there
-    # matters for why this is safe to repair rather than refuse:
+    # fired in practice before the graph lowering (#752): a Stokes solve with a
+    # power-law transversely isotropic viscosity tripped it in about one np=2 run
+    # in five. The graph's emission is canonical by construction (temporaries
+    # ordered by a hash of their C, leaves written as the C they read), and the
+    # #752 fixture now agrees at np = 2, 3 and 4; the check stays as a guard. What
+    # was measured on the disagreeing runs is why repairing is safe:
     #
     #   * the sources differ only in the ORDER of factors in commutative
     #     products — identical token multisets, identical length, identical
@@ -728,9 +731,8 @@ def getext(
     # rank rehashes from it, which restores the one invariant that matters: one
     # source, one hash, one module.
     #
-    # This is a REPAIR, not a fix. The non-determinism upstream is still a bug
-    # and still worth finding, which is why it is said out loud rather than
-    # papered over silently.
+    # A disagreement is a defect in the lowering, which is why it is reported
+    # rather than papered over silently.
     canonical_codeguys, canonical_source, source_hash = _agree_source_across_ranks(
         canonical_codeguys, canonical_source, source_hash
     )
@@ -875,6 +877,9 @@ def getext(
     )
 
 
+_NUMBER_DECLARATION = re.compile(r"const double [A-Za-z_]\w* = [^;]*;")
+
+
 class _Unspellable(Exception):
     """A leaf the kernel has no C for."""
 
@@ -962,10 +967,7 @@ def _spell_leaf(leaf, spellings, constants_subs_map):
         # the mesh names its coordinates; a fresh instance, or a UWCoordinate that
         # SymPy's cache returned for its equal base scalar, is named from its index
         # and system
-        try:
-            text = leaf._ccodestr
-        except AttributeError:
-            text = None
+        text = getattr(leaf, "_ccodestr", None)
         if isinstance(text, str):
             return text
         idx, system = leaf._id[0], str(leaf._id[1])
@@ -984,6 +986,7 @@ def _spell_leaf(leaf, spellings, constants_subs_map):
 
 
 def _unconvertible_message(symbols, index, fn_original):
+    """The message for leaves of kernel ``index`` that have no C."""
     details = []
     for sym in symbols:
         detail = f"  - {sym} (type: {type(sym).__name__})"
@@ -1014,16 +1017,29 @@ def _unconvertible_message(symbols, index, fn_original):
 
 def _print_kernel(printer, temporaries, outputs, out):
     """The C body of one kernel: a ``const double`` per temporary, in order, then
-    the outputs. A SymPy function the printer cannot write returns its
-    ``// Not supported in C:`` text, which the caller refuses."""
-    lines = []
+    the outputs. The printer declares a number symbol it reads (``EulerGamma``,
+    ``Catalan``) before the code that reads it; each declaration is written once, at
+    the top. A SymPy function the printer cannot write raises
+    ``PrintMethodNotImplementedError`` (SymPy 1.14), or, in a SymPy that returns
+    ``// Not supported in C:`` text instead, the text comes back for the caller to
+    refuse."""
+    declarations, lines = [], []
+
+    def without_declarations(code):
+        rest = code.split("\n")
+        while rest and _NUMBER_DECLARATION.fullmatch(rest[0]):
+            if rest[0] not in declarations:
+                declarations.append(rest[0])
+            rest = rest[1:]
+        return "\n".join(rest)
+
     for t, body in temporaries:
         code = printer.doprint(body)
         if code.startswith("// Not supported in C:"):
             return code
-        lines.append(f"const double {t._ccodestr} = {code};")
-    lines.append(printer.doprint(outputs, out))
-    return "\n".join(lines)
+        lines.append(f"const double {t._ccodestr} = {without_declarations(code)};")
+    lines.append(without_declarations(printer.doprint(outputs, out)))
+    return "\n".join(declarations + lines)
 
 
 @timing.routine_timer_decorator
@@ -1085,11 +1101,11 @@ def generate_c_source(
     mesh: underworld3.discretisation.Mesh,
     callbacks: JITCallbackSet,
     primary_field_list,
-    constants_subs_map: Optional[dict] = None,
+    lowered_fns,
+    constants_subs_map,
     verbose: Optional[bool] = False,
     debug: Optional[bool] = False,
     debug_name=None,
-    lowered_fns=None,
 ):
     """Generate the setup.py / C header / Cython wrapper for a JIT bundle.
 
@@ -1108,14 +1124,13 @@ def generate_c_source(
     callbacks : JITCallbackSet
     primary_field_list : list
         Variables that map to PETSc primary variable arrays (``petsc_u[]``).
-    constants_subs_map : dict, optional
-        Mapping from UWexpression → ``_JITConstant`` placeholder; built from the
-        lowered callbacks when not given.
-    lowered_fns : list of sympy.Matrix, optional
+    lowered_fns : list of sympy.Matrix
         The callbacks lowered onto the shared graph (``_jit_graph.lower_callbacks``),
-        one per entry of ``callbacks.flat()``; lowered here when not given. Each
-        kernel is emitted as one C temporary per distinct computation, then its
-        outputs.
+        one per entry of ``callbacks.flat()``. Each kernel is emitted as one C
+        temporary per distinct computation, then its outputs.
+    constants_subs_map : dict
+        Mapping from UWexpression to its ``_JITConstant`` placeholder
+        (``_manifest_of(lowered_fns)``).
 
     Returns
     -------
@@ -1128,17 +1143,9 @@ def generate_c_source(
         Equation-range counts and the random symbol prefix, used by the caller
         for verbose printing and for building the fn-layout manifest.
     """
-    from sympy import symbols, Eq, MatrixSymbol
-    from underworld3 import VarType
-
     fns = callbacks.flat()
     count_residual_sig, count_bc_sig, count_jacobian_sig, \
         count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
-
-    if lowered_fns is None:
-        lowered_fns = _jit_graph.lower_callbacks(fns, mesh)
-    if constants_subs_map is None:
-        _, constants_subs_map = _manifest_from(_jit_graph.constant_leaves(lowered_fns))
 
     # The C a kernel reads for each leaf of the graph: an explicit map, built for
     # this compile, instead of C names patched onto the field classes (#823).

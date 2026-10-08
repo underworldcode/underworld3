@@ -81,6 +81,8 @@ def test_a_derivative_through_nodes_is_the_derivative_of_the_tree(box):
 
 
 def test_second_derivatives_and_a_constant_sensitivity_pass_through_nodes(box):
+    """A node's derivative is a node, so it differentiates again; and a derivative
+    with respect to a constant atom (a sensitivity) reaches every body that reads it."""
     mesh, T, v = box
     u = T.sym[0]
     c = uw.expression(r"c_{0024b}", 1.3, "constant")
@@ -160,7 +162,12 @@ def _guarded_tree(e):
 def test_the_guarded_lowering_is_the_guarded_tree(box):
     """The Newton source on the graph (the sqrt guard in each node body) evaluates to
     the guarded tree, and so does its tangent, including at a state of rest where the
-    unguarded tangent is 0/0."""
+    unguarded tangent is 0/0.
+
+    Except where the tree escapes its own guard: in a power law on a named invariant,
+    eta = edot**(1/n - 1) with edot = sqrt(g), the tree merges the powers into
+    g**((1/n - 1)/2), not a half-integer power, so its Newton flux is NaN at rest. The
+    graph keeps edot a node with a guarded body and stays finite there."""
     from underworld3.cython.generic_solvers import _jacobian_unwrap
 
     mesh, T, v = box
@@ -172,14 +179,29 @@ def test_the_guarded_lowering_is_the_guarded_tree(box):
     cm.Parameters.shear_viscosity_0 = 1.0
     cm.Parameters.yield_stress = uw.expression(r"C_{0024e}", 0.5) + 0.3 * p.sym[0]
     cm.Parameters.yield_stress_min = uw.expression(r"\tau_{0024e}", 0.01)
-    flux = sympy.Matrix(stokes.F1.sym)
+    viscoplastic = sympy.Matrix(stokes.F1.sym)
 
-    tree = flux.applyfunc(_guarded_tree)
-    graph = _jacobian_unwrap(flux)
-    assert graph.atoms(jg._KernelNode), "the Newton source was not lowered"
+    # a power law on a named strain-rate invariant, singular at rest unless guarded
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    edot = uw.expression(r"\dot\varepsilon_{0024e}", stokes.Unknowns.Einv2, "invariant")
+    n = uw.expression(r"n_{0024e}", 3, "stress exponent")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = edot ** (1 / n - 1)
+    power_law = sympy.Matrix(stokes.F1.sym)
 
     L = stokes.Unknowns.L
     rest = {L[i, j] for i in range(2) for j in range(2)}
+    for flux, tree_escapes_at_rest in ((viscoplastic, False), (power_law, True)):
+        tree = flux.applyfunc(_guarded_tree)
+        graph = _jacobian_unwrap(flux)
+        assert graph.atoms(jg._KernelNode), "the Newton source was not lowered"
+        escaped = _same_guarded_values(tree, graph, L, rest)
+        assert escaped == tree_escapes_at_rest, escaped
+
+
+def _same_guarded_values(tree, graph, L, rest):
+    """Graph against tree at a random state and at rest; returns whether the tree was
+    non-finite anywhere (only ever at rest), where the graph must be finite."""
+    escaped = False
     for state in (dict(seed=1), dict(seed=2, rest=rest)):
         for i in range(2):
             for j in range(2):
@@ -188,8 +210,13 @@ def test_the_guarded_lowering_is_the_guarded_tree(box):
                 n = _numbers([tree[i, j], d_tree], **state)
                 for t, g in ((tree[i, j], graph[i, j]), (d_tree, d_graph)):
                     vt, vg = _value(t, n), _value(g, n)
-                    assert np.isfinite(vt) and np.isfinite(vg), (state, t)
+                    assert np.isfinite(vg), (state, g)
+                    if not np.isfinite(vt):
+                        assert "rest" in state, (state, t)
+                        escaped = True
+                        continue
                     assert abs(vg - vt) <= 1.0e-12 * max(abs(vt), 1.0), (state, i, j)
+    return escaped
 
 
 def _header(solver, monkeypatch):
@@ -253,8 +280,9 @@ def test_a_law_with_no_named_quantity_has_no_temporaries(monkeypatch):
     u = uw.discretisation.MeshVariable("U0024g", mesh, 1, degree=1)
     pois = uw.systems.Poisson(mesh, u_Field=u)
     pois.constitutive_model = uw.constitutive_models.DiffusionModel
-    pois.constitutive_model.Parameters.diffusivity = 1.0
-    pois.f = 2.0
+    # named constants: leaves, not nodes
+    pois.constitutive_model.Parameters.diffusivity = uw.expression(r"k_{0024g}", 2.0)
+    pois.f = uw.expression(r"f_{0024g}", 1.0)
     header = _header(pois, monkeypatch)
     assert "out[0]" in header and "uwt_" not in header
 
@@ -297,3 +325,137 @@ def test_a_repeated_condition_stays_a_condition(box):
         n[x] = sympy.Float(xv)
         for t, g in ((tree, lowered), (diff_wrt_field(tree, u), diff_wrt_field(lowered, u))):
             assert abs(_value(g, n) - _value(t, n)) <= 1.0e-12 * abs(_value(t, n))
+
+
+def test_a_deep_law_is_compiled_as_one_temporary_per_layer(monkeypatch):
+    """A law of twelve named layers, each using the one below twice: the expanded tree
+    doubles with every layer (4096 copies of the bottom), the graph has one temporary
+    per layer. The cost of the tree must not come back by any route that expands
+    nodes."""
+    uw.reset_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    u = uw.discretisation.MeshVariable("U0024j", mesh, 1, degree=1)
+    c = uw.expression(r"c_{0024j}", 0.5, "constant")
+    layer = uw.expression(r"e_{0024j,0}", 1 + u.sym[0] ** 2, "bottom")
+    for k in range(1, 13):
+        layer = uw.expression(rf"e_{{0024j,{k}}}", c * layer + sympy.sqrt(layer), "layer")
+    pois = uw.systems.Poisson(mesh, u_Field=u)
+    pois.constitutive_model = uw.constitutive_models.DiffusionModel
+    pois.constitutive_model.Parameters.diffusivity = layer
+    pois.f = 1.0
+    pois.consistent_jacobian = True
+    header = _header(pois, monkeypatch)
+    assert header.count("const double uwt_") <= 12 * 8, header.count("const double uwt_")
+    assert len(header) < 60_000, len(header)
+
+
+def test_a_coordinate_without_its_c_name_is_spelled_from_its_index():
+    """A coordinate leaf can be a UWCoordinate that SymPy's cache returned for its
+    equal base scalar, or a fresh base scalar, without the C name the mesh set: it is
+    written from its index and system (test_0850 and test_0851 met it)."""
+    from underworld3.utilities._jitextension import _spell_leaf
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    x = mesh.X[1]                        # the UWCoordinate wrapping mesh.N.y
+    base = x._original_base_scalar
+    saved = base.__dict__.pop("_ccodestr")
+    try:
+        assert _spell_leaf(x, {}, {}) == "petsc_x[1]"
+        assert _spell_leaf(base, {}, {}) == "petsc_x[1]"
+    finally:
+        base._ccodestr = saved
+    normal = mesh._Gamma.base_scalars()[0]
+    assert _spell_leaf(normal, {}, {}) == "petsc_n[0]"
+
+
+def test_a_mesh_coordinate_beside_a_field_keeps_its_partial_derivative(box):
+    """``mesh.X`` coordinates are UWCoordinates, equal to the base scalars they wrap. In
+    a named quantity that reads one beside a field, the per-body common sub-expression
+    split rebuilt the coordinate with a cloned coordinate system, a symbol no longer
+    equal to ``mesh.N.x``: the derivative by the coordinate lost its explicit term."""
+    mesh, T, v = box
+    X = mesh.X
+    u = T.sym[0]
+    q = uw.expression(r"q_{0024k}", X[0] * u + sympy.sin(X[1]) * u ** 2,
+                      "coordinates beside a field")
+    lowered = jg.KernelGraph().lower(q * u)
+    tree = ex.unwrap_expression(q * u, mode="symbolic_keep_constants")
+    for w in (mesh.N.x, mesh.N.y):
+        d_tree = sympy.diff(tree, w)
+        n = _numbers([d_tree, tree])
+        reference = _value(d_tree, n)
+        assert abs(reference) > 1.0e-3
+        assert abs(_value(sympy.diff(lowered, w), n) - reference) <= 1.0e-12 * abs(reference)
+
+
+def test_a_matrix_or_vector_valued_atom_is_expanded_in_place(box):
+    """A node is one scalar temporary, so an atom whose value is a matrix or a vector is
+    expanded in place, as the tree expanded it."""
+    mesh, T, v = box
+    u = T.sym[0]
+    row = uw.expression(r"M_{0024l}", sympy.Matrix([[u, u ** 2]]), "a row")
+    lowered = jg.lower_callbacks([row], mesh)[0]
+    assert lowered.shape == (1, 2)
+    assert jg.expand_nodes(lowered) == sympy.Matrix([[u, u ** 2]])
+    arrow = uw.expression(r"A_{0024l}", u * mesh.N.i + u ** 2 * mesh.N.j, "a vector")
+    lowered = jg.lower_callbacks([arrow], mesh)[0]
+    assert lowered.shape == (2, 1)
+    assert jg.expand_nodes(lowered) == sympy.Matrix([[u], [u ** 2]])
+
+
+def test_constancy_is_decided_on_the_graph(box, monkeypatch):
+    """Whether an atom is a constant is decided bottom-up on the graph, with the rule
+    of ``_is_truly_constant``, not by that function: it unwraps an atom completely, a
+    full expansion of everything under it, for every atom, which costs 2**depth on a
+    law whose every layer reads the one below twice."""
+    import underworld3.utilities._jitextension as jx
+
+    mesh, T, v = box
+    u = T.sym[0]
+    x = mesh.X[0]
+    c = uw.expression(r"c_{0024n}", 0.5, "constant")
+    nested = uw.expression(r"d_{0024n}", 2 * c + 1, "constant of a constant")
+    atoms = [
+        c, nested,
+        uw.expression(r"e_{0024n}", nested * u, "reads a field"),
+        uw.expression(r"g_{0024n}", c * x, "reads a coordinate"),
+        uw.expression(r"h_{0024n}", uw.quantity(3.0, "m/s"), "a quantity"),
+        uw.expression(r"k_{0024n}", sympy.Matrix([[c, 2 * c]]), "a constant row"),
+    ]
+    expected = [jx._is_truly_constant(a, ex.UWexpression) for a in atoms]
+    assert expected == [True, True, False, False, True, True], expected
+
+    calls = []
+    original = jx._is_truly_constant
+    monkeypatch.setattr(jx, "_is_truly_constant",
+                        lambda *args: calls.append(args) or original(*args))
+    graph = jg.KernelGraph()
+    assert [graph.is_constant(a) for a in atoms] == expected
+    layer = uw.expression(r"e_{0024n,0}", 1 + u ** 2, "bottom")
+    for k in range(1, 17):
+        layer = uw.expression(rf"e_{{0024n,{k}}}", c * layer + sympy.sqrt(layer), "layer")
+    graph.lower(layer)
+    assert not calls, f"{len(calls)} complete unwraps"
+
+
+def test_a_number_symbol_in_a_temporary_is_declared_once(monkeypatch):
+    """The C99 printer declares a number symbol (EulerGamma, Catalan) before the
+    expression that reads it; inside a temporary that declaration was written into
+    the temporary's own initialiser, which does not compile."""
+    uw.reset_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    u = uw.discretisation.MeshVariable("U0024m", mesh, 1, degree=1)
+    pois = uw.systems.Poisson(mesh, u_Field=u)
+    pois.constitutive_model = uw.constitutive_models.DiffusionModel
+    k = uw.expression(r"k_{0024m}", 1 + sympy.EulerGamma * u.sym[0] ** 2 + sympy.Catalan,
+                      "number symbols")
+    pois.constitutive_model.Parameters.diffusivity = k
+    pois.f = 1.0
+    pois.consistent_jacobian = True
+    header = _header(pois, monkeypatch)          # compiles
+    assert "uwt_0" in header
+    for body in header.split("\nvoid ")[1:]:
+        assert body.count("const double EulerGamma =") <= 1

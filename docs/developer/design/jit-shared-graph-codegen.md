@@ -54,10 +54,10 @@ erased. Five properties follow:
 5. **The generated C is readable.** One line per named quantity, so a kernel can be
    checked by eye and a wrong one can be found.
 
-Today's JIT has none of these. Tier 1 makes it fast enough and correct on the cases we
-have found, with patches placed where each failure surfaced.
+The JIT before tier 2 had none of these. Tier 1 made it fast enough and correct on the
+cases we had found, with patches placed where each failure surfaced.
 
-## The current pipeline expands every named sub-expression
+## The tier 1 pipeline expanded every named sub-expression
 
 A solver hands the JIT a `JITCallbackSet` of residual and Jacobian expressions.
 `getext()` turns them into one C function per callback. For a Newton tangent:
@@ -216,12 +216,14 @@ when it emits the kernel. The continuation blend contains both, and each lowers 
 own temporaries.
 
 The guard moves from the expanded tree to each node body, under the same rule. The two
-placements could differ only where SymPy merges powers across a sub-expression
-boundary: a bare `sqrt(g)**(-2/3)` becomes `g**(-1/3)`, which is no longer a
-half-integer power. A real law raises a quotient — $(\dot\varepsilon_{II}/\dot\varepsilon_0)^{1/n-1}$ —
-which SymPy does not merge, and on a power law over a named invariant, with $n$ as a
-constant atom or as the number 3, both routes give a finite Newton tangent at a state of
-rest, equal entry for entry.
+placements differ where SymPy merges powers across a sub-expression boundary: a bare
+`sqrt(g)**(-2/3)` becomes `g**(-1/3)`, which is no longer a half-integer power, and the
+tree's guard misses it. A law that raises a quotient,
+$(\dot\varepsilon_{II}/\dot\varepsilon_0)^{1/n-1}$, is not merged, and both routes give
+a finite Newton tangent at a state of rest, equal entry for entry. A power law on the
+bare named invariant, $\eta = \dot\varepsilon_{II}^{\,1/n-1}$, is merged into
+$g^{(1/n-1)/2}$: the tree's Newton flux is NaN at rest and the graph's is finite, because
+$\dot\varepsilon_{II}$ stays a node whose body carries the guard (`test_0024`).
 
 ### Each lowering is read back by `getext()` from its nodes
 
@@ -235,8 +237,8 @@ temporaries by the C they compute. The solvers are therefore unchanged apart fro
 `_jacobian_unwrap`; one context per setup would only save the constancy test of an atom
 that both lowerings meet.
 
-`getext()` no longer runs `unwrap_expression` over a whole kernel. Its present phases —
-reveal the constants, substitute them, unwrap the rest — become: lower atoms to nodes,
+`getext()` no longer runs `unwrap_expression` over a whole kernel. Its tier 1 phases —
+reveal the constants, substitute them, unwrap the rest — became: lower atoms to nodes,
 collect the manifest from the leaves, emit.
 
 ### A node expands to its body on request
@@ -267,9 +269,9 @@ Applications with equal keys compute the same C and share one temporary. The
 temporaries are written so that each follows the ones it uses, ties broken by key:
 
 ```c
-const double t0 = ...;     /* one line per distinct computation, evaluated once */
-const double t1 = ...;
-out[0] = ...;              /* outputs in terms of t0, t1, ... and the leaves */
+const double uwt_0 = ...;  /* one line per distinct computation, evaluated once */
+const double uwt_1 = ...;
+out[0] = ...;              /* outputs in terms of uwt_0, uwt_1, ... and the leaves */
 ```
 
 The generated source is therefore a function of the mathematics and of the kernel's data
@@ -280,7 +282,7 @@ unconvertible symbols and integration-point derivatives.
 ### The constants manifest is built from the leaves
 
 The manifest is the set of constant atoms among the leaves of the emitted kernels,
-tested with the same predicate (`_is_truly_constant`, memoised once per setup) and
+tested with the same predicate (`_is_truly_constant`, memoised once per lowering) and
 ordered by the same key (name, then creation order). It contains every slot today's
 manifest contains. It can contain more: where the tree cancels a constant across a name
 boundary ($A = c\,x$, then $A/c$), the graph keeps it, and the constant keeps its slot.
@@ -297,9 +299,10 @@ Underworld version.
 The prototype's generated C is byte-identical under `PYTHONHASHSEED` 0, 1 and 2, after
 a preamble that creates extra objects before the law (shifting every creation counter),
 and when the law is declared twice in one process, as a re-run notebook cell does.
-Whether canonical emission also removes the cross-rank disagreement of #752 is a
-hypothesis we test (np ≥ 3, counting how often `_agree_source_across_ranks` repairs); the
-repair stays.
+Canonical emission makes the source the same on every rank by construction, which is
+#752's defect. The #752 fixture no longer disagrees on either route (0 of 10 runs at
+np = 2, 3 and 4), so the fixture cannot show the difference; the repair stays as a
+guard.
 
 ## The prototype agrees with the library to round-off
 
@@ -401,7 +404,7 @@ session's seven solver processes, so the times are indicative. Tree first, graph
 | generated C, all modules of the solve | 4.0 MB / 22 KB | 380 KB / 40 KB | 104 KB / 16 KB | 42 KB / 31 KB | 28 KB / 14 KB | 10.7 KB, byte-identical |
 | Jacobian assembly, ms | 180 / 132 | 2.40 / 2.19 | 1.58 / 1.45 | 2.23 / 2.22 | 1.48 / 1.40 | 1.39 / 1.44 |
 | residual assembly, ms | 21.4 / 18.7 | 0.62 / 0.59 | 0.35 / 0.33 | 0.61 / 0.60 | 0.32 / 0.32 | 0.33 / 0.33 |
-| Newton iterations, nonlinear / linear | 75 / 496 and 57 / 386 (see below) | 6 / 6, both | 30 / 30, both (limit) | 2 / 2, both | 16 / 16, both | 1 / 1, both |
+| Newton iterations, nonlinear / linear | 75 / 496 and 57 / 386 (a property of the problem: 60–111 and 43–86 under round-off-sized perturbations) | 6 / 6, both | 30 / 30, both (limit) | 2 / 2, both | 16 / 16, both | 1 / 1, both |
 
 The compile time is not shown separately: it counts every module the solve builds (the
 VEP's history projections among them), and on these fixtures it is 1–4 s on either
@@ -464,9 +467,11 @@ problem, not of the route.
 
 **The test suite passes on the graph route.** Every serial batch of `scripts/test.sh`
 (tier A and B, levels 1 to 3) run with `UW_JIT_GRAPH=1`: 3,023 passed, none failed. The
-first run found two defects, both in the fault-network laws and both fixed with a test:
-a repeated Piecewise condition shared as a node (a value, which Piecewise refuses as a
-condition), and a coordinate leaf without the C name the mesh sets.
+first run found two defects, both in the fault-network laws, each fixed with a unit test
+in `test_0024`: a repeated Piecewise condition shared as a node (a value, which
+Piecewise refuses as a condition), and a coordinate leaf without the C name the mesh
+sets. After step 4 removed the tree route: 3,082 passed, none failed; and again after the
+second review's fixes: SUITE_FINAL.
 
 **The source is canonical.** On the notch, box and VEP fixtures the graph route's C is
 byte-identical under `PYTHONHASHSEED` 0, 1 and 2; `test_0024` checks that a law
@@ -492,9 +497,11 @@ faster: the notch's pointwise setup takes 2.5 s against 15.9 s, its C is 22 KB a
 emits byte-identical C, because a constant law has no node to lower. The assembly gain
 is smaller than the prototype's kernel timings suggested (an eighth of the time per
 call) because the pointwise kernel is one part of the assembly, beside quadrature and
-the element loop. On Linux with gcc the ratios are the same (below). Still to measure:
-an idle machine with repeated runs, a three-dimensional fixture, and the small kernels
-of `Integral` and `BdIntegral`.
+the element loop. On Linux with gcc the ratios are the same. Not measured:
+an idle machine with repeated runs, a three-dimensional fixture, the small kernels
+of `Integral` and `BdIntegral`, a Newton source that differs from its residual
+(`set_jacobian_F1_source`), and SolCx with Nitsche free-slip; the test suite exercises
+the last three but does not time them.
 
 **More robust.** Each failure class below needed a patch in tier 1, placed where it
 surfaced; in the graph it cannot arise, or arises only in one body:
@@ -503,24 +510,25 @@ surfaced; in the graph it cannot arise, or arises only in one body:
 |---|---|---|---|
 | SymPy's automatic algebra on an expanded base is slow (`im()` inside `Pow.__new__`, 40 s on the notch) | a constant atom added to the power-mean law; realness for unit-carrying parameters | bases are bodies, not trees | graph lowering took 0.04 s on every tier 1 commit, including those where the library took 40 s |
 | realness turns `sqrt(x**2)` into `Abs`, whose derivative with respect to a field SymPy leaves unevaluated | a stand-in derivative at 49 call sites | body partials are taken against real dummies | with plain `sympy.diff` at every solver site, the Drucker–Prager floor law fails to compile on the tree route and solves on the graph route |
+| SymPy merges powers across names and the merged power escapes the sqrt guard: a power law on a named invariant has a NaN Newton flux at rest | none; found by this change's tests | the guard sits in each node body, which SymPy does not merge into its parent | `test_0024`: tree NaN at rest, graph finite |
 | manifest and C built by two walks (#302) | two consistency guards and `_reveal_constants` | one walk | by construction; manifests identical on all fixtures |
-| generated C that differs between ranks (#752, open) | rank 0's source adopted | canonical emission | byte-identical under hash seeds 0–2 (notch, box, VEP), after a preamble and when re-declared (`test_0024`). Across ranks untested: the #752 fixture (`rank_agreement_752.py`, np = 2) disagreed in 0 of 10 runs on either route, against about 2 in 10 before tier 1, so it no longer reproduces the defect |
-| field symbols given their C names by mutating their classes, in an order that matters | `ccode_patch_fns`, the coordinate recovery block | an explicit map from leaf to C | not yet: steps 2–3 still spell leaves through the patched printer; the map belongs to step 4 |
+| generated C that differs between ranks (#752, open) | rank 0's source adopted | canonical emission | byte-identical under hash seeds 0–2 (notch, box, VEP; `test_0105` for a Newton viscoplastic law), after a preamble and when re-declared (`test_0024`). The #752 fixture (`rank_agreement_752.py`) disagreed in 0 of 10 runs at np = 2, 3 and 4 on either route, against about 2 in 10 at np = 2 before tier 1, so it no longer reproduces the defect |
+| field symbols given their C names by mutating their classes, in an order that matters | `ccode_patch_fns`, the coordinate recovery block | an explicit map from leaf to C | `_leaf_spellings`, built for each compile (step 4); a field the compile does not own is now an error, where a patched class could print another compile's slot |
 | generated C too large to read or to compile (#547) | opt-in CSE, lower optimisation flags | one line per named quantity | 22 KB against 4.0 MB for the notch's whole solve |
 
 The graph brings one failure class tier 1 does not have: it cannot cancel a quantity
 against its own reciprocal across a name.
 
 **Less global state, not less code.** The earlier estimate here (530 lines replaced by
-360) does not survive the implementation. The lowering module is 442 lines, about a
-third of them docstrings, and the branches it needs elsewhere about 60. Step 4 deletes
-about 390 lines of the tree route: `_reveal_constants`, the scanning half of
-`_extract_constants`, `_collect_constant_atoms`, `_xreplace_shared`, `_unique_symbols`,
-the tree lowering and its two consistency guards in `generate_c_source`, the coordinate
-recovery, the opt-in CSE path, the tree guard in `_jacobian_unwrap`, and the unused
-`prepare_for_cache_key` and `_createext`. Replacing the class patching of
-`ccode_patch_fns` (148 lines with its comments) by a map from leaf to C would remove
-about 100 more. The line count comes out about even. What changes is where the
+360) did not survive the implementation. Against `development`, the library source
+gains 692 lines and loses 639 (step 4 counts): the lowering module is about 460 lines, a
+third of them docstrings, and step 4 deleted the tree route — `_reveal_constants`, the
+scanning half of `_extract_constants`, `_collect_constant_atoms`, `_xreplace_shared`,
+`_unique_symbols`, the tree lowering and its two consistency guards in
+`generate_c_source`, the coordinate recovery, the opt-in CSE path, the tree guard in
+`_jacobian_unwrap`, the unused `prepare_for_cache_key` and `_createext` — and replaced
+the class patching of `ccode_patch_fns` by a map from leaf to C. The line count comes out
+about even. What changes is where the
 correctness lives: in one module whose every risk has a test that fails when the
 mechanism is broken (`test_0024`, each test checked against a mutation of the lowering),
 instead of in patches at the places each failure surfaced. The stand-in derivative at
@@ -570,7 +578,7 @@ multiplied by a name that holds its reciprocal.
 - The cache protocol: memory, disk, rank-0 compile behind a collective decision.
 - The residual is never guarded, and the Picard tangent is frozen exactly as now.
 - The slot dictionaries `getext()` returns are keyed by the callback objects the solver
-  passed in, so the solvers' lookups (`ext_dict.jac[self._uu_G3]`) are unaffected.
+  passed in, so the solvers' lookups (`i_jac[self._uu_G3]`) are unaffected.
 - `describe()`, the transcript and the model fingerprints record the named, unexpanded
   forms (`str(template.sym)`) and the packed constants; none reads the generated C.
 - A model's `flux_jacobian` is still differentiated as given.
@@ -586,12 +594,15 @@ multiplied by a name that holds its reciprocal.
 | a node class from an earlier compile reused | a changed `.sym` is ignored | the compile serial in each class's identity; a test that changes a body and rebuilds in one process without clearing SymPy's cache |
 | source that depends on the hash seed, a creation counter or a re-declaration | every parallel run repairs; a new process or a re-run notebook cell misses the cache | canonical emission; `test_0105` extended with a Newton fixture, a preamble of extra objects and a re-declared law |
 | a cancellation across a name lost | NaN at a state where the tree gave a finite limit, in an unguarded residual or Picard kernel | every residual and Picard kernel compared with the tree at a state of rest on every fixture |
-| `test_0022` (tier 1) asserts the expanded, guarded tree of `_jacobian_unwrap`, and checks a block for `Derivative` with `has()`, which does not see node bodies | one test fails by construction, the other cannot fail | both rewritten against expanded nodes in the change that alters `_jacobian_unwrap` |
+| `test_0022` (tier 1) asserts the expanded, guarded tree of `_jacobian_unwrap`, and checks a block for `Derivative` with `has()`, which does not see node bodies | one test fails by construction, the other cannot fail | the guard test now holds `_jit_graph.guard_half_integer_powers` to SymPy's `replace` on eight laws; the tests of deleted helpers went with them |
 | an entry that is zero today becomes a non-zero expression | assembly of an entry that evaluates to zero | numbers and leaves inlined; zero patterns compared on every fixture |
-| guard placement changes cold-start behaviour | NaN at a state of rest | `test_1067`, extended to a power-law viscosity (the prototype finds both routes finite and equal) |
-| `getext()` or another walker expands nodes back into the tree | the cost returns, silently | `getext()` lowers atoms itself; a size check on the emitted source of the notch fixture |
-| an atom whose `.sym` is a matrix | it cannot be a scalar temporary | such atoms are expanded in place, as now |
-| verbose-output assertions in `test_0004` | a test fails on wording, not on a defect | rewrite those assertions against the kernel contract |
+| guard placement changes cold-start behaviour | NaN at a state of rest | `test_0024`: the guarded lowering against a guarded tree, at a random state and at rest, for a viscoplastic law and a power law on a named invariant; `test_1067` (cold Newton start) |
+| `getext()` or another walker expands nodes back into the tree | the cost returns, silently | `getext()` lowers atoms itself; `test_0024` emits a twelve-layer law whose tree doubles with each layer and bounds its C |
+| an atom whose `.sym` is a matrix or a vector | it cannot be a scalar temporary | such atoms are expanded in place (`_is_scalar`; `test_0024`) |
+| a `mesh.X` coordinate rebuilt by the per-body cse | a cloned coordinate system, unequal to `mesh.N.x`: derivatives by the coordinate lose the explicit term | every leaf and child node hidden behind a placeholder while cse runs; `test_0024` |
+| deciding constancy by a complete unwrap of each atom | setup exponential in the nesting depth while the C stays small | constancy decided bottom-up on the graph, with the rule of `_is_truly_constant`; `test_0024` counts no complete unwrap on a 16-layer law |
+| a temporary hoists a quantity out of a Piecewise branch | it is computed even where the branch is not taken; values are unaffected, but under PETSc `-fp_trap` a `log` of a negative or a division at rest can trap | accepted: nothing in the repository traps floating-point exceptions |
+| verbose-output assertions in `test_0004` | a test fails on wording, not on a defect | the verbose line prints the lowered kernel, so the assertions hold unchanged |
 | overhead on small kernels | constant-viscosity problems get slower to set up | measured on the small fixtures; budget: no slower than today |
 | a law singular at a state a model reaches (a zero denominator) | NaN where the tree gave rounding noise | the Newton solve of the acceptance criteria; such a law is the model's to fix |
 

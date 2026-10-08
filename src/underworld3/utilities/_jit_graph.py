@@ -21,17 +21,14 @@ import itertools
 import sympy
 from sympy.core.function import AppliedUndef, UndefinedFunction
 from sympy.tensor.array import NDimArray
+from sympy.vector.basisdependent import BasisDependent
 from sympy.vector.scalar import BaseScalar
 
+# TODO(Charter S6): a literal regulariser, the one the expanded-tree guard used; a
+# change of value changes every Newton kernel's C (see uw.maths.functions.vanishing).
 _EPS2 = sympy.Float(1.0e-36)
 _serial = itertools.count(1)
 _nodes_made = False
-
-
-def nodes_exist():
-    """Whether any node has been made in this process; when not, no expression can
-    hold one and the unwrappers skip the search."""
-    return _nodes_made
 
 
 def guard_half_integer_powers(e):
@@ -66,10 +63,21 @@ def guard_half_integer_powers(e):
 
 
 class _KernelNode(AppliedUndef):
-    """A named quantity of a kernel, applied to the leaves its value depends on."""
+    """A named quantity of a kernel, applied to the leaves its value depends on.
+
+    Printed (``str``, ``latex``) as the name of the quantity it was made from, so a
+    lowered block reads as the law; ``srepr``, which the class name and the emission
+    keys are built from, is unchanged."""
 
     def fdiff(self, argindex=1):
         return self._graph.slot_derivative(self, argindex - 1)
+
+    def _sympystr(self, printer):
+        return self._label
+
+    def _latex(self, printer, exp=None):
+        text = self._label
+        return f"{text}^{{{exp}}}" if exp is not None else text
 
     def _ccode(self, printer):
         raise RuntimeError(
@@ -100,6 +108,13 @@ class _Temporary(sympy.Symbol):
 
     def _ccode(self, printer):
         return self._ccodestr
+
+
+def _is_scalar(body):
+    """Whether ``body`` can be one C temporary: a scalar value, not a condition, a
+    matrix, an array or a vector."""
+    return (isinstance(body, sympy.Expr) and not getattr(body, "is_Matrix", False)
+            and not isinstance(body, (NDimArray, BasisDependent)))
 
 
 def body_of(app):
@@ -150,6 +165,7 @@ class KernelGraph:
     def __init__(self):
         self.serial = next(_serial)
         self._const = {}     # id(atom) -> (atom, bool)
+        self._const_busy = set()
         self._node = {}      # (id(atom), guarded) -> (atom, replacement)
         self._by_body = {}   # body -> node class
         self._deriv = {}     # (node class, slot) -> derivative in the class's deps
@@ -158,14 +174,55 @@ class KernelGraph:
 
     # ------------------------------------------------------------------ leaves
     def is_constant(self, atom):
+        """Whether a UWexpression is a ``constants[]`` leaf: the rule of
+        ``_is_truly_constant`` (its complete non-dimensional value reads no
+        coordinate, so no field either), decided bottom-up over the atoms it reads,
+        once per atom. ``_is_truly_constant`` unwraps each atom completely, which costs
+        the size of the expanded tree under it, for every atom."""
         hit = self._const.get(id(atom))
-        if hit is None:
-            from underworld3.function.expressions import UWexpression
-            from underworld3.utilities._jitextension import _is_truly_constant
-            hit = self._const[id(atom)] = (atom, _is_truly_constant(atom, UWexpression))
-        return hit[1]
+        if hit is not None:
+            return hit[1]
+        if id(atom) in self._const_busy:
+            return False             # cyclic: lowering the atom refuses it
+        self._const_busy.add(id(atom))
+        try:
+            result = self._decide_constant(atom)
+        finally:
+            self._const_busy.discard(id(atom))
+        self._const[id(atom)] = (atom, result)
+        return result
+
+    def _decide_constant(self, atom):
+        import underworld3
+        from underworld3.function.expressions import UWexpression
+        from underworld3.function.quantities import UWQuantity
+
+        # as the non-dimensional unwrap resolves an atom (_unwrap_atom)
+        if atom.has_units and underworld3._is_scaling_active():
+            try:
+                float(atom.data)
+                return True
+            except Exception:        # not a number: decided by its content below
+                pass
+        inner = atom.sym
+        if isinstance(inner, UWQuantity) and not isinstance(inner, UWexpression):
+            return True
+        if not hasattr(inner, "free_symbols"):
+            try:
+                float(inner)
+                return True
+            except (TypeError, ValueError):
+                return False
+        for s in inner.free_symbols:
+            if isinstance(s, BaseScalar):
+                return False
+            if isinstance(s, UWexpression) and not self.is_constant(s):
+                return False
+        return True
 
     def is_leaf(self, s):
+        """Whether ``s`` is read by a kernel as it is: a field value or gradient, a
+        coordinate, a constant atom, or another symbol."""
         from underworld3.function.expressions import UWexpression
 
         if isinstance(s, _KernelNode):
@@ -197,6 +254,7 @@ class KernelGraph:
         return (KernelGraph.display_key(s), getattr(s, "instance_number", 0))
 
     def leaves(self, e):
+        """The leaves ``e`` reads, through the arguments of the nodes it holds."""
         out, seen, stack = set(), set(), [e]
         while stack:
             a = stack.pop()
@@ -232,8 +290,11 @@ class KernelGraph:
         if not isinstance(e, sympy.Basic):
             return sympy.sympify(e)
         uw_types = (UWexpression, UWQuantity, UWCoordinate)
-        atoms = sorted((s for s in e.free_symbols if isinstance(s, uw_types)),
-                       key=self.order_key)
+        # a UWCoordinate equals the base scalar it wraps, so free_symbols can hold the
+        # base scalar in its place: they are found by type
+        found = {s for s in e.free_symbols if isinstance(s, uw_types)}
+        found |= e.atoms(UWCoordinate)
+        atoms = sorted(found, key=self.order_key)
         rule = {}
         for s in atoms:
             r = self._replacement(s, guarded)
@@ -254,6 +315,8 @@ class KernelGraph:
         return self.node_of(atom, guarded)
 
     def node_of(self, atom, guarded):
+        """The node of ``atom`` (or its expansion in place, for a matrix-valued
+        atom), its body lowered with the same ``guarded`` variant."""
         key = (id(atom), guarded)
         hit = self._node.get(key)
         if hit is not None:
@@ -267,7 +330,7 @@ class KernelGraph:
                 body = guard_half_integer_powers(body)
             # a matrix-valued atom cannot be one scalar temporary: it is expanded
             # in place, as the tree route expands it
-            out = self.make_node(body) if isinstance(body, sympy.Expr) else body
+            out = self.make_node(body, label=atom.name) if _is_scalar(body) else body
         finally:
             self._busy.discard(key)
         self._node[key] = (atom, out)
@@ -280,14 +343,15 @@ class KernelGraph:
         text = sympy.srepr(body.xreplace(canon))
         return "N" + hashlib.sha1(text.encode()).hexdigest()[:12]
 
-    def make_node(self, body):
-        """The node for ``body``, one per distinct body. A body that is a number, a
-        single leaf, a single node, or reads no leaf is returned as itself, and so is a
-        condition (a node is a value; a Piecewise refuses one as its condition)."""
+    def make_node(self, body, label=None):
+        """The node for ``body``, one per distinct body, printed as ``label`` (the
+        first label it is made with). A body that is a number, a single leaf, a single
+        node, or reads no leaf is returned as itself, and so is a condition (a node is
+        a value; a Piecewise refuses one as its condition)."""
         global _nodes_made
 
         body = sympy.sympify(body)
-        if not isinstance(body, sympy.Expr):
+        if not _is_scalar(body):
             return body
         if not self._splitting:
             body = self._split_shared(body)
@@ -302,6 +366,7 @@ class KernelGraph:
                                     real=True, _ctx=self.serial, _n=len(self._by_body),
                                     __dict__={"_graph": self})
             cls._body, cls._deps = body, deps
+            cls._label = label if label is not None else "_shared"
             self._by_body[body] = cls
             _nodes_made = True
         return cls(*cls._deps)
@@ -311,14 +376,22 @@ class KernelGraph:
         Canonical order, so the split does not depend on the hash seed."""
         if body.is_Atom:
             return body
-        repl, (reduced,) = sympy.cse([body], symbols=sympy.numbered_symbols("_cse", real=True))
+        # every leaf and child node becomes a placeholder while cse runs: cse rebuilds
+        # what it holds, and a rebuilt UWCoordinate gets a cloned coordinate system and
+        # is no longer equal to the base scalar it stood for
+        opaque = body.atoms(AppliedUndef) | {
+            s for s in body.free_symbols if self.is_leaf(s)}
+        hide = {s: sympy.Dummy(real=True) for s in sorted(opaque, key=self.order_key)}
+        show = {d: s for s, d in hide.items()}
+        repl, (reduced,) = sympy.cse([body.xreplace(hide)],
+                                     symbols=sympy.numbered_symbols("_cse", real=True))
         if not repl:
             return body
         self._splitting = True
         try:
-            rule = {}
+            rule = dict(show)
             for sym, e in repl:
-                rule[sym] = self.make_node(e.xreplace(rule))
+                rule[sym] = self.make_node(e.xreplace(rule), label="_shared")
             return reduced.xreplace(rule)
         finally:
             self._splitting = False
@@ -336,7 +409,8 @@ class KernelGraph:
             dummies = [sympy.Dummy(real=True) for _ in deps]
             b = cls._body.xreplace(dict(zip(deps, dummies)))
             d = sympy.diff(b, dummies[i]).xreplace(dict(zip(dummies, deps)))
-            self._deriv[key] = self.make_node(d)
+            self._deriv[key] = self.make_node(
+                d, label=f"\\partial_{{{i}}}{{{cls._label}}}")
         d = self._deriv[key]
         if app.args == cls._deps:
             return d

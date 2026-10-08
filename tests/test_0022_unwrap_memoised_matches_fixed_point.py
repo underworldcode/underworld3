@@ -1,8 +1,5 @@
-"""The memoised unwrap (#823) gives exactly what the algorithm it replaces gave.
-
-(The memoised sqrt guard, the identity-walk symbol scan and the shared xreplace were
-tested here too; they went with the expanded-tree JIT route, and the graph route's
-guard is held to the guarded tree by test_0024.)
+"""The memoised unwrap and the memoised sqrt guard (#823) give exactly what the
+algorithms they replace gave.
 
 The old ``unwrap_expression`` iterated ``subs`` passes to a fixed point, and in
 ``symbolic_keep_constants`` mode ran ``_is_truly_constant`` (itself a full unwrap) for every
@@ -102,6 +99,26 @@ def test_memoised_unwrap_is_the_fixed_point(laws, mode):
             continue
         new = _unwrap_each(expr, lambda e: ex.unwrap_expression(e, mode=mode))
         assert sympy.srepr(new) == sympy.srepr(old), (name, mode)
+
+
+def test_the_jacobian_sqrt_guard_matches_replace(laws):
+    """The guard every Newton node body gets (``_jit_graph.guard_half_integer_powers``),
+    a memoised rebuild, against SymPy's own ``replace`` with the same rule."""
+    from underworld3.utilities._jit_graph import guard_half_integer_powers
+
+    eps2 = sympy.Float(1.0e-36)
+
+    def old_guard(e):
+        return e.replace(
+            lambda n: (n.is_Pow and n.exp.is_Rational and n.exp.q == 2
+                       and n.args[0].free_symbols),
+            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+
+    for name, expr in laws:
+        tree = _unwrap_each(expr, lambda e: _fixed_point_unwrap(e, "symbolic_keep_constants"))
+        new = _unwrap_each(tree, guard_half_integer_powers)
+        old = _unwrap_each(tree, old_guard)
+        assert sympy.srepr(new) == sympy.srepr(old), name
 
 
 def test_each_atom_is_tested_for_constancy_once(monkeypatch):

@@ -1,10 +1,11 @@
 """Compare the two routes' records written by ``route_ab.py`` for one fixture."""
 import os
-import sys
 
 import numpy as np
+import underworld3 as uw
 
-out = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "~/+Simulations/jit_graph/tier2")
+params = uw.Params(uw_dir=uw.Param("~/+Simulations/jit_graph/tier2", description="directory of the .npz records"))
+out = os.path.expanduser(str(params.uw_dir))
 cases = sorted({f.rsplit("_", 1)[0] for f in os.listdir(out) if f.endswith(".npz")})
 for case in cases:
     paths = [os.path.join(out, f"{case}_{r}.npz") for r in ("tree", "graph")]

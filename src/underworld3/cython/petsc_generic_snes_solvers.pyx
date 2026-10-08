@@ -403,12 +403,13 @@ class SolverBaseClass(uw_object):
         ``False`` (default)
             Differentiate the residual flux *as wrapped* — the effective
             viscosity is frozen, giving a Picard / defect-correction tangent.
-            Bit-identical to the long-standing behaviour. Globally robust;
-            load-bearing for the tuned hard-yield viscoplastic paths.
+            Globally robust; load-bearing for the tuned hard-yield viscoplastic
+            paths.
         ``True``
-            Unwrap the flux before differentiation so the tangent captures
-            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
-            the solution; its yield kink can stall the line search far from it.
+            Differentiate through the named quantities of the flux, so the
+            tangent captures :math:`\partial\eta/\partial(\nabla v)` (full
+            Newton). Fast near the solution; its yield kink can stall the line
+            search far from it.
         ``"continuation"``
             Picard :math:`\rightarrow` Newton. Blend
             :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
@@ -421,8 +422,9 @@ class SolverBaseClass(uw_object):
 
         The Newton flux for a model whose flux has a non-smooth yield kink is
         the model's own smooth law (``constitutive_model.flux_jacobian``) when
-        it provides one; otherwise the exact unwrapped flux. See
-        ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+        it provides one; otherwise the exact flux with its named quantities as
+        graph nodes (``_jacobian_unwrap``). See
+        ``docs/developer/design/jacobian-consistent-tangent.md``.
 
         Raises
         ------
@@ -4160,8 +4162,8 @@ class SNES_Scalar(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
-        # it (preserves constant UWexpressions as symbols for constants[]).
+        # RESIDUAL: don't unwrap here — getext() lowers it onto the graph of
+        # named quantities (constant UWexpressions stay constants[] slots).
         f0  = sympy.Array(self.F0.sym).reshape(1).as_immutable()
         # F1 is the flux vector, which lives in the embedded coordinate
         # space (cdim components). For volume meshes dim==cdim so this
@@ -5126,8 +5128,8 @@ class SNES_Vector(SolverBaseClass):
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
         # Residual piece shapes: f0 is (cdim,) per-component, F1 is (cdim, cdim).
-        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
-        # it (preserves constant UWexpressions as symbols for constants[]). The
+        # RESIDUAL: don't unwrap here — getext() lowers it onto the graph of
+        # named quantities (constant UWexpressions stay constants[] slots). The
         # Jacobian sources (f0_jac_list / F1_user_jac) are derived below.
         F0_user = sympy.Matrix(self.F0.sym)
         F1_user = sympy.Matrix(self.F1.sym)
@@ -8189,8 +8191,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
-        # it (preserves constant UWexpressions as symbols for constants[]). The
+        # RESIDUAL: don't unwrap here — getext() lowers it onto the graph of
+        # named quantities (constant UWexpressions stay constants[] slots). The
         # JACOBIAN sources are unwrapped separately below (see _jac_source) so
         # the derivative sees through the viscosity — that is the Newton fix.
         F0  = sympy.Array(self.F0.sym)
@@ -8219,19 +8221,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         U = sympy.Array(self.u.sym).reshape(dim)
         P = sympy.Array(self.p.sym).reshape(1)
 
-        # Expand UWexpressions down to (but NOT including) constant atoms,
-        # element-wise, for the Jacobian derivative ONLY. This exposes the
-        # field / grad-v dependence of the (effective) viscosity so that
-        # derive_by_array forms the full Newton tangent (e.g. Min -> Heaviside
-        # yield switch), instead of freezing eta_eff as an opaque atom and
-        # silently running a Picard / defect-correction tangent. Truly-constant
-        # atoms (eta0, tau_y, ...) survive as symbols so the constants[]
-        # runtime-update mechanism is preserved (the keep-constants predicate
-        # is shared with getext()'s _extract_constants, so they cannot drift).
+        # For the Jacobian derivative ONLY, each non-constant UWexpression
+        # becomes a graph node (_jacobian_unwrap, #823), whose partial
+        # derivatives the chain rule composes. This exposes the field / grad-v
+        # dependence of the (effective) viscosity so that the derivative forms
+        # the full Newton tangent (e.g. Min -> Heaviside yield switch), instead
+        # of freezing eta_eff as an opaque atom and silently running a Picard /
+        # defect-correction tangent. Truly-constant atoms (eta0, tau_y, ...) stay
+        # as symbols, so the constants[] runtime-update mechanism is preserved.
         # The residual fns above (self._u_F0/_u_F1/_p_F0) are left untouched —
-        # getext() unwraps those itself. For constant-viscosity problems this
-        # is a no-op (eta has no grad-v dependence) so the Jacobian is
-        # bit-identical. See docs/developer/design/jacobian-unwrap-constants-bug.md
+        # getext() lowers those itself. For constant-viscosity problems this is
+        # a no-op (eta has no grad-v dependence). See
+        # docs/developer/design/jacobian-consistent-tangent.md
         #
         # (see consistent_jacobian / _jacobian_source: default Picard, bit-
         # identical; True -> Newton; "continuation" -> alpha-blended.)
