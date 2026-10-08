@@ -41,6 +41,25 @@ def _stable_sorted(iterable):
     return sorted(iterable, key=_stable_sort_key)
 
 
+def _petsc_include_dirs():
+    """PETSc's own include directories, from petsc4py's configuration.
+
+    The generated callback header includes ``<petscsystypes.h>`` (#813), so the JIT
+    build needs PETSc's headers: ``$PETSC_DIR/include`` and, for ``petscconf.h``,
+    ``$PETSC_DIR/$PETSC_ARCH/include``. A conda-forge PETSc puts them on the
+    compiler's default path, which is why CI built; a custom PETSc build does not, and
+    there every JIT compile failed with "'petscsystypes.h' file not found".
+    """
+    import petsc4py
+
+    info = petsc4py.get_config()
+    candidates = [Path(info["PETSC_DIR"]) / "include"]
+    # PETSC_ARCH is empty for a prefix install, which has no arch directory
+    if info.get("PETSC_ARCH"):
+        candidates.append(Path(info["PETSC_DIR"]) / info["PETSC_ARCH"] / "include")
+    return [str(c) for c in candidates if c.is_dir()]
+
+
 def _petsc_build_env():
     """Return a subprocess environment with PETSc's C/C++ compilers set.
 
@@ -309,7 +328,7 @@ def prepare_for_cache_key(fn, constants_subs_map):
     if constants_subs_map and fn_structural is not None:
         try:
             if hasattr(fn_structural, "xreplace"):
-                fn_structural = fn_structural.xreplace(constants_subs_map)
+                fn_structural = _xreplace_shared(fn_structural, constants_subs_map)
         except Exception:
             pass
 
@@ -357,6 +376,12 @@ class _JITConstant(sympy.Symbol):
     Identity without ordering is a parallel abort; ordering without identity is
     a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
     pins each one separately.
+
+    A slot holds a C double, so it is built ``real`` (real and finite) for SymPy's
+    simplification (#823). Declared at construction, not by a class handler: SymPy
+    shares one assumptions knowledge base between Symbols with the same declared
+    assumptions, so a handler's answer could be pre-empted by a plain Symbol's cached
+    ``None``.
     """
 
     __slots__ = ("_const_index", "_ccodestr")
@@ -366,7 +391,7 @@ class _JITConstant(sympy.Symbol):
         # slot; see the class docstring on why the name alone is not enough
         # and _hashable_content alone is not either.
         suffix = "" if name is None else f"_{name}"
-        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}")
+        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}", real=True)
         obj._const_index = index
         obj._ccodestr = f"constants[{index}]"
         return obj
@@ -454,6 +479,130 @@ def _extract_constants(all_fns, mesh):
     return manifest, subs_map
 
 
+def _xreplace_shared(expr, rule):
+    """``expr.xreplace(rule)`` (a sympy expression or Matrix), visiting each node
+    OBJECT once.
+
+    A compiled kernel repeats its shared sub-expressions as the same object (the
+    memoised unwrap inserts one object wherever an atom occurs, #823), and
+    ``xreplace`` rebuilds every occurrence: 4.3 s of the notch C generation for the
+    constants[] substitution alone. The result is the same expression.
+    """
+    memo = {}
+
+    def walk(e):
+        hit = memo.get(id(e))
+        if hit is not None:
+            return hit[1]
+        if e in rule:
+            out = rule[e]
+        elif isinstance(e, sympy.Basic) and e.args:
+            new_args = tuple(walk(a) if isinstance(a, sympy.Basic) else a for a in e.args)
+            changed = any(n is not a for n, a in zip(new_args, e.args))
+            out = e.func(*new_args) if changed else e
+        else:
+            out = e
+        memo[id(e)] = (e, out)
+        return out
+
+    if isinstance(expr, sympy.MatrixBase):
+        return expr.applyfunc(walk)
+    return walk(expr)
+
+
+def _holds_instance(expr, types):
+    """Whether ``expr`` holds a node of ``types``, visiting each node object once."""
+    from sympy.tensor.array import NDimArray
+
+    seen = {}
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen[id(e)] = e
+        if isinstance(e, types):
+            return True
+        if isinstance(e, (sympy.MatrixBase, NDimArray)):
+            stack.extend(e)
+        elif isinstance(e, sympy.Basic):
+            stack.extend(e.args)
+    return False
+
+
+def _warn_dirac_deltas_dropped(deltas, where, collective=False):
+    """Say that ``deltas`` were evaluated as 0 by ``where``, at the user's own call.
+
+    The message names the count, not the delta, so a time loop warns once per call
+    site. A ``collective`` caller (the JIT, which every rank runs) warns on rank 0
+    only; an evaluation is rank-local and warns wherever it runs.
+    """
+    if not deltas or (collective and underworld3.mpi.rank != 0):
+        return
+    import sys
+    import warnings
+
+    # the first frame outside the underworld3 package: the user's call
+    package = os.path.dirname(underworld3.__file__) + os.sep
+    frame, level = sys._getframe(1), 2   # stacklevel 2 is the frame that called this
+    while frame is not None and frame.f_code.co_filename.startswith(package):
+        frame, level = frame.f_back, level + 1
+    warnings.warn(
+        f"{where}: {len(deltas)} DiracDelta term(s) taken as 0, their value away from "
+        f"the zero of the argument. A DiracDelta comes from differentiating a step "
+        f"once (a Heaviside or sign of the unknown in a Newton tangent, which then "
+        f"leaves out the jump) or a kink twice (Abs(x - a) in a manufactured source). "
+        f"A point source has to be applied as a point load.",
+        stacklevel=level,
+    )
+
+
+def _without_dirac_deltas(expr, where):
+    """``expr`` with every DiracDelta replaced by 0, warning if there were any.
+
+    The rule for every path that turns an expression into numbers: the JIT (through
+    its printer), ``uw.function.evaluate`` and the field evaluator (through lambdify).
+    A pointwise evaluation cannot carry a distribution.
+    """
+    if not hasattr(expr, "atoms"):
+        return expr
+    deltas = sorted(expr.atoms(sympy.DiracDelta), key=sympy.default_sort_key)
+    if not deltas:
+        return expr
+    _warn_dirac_deltas_dropped(deltas, where)
+    return expr.xreplace({d: sympy.S.Zero for d in deltas})
+
+
+def _unique_symbols(expr):
+    """The Symbol atoms of ``expr`` (a sympy expression, Matrix or Array): the same set
+    as ``expr.atoms(sympy.Symbol)``, found by visiting each node OBJECT once.
+
+    ``atoms`` walks every occurrence of every node. An unwrapped constitutive law
+    repeats its shared sub-expressions as the SAME Python object (the memoised unwrap
+    inserts one object wherever an atom occurs, #823), so an identity walk is
+    proportional to the shared graph rather than the expanded tree: measured on the
+    Spiegelman notch kernels, ``atoms`` was 35 s of a 108 s compile.
+    """
+    # keyed by id, holding the object so that no id is reused while the walk runs
+    seen = {}
+    found = set()
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen[id(e)] = e
+        if isinstance(e, (sympy.MatrixBase, sympy.NDimArray)):
+            stack.extend(e)
+            continue
+        if isinstance(e, sympy.Symbol):
+            found.add(e)
+            continue
+        if isinstance(e, sympy.Basic):
+            stack.extend(e.args)
+    return found
+
+
 def _is_truly_constant(expr, UWexpression):
     """Check if a UWexpression resolves to a pure constant (no spatial deps).
 
@@ -516,7 +665,7 @@ def _collect_constant_atoms(expr, result_set, is_constant_expr, UWexpression):
         return
 
     # Check all UWexpression atoms
-    for atom in _stable_sorted(expr.atoms(sympy.Symbol)):
+    for atom in _stable_sorted(_unique_symbols(expr)):
         if isinstance(atom, UWexpression) and _is_truly_constant(atom, UWexpression):
             result_set.add(atom)
         elif isinstance(atom, UWexpression):
@@ -1167,6 +1316,28 @@ def generate_c_source(
 
     printer = c_code_printers["c99"]({"user_functions": custom_functions})
 
+    # A DiracDelta is printed as 0, its value away from the zero of its argument, by
+    # the rule every evaluation path shares (_without_dirac_deltas). Done in the
+    # printer so that one made while lowering (cse, temporaries) is caught too.
+    dropped_deltas = []
+
+    def _print_DiracDelta(expr, **kwargs):
+        dropped_deltas.append(expr)
+        return "0.0"
+
+    printer._print_DiracDelta = _print_DiracDelta
+
+    # SymPy's code printer rewrites re(UnevaluatedExpr(<real>)) with a whole-tree
+    # replace on every kernel it prints (2.9 s of the notch C generation). Field values
+    # and coordinates are real (#823), so a kernel seldom holds any re() at all; the
+    # rewrite runs only when one is there.
+    handle_unevaluated = printer._handle_UnevaluatedExpr
+
+    def _handle_UnevaluatedExpr(expr):
+        return handle_unevaluated(expr) if _holds_instance(expr, sympy.re) else expr
+
+    printer._handle_UnevaluatedExpr = _handle_UnevaluatedExpr
+
     # Purge libary/header dictionaries. These will be repopulated
     # when `doprint` is called below. This ensures that we only link
     # in libraries where needed.
@@ -1218,7 +1389,7 @@ def generate_c_source(
             # C source must never disagree (issue #302).
             if constants_subs_map is not None and hasattr(fn, 'atoms'):
                 unmanifested = [
-                    a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                    a.name for a in _stable_sorted(_unique_symbols(fn))
                     if isinstance(a, _UWexpr)
                     and _is_truly_constant(a, _UWexpr)
                     and a not in constants_subs_map
@@ -1234,7 +1405,7 @@ def generate_c_source(
             #          These survive into C code as constants[i]
             if constants_subs_map and fn is not None:
                 try:
-                    fn = fn.xreplace(constants_subs_map) if hasattr(fn, 'xreplace') else fn
+                    fn = _xreplace_shared(fn, constants_subs_map) if hasattr(fn, 'xreplace') else fn
                 except Exception:
                     pass
 
@@ -1245,7 +1416,7 @@ def generate_c_source(
             # slot and is about to be baked — refuse rather than freeze the
             # parameter silently (issue #302).
             if constants_subs_map and hasattr(fn, 'atoms'):
-                baked = [a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                baked = [a.name for a in _stable_sorted(_unique_symbols(fn))
                          if a in constants_subs_map]
                 if baked:
                     raise RuntimeError(
@@ -1395,6 +1566,8 @@ def generate_c_source(
             )
         eqns.append(eqn)
 
+    _warn_dirac_deltas_dropped(dropped_deltas, "JIT", collective=True)
+
     MODNAME = "fn_ptr_ext_" + str(name)
 
     # JIT compile flags for the generated kernels. Default keeps -O3 (kernel
@@ -1441,7 +1614,7 @@ ext_mods = [Extension(
 setup(ext_modules=cythonize(ext_mods))
 """.format(
         NAME=MODNAME,
-        HEADERS=list(_stable_sorted(underworld3._incdirs.keys())),
+        HEADERS=list(_stable_sorted(underworld3._incdirs.keys())) + _petsc_include_dirs(),
         LIBDIRS=list(_stable_sorted(underworld3._libdirs.keys())),
         LIBFILES=list(_stable_sorted(underworld3._libfiles.keys())),
         EXTRA_COMPILE_ARGS=extra_compile_args,
@@ -1505,9 +1678,9 @@ cdef extern from "cy_ext.h" nogil:
     fn_counter = 0
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "  res", fn_counter)
+        debug_str = debugging_text(randstr, fns[fn_counter], "  res", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], residual_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
         fn_counter += 1
@@ -1519,9 +1692,9 @@ cdef extern from "cy_ext.h" nogil:
     # but we leave this separate in case it changes in later PETSc implementations
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "  ebc", fn_counter)
+        debug_str = debugging_text(randstr, fns[fn_counter], "  ebc", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], residual_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], residual_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], residual_sig)
         fn_counter += 1
@@ -1530,10 +1703,10 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_1 = eqn_index_1 + count_jacobian_sig
 
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text(randstr, fns[fn_counter], "  jac", fn_counter)
+        debug_str = debugging_text(randstr, fns[fn_counter], "  jac", fn_counter) if debug else ""
 
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], jacobian_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], jacobian_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], jacobian_sig)
         fn_counter += 1
@@ -1541,9 +1714,9 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_residual_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdres", fn_counter)
+        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdres", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], bd_residual_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], bd_residual_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_residual_sig)
         fn_counter += 1
@@ -1551,9 +1724,9 @@ cdef extern from "cy_ext.h" nogil:
     eqn_index_0 = eqn_index_1
     eqn_index_1 = eqn_index_1 + count_bd_jacobian_sig
     for eqn in eqns[eqn_index_0:eqn_index_1]:
-        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdjac", fn_counter)
+        debug_str = debugging_text_bd(randstr, fns[fn_counter], "bdjac", fn_counter) if debug else ""
         h_str += "void {}_petsc_{}{}\n{{\n{}\n{}\n}}\n\n".format(
-            randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str if debug else ""
+            randstr, eqn[0], bd_jacobian_sig, eqn[1], debug_str
         )
         pyx_str += "    void {}_petsc_{}{}\n".format(randstr, eqn[0], bd_jacobian_sig)
         fn_counter += 1

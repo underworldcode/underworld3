@@ -113,15 +113,24 @@ frozen and unwrapped flux by exactly the `∂η/∂(grad v)` term):
 
 ```python
 import sympy
+import underworld3 as uw
 from underworld3.function.expressions import unwrap_expression
 F1 = sympy.Array(stokes.F1.sym)
 L  = sympy.Array(stokes.Unknowns.L)
-G_picard = sympy.derive_by_array(F1, L)
+G_picard = uw.function.derive_by_array_wrt_field(F1, L)
 F1_unwrapped = sympy.Array(
     [unwrap_expression(e, mode="symbolic_keep_constants") for e in F1], F1.shape)
-G_newton = sympy.derive_by_array(F1_unwrapped, L)
+G_newton = uw.function.derive_by_array_wrt_field(F1_unwrapped, L)
 # a nonzero difference == the Newton form is present
 ```
+
+Differentiate with respect to fields the way the solvers do, with
+`uw.function.derive_by_array_wrt_field` (or `uw.function.diff_wrt_field` for one
+entry), never plain `sympy.diff` or `sympy.derive_by_array`, in this check and in a
+hand-written tangent or `flux_jacobian`. Field values and gradients are declared
+real, so a yield floor at softness 0 contains `Abs`, and SymPy differentiates with
+respect to a field through a stand-in with no assumptions: it leaves
+`Derivative(u, u)` unevaluated in the `Abs` term, which cannot be compiled (#823).
 
 ---
 

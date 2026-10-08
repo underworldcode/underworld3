@@ -41,6 +41,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
 | Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
+| Planning (GitHub Project, issues, discussions, wiki) | [guides/planning-on-github.md](guides/planning-on-github.md) |
 | Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
 | Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
 
@@ -156,6 +157,7 @@ guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
+guides/planning-on-github
 guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
