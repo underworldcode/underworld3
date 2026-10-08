@@ -212,6 +212,25 @@ class SolverBaseClass(uw_object):
         self._velocity_is = None
         self._pressure_is = None
         self._subdict = {}
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
+        # + reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        # _rotated_freeslip_datum maps boundary → prescribed wall-normal datum
+        # (the non-zero `conds` of add_rotated_freeslip_bc; absent ⇒ u.n = 0).
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_datum = {}
+        self._rotated_freeslip_info = None
+        # Cross-solve rotated workspace (rotated_bc cache, issue #417):
+        # populated/keyed/invalidated entirely inside solve_rotated_freeslip;
+        # torn down here by _reset_rotated_solver_cache on any DM rebuild.
+        self._rotated_linear_cache = None
+        # Split-fault interface conditions (add_fault_bc): fault names whose
+        # coincident DOF pairs carry a contact (the laws themselves live in
+        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
+        # Non-empty => solve() takes the rotated path, where fault_contact
+        # supplies the pair blocks and the interface operator.
+        self._fault_contact_faults = []
 
         # Per-Newton-iteration callbacks (PETSc SNESSetUpdate). Empty by default
         # -> no hook is installed and the solve path is unchanged. See
@@ -3712,6 +3731,407 @@ class SolverBaseClass(uw_object):
 ## Specific to dimensionality
 
 
+    def _solve_rotated_if_registered(self, zero_init_guess, verbose, picard, time):
+        """Run the rotated strong-constraint solve when a rotated free-slip
+        boundary or a split-fault contact is registered, and return True; return
+        False when neither is, so the caller continues on the standard SNES path.
+
+        Shared by the saddle-point (Stokes) and vector (thin sheet) solvers: the
+        rotation, the Newton loop and the reaction recovery live in
+        ``utilities/rotated_bc.py`` and address the velocity field by name.
+        """
+        cdef DM _time_dm
+        if not (self._rotated_freeslip_bcs or self._fault_contact_faults):
+            return False
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        # Run the same pre-solve preamble as the standard path so the pointwise
+        # functions see the DM time, the auxiliary vector, and updated constants
+        # (needed for problems whose coefficients live in auxiliary fields). This
+        # must precede the nonlinearity probe below so the trial assemblies see
+        # the correct coefficients.
+        if time is not None:
+            t_nd = self._nondimensional_time(time)
+            _time_dm = self.dm
+            UW_DMSetTime(_time_dm.dm, t_nd)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants(record=True)
+
+        # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
+        # Re-check here: this path never reaches the instrumentation, so an armed
+        # guard would be silently inert -- the exact state guard() exists to refuse.
+        if (getattr(self, "_instrumentation", None) is not None
+                and self._instrumentation.armed):
+            raise NotImplementedError(
+                "a wall-clock guard is armed but this solve takes the rotated "
+                "free-slip path, which runs its own Krylov loop outside self.snes "
+                "and cannot be bounded by it. Call unguard() first."
+            )
+        # ONE path for linear and nonlinear models: the manual outer
+        # Newton/Picard loop that rotates F(u), J(u) and the strong
+        # v_n = u_n constraint every iteration. It honours zero_init_guess
+        # (warm start), the Picard warmup count, and the consistent_jacobian
+        # tangent (Picard / Newton / continuation); a linear model converges
+        # after its first increment, so no up-front nonlinearity probe is
+        # paid (the loop self-terminates; _residual_is_nonlinear survives as
+        # a lazy guard inside the picard+pure-Newton corner).
+        from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+        self._rotated_freeslip_info = solve_rotated_freeslip(
+            self, self._rotated_freeslip_bcs, verbose=verbose,
+            zero_init_guess=zero_init_guess, picard=picard,
+            # An explicit `time=` reaches the kernels through petsc_t on
+            # the DM — invisible to every state counter and constant
+            # value, so it must veto the cached-operator fast path.
+            force_operator_refresh=time is not None)
+        # This path solves via ksp.solve on the rotated operator (not self.snes),
+        # so give it a report from the rotated result rather than leaving a stale one.
+        _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
+        # The warm-start flag must follow the rotated solve's own verdict — the SNES
+        # was never run, so the generic reader would latch a stale reason.
+        self._record_convergence_status(converged=_rotated_report.converged)
+        return True
+
+    def _reject_mixed_constraint_mechanisms(self, adding):
+        """Refuse a rotated constraint and a block constraint on one solver (#464).
+
+        The rotated driver builds its own index-set fieldsplit over exactly two
+        fields (``rotated_bc._solve_rotated_iterative``), and ``build_rotation``
+        addresses velocity and pressure by field number. A block constraint
+        registers a multiplier field of its own, and those DOFs are in neither
+        index set — the preconditioner would then be built over a strict subset
+        of the operator's rows, with nothing said about it.
+
+        The two are alternative ways to impose the same wall-normal condition,
+        so asking for both is a configuration error rather than a case to
+        support. Supporting it would need a third split for the multipliers and
+        a ``build_rotation`` that knows about them.
+
+        Parameters
+        ----------
+        adding : str
+            Name of the method being called, so the message can say which
+            mechanism is already in place and which one was refused.
+        """
+
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        multipliers = mechanisms["multipliers"]
+
+        if adding == "solve":
+            # The dispatch reads both lists, so it can only report the pair.
+            if not (rotated and multipliers):
+                return
+            raise RuntimeError(
+                f"solve(): this solver carries {len(rotated)} rotated "
+                f"(free-slip or fault contact) and {len(multipliers)} "
+                f"block-constraint boundary condition(s). The rotated solve "
+                f"splits velocity and pressure by field number and the "
+                f"multiplier fields lie outside that split, so the "
+                f"preconditioner would cover only part of the operator. Both "
+                f"impose the same wall-normal condition — use one of them "
+                f"(issue #464)."
+            )
+
+        if adding == "add_constraint_bc":
+            if not rotated:
+                return
+            present, refused = len(rotated), "a block constraint"
+            present_kind = "rotated (free-slip or fault contact)"
+        else:
+            if not multipliers:
+                return
+            present, refused = len(multipliers), "a rotated constraint"
+            present_kind = "block-constraint multiplier"
+
+        raise RuntimeError(
+            f"{adding}(): this solver already carries {present} "
+            f"{present_kind} boundary condition(s), so it cannot also take "
+            f"{refused}. The rotated solve splits velocity and pressure by "
+            f"field number and a block constraint adds a multiplier field "
+            f"outside that split, so the preconditioner would cover only part "
+            f"of the operator. Both impose the same wall-normal condition — "
+            f"use one of them (issue #464)."
+        )
+
+    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        conds : float, scalar sympy expression, or None, optional
+            Prescribed wall-normal velocity datum :math:`\tilde u_n` (the SCALAR
+            component along the outward normal), in the canonical value-first BC
+            order (Style Charter, API conventions). Zero (or ``None``) is pure
+            free-slip :math:`\mathbf{u}\cdot\hat{\mathbf n}=0`. A non-zero value
+            — a number, a sympy expression of ``mesh.X``, or a scalar field read
+            such as ``h_dot.sym[0]`` — is imposed strongly (machine precision) as
+            :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n`, evaluated at the
+            boundary nodes at each ``solve()``. On an enclosed boundary the
+            datum must be discretely flux-free (:math:`\oint \tilde u_n = 0`)
+            for incompressibility. A corner/edge node shared between rotated
+            boundaries has no single normal and stays at the free-slip pinning
+            (datum ignored there). Vector/matrix values are rejected.
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` (the default, and normally
+            the right choice) uses the geometric facet normal, measure-weighted
+            so that it is consistent with the straight-facet boundary integral
+            the assembler evaluates. A sympy ``1×dim`` matrix supplies an
+            analytic normal (``X/|X|`` on a spherical cap, a constant on a
+            planar face): exact for the TRUE surface, but the assembler still
+            integrates over the facets, so it keeps a consistency error that
+            grows with facet non-uniformity. Use it when the constraint must
+            follow the geometry rather than the mesh. A constant array is also
+            accepted. See ``docs/developer/subsystems/rotated-freeslip.md``.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+
+        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
+        normal)`` is detected conservatively (the first positional argument is
+        a string — the datum is never a string) and shimmed with one
+        DeprecationWarning: the string becomes ``boundary`` and a second
+        positional argument, if present, becomes ``normal``.
+        """
+        self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
+
+        if isinstance(conds, str):
+            # legacy boundary-first call: (boundary[, normal])
+            if boundary is not None:
+                if normal is not None:
+                    raise TypeError(
+                        "add_rotated_freeslip_bc() received 'normal' twice "
+                        "(positionally, legacy order, and as a keyword)")
+                normal = boundary
+            boundary = conds
+            conds = None
+            import warnings
+            warnings.warn(
+                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
+                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
+                "with conds=0 (or boundary=... by keyword)",
+                DeprecationWarning, stacklevel=2)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_rotated_freeslip_bc() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        if conds is not None:
+            if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
+                raise TypeError(
+                    "add_rotated_freeslip_bc(conds=...) takes the SCALAR "
+                    "wall-normal datum u.n; got a vector/matrix value")
+            # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
+            # structurally, but both are zero data (the free-slip member of the
+            # family). is_zero is True only when sympy can PROVE zero, so a
+            # symbolic datum (field read, expression) is correctly kept.
+            if sympy.sympify(conds).is_zero is not True:
+                self._rotated_freeslip_datum[boundary] = conds
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def add_fault_bc(self, conds=0, boundary=None, normal=None):
+        r"""Interface condition on a split-node fault (value-first).
+
+        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
+        ``fault_split.split_fault``); the mesh carries its coincident DOF
+        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
+        is always imposed strongly; ``conds`` sets the tangential law:
+
+        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
+          traction, the slip emerges (the stress-driven crack).
+        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
+          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
+          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
+          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
+          not the background's — and :math:`w` its width). ``conds`` large
+          removes the fault (only the JUMP is penalised — nothing becomes
+          rigid).
+
+        ``normal`` optionally supplies the fault's smooth unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
+        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
+        smoothed normal is built from the fault's own stored polyline —
+        the right choice for digitized traces with no analytic formula),
+        or a constant ``(dim,)`` array. Use it whenever the fault trace is
+        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
+        adjacent facet normals, which zig-zags at the sampling kinks, and
+        the no-opening constraint then forbids smooth slip past each kink —
+        slip notches and normal-traction sawteeth that GROW under mesh
+        refinement. The smooth normal restores the smooth curve's
+        mechanics on the same polyline mesh. On a straight fault the
+        default is already exact, and a deliberately KINKED fault should
+        NOT be smoothed — there the kink response is the physics.
+
+        The solve then takes the rotated strong-constraint path
+        (``utilities/rotated_bc.py`` with the pair blocks of
+        ``utilities/fault_contact.py``); ``guard()`` /
+        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
+        Slip and leak per coincident pair afterwards:
+        ``fault_contact.fault_slip(solver, boundary,
+        solver._rotated_freeslip_info)``.
+        """
+        from underworld3.utilities import fault_contact
+
+        self._reject_mixed_constraint_mechanisms("add_fault_bc")
+
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_fault_bc() requires the fault's boundary name string; "
+                f"got {type(boundary).__name__}")
+        eta_f = float(conds)
+        if eta_f == 0.0:
+            fault_contact.add_frictionless_fault_bc(self, boundary,
+                                                    normal=normal)
+        else:
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
+                                               normal=normal)
+        self.is_setup = False
+        return
+
+    def _residual_is_nonlinear(self, tol=1e-8):
+        r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
+        — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
+        iteration is required.
+
+        Detected by a NUMERICAL probe: assemble the Jacobian at two distinct
+        velocity states and compare. A symbolic test on ``F1.sym`` cannot see the
+        nonlinearity — the effective viscosity's strain-rate (velocity-gradient)
+        dependence is carried as a JIT-substituted *placeholder* symbol
+        (``\dot\varepsilon_{II}``) in the flux, decoupled from the gradient
+        ``L`` in the symbolic form, so it only becomes visible once the operator
+        is assembled at a concrete iterate. Constant- or temperature-dependent
+        viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
+        bit-identical ⇒ linear.
+
+        Used as a LAZY guard in the rotated-free-slip loop's picard + pure-Newton
+        corner (a Picard warmup is meaningless for a linear residual and impossible
+        for pure Newton) — the loop itself needs no up-front probe, it
+        self-terminates. The caller must have run the pre-solve preamble
+        (auxiliary vector + constants) so the assembly sees the correct
+        coefficients.
+        """
+        snes = self.snes
+        dm = self.dm
+        snes.setUp()
+        J = snes.getJacobian()[0]
+        U1 = dm.getGlobalVec(); U2 = dm.getGlobalVec()
+        # two distinct smooth, bounded states with non-zero velocity gradients
+        # (a linear operator gives the SAME J for both; only a solution-dependent
+        # viscosity makes them differ). Ownership-relative index keeps it
+        # partition-independent enough for the norm comparison.
+        rs, re = U1.getOwnershipRange()
+        idx = np.arange(rs, re, dtype=float)
+        # write IN PLACE into each vec's PETSc-owned array (getArray returns a writable
+        # view). setArray with a fresh numpy temporary on a POOLED getGlobalVec is risky:
+        # its storage lifetime/pool reuse is not guaranteed for the later computeJacobian.
+        a1 = U1.getArray(); a1[:] = 0.1 * np.sin(0.7 * idx + 0.3)
+        a2 = U2.getArray(); a2[:] = 0.1 * np.sin(1.3 * idx + 1.1)
+        J1 = J.copy(); J2 = J.copy()
+        try:
+            snes.computeJacobian(U1, J1)
+            snes.computeJacobian(U2, J2)
+            J2.axpy(-1.0, J1)                       # J2 <- J(U2) - J(U1)
+            rel = J2.norm() / (J1.norm() + 1e-300)
+        finally:
+            dm.restoreGlobalVec(U1); dm.restoreGlobalVec(U2)
+            J1.destroy(); J2.destroy()
+        return rel > tol
+
+    def boundary_normal_traction(self, boundary, mass="auto"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`.
+
+        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
+        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
+        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
+        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
+        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
+        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
+        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
+        independently of h (#404, measured in #633). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only (#637).
+
+        .. warning::
+           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
+           only slowly (the vertex basis has zero surface mean, so vertex reactions
+           carry only the O(h) facet-geometry error); edge-midpoint values are
+           superconvergent. Pointwise consumers on curved boundaries should use
+           midpoint or integral/fitted quantities (issue #414)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
+
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
+        ``mass="auto"`` selects lumped recovery where valid and
+        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
+
+        .. warning::
+           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
+           values written into ``field`` converge only slowly; edge-midpoint values
+           are superconvergent. Downstream pointwise use of curved-boundary
+           topography should rely on midpoint/fitted quantities (issue #414)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
+
+    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
+        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
+        rotated-free-slip constraint reaction.
+
+        With ``remove_mean=True`` (default), the constant normal-traction gauge
+        is removed before projection. Unlike pointwise
+        :meth:`boundary_normal_traction`, this weak projection does not recover
+        nodal traction values or gather a global boundary mesh. It is therefore
+        suitable for harmonic and integral diagnostics on curved P2 boundaries,
+        whose recovered vertex values converge slowly (issue #414).
+        """
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction_integral requires a completed "
+                "rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
+        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
+                     remove_mean=remove_mean)
+
+
 class SNES_Scalar(SolverBaseClass):
     r"""
     General scalar equation solver using PETSc SNES.
@@ -5126,6 +5546,15 @@ class SNES_Vector(SolverBaseClass):
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
+        # The single field, registered AFTER the boundaries are on the DM (the
+        # decomposition finalises the DM, and DMAddBoundary refuses afterwards),
+        # under the name the rotated solve and the copy-back address it by —
+        # the saddle solver names its fields the same way. The index set is the
+        # whole vector; the sub-DM carries its local/global scatter.
+        names, isets, dms = self.dm.createFieldDecomposition()
+        self.fields = {"velocity": self.u}
+        self._subdict = {"velocity": (isets[0], dms[0])}
+
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
@@ -5569,6 +5998,8 @@ class SNES_Vector(SolverBaseClass):
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, 0, None):
+            return
 
 
         gvec = self.dm.getGlobalVec()
@@ -6446,25 +6877,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
-        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
-        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
-        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
-        # + reaction = sigma_nn). Empty by default → the solve path is unchanged.
-        # _rotated_freeslip_datum maps boundary → prescribed wall-normal datum
-        # (the non-zero `conds` of add_rotated_freeslip_bc; absent ⇒ u.n = 0).
-        self._rotated_freeslip_bcs = []
-        self._rotated_freeslip_datum = {}
-        self._rotated_freeslip_info = None
-        # Cross-solve rotated workspace (rotated_bc cache, issue #417):
-        # populated/keyed/invalidated entirely inside solve_rotated_freeslip;
-        # torn down here by _reset_rotated_solver_cache on any DM rebuild.
-        self._rotated_linear_cache = None
-        # Split-fault interface conditions (add_fault_bc): fault names whose
-        # coincident DOF pairs carry a contact (the laws themselves live in
-        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
-        # Non-empty => solve() takes the rotated path, where fault_contact
-        # supplies the pair blocks and the interface operator.
-        self._fault_contact_faults = []
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -6643,344 +7055,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # this attrib records if we need to re-setup
         self.is_setup = False
-
-    def _reject_mixed_constraint_mechanisms(self, adding):
-        """Refuse a rotated constraint and a block constraint on one solver (#464).
-
-        The rotated driver builds its own index-set fieldsplit over exactly two
-        fields (``rotated_bc._solve_rotated_iterative``), and ``build_rotation``
-        addresses velocity and pressure by field number. A block constraint
-        registers a multiplier field of its own, and those DOFs are in neither
-        index set — the preconditioner would then be built over a strict subset
-        of the operator's rows, with nothing said about it.
-
-        The two are alternative ways to impose the same wall-normal condition,
-        so asking for both is a configuration error rather than a case to
-        support. Supporting it would need a third split for the multipliers and
-        a ``build_rotation`` that knows about them.
-
-        Parameters
-        ----------
-        adding : str
-            Name of the method being called, so the message can say which
-            mechanism is already in place and which one was refused.
-        """
-
-        mechanisms = self._constraint_mechanisms()
-        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
-        multipliers = mechanisms["multipliers"]
-
-        if adding == "solve":
-            # The dispatch reads both lists, so it can only report the pair.
-            if not (rotated and multipliers):
-                return
-            raise RuntimeError(
-                f"solve(): this solver carries {len(rotated)} rotated "
-                f"(free-slip or fault contact) and {len(multipliers)} "
-                f"block-constraint boundary condition(s). The rotated solve "
-                f"splits velocity and pressure by field number and the "
-                f"multiplier fields lie outside that split, so the "
-                f"preconditioner would cover only part of the operator. Both "
-                f"impose the same wall-normal condition — use one of them "
-                f"(issue #464)."
-            )
-
-        if adding == "add_constraint_bc":
-            if not rotated:
-                return
-            present, refused = len(rotated), "a block constraint"
-            present_kind = "rotated (free-slip or fault contact)"
-        else:
-            if not multipliers:
-                return
-            present, refused = len(multipliers), "a rotated constraint"
-            present_kind = "block-constraint multiplier"
-
-        raise RuntimeError(
-            f"{adding}(): this solver already carries {present} "
-            f"{present_kind} boundary condition(s), so it cannot also take "
-            f"{refused}. The rotated solve splits velocity and pressure by "
-            f"field number and a block constraint adds a multiplier field "
-            f"outside that split, so the preconditioner would cover only part "
-            f"of the operator. Both impose the same wall-normal condition — "
-            f"use one of them (issue #464)."
-        )
-
-    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
-        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
-        the boundary velocity DOFs into a per-node (normal, tangential) frame and
-        imposing the rotated normal component as an exact Dirichlet constraint.
-
-        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
-        this enforces zero wall-normal flow to machine precision, and the constraint
-        **reaction** is the consistent boundary normal traction
-        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
-        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
-        boundaries because the normal is taken per node.
-
-        Parameters
-        ----------
-        conds : float, scalar sympy expression, or None, optional
-            Prescribed wall-normal velocity datum :math:`\tilde u_n` (the SCALAR
-            component along the outward normal), in the canonical value-first BC
-            order (Style Charter, API conventions). Zero (or ``None``) is pure
-            free-slip :math:`\mathbf{u}\cdot\hat{\mathbf n}=0`. A non-zero value
-            — a number, a sympy expression of ``mesh.X``, or a scalar field read
-            such as ``h_dot.sym[0]`` — is imposed strongly (machine precision) as
-            :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n`, evaluated at the
-            boundary nodes at each ``solve()``. On an enclosed boundary the
-            datum must be discretely flux-free (:math:`\oint \tilde u_n = 0`)
-            for incompressibility. A corner/edge node shared between rotated
-            boundaries has no single normal and stays at the free-slip pinning
-            (datum ignored there). Vector/matrix values are rejected.
-        boundary : str
-            Boundary label to constrain.
-        normal : None or sympy 1×dim Matrix or array, optional
-            Per-node outward normal source. ``None`` (the default, and normally
-            the right choice) uses the geometric facet normal, measure-weighted
-            so that it is consistent with the straight-facet boundary integral
-            the assembler evaluates. A sympy ``1×dim`` matrix supplies an
-            analytic normal (``X/|X|`` on a spherical cap, a constant on a
-            planar face): exact for the TRUE surface, but the assembler still
-            integrates over the facets, so it keeps a consistency error that
-            grows with facet non-uniformity. Use it when the constraint must
-            follow the geometry rather than the mesh. A constant array is also
-            accepted. See ``docs/developer/subsystems/rotated-freeslip.md``.
-
-        Notes
-        -----
-        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
-        edge) is constrained on the whole span of its accumulated normals: a 3D
-        face frees two tangential directions, a 3D edge frees one (the edge
-        tangent), a corner is fully pinned. Registering delegates the solve to
-        :mod:`underworld3.utilities.rotated_bc`.
-
-        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
-        normal)`` is detected conservatively (the first positional argument is
-        a string — the datum is never a string) and shimmed with one
-        DeprecationWarning: the string becomes ``boundary`` and a second
-        positional argument, if present, becomes ``normal``.
-        """
-        self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
-
-        if isinstance(conds, str):
-            # legacy boundary-first call: (boundary[, normal])
-            if boundary is not None:
-                if normal is not None:
-                    raise TypeError(
-                        "add_rotated_freeslip_bc() received 'normal' twice "
-                        "(positionally, legacy order, and as a keyword)")
-                normal = boundary
-            boundary = conds
-            conds = None
-            import warnings
-            warnings.warn(
-                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
-                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
-                "with conds=0 (or boundary=... by keyword)",
-                DeprecationWarning, stacklevel=2)
-        if not isinstance(boundary, str):
-            raise TypeError(
-                f"add_rotated_freeslip_bc() requires a boundary label string; "
-                f"got {type(boundary).__name__}")
-        if conds is not None:
-            if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
-                raise TypeError(
-                    "add_rotated_freeslip_bc(conds=...) takes the SCALAR "
-                    "wall-normal datum u.n; got a vector/matrix value")
-            # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
-            # structurally, but both are zero data (the free-slip member of the
-            # family). is_zero is True only when sympy can PROVE zero, so a
-            # symbolic datum (field read, expression) is correctly kept.
-            if sympy.sympify(conds).is_zero is not True:
-                self._rotated_freeslip_datum[boundary] = conds
-        self._rotated_freeslip_bcs.append((boundary, normal))
-        self.is_setup = False
-        return
-
-    def add_fault_bc(self, conds=0, boundary=None, normal=None):
-        r"""Interface condition on a split-node fault (value-first).
-
-        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
-        ``fault_split.split_fault``); the mesh carries its coincident DOF
-        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
-        is always imposed strongly; ``conds`` sets the tangential law:
-
-        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
-          traction, the slip emerges (the stress-driven crack).
-        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
-          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
-          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
-          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
-          not the background's — and :math:`w` its width). ``conds`` large
-          removes the fault (only the JUMP is penalised — nothing becomes
-          rigid).
-
-        ``normal`` optionally supplies the fault's smooth unit normal —
-        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
-        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
-        smoothed normal is built from the fault's own stored polyline —
-        the right choice for digitized traces with no analytic formula),
-        or a constant ``(dim,)`` array. Use it whenever the fault trace is
-        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
-        adjacent facet normals, which zig-zags at the sampling kinks, and
-        the no-opening constraint then forbids smooth slip past each kink —
-        slip notches and normal-traction sawteeth that GROW under mesh
-        refinement. The smooth normal restores the smooth curve's
-        mechanics on the same polyline mesh. On a straight fault the
-        default is already exact, and a deliberately KINKED fault should
-        NOT be smoothed — there the kink response is the physics.
-
-        The solve then takes the rotated strong-constraint path
-        (``utilities/rotated_bc.py`` with the pair blocks of
-        ``utilities/fault_contact.py``); ``guard()`` /
-        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
-        Slip and leak per coincident pair afterwards:
-        ``fault_contact.fault_slip(solver, boundary,
-        solver._rotated_freeslip_info)``.
-        """
-        from underworld3.utilities import fault_contact
-
-        self._reject_mixed_constraint_mechanisms("add_fault_bc")
-
-        if not isinstance(boundary, str):
-            raise TypeError(
-                f"add_fault_bc() requires the fault's boundary name string; "
-                f"got {type(boundary).__name__}")
-        eta_f = float(conds)
-        if eta_f == 0.0:
-            fault_contact.add_frictionless_fault_bc(self, boundary,
-                                                    normal=normal)
-        else:
-            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
-                                               normal=normal)
-        self.is_setup = False
-        return
-
-    def _residual_is_nonlinear(self, tol=1e-8):
-        r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
-        — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
-        iteration is required.
-
-        Detected by a NUMERICAL probe: assemble the Jacobian at two distinct
-        velocity states and compare. A symbolic test on ``F1.sym`` cannot see the
-        nonlinearity — the effective viscosity's strain-rate (velocity-gradient)
-        dependence is carried as a JIT-substituted *placeholder* symbol
-        (``\dot\varepsilon_{II}``) in the flux, decoupled from the gradient
-        ``L`` in the symbolic form, so it only becomes visible once the operator
-        is assembled at a concrete iterate. Constant- or temperature-dependent
-        viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
-        bit-identical ⇒ linear.
-
-        Used as a LAZY guard in the rotated-free-slip loop's picard + pure-Newton
-        corner (a Picard warmup is meaningless for a linear residual and impossible
-        for pure Newton) — the loop itself needs no up-front probe, it
-        self-terminates. The caller must have run the pre-solve preamble
-        (auxiliary vector + constants) so the assembly sees the correct
-        coefficients.
-        """
-        snes = self.snes
-        dm = self.dm
-        snes.setUp()
-        J = snes.getJacobian()[0]
-        U1 = dm.getGlobalVec(); U2 = dm.getGlobalVec()
-        # two distinct smooth, bounded states with non-zero velocity gradients
-        # (a linear operator gives the SAME J for both; only a solution-dependent
-        # viscosity makes them differ). Ownership-relative index keeps it
-        # partition-independent enough for the norm comparison.
-        rs, re = U1.getOwnershipRange()
-        idx = np.arange(rs, re, dtype=float)
-        # write IN PLACE into each vec's PETSc-owned array (getArray returns a writable
-        # view). setArray with a fresh numpy temporary on a POOLED getGlobalVec is risky:
-        # its storage lifetime/pool reuse is not guaranteed for the later computeJacobian.
-        a1 = U1.getArray(); a1[:] = 0.1 * np.sin(0.7 * idx + 0.3)
-        a2 = U2.getArray(); a2[:] = 0.1 * np.sin(1.3 * idx + 1.1)
-        J1 = J.copy(); J2 = J.copy()
-        try:
-            snes.computeJacobian(U1, J1)
-            snes.computeJacobian(U2, J2)
-            J2.axpy(-1.0, J1)                       # J2 <- J(U2) - J(U1)
-            rel = J2.norm() / (J1.norm() + 1e-300)
-        finally:
-            dm.restoreGlobalVec(U1); dm.restoreGlobalVec(U2)
-            J1.destroy(); J2.destroy()
-        return rel > tol
-
-    def boundary_normal_traction(self, boundary, mass="auto"):
-        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
-        rotated-free-slip ``boundary`` as the constraint reaction from the last
-        solve — the smooth, bounded quantity used for dynamic topography
-        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
-        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
-        :meth:`solve`.
-
-        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
-        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
-        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
-        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
-        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
-        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
-        independently of h (#404, measured in #633). Three-dimensional recovery
-        currently supports triangular P1/P2 traces only (#637).
-
-        .. warning::
-           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
-           only slowly (the vertex basis has zero surface mean, so vertex reactions
-           carry only the O(h) facet-geometry error); edge-midpoint values are
-           superconvergent. Pointwise consumers on curved boundaries should use
-           midpoint or integral/fitted quantities (issue #414)."""
-        if self._rotated_freeslip_info is None:
-            raise RuntimeError(
-                "boundary_normal_traction requires a completed rotated-free-slip solve.")
-        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
-        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
-
-    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
-        r"""Write the dynamic topography
-        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
-        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
-        constraint reaction of the last solve. This is the hand-off to the free-surface
-        machinery — the 3-number topography integrator drives node motion from a surface
-        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
-        pass it here after each :meth:`solve`; its boundary nodes are filled and the
-        interior left untouched.
-
-        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
-        ``mass="auto"`` selects lumped recovery where valid and
-        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
-        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
-
-        .. warning::
-           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
-           values written into ``field`` converge only slowly; edge-midpoint values
-           are superconvergent. Downstream pointwise use of curved-boundary
-           topography should rely on midpoint/fitted quantities (issue #414)."""
-        if self._rotated_freeslip_info is None:
-            raise RuntimeError(
-                "dynamic_topography requires a completed rotated-free-slip solve.")
-        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
-        return _dtf(self, boundary, self._rotated_freeslip_info, field,
-                    buoyancy_scale=buoyancy_scale, mass=mass)
-
-    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
-        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
-        rotated-free-slip constraint reaction.
-
-        With ``remove_mean=True`` (default), the constant normal-traction gauge
-        is removed before projection. Unlike pointwise
-        :meth:`boundary_normal_traction`, this weak projection does not recover
-        nodal traction values or gather a global boundary mesh. It is therefore
-        suitable for harmonic and integral diagnostics on curved P2 boundaries,
-        whose recovered vertex values converge slowly (issue #414).
-        """
-        if self._rotated_freeslip_info is None:
-            raise RuntimeError(
-                "boundary_normal_traction_integral requires a completed "
-                "rotated-free-slip solve.")
-        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
-        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
-                     remove_mean=remove_mean)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):
@@ -10033,55 +10107,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Non-dimensionalise if the scaling system is active.
         cdef DM _time_dm_stokes
 
-        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
-        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
-        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
-        if self._rotated_freeslip_bcs or self._fault_contact_faults:
-            # Run the same pre-solve preamble as the standard path so the pointwise
-            # functions see the DM time, the auxiliary vector, and updated constants
-            # (needed for problems whose coefficients live in auxiliary fields). This
-            # must precede the nonlinearity probe below so the trial assemblies see
-            # the correct coefficients.
-            if time is not None:
-                t_nd = self._nondimensional_time(time)
-                _time_dm_stokes = self.dm
-                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
-            self.mesh.update_lvec()
-            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-            self._update_constants(record=True)
-
-            # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
-            # Re-check here: this path never reaches the instrumentation, so an armed
-            # guard would be silently inert -- the exact state guard() exists to refuse.
-            if (getattr(self, "_instrumentation", None) is not None
-                    and self._instrumentation.armed):
-                raise NotImplementedError(
-                    "a wall-clock guard is armed but this solve takes the rotated "
-                    "free-slip path, which runs its own Krylov loop outside self.snes "
-                    "and cannot be bounded by it. Call unguard() first."
-                )
-            # ONE path for linear and nonlinear models: the manual outer
-            # Newton/Picard loop that rotates F(u), J(u) and the strong
-            # v_n = u_n constraint every iteration. It honours zero_init_guess
-            # (warm start), the Picard warmup count, and the consistent_jacobian
-            # tangent (Picard / Newton / continuation); a linear model converges
-            # after its first increment, so no up-front nonlinearity probe is
-            # paid (the loop self-terminates; _residual_is_nonlinear survives as
-            # a lazy guard inside the picard+pure-Newton corner).
-            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
-            self._rotated_freeslip_info = solve_rotated_freeslip(
-                self, self._rotated_freeslip_bcs, verbose=verbose,
-                zero_init_guess=zero_init_guess, picard=picard,
-                # An explicit `time=` reaches the kernels through petsc_t on
-                # the DM — invisible to every state counter and constant
-                # value, so it must veto the cached-operator fast path.
-                force_operator_refresh=time is not None)
-            # This path solves via ksp.solve on the rotated operator (not self.snes),
-            # so give it a report from the rotated result rather than leaving a stale one.
-            _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
-            # The warm-start flag must follow the rotated solve's own verdict — the SNES
-            # was never run, so the generic reader would latch a stale reason.
-            self._record_convergence_status(converged=_rotated_report.converged)
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, picard, time):
             return
 
         if time is not None:

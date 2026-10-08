@@ -1094,7 +1094,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # defined as unreachable. Measured before this was hoisted: the velocity
     # residual reached 6e-12 at the first increment and the remaining |F̂| was
     # the pinned DOF alone, bit-identical for eight further no-op iterations.
-    lu_pin = _naive_pressure_pin(dm) if use_lu else None
+    lu_pin = _naive_pressure_pin(dm) if (use_lu and "pressure" in solver._subdict) else None
     interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
 
     # ---- cross-solve workspace cache (issue #417; see the block comment
@@ -1229,7 +1229,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
 
     J, Jp = snes.getJacobian()[:2]
-    pres_is = solver._subdict["pressure"][0]
+    # A vector solver (the thin sheet) has the velocity alone: no pressure
+    # block, no Schur complement, no pressure gauge. Every pressure site below
+    # is gated on this.
+    has_pressure = "pressure" in solver._subdict
+    pres_is = solver._subdict["pressure"][0] if has_pressure else None
     Fc = dm.createGlobalVec()
     reaction = dm.createGlobalVec()          # the final (un-zeroed) Cartesian residual
 
@@ -1261,7 +1265,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # stalls against the constant offset). This mirrors PETSc's own projected
     # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
     # (σ_nn reads velocity rows only).
-    use_pnull = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+    use_pnull = has_pressure and bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
     # L2 norm of the LAST projected-out gauge component (|mean|·√N over the
     # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
     # behind the projection (see the guard after the Newton loop).
@@ -1397,7 +1401,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Aop = Ahat
         if not use_lu:
             if ctx is None:
-                Mp = _pressure_mass_schur_pmat(solver)
+                Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
             elif assemble and Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
@@ -1440,11 +1444,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # parity with the iterative path's exact v_n cleanup (LU is exact only
             # to factorisation round-off at the decoupled constraint rows)
             _zero_rows_local(dhat, normal_rows)
-        else:
+        elif has_pressure:
             dhat, last_reason, ctx = _solve_rotated_iterative(
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
                 refresh_operator=assemble)
+        else:
+            dhat, last_reason, ctx = _solve_rotated_vector(
+                solver, Aop, bhat, normal_rows,
+                custom_Pl=custom_Pl, nsp=nsp, ctx=ctx, refresh_operator=assemble)
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
@@ -1975,6 +1983,98 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                    f"outer KSP {ksp.getConvergedReason()} in "
                    f"{ksp.getIterationNumber()} its (last apply: vel "
                    f"{ctx['vel_its_last']}, pres {ctx['pres_its_last']})")
+    return Uhat, ksp.getConvergedReason(), ctx
+
+
+def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=None,
+                          ctx=None, refresh_operator=True):
+    """Solve the rotated operator of a single-field (vector) solver — the thin
+    sheet — with one KSP on the whole matrix: geometric FMG on the custom
+    prolongation when the solver has a hierarchy, else the shared GAMG bundle
+    with the solver's block size. The saddle-point counterpart is
+    ``_solve_rotated_iterative``; this one has no Schur complement and no
+    pressure gauge. Same ``(Uhat, reason, ctx)`` contract and the same context
+    reuse across Newton iterations."""
+    from underworld3.utilities import custom_mg, multigrid_options
+    dm = solver.dm
+    if ctx is None:
+        if nsp is not None:
+            Ahat.setNullSpace(nsp)
+            Ahat.setTransposeNullSpace(nsp)
+        global _ROT_SOLVE_COUNT
+        _ROT_SOLVE_COUNT += 1
+        pfx = f"rotvec{_ROT_SOLVE_COUNT}_"
+        opts = PETSc.Options()
+        tol = float(solver.tolerance)
+        cfg = {"ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "500"}
+        if custom_Pl is None:
+            cfg.update(multigrid_options.gamg_bundle(
+                block_size=getattr(solver, "_pc_block_size", 1)).settings)
+        for k, v in cfg.items():
+            opts[pfx + k] = v
+        try:
+            ksp = PETSc.KSP().create(comm=dm.comm)
+            ksp.setOptionsPrefix(pfx)
+            ksp.setOperators(Ahat)
+            pc = ksp.getPC()
+            ksp.setFromOptions()
+            if custom_Pl is not None:
+                # coarse="svd" only when verified rotation modes make the
+                # Galerkin-coarsened operator singular (see the saddle route).
+                _coarse = ("svd" if getattr(solver, "_rotated_velocity_null_modes", 0)
+                           else "redundant")
+                _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _fac_keys = custom_mg._configure_pcmg(
+                    pc, custom_Pl, coarse=_coarse,
+                    smoother=solver._mg_smoother_variant,
+                    patch_rows=getattr(_hier, "level_patch_rows", None))
+                pc.setUp()
+                for _l in range(1, pc.getMGLevels()):
+                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
+                                         for k in _fac_keys):
+                        pc.getMGSmoother(_l).setUp()
+                vpfx = pc.getOptionsPrefix() or ""
+                for key in multigrid_options.geometric_mg_bundle(
+                        coarse=_coarse,
+                        smoother=solver._mg_smoother_variant).settings:
+                    opts.delValue(vpfx + key)
+                for key in _fac_keys or ():
+                    opts.delValue(vpfx + key)
+            else:
+                pc.setUp()
+        finally:
+            for k in cfg:
+                # an option PETSc already consumed and dropped is not an error
+                try:
+                    opts.delValue(pfx + k)
+                except Exception:
+                    pass
+        ctx = {"ksp": ksp, "pc": pc, "Mp": None, "nsp": nsp, "cns": None,
+               "custom_Pl": custom_Pl, "pfx": pfx,
+               "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
+               "schur_pre": "none"}
+        if custom_Pl is None:
+            solver._record_pc_fallback(
+                "rotated.velocity_pc",
+                requested="custom-P geometric MG on the rotated operator",
+                installed="GAMG",
+                reason="unavailable",
+                detail="no multigrid hierarchy (set_custom_fmg or a mesh-owned "
+                       "adapt tail) is available to the rotated path")
+    else:
+        ksp = ctx["ksp"]
+        nsp = ctx["nsp"]
+        if refresh_operator:
+            ksp.setOperators(Ahat)
+    if nsp is not None:
+        nsp.remove(bhat)
+    Uhat = Ahat.createVecRight()
+    Uhat.set(0.0)
+    ksp.solve(bhat, Uhat)
+    _warn_if_ksp_diverged(ksp, kind="rotated vector")
+    # exact at the decoupled constraint rows, independent of the iterative tolerance
+    _zero_rows_local(Uhat, normal_rows)
+    ctx["velocity_pc_type"] = ksp.getPC().getType()
     return Uhat, ksp.getConvergedReason(), ctx
 
 
