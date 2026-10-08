@@ -7145,6 +7145,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             inner_self._owning_solver.is_setup = False
             return
 
+    #: True for a solver whose momentum flux ``F1`` adds
+    #: :meth:`_coupled_momentum_flux` (``SNES_Stokes``); a solver that builds
+    #: its own ``F1`` leaves it False and ``add_coupled_field`` refuses a
+    #: ``momentum_flux`` instead of dropping it.
+    _F1_carries_coupled_momentum_flux = False
 
     @timing.routine_timer_decorator
     def __init__(self,
@@ -7452,6 +7457,38 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             f"use one of them (issue #464)."
         )
 
+    def _reject_rotated_with_coupled_fields(self, adding, adding_rotated=False):
+        """Refuse a rotated constraint and a coupled volume field on one solver.
+
+        The rotated driver splits velocity and pressure by field number
+        (``rotated_bc._solve_rotated_iterative``) and builds its rotation over
+        those two fields. A coupled field (:meth:`add_coupled_field`) is a third
+        DM field outside both, so the rotated solve would cover only part of the
+        operator: measured, it stops at the first iteration
+        (DIVERGED_LINE_SEARCH) with nothing said about why. Supporting the pair
+        needs a rotated driver that carries the extra fields.
+
+        Parameters
+        ----------
+        adding : str
+            Name of the method being called, for the message.
+        adding_rotated : bool
+            The call is adding a rotated condition not yet in the lists.
+        """
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        n_rotated = len(rotated) + int(bool(adding_rotated))
+        if not (n_rotated and self._coupled_fields):
+            return
+        raise RuntimeError(
+            f"{adding}(): this solver would carry {n_rotated} rotated (free-slip "
+            f"or fault contact) boundary condition(s) and {len(self._coupled_fields)} "
+            f"coupled volume field(s). The rotated solve splits velocity and "
+            f"pressure by field number and a coupled field lies outside that "
+            f"split, so the solve would cover only part of the operator. Impose "
+            f"the wall condition another way (Dirichlet, or add_nitsche_bc)."
+        )
+
     def add_coupled_field(self, field, F0, F1=None, momentum_flux=None):
         r"""Solve an extra volume field together with velocity and pressure.
 
@@ -7512,11 +7549,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if F1 is not None:
             F1 = sympy.Matrix(sympy.Array(sympy.sympify(F1)).reshape(n_components, dim))
         if momentum_flux is not None:
+            if not self._F1_carries_coupled_momentum_flux:
+                raise NotImplementedError(
+                    f"add_coupled_field(): {type(self).__name__} builds its own "
+                    f"momentum flux, which does not include a coupled field's "
+                    f"momentum_flux; it would be dropped. Use uw.systems.Stokes.")
             momentum_flux = sympy.Matrix(
                 sympy.Array(sympy.sympify(momentum_flux)).reshape(dim, dim))
 
+        if any(c.field is field for c in self._coupled_fields):
+            raise ValueError(
+                f"add_coupled_field(): {field.name} is already a coupled field "
+                f"of this solver")
         field._solver_field_name = f"coupled_{field.clean_name}"
         self._coupled_fields.append(_CoupledField(field, F0, F1, momentum_flux))
+        try:
+            self._reject_rotated_with_coupled_fields("add_coupled_field")
+        except RuntimeError:
+            self._coupled_fields.pop()
+            raise
         self.fields[field._solver_field_name] = field
         # A new DM field: the discretisation and the solver must be rebuilt.
         self.is_setup = False
@@ -7670,6 +7721,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         positional argument, if present, becomes ``normal``.
         """
         self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
+        self._reject_rotated_with_coupled_fields("add_rotated_freeslip_bc", adding_rotated=True)
 
         if isinstance(conds, str):
             # legacy boundary-first call: (boundary[, normal])
@@ -7750,6 +7802,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from underworld3.utilities import fault_contact
 
         self._reject_mixed_constraint_mechanisms("add_fault_bc")
+        self._reject_rotated_with_coupled_fields("add_fault_bc", adding_rotated=True)
 
         if not isinstance(boundary, str):
             raise TypeError(
@@ -11127,6 +11180,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # before any setup reads either list, so an unsupported pair costs
         # nothing before it is refused.
         self._reject_mixed_constraint_mechanisms("solve")
+        self._reject_rotated_with_coupled_fields("solve")
 
         _check_homotopy_value(homotopy)
         if homotopy:

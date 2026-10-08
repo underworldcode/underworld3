@@ -30,6 +30,11 @@ def _driven_stokes(viscosity=1):
     stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
     stokes.add_dirichlet_bc((0.0, 0.0), "Left")
     stokes.add_dirichlet_bc((0.0, 0.0), "Right")
+    # A closed box fixes the pressure only up to a constant, so declare it.
+    # Without the null space, LU of the singular system lets the constant drift
+    # from one Newton step to the next: measured with one MUMPS build at -2.3e14,
+    # where the residual cannot be resolved below |F| ~ 2.
+    stokes.petsc_use_pressure_nullspace = True
     return mesh, stokes
 
 
@@ -84,6 +89,9 @@ def test_two_way_coupled_jacobian_is_the_residual_derivative():
     stokes.consistent_jacobian = True
     _exact_linear_solves(stokes)
     stokes.solve()
+    # the Taylor test needs a state the residual can resolve: a real solution,
+    # not a stop on a small step
+    assert stokes.snes.getFunctionNorm() < 1.0e-8, stokes.snes.getFunctionNorm()
     stokes._set_newton_alpha(1.0)
 
     snes = stokes.snes
@@ -197,3 +205,69 @@ def test_cosserat_shear_layer_converges_to_the_closed_form():
     # P2 omega and P2 velocity: L2 order 3 asymptotically
     assert omega_order > 2.5, f"omega L2 errors {coarse[0]:.3e} -> {fine[0]:.3e}"
     assert u_order > 2.5, f"u_x L2 errors {coarse[1]:.3e} -> {fine[1]:.3e}"
+
+
+# ---- refusals ---------------------------------------------------------------------
+def _scalar_field(mesh, name):
+    return uw.discretisation.MeshVariable(name, mesh, 1, degree=1)
+
+
+@pytest.mark.tier_b
+def test_rotated_freeslip_and_coupled_field_are_refused_in_either_order():
+    # the rotated solve splits velocity and pressure by field number; a coupled
+    # field outside that split was measured to stop the solve at iteration 0
+    mesh, stokes = _driven_stokes()
+    chi = _scalar_field(mesh, "chi_r1")
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    with pytest.raises(RuntimeError, match="coupled volume field"):
+        stokes.add_rotated_freeslip_bc(0, "Left")
+
+    mesh, stokes = _driven_stokes()
+    stokes.add_rotated_freeslip_bc(0, "Left")
+    chi = _scalar_field(mesh, "chi_r2")
+    with pytest.raises(RuntimeError, match="coupled volume field"):
+        stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    assert stokes._coupled_fields == []
+
+
+@pytest.mark.tier_b
+def test_a_field_is_coupled_once():
+    mesh, stokes = _driven_stokes()
+    chi = _scalar_field(mesh, "chi_twice")
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    with pytest.raises(ValueError, match="already a coupled field"):
+        stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+
+
+@pytest.mark.tier_b
+def test_momentum_flux_is_refused_where_the_flux_would_drop_it():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4, qdegree=3)
+    v = uw.discretisation.MeshVariable("U_ns", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_ns", mesh, 1, degree=1)
+    ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)
+    omega = _scalar_field(mesh, "omega_ns")
+    with pytest.raises(NotImplementedError, match="momentum_flux"):
+        ns.add_coupled_field(omega, F0=omega.sym[0],
+                             momentum_flux=omega.sym[0] * sympy.eye(mesh.dim))
+
+
+@pytest.mark.tier_b
+def test_two_way_coupling_converges_with_the_default_fieldsplit_solver():
+    # split 0 = velocity + coupled field under the default velocity multigrid,
+    # split 1 = pressure: the solver a user gets without choosing one
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3)
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    chi = _scalar_field(mesh, "chi_default")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + 0.5 * chi.sym[0] ** 2
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    stokes.consistent_jacobian = True
+    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Left")      # right wall traction-free
+    stokes.solve()
+    assert stokes.snes.getConvergedReason() > 0
+    assert stokes.snes.getFunctionNorm() < 1.0e-6
+    assert chi.array.max() > 1.0                     # driven, not trivially zero

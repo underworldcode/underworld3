@@ -148,6 +148,10 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
       extrapolation level are mesh variables the solver owns.
     """
 
+    # F1 is built here, not by the SNES_Stokes template, and does not add a
+    # coupled field's momentum flux (add_coupled_field refuses one)
+    _F1_carries_coupled_momentum_flux = False
+
     _solver_terms = SNES_Stokes._solver_terms + (
         ("rho", "density multiplying the inertial terms"),
     )

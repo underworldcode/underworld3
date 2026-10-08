@@ -2169,6 +2169,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         """,
     )
 
+    # F1 below adds the coupled fields' momentum flux (add_coupled_field)
+    _F1_carries_coupled_momentum_flux = True
+
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: self.stress + self._devss_flux() + self._coupled_momentum_flux(),
