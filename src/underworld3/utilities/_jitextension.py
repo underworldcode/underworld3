@@ -1570,24 +1570,25 @@ def generate_c_source(
 
     MODNAME = "fn_ptr_ext_" + str(name)
 
-    # JIT compile flags for the generated kernels. Default keeps -O3 (kernel
-    # runtime speed) but adds -g0 to drop the debug info that the base Python
-    # CFLAGS injects via sysconfig -- pure overhead, and a memory hog on huge
-    # expressions, for these generated kernels. For very large expressions
-    # whose gcc -O3 compile is slow or OOM-killed, set UW3_JIT_CFLAGS to a
-    # lower optimisation level, e.g. UW3_JIT_CFLAGS="-O1 -g0". Two flags are
-    # always prepended: -std=c99 (the generated code relies on it) and
-    # -fno-math-errno. The kernels never read errno, and gcc's default
-    # -fmath-errno makes each sqrt, pow and exp a side effect it cannot merge
-    # with a repeat of the same call: a third of the cost of a viscoplastic
-    # Jacobian's callbacks with it, bit-identical results (#834). Apple clang
-    # never sets errno, so this is already the macOS behaviour.
-    _default_jit_cflags = ["-O3", "-g0"]
+    # JIT compile flags for the generated kernels. -std=c99 is always first (the
+    # generated code relies on it); UW3_JIT_CFLAGS replaces the rest.
+    #   -O3   kernel run-time speed.
+    #   -g0   drops the debug info the base Python CFLAGS inject via sysconfig:
+    #         overhead, and a memory hog on huge expressions.
+    #   -fno-math-errno  the kernels never read errno. gcc and clang on Linux
+    #         default to -fmath-errno, which makes each sqrt, pow and exp call a
+    #         side effect that cannot be merged with a repeat of the same call; the
+    #         flag cut a viscoplastic Jacobian's callbacks to a third on gcc 14, with
+    #         bit-identical results for the C SymPy prints (#834). clang targeting
+    #         macOS already defaults to it.
+    # For a very large expression whose -O3 compile is slow or OOM-killed, use a
+    # lower level, e.g. UW3_JIT_CFLAGS="-O1 -g0 -fno-math-errno". The override
+    # replaces all three, so a compiler that rejects one (nvc rejects -g0 and
+    # -fno-math-errno) can still be used.
+    default_flags = ["-O3", "-g0", "-fno-math-errno"]
     _jit_cflags_env = os.environ.get("UW3_JIT_CFLAGS")
-    extra_compile_args = [
-        "-std=c99", "-fno-math-errno",
-        *(_jit_cflags_env.split() if _jit_cflags_env is not None else _default_jit_cflags),
-    ]
+    chosen_flags = _jit_cflags_env.split() if _jit_cflags_env is not None else default_flags
+    extra_compile_args = ["-std=c99", *chosen_flags]
     if verbose:
         print(
             f"JIT compile flags: {extra_compile_args}"
