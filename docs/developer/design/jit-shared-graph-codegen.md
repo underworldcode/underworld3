@@ -1,7 +1,9 @@
 # Generating JIT kernels from the shared expression graph
 
 **Status**: Implemented on `feature/jit-graph-codegen`, 2026-10-08: the graph route is
-the only JIT route (staging steps 2–4). Steps 2 and 3 were first measured against tier 1
+the default JIT route (staging steps 2–4), and the expanded route — the JIT before tier
+2, generating byte-identical C — is kept beside it, selectable per process and per
+solver (decision of 2026-10-09). Steps 2 and 3 were first measured against tier 1
 end to end while both routes existed behind a switch ({ref}`jit-graph-in-the-library`).
 Tier 2 of [#823](https://github.com/underworldcode/underworld3/issues/823).
 Tier 1 ([#830](https://github.com/underworldcode/underworld3/pull/830), merged
@@ -678,12 +680,13 @@ repository; the notch is the one exception, and its driver is named.
    updated. `jit-cache.md` already describes the cross-rank check as an abort and every
    rank as compiling; both stopped being true before this change.
 
-   Done, 2026-10-08. The field classes' patched C names (`ccode_patch_fns`), the
-   coordinate recovery and the unconvertible-symbol scan were replaced by an explicit map
-   from leaf to C built for each compile (`_leaf_spellings`, `_spell_leaf`), and the
-   opt-in `UW_JIT_CSE` path, which served only the expanded tree, was retired. Against
-   `development`, the library source gains 692 lines and loses 639: `_jit_graph.py` is
-   457 of the gain, and `_jitextension.py` is about 400 lines shorter.
+   Done, 2026-10-08: on the graph route, an explicit map from leaf to C built for each
+   compile (`_leaf_spellings`, `_spell_leaf`) replaced the field classes' patched C
+   names, the coordinate recovery and the unconvertible-symbol scan. Amended
+   2026-10-09: the expanded route was restored beside the graph, unchanged, as a
+   selectable fallback (see Decisions), so the step's deletions and the retirement of
+   `UW_JIT_CSE` were undone; only the unused `prepare_for_cache_key` and `_createext`
+   stay removed.
 
 Each step is benchmarked against the one before it and reviewed adversarially before
 the next begins.
@@ -714,7 +717,20 @@ the next begins.
 - **2026-10-08: steps 2–4 land as one change** (Louis: "crash through, then compare
   with the existing, improved JIT"). The comparison is against `development` with tier 1
   and `-fno-math-errno` (#834, PR #835), the competitor at its best.
-- **2026-10-08: `UW_JIT_CSE` is retired** with the expanded tree it served.
+- **2026-10-08: `UW_JIT_CSE` is retired** with the expanded tree it served
+  (superseded on 2026-10-09: it remains an option of the restored expanded route).
+- **2026-10-09: the expanded route stays, as a fallback and a reference** (Louis: "we
+  will not be sure whether or not there is a regression, or more likely a case we did
+  not consider, unless we have the capacity to try it the old way. If both are wrong,
+  the model is likely wrong"). The graph is the default. `uw.use_jit_route("expanded")`,
+  or `UW_JIT_ROUTE=expanded` in the environment, selects the old route for the process,
+  and `solver.jit_route = "expanded"` for one solver, rebuilt at its next solve with its
+  state kept. The expanded route is `development`'s code, moved and not edited: its C is
+  byte-identical to `development`'s on the six fixtures, the notch included.
+  `UW_JIT_CSE` remains an option of that route. `test_0026` holds the two routes to
+  the same iteration counts and solutions on a viscoplastic box, Newton and Picard, and
+  the expanded route keeps its own tests (`test_0022`, `test_0103`, `test_0104`,
+  `test_0105`). Removing it is a later decision, once the graph has run in production.
 
 ## Questions for the maintainer
 

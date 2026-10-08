@@ -192,7 +192,7 @@ def test_the_guarded_lowering_is_the_guarded_tree(box):
     rest = {L[i, j] for i in range(2) for j in range(2)}
     for flux, tree_escapes_at_rest in ((viscoplastic, False), (power_law, True)):
         tree = flux.applyfunc(_guarded_tree)
-        graph = _jacobian_unwrap(flux)
+        graph = _jacobian_unwrap(flux, route="graph")
         assert graph.atoms(jg._KernelNode), "the Newton source was not lowered"
         escaped = _same_guarded_values(tree, graph, L, rest)
         assert escaped == tree_escapes_at_rest, escaped
@@ -234,6 +234,7 @@ def _header(solver, monkeypatch):
         return modname, codeguys, diag
 
     monkeypatch.setattr(jx, "generate_c_source", keep)
+    solver.jit_route = "graph"
     solver.is_setup = False
     solver._setup_pointwise_functions()
     return seen["h"]
@@ -289,8 +290,9 @@ def test_a_law_with_no_named_quantity_has_no_temporaries(monkeypatch):
 
 def test_the_manifest_is_the_constants_the_kernels_read(box):
     """Every constant atom a lowered kernel reads, at any depth, has a slot, ordered by
-    name; a constant inside a constant is folded into its holder's slot."""
-    from underworld3.utilities._jitextension import _extract_constants
+    name; a constant inside a constant is folded into its holder's slot. The expanded
+    route's scan gives the same manifest."""
+    from underworld3.utilities._jitextension import _extract_constants, _manifest_of
 
     mesh, T, v = box
     u = T.sym[0]
@@ -301,9 +303,12 @@ def test_the_manifest_is_the_constants_the_kernels_read(box):
     a = uw.expression(r"a_{0024h}", c1 * u + c4 * u ** 2, "inner")
     b = uw.expression(r"b_{0024h}", a / (c2 + a ** 2), "outer")
     fns = (b, sympy.Matrix([[b * u, a]]))
-    manifest, placeholders = _extract_constants(fns, mesh)
-    assert [e for _, e in manifest] == [c1, c2, c4]
+    graph, placeholders = _manifest_of(jg.lower_callbacks(fns, mesh))
+    assert [e for _, e in graph] == [c1, c2, c4]
     assert len(set(placeholders.values())) == 3
+    # the expanded route's scan finds the same slots
+    expanded, _ = _extract_constants(fns, mesh)
+    assert [e for _, e in expanded] == [c1, c2, c4]
 
 
 def test_a_repeated_condition_stays_a_condition(box):

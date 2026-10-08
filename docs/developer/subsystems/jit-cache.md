@@ -35,7 +35,8 @@ processes.
 
 ## What is compiled
 
-`getext()` lowers each callback onto the shared graph of named quantities
+There are two routes. The default, `"graph"`, lowers each callback onto the shared
+graph of named quantities
 (`src/underworld3/utilities/_jit_graph.py`, design note
 `docs/developer/design/jit-shared-graph-codegen.md`): each non-constant `UWexpression`
 becomes one C temporary, evaluated once per kernel call (a matrix-valued atom is
@@ -45,6 +46,14 @@ by a hash of the C each computes, with every leaf written as the C the kernel re
 (`petsc_u[3]`, `petsc_x[0]`, `constants[2]`). The generated source, and so the key below,
 is therefore a function of the mathematics and the data layout only: the same under any
 `PYTHONHASHSEED`, in any process, whatever the script created first.
+
+The `"expanded"` route is the JIT before #823 tier 2, kept as a fallback and a
+reference: every named quantity is expanded into one expression tree, differentiated
+and printed whole. Select it for the process with `uw.use_jit_route("expanded")` or
+`UW_JIT_ROUTE=expanded`, or for one solver with `solver.jit_route = "expanded"`. The
+two routes generate different C for any law with a named non-constant quantity, so
+they never share a cache entry; for a law without one they generate the same C and
+share it, which is correct, because the same C is the same function.
 
 ## Cache key
 
@@ -137,6 +146,7 @@ When `mpi.size > 1`:
 | `UW_JIT_CACHE_DIR`   | Override the cache directory location                   |
 | `XDG_CACHE_HOME`     | Used when `UW_JIT_CACHE_DIR` is unset                   |
 | `UW3_JIT_CFLAGS`     | Replaces the kernels' default compile flags, `-O3 -g0 -fno-math-errno`; `-std=c99` is always kept. Use a lower level for a huge expression whose `-O3` compile is slow or runs out of memory (`-O1 -g0 -fno-math-errno`), or drop a flag the compiler rejects (nvc rejects `-g0` and `-fno-math-errno`). Without `-fno-math-errno`, gcc and clang on Linux cannot merge repeated `sqrt`, `pow` and `exp` calls (#834). The flags are part of the cache key. |
+| `UW_JIT_ROUTE`       | `graph` (default) or `expanded`, the JIT route; `uw.use_jit_route()` and `solver.jit_route` override it |
 
 ## Code references
 

@@ -91,8 +91,11 @@ def _module_hash(seed, cache_dir, tmp_path):
     return line[0].removeprefix("MODULES:")
 
 
+@pytest.mark.parametrize("route", ["graph", "expanded"])
 @pytest.mark.parametrize("seeds", [(0, 1, 2)])
-def test_the_generated_module_is_the_same_under_every_hash_seed(seeds, tmp_path):
+def test_the_generated_module_is_the_same_under_every_hash_seed(seeds, route, tmp_path,
+                                                               monkeypatch):
+    monkeypatch.setenv("UW_JIT_ROUTE", route)     # the children read it
     hashes = {}
     for seed in seeds:
         cache = tmp_path / f"cache_{seed}"      # a cold cache per seed
@@ -114,6 +117,8 @@ _CHILD_NEWTON = textwrap.dedent(
     import pathlib, sys
     import sympy, underworld3 as uw
     import underworld3.utilities._jitextension as jx
+
+    uw.use_jit_route("graph")
 
     temporaries = []
     generate = jx.generate_c_source

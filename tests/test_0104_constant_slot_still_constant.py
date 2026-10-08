@@ -7,7 +7,8 @@ decided constancy by the atom's current value, that expression banked as one
 constants[] slot, and ramping ``m`` left the kernel reading a scalar where the law
 depends on position again. The JIT now decides constancy by structure (#823, tier 2):
 the expression reads a field, so it is compiled as a quantity reading ``T`` and the
-``m`` slot, and ``m`` ramps without a recompile.
+``m`` slot, and ``m`` ramps without a recompile. The expanded route, the JIT before
+tier 2 kept as a fallback, still decides by value; there the collapsed slot raises.
 
 A slot can still stop being constant: a constant atom whose content is replaced by one
 that reads a field, without a rebuild. Packing a zero into it would hand the solve a
@@ -21,7 +22,7 @@ import sympy
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
 
-def _build(initial):
+def _build(initial, route="graph"):
     import underworld3 as uw
 
     uw.reset_default_model()
@@ -41,6 +42,7 @@ def _build(initial):
     poisson.add_dirichlet_bc(0.0, "Top")
     poisson.add_dirichlet_bc(0.0, "Bottom")
     poisson.petsc_options.delValue("ksp_monitor")
+    poisson.jit_route = route
     return uw, poisson, T, m
 
 
@@ -126,3 +128,15 @@ def test_an_expression_that_stays_constant_is_unaffected():
     poisson.solve(zero_init_guess=True)
     second = float(np.asarray(T.data)[:, 0].mean())
     assert second == pytest.approx(first / 2.0, rel=1e-6)
+
+
+def test_on_the_expanded_route_a_collapsed_slot_raises_when_it_stops_being_constant():
+    """The expanded route keeps the JIT's behaviour before #823 tier 2: compiled while
+    the whole expression is the number 2, the diffusivity banks as one scalar slot,
+    and ramping m makes it depend on T again. Packing must raise, not pass a zero."""
+    uw, poisson, T, m = _build(0.0, route="expanded")
+    poisson.solve(zero_init_guess=True)
+    assert len(poisson.constants_manifest) == 1
+    m.sym = sympy.sympify(0.5)
+    with pytest.raises(RuntimeError, match="no longer.*reduces to a number"):
+        poisson.solve(zero_init_guess=True)

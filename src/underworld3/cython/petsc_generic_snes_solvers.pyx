@@ -51,6 +51,7 @@ from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 from underworld3.function._function import diff_wrt_field, derive_by_array_wrt_field
+from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
 def _public_names(cls):
@@ -63,10 +64,13 @@ def _public_names(cls):
                   if obj is cls and not name.startswith("SNES_"))
 
 
-def _jacobian_unwrap(expr):
-    r"""The Newton source of a residual flux: each non-constant UWexpression
-    replaced by its GUARDED node (``underworld3.utilities._jit_graph``), so that the
-    Jacobian derivative passes through it by the chain rule.
+def _jacobian_unwrap(expr, route=None):
+    r"""The Newton source of a residual flux. On the graph route (the default) each
+    non-constant UWexpression is replaced by its GUARDED node
+    (``underworld3.utilities._jit_graph``), so that the Jacobian derivative passes
+    through it by the chain rule. On the expanded route (``route="expanded"``, the
+    JIT before #823 tier 2) every non-constant UWexpression is expanded down to the
+    constant atoms and the guard is applied to the expanded tree.
 
     Applied element-wise over a sympy ``Matrix``/``Array``. A node is an applied
     function of the leaves its value depends on (field values and gradients,
@@ -98,10 +102,58 @@ def _jacobian_unwrap(expr):
     See ``docs/developer/design/jit-shared-graph-codegen.md`` and
     ``docs/developer/design/jacobian-consistent-tangent.md``.
     """
-    from underworld3.utilities import _jit_graph
+    from underworld3.utilities._jitextension import resolve_jit_route
 
-    graph = _jit_graph.KernelGraph()
-    f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
+    if resolve_jit_route(route) == "graph":
+        from underworld3.utilities import _jit_graph
+
+        graph = _jit_graph.KernelGraph()
+        f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
+        if isinstance(expr, sympy.MatrixBase):
+            return expr.applyfunc(f)
+        if isinstance(expr, sympy.NDimArray):
+            return sympy.Array([f(e) for e in expr], expr.shape)
+        return f(expr)  # scalar expression
+
+    # the expanded route: development's body, unchanged
+    eps2 = sympy.Float(1.0e-36)
+
+    def _guard_sqrts(e):
+        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
+        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
+        # derivatives), ... — all singular in value or derivative at a
+        # zero-argument state.
+        # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
+        # identity: the unwrapped flux repeats its shared sub-expressions as the same
+        # object, and `replace` walked every occurrence (measured 16 s of a 108 s
+        # notch compile, #823).
+        memo = {}
+
+        def guard(n):
+            hit = memo.get(id(n))
+            if hit is not None:
+                return hit[1]
+            out = n
+            args = getattr(n, "args", None)
+            if args:
+                new_args = tuple(guard(a) for a in args)
+                if any(a is not b for a, b in zip(args, new_args)) and args != new_args:
+                    out = n.func(*new_args)
+                    # replace(simultaneous=True): a rebuild that collapses to one of
+                    # the changed arguments is not matched again
+                    if any(out == a and a != b for a, b in zip(args, new_args)):
+                        memo[id(n)] = (n, out)
+                        return out
+                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
+                        and out.args[0].free_symbols):
+                    out = sympy.Pow(out.args[0] + eps2, out.exp)
+            memo[id(n)] = (n, out)
+            return out
+
+        return guard(e)
+
+    f = lambda e: _guard_sqrts(
+        _unwrap_expression(e, mode="symbolic_keep_constants"))
     if isinstance(expr, sympy.MatrixBase):
         return expr.applyfunc(f)
     if isinstance(expr, sympy.NDimArray):
@@ -448,6 +500,47 @@ class SolverBaseClass(uw_object):
                 f"consistent_jacobian must be False, True or 'continuation'; "
                 f"got {mode!r}")
 
+    @property
+    def jit_route(self):
+        r"""The JIT route this solver compiles its kernels with: ``"graph"``,
+        ``"expanded"``, or ``None`` (default) for the process default
+        (``uw.use_jit_route``, else the ``UW_JIT_ROUTE`` environment variable, else
+        ``"graph"``).
+
+        ``"graph"`` compiles each named quantity once, as one C temporary, and forms
+        the Newton tangent through it by the chain rule. ``"expanded"`` is the JIT
+        before #823 tier 2: every named quantity is expanded into one expression,
+        differentiated and printed whole. Use it as a fallback and as a reference: if
+        a model misbehaves on one route and not the other, the JIT is at fault; if on
+        both, look at the model.
+
+        Setting it rebuilds this solver's kernels at the next solve; the solution and
+        the warm start are kept.
+
+        Raises
+        ------
+        ValueError
+            On assignment of anything other than ``None``, ``"graph"`` or
+            ``"expanded"``.
+        """
+        return getattr(self, "_jit_route", None)
+
+    @jit_route.setter
+    def jit_route(self, route):
+        from underworld3.utilities._jitextension import resolve_jit_route
+
+        if route is not None:
+            route = resolve_jit_route(route)
+        if route != self.jit_route:
+            self._jit_route = route
+            self._needs_function_rewire = True
+
+    def _jit_route_in_use(self):
+        """The route this solver's next build compiles with."""
+        from underworld3.utilities._jitextension import resolve_jit_route
+
+        return resolve_jit_route(self.jit_route)
+
     def _jacobian_source(self, expr, newton_expr=None):
         """Prepare a residual flux for Jacobian differentiation.
 
@@ -471,7 +564,7 @@ class SolverBaseClass(uw_object):
         if not mode:
             return expr
         if newton_expr is None:
-            newton_expr = _jacobian_unwrap(expr)
+            newton_expr = _jacobian_unwrap(expr, route=self._jit_route_in_use())
         if mode == "continuation":
             a = self._get_newton_alpha()
             if isinstance(expr, sympy.MatrixBase):
@@ -4295,6 +4388,7 @@ class SNES_Scalar(SolverBaseClass):
             prim_field_list,
             verbose=verbose,
             debug=debug,
+            route=self._jit_route_in_use(),
         )
         self.compiled_extensions = _getext_result.ptrobj
         self.ext_dict = _getext_result.fn_dicts
@@ -5316,6 +5410,7 @@ class SNES_Vector(SolverBaseClass):
             prim_field_list,
             verbose=verbose,
             debug=debug,
+            route=self._jit_route_in_use(),
         )
         self.compiled_extensions = _getext_result.ptrobj
         self.ext_dict = _getext_result.fn_dicts
@@ -6047,6 +6142,7 @@ class SNES_MultiComponent(SolverBaseClass):
             prim_field_list,
             verbose=verbose,
             debug=debug,
+            route=self._jit_route_in_use(),
         )
         self.compiled_extensions = _getext_result.ptrobj
         self.ext_dict = _getext_result.fn_dicts
@@ -8628,6 +8724,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             verbose=verbose,
             debug=debug,
             debug_name=debug_name,
+            route=self._jit_route_in_use(),
             # Disk cache + rank-0-only compile: under MPI only rank 0 invokes
             # cc and publishes to the shared cache dir; the other ranks load
             # the compiled module. Without this, every rank compiles its own
