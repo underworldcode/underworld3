@@ -224,6 +224,9 @@ def test_direct_lu_diagnostic_constrained_matches_direct_lu_diagnostic_nitsche()
     assert abs(constrained_cmb - nitsche_cmb) / nitsche_cmb < 0.01
 
 
+# TODO(BUG): this strict xfail XPASSes on feature/shear-band-length-scale AND on its
+# base f57c2a27 (2026-10-08, Hyperion), i.e. the LU-subsolve split now reproduces the
+# Nitsche response and the marker is stale. Needs a maintainer decision.
 @pytest.mark.xfail(
     reason=(
         "Known constrained field-split failure: LU sub-solves in the "
