@@ -2171,7 +2171,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: self.stress + self._devss_flux(),
+        lambda self: self.stress + self._devss_flux() + self._coupled_momentum_flux(),
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
@@ -2182,6 +2182,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         $\mu$ (``constitutive_model.K``) so that, under spatially-variable
         viscosity, the ratio penalty/$\mu$ stays uniform — a bare constant
         would over-stiffen low-viscosity regions and lock the velocity there.
+        Fields solved with the flow (``add_coupled_field``) may add a stress of
+        their own here, e.g. the skew stress of a Cosserat continuum.
         """,
     )
 

@@ -56,6 +56,12 @@ from underworld3.function._function import diff_wrt_field, derive_by_array_wrt_f
 
 _DEFAULT_KRYLOV_RESTART = 100
 
+# One extra volume field of a coupled Stokes system (SNES_Stokes_SaddlePt.
+# add_coupled_field): its weak-form residual (F0, F1) and the flux it adds to
+# the momentum equation.
+_CoupledField = collections.namedtuple(
+    "_CoupledField", ["field", "F0", "F1", "momentum_flux"])
+
 
 def _warn_from_caller(message, category=RuntimeWarning):
     """Warn, attributed to the first frame outside the underworld3 package, so the
@@ -208,6 +214,20 @@ def _jacobian_unwrap(expr):
 
 
 include "petsc_extras.pxi"
+
+
+cdef PetscDSResidualFn _residual_fn(PtrContainer ext, index, fn):
+    """The compiled residual for ``fn``, or NULL for a term that is absent."""
+    if fn is None:
+        return NULL
+    return ext.fns_residual[index[fn]]
+
+
+cdef PetscDSJacobianFn _jacobian_fn(PtrContainer ext, index, fn):
+    """The compiled Jacobian for ``fn``, or NULL for a block that is zero."""
+    if fn is None:
+        return NULL
+    return ext.fns_jacobian[index[fn]]
 
 class SolverBaseClass(uw_object):
     r"""
@@ -7140,6 +7160,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Extra volume fields solved monolithically with (u, p): the micro-
+        # structure of a generalised continuum (a micromorphic plastic-strain
+        # field, a Cosserat micro-rotation). Registered by add_coupled_field as DM
+        # fields after the multipliers. EMPTY for ordinary Stokes — every path
+        # that reads it is guarded by `if self._coupled_fields:` so that the
+        # emitted DS and C source are bit-identical to the 2-field solver.
+        self._coupled_fields = []
         # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
         # add_rotated_freeslip_bc; when non-empty, solve() delegates to
         # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
@@ -7402,6 +7429,138 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             f"of the operator. Both impose the same wall-normal condition — "
             f"use one of them (issue #464)."
         )
+
+    def add_coupled_field(self, field, F0, F1=None, momentum_flux=None):
+        r"""Solve an extra volume field together with velocity and pressure.
+
+        The field :math:`c` (a scalar or vector ``MeshVariable`` on this mesh)
+        gets its own weak-form equation, assembled in the same Newton system as
+        Stokes,
+
+        .. math::
+
+            \int_\Omega \left( F_0 \, \psi + F_1 \cdot \nabla\psi \right) d\Omega = 0
+            \quad \forall \psi ,
+
+        with the PETSc sign convention (a Poisson equation has :math:`F_0 = -f`,
+        :math:`F_1 = \kappa\nabla c`). ``F0`` and ``F1`` may depend on ``u``,
+        ``p``, :math:`c` and their gradients; every Jacobian block between this
+        field and the others is derived from them, and follows
+        ``consistent_jacobian`` like the Stokes blocks. Without a boundary
+        condition the field carries the natural one, :math:`F_1\cdot n = 0`.
+
+        This is how a generalised continuum enters the momentum balance: a
+        micromorphic plastic-strain field that gives a yield law its length
+        scale, or a Cosserat micro-rotation whose skew stress
+        (``momentum_flux``) is added to the momentum flux :math:`\sigma`.
+
+        Parameters
+        ----------
+        field : MeshVariable
+            The coupled unknown: scalar or vector, any degree and continuity.
+        F0 : sympy expression or Matrix
+            Pointwise residual, one entry per component of ``field``.
+        F1 : sympy Matrix, optional
+            Flux residual, shape ``(components, dim)``. ``None`` means zero.
+        momentum_flux : sympy Matrix, optional
+            A ``(dim, dim)`` stress added to the momentum flux :math:`F_1`.
+
+        Example
+        -------
+        A smoothed strain-rate invariant :math:`\chi - l^2 \nabla^2 \chi = \dot\varepsilon_{II}`
+        solved in the same system as the flow::
+
+            chi = uw.discretisation.MeshVariable("chi", mesh, 1, degree=1)
+            stokes.add_coupled_field(
+                chi, F0=chi.sym[0] - stokes.Unknowns.Einv2,
+                F1=l**2 * chi.sym.jacobian(mesh.CoordinateSystem.N))
+        """
+        dim = self.mesh.dim
+        if field.mesh is not self.mesh:
+            raise ValueError(
+                f"add_coupled_field(): {field.name} lives on a different mesh "
+                f"from this solver")
+        n_components = field.num_components
+        if tuple(field.sym.shape) != (1, n_components):
+            raise ValueError(
+                f"add_coupled_field(): {field.name} must be a scalar or vector "
+                f"variable (its symbol has shape {tuple(field.sym.shape)})")
+
+        F0 = sympy.Matrix(sympy.Array(sympy.sympify(F0)).reshape(1, n_components))
+        if F1 is not None:
+            F1 = sympy.Matrix(sympy.Array(sympy.sympify(F1)).reshape(n_components, dim))
+        if momentum_flux is not None:
+            momentum_flux = sympy.Matrix(
+                sympy.Array(sympy.sympify(momentum_flux)).reshape(dim, dim))
+
+        field._solver_field_name = f"coupled_{field.clean_name}"
+        self._coupled_fields.append(_CoupledField(field, F0, F1, momentum_flux))
+        self.fields[field._solver_field_name] = field
+        # A new DM field: the discretisation and the solver must be rebuilt.
+        self.is_setup = False
+        self._needs_function_rewire = True
+        return field
+
+    def _coupled_momentum_flux(self):
+        """The coupled fields' contribution to the momentum flux (zero without them)."""
+        dim = self.mesh.dim
+        flux = sympy.zeros(dim, dim)
+        for coupled in self._coupled_fields:
+            if coupled.momentum_flux is not None:
+                flux = flux + coupled.momentum_flux
+        return flux
+
+    @staticmethod
+    def _coupled_jacobian_block(f0, f1, values, gradient):
+        r"""PETSc pointwise Jacobian of one row field against one column field.
+
+        ``f0`` is the row residual (``Nf`` entries) and ``f1`` its flux
+        (``Nf x dim``, or ``None``); the column field has component symbols
+        ``values`` (``Ng``) and gradient symbols ``gradient`` (``Ng x dim``).
+        Returns ``(G0, G1, G2, G3)`` in PETSc's flat layout
+
+        * ``G0[fc, gc] = d f0[fc] / d c[gc]``
+        * ``G1[fc*Ng + gc, dg] = d f0[fc] / d grad_c[gc, dg]``
+        * ``G2[fc*Ng + gc, df] = d f1[fc, df] / d c[gc]``
+        * ``G3[fc*Ng + gc, df*dim + dg] = d f1[fc, df] / d grad_c[gc, dg]``
+
+        (see ``docs/developer/subsystems/petsc-jacobian-layout.md``), with a
+        block that is identically zero returned as ``None`` so that it is
+        registered as NULL rather than compiled.
+        """
+        f0 = sympy.Array(f0)
+        f0 = f0.reshape(f0._loop_size)
+        Nf = len(f0)
+        Ng = len(values)
+        dim = gradient.shape[1]
+
+        G0 = sympy.zeros(Nf, Ng)
+        G1 = sympy.zeros(Nf * Ng, dim)
+        G2 = sympy.zeros(Nf * Ng, dim)
+        G3 = sympy.zeros(Nf * Ng, dim * dim)
+        for gc in range(Ng):
+            d_value = diff_wrt_field(f0, values[gc])
+            for fc in range(Nf):
+                G0[fc, gc] = d_value[fc]
+            for dg in range(dim):
+                d_gradient = diff_wrt_field(f0, gradient[gc, dg])
+                for fc in range(Nf):
+                    G1[fc * Ng + gc, dg] = d_gradient[fc]
+        if f1 is not None:
+            f1 = sympy.Array(f1).reshape(Nf, dim)
+            for gc in range(Ng):
+                d_value = diff_wrt_field(f1, values[gc])
+                for fc in range(Nf):
+                    for df in range(dim):
+                        G2[fc * Ng + gc, df] = d_value[fc, df]
+                for dg in range(dim):
+                    d_gradient = diff_wrt_field(f1, gradient[gc, dg])
+                    for fc in range(Nf):
+                        for df in range(dim):
+                            G3[fc * Ng + gc, df * dim + dg] = d_gradient[fc, df]
+
+        return tuple(None if G.is_zero_matrix else sympy.ImmutableMatrix(G)
+                     for G in (G0, G1, G2, G3))
 
     def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
         r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
@@ -8797,10 +8956,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return self._stokes_nullspace
 
     def _setup_block_fieldsplit_options(self):
-        """Collapse the 3+ field DM to a 2-way velocity | [p,h] Schur split.
+        """Collapse the 3+ field DM to a 2-way [u,c] | [p,h] Schur split.
 
-        We group by DM FIELD INDEX (pc_fieldsplit_0_fields=0,
-        pc_fieldsplit_1_fields=1,2,...) rather than by IS: a field-index split
+        Split 0 holds velocity and any coupled volume fields (add_coupled_field),
+        split 1 pressure and any multipliers. We group by DM FIELD INDEX
+        (pc_fieldsplit_0_fields=0,..., pc_fieldsplit_1_fields=1,2,...) rather
+        than by IS: a field-index split
         keeps the DM-field association, so geometric multigrid / FMG on the
         velocity block can build its interpolation hierarchy (an IS-defined
         split has no DM and PCMG errors out with PETSC_ERR_SUP). The grouped
@@ -8814,8 +8975,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if str(opts.getAll().get("pc_type", "")) != "fieldsplit":
             return  # respect a user's direct (lu) solve of the monolithic system
 
+        group0 = ["0"] + [str(c.field._solver_field_id) for c in self._coupled_fields]
         group1 = ["1"] + [str(cbc.lam._solver_field_id) for cbc in self._block_constraint_bcs]
-        opts["pc_fieldsplit_0_fields"] = "0"
+        opts["pc_fieldsplit_0_fields"] = ",".join(group0)
         opts["pc_fieldsplit_1_fields"] = ",".join(group1)
 
         # Mirror velocity_->0_ and pressure_->1_, but DON'T clobber any
@@ -9250,6 +9412,38 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             fns_residual.append(h_F0)
             fns_jacobian.append(hh_G0)
 
+        ## Coupled volume fields (generalised continua). Guarded: no-op for
+        ## ordinary Stokes. Field k has its own residual (f0, f1); the Jacobian
+        ## holds every block touching it: its row against each column field
+        ## (velocity, pressure, every coupled field) and the velocity and
+        ## pressure rows against its column. Blocks are keyed by
+        ## (row, column) with "u", "p" or the coupled field's index k, and a
+        ## block that is identically zero is None (registered as NULL).
+        self._coupled_residuals = []
+        self._coupled_jacobians = {}
+        if self._coupled_fields:
+            columns = {"u": (U_list, L), "p": ([p_scalar], Gp)}
+            rows = {"u": (_f0_flat, F1_for_jac), "p": (PF0_jac, None)}
+            for k, coupled in enumerate(self._coupled_fields):
+                c = coupled.field
+                columns[k] = ([c.sym[0, i] for i in range(c.num_components)],
+                              c.sym.jacobian(self.mesh.CoordinateSystem.N))
+                c_F0 = sympy.ImmutableDenseMatrix(coupled.F0)
+                c_F1 = None if coupled.F1 is None else sympy.ImmutableDenseMatrix(coupled.F1)
+                self._coupled_residuals.append((c_F0, c_F1))
+                fns_residual += [fn for fn in (c_F0, c_F1) if fn is not None]
+                rows[k] = (self._jacobian_source(sympy.Array(coupled.F0)),
+                           None if coupled.F1 is None
+                           else self._jacobian_source(sympy.Array(coupled.F1)))
+
+            for row, (f0, f1) in rows.items():
+                for column, (values, gradient) in columns.items():
+                    if row in ("u", "p") and column in ("u", "p"):
+                        continue    # the Stokes blocks, built above
+                    block = self._coupled_jacobian_block(f0, f1, values, gradient)
+                    self._coupled_jacobians[(row, column)] = block
+                    fns_jacobian += [G for G in block if G is not None]
+
         # Now natural bcs (compiled into boundary integral terms)
         # Need to loop on them all ...
 
@@ -9458,6 +9652,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         prim_field_list = [self.u, self.p]
         if self._multipliers:
             prim_field_list = prim_field_list + list(self._multipliers)
+        if self._coupled_fields:
+            # DM field order: velocity, pressure, multipliers, coupled fields
+            prim_field_list = prim_field_list + [c.field for c in self._coupled_fields]
 
         # Essential-BC value functions. (Block-constrained Stokes reduces the
         # interior multiplier DOFs by constraining them directly in the
@@ -9580,6 +9777,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 fe_h.setName(mvar._solver_field_name)
                 mvar._solver_field_id = self.dm.getNumFields()
                 self.dm.setField(mvar._solver_field_id, fe_h)
+
+            # Coupled volume fields, after the multipliers, each at its own
+            # degree, continuity and number of components. Guarded: no-op for
+            # ordinary Stokes.
+            for coupled in self._coupled_fields:
+                c = coupled.field
+                c_prefix = "private_{}_{}_".format(self.petsc_options_prefix, c._solver_field_name)
+                options.setValue(c_prefix + "petscspace_degree", c.degree)
+                options.setValue(c_prefix + "petscdualspace_lagrange_continuity", c.continuous)
+                options.setValue(c_prefix + "petscdualspace_lagrange_node_endpoints", False)
+                fe_c = PETSc.FE().createDefault(mesh.dim, c.num_components, mesh.isSimplex,
+                                                mesh.qdegree, c_prefix, PETSc.COMM_SELF)
+                fe_c.setName(c._solver_field_name)
+                c._solver_field_id = self.dm.getNumFields()
+                self.dm.setField(c._solver_field_id, fe_c)
 
         self.dm.createDS()
 
@@ -9977,6 +10189,26 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             PetscDSSetJacobian(              ds.ds, fid, fid, ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL, NULL)
             PetscDSSetJacobianPreconditioner(ds.ds, fid, fid, ext.fns_jacobian[i_jac[hh_pc]], NULL, NULL, NULL)
 
+        # Coupled volume fields: residual on each field, and every Jacobian
+        # block touching one, as operator and preconditioner alike. Guarded:
+        # no-op for ordinary Stokes.
+        if self._coupled_fields:
+            field_ids = {"u": 0, "p": 1}
+            for k, coupled in enumerate(self._coupled_fields):
+                field_ids[k] = coupled.field._solver_field_id
+                c_F0, c_F1 = self._coupled_residuals[k]
+                PetscDSSetResidual(ds.ds, field_ids[k],
+                                   _residual_fn(ext, i_res, c_F0), _residual_fn(ext, i_res, c_F1))
+            for (row, column), block in self._coupled_jacobians.items():
+                if all(G is None for G in block):
+                    continue
+                PetscDSSetJacobian(ds.ds, field_ids[row], field_ids[column],
+                                   _jacobian_fn(ext, i_jac, block[0]), _jacobian_fn(ext, i_jac, block[1]),
+                                   _jacobian_fn(ext, i_jac, block[2]), _jacobian_fn(ext, i_jac, block[3]))
+                PetscDSSetJacobianPreconditioner(ds.ds, field_ids[row], field_ids[column],
+                                   _jacobian_fn(ext, i_jac, block[0]), _jacobian_fn(ext, i_jac, block[1]),
+                                   _jacobian_fn(ext, i_jac, block[2]), _jacobian_fn(ext, i_jac, block[3]))
+
         cdef DMLabel c_label
 
         for bc in self.natural_bcs:
@@ -10199,10 +10431,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # decomposition so they see the shrunken [p,h] global block.
             self._constrain_interior_multipliers_in_section()
 
-            # Block-constrained: group [pressure, multipliers] into a single
-            # Schur factor by DM FIELD INDEX, so the velocity block keeps its DM
-            # hierarchy for geometric MG/FMG. Must precede setFromOptions.
-            if self._block_constraint_bcs:
+            # Block-constrained or coupled: group [velocity, coupled fields] and
+            # [pressure, multipliers] into the two Schur factors by DM FIELD
+            # INDEX, so the velocity block keeps its DM hierarchy for geometric
+            # MG/FMG. Must precede setFromOptions.
+            if self._block_constraint_bcs or self._coupled_fields:
                 self._setup_block_fieldsplit_options()
 
             self._withdraw_block_size_if_not_node_blocked(
@@ -10583,9 +10816,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             return
 
         # Function to get index set for a field
-        def get_local_field_is(section, field, unconstrained=False):
+        def get_local_field_is(section, field, unconstrained=False, every_dof=False):
             """
             This function returns the index set of unconstrained points if True, or all points if False.
+            ``every_dof`` takes every DOF at each point, whatever the pressure's
+            continuity (a coupled field may have several components per point).
             """
             pStart, pEnd = section.getChart()
             indices = []
@@ -10593,7 +10828,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 dof = section.getFieldDof(p, field)
                 if dof > 0:
                     offset = section.getFieldOffset(p, field)
-                    if not unconstrained and self.Unknowns.p.continuous:
+                    if every_dof:
+                        indices.extend(range(offset, offset + dof))
+                    elif not unconstrained and self.Unknowns.p.continuous:
                         indices.append(offset)
                     else:
                         cind = section.getFieldConstraintIndices(p, field)
@@ -10624,6 +10861,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             mis = get_local_field_is(local_section, mvar._solver_field_id, unconstrained=False)
             self._multiplier_is[mvar._solver_field_name] = mis
             multiplier_indices |= set(mis.getIndices())
+
+        # Coupled volume fields share the extra-field dict: the same copy-back
+        # and the same exclusion from the velocity complement. Guarded: no-op
+        # for ordinary Stokes.
+        for coupled in self._coupled_fields:
+            c = coupled.field
+            cis = get_local_field_is(local_section, c._solver_field_id, every_dof=True)
+            self._multiplier_is[c._solver_field_name] = cis
+            multiplier_indices |= set(cis.getIndices())
 
         # Get indices for velocity (complement of pressure and multipliers)
         size = clvec.getLocalSize()
