@@ -106,3 +106,38 @@ def test_short_arc_slips_as_the_griffith_crack():
     assert abs(V.max() - peak) < 0.12 * peak, f"peak slip {V.max():.4f} vs {peak:.4f}"
     rms = np.sqrt(np.mean((V - ellipse) ** 2))
     assert rms < 0.12 * peak, f"rms profile error {rms:.4f} vs peak {peak:.4f}"
+
+
+@pytest.mark.tier_b
+def test_a_viscous_interface_law_penalises_the_slip_on_the_sphere():
+    """tau = eta_f V on the arc under the toroidal shear: the interface law is
+    assembled on the edge facets of the surface mesh (one slip component along
+    the trace), and the slip falls at first order in 1 / eta_f."""
+    a = 0.25
+    split = _faulted_sphere(0.1, a)
+    X = split.X
+    x, y, z = X[0], X[1], X[2]
+    r = sympy.sqrt(x**2 + y**2 + z**2)
+    rhat = sympy.Matrix([[x, y, z]]) / r
+    P = sympy.eye(3) - rhat.T * rhat
+    u_e = sympy.Matrix([[2 * y * z, -2 * x * z, 0]])
+    G = u_e.jacobian(sympy.Matrix([x, y, z])) * P
+    E = P * ((G + G.T) / 2) * P
+    sigma = 2 * (E + E.trace() * P)
+    Xs = [x, y, z]
+    divs = sympy.Matrix([[sum(sigma[i, j].diff(Xs[k]) * P[k, j]
+                              for j in range(3) for k in range(3)) for i in range(3)]])
+    slip = {}
+    for eta_f in (1.0e1, 1.0e2):
+        sheet = _sheet(split, eta=1)
+        sheet.basal_drag = 1
+        sheet.bodyforce = list((-divs + u_e).subs(r, 1))
+        sheet.add_fault_bc(eta_f, "Flt")
+        sheet.solve()
+        info = sheet._rotated_freeslip_info
+        assert info["converged"]
+        _s, V, leak = fault_slip(sheet, "Flt", info)
+        assert np.abs(leak).max() < 1.0e-13
+        slip[eta_f] = np.abs(V).max()
+    order = np.log(slip[1.0e1] / slip[1.0e2]) / np.log(10.0)
+    assert order > 0.8, f"slip order in 1/eta_f {order:.2f}: {slip}"

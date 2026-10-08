@@ -856,8 +856,11 @@ class _InterfaceAssembler:
         self._lo_m = np.asarray(lo_m, dtype=np.int64)
         self._tan = np.asarray(tans, dtype=float).reshape(-1, ncomp, dim)
         self._nrm = np.asarray(nrms, dtype=float).reshape(-1, dim)
-        self._NQ = _NQ if dim == 2 else _NQ3
-        self._WQ = _WQ if dim == 2 else _WQ3
+        # the trace quadrature follows the facet TOPOLOGY (an edge on a 2-D
+        # or surface mesh, a triangle in 3-D); the strides above follow the
+        # component count
+        self._NQ = _NQ if solver.mesh.dim == 2 else _NQ3
+        self._WQ = _WQ if solver.mesh.dim == 2 else _WQ3
         self._laws = laws_of
         self._facets = facets
         self._dim = dim
