@@ -96,7 +96,7 @@ def _jacobian_unwrap(expr):
     tangent never calls this function.
 
     See ``docs/developer/design/jit-shared-graph-codegen.md`` and
-    ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+    ``docs/developer/design/jacobian-consistent-tangent.md``.
     """
     from underworld3.utilities import _jit_graph
 

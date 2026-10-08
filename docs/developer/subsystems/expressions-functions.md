@@ -147,8 +147,13 @@ underlying values. Two modes are used internally:
 
 | Mode | Purpose | Used by |
 |------|---------|---------|
-| `nondimensional` | Numeric values for JIT/evaluate | `_createext()`, `evaluate()` |
+| `nondimensional` | Numeric values for constants and evaluate | `_pack_constants()`, `evaluate()` |
 | `dimensional` | Display values with units | `print()`, notebooks |
+
+The JIT does not unwrap whole kernels: it lowers each named quantity to a node of its
+own (`_jit_graph`, #823). A solver's Newton Jacobian blocks (`_uu_G3`, ...) hold those
+nodes; both `unwrap_expression` and `unwrap_for_evaluate` expand a node to its body, so
+code that evaluates a block sees the expanded expression.
 
 ```python
 # Nested expressions

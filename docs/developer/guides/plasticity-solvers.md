@@ -124,6 +124,11 @@ G_newton = uw.function.derive_by_array_wrt_field(F1_unwrapped, L)
 # a nonzero difference == the Newton form is present
 ```
 
+The solver forms the same tangent without expanding the flux: each named quantity is a
+node whose partial derivatives the chain rule composes (#823), so its compiled kernel
+computes each quantity once. Its blocks (`stokes._uu_G3`, ...) hold those nodes;
+`unwrap_expression` expands them.
+
 Differentiate with respect to fields the way the solvers do, with
 `uw.function.derive_by_array_wrt_field` (or `uw.function.diff_wrt_field` for one
 entry), never plain `sympy.diff` or `sympy.derive_by_array`, in this check and in a

@@ -1,8 +1,8 @@
 # Generating JIT kernels from the shared expression graph
 
-**Status**: Proposed, 2026-10-07. Staging steps 2 and 3 implemented behind the private
-switch `UW_JIT_GRAPH=1` on `feature/jit-graph-codegen`, 2026-10-08, and measured against
-tier 1 end to end ({ref}`jit-graph-in-the-library`).
+**Status**: Implemented on `feature/jit-graph-codegen`, 2026-10-08: the graph route is
+the only JIT route (staging steps 2–4). Steps 2 and 3 were first measured against tier 1
+end to end while both routes existed behind a switch ({ref}`jit-graph-in-the-library`).
 Tier 2 of [#823](https://github.com/underworldcode/underworld3/issues/823).
 Tier 1 ([#830](https://github.com/underworldcode/underworld3/pull/830), merged
 2026-10-07) is the fix for today: the memoised
@@ -303,9 +303,10 @@ repair stays.
 
 ## The prototype agrees with the library to round-off
 
-`scripts/sessions/jit_graph/kernel_graph.py` is the lowering;
-`scripts/sessions/jit_graph/graph_vs_library.py` builds three kernels of a fixture twice
-and compiles each into a C function of the same leaves:
+`scripts/sessions/jit_graph/kernel_graph.py` was the lowering;
+`scripts/sessions/jit_graph/graph_vs_library.py` built three kernels of a fixture twice
+and compiled each into a C function of the same leaves. (Both scripts were removed in
+staging step 4, when `_jit_graph.py` replaced them; they are in commit 5a0d2c46.)
 
 - the residual flux `F1`, lowered with plain nodes; the library route unwraps it as
   `getext()` does (keep-constants);
@@ -381,11 +382,11 @@ exactly 0 or 1 — but a model with a projected or higher-degree material field 
 (jit-graph-in-the-library)=
 ## In the library, against tier 1
 
-Steps 2 and 3 are implemented on `feature/jit-graph-codegen`
+Steps 2 and 3 were implemented on `feature/jit-graph-codegen`
 (`src/underworld3/utilities/_jit_graph.py`, with branches in `getext()`,
-`generate_c_source()`, `_jacobian_unwrap` and the two unwrappers), selected by
-`UW_JIT_GRAPH=1`. Unset, every path is tier 1's. Both routes therefore run on one build,
-and each fixture is run once per route in a fresh process with the JIT cache off
+`generate_c_source()`, `_jacobian_unwrap` and the two unwrappers), selected by a private
+switch, `UW_JIT_GRAPH=1`; unset, every path was tier 1's. Both routes therefore ran on
+one build, and each fixture was run once per route in a fresh process with the JIT cache off
 (`scripts/sessions/jit_graph/route_ab.py`): the solver's whole pointwise setup, a Newton
 solve, then the residual and the Jacobian assembled repeatedly at the solution. The
 fixtures are those of the prototype, with the box ones solved as a lid-driven box
@@ -596,9 +597,10 @@ multiplied by a name that holds its reciprocal.
 
 ## Benchmark plan
 
-During development both routes run in one process on identical inputs, selected by a
-private switch, so every comparison is A against B on one build. The switch and the
-expanded route are removed before the change merges. The fixtures are built in
+While steps 2 and 3 were developed, both routes ran on one build, selected by a private
+switch, so every comparison was A against B on identical inputs. Step 4 removed the
+switch and the expanded route; the session scripts now take the route from the build,
+and the tier 1 JIT is measured in a build of `development`. The fixtures are built in
 `scripts/sessions/jit_graph/` so that the measurements can be repeated from the
 repository; the notch is the one exception, and its driver is named.
 
@@ -646,12 +648,19 @@ repository; the notch is the one exception, and its driver is named.
    blocks; in the same change the two unwrappers learn to expand them and `test_0022`'s
    tree-shaped guard test is pinned to the tree route.
 
-   Steps 2 and 3 are implemented together behind `UW_JIT_GRAPH=1` (2026-10-08).
+   Steps 2 and 3 were implemented together behind `UW_JIT_GRAPH=1` (2026-10-08).
 4. The expanded route and the switch are removed, together with the two functions that
    mirror it and have no callers (`prepare_for_cache_key`, `_createext`), and
    `jit-cache.md`, `expressions-functions.md` and `jacobian-consistent-tangent.md` are
    updated. `jit-cache.md` already describes the cross-rank check as an abort and every
    rank as compiling; both stopped being true before this change.
+
+   Done, 2026-10-08. The field classes' patched C names (`ccode_patch_fns`), the
+   coordinate recovery and the unconvertible-symbol scan were replaced by an explicit map
+   from leaf to C built for each compile (`_leaf_spellings`, `_spell_leaf`), and the
+   opt-in `UW_JIT_CSE` path, which served only the expanded tree, was retired. Against
+   `development`, the library source gains 692 lines and loses 639: `_jit_graph.py` is
+   457 of the gain, and `_jitextension.py` is about 400 lines shorter.
 
 Each step is benchmarked against the one before it and reviewed adversarially before
 the next begins.
@@ -679,12 +688,15 @@ the next begins.
   C. After the change the C is canonical, bit-identical across hash seeds, preambles,
   re-declarations and processes by construction.
 
+- **2026-10-08: steps 2–4 land as one change** (Louis: "crash through, then compare
+  with the existing, improved JIT"). The comparison is against `development` with tier 1
+  and `-fno-math-errno` (#834, PR #835), the competitor at its best.
+- **2026-10-08: `UW_JIT_CSE` is retired** with the expanded tree it served.
+
 ## Questions for the maintainer
 
-1. One PR for steps 2–4, or one PR per step.
-2. Whether the generated C should carry each temporary's display name as a comment.
+1. Whether the generated C should carry each temporary's display name as a comment.
    It makes kernels readable; it also puts display names into the cache key, so a
    `rename()` recompiles.
-3. Whether the adjoint's own unwrap (`_peel_except`, on the adjoint branches) adopts the
-   nodes in this change or after it.
-4. Whether `UW_JIT_CSE` is retired once this lands.
+2. Whether the adjoint's own unwrap (`_peel_except`, on the adjoint branches) adopts the
+   nodes when those branches rebase onto this change.
