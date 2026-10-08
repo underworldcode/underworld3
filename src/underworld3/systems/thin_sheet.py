@@ -262,6 +262,25 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
                       divergence_retries=divergence_retries)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
 
+    @property
+    def stress_transport(self) -> str:
+        """How a viscoelastic stress history is carried (see
+        :attr:`SNES_Stokes.stress_transport`). On a manifold the history is
+        carried on the grid (``"eulerian"``, the streamline-upwind transport):
+        the semi-Lagrangian trace-back leaves the faceted surface and is not
+        supported there."""
+        return super().stress_transport
+
+    @stress_transport.setter
+    def stress_transport(self, value):
+        if self.mesh.dim < self.mesh.cdim and str(value) != "eulerian":
+            raise ValueError(
+                f"stress_transport={value!r} is not available on a manifold "
+                "mesh: the thin sheet carries its history on the grid "
+                "('eulerian'); the semi-Lagrangian trace-back leaves the "
+                "faceted surface.")
+        _StressHistoryMixin.stress_transport.fset(self, value)
+
     # ------------------------------------------------------------------
     # geometry
     # ------------------------------------------------------------------

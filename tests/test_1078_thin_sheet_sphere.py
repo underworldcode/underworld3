@@ -128,3 +128,14 @@ def test_a_maxwell_sheet_keeps_a_rigid_rotation_stress_free():
         assert np.abs(sheet.u.array[:, 0, :] - exact).max() < 1.0e-7
         assert np.abs(np.asarray(sheet.tau.array)).max() < 1.0e-7
         assert _leak(sheet) < 1.0e-13
+
+
+@pytest.mark.tier_b
+def test_a_manifold_sheet_refuses_a_semi_lagrangian_history():
+    """The history is carried on the grid on a manifold; asking for the
+    trace-back is refused before any history exists."""
+    sheet = uw.systems.ThinSheet(_sphere(0.4))
+    assert sheet.stress_transport == "eulerian"
+    with pytest.raises(ValueError, match="manifold"):
+        sheet.stress_transport = "semi_lagrangian"
+    sheet.stress_transport = "eulerian"
