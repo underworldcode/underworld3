@@ -1804,6 +1804,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             bcs=None,
             order=order,
             smoothing=0.0001,
+            # the history carries a stress; the flux handed over at construction
+            # is a zero placeholder, so it cannot say so itself
+            units=uw.units.Pa,
         )
         if self.stress_transport == "integration_point":
             unsupported = set(ddt_kwargs) - {"with_forcing_history"}
@@ -1830,6 +1833,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
                 vtype=common["vtype"], varsymbol=common["varsymbol"], order=order,
+                units=common["units"],
             )
         elif self.stress_transport == "lagrangian":
             if ddt_kwargs:
