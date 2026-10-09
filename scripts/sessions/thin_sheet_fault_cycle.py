@@ -27,6 +27,7 @@ import numpy as np
 import sympy
 
 import underworld3 as uw
+from underworld3.utilities import fault_contact
 from underworld3.utilities.fault_contact import add_coulomb_fault_bc, fault_pair_jumps
 
 params = uw.Params(
@@ -45,6 +46,11 @@ params = uw.Params(
     uw_snapshots="0.5,1.0,1.5,3.0",
     uw_isostatic_factor=0.15,    # 1 - rho_c / rho_m: surface uplift per unit thickening (Airy)
     uw_weld_viscosity=1.0e6,     # interface viscosity that welds the reference sheet's fault
+    uw_tolerance=1.0e-8,         # sheet solver tolerance
+    uw_eta_v=0.0,                # viscous term eta_v V added to the Coulomb law (0 = pure Coulomb)
+    uw_transport="",             # stress-history transport; "" = the solver's default
+    uw_order=1,                  # Maxwell time-integration order
+    uw_integrator="etd",         # etd (exponential) | bdf
 )
 out = os.path.join(params.uw_output_dir, params.uw_geometry)
 os.makedirs(out, exist_ok=True)
@@ -76,18 +82,31 @@ def substrate_velocity(m):
 def dragged_sheet(m):
     """A Maxwell sheet on mesh ``m`` dragged by the substrate."""
     s = uw.systems.ThinSheet(m)
+    if params.uw_transport:
+        s.stress_transport = params.uw_transport      # before the model creates the history
     s.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        s.Unknowns, order=1, integrator="etd")
+        s.Unknowns, order=params.uw_order, integrator=params.uw_integrator)
     s.constitutive_model.Parameters.shear_viscosity_0 = params.uw_eta
     s.constitutive_model.Parameters.shear_modulus = params.uw_shear_modulus
     s.basal_drag = c
     s.bodyforce = list(c * substrate_velocity(m))
-    s.tolerance = 1.0e-8
+    s.tolerance = params.uw_tolerance
     return s
 
 
 sheet = dragged_sheet(split)
-add_coulomb_fault_bc(sheet, params.uw_mu_f, "Flt", sigma_n=params.uw_sigma_n, V0=params.uw_V0)
+if params.uw_eta_v > 0.0:
+    # Saturated regularised Coulomb is nearly flat in V (dtau/dV ~ mu sigma_n
+    # V0 / V^2), which leaves the slip rate of a sliding fault barely determined
+    # by the per-step problem; a viscous term eta_v V gives it a slope.
+    # TODO(FEATURE): no public way to register a composite SymbolicFaultLaw;
+    # this uses fault_contact's private _register_law.
+    fault_contact.add_frictionless_fault_bc(sheet, "Flt")
+    coulomb = fault_contact.CoulombFaultLaw(params.uw_mu_f, params.uw_sigma_n, params.uw_V0)
+    fault_contact._register_law(sheet, "Flt", fault_contact.SymbolicFaultLaw(
+        coulomb.expr + params.uw_eta_v * fault_contact.slip_rate))
+else:
+    add_coulomb_fault_bc(sheet, params.uw_mu_f, "Flt", sigma_n=params.uw_sigma_n, V0=params.uw_V0)
 # The reference state for Delta CFF: the same sheet on the SAME split mesh with
 # the fault welded (a stiff viscous interface, slip ~ tau / eta_f). Same nodes,
 # same discretisation, so Delta CFF is the fault's effect alone — a reference on
