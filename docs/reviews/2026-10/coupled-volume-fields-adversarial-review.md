@@ -73,13 +73,49 @@ strengthening; the campaign report is `notch_length_scale/REPORT.md` in uw3-camp
    PETSc's boundary f0 as given, and the docstring says "traction". The Cosserat test
    passes the negated traction, with a comment. Not changed here.
 
-8. **OPEN: the default fieldsplit solve with a coupled field HANGS at np = 3.**
-   `test_two_way_coupling_converges_with_the_default_fieldsplit_solver` passes serially
-   (6 Newton steps) and was still running after 120 s at np = 3. The other seven
-   test_1070 tests pass at np = 3, including the two-way exact-LU solve, so the hang
-   lies in the parallel fieldsplit/multigrid path with velocity and the coupled field
-   in split 0. Not yet localised. CI runs test_1070 serially, so it does not hang CI;
-   it must be fixed or refused before coupled fields are used in parallel.
+8. **The default fieldsplit solve with a coupled field hung at np = 3 (fixed: `3181baa8`).**
+   `test_two_way_coupling_converges_with_the_default_fieldsplit_solver` passed serially
+   but hung at np = 3.
+   - **Cause.** With no mesh hierarchy the velocity block runs GAMG, and its option
+     bundle sets `fieldsplit_velocity_mat_block_size 2`. `_setup_block_fieldsplit_options`
+     mirrored that onto split 0, which also holds the coupled field. Its DOFs interleave
+     with the velocity's, so split 0 is not node-blocked: the block size was wrong
+     everywhere.
+   - **Why it hung rather than failed.** PETSc refused the block size only where a rank's
+     local split-0 size was odd ("Local size 215 not compatible with block size 2",
+     `PCSetUp_FieldSplit` -> `MatSetFromOptions` -> `PetscLayoutSetBlockSize`). The ranks
+     that raised dropped out, and the remaining rank waited in a collective
+     (`MPI_Allreduce`: "Message truncated"). Serially the size happened to be even, so
+     the wrong block size passed silently.
+   - **Fix.** The velocity block size is not mirrored when coupled fields share split 0.
+   - **Regression test.**
+     `test_default_fieldsplit_with_a_coupled_field_has_no_velocity_block_size`: χ held on
+     one wall makes split 0 odd (705 DOFs) on one process, which failed before the fix
+     with the same PETSc error.
+   - **Two test fixes in the same commit.**
+     - The default-solver test's χ bound was rank-local (`chi.array.max()`, 0.74 on the
+       rank far from the lid); it is now the global `chi.max()`.
+     - The driven-box fixture leaves its right wall traction-free, so the pressure is
+       fixed. See finding 10 for why the declared null space was not enough.
+   - **Result.** test_1070: 9/9 serially, and 9/9 on every rank at np = 3, five runs
+     out of five (Hyperion) and three out of three (Mac).
+
+9. **OPEN (latent): the multipliers-only split keeps the mirrored block size.** With block
+   constraints but no coupled field, split 0 is the velocity alone, and
+   `_setup_block_fieldsplit_options` still mirrors `fieldsplit_velocity_mat_block_size`
+   to `fieldsplit_0_mat_block_size`. `_withdraw_block_size_if_not_node_blocked` runs
+   afterwards and deletes only the `fieldsplit_velocity_` key, so when the velocity is not
+   node-blocked (an odd local size from mixed component-wise BCs) the `fieldsplit_0_` key
+   survives and PETSc would refuse it, on the affected ranks only. Not reproduced yet;
+   marked `TODO(BUG)` in `_setup_block_fieldsplit_options`.
+
+10. **OPEN: the closed-box pressure drifted at np = 3 with the null space declared.** Before
+    the fixture change, the two-way Taylor test (closed box, `petsc_use_pressure_nullspace`,
+    monolithic MUMPS LU) reached |F| = 2.1 instead of < 1e-8 at np = 3 in one run of five
+    (Hyperion), the same symptom as the Mac's serial drift without the null space. So the
+    declared null space is not always effective under monolithic exact LU in parallel.
+    Whether this is pre-existing, i.e. whether it also happens on plain Stokes with no
+    coupled field, is being checked.
 
 ## Not covered
 
