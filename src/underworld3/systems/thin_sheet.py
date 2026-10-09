@@ -211,12 +211,13 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         if mesh.dim < mesh.cdim:
             from underworld3.utilities.rotated_bc import SHEET_TANGENCY
             self._rotated_freeslip_bcs.append((SHEET_TANGENCY, _sheet_normal(mesh)))
-            # A stress history on a surface mesh is carried on the grid (the
-            # streamline-upwind transport the Eulerian solvers use): the
-            # semi-Lagrangian trace-back leaves the faceted surface and is not
-            # validated there. Measured: a Killing field stays exact (3e-10)
-            # over the steps with the grid history.
-            self._stress_transport = "eulerian"
+        # The stress history is carried on the grid (the streamline-upwind
+        # transport the Eulerian solvers use). On a surface mesh the
+        # semi-Lagrangian trace-back leaves the faceted surface; next to a
+        # split-node fault its point evaluation reads across the slit (measured:
+        # a period-2-step slip-rate oscillation that the grid history removes,
+        # at a sixth of the Newton work).
+        self._stress_transport = "eulerian"
         # Last-seen effective order of the stress history (it ramps over the
         # opening steps); a change rewires the pointwise functions.
         self._prev_effective_order = None
@@ -265,10 +266,11 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
     @property
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried (see
-        :attr:`SNES_Stokes.stress_transport`). On a manifold the history is
-        carried on the grid (``"eulerian"``, the streamline-upwind transport):
-        the semi-Lagrangian trace-back leaves the faceted surface and is not
-        supported there."""
+        :attr:`SNES_Stokes.stress_transport`). The default is the grid
+        (``"eulerian"``, the streamline-upwind transport). On a manifold it is
+        the only one: the semi-Lagrangian trace-back leaves the faceted surface.
+        On a flat mesh the others may be chosen, but next to a split-node fault
+        the trace-back reads across the slit."""
         return super().stress_transport
 
     @stress_transport.setter

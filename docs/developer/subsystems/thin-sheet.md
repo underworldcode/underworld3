@@ -66,9 +66,13 @@ embedding space. Two normals are involved, and they are different on purpose:
 The rigid-rotation gauge offers the three Killing fields; with basal drag they are
 not null modes and are rejected by the operator test, as they should be.
 
-A stress history on a manifold is carried on the grid (`stress_transport =
-"eulerian"`, the streamline-upwind transport the Eulerian solvers use); the
-semi-Lagrangian trace-back is refused there.
+The stress history is carried on the grid (`stress_transport = "eulerian"`, the
+streamline-upwind transport the Eulerian solvers use) by default. On a manifold it
+is the only choice; the semi-Lagrangian trace-back is refused there. On a flat
+mesh it can be chosen, but next to a split-node fault its point evaluation reads
+across the slit: with a sliding Coulomb fault it produced a period-2-step
+oscillation of the near-tip slip rate and patchy stress along the trace, both of
+which the grid history removes, at a sixth of the Newton work.
 
 ## Faults on a sphere
 

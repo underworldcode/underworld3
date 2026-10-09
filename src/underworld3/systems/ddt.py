@@ -3815,6 +3815,14 @@ class SemiLagrangian(_DDtBase):
         # here as dead code — see git history for the sketch if the
         # `preserve_moments` option is ever implemented.
 
+    # TODO(BUG): on a mesh with a split-node fault the trace-back samples the
+    # history with a point evaluation, which is unreliable within about h/2 of
+    # the slit and can read the other side of the fault. Measured 2026-10-09 on
+    # a Maxwell thin sheet with a sliding Coulomb fault: a period-2-step
+    # oscillation of the near-tip slip rate (amplitude doubling at half dt,
+    # unchanged by a 1e-11 solver tolerance) and patchy stress along the trace,
+    # both gone with the grid (Eulerian SUPG) history. A Stokes viscoelastic
+    # model with a split fault uses this history by default and is exposed too.
     def update_pre_solve(
         self,
         dt: float,
