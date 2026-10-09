@@ -114,8 +114,18 @@ strengthening; the campaign report is `notch_length_scale/REPORT.md` in uw3-camp
     monolithic MUMPS LU) reached |F| = 2.1 instead of < 1e-8 at np = 3 in one run of five
     (Hyperion), the same symptom as the Mac's serial drift without the null space. So the
     declared null space is not always effective under monolithic exact LU in parallel.
-    Whether this is pre-existing, i.e. whether it also happens on plain Stokes with no
-    coupled field, is being checked.
+    **Plain Stokes does not reproduce it.**
+    - The check, `notch_length_scale/drivers/nullspace_drift_probe.py` in uw3-campaigns:
+      plain Stokes with no coupled field, the same closed box, the null space declared,
+      exact Newton with MUMPS LU, and viscosity 1 + ε̇_II² so the solve takes several
+      Newton steps.
+    - Result at np = 3, five runs: all identical, 7 steps, |F| = 1.9e-11, the same
+      pressure in each run.
+    - So the drift is not a general failure of the declared null space under parallel
+      MUMPS. It appeared only with a coupled field in the closed box, once in five runs,
+      and was not reproduced in isolation (the Taylor test alone passed 4 runs out of 4).
+    - Left open with that evidence. The fixture change (a traction-free wall) removes the
+      singular system from test_1070 either way.
 
 ## Not covered
 
