@@ -218,6 +218,11 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # solve: the extrapolation, or the latest Picard iterate) and the
         # level n-1 the extrapolation needs beyond what the history holds.
         u = self.Unknowns.u
+        # TODO(BUG): this solver sizes its velocity-shaped fields and loops by
+        # mesh.dim (here, and in the SUPG terms and speed estimates below). On a
+        # surface mesh the velocity has mesh.cdim components; the same sizing was
+        # fixed in EulerianSUPG and the Eulerian AdvDiffusion (2026-10-09,
+        # thin-sheet work). Not fixed here: not used on a surface mesh yet.
         self._a_var = uw.discretisation.MeshVariable(
             f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
             continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
