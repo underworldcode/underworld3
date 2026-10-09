@@ -210,3 +210,34 @@ def test_supg_advection_turns_a_scalar_round_the_sphere():
     turned = -T.coords[:, 1]
     error = np.sqrt(((T.array[:, 0, 0] - turned) ** 2).sum() / (turned ** 2).sum())
     assert error < 5.0e-3, f"relative error {error:.2e} after a quarter turn"
+
+
+@pytest.mark.tier_b
+def test_a_maxwell_sheet_keeps_its_stress_tangent():
+    """The carried stress of a Maxwell sheet on the sphere stays tangent to the
+    surface. Transported component by component in the embedding space it drifted
+    out of the tangent plane (normal part 31% of the stress by t = 3, measured
+    2026-10-09, h = 0.12, dt = 0.1) and the plane-stress closure read the normal
+    part as a pressure. Driven by the divergence-free toroidal flow
+    rhat x grad(z^2), the sheet still thickens at both poles (an uplift rate of
+    0.15) with the history tangent: that is the advection of the stress, a
+    large-strain effect quadratic in the flow (Weissenberg number ~2 here) — with
+    the transport switched off it is 6e-6."""
+    sphere = _sphere(0.12)
+    X = sphere.X
+    x, y, z = X[0], X[1], X[2]
+    sheet = uw.systems.ThinSheet(sphere)
+    sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        sheet.Unknowns, order=1, integrator="etd")
+    sheet.constitutive_model.Parameters.shear_viscosity_0 = 1
+    sheet.constitutive_model.Parameters.shear_modulus = 1
+    sheet.basal_drag = 4
+    sheet.bodyforce = list(4 * sympy.Matrix([[2 * y * z, -2 * x * z, 0]]))
+    sheet.tolerance = 1.0e-9
+    for _ in range(12):
+        sheet.solve(timestep=0.1, zero_init_guess=False)
+    tau = np.asarray(sheet.tau.array)
+    c = sheet.tau.coords
+    rhat = c / np.linalg.norm(c, axis=1)[:, None]
+    normal = np.linalg.norm(np.einsum("nij,nj->ni", tau, rhat), axis=1)
+    assert normal.max() < 1.0e-12 * np.abs(tau).max()

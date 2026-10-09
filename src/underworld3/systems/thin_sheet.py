@@ -40,6 +40,7 @@ supplying the curvature term :math:`-\mathbf{u}\cdot\nabla_s\hat{\mathbf{n}}`.
 
 from typing import Optional, Union
 
+import numpy as np
 import sympy
 
 import underworld3 as uw
@@ -97,7 +98,6 @@ def _facet_normal_field(mesh):
     """
     field = getattr(mesh, "_sheet_facet_normal", None)
     if field is None:
-        import numpy as np
         field = uw.discretisation.MeshVariable(
             "sheet_facet_normal", mesh, mesh.cdim, degree=0, continuous=False)
         c_start, c_end = mesh.dm.getHeightStratum(0)
@@ -259,9 +259,37 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
         self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
+        self._keep_history_tangent()
         super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
                       divergence_retries=divergence_retries)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self._keep_history_tangent()
+
+    def _keep_history_tangent(self):
+        r"""On a manifold, project every stored history level onto the tangent
+        plane, :math:`\boldsymbol\sigma^* \leftarrow \mathbf{P}\boldsymbol\sigma^*\mathbf{P}`,
+        with the analytic surface normal at each history node.
+
+        The history is transported component by component in the embedding
+        space, so a tensor carried along the curved surface keeps its Cartesian
+        components while the tangent plane under it turns: it acquires normal
+        components, which the plane-stress closure reads as a trace and so as a
+        spurious pressure. Measured without this, an unfaulted Maxwell sheet
+        driven by a divergence-free flow carried normal components up to 31% of
+        the stress by t = 3 and thickened at both poles (an uplift rate of 0.15
+        against 1.7e-4 for the same sheet solved viscously). The projection
+        removes the normal part; the in-plane orientation is still carried
+        without rotation, as on a flat mesh."""
+        if self.mesh.dim == self.mesh.cdim:
+            return
+        for level in self.Unknowns.DFDt.psi_star:
+            coords = level.coords
+            rhat = coords / np.linalg.norm(coords, axis=1)[:, None]
+            P = np.eye(self.mesh.cdim)[None] - rhat[:, :, None] * rhat[:, None, :]
+            projected = P @ np.asarray(level.array) @ P
+            # symmetric to round-off; a symmetric tensor variable stores one
+            # value per off-diagonal pair and refuses two that differ
+            level.array[...] = 0.5 * (projected + projected.transpose(0, 2, 1))
 
     @property
     def stress_transport(self) -> str:
