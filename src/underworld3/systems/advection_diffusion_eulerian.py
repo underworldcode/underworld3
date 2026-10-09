@@ -476,7 +476,8 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
 
     @V_fn.setter
     def V_fn(self, value):
-        self.DuDt.V_fn = _as_row_vector(value, self.mesh.dim)
+        # one velocity component per EMBEDDING dimension (three on a surface mesh)
+        self.DuDt.V_fn = _as_row_vector(value, self.mesh.cdim)
         self.is_setup = False
 
     @property
@@ -519,8 +520,9 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     # ------------------------------------------------------------------
 
     def _diffusive_flux(self):
-        r"""``(1, dim)`` flux :math:`\sum_k w_k\,\nabla\phi^{(k)}\cdot\kappa` from the constitutive tensor."""
-        dim = self.mesh.dim
+        r"""``(1, cdim)`` flux :math:`\sum_k w_k\,\nabla\phi^{(k)}\cdot\kappa` from the constitutive tensor."""
+        # the gradient has one component per EMBEDDING dimension
+        dim = self.mesh.cdim
         c = self.constitutive_model.c
         total = sympy.zeros(1, dim)
         for w, phi in zip(self.DuDt.spatial_weights(), self.DuDt.states()):

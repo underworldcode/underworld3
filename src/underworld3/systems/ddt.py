@@ -2235,7 +2235,8 @@ class EulerianSUPG(Eulerian):
 
     def _convective(self, a, psi):
         r"""``(a . grad) psi`` entry by entry, a matrix of ``psi``'s shape."""
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         grad = self.mesh.vector.gradient
 
         def entry(r, c):
@@ -2255,7 +2256,8 @@ class EulerianSUPG(Eulerian):
 
     def tau(self):
         r"""The stabilisation parameter :math:`\tau` (times the weights)."""
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         a = self.advecting_velocity(0)
         a_mag2 = sum(a[0, i] ** 2 for i in range(dim))
         h = self.mesh.cell_size()
@@ -2348,7 +2350,8 @@ class EulerianSUPG(Eulerian):
 
         The theta rule at :attr:`transport_theta`, Crank-Nicolson by default.
         """
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         S, S_old = solver.u.sym, self._transport_old.sym
         gradient = self.mesh.vector.gradient
         a = self.advecting_velocity(0)

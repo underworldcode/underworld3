@@ -158,3 +158,55 @@ def test_reloadable_checkpoint_round_trips_on_a_manifold(tmp_path):
     w.read_checkpoint(str(tmp_path / "manifold.mesh.v.00000.h5"), data_name="v",
                       same_layout=True)
     assert np.abs(w.array[:, 0, :] - w.coords).max() < 1.0e-12
+
+
+@pytest.mark.tier_b
+def test_the_grid_history_carries_a_tensor_round_the_sphere():
+    """The grid (Eulerian SUPG) history advects each component as a scalar.
+    A rigid rotation about the x axis, u = (0, -z, y), carries a component
+    planted as z to -y after a quarter turn; the rotation has a z velocity, so a
+    transport that sums only the first mesh.dim velocity components (as it
+    once did on a surface mesh) leaves the field where it started (measured
+    1.126 then). Measured 2026-10-09, h = 0.15, 40 steps: 2.27e-3."""
+    sphere = _sphere(0.15)
+    X = sphere.X
+    x, y, z = X[0], X[1], X[2]
+    stress = uw.discretisation.MeshVariable(
+        "S_turn", sphere, vtype=uw.VarType.SYM_TENSOR, degree=2)
+    manager = uw.systems.ddt.EulerianSUPG(
+        sphere, stress, sympy.Matrix([[0, -z, y]]), vtype=uw.VarType.SYM_TENSOR,
+        degree=2, continuous=True, order=1, transport_on_update=True)
+    c = stress.coords
+    stress.array[:, 0, 0] = c[:, 2]
+    manager.initialise_history()
+    dt, steps = np.pi / 2 / 40, 40                 # a quarter turn
+    for _ in range(steps):
+        manager.update_pre_solve(dt)
+        stress.array[...] = manager.psi_star[0].array[...]
+    carried = np.asarray(manager.psi_star[0].array[:, 0, 0])
+    turned = -c[:, 1]
+    error = np.sqrt(((carried - turned) ** 2).sum() / (turned ** 2).sum())
+    assert error < 5.0e-3, f"relative error {error:.2e} after a quarter turn"
+
+
+@pytest.mark.tier_b
+def test_supg_advection_turns_a_scalar_round_the_sphere():
+    """The Eulerian SUPG advection-diffusion solver on a surface mesh: a rigid
+    rotation about the x axis, u = (0, -z, y), carries T = z to T = -y after a
+    quarter turn (no diffusion). The velocity has three components and the
+    surface gradient three entries; the solver must use all of them.
+    Measured 2026-10-09, h = 0.15, 40 steps: 2.27e-3."""
+    sphere = _sphere(0.15)
+    X = sphere.X
+    x, y, z = X[0], X[1], X[2]
+    T = uw.discretisation.MeshVariable("T_turn", sphere, 1, degree=2)
+    T.array[:, 0, 0] = T.coords[:, 2]
+    adv = uw.systems.AdvDiffusion(sphere, T, sympy.Matrix([[0, -z, y]]))
+    adv.constitutive_model = uw.constitutive_models.DiffusionModel
+    adv.constitutive_model.Parameters.diffusivity = 0
+    dt, steps = np.pi / 2 / 40, 40                 # a quarter turn
+    for _ in range(steps):
+        adv.solve(timestep=dt)
+    turned = -T.coords[:, 1]
+    error = np.sqrt(((T.array[:, 0, 0] - turned) ** 2).sum() / (turned ** 2).sum())
+    assert error < 5.0e-3, f"relative error {error:.2e} after a quarter turn"
