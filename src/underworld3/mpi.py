@@ -58,7 +58,6 @@ rank = comm.rank
 # State tracking for selective execution
 _in_selective_ranks = False
 _selective_executing_ranks = None
-_this_rank_executes = True
 
 # get the pid of the root process
 pid0 = _os.getpid()
@@ -77,155 +76,159 @@ def barrier():
     comm.Barrier()
 
 
-def _should_rank_execute(current_rank, rank_selector, total_size):
-    """
-    Determine if a rank should execute based on rank selector.
+def _selected_ranks(rank_selector, total_size):
+    """The ranks of a ``total_size`` communicator that ``rank_selector`` selects.
 
-    Args:
-        current_rank: The rank to check
-        rank_selector: int, slice, list, tuple, callable, str, or numpy array
-        total_size: Total number of ranks
+    The one resolution behind both the per-rank flag (:func:`pprint`,
+    :func:`selective_ranks`) and the collective guard, so the two cannot
+    disagree. Entries outside ``range(total_size)`` select nothing.
 
-    Returns:
-        bool: True if rank should execute
+    Parameters
+    ----------
+    rank_selector : None, int, slice, list, tuple, set, range, str, callable or numpy.ndarray
+        ``None`` or ``"all"`` selects every rank. A string is one of
+        ``"first"``, ``"last"``, ``"even"``, ``"odd"`` or a percentage such as
+        ``"10%"`` (the first 10% of ranks). A callable takes a rank and
+        returns a bool. A boolean array is a mask indexed by rank; an integer
+        array lists ranks.
+    total_size : int
+        Number of ranks in the communicator.
+
+    Returns
+    -------
+    frozenset of int
+        The selected ranks.
+
+    Raises
+    ------
+    ValueError
+        For a string that is not one of the named patterns.
+    TypeError
+        For a selector of any other type.
     """
+    import numbers
+
     import numpy as np
 
-    if rank_selector is None or rank_selector == "all":
-        return True
+    everyone = range(total_size)
 
-    if isinstance(rank_selector, int):
-        return current_rank == rank_selector
+    def _valid(ranks):
+        return frozenset(int(r) for r in ranks if 0 <= int(r) < total_size)
 
-    if isinstance(rank_selector, slice):
-        return current_rank in range(*rank_selector.indices(total_size))
-
-    if isinstance(rank_selector, (list, tuple)):
-        return current_rank in rank_selector
+    if rank_selector is None:
+        return frozenset(everyone)
 
     if isinstance(rank_selector, str):
+        if rank_selector == "all":
+            return frozenset(everyone)
         if rank_selector == "first":
-            return current_rank == 0
-        elif rank_selector == "last":
-            return current_rank == total_size - 1
-        elif rank_selector == "even":
-            return current_rank % 2 == 0
-        elif rank_selector == "odd":
-            return current_rank % 2 == 1
-        elif rank_selector.endswith("%"):
-            pct = float(rank_selector[:-1]) / 100
-            return current_rank < int(total_size * pct)
+            return _valid([0])
+        if rank_selector == "last":
+            return _valid([total_size - 1])
+        if rank_selector == "even":
+            return frozenset(range(0, total_size, 2))
+        if rank_selector == "odd":
+            return frozenset(range(1, total_size, 2))
+        if rank_selector.endswith("%"):
+            count = int(total_size * float(rank_selector[:-1]) / 100)
+            return frozenset(range(min(count, total_size)))
+        raise ValueError(f"unknown rank selector {rank_selector!r}")
 
-    if callable(rank_selector):
-        return rank_selector(current_rank)
-
-    if isinstance(rank_selector, np.ndarray):
-        if rank_selector.dtype == bool and len(rank_selector) > current_rank:
-            return bool(rank_selector[current_rank])
-        elif current_rank in rank_selector:
-            return True
-
-    return False
-
-
-def _get_executing_ranks(rank_selector, total_size):
-    """
-    Get set of ranks that will execute for a given selector.
-
-    Args:
-        rank_selector: Rank selection specification
-        total_size: Total number of ranks
-
-    Returns:
-        set: Set of rank numbers that will execute
-    """
-    import numpy as np
-
-    if rank_selector is None or rank_selector == "all":
-        return set(range(total_size))
-
-    if isinstance(rank_selector, int):
-        return {rank_selector}
+    if isinstance(rank_selector, numbers.Integral):
+        return _valid([rank_selector])
 
     if isinstance(rank_selector, slice):
-        return set(range(*rank_selector.indices(total_size)))
-
-    if isinstance(rank_selector, (list, tuple)):
-        return set(rank_selector)
-
-    if isinstance(rank_selector, str):
-        if rank_selector == "first":
-            return {0}
-        elif rank_selector == "last":
-            return {total_size - 1}
-        elif rank_selector == "even":
-            return set(range(0, total_size, 2))
-        elif rank_selector == "odd":
-            return set(range(1, total_size, 2))
-        elif rank_selector.endswith("%"):
-            pct = float(rank_selector[:-1]) / 100
-            return set(range(int(total_size * pct)))
-
-    if callable(rank_selector):
-        return {r for r in range(total_size) if rank_selector(r)}
+        return frozenset(range(*rank_selector.indices(total_size)))
 
     if isinstance(rank_selector, np.ndarray):
         if rank_selector.dtype == bool:
-            return {r for r in range(min(len(rank_selector), total_size)) if rank_selector[r]}
-        else:
-            return set(rank_selector[rank_selector < total_size])
+            mask = rank_selector.ravel()[:total_size]
+            return frozenset(int(r) for r in np.flatnonzero(mask))
+        return _valid(rank_selector.ravel())
 
-    return set()
+    if isinstance(rank_selector, (list, tuple, set, frozenset, range)):
+        return _valid(rank_selector)
+
+    if callable(rank_selector):
+        return frozenset(r for r in everyone if rank_selector(r))
+
+    raise TypeError(
+        f"unsupported rank selector of type {type(rank_selector).__name__}")
+
+
+def _should_rank_execute(current_rank, rank_selector, total_size):
+    """Whether ``current_rank`` is among the ranks ``rank_selector`` selects."""
+    return current_rank in _selected_ranks(rank_selector, total_size)
+
+
+def _get_executing_ranks(rank_selector, total_size):
+    """The set of ranks ``rank_selector`` selects (see :func:`_selected_ranks`)."""
+    return set(_selected_ranks(rank_selector, total_size))
 
 
 @_contextmanager
 def selective_ranks(ranks):
+    """Flag the selected ranks inside a block that every rank runs.
+
+    Every rank must reach the same ``with`` statement with the same selector:
+    the body runs on every rank, and the context manager yields ``True`` on
+    the selected ranks and ``False`` on the others. The body chooses on that
+    value. Because every rank is inside the block, a method marked
+    :func:`collective_operation` and called there raises
+    :class:`CollectiveOperationError` on each rank that reaches it, unless the
+    selection covers every rank.
+
+    Parameters
+    ----------
+    ranks : None, int, slice, list, tuple, str, callable or numpy.ndarray
+        The ranks to select. ``None`` or ``"all"`` selects every rank; a
+        string may also be ``"first"``, ``"last"``, ``"even"``, ``"odd"`` or a
+        percentage such as ``"10%"``. A callable takes a rank and returns a
+        bool; a boolean array is a mask indexed by rank; an integer array
+        lists ranks. Ranks outside the communicator select nothing.
+
+    Yields
+    ------
+    bool
+        ``True`` on the selected ranks.
+
+    Notes
+    -----
+    The guard does not stop the job: the ranks that reach the marked call
+    raise, and the others continue, so they can still stall at their next
+    collective. Collectives that are not marked (raw PETSc or MPI calls, file
+    writes through parallel HDF5 such as ``swarm.save`` or
+    ``mesh.write_timestep``) are not detected. A nested block replaces the
+    enclosing selection while it runs; the two are not intersected.
+
+    A selector computed from rank-local data gives each rank a different
+    selection, which the guard cannot see.
+
+    Examples
+    --------
+    >>> with uw.selective_ranks(0) as should_execute:
+    ...     if should_execute:
+    ...         import matplotlib.pyplot as plt
+    ...         plt.plot(x, y)
+    ...         plt.savefig("output.png")
+
+    Without the ``if``, every rank writes ``output.png``.
     """
-    Execute code only on selected ranks, with collective operation detection.
+    global _in_selective_ranks, _selective_executing_ranks
 
-    This context manager allows you to selectively execute code on specific MPI ranks
-    while protecting against deadlocks from collective operations.
-
-    Args:
-        ranks: Which ranks should execute the code block. Can be:
-            - int: Single rank (e.g., 0)
-            - slice: Range of ranks (e.g., slice(0, 4))
-            - list/tuple: Specific ranks (e.g., [0, 3, 7])
-            - str: Named patterns ('all', 'first', 'last', 'even', 'odd', '10%')
-            - callable: Function taking rank and returning bool
-            - numpy array: Boolean mask or integer indices
-
-    Raises:
-        CollectiveOperationError: If a collective operation is detected within
-            the selective execution block (would cause deadlock)
-
-    Example:
-        >>> with uw.mpi.selective_ranks(0):
-        ...     import matplotlib.pyplot as plt
-        ...     plt.plot(x, y)
-        ...     plt.savefig("output.png")
-    """
-    global _in_selective_ranks, _selective_executing_ranks, _this_rank_executes
-
-    should_execute = _should_rank_execute(rank, ranks, size)
+    selected = _selected_ranks(ranks, size)
 
     old_selective = _in_selective_ranks
     old_executing_ranks = _selective_executing_ranks
-    old_this_executes = _this_rank_executes
 
     _in_selective_ranks = True
-    _selective_executing_ranks = _get_executing_ranks(ranks, size)
-    _this_rank_executes = should_execute
+    _selective_executing_ranks = selected
 
     try:
-        if should_execute:
-            yield True
-        else:
-            yield False
+        yield rank in selected
     finally:
         _in_selective_ranks = old_selective
         _selective_executing_ranks = old_executing_ranks
-        _this_rank_executes = old_this_executes
 
 
 class CollectiveOperationError(RuntimeError):
@@ -250,13 +253,15 @@ def collective_operation(func):
 
     def wrapper(*args, **kwargs):
         if _in_selective_ranks:
-            # Check if all ranks are executing
-            if _selective_executing_ranks is not None and len(_selective_executing_ranks) != size:
+            # Every rank of the communicator must be selected. This compares
+            # the set, not its size: [1, ..., size] has as many entries as
+            # there are ranks but leaves out rank 0.
+            if (_selective_executing_ranks is not None
+                    and not _selective_executing_ranks.issuperset(range(size))):
                 # Not all ranks will execute - this is a collective operation error
                 func_name = func.__name__
-                executing_ranks = list(_selective_executing_ranks)
-                all_ranks = list(range(size))
-                excluded_ranks = [r for r in all_ranks if r not in executing_ranks]
+                executing_ranks = sorted(_selective_executing_ranks)
+                excluded_ranks = [r for r in range(size) if r not in _selective_executing_ranks]
 
                 error_msg = (
                     f"\n{'='*70}\n"
