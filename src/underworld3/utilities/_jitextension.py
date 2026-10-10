@@ -1633,8 +1633,9 @@ def _unconvertible_message(symbols, index, fn_original):
 
 
 def _print_kernel(printer, temporaries, outputs, out):
-    """The C body of one kernel: a ``const double`` per temporary, in order, then
-    the outputs. The printer declares a number symbol it reads (``EulerGamma``,
+    """The C body of one kernel: a ``const double`` per temporary, in order, each
+    with the name of the quantity it computes as a comment (so a rename recompiles),
+    then the outputs. The printer declares a number symbol it reads (``EulerGamma``,
     ``Catalan``) before the code that reads it; each declaration is written once, at
     the top. A SymPy function the printer cannot write raises
     ``PrintMethodNotImplementedError`` (SymPy 1.14), or, in a SymPy that returns
@@ -1650,11 +1651,13 @@ def _print_kernel(printer, temporaries, outputs, out):
             rest = rest[1:]
         return "\n".join(rest)
 
-    for t, body in temporaries:
+    for t, body, label in temporaries:
         code = printer.doprint(body)
         if code.startswith("// Not supported in C:"):
             return code
-        lines.append(f"const double {t._ccodestr} = {without_declarations(code)};")
+        name = " ".join(str(label).replace("*/", "* /").split())
+        lines.append(f"const double {t._ccodestr} = {without_declarations(code)};"
+                     f"  /* {name} */")
     lines.append(without_declarations(printer.doprint(outputs, out)))
     return "\n".join(declarations + lines)
 

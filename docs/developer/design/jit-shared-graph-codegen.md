@@ -271,9 +271,9 @@ Applications with equal keys compute the same C and share one temporary. The
 temporaries are written so that each follows the ones it uses, ties broken by key:
 
 ```c
-const double uwt_0 = ...;  /* one line per distinct computation, evaluated once */
-const double uwt_1 = ...;
-out[0] = ...;              /* outputs in terms of uwt_0, uwt_1, ... and the leaves */
+const double uwt_0 = ...;  /* \dot\varepsilon_{II} */   (one line per distinct computation,
+const double uwt_1 = ...;  /* \eta_{\mathrm{eff}} */      named by the quantity it computes)
+out[0] = ...;              (outputs in terms of uwt_0, uwt_1, ... and the leaves)
 ```
 
 The generated source is therefore a function of the mathematics and of the kernel's data
@@ -732,10 +732,12 @@ the next begins.
   the expanded route keeps its own tests (`test_0022`, `test_0103`, `test_0104`,
   `test_0105`). Removing it is a later decision, once the graph has run in production.
 
+- **2026-10-11: each C temporary carries its quantity's name as a comment**
+  (`const double uwt_3 = ...;  /* \eta_{\mathrm{eff}} */`), so a kernel can be read
+  by eye. The names enter the cache key: renaming a quantity recompiles its kernels.
+
 ## Questions for the maintainer
 
-1. Whether the generated C should carry each temporary's display name as a comment.
-   It makes kernels readable; it also puts display names into the cache key, so a
-   `rename()` recompiles.
-2. Whether the adjoint's own unwrap (`_peel_except`, on the adjoint branches) adopts the
-   nodes when those branches rebase onto this change.
+1. Whether the adjoint's own unwrap (`_peel_except`, on the adjoint branches) adopts the
+   nodes when those branches rebase onto this change. (Louis, 2026-10-11:
+   probably.)

@@ -463,8 +463,9 @@ def emission_order(outputs, spell):
     their own keys. Applications with equal keys compute the same C and share one
     temporary; temporaries follow the ones they use, ties broken by key.
 
-    Returns ``(order, key)``: ``order`` is a list of ``(key, body)``; ``key`` maps each
-    node application reached to its key.
+    Returns ``(order, key)``: ``order`` is a list of ``(key, body, label)``, the label
+    being the name of the first quantity reached with that key; ``key`` maps each node
+    application reached to its key.
     """
     key = {}
     spelt = {}
@@ -498,7 +499,7 @@ def emission_order(outputs, spell):
         body = body_of(app)
         for child in sorted(body.atoms(_KernelNode), key=key_of):
             visit(child)
-        order.append((k, body))
+        order.append((k, body, app.func._label))
 
     for out in outputs:
         for child in sorted(sympy.sympify(out).atoms(_KernelNode), key=key_of):
@@ -510,7 +511,8 @@ def emit(fn, spell):
     """``fn`` (a lowered Matrix) as temporaries and outputs, ready to print.
 
     Returns ``(temporaries, outputs)``: ``temporaries`` is a list of
-    ``(_Temporary, body)`` in the order to write them, and ``outputs`` is ``fn`` with
+    ``(_Temporary, body, label)`` in the order to write them, the label being the name
+    of the quantity the temporary computes, and ``outputs`` is ``fn`` with
     each node application replaced by its temporary. In both, every leaf is replaced
     by a ``_CName`` holding ``spell(leaf)``.
     """
@@ -529,8 +531,8 @@ def emit(fn, spell):
         return rule
 
     temp_of, temporaries = {}, []
-    for i, (k, body) in enumerate(order):
+    for i, (k, body, label) in enumerate(order):
         t = _Temporary(i)
-        temporaries.append((t, body.xreplace(rule_for(body, temp_of))))
+        temporaries.append((t, body.xreplace(rule_for(body, temp_of)), label))
         temp_of[k] = t
     return temporaries, fn.xreplace(rule_for(fn, temp_of))

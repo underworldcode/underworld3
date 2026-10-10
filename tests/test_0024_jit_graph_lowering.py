@@ -270,6 +270,8 @@ def test_the_emitted_source_does_not_depend_on_what_came_before(monkeypatch):
     second = _header(_poisson("0024f", mesh2), monkeypatch)
     assert first == second
     assert "uwt_0" in first, "the kernel has no temporaries: nothing was lowered"
+    # each temporary carries the name of the quantity it computes
+    assert "/* g_{0024f} */" in first
 
 
 def test_a_law_with_no_named_quantity_has_no_temporaries(monkeypatch):
@@ -470,3 +472,18 @@ def test_a_number_symbol_in_a_temporary_is_declared_once(monkeypatch):
     assert "uwt_0" in header
     for body in header.split("\nvoid ")[1:]:
         assert body.count("const double EulerGamma =") <= 1
+
+
+def test_a_name_cannot_close_its_comment(box):
+    """Each temporary's comment is the name of its quantity; a name holding the
+    comment terminator is written so that it cannot end the comment early."""
+    from sympy.printing.c import c_code_printers
+    from underworld3.utilities._jitextension import _print_kernel
+
+    mesh, T, v = box
+    t = jg._Temporary(0)
+    printer = c_code_printers["c99"]()
+    code = _print_kernel(printer, [(t, sympy.Float(2.0), "a */ b\nc")],
+                         sympy.Matrix([[t]]), sympy.MatrixSymbol("out", 1, 1))
+    first = code.splitlines()[0]
+    assert first.endswith("/* a * / b c */") and first.count("*/") == 1, first
