@@ -1,0 +1,235 @@
+name: "GHCR: HPC Underworld3 images"
+
+# Builds docs/developer/hpc_containers/underworld3.hpc once per platform and
+# pushes to GHCR for `singularity pull docker://...` on Gadi, Kaiju and Setonix.
+#
+# This is the layer that moves; the expensive PETSc images under it are built
+# rarely by hpc-petsc-image.yml, and the platform bases rarer still by
+# hpc-base-images.yml. Unlike docker-image.yaml and binder-image.yml these
+# images match each HPC system's OS and MPI ABI.
+
+on:
+  push:
+    branches:
+      - main
+      - development
+    tags: ['v*']
+    paths:
+      - 'docs/developer/hpc_containers/underworld3.hpc'
+      - '.github/workflows/hpc-uw3-image.yml'
+      - 'pixi.toml'
+      - 'pyproject.toml'
+      - 'setup.py'
+      - 'src/**'
+  # Releases are the guaranteed path for a tagged image: the `tags:` filter above
+  # is combined with `paths:`, so a tag whose diff touches nothing in that list
+  # would not build on its own.
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      uw3_branch:
+        description: 'UW3 branch/tag to clone and build (e.g. development, v3.1.0). Empty = triggering ref.'
+        type: string
+        default: ''
+      petsc_image:
+        description: 'PETSc base image override. Applies to EVERY platform in the matrix, so only useful with a single-platform matrix edit. Empty = per-platform default.'
+        type: string
+        default: ''
+      image_tag:
+        description: 'Image tag override (e.g. ci-test). Empty = derive from ref.'
+        type: string
+        default: ''
+      force_rebuild:
+        description: 'Force full rebuild (no cache)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: hpc-uw3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: gadi
+            base: rocky-ompi
+            mpi: ompi
+            mpi_name: "Open MPI"
+            petsc_var: GADI_PETSC_IMAGE
+          - platform: setonix
+            base: ubuntu-mpich
+            mpi: mpich
+            mpi_name: "MPICH"
+            petsc_var: SETONIX_PETSC_IMAGE
+    env:
+      # Repository variables that let a fork reuse a PETSc image it already
+      # published under another name. Indexed by matrix.petsc_var below.
+      GADI_PETSC_IMAGE: ${{ vars.GADI_PETSC_IMAGE }}
+      SETONIX_PETSC_IMAGE: ${{ vars.SETONIX_PETSC_IMAGE }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve names and tags
+        id: meta
+        run: |
+          set -euo pipefail
+
+          # Image names must be lowercase; repository_owner may not be.
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/underworld3-${{ matrix.platform }}"
+          BASE="ghcr.io/${OWNER}/uw3-base-${{ matrix.base }}"
+
+          # Same ref-name / IS_RELEASE convention as binder-image.yml.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF_NAME=${GITHUB_REF#refs/tags/}
+            IS_RELEASE=true
+          else
+            REF_NAME=${GITHUB_REF#refs/heads/}
+            IS_RELEASE=false
+          fi
+
+          if [[ -n "${{ inputs.uw3_branch }}" ]]; then
+            REF_NAME="${{ inputs.uw3_branch }}"
+            [[ "$REF_NAME" == v* ]] && IS_RELEASE=true
+          fi
+          if [[ -n "${{ inputs.image_tag }}" ]]; then
+            DOCKER_TAG="${{ inputs.image_tag }}"
+          else
+            # Docker tags cannot contain '/'
+            DOCKER_TAG=$(echo "$REF_NAME" | tr '/' '-')
+          fi
+
+          # Dispatch input wins, then the per-platform repo variable, then the
+          # canonical name.
+          VAR_NAME="${{ matrix.petsc_var }}"
+          PETSC_IMAGE="${{ inputs.petsc_image }}"
+          PETSC_IMAGE="${PETSC_IMAGE:-${!VAR_NAME}}"
+          PETSC_IMAGE="${PETSC_IMAGE:-ghcr.io/${OWNER}/petsc-${{ matrix.platform }}:3.25.0-${{ matrix.mpi }}}"
+
+          TAGS="${IMAGE}:${DOCKER_TAG}"
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+
+          # A release tag is the version; anything else gets a PEP440 dev
+          # version carrying the commit, since branch names are not versions.
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            UW3_VERSION="${REF_NAME#v}"
+          else
+            UW3_VERSION="0.0.0.dev0+g${GITHUB_SHA:0:7}"
+          fi
+
+          {
+            echo "image=${IMAGE}:${DOCKER_TAG}"
+            echo "tags=${TAGS}"
+            echo "base=${BASE}"
+            echo "uw3_branch=${REF_NAME}"
+            echo "petsc_image=${PETSC_IMAGE}"
+            echo "uw3_version=${UW3_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building ${IMAGE}:${DOCKER_TAG}"
+          echo "  UW3 ref:    ${REF_NAME}"
+          echo "  PETSc base: ${PETSC_IMAGE}"
+          echo "  builder:    ${BASE}:builder"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docs/developer/hpc_containers/underworld3.hpc
+          # Docker v2 media types rather than buildx's OCI default, matching the
+          # podman `--format docker` images already validated on Gadi. Older
+          # Singularity builds read OCI patchily; this removes the variable.
+          outputs: type=image,push=true,oci-mediatypes=false
+          # All three systems are x86_64. No arm64: it would need QEMU for no
+          # benefit, and the gmsh / vtk-osmesa wheels are x86_64-only anyway.
+          platforms: linux/amd64
+          # Attestations turn the result into a multi-manifest index containing an
+          # "unknown/unknown" entry, which some Singularity/Apptainer versions
+          # refuse to pull. Keep these off — see README "Automated builds".
+          provenance: false
+          sbom: false
+          no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            UW3_BRANCH=${{ steps.meta.outputs.uw3_branch }}
+            UW3_REPO=${{ github.server_url }}/${{ github.repository }}.git
+            PETSC_IMAGE=${{ steps.meta.outputs.petsc_image }}
+            BASE_BUILDER=${{ steps.meta.outputs.base }}:builder
+            BASE_RUNTIME=${{ steps.meta.outputs.base }}:runtime
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.meta.outputs.uw3_version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          # Cache lives in its own package: sharing one with the image put stale
+          # cache manifests into the same untagged pool the cleanup step prunes,
+          # so they competed with old images for min-versions-to-keep.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/underworld3-${{ matrix.platform }}-buildcache:latest
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/underworld3-${{ matrix.platform }}-buildcache:latest,mode=max
+
+      - name: Pull image
+        run: docker pull ${{ steps.meta.outputs.image }}
+
+      # A bare import is the cheapest check and catches a missing runtime dep
+      # (this is exactly how the absent `requests` once showed up).
+      - name: Import underworld3
+        run: |
+          docker run --rm ${{ steps.meta.outputs.image }} \
+            python -c "import underworld3; print('underworld3', underworld3.__version__)"
+
+      # The recipe installs gmsh and vtk-osmesa behind `|| echo skip`, so a
+      # failed install is silent. Import them explicitly or it ships broken.
+      - name: Import optional stack (gmsh, vtk, pyvista, h5py, petsc4py)
+        run: |
+          docker run --rm ${{ steps.meta.outputs.image }} \
+            python -c "import gmsh, vtk, pyvista, h5py, petsc4py; print('optional stack OK')"
+
+      # Assert the MPI flavour too: a silently wrong libmpi is exactly the
+      # failure that would otherwise only surface on a compute node.
+      - name: MPI sanity (2 ranks, expect ${{ matrix.mpi_name }})
+        run: |
+          docker run --rm ${{ steps.meta.outputs.image }} \
+            mpiexec -n 2 python -c "
+          import underworld3 as uw
+          from mpi4py import MPI
+          c = MPI.COMM_WORLD
+          v = MPI.Get_library_version().splitlines()[0]
+          assert c.size == 2
+          assert '${{ matrix.mpi_name }}' in v, v
+          print(f'rank {c.rank} of {c.size}, underworld3 {uw.__version__}, {v}')
+          "
+
+      # Only prune once the image is known good — a failed step above stops
+      # the job before this runs, so a broken build never deletes the last
+      # working one. Housekeeping only: a 404 partway through must not fail
+      # a run whose image is good.
+      - name: Delete old untagged image versions
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: underworld3-${{ matrix.platform }}
+          package-type: container
+          min-versions-to-keep: 3
+          # Load-bearing: every TAGGED image (:latest, :v3.1.0, :main, and the
+          # current :development) is exempt regardless of age. Only superseded
+          # rolling builds are eligible.
+          delete-only-untagged-versions: true
