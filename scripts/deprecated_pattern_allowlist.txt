@@ -55,6 +55,7 @@ src/underworld3/units.py:except-pass
 src/underworld3/utilities/_api_tools.py:except-pass
 src/underworld3/utilities/_interrupt.py:except-pass
 src/underworld3/utilities/_jit_cache.py:except-pass
+src/underworld3/utilities/_jitextension.py:except-pass
 src/underworld3/utilities/_params.py:except-pass
 src/underworld3/utilities/diagnostics.py:except-pass
 src/underworld3/utilities/mathematical_mixin.py:except-pass
