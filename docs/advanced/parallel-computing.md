@@ -77,11 +77,11 @@ This common pattern is **dangerous**:
 ```python
 # DANGEROUS - can hang in parallel!
 if uw.mpi.rank == 0:
-    stats = var.stats()  # Collective operation - other ranks wait forever!
+    stats = var.stats()  # Collective operation - rank 0 waits forever for the others
     print(f"Stats: {stats}")
 ```
 
-**Why it hangs**: `var.stats()` is a **collective operation** - ALL ranks must call it. If only rank 0 calls it, other ranks wait forever for synchronization that never comes.
+**Why it hangs**: `var.stats()` is a **collective operation** - ALL ranks must call it. If only rank 0 calls it, rank 0 waits forever for the other ranks, which never call it.
 
 ### The Solution: Parallel Print
 
@@ -92,7 +92,7 @@ Use `uw.pprint()` for rank-specific output:
 uw.pprint(f"Stats: {var.stats()}")
 
 # Debug - print from multiple ranks
-uw.pprint(slice(0, 4), f"Local max: {var.data.max()}")
+uw.pprint(f"Local max: {var.data.max()}", proc=slice(0, 4))
 ```
 
 ## Rank Selection Syntax
@@ -106,44 +106,44 @@ uw.pprint(slice(0, 4), f"Local max: {var.data.max()}")
 uw.pprint("Only rank 0")
 
 # All ranks
-uw.pprint(None, "Everyone prints this")
+uw.pprint("Everyone prints this", proc=None)
 
 # Range of ranks (Python slice)
-uw.pprint(slice(0, 4), "Ranks 0-3")
-uw.pprint(slice(2, 8, 2), "Ranks 2, 4, 6")
+uw.pprint("Ranks 0-3", proc=slice(0, 4))
+uw.pprint("Ranks 2, 4, 6", proc=slice(2, 8, 2))
 
 # Specific ranks (list/tuple)
-uw.pprint([0, 3, 7], "Ranks 0, 3, and 7")
+uw.pprint("Ranks 0, 3, and 7", proc=[0, 3, 7])
 ```
 
 ### Named Patterns
 
 ```python
-uw.pprint('all', "All ranks")
-uw.pprint('first', "Rank 0 only")
-uw.pprint('last', "Highest rank only")
-uw.pprint('even', "Even-numbered ranks")
-uw.pprint('odd', "Odd-numbered ranks")
+uw.pprint("All ranks", proc='all')
+uw.pprint("Rank 0 only", proc='first')
+uw.pprint("Highest rank only", proc='last')
+uw.pprint("Even-numbered ranks", proc='even')
+uw.pprint("Odd-numbered ranks", proc='odd')
 ```
 
 ### Advanced Selection
 
 ```python
 # Percentage of ranks
-uw.pprint('10%', "First 10% of ranks")
+uw.pprint("First 10% of ranks", proc='10%')
 
 # Function-based
-uw.pprint(lambda r: r % 3 == 0, "Every third rank")
+uw.pprint("Every third rank", proc=lambda r: r % 3 == 0)
 
 # NumPy arrays
 import numpy as np
 mask = np.array([True, False, True, False])
-uw.pprint(mask, "Using boolean mask")
+uw.pprint("Using boolean mask", proc=mask)
 ```
 
 ## Selective Execution Context
 
-For code that should **only execute on certain ranks** (not just print), use `selective_ranks()`:
+For code that should **only execute on certain ranks** (not just print), use `selective_ranks()`. Entering the block is collective: every rank runs the `with` body, and the context manager yields `True` on the selected ranks and `False` on the others. The `if` on that value is what restricts the code:
 
 ```python
 # Visualization - only rank 0 executes
@@ -161,8 +161,10 @@ with uw.selective_ranks(slice(0, 4)) as should_execute:
         process_local_partition()
 ```
 
-```{tip} Using the Context Manager Return Value
-The `selective_ranks()` context manager yields `True` if the current rank should execute, `False` otherwise. Always check this value to ensure code only runs on selected ranks:
+````{admonition} The if check is required
+:class: warning
+
+The `with` body runs on every rank. Without the `if should_execute:` check, every rank executes the code. A file written that way is written by every rank at once and can be corrupted. The correct form:
 
 ```python
 with uw.selective_ranks(0) as should_execute:
@@ -170,24 +172,27 @@ with uw.selective_ranks(0) as should_execute:
         # Your rank-specific code here
         pass
 ```
-```
+````
 
 ### Collective Operation Safety
 
-```{warning} Avoid Collective Operations in Selective Blocks
-**Never call collective operations inside `selective_ranks()` blocks** - they will cause deadlocks since not all ranks participate:
+````{admonition} Avoid collective operations in selective blocks
+:class: warning
+
+**Never call collective operations inside the selected part of a `selective_ranks()` block.** Only the selected ranks reach them, so the others never join:
 
 ```python
-# WRONG - Will hang!
-with uw.selective_ranks(0):
-    stats = var.stats()  # Collective operation - deadlock!
+# WRONG - only rank 0 calls the collective
+with uw.selective_ranks(0) as should_execute:
+    if should_execute:
+        stats = var.stats()  # raises CollectiveOperationError
 
 # RIGHT - Use pprint instead
 uw.pprint(f"Stats: {var.stats()}")  # All ranks execute stats(), only rank 0 prints
 ```
-```
+````
 
-Future versions will include automatic detection of collective operations within selective execution blocks.
+Methods marked as collective with `uw.collective_operation` (among them `var.stats()`, `solver.solve()`, `swarm.migrate()` and the swarm `global_*` reductions) raise `CollectiveOperationError` on each rank that reaches them inside a `selective_ranks()` block that does not select every rank. The other ranks continue, so they can still stall at their next collective; the error names the function so the cause is found. Unmarked collectives are not detected and hang: raw PETSc or MPI calls, and parallel HDF5 writes such as `mesh.write()`, `mesh.write_timestep()` and `swarm.save()`.
 
 ## Understanding Collective Operations
 
@@ -199,7 +204,7 @@ Future versions will include automatic detection of collective operations within
 # Solver operations
 stokes.solve()           # All ranks must call
 var.stats()              # All ranks must call
-mesh.save("file.h5")     # Collective I/O
+mesh.write("file.h5")    # Collective I/O (parallel HDF5)
 
 # Data operations  
 var.rbf_interpolate()    # All ranks participate
@@ -250,14 +255,14 @@ uw.pprint(f"Pressure range: [{pressure_stats['min']:.6e}, {pressure_stats['max']
 
 ```python
 # Check local data on multiple ranks
-uw.pprint(slice(0, 4), f"Rank {uw.mpi.rank}: Local elements = {mesh.dm.getLocalSize()}")
-uw.pprint('all', f"Rank {uw.mpi.rank}: Partition shape = {var.data.shape}")
+uw.pprint(f"Rank {uw.mpi.rank}: Local elements = {mesh.dm.getLocalSize()}", proc=slice(0, 4))
+uw.pprint(f"Rank {uw.mpi.rank}: Partition shape = {var.data.shape}", proc='all')
 
 # Check first and last rank only
-uw.pprint([0, uw.mpi.size-1], f"Rank {uw.mpi.rank}: Boundary points = {boundary_count}")
+uw.pprint(f"Rank {uw.mpi.rank}: Boundary points = {boundary_count}", proc=[0, uw.mpi.size-1])
 
 # Custom selection - every 4th rank
-uw.pprint(lambda r: r % 4 == 0, f"Rank {uw.mpi.rank}: Memory usage = {psutil.Process().memory_info().rss / 1e9:.2f} GB")
+uw.pprint(f"Rank {uw.mpi.rank}: Memory usage = {psutil.Process().memory_info().rss / 1e9:.2f} GB", proc=lambda r: r % 4 == 0)
 ```
 
 ### Pattern 4: Visualization and I/O
@@ -292,24 +297,20 @@ else:
     uw.pprint(f"No variables are defined on the mesh\n")
 ```
 
-### Pattern 6: Conditional Execution by Rank Group
+### Pattern 6: Collective I/O, Serial Bookkeeping
+
+Checkpoint writes are collective (parallel HDF5), so every rank calls them. Only the serial bookkeeping around them belongs to one rank:
 
 ```python
-# Define rank groups for different tasks
-io_ranks = 0
-compute_ranks = slice(1, None)
+# Every rank writes its part of the checkpoint
+mesh.write_timestep("model", index=step, meshVars=[velocity, pressure], outputPath="output")
+swarm.save(f"output/particles_{step}.h5")
 
-# Rank 0: Handle I/O
-with uw.selective_ranks(io_ranks) as should_execute:
+# Only rank 0 appends to the run log
+with uw.selective_ranks(0) as should_execute:
     if should_execute:
-        mesh.save(f"checkpoint_{step}.h5")
-        swarm.save(f"particles_{step}.h5")
-
-# Ranks 1+: Continue computing
-with uw.selective_ranks(compute_ranks) as should_execute:
-    if should_execute:
-        # Prepare next timestep while rank 0 saves
-        update_advection_timestep()
+        with open("output/run.log", "a") as log:
+            log.write(f"step {step} written\n")
 ```
 
 ## Testing Parallel Safety
@@ -360,9 +361,10 @@ import matplotlib.pyplot as plt
 plt.plot(x, y)
 
 # RIGHT - only rank 0
-with uw.selective_ranks(0):
-    import matplotlib.pyplot as plt
-    plt.plot(x, y)
+with uw.selective_ranks(0) as should_execute:
+    if should_execute:
+        import matplotlib.pyplot as plt
+        plt.plot(x, y)
 ```
 
 ## Migration from Old Patterns
@@ -407,29 +409,31 @@ with uw.selective_ranks(0) as should_execute:
         plotter.show()
 ```
 
-```{note} Why the Change?
+```{admonition} Why the change?
+:class: note
+
 The new patterns are safer because:
 
 1. **`uw.pprint()`** ensures all ranks evaluate arguments (preventing collective operation deadlocks)
 2. **`selective_ranks()`** makes it explicit which code is rank-specific
 3. Code is more readable and intention is clear
-4. Future automatic deadlock detection becomes possible
+4. Marked collectives called inside a selective block are reported (`CollectiveOperationError`)
 ```
 
 ## When to Use What
 
 | Task | Use | Example |
 |------|-----|---------|
-| Print from specific ranks | `uw.pprint(ranks, ...)` | `uw.pprint("Done")` |
-| Serial code (viz, I/O) | `with uw.selective_ranks(ranks):` | Matplotlib, file writes |
+| Print from specific ranks | `uw.pprint(..., proc=ranks)` | `uw.pprint("Done")` |
+| Serial code (viz, I/O) | `with uw.selective_ranks(ranks) as should_execute:` then `if should_execute:` | Matplotlib, file writes |
 | Collective with output | `uw.pprint()` with collective args | `uw.pprint(var.stats())` |
-| Debug multiple ranks | `uw.pprint('all', ...)` | Check local data |
+| Debug multiple ranks | `uw.pprint(..., proc='all')` | Check local data |
 
 ## Best Practices
 
 1. **Never use direct MPI** unless absolutely necessary
 2. **Use `uw.pprint()`** instead of `if uw.mpi.rank == 0: print()`
-3. **Wrap serial libraries** in `selective_ranks(0)`
+3. **Wrap serial libraries** in `selective_ranks(0)` and check the flag it yields
 4. **Test with multiple processors** early and often
 5. **Check error messages** - they tell you exactly what's wrong
 
@@ -448,9 +452,10 @@ class RankGroups:
 groups = RankGroups()
 
 # Use throughout script
-uw.pprint(groups.io_rank, "Saving data...")
-with uw.selective_ranks(groups.compute_ranks):
-    heavy_computation()
+uw.pprint("Saving data...", proc=groups.io_rank)
+with uw.selective_ranks(groups.compute_ranks) as should_execute:
+    if should_execute:
+        heavy_computation()
 ```
 
 ## Related Documentation
@@ -463,30 +468,30 @@ with uw.selective_ranks(groups.compute_ranks):
 
 ### API Summary
 
-**`uw.pprint(ranks, *args, prefix=True, **kwargs)`**
+**`uw.pprint(*args, proc=0, prefix=None, **kwargs)`**
 - Print from selected ranks
 - All ranks evaluate arguments (safe for collective operations)
 - Optional rank prefix (default: `[0]`)
 
 **`uw.selective_ranks(ranks)`**
-- Context manager for rank-specific execution
-- Yields `True`/`False` for current rank
-- Use with `if should_execute:` check
+- Context manager for rank-specific execution; every rank enters the block
+- Yields `True` on the selected ranks, `False` on the others
+- The `if should_execute:` check is what restricts execution
 
 ### Rank Selection Quick Reference
 
 | Syntax | Selects | Example |
 |--------|---------|---------|
 | `0` | Single rank | `uw.pprint("message")` |
-| `slice(0, 4)` | Range of ranks | `uw.pprint(slice(0, 4), ...)` |
-| `[0, 3, 7]` | Specific ranks | `uw.pprint([0, 3, 7], ...)` |
-| `'all'` or `None` | All ranks | `uw.pprint('all', ...)` |
-| `'first'` | Rank 0 | `uw.pprint('first', ...)` |
-| `'last'` | Highest rank | `uw.pprint('last', ...)` |
-| `'even'` | Even ranks | `uw.pprint('even', ...)` |
-| `'odd'` | Odd ranks | `uw.pprint('odd', ...)` |
-| `'10%'` | First 10% of ranks | `uw.pprint('10%', ...)` |
-| `lambda r: ...` | Custom function | `uw.pprint(lambda r: r % 3 == 0, ...)` |
+| `slice(0, 4)` | Range of ranks | `uw.pprint(..., proc=slice(0, 4))` |
+| `[0, 3, 7]` | Specific ranks | `uw.pprint(..., proc=[0, 3, 7])` |
+| `'all'` or `None` | All ranks | `uw.pprint(..., proc='all')` |
+| `'first'` | Rank 0 | `uw.pprint(..., proc='first')` |
+| `'last'` | Highest rank | `uw.pprint(..., proc='last')` |
+| `'even'` | Even ranks | `uw.pprint(..., proc='even')` |
+| `'odd'` | Odd ranks | `uw.pprint(..., proc='odd')` |
+| `'10%'` | First 10% of ranks | `uw.pprint(..., proc='10%')` |
+| `lambda r: ...` | Custom function | `uw.pprint(..., proc=lambda r: r % 3 == 0)` |
 
 ### Common Collective Operations
 
@@ -496,14 +501,14 @@ These operations require **ALL ranks** to participate:
 |-----------|------|---------|
 | `var.stats()` | Statistics | Global min/max/mean |
 | `solver.solve()` | Solver | All PETSc solvers |
-| `mesh.save()` | I/O | Parallel HDF5 write |
+| `mesh.write()`, `mesh.write_timestep()`, `swarm.save()` | I/O | Parallel HDF5 write |
 | `var.rbf_interpolate()` | Interpolation | Radial basis functions |
 | `swarm.migrate()` | Redistribution | Particle migration |
 
 ### Migration Checklist
 
 - [ ] Replace `if uw.mpi.rank == 0: print(...)` with `uw.pprint(...)`
-- [ ] Replace `if uw.mpi.rank == 0:` for visualization with `with uw.selective_ranks(0):`
+- [ ] Replace `if uw.mpi.rank == 0:` for visualization with `with uw.selective_ranks(0) as should_execute:` and `if should_execute:`
 - [ ] Ensure collective operations are called on ALL ranks
 - [ ] Test with `mpirun -np 2` and `mpirun -np 4`
 - [ ] Check for deadlocks (script hangs = collective operation issue)
@@ -533,8 +538,8 @@ recommended workaround. (Issue #134.)
 **Key Takeaways:**
 
 1. **PETSc handles parallelism** - you write parallel-safe UW3 code
-2. **Use `uw.pprint(ranks, ...)`** for output on specific ranks
-3. **Use `with uw.selective_ranks(ranks):`** for serial operations
+2. **Use `uw.pprint(..., proc=ranks)`** for output on specific ranks
+3. **Use `with uw.selective_ranks(ranks) as should_execute:` and `if should_execute:`** for serial operations
 4. **Collective operations must run on ALL ranks** - never inside rank conditionals
 5. **Test with `mpirun -np N`** to catch issues early
 6. **At ≳1000 ranks, write timing output as `.csv`** to avoid `PetscLogView` hangs
