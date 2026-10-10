@@ -211,10 +211,11 @@ pytest -m "level_1 and tier_a"     # quick
 pytest -m "tier_a or tier_b"       # full validation
 ```
 
-Tier A is hardened and reviewed — safe to build code around. Tier C is not mature
-enough to drive coding. Every bug fix ships the regression test that would have
-caught it, written first and shown to fail. Validate a new test's own correctness
-before changing library code to satisfy it.
+Tier A is hardened and reviewed — safe to build code around. Every bug fix ships
+the regression test that would have caught it, written first and shown to fail;
+such a proven test starts at tier B, so it gates. Tier C is only for a test not yet
+proven, so it cannot derail the code. Validate a new test's own correctness before
+changing library code to satisfy it.
 
 Every test file must be reachable from a glob in `scripts/test.sh`;
 `scripts/check_test_coverage.py` enforces it.
