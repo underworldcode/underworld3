@@ -8,6 +8,9 @@ with every Jacobian block touching it derived from its residual. These tests pin
 * the Jacobian: with two-way coupling the assembled operator is the derivative of
   the residual (Taylor remainder of order two);
 * the guard: an ordinary Stokes solver compiles and registers only its own terms.
+
+The residual and Jacobian tests run in 2-D and 3-D: the coupled-field code takes its
+dimension from the mesh and nothing in it is planar.
 """
 import numpy as np
 import pytest
@@ -20,15 +23,21 @@ pytestmark = pytest.mark.level_2
 SMOOTHING = 0.05    # l^2 of the screened-Poisson field
 
 
-def _driven_stokes(viscosity=1):
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3)
+def _driven_stokes(viscosity=1, dim=2):
+    if dim == 2:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3)
+    else:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=1.0 / 4,
+            qdegree=3)
     stokes = uw.systems.Stokes(mesh)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
-    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
-    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
-    stokes.add_dirichlet_bc((0.0, 0.0), "Left")
+    zero = (0.0,) * dim
+    stokes.add_dirichlet_bc((1.0,) + zero[1:], "Top")
+    stokes.add_dirichlet_bc(zero, "Bottom")
+    stokes.add_dirichlet_bc(zero, "Left")
     # The right wall is traction-free, which fixes the pressure. A closed box leaves
     # its constant free, and LU of that singular system lets the constant drift
     # between Newton steps until the residual cannot be resolved below |F| ~ 2:
@@ -54,8 +63,9 @@ def _screened_strain_rate(mesh, stokes, chi):
 
 
 @pytest.mark.tier_b
-def test_one_way_coupled_field_equals_projection():
-    mesh, stokes = _driven_stokes()
+@pytest.mark.parametrize("dim", [2, 3])
+def test_one_way_coupled_field_equals_projection(dim):
+    mesh, stokes = _driven_stokes(dim=dim)
     chi = uw.discretisation.MeshVariable("chi", mesh, 1, degree=1)
     stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
     _exact_linear_solves(stokes)
@@ -78,8 +88,9 @@ def test_one_way_coupled_field_equals_projection():
 
 
 @pytest.mark.tier_b
-def test_two_way_coupled_jacobian_is_the_residual_derivative():
-    mesh, stokes = _driven_stokes()
+@pytest.mark.parametrize("dim", [2, 3])
+def test_two_way_coupled_jacobian_is_the_residual_derivative(dim):
+    mesh, stokes = _driven_stokes(dim=dim)
     chi = uw.discretisation.MeshVariable("chi", mesh, 1, degree=1)
     # the viscosity depends on chi, and chi on the strain rate: both off-diagonal
     # blocks, and the chi row's dependence on grad u, are non-zero
@@ -252,20 +263,21 @@ def test_momentum_flux_is_refused_where_the_flux_would_drop_it():
 
 
 @pytest.mark.tier_b
-def test_two_way_coupling_converges_with_the_default_fieldsplit_solver():
+@pytest.mark.parametrize("dim", [2, 3])
+def test_two_way_coupling_converges_with_the_default_fieldsplit_solver(dim):
     # split 0 = velocity + coupled field under the default velocity multigrid,
-    # split 1 = pressure: the solver a user gets without choosing one
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3)
-    stokes = uw.systems.Stokes(mesh)
-    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    # split 1 = pressure: the solver a user gets without choosing one. In 3-D the
+    # velocity block size the coupled split must not inherit is 3.
+    mesh, stokes = _driven_stokes(dim=dim)       # right wall traction-free
     chi = _scalar_field(mesh, "chi_default")
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + 0.5 * chi.sym[0] ** 2
     stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
     stokes.consistent_jacobian = True
-    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
-    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
-    stokes.add_dirichlet_bc((0.0, 0.0), "Left")      # right wall traction-free
+    # The default stop (rtol 1e-4) can land just before the quadratic step: in 3-D,
+    # after about 18 line-search-damped steps, at |F| = 3.4e-6 (2026-10-11). Ask for
+    # a real solution so the absolute check below tests the solve, not the stopping
+    # rule.
+    stokes.petsc_options["snes_rtol"] = 1.0e-10
     stokes.solve()
     assert stokes.snes.getConvergedReason() > 0
     assert stokes.snes.getFunctionNorm() < 1.0e-6
