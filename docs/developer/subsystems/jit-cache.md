@@ -125,6 +125,7 @@ performs the cold compile but only rank 0 publishes the result.
 | `UW_JIT_CACHE`       | Set to `0`/`false`/`no` to disable disk cache           |
 | `UW_JIT_CACHE_DIR`   | Override the cache directory location                   |
 | `XDG_CACHE_HOME`     | Used when `UW_JIT_CACHE_DIR` is unset                   |
+| `UW3_JIT_CFLAGS`     | Replaces the kernels' default compile flags, `-O3 -g0 -fno-math-errno`; `-std=c99` is always kept. Use a lower level for a huge expression whose `-O3` compile is slow or runs out of memory (`-O1 -g0 -fno-math-errno`), or drop a flag the compiler rejects (nvc rejects `-g0` and `-fno-math-errno`). Without `-fno-math-errno`, gcc and clang on Linux cannot merge repeated `sqrt`, `pow` and `exp` calls (#834). The flags are part of the cache key. |
 
 ## Code references
 

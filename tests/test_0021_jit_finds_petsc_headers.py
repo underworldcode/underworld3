@@ -33,20 +33,10 @@ def test_petscs_include_dirs_hold_the_headers_the_callbacks_include():
     assert any(os.path.exists(os.path.join(d, "petscconf.h")) for d in dirs), dirs
 
 
-def test_the_generated_setup_py_passes_petscs_include_dirs(monkeypatch):
+def test_the_generated_setup_py_passes_petscs_include_dirs(jit_bundles):
     """Fails wherever the include directories are left out, including CI, whose
     conda-forge PETSc would compile without them."""
-    import underworld3.utilities._jitextension as jx
-
-    bundles = []
-    generate = jx.generate_c_source
-
-    def capture(*args, **kwargs):
-        result = generate(*args, **kwargs)
-        bundles.append(dict(result[1]))
-        return result
-
-    monkeypatch.setattr(jx, "generate_c_source", capture)
+    bundles = jit_bundles
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
     u = uw.discretisation.MeshVariable("U0021s", mesh, 1, degree=1)
