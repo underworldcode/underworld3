@@ -133,6 +133,11 @@ closed by this branch, already fixed (closed on a probe run against
 which part. Refusing to close is a verdict, not a gap. Close on a probe,
 never on the word of a PR that merged nearby.
 
+**Close issues by hand when the fix merges to `development`.** `Closes #N` fires
+only on merges to `main`. While the fix is in an open PR, label the issue
+`fixed-in-PR`; when the PR merges, close the issue with a comment naming the PR and
+the merge commit. Detail: [`guides/planning-on-github.md`](docs/developer/guides/planning-on-github.md).
+
 **A finding the branch fixes is a commit, not an issue.** Only a finding we
 decide *not* to fix in this branch is filed, and the PR body then says which
 issues it leaves open. Filing one issue per finding *and* posting it on the PR

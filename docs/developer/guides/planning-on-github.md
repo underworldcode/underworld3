@@ -89,6 +89,23 @@ gh project field-list 10 --owner underworldcode --format json \
    little left to add. Retired pages are listed, not deleted. Editing is restricted to
    collaborators.
 
+## Issues and the pull requests that fix them
+
+Our pull requests merge to `development`, and GitHub's closing keywords (`Closes #N`)
+act only on merges to the default branch, `main`. So an issue is closed by hand:
+
+- **While the fix is in an open PR**, the issue stays open, labelled `fixed-in-PR`, with
+  a comment naming the PR. The PR body still carries `Closes #N`, which records the link.
+- **When the PR merges to `development`**, close the issue with a comment naming the PR
+  and the merge commit:
+
+  ```bash
+  gh issue close <n> --comment "Fixed by #<pr> (merged to development, <sha>)."
+  ```
+
+  Do not leave it open until a release to `main`: an issue whose fix has merged reads as
+  live, and gets investigated again. Closing it moves its Project item to Done.
+
 ## Writing wiki pages
 
 **Structure.** Pages are organised by topic, with campaigns and benchmarks in their own
@@ -154,3 +171,6 @@ Until 2026-10-05 the Underworld plan was a file, `underworld.md`, in a private
 hub-and-spoke planning folder read through `UW_AI_TOOLS_PATH`. Its items were migrated to
 the Project with their bodies and annotations; the file now carries a pointer and is
 frozen. The hub keeps the cross-project material that does not belong on GitHub.
+
+2026-10-11: issues are closed by hand when their fix merges to `development`, and
+labelled `fixed-in-PR` while it is in an open PR (Louis).
