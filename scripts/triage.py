@@ -162,7 +162,11 @@ def main():
     base_sha = sh("git", "rev-parse", "--short", f"origin/{BASE}").strip()
 
     iss = issues()
-    open_numbers = {i["number"] for i in iss}
+    # An issue labelled fixed-in-development has been adjudicated: it stays open
+    # only until the release, so it is counted, never probed again.
+    fixed = {i["number"] for i in iss
+             if any(l["name"] == "fixed-in-development" for l in i["labels"])}
+    open_numbers = {i["number"] for i in iss} - fixed
     titles = {i["number"]: i["title"] for i in iss}
     opn = prs()
     merged = prs("merged")
@@ -172,7 +176,8 @@ def main():
     # ---- issues -----------------------------------------------------------
     by_author = collections.Counter(i["author"]["login"] for i in iss)
     unlabelled = sum(1 for i in iss if not i["labels"])
-    print(f"ISSUES  {len(iss)} open   {unlabelled} unlabelled")
+    print(f"ISSUES  {len(iss)} open   {unlabelled} unlabelled   "
+          f"{len(fixed)} fixed in development, awaiting release")
     print("  by author: " + ", ".join(f"{a} {n}" for a, n in by_author.most_common()))
 
     # An issue a MERGED PR referenced is a candidate to probe, not a verdict:

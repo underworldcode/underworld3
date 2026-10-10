@@ -92,19 +92,27 @@ gh project field-list 10 --owner underworldcode --format json \
 ## Issues and the pull requests that fix them
 
 Our pull requests merge to `development`, and GitHub's closing keywords (`Closes #N`)
-act only on merges to the default branch, `main`. So an issue is closed by hand:
+act only on merges to the default branch, `main`. An issue's label therefore carries
+its state until the fix is released:
 
 - **While the fix is in an open PR**, the issue stays open, labelled `fixed-in-PR`, with
   a comment naming the PR. The PR body still carries `Closes #N`, which records the link.
-- **When the PR merges to `development`**, close the issue with a comment naming the PR
-  and the merge commit:
+- **When the PR merges to `development`**, the label becomes `fixed-in-development` and
+  a comment names the PR and the merge commit. The issue stays open, because the fix is
+  not in a release yet:
 
   ```bash
-  gh issue close <n> --comment "Fixed by #<pr> (merged to development, <sha>)."
+  gh issue edit <n> --remove-label fixed-in-PR --add-label fixed-in-development
+  gh issue comment <n> --body "Fixed by #<pr> (merged to development, <sha>)."
   ```
 
-  Do not leave it open until a release to `main`: an issue whose fix has merged reads as
-  live, and gets investigated again. Closing it moves its Project item to Done.
+- **When `development` is released to `main`**, every issue labelled
+  `fixed-in-development` is closed (see the post-release tasks in
+  [the release process](release-process.md)). Closing an issue moves its Project item to
+  Done.
+
+An open issue without either label is live. One with a label has a fix, and the label
+says where it is, so it is not investigated again.
 
 ## Writing wiki pages
 
@@ -172,5 +180,6 @@ hub-and-spoke planning folder read through `UW_AI_TOOLS_PATH`. Its items were mi
 the Project with their bodies and annotations; the file now carries a pointer and is
 frozen. The hub keeps the cross-project material that does not belong on GitHub.
 
-2026-10-11: issues are closed by hand when their fix merges to `development`, and
-labelled `fixed-in-PR` while it is in an open PR (Louis).
+2026-10-11: an issue is labelled `fixed-in-PR` while its fix is in an open PR and
+`fixed-in-development` once the PR merges, and is closed when the fix is released to
+`main` (Louis).
