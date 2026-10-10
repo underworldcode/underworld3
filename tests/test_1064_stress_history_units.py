@@ -24,8 +24,8 @@ MYR_S = 3.15576e13
 STRESS_SCALE_PA = 1.0e21 / MYR_S
 STEPS = 12
 ORIGIN = np.array([[0.0, 0.0]])
-CASES = [(t, 1) for t in ("semi_lagrangian", "integration_point", "forward", "lagrangian", "eulerian")] \
-    + [(t, 2) for t in ("semi_lagrangian", "integration_point", "eulerian")]
+CASES = [(t, 1) for t in ("backward_nodes", "backward_integration_points", "forward_integration_points", "lagrangian", "eulerian")] \
+    + [(t, 2) for t in ("backward_nodes", "backward_integration_points", "eulerian")]
 
 
 def _shear_box(transport, order, with_units, **model_options):
@@ -35,7 +35,7 @@ def _shear_box(transport, order, with_units, **model_options):
             length=uw.quantity(1.0, "km"), viscosity=uw.quantity(1.0e21, "Pa*s"),
             time=uw.quantity(1.0, "Myr"))
     mesh = uw.meshing.StructuredQuadBox(elementRes=(16, 8), minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5))
-    tag = f"{transport[:3]}{order}{'u' if with_units else 'n'}"
+    tag = f"{"".join(w[0] for w in transport.split("_"))}{order}{'u' if with_units else 'n'}"
     v = uw.discretisation.MeshVariable(f"U_{tag}", mesh, 2, degree=2, units="km/Myr" if with_units else None)
     p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1, units="Pa" if with_units else None)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -86,7 +86,7 @@ def test_units_model_history_is_the_nondimensional_history(transport, order):
     assert abs(value_pa - expected_pa) < 1.0e-6 * abs(expected_pa), (transport, order, value_pa, expected_pa)
 
 
-@pytest.mark.parametrize("transport", ["semi_lagrangian", "forward"])
+@pytest.mark.parametrize("transport", ["backward_nodes", "forward_integration_points"])
 def test_units_model_log_conformation_history(transport):
     """The log-conformation record is dimensionless: the same in both runs; the
     stress the model reads from it, G (exp(psi) - I), is in Pa."""

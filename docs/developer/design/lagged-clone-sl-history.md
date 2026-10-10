@@ -208,7 +208,7 @@ despite old-frame being active, because the standard `store_result` path
 **re-records** `psi_star[0]` by evaluating `psi_fn` on the *deformed* mesh at
 centroid-shifted nodes — injecting boundary-layer interpolation error that grows
 with `h_max` and then rides the old-geometry sample. Recording the history by a
-**direct nodal carry** (reusing the parallel `_record_psi_star_from_field_data`
+**direct nodal carry** (reusing the nodal copy `_copy_tracked_field`, formerly `_record_psi_star_from_field_data`
 path) restores the prototype's exact behaviour. This is the "store primitives,
 not re-derived values" principle of invariant 3, in miniature.
 

@@ -813,7 +813,7 @@ class FreeSurface:
             # ~5.4% deformation; OFF holds T in [0,1] to 1e-3 through 17% deformation.
             monotone_mode="clamp", theta=0.5, old_frame_traceback=False,
         )
-        self._comp_adv = uw.systems.AdvDiffusionSLCN(
+        self._comp_adv = uw.systems.solvers.SNES_AdvectionDiffusion(
             self.mesh, u_Field=self.composition, V_fn=self._adv_velocity.sym,
             order=1, DuDt=self._comp_ddt,
         )

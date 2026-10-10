@@ -80,11 +80,18 @@ is resolved in time (a fraction of a feature width per step), the Eulerian solve
 is cheaper and more accurate; if the step is deliberately long relative to the
 transported features, the semi-Lagrangian solver is the one that survives it.
 
-## The three transport managers
+## The transport managers
 
-`DuDt` selects the transport, and three managers are worth considering for a
-scalar field. The choice turns on the Courant number the model runs at and on
-whether the model is carrying particles for another reason.
+`DuDt` selects the transport. The choice turns on the Courant number the model
+runs at and on whether the model is carrying particles for another reason.
+
+The semi-Lagrangian schemes are named by two choices, and
+`uw.systems.ddt.SemiLagrangian(..., trace=, launch=)` builds any of them:
+`trace` is `"backward"` (follow the characteristic back from each storage point
+and sample the old field at the departure point) or `"forward"` (launch the old
+field from where it is known, carry it one step, and fit the arrivals in each
+cell); `launch` is `"nodes"` or `"integration_points"`. Called with neither, it
+builds `BackwardNodesSemiLagrangian`, the historical default.
 
 **Eulerian SUPG** (`uw.systems.ddt.EulerianSUPG`, the default) is the general
 choice. Its error falls as $\Delta t^2$, it puts no lower limit on the Courant
@@ -95,7 +102,9 @@ enclosed volume to 4e-5 against that scheme's 5e-3. Use it unless something
 below applies.
 
 **Semi-Lagrangian on the integration points**
-(`uw.systems.ddt.IntegrationPointSemiLagrangian`) is the accurate choice at
+(`uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian`, or
+`SemiLagrangian(trace="backward", launch="integration_points")`) is the
+accurate choice at
 larger Courant numbers. Its error is flat between Courant 0.5 and 2, so a model
 that takes long steps keeps its accuracy where the Eulerian scheme loses it, and
 it loses 45 times less of the second moment than the nodal scheme does. It
@@ -118,11 +127,20 @@ aimed at models that already carry a swarm for material tracking, where the
 transport rides on particles the model is advecting anyway. We would not expect
 to introduce particles in order to use it.
 
-**Semi-Lagrangian at the nodes** (`uw.systems.ddt.SemiLagrangian`) remains the
-historical default of `AdvDiffusionSLCN`. It re-interpolates once per step, which
-costs it accuracy at small Courant numbers, and on a deforming flow with a sharp
-interface it diverges below a Courant number that depends on the problem. Prefer
-one of the three above.
+**Semi-Lagrangian at the nodes**
+(`uw.systems.ddt.BackwardNodesSemiLagrangian`) remains the historical default of
+`AdvDiffusionSLCN`. It re-interpolates once per step, which costs it accuracy at
+small Courant numbers, and on a deforming flow with a sharp interface it
+diverges below a Courant number that depends on the problem. Prefer one of the
+three above.
+
+**Forward traces** (`ForwardIntegrationPointsSemiLagrangian`,
+`ForwardNodesSemiLagrangian`) carry the field from where it is known rather
+than sampling where it is wanted, which is what a stress history needs when the
+departure point falls outside the domain. They are newer than the measurements
+above and are documented with the stress transport, in
+`docs/developer/subsystems/stress-transport.md`. The per-cell fit a forward
+trace performs is unstable where the flow empties a cell (#811).
 
 ## Choosing the time scheme
 

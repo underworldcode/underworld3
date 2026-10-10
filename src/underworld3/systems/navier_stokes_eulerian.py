@@ -11,9 +11,12 @@ stabilised by the streamline-upwind Petrov-Galerkin term, the vector
 counterpart of :class:`~underworld3.systems.AdvDiffusion`. The time
 scheme is the same multistep family: Crank-Nicolson (the theta rule) at
 order 1, BDF2 at order 2, with the history held on the mesh by the
-Eulerian history manager. No stress history is carried: the viscous stress
-at an earlier level is rebuilt from the stored velocity level through the
-constitutive model.
+Eulerian history manager, or carried by a semi-Lagrangian scheme
+(``velocity_transport``). For a viscous fluid no stress history is carried:
+the viscous stress at an earlier level is rebuilt from the stored velocity
+level through the constitutive model. A viscoelastic model carries its stress
+history by the scheme ``stress_transport`` names, and the SUPG residual then
+includes the divergence of that memory stress.
 
 The advecting velocity :math:`\mathbf{a}` in :math:`(\mathbf{a}\cdot\nabla)\mathbf{u}^{n+1}`
 is a choice (``advection=``): ``"extrapolated"`` (default) uses
@@ -39,6 +42,18 @@ from underworld3.systems.ddt import _DDtBase
 from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.advection_diffusion_eulerian import _check_supplied_manager
 from underworld3.systems.solvers import SNES_Stokes, _dimensionalise_dt
+
+def _expand_spatial(expr):
+    """``expr`` with every expression container that varies in space replaced
+    by its content, repeatedly; containers holding constants stay, so they
+    remain runtime parameters of the compiled form."""
+    from underworld3.function.expressions import UWexpression
+    while True:
+        spatial = {a: a.sym for a in expr.atoms(UWexpression) if not a.is_uw_constant()}
+        if not spatial:
+            return expr
+        expr = expr.xreplace(spatial)
+
 
 _ADVECTION_MODES = ("extrapolated", "implicit")
 
@@ -119,6 +134,17 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         (2\nu)`; both are combined with the transient term as
         :math:`[(C_t c_0/\Delta t)^2 + \tau^{-2}]^{-1/2}` so the time step still
         caps them. The advective and viscous weights are not used by these two.
+    velocity_transport : str, default "eulerian"
+        How the momentum is carried. ``"eulerian"`` assembles the advection on
+        the mesh and stabilises it with SUPG (the parameters above). A
+        semi-Lagrangian history instead carries the velocity along its own
+        characteristics: ``"backward_nodes"``, ``"backward_integration_points"``,
+        ``"forward_integration_points"`` or ``"forward_nodes"``, named by the
+        ``trace`` and ``launch`` arguments of
+        :func:`~underworld3.systems.ddt.SemiLagrangian`; the forward schemes
+        carry one level (``order=1``), and the forward integration-point fit
+        is linear, so it refuses a P2 velocity. A viscoelastic stress history
+        is chosen separately, by ``stress_transport``.
     peclet_weight : float, default 4
         A critical cell Péclet number. The SUPG term is multiplied by
         :math:`Pe^2 / (Pe^2 + Pe_c^2)`, :math:`Pe = |a| h / 2\nu`, so the
@@ -172,6 +198,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         DuDt: Optional[_DDtBase] = None,
         DFDt=None,
         restore_points_func=None,
+        velocity_transport: str = "eulerian",
     ):
         if DFDt is not None:
             raise ValueError(
@@ -218,18 +245,37 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # solve: the extrapolation, or the latest Picard iterate) and the
         # level n-1 the extrapolation needs beyond what the history holds.
         u = self.Unknowns.u
-        self._a_var = uw.discretisation.MeshVariable(
-            f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
-            continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
-        self._u_prev = uw.discretisation.MeshVariable(
-            f"u_prev_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
-            continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
+        self._eulerian = velocity_transport == "eulerian"
+        self._velocity_transport = velocity_transport
+        # the extrapolation state belongs to the assembled-advection path only
+        self._a_var = self._u_prev = None
+        if self._eulerian:
+            self._a_var = uw.discretisation.MeshVariable(
+                f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
+                continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
+            self._u_prev = uw.discretisation.MeshVariable(
+                f"u_prev_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
+                continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
         self._history_primed = False
+        if not self._eulerian and peclet_weight != 4.0:
+            raise ValueError("peclet_weight is the SUPG weight's threshold; it applies to "
+                             "velocity_transport='eulerian' only")
 
         # The transport plugin: the history manager owns the time scheme, the
         # advecting velocity, the assembled advection and the stabilisation.
         # At the stored levels the momentum is carried by the stored velocity.
-        if DuDt is None:
+        if DuDt is not None and velocity_transport != "eulerian":
+            raise ValueError("velocity_transport chooses the DuDt the solver builds; it cannot "
+                             "apply to a DuDt that is supplied")
+        if DuDt is None and velocity_transport != "eulerian":
+            # a semi-Lagrangian history carries the momentum along the velocity
+            # itself; it has no assembled advection and no stabilisation
+            from underworld3.systems.solvers import _value_history
+            self.Unknowns.DuDt = _value_history(
+                velocity_transport, self.mesh, u, u.sym, uw.VarType.VECTOR, order=order,
+                nodal_options=dict(verbose=verbose, bcs=self.essential_bcs, smoothing=0.0),
+                requested={}, theta=theta)
+        elif DuDt is None:
             self.Unknowns.DuDt = EulerianSUPG_DDt(
                 self.mesh,
                 u,
@@ -317,6 +363,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     @property
     def peclet_weight(self) -> float:
         """The critical cell Péclet number of the weight (0 = no Péclet weighting)."""
+        self._supg_only("peclet_weight")
         return self.DuDt.peclet_weight
 
     @property
@@ -354,19 +401,23 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     @property
     def supg_weight(self) -> float:
         """Weight of the SUPG term; 0 gives the plain Galerkin scheme."""
+        self._supg_only("supg_weight")
         return self.DuDt.supg_weight
 
     @supg_weight.setter
     def supg_weight(self, value):
+        self._supg_only("supg_weight")
         self.DuDt.supg_weight = value
 
     @property
     def tau_weights(self):
         """The three weights of tau: transient, advective, viscous."""
+        self._supg_only("tau_weights")
         return self.DuDt.tau_weights
 
     @tau_weights.setter
     def tau_weights(self, values):
+        self._supg_only("tau_weights")
         self.DuDt.tau_weights = values
 
     # ------------------------------------------------------------------
@@ -375,9 +426,21 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
     def _advecting_velocity(self):
         """The advecting velocity at the new level, as a ``(1, dim)`` row."""
-        if self._advection_mode == "implicit":
+        if self._advection_mode == "implicit" or self._a_var is None:
             return self.u.sym
         return self._a_var.sym
+
+    @property
+    def velocity_transport(self) -> str:
+        """How the velocity history is carried: ``"eulerian"`` (SUPG on the
+        mesh) or a semi-Lagrangian scheme (constructor choice)."""
+        return self._velocity_transport
+
+    def _supg_only(self, name):
+        if not self._eulerian:
+            raise ValueError(f"{name} belongs to the SUPG scheme (velocity_transport='eulerian'); "
+                             f"this solver carries its velocity history by {type(self.DuDt).__name__}, "
+                             "which assembles no advection and has no stabilisation")
 
     def _strong_residual(self, with_pressure=False):
         r"""The strong momentum residual of the time scheme, first derivatives only.
@@ -389,9 +452,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         :math:`-p\mathbf{I}` in :math:`\mathbf{F}_1`, so it must not appear in
         :math:`\mathbf{f}_0`, but a strong residual without it is O(1) at the
         exact solution and the stabilisation then injects an O(tau) error
-        (measured on Kovasznay flow: 50 times the Galerkin error). The
-        viscous term needs second derivatives the kernels do not see; it is
-        the remaining inconsistency for P2 velocity.
+        (measured on Kovasznay flow: 50 times the Galerkin error). For the
+        same reason it takes the divergence of the stress a viscoelastic
+        history carries (:meth:`_memory_stress`): at high Weissenberg number
+        that stress dominates the momentum balance. The viscous term needs
+        second derivatives the kernels do not see; it is the remaining
+        inconsistency for P2 velocity.
         """
         # The body-force setter may store a column; the residual is a row.
         dim = self.mesh.dim
@@ -400,7 +466,46 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         if with_pressure:
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
+            memory = self._memory_stress()
+            if memory is not None:
+                R = R - sympy.Matrix([[sum(memory[i, j].diff(X[j]) for j in range(dim))
+                                       for i in range(dim)]])
         return R
+
+    def _memory_stress(self):
+        r"""The part of the momentum flux the stress history carries, or ``None``.
+
+        The model's flux with the velocity's own derivatives set to zero: what
+        remains is the history's part (the carried stress, decoded from a
+        log-conformation store, and a stored strain rate for the exponential
+        integrator), for any model and integrator, and the solvent stress drops
+        out. The stored levels of the theta rule are history too. Expression
+        containers that vary in space are expanded first, so the divergence
+        sees the gradient of a varying modulus or viscosity; constant ones (the
+        timestep, the integrator weights) stay runtime parameters. The
+        divergence needs only first derivatives of the stores (of an
+        integration-point store's nodal snapshot). Terms that carry the
+        velocity gradient itself (the objective rate's, the deformation
+        step's) go with the viscous term: their divergence needs second
+        derivatives of the velocity, as does that of a yielding material's
+        strain-rate-dependent viscosity.
+        """
+        history = self.Unknowns.DFDt
+        cm = self.constitutive_model
+        if history is None or not getattr(cm, "is_elastic", False):
+            return None
+        # TODO(DESIGN): a yielding material's viscosity depends on the strain
+        # rate; its divergence needs second derivatives the kernels do not see.
+        X = self.mesh.X
+        dim = self.mesh.dim
+        own_rate = {self.u.sym[i].diff(X[j]): 0 for i in range(dim) for j in range(dim)}
+        weights = self.DuDt.spatial_weights()
+        memory = weights[0] * _expand_spatial(sympy.Matrix(cm.flux)).xreplace(own_rate)
+        for level, w in enumerate(weights[1:]):
+            if w == 0:
+                continue
+            memory = memory + w * _expand_spatial(sympy.Matrix(cm._carried_stress_sym(level)))
+        return memory.xreplace(history._derivative_stand_ins())
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the
@@ -421,29 +526,16 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         elastic stress history. BDF puts every spatial term at the new level and
         the question does not arise.
         """
-        states = self.DuDt.states()
+        # a velocity store without a derivative is read through its snapshot
+        stand_in = self.DuDt._derivative_stand_ins()
+        states = [sympy.Matrix(u_k).xreplace(stand_in) for u_k in self.DuDt.states()]
         weights = self.DuDt.spatial_weights()
+        if self.Unknowns.DFDt is not None:
+            return self._theta_rule_flux(weights, states[1:])
         total = weights[0] * self.stress_deviator
-        stress_history = self.Unknowns.DFDt
-        for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
-            if w == 0:
-                continue
-            if stress_history is None:
+        for w, u_k in zip(weights[1:], states[1:]):
+            if w != 0:
                 total = total + w * self._viscous_stress(u_k)
-            elif level < len(stress_history.psi_star):
-                # the history carries the memory part only; a solvent viscosity
-                # is rebuilt from the stored velocity, as the new level has it
-                eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
-                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
-                carried = self.constitutive_model._carried_stress_sym(level) \
-                    if hasattr(self.constitutive_model, "_carried_stress_sym") \
-                    else stress_history.psi_star[level].sym
-                total = total + w * (sympy.Matrix(carried) + solvent)
-            else:
-                raise ValueError(
-                    f"the time scheme weights the flux at level {level + 1}, but the "
-                    f"stress history holds {len(stress_history.psi_star)} level(s): "
-                    "give the constitutive model a higher order, or the solver a lower one.")
         return total
 
     def _stabilisation_flux(self):
@@ -487,7 +579,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     def _prime_history(self):
         """First solve: the extrapolation level equals the current velocity."""
         if not self._history_primed:
-            self._u_prev.array[...] = self.u.array[...]
+            if self._u_prev is not None:
+                self._u_prev.array[...] = self.u.array[...]
             self._history_primed = True
 
     @timing.routine_timer_decorator
@@ -534,7 +627,11 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         the advecting velocity; with ``"implicit"`` the SNES solves the
         quadratic term by Newton iteration.
         """
-        for name in ("time", "order", "evalf", "_evalf", "homotopy"):
+        if "order" in kwargs:
+            raise ValueError("NavierStokes.solve(order=...) is not an option: the order of the "
+                             "time scheme is fixed at construction (the former NavierStokesSLCN "
+                             "read it per solve)")
+        for name in ("time", "evalf", "_evalf", "homotopy"):
             kwargs.pop(name, None)
         if kwargs:
             warnings.warn(f"NavierStokes.solve ignores {sorted(kwargs)}", stacklevel=2)
@@ -565,12 +662,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
         self._prime_history()
         u_n = np.array(self.u.array[...])
-        if self._advection_mode == "extrapolated":
+        if self._advection_mode == "extrapolated" and self._eulerian:
             self._set_advecting_velocity(2.0 * u_n - np.asarray(self._u_prev.array[...]))
         self.DuDt.update_pre_solve(dt, verbose=verbose)
 
         passes = 1
-        if self._advection_mode == "extrapolated":
+        if self._advection_mode == "extrapolated" and self._eulerian:
             n_picard = self._picard_iterations if picard_iterations is None else int(picard_iterations)
             passes += max(n_picard, 0)
         from mpi4py import MPI
@@ -606,8 +703,10 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         if carries_stress:
             self._stress_history_post_solve(dt, verbose=verbose, evalf=False)
 
-        # Shift the extrapolation level, then the history.
-        self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]
+        # Shift the extrapolation level (the velocity this step started from),
+        # then the history.
+        if self._u_prev is not None:
+            self._u_prev.array[...] = u_n
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True

@@ -122,8 +122,8 @@ def test_semi_lagrangian_manager_drops_into_the_supg_solver():
     plug = uw.systems.AdvDiffusion(mesh, T_plug, V, DuDt=history)
     assert plug.DuDt is history and plug.integrator == "am" and plug.order == 1
     assert _is_zero(plug.DuDt.advection()) and _is_zero(plug._stabilisation_flux())
-    with pytest.raises(AttributeError):
-        plug.supg_weight                      # no stabilisation knobs on this manager
+    with pytest.raises(ValueError, match="eulerian"):
+        plug.supg_weight                      # the stabilisation knobs belong to the SUPG scheme
 
     T_slcn = field("slcn")
     slcn = uw.systems.AdvDiffusionSLCN(mesh, T_slcn, V)

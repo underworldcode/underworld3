@@ -117,3 +117,10 @@ Array wrapper that triggers callbacks on modification.
    :members:
    :show-inheritance:
 ```
+
+## Particle projection
+
+```{eval-rst}
+.. automodule:: underworld3.utilities.particle_projection
+   :members:
+```

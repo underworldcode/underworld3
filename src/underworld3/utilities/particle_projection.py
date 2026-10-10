@@ -1,0 +1,342 @@
+r"""Global L2 projection of scattered, weighted values onto a continuous P1 or P2 field.
+
+Given points :math:`\mathbf{x}_p` with values :math:`v_p` and weights :math:`w_p`
+(each point's share of the domain), the continuous linear field
+:math:`u = \sum_i u_i \phi_i` that best fits them in the weighted least-squares
+sense solves
+
+.. math::
+
+    \Big(\sum_p w_p\,\phi_i(\mathbf{x}_p)\,\phi_j(\mathbf{x}_p)
+         + \varepsilon M_{ij} + \alpha K_{ij}\Big)\,u_j
+    = \sum_p w_p\,\phi_i(\mathbf{x}_p)\,v_p + \varepsilon M_{ij}\,u^{\mathrm{old}}_j .
+
+The first term is the finite-element mass matrix with the points as its
+quadrature rule: when the points are the integration points of the mesh, or
+those points moved by an incompressible flow, the weights are a quadrature rule
+and the system is the ordinary L2 projection. There is no per-cell fit: every
+nodal value is set by all the points in the patch of cells around the node, so
+the node is interpolated from data on every side of it rather than extrapolated
+from one cell's points.
+
+A node whose patch received no points has an empty row. The term
+:math:`\varepsilon M (u - u^{\mathrm{old}})` (:math:`M` the finite-element mass
+matrix) keeps such a node at its previous value and is negligible where the
+patch is sampled; :math:`\alpha K` (:math:`K` the stiffness matrix, :math:`\alpha`
+per cell, length squared) is the optional gradient penalty of the history
+projections' ``store_smoothing``.
+
+Simplex meshes; degree 2 on triangles. In parallel each point is contributed by the rank that owns its
+cell (the mesh is distributed without overlap); the shared nodes on a partition
+seam sum their contributions through PETSc's local-to-global ADD, so the system,
+and to the solver tolerance the answer, does not depend on the partition.
+"""
+
+import numpy as np
+from petsc4py import PETSc
+
+import underworld3 as uw
+
+
+# Dunavant's degree-4 rule on the triangle, in barycentric coordinates with the
+# weights summing to one: exact for the P2 mass matrix (degree 4) and stiffness
+_A1, _B1, _W1 = 0.445948490915965, 0.108103018168070, 0.223381589678011
+_A2, _B2, _W2 = 0.091576213509771, 0.816847572980459, 0.109951743655322
+_TRI_RULE = (
+    np.array([[_B1, _A1, _A1], [_A1, _B1, _A1], [_A1, _A1, _B1],
+              [_B2, _A2, _A2], [_A2, _B2, _A2], [_A2, _A2, _B2]]),
+    np.array([_W1, _W1, _W1, _W2, _W2, _W2]),
+)
+
+
+class ParticleL2Projector:
+    """Weighted least-squares projection of scattered values onto continuous
+    P1 (any simplex mesh) or P2 (triangles).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A simplex mesh.
+    degree : int
+        1 or 2, the degree of the continuous field; its rows are the rows of
+        any continuous mesh variable of that degree on the mesh (vertices, then
+        for degree 2 the edges).
+    rtol : float
+        Relative tolerance of the conjugate-gradient solve.
+    """
+
+    instances = 0
+    #: the covered fraction of a cell's measure below which the previous field
+    #: fills the shortfall (fully at zero)
+    FILL_BELOW = 0.5
+
+    def __init__(self, mesh, degree=1, rtol=1.0e-12):
+        if degree not in (1, 2):
+            raise NotImplementedError(f"ParticleL2Projector projects onto P1 or P2, not degree {degree}")
+        if degree == 2 and mesh.dim != 2:
+            raise NotImplementedError("ParticleL2Projector: degree 2 is for triangles (2-D) only")
+        ParticleL2Projector.instances += 1
+        self.mesh = mesh
+        self.degree = int(degree)
+        self.rtol = rtol
+        # the scalar layout the matrix and vectors live on; a variable of this
+        # degree and any shape keeps its rows in the same point order (rows =
+        # section offsets over the vertices, then the edges)
+        self._var = uw.discretisation.MeshVariable(
+            f"_pl2_{ParticleL2Projector.instances}", mesh, 1, degree=self.degree, continuous=True)
+        self._dm = None
+        #: Degree 2 only: the quadratic content of each cell, measured as each
+        #: edge dof's departure from the mean of its two vertices (the bubble),
+        #: is penalised at this fraction of the weight the data of a fully
+        #: covered cell give its bubbles (the bubble's own mass). The P1 part of
+        #: the field is untouched; the bubble is kept only where the arrivals
+        #: support it against a prior of that weight. An edge dof belongs to two
+        #: cells and is set by their quadratic content alone, so a cell the flow
+        #: has thinned leaves it to a few arrivals; the P1 vertex dofs, shared by
+        #: a whole patch, do not have this exposure.
+        self.bubble_penalty = 0.0
+
+    def _build(self):
+        """The cell-to-row map, the element matrices and the solver, for the mesh
+        DM as it is now (adding a variable rebuilds the DM, so this is redone
+        whenever the DM changes)."""
+        mesh = self.mesh
+        dm = mesh.dm
+        d = mesh.dim
+        c0, c1 = dm.getHeightStratum(0)
+        v0, v1 = dm.getDepthStratum(0)
+        _, self._sub = dm.createSubDM(self._var.field_id)
+        sec = self._sub.getLocalSection()
+        csec = dm.getCoordinateSection()
+        coords = dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
+        cells = []
+        for c in range(c0, c1):
+            verts = [p for p in dm.getTransitiveClosure(c)[0] if v0 <= p < v1]
+            if len(verts) != d + 1:
+                raise NotImplementedError("ParticleL2Projector needs a simplex mesh")
+            cells.append(verts)
+        cells = np.asarray(cells, dtype=np.int64).reshape(-1, d + 1)
+        rows = [[sec.getOffset(int(p)) for p in row] for row in cells]
+        self._edge_pairs = None
+        if self.degree == 2:
+            # each cell's edges, as the local indices of the two vertices they join
+            e0, e1 = dm.getDepthStratum(1)
+            pairs = []
+            for c, verts in zip(range(c0, c1), cells):
+                edges = [p for p in dm.getTransitiveClosure(c)[0] if e0 <= p < e1]
+                local = {int(v): k for k, v in enumerate(verts)}
+                rows[c - c0].extend(sec.getOffset(int(e)) for e in edges)
+                pairs.append([[local[int(q)] for q in dm.getCone(int(e))] for e in edges])
+            self._edge_pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 3, 2)
+        # the basis size comes from the degree, not from the data: a rank with no
+        # cells must still build (the setter and project() are collective)
+        self._nb = d + 1 + (3 if self.degree == 2 else 0)
+        self._rows = np.asarray(rows, dtype=np.int32).reshape(len(cells), self._nb)
+        Xv = np.array([[coords[csec.getOffset(int(p)) // mesh.cdim, :d] for p in row] for row in cells])
+        self._Xv = Xv
+        self._x0 = Xv[:, 0, :] if cells.size else np.zeros((0, d))
+        # barycentric coordinates: lambda_{1..d} = Tinv (x - x0), lambda_0 = 1 - sum
+        T = np.transpose(Xv[:, 1:, :] - Xv[:, :1, :], (0, 2, 1)) if cells.size else np.zeros((0, d, d))
+        self._Tinv = np.linalg.inv(T) if cells.size else T
+        measure = np.abs(np.linalg.det(T)) / (1.0 if d == 1 else 2.0 if d == 2 else 6.0) if cells.size else np.zeros(0)
+        self.cell_measure = measure
+        # element matrices: consistent mass and stiffness, closed form for P1,
+        # by quadrature (exact) for P2
+        nv = d + 1
+        self._G = np.concatenate([-self._Tinv.sum(axis=1, keepdims=True), self._Tinv], axis=1) \
+            if cells.size else np.zeros((0, nv, d))                                  # grad lambda, (nc, nv, d)
+        if self.degree == 1:
+            base = (np.ones((nv, nv)) + np.eye(nv)) / ((d + 1) * (d + 2))
+            self._Me = measure[:, None, None] * base[None, :, :]
+            self._Ke = measure[:, None, None] * np.einsum("cid,cjd->cij", self._G, self._G)
+        else:
+            lam_q, w_q = _TRI_RULE
+            ncell = cells.shape[0]
+            Me = np.zeros((ncell, self._nb, self._nb))
+            Ke = np.zeros((ncell, self._nb, self._nb))
+            for lam, wq in zip(lam_q, w_q):
+                L = np.broadcast_to(lam, (ncell, nv))
+                phi = self._basis_from_lambda(L, np.arange(ncell))                    # (nc, nb)
+                dphi = self._basis_gradient(L, np.arange(ncell))                      # (nc, nb, d)
+                Me += wq * measure[:, None, None] * phi[:, :, None] * phi[:, None, :]
+                Ke += wq * measure[:, None, None] * np.einsum("cid,cjd->cij", dphi, dphi)
+            self._Me, self._Ke = Me, Ke
+            # the bubble operator: sum over the cell's edges of b b^T with
+            # b = e_edge - (e_a + e_b) / 2, scaled by the cell measure
+            B = np.zeros((ncell, self._nb, self._nb))
+            for k in range(3):
+                b = np.zeros((ncell, self._nb))
+                b[:, nv + k] = 1.0
+                np.put_along_axis(b, self._edge_pairs[:, k, 0:1], -0.5, axis=1)
+                np.put_along_axis(b, self._edge_pairs[:, k, 1:2], -0.5, axis=1)
+                B += b[:, :, None] * b[:, None, :]
+            # scaled by the L2 mass of one edge bubble, int (4 lam_a lam_b)^2 =
+            # (8/45) |cell|: bubble_penalty = 1 then weighs the prior as much as
+            # the data of a fully covered cell weigh its quadratic content
+            self._Bub = (8.0 / 45.0) * measure[:, None, None] * B
+        self._A = self._sub.createMatrix()
+        self._A.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+        self._ksp = PETSc.KSP().create(comm=dm.comm)
+        self._ksp.setType("cg")
+        self._ksp.getPC().setType("jacobi")
+        self._ksp.setTolerances(rtol=self.rtol, atol=0.0, max_it=10000)
+        self._lb = self._sub.createLocalVector()
+        self._gb = self._sub.createGlobalVector()
+        self._gx = self._sub.createGlobalVector()
+        self._lx = self._sub.createLocalVector()
+        self.n_local_rows = self._lb.getSize()
+        self._dm = dm
+
+    def barycentric(self, X, cell):
+        """Barycentric coordinates of points ``X`` in their cells, shape (n, d+1)."""
+        if self._dm is not self.mesh.dm:
+            self._build()
+        d = self.mesh.dim
+        lam = np.einsum("nij,nj->ni", self._Tinv[cell], X[:, :d] - self._x0[cell])
+        return np.concatenate([1.0 - lam.sum(axis=1, keepdims=True), lam], axis=1)
+
+    def _basis_from_lambda(self, lam, cell):
+        """The basis functions at points with barycentric coordinates ``lam``
+        (n, d+1) in cells ``cell``: (n, nb)."""
+        if self.degree == 1:
+            return lam
+        pairs = self._edge_pairs[cell]                                               # (n, 3, 2)
+        vertex = lam * (2.0 * lam - 1.0)
+        edge = 4.0 * lam[np.arange(len(cell))[:, None], pairs[:, :, 0]] * lam[np.arange(len(cell))[:, None], pairs[:, :, 1]]
+        return np.concatenate([vertex, edge], axis=1)
+
+    def _basis_gradient(self, lam, cell):
+        """Gradients of the basis functions in physical coordinates: (n, nb, d)."""
+        G = self._G[cell]                                                            # (n, d+1, d)
+        if self.degree == 1:
+            return G
+        pairs = self._edge_pairs[cell]
+        n = np.arange(len(cell))[:, None]
+        vertex = (4.0 * lam - 1.0)[:, :, None] * G
+        la, lb = lam[n, pairs[:, :, 0]], lam[n, pairs[:, :, 1]]
+        edge = 4.0 * (la[:, :, None] * G[n, pairs[:, :, 1]] + lb[:, :, None] * G[n, pairs[:, :, 0]])
+        return np.concatenate([vertex, edge], axis=1)
+
+    def basis(self, X, cell):
+        """The basis functions at points ``X`` in cells ``cell``: (n, nb)."""
+        return self._basis_from_lambda(self.barycentric(np.asarray(X, dtype=float), cell), cell)
+
+    def project(self, X, values, weights, cell, old=None, eps=1.0e-8, alpha=None, fill_deficit=True):
+        """The projected field at the local rows, shape (n_local_rows, ncomponents).
+
+        ``X`` (n, d), ``values`` (n, k), ``weights`` (n,) and ``cell`` (n,), the
+        owning local cell of each point; ``old`` (n_local_rows, k), the previous
+        field; ``eps`` scales a weak pull towards it relative to the
+        finite-element mass matrix (what keeps a row no point reaches at all);
+        ``alpha`` (ncell,) the gradient penalty per cell.
+
+        With ``fill_deficit`` (and ``old``), a cell whose arriving weights
+        cover less than :attr:`FILL_BELOW` of its measure is held by the
+        previous field: the shortfall below that fraction enters as its
+        finite-element mass with ``old`` as the data, fully at zero coverage.
+        A cell the flow has emptied is then determined by what it held rather
+        than left to its neighbours and a 1e-8 pull; an ordinarily covered
+        cell, whose received weight fluctuates about its measure in a flow, is
+        unchanged. The weights are the points' shares of the domain, so the
+        sum over a cell measures how much of it was reached."""
+        if self._dm is not self.mesh.dm:
+            self._build()
+        values = np.asarray(values, dtype=float)
+        # no points at all (a rank whose patches nothing reached): the component
+        # count comes from the previous field
+        k = values.shape[1] if values.ndim == 2 else (np.asarray(old).shape[1] if old is not None else 1)
+        values = values.reshape(len(X), k)
+        ncell = self._rows.shape[0]
+        phi = self.basis(X, cell) if len(X) else np.zeros((0, self._nb))
+        Me = np.zeros_like(self._Me)
+        Re = np.zeros((ncell, self._nb, k))
+        w = np.asarray(weights, dtype=float)
+        np.add.at(Me, cell, w[:, None, None] * phi[:, :, None] * phi[:, None, :])
+        np.add.at(Re, cell, w[:, None, None] * phi[:, :, None] * values[:, None, :])
+        pull = np.full(ncell, float(eps))
+        if fill_deficit and old is not None:
+            # In a flow every cell's received weight fluctuates about its
+            # measure, so a fill of any shortfall would pull about half the cells
+            # a few percent towards the previous (un-advected) field each step: a
+            # lag that acts as diffusion (a quarter turn of a Gaussian lost 18% of
+            # its peak). The fill therefore starts at half the measure and is
+            # complete at zero: an ordinarily covered cell feels nothing, an
+            # emptied cell is held by what it carried.
+            received = np.bincount(cell, weights=w, minlength=ncell)
+            covered = received / np.maximum(self.cell_measure, 1.0e-300)
+            pull = pull + np.clip((self.FILL_BELOW - covered) / self.FILL_BELOW, 0.0, 1.0)
+        if np.any(pull > 0.0):
+            Me = Me + pull[:, None, None] * self._Me
+            if old is not None:
+                Re = Re + pull[:, None, None] * np.einsum("cij,cjk->cik", self._Me, np.asarray(old)[self._rows])
+        if alpha is not None:
+            Me = Me + np.asarray(alpha, dtype=float).reshape(-1)[:, None, None] * self._Ke
+        if self.degree == 2 and self.bubble_penalty > 0.0:
+            Me = Me + float(self.bubble_penalty) * self._Bub
+        A = self._A
+        A.zeroEntries()
+        for c in range(ncell):
+            A.setValuesLocal(self._rows[c], self._rows[c], Me[c], addv=PETSc.InsertMode.ADD_VALUES)
+        A.assemble()
+        self._ksp.setOperators(A)
+        out = np.zeros((self.n_local_rows, k))
+        for j in range(k):
+            self._lb.zeroEntries()
+            b = self._lb.getArray()
+            np.add.at(b, self._rows.ravel(), Re[:, :, j].ravel())
+            self._lb.setArray(b)
+            self._gb.zeroEntries()
+            self._sub.localToGlobal(self._lb, self._gb, addv=PETSc.InsertMode.ADD_VALUES)
+            self._gx.zeroEntries()
+            self._ksp.solve(self._gb, self._gx)
+            if self._ksp.getConvergedReason() <= 0:
+                raise RuntimeError(f"ParticleL2Projector: the projection's solve did not converge "
+                                   f"(reason {self._ksp.getConvergedReason()}, {self._ksp.getIterationNumber()} "
+                                   "iterations); a row no point and no previous field reaches is singular")
+            self._sub.globalToLocal(self._gx, self._lx)
+            out[:, j] = self._lx.getArray()
+        return out
+
+    def sum_cell_values_to_rows(self, per_cell):
+        """The sum over the cells sharing each row of per-cell values at the
+        cell's rows, ``per_cell`` (ncell, nb, k), summed across partition seams:
+        (n_local_rows, k), the same on every rank that holds the row."""
+        if self._dm is not self.mesh.dm:
+            self._build()
+        per_cell = np.asarray(per_cell, dtype=float).reshape(self._rows.shape[0], self._nb, -1)
+        k = per_cell.shape[2]
+        out = np.zeros((self.n_local_rows, k))
+        for j in range(k):
+            self._lb.zeroEntries()
+            b = self._lb.getArray()
+            np.add.at(b, self._rows.ravel(), per_cell[:, :, j].ravel())
+            self._lb.setArray(b)
+            self._gb.zeroEntries()
+            self._sub.localToGlobal(self._lb, self._gb, addv=PETSc.InsertMode.ADD_VALUES)
+            self._sub.globalToLocal(self._gb, self._lx)
+            out[:, j] = self._lx.getArray()
+        return out
+
+    def average_cell_values_to_rows(self, per_cell):
+        """The mean over the cells sharing each row of per-cell values at the
+        cell's rows, ``per_cell`` (ncell, nb, k), summed across partition seams
+        so a shared row gets the same mean on every rank: (n_local_rows, k)."""
+        if self._dm is not self.mesh.dm:
+            self._build()
+        per_cell = np.asarray(per_cell, dtype=float).reshape(self._rows.shape[0], self._nb, -1)
+        k = per_cell.shape[2]
+        out = np.zeros((self.n_local_rows, k))
+        for j in range(k + 1):
+            self._lb.zeroEntries()
+            b = self._lb.getArray()
+            src = per_cell[:, :, j].ravel() if j < k else np.ones(self._rows.size)
+            np.add.at(b, self._rows.ravel(), src)
+            self._lb.setArray(b)
+            self._gb.zeroEntries()
+            self._sub.localToGlobal(self._lb, self._gb, addv=PETSc.InsertMode.ADD_VALUES)
+            self._sub.globalToLocal(self._gb, self._lx)
+            if j < k:
+                out[:, j] = self._lx.getArray()
+            else:
+                count = np.maximum(self._lx.getArray(), 1.0)
+        return out / count[:, None]

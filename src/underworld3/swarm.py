@@ -5971,6 +5971,10 @@ class Swarm(Stateful, uw_object):
         import math
         import numpy as np
 
+        # TODO(BUG): with evalf=True evaluate() flags EVERY point as extrapolated, so
+        # at np > 1 this raises the 'not located on this rank' warning for particles
+        # that are all local (seen on the Lagrangian stress history, 2026-09-27).
+        # See issue #798
         vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
 
         # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
