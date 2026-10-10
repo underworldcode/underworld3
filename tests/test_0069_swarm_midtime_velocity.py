@@ -13,6 +13,24 @@ import sympy
 
 import underworld3 as uw
 
+
+def _param(name, value, description):
+    """Declare a named parameter, or fetch it and assign.
+
+    An expression's identity is its NAME: the same name reaches the same
+    container, so a second declaration carrying a different value is refused
+    rather than silently rebinding every formula already written against it.
+    A factory that rebuilds the same problem in one process is asking to SET
+    the value, and assignment is how that is said.
+    """
+    import underworld3 as uw
+    try:
+        return uw.expression(name, value, description)
+    except ValueError:
+        existing = uw.expression(name)
+        existing.sym = value
+        return existing
+
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
 
@@ -20,7 +38,7 @@ def _angle_error(midtime, nsteps=10, dt=0.1):
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=0.2, qdegree=2)
     mesh.return_coords_to_bounds = None
     x, y = mesh.X
-    c = uw.expression(r"c_{rate}", 1.0, "rotation rate")
+    c = _param(r"c_{rate}", 1.0, "rotation rate")
     V = c * sympy.Matrix([[-y, x]])
     swarm = uw.swarm.Swarm(mesh)
     swarm.verbose = False
