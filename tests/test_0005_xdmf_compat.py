@@ -1,11 +1,8 @@
-"""Test XDMF/HDF5 compatibility groups written by write_timestep.
+"""Compact XDMF/HDF5 layouts for continuous and cell fields."""
 
-Validates that /vertex_fields/ and /cell_fields/ groups are created
-correctly, with proper component counts and data values.
-"""
-
-import os
+from pathlib import Path
 import re
+import xml.etree.ElementTree as ET
 
 import h5py
 import numpy as np
@@ -14,425 +11,324 @@ import pytest
 import underworld3 as uw
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+_OLD_GROUPS = ("vertex_fields", "cell_fields", "dg1")
 
 
-def _check_h5_group_exists(h5_path, group_path):
-    """Return True if group_path exists in the HDF5 file."""
-    with h5py.File(h5_path, "r") as f:
-        return group_path in f
+def _shared_path(tmp_path):
+    return Path(uw.mpi.comm.bcast(str(tmp_path), root=0))
 
 
-def _read_h5_dataset(h5_path, dataset_path):
-    """Read and return an HDF5 dataset as a numpy array."""
-    with h5py.File(h5_path, "r") as f:
-        return f[dataset_path][:]
+def _assert_xdmf_references_exist(xdmf_path):
+    """Check every HDF reference and advertised shape in an XDMF file."""
+    text = xdmf_path.read_text()
+    entities = dict(re.findall(r'<!ENTITY\s+(\w+)\s+"([^"]+\.h5)"\s*>', text))
+    tree = ET.parse(xdmf_path)
+    for item in tree.findall(".//DataItem[@Format='HDF']"):
+        reference, dataset = item.text.strip().split(":", 1)
+        entity = reference.removeprefix("&").removesuffix(";")
+        h5_name = entities.get(entity, reference)
+        with h5py.File(xdmf_path.parent / h5_name, "r") as handle:
+            assert dataset in handle
+            dimensions = item.get("Dimensions")
+            if dimensions:
+                assert tuple(map(int, dimensions.split())) == handle[dataset].shape
 
 
-def _check_xdmf_refs(xdmf_path, tmp_dir):
-    """Verify all XDMF entity references point to real HDF5 datasets."""
-    with open(xdmf_path, "r") as f:
-        content = f.read()
-
-    doctype_match = re.search(r"<!DOCTYPE\s+Xdmf.*?\[(.*?)\]>", content, re.DOTALL)
-    assert doctype_match, "No DOCTYPE entity block found in XDMF file"
-
-    entity_block = doctype_match.group(1)
-    entities = dict(re.findall(r'<!ENTITY\s+(\w+)\s+"([^"]+\.h5)"\s*>', entity_block))
-
-    # Check both vertex_fields and cell_fields references
-    refs = re.findall(r"&(\w+);:(/(vertex_fields|cell_fields)/[A-Za-z0-9_]+)", content)
-    errors = []
-    for entity_name, dataset_path, _ in refs:
-        h5_file = entities.get(entity_name)
-        if not h5_file:
-            errors.append(f"Entity {entity_name} not found")
-            continue
-        h5_full = os.path.join(tmp_dir, h5_file)
-        if not os.path.exists(h5_full):
-            errors.append(f"File {h5_file} not found")
-            continue
-        with h5py.File(h5_full, "r") as f:
-            if dataset_path.lstrip("/") not in f:
-                errors.append(f"{h5_file}: {dataset_path} missing")
-
-    assert not errors, "XDMF reference errors:\n" + "\n".join(errors)
+def _assert_no_compatibility_copies(handle):
+    for group in _OLD_GROUPS:
+        assert group not in handle
 
 
-# ---------------------------------------------------------------------------
-# Test: P1 scalar + P2 vector (2D)
-# ---------------------------------------------------------------------------
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_direct_p1_p2_and_dg0_use_fields_only(tmp_path):
+    """P1, triangular P2, and DG0 are visualized directly from /fields."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.4, regular=True, qdegree=3)
+    p1 = uw.discretisation.MeshVariable("p1", mesh, 1, degree=1)
+    p2 = uw.discretisation.MeshVariable("p2", mesh, 2, degree=2)
+    dg0 = uw.discretisation.MeshVariable("dg0", mesh, 1, degree=0, continuous=False)
+
+    p1.array[:, 0, 0] = p1.coords[:, 0] + 2.0 * p1.coords[:, 1]
+    p2.array[:, 0, 0] = p2.coords[:, 0]
+    p2.array[:, 0, 1] = p2.coords[:, 1]
+    dg0.array[:, 0, 0] = 7.0
+    mesh.write_timestep("compact", 0, outputPath=str(directory), meshVars=[p1, p2, dg0])
+
+    if uw.mpi.rank == 0:
+        p1_file = directory / "compact.mesh.p1.00000.h5"
+        p2_file = directory / "compact.mesh.p2.00000.h5"
+        dg0_file = directory / "compact.mesh.dg0.00000.h5"
+        with h5py.File(p1_file, "r") as handle:
+            assert set(handle) == {"fields"}
+            assert set(handle["fields"]) == {"coordinates", "p1"}
+            assert "visualization" not in handle
+            _assert_no_compatibility_copies(handle)
+        with h5py.File(dg0_file, "r") as handle:
+            assert set(handle) == {"fields"}
+            assert handle["fields/dg0"].shape[0] == handle["fields/coordinates"].shape[0]
+            assert "visualization" not in handle
+            _assert_no_compatibility_copies(handle)
+        with h5py.File(p2_file, "r") as handle:
+            assert set(handle) == {"fields"}
+            coordinates = handle["fields/coordinates"][:]
+            cells = handle["fields/cells"][:]
+            values = handle["fields/p2"][:]
+            assert cells.shape[1] == 6
+            assert values.shape == coordinates.shape
+            np.testing.assert_allclose(values, coordinates, atol=1.0e-12)
+            points = coordinates[cells]
+            np.testing.assert_allclose(points[:, 3], 0.5 * (points[:, 0] + points[:, 1]))
+            np.testing.assert_allclose(points[:, 4], 0.5 * (points[:, 1] + points[:, 2]))
+            np.testing.assert_allclose(points[:, 5], 0.5 * (points[:, 2] + points[:, 0]))
+            _assert_no_compatibility_copies(handle)
+
+        xdmf = directory / "compact.mesh.00000.xdmf"
+        text = xdmf.read_text()
+        # ParaView's XDMF3 reader does not accept XML-reference DataItems
+        # without a Format attribute. Inline the two mesh HDF references so
+        # both its XDMF3 reader and the legacy XDMF reader can open the file.
+        assert 'Reference="XML"' not in text
+        assert 'TopologyType="Triangle_6"' in text
+        assert "&p1_Data;:/fields/p1" in text
+        assert "&p2_Data;:/fields/p2" in text
+        assert "&dg0_Data;:/fields/dg0" in text
+        _assert_xdmf_references_exist(xdmf)
 
 
-def test_xdmf_compat_2d(tmp_path):
-    """write_timestep creates correct compat groups for 2D mesh variables."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-
-    # P1 scalar, P2 vector
-    p_var = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
-    v_var = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
-
-    # Initialise with known values
-    x, y = mesh.X
-    p_var.data[:, 0] = mesh._coords[:, 0]  # p = x coordinate
-    v_var.data[:, 0] = 1.0
-    v_var.data[:, 1] = 2.0
-
-    mesh.write_timestep(
-        "test", index=0, outputPath=str(tmp_path), meshVars=[p_var, v_var]
-    )
-
-    # Check XDMF file was created
-    xdmf_file = os.path.join(str(tmp_path), "test.mesh.00000.xdmf")
-    assert os.path.exists(xdmf_file), "XDMF file not created"
-
-    # Check P1 scalar: /vertex_fields/p_p should exist with correct shape
-    p_h5 = os.path.join(str(tmp_path), "test.mesh.p.00000.h5")
-    assert _check_h5_group_exists(p_h5, "vertex_fields/p_p")
-    assert _check_h5_group_exists(p_h5, "vertex_fields/coordinates")
-
-    p_compat = _read_h5_dataset(p_h5, "vertex_fields/p_p")
-    # PETSc writes 1-component scalars as 1D (N,); accept both (N,) and (N,1)
-    effective_ncomp = p_compat.shape[1] if p_compat.ndim == 2 else 1
-    assert effective_ncomp == 1, f"P1 scalar should have 1 component, got {effective_ncomp}"
-
-    # P1 scalar: compat values should match var.data exactly
-    p_original = _read_h5_dataset(p_h5, "fields/p")
-    np.testing.assert_allclose(
-        p_compat.ravel(), p_original.ravel(), atol=1e-10,
-        err_msg="P1 compat data should match original field data exactly"
-    )
-
-    # Check P2 vector: /vertex_fields/v_v should exist with dim components
-    v_h5 = os.path.join(str(tmp_path), "test.mesh.v.00000.h5")
-    assert _check_h5_group_exists(v_h5, "vertex_fields/v_v")
-
-    v_compat = _read_h5_dataset(v_h5, "vertex_fields/v_v")
-    # Standalone Vec writes as 1D — infer components from total size / vertex count
-    n_verts = mesh._coords.shape[0]
-    v_total = v_compat.size
-    v_ncomp = v_total // n_verts if n_verts > 0 else 0
-    assert v_ncomp == mesh.dim, (
-        f"P2 vector should have {mesh.dim} components, got {v_ncomp}"
-    )
-
-    # P2 vector: vertex count should match mesh vertices, not P2 DOFs
-    coords_compat = _read_h5_dataset(v_h5, "vertex_fields/coordinates")
-    coords_n_verts = coords_compat.size // mesh.dim
-    assert coords_n_verts == mesh._coords.shape[0], (
-        "Vertex count mismatch between compat coords and mesh"
-    )
-
-    # Verify XDMF references are valid
-    _check_xdmf_refs(xdmf_file, str(tmp_path))
-
-    del mesh
-
-
-def test_write_timestep_mesh_keeps_restart_and_viz_topology(tmp_path):
-    """write_timestep mesh output keeps restart data plus XDMF topology."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
-    s_var.data[:, 0] = mesh._coords[:, 0]
-
-    mesh.write_timestep(
-        "viztopo", index=0, outputPath=str(tmp_path), meshVars=[s_var]
-    )
-
-    mesh_h5 = os.path.join(str(tmp_path), "viztopo.mesh.00000.h5")
-    xdmf_file = os.path.join(str(tmp_path), "viztopo.mesh.00000.xdmf")
-
-    with h5py.File(mesh_h5, "r") as h5f:
-        assert "labels" in h5f
-        assert "topology/cells" in h5f
-        assert "topology/cones" in h5f
-        assert "viz/topology/cells" in h5f
-        cells = h5f["viz/topology/cells"]
-        assert len(cells.shape) == 2
-        assert cells.shape[1] > 1
-
-    with open(xdmf_file, "r") as f:
-        xdmf_text = f.read()
-    assert "&MeshData;:/viz/topology/cells" in xdmf_text
-    assert "&MeshData;:/topology/cells" not in xdmf_text
-    assert 'ItemType="HyperSlab"' not in xdmf_text
-
-    del mesh
-
-
-def test_write_checkpoint_mesh_uses_petsc_topology(tmp_path):
-    """write_checkpoint keeps PETSc DMPlex topology for restart output."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
-    s_var.data[:, 0] = mesh._coords[:, 0]
-
-    with pytest.warns(FutureWarning, match="write_checkpoint\\(\\) is deprecated"):
-        mesh.write_checkpoint(
-            "restart",
-            outputPath=str(tmp_path),
-            meshUpdates=True,
-            meshVars=[s_var],
-            index=0,
-        )
-
-    mesh_h5 = os.path.join(str(tmp_path), "restart.mesh.00000.h5")
-
-    with h5py.File(mesh_h5, "r") as h5f:
-        assert "topologies/uw_mesh/topology" in h5f
-        assert "viz/topology/cells" not in h5f
-
-    del mesh
-
-
-# ---------------------------------------------------------------------------
-# Test: 3D mesh
-# ---------------------------------------------------------------------------
-
-
-def test_xdmf_compat_3d(tmp_path):
-    """write_timestep creates correct compat groups for 3D mesh."""
-
-    mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(3, 3, 3),
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_direct_p2_tetrahedron_uses_exact_tetrahedron_10(tmp_path):
+    """A 3D continuous P2 field uses exact VTK-ordered tetrahedral data."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0, 0.0),
         maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.7,
+        regular=True,
+        qdegree=3,
     )
+    p2 = uw.discretisation.MeshVariable("p2_tet", mesh, 3, degree=2)
+    p2.array[:, 0, :] = p2.coords
+    mesh.write_timestep("tet", 0, outputPath=str(directory), meshVars=[p2])
 
-    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
-    s_var.data[:, 0] = mesh._coords[:, 2]  # s = z
+    restored = uw.discretisation.MeshVariable("restored", mesh, 3, degree=2)
+    restored.read_timestep("tet", "p2_tet", 0, outputPath=str(directory))
+    np.testing.assert_allclose(restored.array, p2.array, atol=1.0e-12)
 
+    if uw.mpi.rank == 0:
+        field_file = directory / "tet.mesh.p2_tet.00000.h5"
+        with h5py.File(field_file, "r") as handle:
+            coordinates = handle["fields/coordinates"][:]
+            values = handle["fields/p2_tet"][:]
+            cells = handle["fields/cells"][:]
+            assert cells.shape[1] == 10
+            assert values.shape == coordinates.shape
+            np.testing.assert_allclose(values, coordinates, atol=1.0e-12)
+            points = coordinates[cells]
+            edge_pairs = ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3))
+            for local_node, (a, b) in enumerate(edge_pairs, start=4):
+                np.testing.assert_allclose(
+                    points[:, local_node], 0.5 * (points[:, a] + points[:, b])
+                )
+            assert "visualization" not in handle
+            _assert_no_compatibility_copies(handle)
+
+        xdmf = directory / "tet.mesh.00000.xdmf"
+        assert 'TopologyType="Tetrahedron_10"' in xdmf.read_text()
+        assert "&p2_tet_Data;:/fields/p2_tet" in xdmf.read_text()
+        _assert_xdmf_references_exist(xdmf)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_higher_order_fields_keep_exact_data_and_one_compact_reduction(tmp_path):
+    """P3+ uses P1 and DG2+ uses DG0 only for the XDMF view."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.4, regular=True, qdegree=5)
+    continuous = [
+        uw.discretisation.MeshVariable(f"p{degree}", mesh, 1, degree=degree) for degree in (3, 4)
+    ]
+    discontinuous = [
+        uw.discretisation.MeshVariable(f"dg{degree}", mesh, 1, degree=degree, continuous=False)
+        for degree in (2, 3, 4)
+    ]
+    for field in continuous:
+        field.array[:, 0, 0] = 2.0
+    for field in discontinuous:
+        field.array[:, 0, 0] = 3.0
+    mesh.write_timestep("high", 0, outputPath=str(directory), meshVars=continuous + discontinuous)
+
+    if uw.mpi.rank == 0:
+        mesh_file = directory / "high.mesh.00000.h5"
+        with h5py.File(mesh_file, "r") as handle:
+            vertex_count = handle["geometry/vertices"].shape[0]
+            cell_count = handle["viz/topology/cells"].shape[0]
+        for field in continuous:
+            with h5py.File(directory / f"high.mesh.{field.clean_name}.00000.h5", "r") as handle:
+                assert handle[f"fields/{field.clean_name}"].shape[0] > vertex_count
+                assert handle[f"visualization/{field.clean_name}"].shape[0] == vertex_count
+                np.testing.assert_allclose(handle[f"visualization/{field.clean_name}"][:], 2.0)
+                assert (
+                    handle[f"visualization/{field.clean_name}"].attrs["visualization_degree"] == 1
+                )
+                _assert_no_compatibility_copies(handle)
+        for field in discontinuous:
+            with h5py.File(directory / f"high.mesh.{field.clean_name}.00000.h5", "r") as handle:
+                assert handle[f"fields/{field.clean_name}"].shape[0] > cell_count
+                assert handle[f"visualization/{field.clean_name}"].shape[0] == cell_count
+                np.testing.assert_allclose(handle[f"visualization/{field.clean_name}"][:], 3.0)
+                assert (
+                    handle[f"visualization/{field.clean_name}"].attrs["visualization_degree"] == 0
+                )
+                _assert_no_compatibility_copies(handle)
+
+        xdmf = directory / "high.mesh.00000.xdmf"
+        text = xdmf.read_text()
+        for field in continuous + discontinuous:
+            assert f"&{field.clean_name}_Data;:/visualization/{field.clean_name}" in text
+        _assert_xdmf_references_exist(xdmf)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_compact_tensor_keeps_native_component_count(tmp_path):
+    """The authoritative field avoids a second nine-component tensor copy."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    tensor = uw.discretisation.MeshVariable("tensor", mesh, degree=1, vtype=uw.VarType.TENSOR)
+    tensor.array[:, 0, 0] = 1.0
+    tensor.array[:, 0, 1] = 2.0
+    tensor.array[:, 1, 0] = 3.0
+    tensor.array[:, 1, 1] = 4.0
+    mesh.write_timestep("tensor", 0, outputPath=str(directory), meshVars=[tensor])
+
+    if uw.mpi.rank == 0:
+        with h5py.File(directory / "tensor.mesh.tensor.00000.h5", "r") as handle:
+            assert handle["fields/tensor"].shape[1] == 4
+            assert "visualization" not in handle
+            _assert_no_compatibility_copies(handle)
+        text = (directory / "tensor.mesh.00000.xdmf").read_text()
+        assert 'Type="Matrix"' in text
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_timestep_and_optional_checkpoint_roundtrip(tmp_path):
+    """Dimensional fields support remap; /restart/petsc supports exact reload."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.4, regular=True)
+    source = uw.discretisation.MeshVariable("source", mesh, 1, degree=2)
+    source.array[:, 0, 0] = source.coords[:, 0] + 2.0 * source.coords[:, 1]
+    same_layout_expected = np.array(source.array)
     mesh.write_timestep(
-        "test3d", index=0, outputPath=str(tmp_path), meshVars=[s_var]
+        "roundtrip", 0, outputPath=str(directory), meshVars=[source], petsc_reload=True
     )
 
-    s_h5 = os.path.join(str(tmp_path), "test3d.mesh.s.00000.h5")
-    assert _check_h5_group_exists(s_h5, "vertex_fields/s_s")
+    field_file = directory / "roundtrip.mesh.source.00000.h5"
+    source.array[:, 0, 0] = 0.0
+    source.read_checkpoint(str(field_file), data_name="source", same_layout=True)
+    np.testing.assert_allclose(source.array, same_layout_expected, atol=1.0e-12)
 
-    s_compat = _read_h5_dataset(s_h5, "vertex_fields/s_s")
-    s_original = _read_h5_dataset(s_h5, "fields/s")
-    np.testing.assert_allclose(s_compat.ravel(), s_original.ravel(), atol=1e-10)
+    reloaded_mesh = uw.discretisation.Mesh(str(directory / "roundtrip.mesh.00000.h5"))
+    restored = uw.discretisation.MeshVariable("source", reloaded_mesh, 1, degree=2)
+    restored.read_checkpoint(str(field_file), data_name="source")
+    expected = restored.coords[:, 0] + 2.0 * restored.coords[:, 1]
+    np.testing.assert_allclose(restored.array[:, 0, 0], expected, atol=1.0e-12)
 
-    # Verify XDMF
-    xdmf_file = os.path.join(str(tmp_path), "test3d.mesh.00000.xdmf")
-    _check_xdmf_refs(xdmf_file, str(tmp_path))
+    remapped = uw.discretisation.MeshVariable("remapped", mesh, 1, degree=2)
+    remapped.read_timestep("roundtrip", "source", 0, outputPath=str(directory))
+    expected = remapped.coords[:, 0] + 2.0 * remapped.coords[:, 1]
+    np.testing.assert_allclose(remapped.array[:, 0, 0], expected, atol=1.0e-12)
 
-    mesh_h5 = os.path.join(str(tmp_path), "test3d.mesh.00000.h5")
-    with h5py.File(mesh_h5, "r") as h5f:
-        assert "viz/topology/cells" in h5f
-        cells = h5f["viz/topology/cells"]
-        assert len(cells.shape) == 2
-        assert cells.shape[1] > 1
-
-    with open(xdmf_file, "r") as f:
-        xdmf_text = f.read()
-    assert "&MeshData;:/viz/topology/cells" in xdmf_text
-    assert "&MeshData;:/topology/cells" not in xdmf_text
-    assert f'Dimensions="{s_compat.shape[0]}"' in xdmf_text
-
-    del mesh
-
-
-# ---------------------------------------------------------------------------
-# Test: Cell (discontinuous) variable
-# ---------------------------------------------------------------------------
+    if uw.mpi.rank == 0:
+        with h5py.File(field_file, "r") as handle:
+            assert set(handle) == {"fields", "restart"}
+            assert "restart/petsc/topologies/uw_mesh/dms/source/vecs/source/source" in handle
+            assert set(handle["restart/petsc/topologies/uw_mesh/dms"]) == {
+                "source",
+                "uw_mesh",
+            }
 
 
-def test_xdmf_compat_cell_variable(tmp_path):
-    """Cell variables go to /cell_fields/ group."""
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_create_xdmf_false_preserves_native_writer(tmp_path):
+    """Disabling XDMF leaves the established native field file untouched."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    field = uw.discretisation.MeshVariable("field", mesh, 1, degree=1)
+    field.array[:, 0, 0] = 1.0
+    mesh.write_timestep("native", 0, outputPath=str(directory), meshVars=[field], create_xdmf=False)
+    if uw.mpi.rank == 0:
+        assert not (directory / "native.mesh.00000.xdmf").exists()
+        with h5py.File(directory / "native.mesh.field.00000.h5", "r") as handle:
+            assert "fields/field" in handle
+            assert "visualization" not in handle
 
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
 
-    # Discontinuous (cell-centred) variable
-    c_var = uw.discretisation.MeshVariable(
-        "c", mesh, 1, degree=0, continuous=False
-    )
-    c_var.data[:, 0] = 42.0
-
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_petsc_reload_only_omits_duplicate_fields(tmp_path):
+    """Restart-only output stores the native PETSc payload exactly once."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    field = uw.discretisation.MeshVariable("field", mesh, 1, degree=2)
+    field.array[:, 0, 0] = field.coords[:, 0] + 2.0 * field.coords[:, 1]
+    expected = np.asarray(field.array).copy()
     mesh.write_timestep(
-        "testcell", index=0, outputPath=str(tmp_path), meshVars=[c_var]
+        "restart",
+        0,
+        outputPath=str(directory),
+        meshVars=[field],
+        create_xdmf=False,
+        petsc_reload=True,
     )
 
-    c_h5 = os.path.join(str(tmp_path), "testcell.mesh.c.00000.h5")
-    assert _check_h5_group_exists(c_h5, "cell_fields/c_c"), (
-        "/cell_fields/c_c group should exist for discontinuous variable"
+    field.array[...] = 0.0
+    field.read_checkpoint(
+        str(directory / "restart.mesh.field.00000.h5"),
+        data_name="field",
+        same_layout=True,
     )
+    np.testing.assert_allclose(field.array, expected)
 
-    c_compat = _read_h5_dataset(c_h5, "cell_fields/c_c")
-    c_effective_ncomp = c_compat.shape[1] if c_compat.ndim == 2 else 1
-    assert c_effective_ncomp == 1
+    if uw.mpi.rank == 0:
+        assert not (directory / "restart.mesh.00000.xdmf").exists()
+        with h5py.File(directory / "restart.mesh.field.00000.h5", "r") as handle:
+            assert set(handle) == {"restart"}
+            assert set(handle["restart"]) == {"petsc"}
 
-    del mesh
+        # Existing files that used the former group name remain readable.
+        with h5py.File(directory / "restart.mesh.field.00000.h5", "a") as handle:
+            handle.move("restart/petsc", "uw_checkpoint")
+            del handle["restart"]
+    uw.mpi.barrier()
 
-
-# ---------------------------------------------------------------------------
-# Test: read_timestep round-trip still works (checkpoint integrity)
-# ---------------------------------------------------------------------------
-
-
-def test_xdmf_checkpoint_roundtrip(tmp_path):
-    """Compat groups don't corrupt the /fields/ data used by read_timestep."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-
-    p1 = uw.discretisation.MeshVariable("p1", mesh, 1, degree=1)
-    p1.data[:, 0] = mesh._coords[:, 0] + mesh._coords[:, 1]
-
-    mesh.write_timestep(
-        "roundtrip", index=0, outputPath=str(tmp_path), meshVars=[p1]
+    field.array[...] = 0.0
+    field.read_checkpoint(
+        str(directory / "restart.mesh.field.00000.h5"),
+        data_name="field",
+        same_layout=True,
     )
-
-    # Read back
-    p1_check = uw.discretisation.MeshVariable("p1check", mesh, 1, degree=1)
-    p1_check.read_timestep("roundtrip", "p1", 0, outputPath=str(tmp_path))
-
-    np.testing.assert_allclose(p1.data, p1_check.data, atol=1e-10)
-
-    del mesh
+    np.testing.assert_allclose(field.array, expected)
 
 
-# ---------------------------------------------------------------------------
-# Test: create_xdmf=False skips compat groups
-# ---------------------------------------------------------------------------
-
-
-def test_no_xdmf_when_disabled(tmp_path):
-    """create_xdmf=False should not create compat groups or XDMF file."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-    s = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
-    s.data[:, 0] = 1.0  # initialise so gvec exists
-
-    mesh.write_timestep(
-        "noxdmf", index=0, outputPath=str(tmp_path),
-        meshVars=[s], create_xdmf=False,
-    )
-
-    # XDMF file should not be generated.
-    # Note: we do NOT check HDF5 groups because some PETSc versions (3.21+)
-    # write /vertex_fields/ automatically during var.write() — that is PETSc
-    # behaviour, not ours.
-    xdmf_file = os.path.join(str(tmp_path), "noxdmf.mesh.00000.xdmf")
-    assert not os.path.exists(xdmf_file), "XDMF file should not exist"
-
-    del mesh
-
-
-# ---------------------------------------------------------------------------
-# Test: Tensor variable repacking
-# ---------------------------------------------------------------------------
-
-
-def test_tensor_variable_repacking(tmp_path):
-    """Tensor variables are repacked to 9 components (3x3) in vertex_fields."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-
-    # 2D full tensor (4 components internally)
-    T = uw.discretisation.MeshVariable(
-        "T", mesh, mesh.dim, degree=1, vtype=uw.VarType.TENSOR
-    )
-    T.data[:, 0] = 1.0  # xx
-    T.data[:, 1] = 0.1  # xy
-    T.data[:, 2] = 0.2  # yx
-    T.data[:, 3] = 2.0  # yy
-
-    mesh.write_timestep(
-        "tensor", index=0, outputPath=str(tmp_path), meshVars=[T]
-    )
-
-    t_h5 = os.path.join(str(tmp_path), "tensor.mesh.T.00000.h5")
-    assert _check_h5_group_exists(t_h5, "vertex_fields/T_T")
-
-    t_compat = _read_h5_dataset(t_h5, "vertex_fields/T_T")
-    n_verts = mesh._coords.shape[0]
-    t_ncomp = t_compat.size // n_verts
-    assert t_ncomp == 9, f"Tensor should be repacked to 9 components, got {t_ncomp}"
-
-    # Verify XDMF
-    xdmf_file = os.path.join(str(tmp_path), "tensor.mesh.00000.xdmf")
-    _check_xdmf_refs(xdmf_file, str(tmp_path))
-
-    del mesh
-
-
-# ---------------------------------------------------------------------------
-# Test: Valid /viz/topology connectivity generation
-# ---------------------------------------------------------------------------
-
-
-def test_xdmf_viz_topology_written_correctly(tmp_path):
-    """write_timestep uses PETSc-native viz topology and valid geometry."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(3, 3))
-    
-    # Write just the mesh (no vars needed to test mesh topology)
-    mesh.write_timestep("test_topo", index=0, outputPath=str(tmp_path))
-
-    mesh_h5 = os.path.join(str(tmp_path), "test_topo.mesh.00000.h5")
-    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
-        "Mesh HDF5 must contain the /viz/topology/cells dataset"
-    )
-    assert _check_h5_group_exists(mesh_h5, "geometry/vertices"), (
-        "Mesh HDF5 must contain the /geometry/vertices dataset"
-    )
-
-    # Validate cell-to-vertex connectivity bounds
-    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
-    vertices = _read_h5_dataset(mesh_h5, "geometry/vertices")
-    
-    num_vertices = vertices.shape[0]
-    assert cells.max() < num_vertices, (
-        f"Invalid topology: cells max ({cells.max()}) must be < numVertices ({num_vertices})"
-    )
-    assert cells.min() >= 0, "Invalid topology: cells indices cannot be negative"
-
-    # Validate XDMF actually points to the viz group, not the raw DMPlex group
-    xdmf_file = os.path.join(str(tmp_path), "test_topo.mesh.00000.xdmf")
-    assert os.path.exists(xdmf_file), "XDMF file should exist"
-    
-    with open(xdmf_file, "r") as f:
-        xdmf_content = f.read()
-    
-    assert "/viz/topology/cells" in xdmf_content, (
-        "XDMF file should explicitly point to /viz/topology/cells"
-    )
-    assert "/geometry/vertices" in xdmf_content, (
-        "XDMF file should explicitly point to /geometry/vertices"
-    )
-
-    del mesh
-
-
-def test_xdmf_viz_topology_3d_written_correctly(tmp_path):
-    """write_timestep uses PETSc-native viz topology for 3D meshes."""
-
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2, 2))
-    
-    # Write just the mesh
-    mesh.write_timestep("test_topo_3d", index=0, outputPath=str(tmp_path))
-
-    mesh_h5 = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.h5")
-    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
-        "3D Mesh HDF5 must contain the /viz/topology/cells dataset"
-    )
-
-    # Validate connectivity
-    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
-    vertices = _read_h5_dataset(mesh_h5, "geometry/vertices")
-    
-    num_vertices = vertices.shape[0]
-    assert cells.max() < num_vertices, "Invalid 3D topology bounds"
-    
-    xdmf_file = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.xdmf")
-    assert os.path.exists(xdmf_file)
-    with open(xdmf_file, "r") as f:
-        xdmf_content = f.read()
-    assert "/viz/topology/cells" in xdmf_content
-    assert "/geometry/vertices" in xdmf_content
-
-    del mesh
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("dim", [2, 3])
+def test_mesh_xdmf_topology_is_direct_and_bounded(tmp_path, dim):
+    """The base mesh XDMF uses valid direct cell-to-vertex connectivity."""
+    directory = _shared_path(tmp_path)
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2,) * dim)
+    mesh.write_timestep("topology", 0, outputPath=str(directory))
+    if uw.mpi.rank == 0:
+        with h5py.File(directory / "topology.mesh.00000.h5", "r") as handle:
+            cells = handle["viz/topology/cells"][:]
+            vertices = handle["geometry/vertices"][:]
+            assert cells.ndim == 2
+            assert cells.min() >= 0
+            assert cells.max() < len(vertices)
+        text = (directory / "topology.mesh.00000.xdmf").read_text()
+        assert "&MeshData;:/viz/topology/cells" in text
+        assert "&MeshData;:/topology/cells" not in text

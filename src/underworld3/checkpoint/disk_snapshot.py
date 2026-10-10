@@ -40,12 +40,12 @@ import datetime
 import json
 import os
 import warnings
-from contextlib import contextmanager
 from typing import Any, Optional
 
 import numpy as np
 
 import underworld3 as uw
+from underworld3.utilities._io import _short_io_path
 
 
 DISK_SNAPSHOT_SCHEMA_VERSION = 1
@@ -262,22 +262,6 @@ def _bulk_dir_for(wrapper_path: str) -> str:
     base = wrapper_path[:-3] if wrapper_path.endswith(".h5") else wrapper_path
     return base + ".bulk"
 
-
-@contextmanager
-def _short_io_path(path: str):
-    """Expose ``path`` to native I/O as a basename from its parent directory.
-
-    Some parallel PETSc/HDF5 stacks fail on valid absolute paths well below
-    ``PATH_MAX``. Snapshot artifacts retain their normal locations, while the
-    native reader or writer receives only the final path component.
-    """
-    absolute_path = os.path.abspath(path)
-    previous_directory = os.getcwd()
-    os.chdir(os.path.dirname(absolute_path))
-    try:
-        yield os.path.basename(absolute_path)
-    finally:
-        os.chdir(previous_directory)
 
 
 def _sanitise(name: str) -> str:
