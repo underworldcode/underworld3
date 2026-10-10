@@ -14,7 +14,7 @@ import pytest
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_c]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 
 def _compile_args(bundles):
