@@ -2,6 +2,12 @@
 
 **Status**: Implemented — PR #258 (2026-07-02): opt-in `solver.consistent_jacobian`, default off (Picard tangent unchanged).
 
+**Since #823 (tier 2)** the Newton source is no longer the `symbolic_keep_constants`
+expansion described below. `_jacobian_unwrap` replaces each non-constant atom by a
+*node* of the shared graph (`_jit_graph`), whose partial derivatives SymPy's chain rule
+uses, so the derivative sees the same `∂η/∂(grad v)` without expanding the law into a
+tree. The tangent is the same function; see `jit-shared-graph-codegen.md`.
+
 ## The bug
 
 The SNES Jacobian assembly in `src/underworld3/cython/petsc_generic_snes_solvers.pyx`

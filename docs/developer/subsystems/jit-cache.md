@@ -33,6 +33,28 @@ Setting `UW_JIT_CACHE=0` (or `false` / `no`) disables the on-disk cache
 entirely — the in-memory dict still works, but nothing is persisted across
 processes.
 
+## What is compiled
+
+There are two routes. The default, `"graph"`, lowers each callback onto the shared
+graph of named quantities
+(`src/underworld3/utilities/_jit_graph.py`, design note
+`docs/developer/design/jit-shared-graph-codegen.md`): each non-constant `UWexpression`
+becomes one C temporary, evaluated once per kernel call (a matrix-valued atom is
+expanded in place), and the Newton tangent is
+formed through those quantities by the chain rule. The temporaries are ordered and merged
+by a hash of the C each computes, with every leaf written as the C the kernel reads
+(`petsc_u[3]`, `petsc_x[0]`, `constants[2]`). The generated source, and so the key below,
+is therefore a function of the mathematics and the data layout only: the same under any
+`PYTHONHASHSEED`, in any process, whatever the script created first.
+
+The `"expanded"` route is the JIT before #823 tier 2, kept as a fallback and a
+reference: every named quantity is expanded into one expression tree, differentiated
+and printed whole. Select it for the process with `uw.use_jit_route("expanded")` or
+`UW_JIT_ROUTE=expanded`, or for one solver with `solver.jit_route = "expanded"`. The
+two routes generate different C for any law with a named non-constant quantity, so
+they never share a cache entry; for a law without one they generate the same C and
+share it, which is correct, because the same C is the same function.
+
 ## Cache key
 
 The key is the SHA-256 of the **canonical** generated C source plus an
@@ -104,19 +126,17 @@ The next solve will repopulate.
 
 When `mpi.size > 1`:
 
-- Every rank computes the C-source hash independently. The hashes are
-  `comm.allgather`'d and compared — a mismatch raises immediately rather
-  than letting ranks diverge. Non-determinism in `generate_c_source` (e.g.
-  set/dict iteration order leaking into emitted C) would land here.
-- Rank 0 writes the cache entry; other ranks rely on the disk-cache hit
-  path on subsequent calls.
+- Every rank computes the C-source hash independently, and the hashes are
+  `comm.allgather`'d and compared (`_agree_source_across_ranks`). If they
+  differ, every rank adopts rank 0's source, rehashes and warns: the ranks
+  compile one module. Canonical emission makes the source rank-independent by
+  construction; the check stays as a guard (#752).
+- Whether to compile is decided collectively: if any rank lacks the module,
+  rank 0 compiles and publishes it while the others wait at a barrier, then
+  load it from the disk cache. With the disk cache off, every rank compiles.
 - The `flock` on the per-hash lockfile serialises cross-shell concurrent
   writes (e.g. a `mpirun -np 4` and a `mpirun -np 2` started seconds apart
   on the same machine).
-
-A future refinement would have rank 0 compile while other ranks wait on a
-barrier and read the resulting `.so` directly; today every rank still
-performs the cold compile but only rank 0 publishes the result.
 
 ## Environment variables
 
@@ -125,11 +145,15 @@ performs the cold compile but only rank 0 publishes the result.
 | `UW_JIT_CACHE`       | Set to `0`/`false`/`no` to disable disk cache           |
 | `UW_JIT_CACHE_DIR`   | Override the cache directory location                   |
 | `XDG_CACHE_HOME`     | Used when `UW_JIT_CACHE_DIR` is unset                   |
+| `UW3_JIT_CFLAGS`     | Replaces the kernels' default compile flags, `-O3 -g0 -fno-math-errno`; `-std=c99` is always kept. Use a lower level for a huge expression whose `-O3` compile is slow or runs out of memory (`-O1 -g0 -fno-math-errno`), or drop a flag the compiler rejects (nvc rejects `-g0` and `-fno-math-errno`). Without `-fno-math-errno`, gcc and clang on Linux cannot merge repeated `sqrt`, `pow` and `exp` calls (#834). The flags are part of the cache key. |
+| `UW_JIT_ROUTE`       | `graph` (default) or `expanded`, the JIT route; `uw.use_jit_route()` and `solver.jit_route` override it |
 
 ## Code references
 
 - `src/underworld3/utilities/_jitextension.py` — `getext`, `generate_c_source`,
-  `compile_and_load`, `_abi_salt`, `_extract_constants`.
+  `compile_and_load`, `_abi_salt`, `_extract_constants`, `_leaf_spellings`.
+- `src/underworld3/utilities/_jit_graph.py` — the lowering: nodes, their
+  derivatives, canonical emission.
 - `src/underworld3/utilities/_jit_cache.py` — disk cache: `get_cache_dir`,
   `load_module`, `store_module`, `_file_lock`.
 - `uw` (shell driver) — `.env-fingerprint` write + cache wipe inside
