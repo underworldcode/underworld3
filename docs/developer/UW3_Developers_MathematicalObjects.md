@@ -449,21 +449,22 @@ atoms = momentum.atoms(sympy.Function)  # Finds V_0, V_1
 
 ## Expression Unwrapping and Constants
 
-The JIT compiler performs a **two-phase unwrap** on expressions:
+The JIT compiler lowers each expression onto the graph of named quantities
+(`_jit_graph`, #823; design note `design/jit-shared-graph-codegen.md`):
 
-1. **Phase 1 — Constants extraction**: `UWexpression` atoms that resolve to
-   pure numbers (no spatial/field dependencies) are replaced with
-   `_JITConstant` symbols that render as `constants[i]` in C code.
+1. **Constants**: `UWexpression` atoms that resolve to pure numbers (no
+   spatial/field dependencies) are leaves, written as `constants[i]` in C code.
 
-2. **Phase 2 — Full unwrap**: Remaining `UWexpression` atoms are expanded
-   to their numerical values and baked into the C code.
+2. **Named quantities**: every other `UWexpression` atom becomes one C
+   temporary, computed once per kernel call from the leaves and earlier
+   temporaries; field variables are read from `petsc_a[]` and `petsc_u[]`.
 
 ```python
 # Expression with nested UWexpressions
 complex_expr = alpha * (temperature - T0) * velocity
 
-# Phase 1: alpha and T0 are constants → constants[0], constants[1]
-# Phase 2: temperature and velocity are field variables → petsc_a[], petsc_u[]
+# alpha and T0 are constants → constants[0], constants[1]
+# temperature and velocity are field variables → petsc_a[], petsc_u[]
 
 # Generated C code:
 #   result = constants[0] * (petsc_a[0] - constants[1]) * petsc_u[0];

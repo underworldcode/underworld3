@@ -2644,7 +2644,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     # consistent tangent of the *harmonic* problem) and converges WORSE than
     # Picard on hard-yield VEP; the robust route is problem-space homotopy
     # (ramp the softmin softness δ→0), not a smooth tangent. See the design doc
-    # docs/developer/design/jacobian-unwrap-constants-bug.md. The generic
+    # docs/developer/design/jacobian-consistent-tangent.md. The generic
     # Constitutive_Model.flux_jacobian hook (default None) remains available.
 
     @property
@@ -4838,9 +4838,9 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             Default: False (assumes IndexSwarmVariable maintains partition of unity)
         """
         # Constituents that share a parameter name (every ViscousFlowModel
-        # calls its viscosity \eta) rely on _JITConstant keeping its
-        # constants[] slots distinct; see utilities/_jitextension.py and the
-        # regression in tests/test_0103_jit_rampable_constants.py.
+        # calls its viscosity \eta) rely on the constants manifest keeping their
+        # constants[] slots distinct (by object, ordered by creation); see
+        # utilities/_jitextension.py and tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
         if any(getattr(m, "_stress_history", "stress") != "stress" for m in constitutive_models):

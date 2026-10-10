@@ -1,11 +1,13 @@
 from typing import Optional
 import os
+import re
 import shutil
 import subprocess
 from xmlrpc.client import boolean
 import sympy
 import underworld3
 import underworld3.timing as timing
+from underworld3.utilities import _jit_graph
 from collections import namedtuple
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,6 +202,46 @@ def _abi_salt():
 
 
 # ============================================================================
+# The two JIT routes
+# ============================================================================
+#
+# "graph" (default, #823 tier 2): each named non-constant quantity is one C
+# temporary, and the Newton tangent passes through it by the chain rule
+# (_jit_graph). "expanded" (the JIT before tier 2): every named quantity is expanded
+# into one expression tree, differentiated and printed whole. The expanded route is
+# kept as a fallback and a reference: a model that misbehaves can be solved the old
+# way, and if both routes agree the cause is the model, not the JIT.
+# ============================================================================
+
+JIT_ROUTES = ("graph", "expanded")
+_jit_route_default = None        # set by uw.use_jit_route(); None reads UW_JIT_ROUTE
+
+
+def resolve_jit_route(route=None):
+    """The JIT route to compile with: ``route`` if given, else the process default
+    (``uw.use_jit_route``), else the ``UW_JIT_ROUTE`` environment variable, else
+    ``"graph"``."""
+    if route is None:
+        route = _jit_route_default
+    if route is None:
+        route = os.environ.get("UW_JIT_ROUTE", "graph").strip().lower() or "graph"
+    if route not in JIT_ROUTES:
+        raise ValueError(f"JIT route must be one of {JIT_ROUTES}; got {route!r}")
+    return route
+
+
+def use_jit_route(route):
+    """Set the process default JIT route, ``"graph"`` or ``"expanded"``; ``None``
+    returns to the ``UW_JIT_ROUTE`` environment variable (default ``"graph"``).
+    Solvers built afterwards use it unless their own ``jit_route`` is set; a solver
+    already set up keeps its kernels until it is rebuilt."""
+    global _jit_route_default
+    if route is not None:
+        resolve_jit_route(route)          # validates
+    _jit_route_default = route
+
+
+# ============================================================================
 # JIT Callback Set
 # ============================================================================
 #
@@ -250,7 +292,7 @@ class JITCallbackSet:
         """Concatenate all slots into a single ordered tuple.
 
         The ordering (residual, bcs, jacobian, bd_residual, bd_jacobian)
-        matches what ``_createext()`` expects.
+        matches what ``generate_c_source()`` expects.
         """
         return self.residual + self.bcs + self.jacobian + self.bd_residual + self.bd_jacobian
 
@@ -274,7 +316,7 @@ class JITCallbackSet:
 
     @property
     def counts(self):
-        """Lengths of each slot, for ``_createext()`` offset calculation."""
+        """Lengths of each slot, for the offsets in ``generate_c_source()``."""
         return (len(self.residual), len(self.bcs), len(self.jacobian),
                 len(self.bd_residual), len(self.bd_jacobian))
 
@@ -307,37 +349,6 @@ def _reveal_constants(fn):
     return unwrap_expression(fn, mode='symbolic_keep_constants')
 
 
-def prepare_for_cache_key(fn, constants_subs_map):
-    """Prepare a single expression for JIT cache hashing.
-
-    Three-phase process (mirrors the codegen lowering in ``_createext`` so
-    the cache key and the generated C agree — issue #302):
-    1. Reveal nested constants (``_reveal_constants``).
-    2. Substitute manifested constants with ``_JITConstant`` placeholders
-       so that changing a constant's *value* does not invalidate the cache.
-    3. Unwrap the remaining UW atoms to pure SymPy so the hash is
-       deterministic.
-    """
-    # Phase 1: reveal constants nested inside other UWexpressions. Loud on
-    # failure, exactly like the codegen path — a silent fallback here would
-    # hash constant VALUES into the cache key and force a recompile on
-    # every ramp (adversarial-review finding).
-    fn_structural = _reveal_constants(fn)
-
-    # Phase 2: Substitute constants with _JITConstant placeholders
-    if constants_subs_map and fn_structural is not None:
-        try:
-            if hasattr(fn_structural, "xreplace"):
-                fn_structural = _xreplace_shared(fn_structural, constants_subs_map)
-        except Exception:
-            pass
-
-    # Phase 3: Unwrap remaining (non-constant) expressions
-    return underworld3.function.expressions.unwrap(
-        fn_structural, keep_constants=False, return_self=False
-    )
-
-
 # ============================================================================
 # JIT Constants Support
 # ============================================================================
@@ -348,16 +359,20 @@ def prepare_for_cache_key(fn, constants_subs_map):
 # ============================================================================
 
 class _JITConstant(sympy.Symbol):
-    r"""Symbol subclass that renders as ``constants[i]`` in generated C code.
+    r"""A ``constants[]`` slot of the manifest: the placeholder each manifested
+    constant maps to, carrying its C, ``constants[i]``.
 
-    Used by the JIT compiler to route constant UWexpressions through PETSc's
-    ``PetscDSSetConstants()`` mechanism instead of baking values as C literals.
+    Constant UWexpressions are routed through PETSc's ``PetscDSSetConstants()``
+    instead of being baked as C literals. The graph lowering (#823) writes each
+    constant leaf as ``constants[i]`` from this placeholder; the placeholder itself
+    no longer appears in the expressions that are printed, so its identity and
+    ordering below now matter to code that substitutes it into an expression (as
+    ``test_0103`` does), not to the generated C, whose order is canonical.
 
     Two constants may legitimately share a display name — every
     ``ViscousFlowModel`` calls its viscosity :math:`\eta`, so a two-material
     model has two of them — and each needs its own ``constants[]`` slot. Two
-    separate SymPy properties have to hold for that to work, and they are not
-    the same property:
+    separate SymPy properties hold for that, and they are not the same property:
 
     **Identity** — the slot index is in ``_hashable_content``, and the symbol
     is built with ``Symbol.__xnew__`` to bypass SymPy's ``(cls, name)``
@@ -369,13 +384,10 @@ class _JITConstant(sympy.Symbol):
     **Ordering** — the slot index is also in the NAME. ``_hashable_content``
     does nothing for ``Symbol.sort_key()``, which is derived from the name, so
     two same-named placeholders sort equal; term order inside an ``Add`` then
-    falls back to hash order, which is randomised per process. The generated C
-    then differs between MPI ranks and ``getext``'s cross-rank hash check
-    aborts the run — intermittently, since it depends on the hash seed.
+    falls back to hash order, which is randomised per process. (When the
+    placeholders were printed, that made the generated C differ between MPI ranks.)
 
-    Identity without ordering is a parallel abort; ordering without identity is
-    a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
-    pins each one separately.
+    ``tests/test_0103_jit_rampable_constants.py`` pins each one separately.
 
     A slot holds a C double, so it is built ``real`` (real and finite) for SymPy's
     simplification (#823). Declared at construction, not by a class handler: SymPy
@@ -408,7 +420,8 @@ class _JITConstant(sympy.Symbol):
 
 
 def _extract_constants(all_fns, mesh):
-    """Extract constant UWexpressions from a list of pre-unwrap functions.
+    """Extract constant UWexpressions from a list of pre-unwrap functions: the
+    ``constants[]`` manifest of the expanded route.
 
     Scans all expressions for UWexpression atoms where is_constant_expr()
     is True (no spatial/field dependencies). Assigns deterministic indices
@@ -447,6 +460,18 @@ def _extract_constants(all_fns, mesh):
         else:
             _collect_constant_atoms(fn, constant_exprs, is_constant_expr, UWexpression)
 
+    return _manifest_from(constant_exprs)
+
+
+def _manifest_of(lowered):
+    """``(manifest, subs_map)`` of callbacks lowered onto the graph (``_jit_graph``):
+    the manifest of the graph route."""
+    return _manifest_from(_jit_graph.constant_leaves(lowered))
+
+
+def _manifest_from(constant_exprs):
+    """The ``constants[]`` manifest of a set of constant atoms: ``(manifest,
+    subs_map)``, slots ordered by name, then creation order."""
     if not constant_exprs:
         return [], {}
 
@@ -714,17 +739,18 @@ def _pack_constants(manifest):
                 # catastrophic: a zero diffusivity or viscosity diverges, and
                 # nothing says why.
                 #
-                # The usual cause is a nested atom that has been ramped.
-                # `(1 + T**2)**(-m) + 1` is the NUMBER 2 while m is zero, so it
-                # banks as one constant; ramp m and it depends on T again, but
-                # the kernel still expects a scalar.
+                # The usual cause is a constant atom whose content has been
+                # replaced by one that reads a field (c.sym = 1 + T**2) without
+                # a rebuild: the kernel still expects a scalar. (Constancy is
+                # decided by structure, so an atom ramped inside an expression,
+                # (1 + T**2)**(-m), keeps its own slot and ramps; #823.)
                 raise RuntimeError(
                     f"constants[] slot {idx} ({uw_expr.name!r}) no longer "
                     f"reduces to a number, so the compiled kernel — which "
                     f"treats it as a scalar constant — is out of date.\n"
                     f"  current content: {str(getattr(uw_expr, '_sym', uw_expr))[:160]}\n"
-                    f"This usually means an atom nested inside it has been "
-                    f"ramped, and the expression has stopped being constant. "
+                    f"This usually means its content was replaced by an "
+                    f"expression that reads a field or a coordinate. "
                     f"Force a rebuild before solving again:\n"
                     f"    solver.is_setup = False\n"
                     f"    solver._needs_function_rewire = True\n"
@@ -793,6 +819,7 @@ def getext(
     debug=False,
     debug_name=None,
     cache=True,
+    route=None,
 ):
     """Compile (or retrieve cached) JIT extension for PETSc pointwise functions.
 
@@ -806,6 +833,8 @@ def getext(
     primary_field_list : iterable
         Variables that map to PETSc primary arrays (``petsc_u[]``).
         All others map to auxiliary arrays (``petsc_a[]``).
+    route : {"graph", "expanded"}, optional
+        The JIT route (``resolve_jit_route``); the process default when omitted.
 
     Returns
     -------
@@ -821,7 +850,15 @@ def getext(
     # Extract constant UWexpressions that are routed through PETSc's
     # constants[] array. Value changes don't affect the C source — they
     # only alter what we pass to PetscDSSetConstants at solve time.
-    constants_manifest, constants_subs_map = _extract_constants(callbacks.flat(), mesh)
+    route = resolve_jit_route(route)
+    if route == "graph":
+        # Each callback is lowered onto the shared graph of named quantities once
+        # (``_jit_graph``, #823); the manifest is the constant leaves of the result.
+        lowered_fns = _jit_graph.lower_callbacks(callbacks.flat(), mesh)
+        constants_manifest, constants_subs_map = _manifest_of(lowered_fns)
+    else:
+        lowered_fns = None
+        constants_manifest, constants_subs_map = _extract_constants(callbacks.flat(), mesh)
 
     if debug and underworld3.mpi.rank == 0:
         if constants_manifest:
@@ -838,10 +875,12 @@ def getext(
         mesh,
         callbacks,
         primary_field_list,
-        constants_subs_map=constants_subs_map,
+        lowered_fns,
+        constants_subs_map,
         verbose=verbose,
         debug=debug,
         debug_name=debug_name,
+        route=route,
     )
     gen_randstr = diag["randstr"]
 
@@ -870,10 +909,12 @@ def getext(
     # rank-0-compiles/others-load protocol would break.
     #
     # Agreement used to be REQUIRED here, and a mismatch was a hard error. It
-    # fires in practice: the lowering above is not yet deterministic across
-    # ranks (#752), and a Stokes solve with a power-law transversely isotropic
-    # viscosity trips it in roughly half of np=2 runs. What we measured there
-    # matters for why this is safe to repair rather than refuse:
+    # fired in practice before the graph lowering (#752): a Stokes solve with a
+    # power-law transversely isotropic viscosity tripped it in about one np=2 run
+    # in five. The graph's emission is canonical by construction (temporaries
+    # ordered by a hash of their C, leaves written as the C they read), and the
+    # #752 fixture now agrees at np = 2, 3 and 4; the check stays as a guard. What
+    # was measured on the disagreeing runs is why repairing is safe:
     #
     #   * the sources differ only in the ORDER of factors in commutative
     #     products — identical token multisets, identical length, identical
@@ -888,9 +929,8 @@ def getext(
     # rank rehashes from it, which restores the one invariant that matters: one
     # source, one hash, one module.
     #
-    # This is a REPAIR, not a fix. The non-determinism upstream is still a bug
-    # and still worth finding, which is why it is said out loud rather than
-    # papered over silently.
+    # A disagreement is a defect in the lowering, which is why it is reported
+    # rather than papered over silently.
     canonical_codeguys, canonical_source, source_hash = _agree_source_across_ranks(
         canonical_codeguys, canonical_source, source_hash
     )
@@ -1035,107 +1075,62 @@ def getext(
     )
 
 
-@timing.routine_timer_decorator
-def _aux_component_offsets(mesh):
-    """Component offset of every field of the mesh DM, keyed by field id.
-
-    Read from the DM itself, not from ``mesh.vars``: a MeshVariable that
-    was dropped and collected leaves its PETSc field in the DM (a DMPlex
-    cannot shed a field), and PETSc lays the auxiliary arrays out over
-    ALL fields in field order. The offsets therefore have to count the
-    orphaned fields too.
-    """
-    offsets = {}
-    total = 0
-    for field_id in range(mesh.dm.getNumFields()):
-        fe, _label = mesh.dm.getField(field_id)
-        offsets[field_id] = total
-        total += fe.getNumComponents()
-    return offsets
+_NUMBER_DECLARATION = re.compile(r"const double [A-Za-z_]\w* = [^;]*;")
 
 
-def _agree_source_across_ranks(canonical_codeguys, canonical_source, source_hash):
-    """Make every rank compile the SAME generated C, and say so if they did not.
+def _graph_equations(fns, lowered_fns, constants_subs_map, mesh, primary_field_list,
+                     printer, verbose):
+    """The ``(name, C body)`` of each kernel on the graph route: one temporary per
+    distinct computation, then the outputs, every leaf written by an explicit map
+    built for this compile instead of C names patched onto the field classes."""
+    spellings = _leaf_spellings(mesh, primary_field_list)
 
-    Returns the (possibly replaced) ``(codeguys, source, hash)``. Serial runs and
-    runs where the ranks already agree are returned untouched, so the common path
-    costs one ``allgather`` of a 16-character string.
+    eqns = []
+    for index, fn_original in enumerate(fns):
+        unspellable = []
 
-    See the call site for why adopting one rank's source is a sound repair rather
-    than papering over a wrong answer. Separated out so the repair can be tested
-    directly — forcing a real disagreement through the JIT means reproducing a
-    non-deterministic bug, which is not a test.
-    """
-    import hashlib          # module-local in generate_c_source too
+        def spell(leaf):
+            try:
+                return _spell_leaf(leaf, spellings, constants_subs_map)
+            except _Unspellable:
+                unspellable.append(leaf)
+                return f"?{sympy.srepr(leaf)}"
 
-    if underworld3.mpi.size <= 1:
-        return canonical_codeguys, canonical_source, source_hash
+        temporaries, fn = _jit_graph.emit(lowered_fns[index], spell)
+        if unspellable:
+            raise RuntimeError(_unconvertible_message(
+                _stable_sorted(set(unspellable)), index, fn_original))
 
-    all_hashes = underworld3.mpi.comm.allgather(source_hash)
-    if all(h == source_hash for h in all_hashes):
-        return canonical_codeguys, canonical_source, source_hash
+        if verbose:
+            # the kernel as mathematics (named quantities as nodes); the C is in the header
+            print("Processing JIT {:4d} / {}".format(index, lowered_fns[index]))
 
-    canonical_codeguys = underworld3.mpi.comm.bcast(canonical_codeguys, root=0)
-    canonical_source = "\n".join(entry[1] for entry in canonical_codeguys)
-    source_hash = hashlib.sha256(
-        (canonical_source + "\n---\n" + _abi_salt()).encode("utf-8")
-    ).hexdigest()[:16]
-    underworld3.mpi.pprint(
-        f"[jit] WARNING: generated C differed across ranks "
-        f"({sorted(set(all_hashes))}); adopted rank 0's source so every rank "
-        f"compiles the same module. The kernels are mathematically identical — "
-        f"see issue #752 for the upstream non-determinism."
-    )
-    return canonical_codeguys, canonical_source, source_hash
+        out = sympy.MatrixSymbol("out", *fn.shape)
+        eqn = ("eqn_" + str(index), _print_kernel(printer, temporaries, fn, out))
+
+        if eqn[1].startswith("// Not supported in C:"):
+            spliteqn = eqn[1].split("\n")
+            raise RuntimeError(
+                f"Error encountered generating JIT extension:\n"
+                f"{spliteqn[0]}\n"
+                f"{spliteqn[1]}\n"
+                f"This is usually because code generation for a Sympy function (or its derivative) is not supported.\n"
+                f"Please contact the developers."
+                f"---"
+                f"The ID of the JIT component that failed is {index}"
+                f"The decription of the JIT component that failed:\n {fn}"
+            )
+        eqns.append(eqn)
+
+    return eqns
 
 
-def generate_c_source(
-    name,
-    mesh: underworld3.discretisation.Mesh,
-    callbacks: JITCallbackSet,
-    primary_field_list,
-    constants_subs_map: Optional[dict] = None,
-    verbose: Optional[bool] = False,
-    debug: Optional[bool] = False,
-    debug_name=None,
-):
-    """Generate the setup.py / C header / Cython wrapper for a JIT bundle.
-
-    This is the pure text-generation phase: sympy processing, C-code emission,
-    and assembly of the files that will make up the compiled module. No I/O,
-    no subprocess, no dynamic loading — those happen in ``compile_and_load``.
-
-    Keying a cache on a hash of the generated C source requires that this
-    function produce byte-identical output for byte-identical inputs.
-
-    Parameters
-    ----------
-    name : str or int
-        Identifier used to build ``MODNAME = "fn_ptr_ext_" + str(name)``.
-    mesh : Mesh
-    callbacks : JITCallbackSet
-    primary_field_list : list
-        Variables that map to PETSc primary variable arrays (``petsc_u[]``).
-    constants_subs_map : dict, optional
-        Mapping from UWexpression → ``_JITConstant`` placeholder.
-
-    Returns
-    -------
-    modname : str
-        Fully-qualified extension module name (``fn_ptr_ext_<name>``).
-    codeguys : list of [filename, content]
-        The files that make up the source bundle
-        (``setup.py``, ``cy_ext.h``, ``cy_ext.pyx``).
-    diagnostics : dict
-        Equation-range counts and the random symbol prefix, used by the caller
-        for verbose printing and for building the fn-layout manifest.
-    """
-    from sympy import symbols, Eq, MatrixSymbol
+def _expanded_equations(fns, constants_subs_map, mesh, primary_field_list, printer,
+                        verbose):
+    """The ``(name, C body)`` of each kernel on the expanded route: the JIT before
+    #823 tier 2, unchanged. Every named quantity is unwrapped into one expression and
+    printed whole; field symbols are given their C names by patching their classes."""
     from underworld3 import VarType
-
-    fns = callbacks.flat()
-    count_residual_sig, count_bc_sig, count_jacobian_sig, \
-        count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
 
     # `_ccode` patching
     def ccode_patch_fns(varlist, prefix_str, component_offsets=None):
@@ -1285,73 +1280,6 @@ def generate_c_source(
     Gamma_scalars = mesh._Gamma.base_scalars()
     if type(Gamma_scalars[0]) is not type(mesh.N.x):
         type(Gamma_scalars[0])._ccode = _basescalar_ccode
-
-    # Create a custom functions replacement dictionary.
-    # Note that this dictionary is really just to appease Sympy,
-    # and the actual implementation is printed directly into the
-    # generated JIT files (see `h_str` below). Without specifying
-    # this dictionary, Sympy doesn't code print the Heaviside correctly.
-    # For example, it will print
-    #    Heaviside(petsc_x[0,1])
-    # instead of
-    #    Heaviside(petsc_x[1]).
-    # Note that the Heaviside implementation will be printed into all JIT
-    # files now. This is fine for now, but if more complex functions are
-    # required a cleaner solution might be desirable.
-
-    custom_functions = {
-        "Heaviside": [
-            (
-                lambda *args: len(args) == 1,
-                "Heaviside_1",
-            ),  # for single arg Heaviside  (defaults to 0.5 at jump).
-            (lambda *args: len(args) == 2, "Heaviside_2"),
-        ],  # for two arg Heavisides    (second arg is jump value).
-    }
-
-    # Now go ahead and generate C code from substituted Sympy expressions.
-    # from sympy.printing.c import C99CodePrinter
-    # printer = C99CodePrinter(user_functions=custom_functions)
-    from sympy.printing.c import c_code_printers
-
-    printer = c_code_printers["c99"]({"user_functions": custom_functions})
-
-    # A DiracDelta is printed as 0, its value away from the zero of its argument, by
-    # the rule every evaluation path shares (_without_dirac_deltas). Done in the
-    # printer so that one made while lowering (cse, temporaries) is caught too.
-    dropped_deltas = []
-
-    def _print_DiracDelta(expr, **kwargs):
-        dropped_deltas.append(expr)
-        return "0.0"
-
-    printer._print_DiracDelta = _print_DiracDelta
-
-    # SymPy's code printer rewrites re(UnevaluatedExpr(<real>)) with a whole-tree
-    # replace on every kernel it prints (2.9 s of the notch C generation). Field values
-    # and coordinates are real (#823), so a kernel seldom holds any re() at all; the
-    # rewrite runs only when one is there.
-    handle_unevaluated = printer._handle_UnevaluatedExpr
-
-    def _handle_UnevaluatedExpr(expr):
-        return handle_unevaluated(expr) if _holds_instance(expr, sympy.re) else expr
-
-    printer._handle_UnevaluatedExpr = _handle_UnevaluatedExpr
-
-    # Purge libary/header dictionaries. These will be repopulated
-    # when `doprint` is called below. This ensures that we only link
-    # in libraries where needed.
-    # Note that this generally shouldn't be necessary, as the
-    # extension module should build successfully even where
-    # libraries are linked in redundantly. However it does
-    # help to ensure that any potential linking issues are isolated
-    # to only those sympy functions (just analytic solutions currently)
-    # that require linking. There may also be a performance advantage
-    # (faster extension build time) but this is unlikely to be
-    # significant.
-    underworld3._incdirs.clear()
-    underworld3._libdirs.clear()
-    underworld3._libfiles.clear()
 
     eqns = []
     for index, fn in enumerate(fns):
@@ -1565,6 +1493,356 @@ def generate_c_source(
                 f"The decription of the JIT component that failed:\n {fn}"
             )
         eqns.append(eqn)
+
+    return eqns
+
+
+class _Unspellable(Exception):
+    """A leaf the kernel has no C for."""
+
+
+class _Refusal:
+    """A leaf that has a meaning but no C in a weak form, with the reason."""
+
+    def __init__(self, message):
+        self.message = message
+
+
+_IP_DERIVATIVE_REFUSAL = _Refusal(
+    "derivative of an integration-point "
+    "variable has no meaning (the field is defined only at the "
+    "quadrature points), so the gradient here would be a silent "
+    "zero. This is refused in a WEAK FORM only, where the "
+    "discretisation is yours to choose: build the variable with "
+    "proxy_location='cells' instead, whose level sets are a "
+    "least-squares polynomial per cell and differentiate directly. "
+    "uw.function.evaluate() of the same derivative does answer: as "
+    "a query it recovers the gradient from a per-cell fit for you."
+)
+
+
+def _leaf_spellings(mesh, primary_field_list):
+    """The C a kernel reads for each mesh-variable leaf, keyed by the leaf's class.
+
+    For a 2-D velocity and pressure in the primary arrays: ``V_x -> petsc_u[0]``,
+    ``V_y -> petsc_u[1]``, ``P -> petsc_u[2]``, ``V_x_x -> petsc_u_x[0]``, ...,
+    ``P_y -> petsc_u_x[5]``. Every field of the mesh is entered first, from the
+    auxiliary arrays (``petsc_a``), at its own field's component offset in the DM
+    (``_aux_component_offsets``: a dropped variable's field stays in the DM and keeps
+    its slots); the primary fields then replace their entries with ``petsc_u``.
+    Gradients run to ``cdim``, the embedded dimension, so a manifold mesh's third
+    partial is wired too. The gradient of an integration-point variable is a
+    ``_Refusal``.
+    """
+    from underworld3 import VarType
+
+    spellings = {}
+
+    def enter(varlist, prefix, component_offsets=None):
+        u_i = 0          # component
+        u_x_i = 0        # gradient component
+        for var in varlist:
+            if component_offsets is not None:
+                u_i = component_offsets[var.field_id]
+                u_x_i = u_i * mesh.cdim
+            if var.vtype == VarType.SCALAR:
+                components = [var.fn]
+            elif var.vtype in (VarType.VECTOR, VarType.TENSOR, VarType.SYM_TENSOR,
+                               VarType.MATRIX):
+                components = list(var.sym_1d)
+            else:
+                raise RuntimeError(
+                    f"Unsupported type {var.vtype} for code generation. "
+                    f"Please contact developers.")
+            ip = getattr(var, "is_integration_point", False)
+            for component in components:
+                spellings[type(component)] = f"{prefix}[{u_i}]"
+                u_i += 1
+                for ind in range(mesh.cdim):
+                    # _diff[ind] is the gradient component's class
+                    spellings[component._diff[ind]] = (
+                        _IP_DERIVATIVE_REFUSAL if ip else f"{prefix}_x[{u_x_i}]")
+                    u_x_i += 1
+
+    enter(_stable_sorted(mesh.vars.values()), "petsc_a",
+          component_offsets=_aux_component_offsets(mesh))
+    enter(primary_field_list, "petsc_u")
+    return spellings
+
+
+def _spell_leaf(leaf, spellings, constants_subs_map):
+    """The C for one leaf: a constants[] slot, a field value or gradient
+    (``spellings``), a coordinate or boundary normal, or a symbol that names its own
+    C (the time, ``petsc_t``). Raises ``_Unspellable`` for anything else."""
+    from sympy.core.function import AppliedUndef
+    from sympy.vector.scalar import BaseScalar
+
+    placeholder = constants_subs_map.get(leaf) if constants_subs_map else None
+    if placeholder is not None:
+        return placeholder._ccodestr
+    if isinstance(leaf, BaseScalar):
+        # the mesh names its coordinates; a fresh instance, or a UWCoordinate that
+        # SymPy's cache returned for its equal base scalar, is named from its index
+        # and system
+        text = getattr(leaf, "_ccodestr", None)
+        if isinstance(text, str):
+            return text
+        idx, system = leaf._id[0], str(leaf._id[1])
+        return f"petsc_n[{idx}]" if "Gamma" in system else f"petsc_x[{idx}]"
+    if isinstance(leaf, AppliedUndef):
+        entry = spellings.get(type(leaf))
+        if entry is None:
+            raise _Unspellable(leaf)
+        if isinstance(entry, _Refusal):
+            raise RuntimeError(f"{type(leaf).__name__}: {entry.message}")
+        return entry
+    text = getattr(leaf, "_ccodestr", None)
+    if isinstance(text, str) and hasattr(leaf, "_ccode"):
+        return text
+    raise _Unspellable(leaf)
+
+
+def _unconvertible_message(symbols, index, fn_original):
+    """The message for leaves of kernel ``index`` that have no C."""
+    details = []
+    for sym in symbols:
+        detail = f"  - {sym} (type: {type(sym).__name__})"
+        if hasattr(sym, "units"):
+            detail += f" [has units: {sym.units}]"
+        if hasattr(sym, "value"):
+            detail += f" [value: {sym.value}]"
+        details.append(detail)
+    return (
+        f"\n{'=' * 70}\n"
+        f"JIT COMPILATION ERROR: Expression contains unconvertible symbols\n"
+        f"{'=' * 70}\n\n"
+        f"The following symbols could not be converted to C code:\n"
+        + "\n".join(details) + "\n\n"
+        f"This usually means:\n"
+        f"  1. A UWexpression or UWQuantity was not properly expanded\n"
+        f"  2. An arithmetic operation failed (e.g., Matrix * UWexpression)\n"
+        f"  3. A symbolic function is missing from the expression tree\n"
+        f"  4. A field that belongs to another mesh, or to no mesh\n\n"
+        f"Expression index: {index}\n"
+        f"Original expression: {fn_original}\n\n"
+        f"TIP: Check that all expression operations (*, /, +, -) produce\n"
+        f"valid SymPy expressions. For example, ensure scalar * Matrix\n"
+        f"and not Matrix * scalar when using UWexpression objects.\n"
+        f"{'=' * 70}"
+    )
+
+
+def _print_kernel(printer, temporaries, outputs, out):
+    """The C body of one kernel: a ``const double`` per temporary, in order, each
+    with the name of the quantity it computes as a comment (so a rename recompiles),
+    then the outputs. The printer declares a number symbol it reads (``EulerGamma``,
+    ``Catalan``) before the code that reads it; each declaration is written once, at
+    the top. A SymPy function the printer cannot write raises
+    ``PrintMethodNotImplementedError`` (SymPy 1.14), or, in a SymPy that returns
+    ``// Not supported in C:`` text instead, the text comes back for the caller to
+    refuse."""
+    declarations, lines = [], []
+
+    def without_declarations(code):
+        rest = code.split("\n")
+        while rest and _NUMBER_DECLARATION.fullmatch(rest[0]):
+            if rest[0] not in declarations:
+                declarations.append(rest[0])
+            rest = rest[1:]
+        return "\n".join(rest)
+
+    for t, body, label in temporaries:
+        code = printer.doprint(body)
+        if code.startswith("// Not supported in C:"):
+            return code
+        name = " ".join(str(label).replace("*/", "* /").split())
+        lines.append(f"const double {t._ccodestr} = {without_declarations(code)};"
+                     f"  /* {name} */")
+    lines.append(without_declarations(printer.doprint(outputs, out)))
+    return "\n".join(declarations + lines)
+
+
+@timing.routine_timer_decorator
+def _aux_component_offsets(mesh):
+    """Component offset of every field of the mesh DM, keyed by field id.
+
+    Read from the DM itself, not from ``mesh.vars``: a MeshVariable that
+    was dropped and collected leaves its PETSc field in the DM (a DMPlex
+    cannot shed a field), and PETSc lays the auxiliary arrays out over
+    ALL fields in field order. The offsets therefore have to count the
+    orphaned fields too.
+    """
+    offsets = {}
+    total = 0
+    for field_id in range(mesh.dm.getNumFields()):
+        fe, _label = mesh.dm.getField(field_id)
+        offsets[field_id] = total
+        total += fe.getNumComponents()
+    return offsets
+
+
+def _agree_source_across_ranks(canonical_codeguys, canonical_source, source_hash):
+    """Make every rank compile the SAME generated C, and say so if they did not.
+
+    Returns the (possibly replaced) ``(codeguys, source, hash)``. Serial runs and
+    runs where the ranks already agree are returned untouched, so the common path
+    costs one ``allgather`` of a 16-character string.
+
+    See the call site for why adopting one rank's source is a sound repair rather
+    than papering over a wrong answer. Separated out so the repair can be tested
+    directly — forcing a real disagreement through the JIT means reproducing a
+    non-deterministic bug, which is not a test.
+    """
+    import hashlib          # module-local in generate_c_source too
+
+    if underworld3.mpi.size <= 1:
+        return canonical_codeguys, canonical_source, source_hash
+
+    all_hashes = underworld3.mpi.comm.allgather(source_hash)
+    if all(h == source_hash for h in all_hashes):
+        return canonical_codeguys, canonical_source, source_hash
+
+    canonical_codeguys = underworld3.mpi.comm.bcast(canonical_codeguys, root=0)
+    canonical_source = "\n".join(entry[1] for entry in canonical_codeguys)
+    source_hash = hashlib.sha256(
+        (canonical_source + "\n---\n" + _abi_salt()).encode("utf-8")
+    ).hexdigest()[:16]
+    underworld3.mpi.pprint(
+        f"[jit] WARNING: generated C differed across ranks "
+        f"({sorted(set(all_hashes))}); adopted rank 0's source so every rank "
+        f"compiles the same module. The kernels are mathematically identical — "
+        f"see issue #752 for the upstream non-determinism."
+    )
+    return canonical_codeguys, canonical_source, source_hash
+
+
+def generate_c_source(
+    name,
+    mesh: underworld3.discretisation.Mesh,
+    callbacks: JITCallbackSet,
+    primary_field_list,
+    lowered_fns,
+    constants_subs_map,
+    verbose: Optional[bool] = False,
+    debug: Optional[bool] = False,
+    debug_name=None,
+    route="graph",
+):
+    """Generate the setup.py / C header / Cython wrapper for a JIT bundle.
+
+    This is the pure text-generation phase: sympy processing, C-code emission,
+    and assembly of the files that will make up the compiled module. No I/O,
+    no subprocess, no dynamic loading — those happen in ``compile_and_load``.
+
+    Keying a cache on a hash of the generated C source requires that this
+    function produce byte-identical output for byte-identical inputs.
+
+    Parameters
+    ----------
+    name : str or int
+        Identifier used to build ``MODNAME = "fn_ptr_ext_" + str(name)``.
+    mesh : Mesh
+    callbacks : JITCallbackSet
+    primary_field_list : list
+        Variables that map to PETSc primary variable arrays (``petsc_u[]``).
+    lowered_fns : list of sympy.Matrix or None
+        The graph route: the callbacks lowered onto the shared graph
+        (``_jit_graph.lower_callbacks``), one per entry of ``callbacks.flat()``;
+        each kernel is emitted as one C temporary per distinct computation, then
+        its outputs. ``None`` on the expanded route.
+    constants_subs_map : dict
+        Mapping from UWexpression to its ``_JITConstant`` placeholder.
+    route : {"graph", "expanded"}
+        Which JIT route generates the kernels.
+
+    Returns
+    -------
+    modname : str
+        Fully-qualified extension module name (``fn_ptr_ext_<name>``).
+    codeguys : list of [filename, content]
+        The files that make up the source bundle
+        (``setup.py``, ``cy_ext.h``, ``cy_ext.pyx``).
+    diagnostics : dict
+        Equation-range counts and the random symbol prefix, used by the caller
+        for verbose printing and for building the fn-layout manifest.
+    """
+    fns = callbacks.flat()
+    count_residual_sig, count_bc_sig, count_jacobian_sig, \
+        count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
+
+    # Create a custom functions replacement dictionary.
+    # Note that this dictionary is really just to appease Sympy,
+    # and the actual implementation is printed directly into the
+    # generated JIT files (see `h_str` below). Without specifying
+    # this dictionary, Sympy doesn't code print the Heaviside correctly.
+    # For example, it will print
+    #    Heaviside(petsc_x[0,1])
+    # instead of
+    #    Heaviside(petsc_x[1]).
+    # Note that the Heaviside implementation will be printed into all JIT
+    # files now. This is fine for now, but if more complex functions are
+    # required a cleaner solution might be desirable.
+
+    custom_functions = {
+        "Heaviside": [
+            (
+                lambda *args: len(args) == 1,
+                "Heaviside_1",
+            ),  # for single arg Heaviside  (defaults to 0.5 at jump).
+            (lambda *args: len(args) == 2, "Heaviside_2"),
+        ],  # for two arg Heavisides    (second arg is jump value).
+    }
+
+    # Now go ahead and generate C code from substituted Sympy expressions.
+    # from sympy.printing.c import C99CodePrinter
+    # printer = C99CodePrinter(user_functions=custom_functions)
+    from sympy.printing.c import c_code_printers
+
+    printer = c_code_printers["c99"]({"user_functions": custom_functions})
+
+    # A DiracDelta is printed as 0, its value away from the zero of its argument, by
+    # the rule every evaluation path shares (_without_dirac_deltas). Done in the
+    # printer so that one made while lowering (cse, temporaries) is caught too.
+    dropped_deltas = []
+
+    def _print_DiracDelta(expr, **kwargs):
+        dropped_deltas.append(expr)
+        return "0.0"
+
+    printer._print_DiracDelta = _print_DiracDelta
+
+    # SymPy's code printer rewrites re(UnevaluatedExpr(<real>)) with a whole-tree
+    # replace on every kernel it prints (2.9 s of the notch C generation). Field values
+    # and coordinates are real (#823), so a kernel seldom holds any re() at all; the
+    # rewrite runs only when one is there.
+    handle_unevaluated = printer._handle_UnevaluatedExpr
+
+    def _handle_UnevaluatedExpr(expr):
+        return handle_unevaluated(expr) if _holds_instance(expr, sympy.re) else expr
+
+    printer._handle_UnevaluatedExpr = _handle_UnevaluatedExpr
+
+    # Purge libary/header dictionaries. These will be repopulated
+    # when `doprint` is called below. This ensures that we only link
+    # in libraries where needed.
+    # Note that this generally shouldn't be necessary, as the
+    # extension module should build successfully even where
+    # libraries are linked in redundantly. However it does
+    # help to ensure that any potential linking issues are isolated
+    # to only those sympy functions (just analytic solutions currently)
+    # that require linking. There may also be a performance advantage
+    # (faster extension build time) but this is unlikely to be
+    # significant.
+    underworld3._incdirs.clear()
+    underworld3._libdirs.clear()
+    underworld3._libfiles.clear()
+
+    if route == "graph":
+        eqns = _graph_equations(fns, lowered_fns, constants_subs_map, mesh,
+                                primary_field_list, printer, verbose)
+    else:
+        eqns = _expanded_equations(fns, constants_subs_map, mesh, primary_field_list,
+                                   printer, verbose)
 
     _warn_dirac_deltas_dropped(dropped_deltas, "JIT", collective=True)
 
@@ -1898,67 +2176,3 @@ def compile_and_load(modname, codeguys, verbose=False):
         )
 
     return module, tmpdir
-
-
-@timing.routine_timer_decorator
-def _createext(
-    name,
-    mesh: underworld3.discretisation.Mesh,
-    callbacks: JITCallbackSet,
-    primary_field_list,
-    constants_subs_map: Optional[dict] = None,
-    verbose: Optional[bool] = False,
-    debug: Optional[bool] = False,
-    debug_name=None,
-):
-    """Thin wrapper: generate source, compile, stash in ``_ext_dict[name]``.
-
-    Retained for backwards compatibility with :func:`getext`. New code
-    should call :func:`generate_c_source` and :func:`compile_and_load`
-    directly — splitting the two phases is what makes cache keys on the
-    generated C source possible.
-    """
-    modname, codeguys, diag = generate_c_source(
-        name,
-        mesh,
-        callbacks,
-        primary_field_list,
-        constants_subs_map=constants_subs_map,
-        verbose=verbose,
-        debug=debug,
-        debug_name=debug_name,
-    )
-    module, tmpdir = compile_and_load(modname, codeguys, verbose=verbose)
-    _ext_dict[name] = module
-
-    if underworld3.mpi.rank == 0 and verbose:
-        randstr = diag["randstr"]
-        print(f"Location of compiled module: {str(tmpdir)}")
-        print(f"{randstr} Equation count - {diag['eqn_count']}", flush=True)
-        print(
-            f"{randstr}   {diag['count_residual_sig']:5d}    residuals: "
-            f"{diag['residual_equations'][0]}:{diag['residual_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_bc_sig']:5d}   boundaries: "
-            f"{diag['boundary_equations'][0]}:{diag['boundary_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_jacobian_sig']:5d}    jacobians: "
-            f"{diag['jacobian_equations'][0]}:{diag['jacobian_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_bd_residual_sig']:5d} boundary_res: "
-            f"{diag['boundary_residual_equations'][0]}:{diag['boundary_residual_equations'][1]}",
-            flush=True,
-        )
-        print(
-            f"{randstr}   {diag['count_bd_jacobian_sig']:5d} boundary_jac: "
-            f"{diag['boundary_jacobian_equations'][0]}:{diag['boundary_jacobian_equations'][1]}",
-            flush=True,
-        )
-
-    return
