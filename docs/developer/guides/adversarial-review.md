@@ -115,7 +115,7 @@ on the PR with its evidence:
 
 | verdict | what it means | what it requires |
 |---|---|---|
-| **Closed by this branch** | the defect is gone because of this change | the PR body carries `Closes #N`, and the branch carries the regression test that would have caught it |
+| **Closed by this branch** | the defect is gone because of this change | the PR body carries `Closes #N`, and the branch carries the regression test that would have caught it; the issue is labelled `fixed-in-PR` while the PR is open and closed by hand when it merges to `development` (`Closes #N` fires only on `main`; see [Planning on GitHub](planning-on-github.md)) |
 | **Already fixed** | it was fixed earlier and nobody closed it | a probe run against `development`, pasted into the issue as the closing comment, showing the behaviour the issue describes no longer happens |
 | **Still live** | the branch passes through it and leaves it | one line saying which part still reproduces, so the next session does not re-derive it |
 
