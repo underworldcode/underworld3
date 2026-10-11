@@ -317,6 +317,9 @@ def _cell_values(solver, exprs):
         proj.petsc_options.delValue("ksp_monitor")
         probe = solver._rate_strengthening_probe = (var, proj)
     var, proj = probe
+    # the probe compiles on its solver's JIT route, so "expanded" rules the graph out
+    # of the entry multiplier as well as of the solve
+    proj.jit_route = solver.jit_route
     values = []
     for expr in exprs:
         proj.uw_function = expr

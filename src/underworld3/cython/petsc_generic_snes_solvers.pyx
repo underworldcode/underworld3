@@ -609,7 +609,9 @@ class SolverBaseClass(uw_object):
             :math:`F_{\mathrm{ref}}`; a warm start enters the ramp at the
             :math:`\alpha` its residual calls for. Picard locates the basin, Newton
             converges inside it (cf. Spiegelman et al. 2016). :math:`\alpha = 0` is
-            bit-identical to Picard, so no recompile is needed to switch.
+            bit-identical to Picard while the Newton blocks are finite (the guard of
+            :func:`_jacobian_unwrap` keeps them finite at rest), so no recompile is
+            needed to switch.
 
         The Newton flux for a model whose flux has a non-smooth yield kink is
         the model's own smooth law (``constitutive_model.flux_jacobian``) when
@@ -703,18 +705,21 @@ class SolverBaseClass(uw_object):
         """Prepare a residual flux for Jacobian differentiation.
 
         ``expr`` is the exact (Picard) flux; ``newton_expr`` is the consistent
-        (Newton) flux to use — when None it is the unwrapped ``expr`` (the
-        derivative then captures d(eta)/d(grad v)). The residual itself is never
+        (Newton) flux to use — when None it is ``_jacobian_unwrap(expr)`` on the
+        solver's JIT route (the derivative then captures d(eta)/d(grad v)). The residual itself is never
         passed through here, so the converged solution always satisfies the
         exact constitutive law.
 
         Returns, by ``consistent_jacobian`` mode:
           * False  -> ``expr``  (frozen viscosity; bit-identical Picard tangent)
-          * True   -> ``newton_expr``  (full consistent Newton tangent)
+          * True   -> ``newton_expr``  (full consistent Newton tangent); once a
+            cold start has planned its Picard step (``_picard_blend``), the
+            blend below, held at alpha = 1 except during that step
           * "continuation" -> ``expr + alpha*(newton_expr - expr)`` with alpha a
             constants[] parameter ramped 0->1 at solve time. Differentiating
             this gives ``G_picard + alpha*(G_newton - G_picard)`` because alpha
-            is constant w.r.t. the unknowns. alpha=0 is bit-identical to Picard.
+            is constant w.r.t. the unknowns. alpha=0 is bit-identical to Picard
+            while ``newton_expr``'s blocks are finite (0 * NaN is NaN).
 
         No-op for constant viscosity (``newton_expr`` == ``expr``).
         """
