@@ -225,7 +225,10 @@ $(\dot\varepsilon_{II}/\dot\varepsilon_0)^{1/n-1}$, is not merged, and both rout
 a finite Newton tangent at a state of rest, equal entry for entry. A power law on the
 bare named invariant, $\eta = \dot\varepsilon_{II}^{\,1/n-1}$, is merged into
 $g^{(1/n-1)/2}$: the tree's Newton flux is NaN at rest and the graph's is finite, because
-$\dot\varepsilon_{II}$ stays a node whose body carries the guard (`test_0024`).
+$\dot\varepsilon_{II}$ stays a node whose body carries the guard (`test_0024`). Since #841
+both guards cover every fractional power (a non-integer exponent on a base with free
+symbols), so the merged power is guarded on both routes and both tangents are finite at
+rest; `test_0024` keeps the old tree as its reference.
 
 ### Each lowering is read back by `getext()` from its nodes
 
@@ -608,7 +611,7 @@ multiplied by a name that holds its reciprocal.
 | a node class from an earlier compile reused | a changed `.sym` is ignored | the compile serial in each class's identity; a test that changes a body and rebuilds in one process without clearing SymPy's cache |
 | source that depends on the hash seed, a creation counter or a re-declaration | every parallel run repairs; a new process or a re-run notebook cell misses the cache | canonical emission; `test_0105` extended with a Newton fixture, a preamble of extra objects and a re-declared law |
 | a cancellation across a name lost | NaN at a state where the tree gave a finite limit, in an unguarded residual or Picard kernel | every residual and Picard kernel compared with the tree at a state of rest on every fixture |
-| `test_0022` (tier 1) asserts the expanded, guarded tree of `_jacobian_unwrap`, and checks a block for `Derivative` with `has()`, which does not see node bodies | one test fails by construction, the other cannot fail | the guard test now holds `_jit_graph.guard_half_integer_powers` to SymPy's `replace` on eight laws; the tests of deleted helpers went with them |
+| `test_0022` (tier 1) asserts the expanded, guarded tree of `_jacobian_unwrap`, and checks a block for `Derivative` with `has()`, which does not see node bodies | one test fails by construction, the other cannot fail | the guard test now holds `_jit_graph.guard_fractional_powers` (named `guard_half_integer_powers` until #841) to SymPy's `replace` on eight laws; the tests of deleted helpers went with them |
 | an entry that is zero today becomes a non-zero expression | assembly of an entry that evaluates to zero | numbers and leaves inlined; zero patterns compared on every fixture |
 | guard placement changes cold-start behaviour | NaN at a state of rest | `test_0024`: the guarded lowering against a guarded tree, at a random state and at rest, for a viscoplastic law and a power law on a named invariant; `test_1067` (cold Newton start) |
 | `getext()` or another walker expands nodes back into the tree | the cost returns, silently | `getext()` lowers atoms itself; `test_0024` emits a twelve-layer law whose tree doubles with each layer and bounds its C |

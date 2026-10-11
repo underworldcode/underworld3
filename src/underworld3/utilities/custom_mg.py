@@ -1059,6 +1059,13 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     # ``PCSetUp``, after the write.
     if ksp is not None:
         ksp.setType(opts.getString(prefix + "ksp_type", ksp.getType()))
+        # KSPSetType re-creates the Krylov context with ITS defaults, so a restart the
+        # options database carries (the solvers' default 100, or the user's own) is
+        # lost here: re-apply it to the live object (measured: a single-field FMG
+        # solve ran FGMRES(30) while its report said 100).
+        if ksp.getType() in ("gmres", "fgmres", "lgmres", "dgmres", "pgmres", "pipefgmres") \
+                and opts.hasName(prefix + "ksp_gmres_restart"):
+            ksp.setGMRESRestart(opts.getInt(prefix + "ksp_gmres_restart"))
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)

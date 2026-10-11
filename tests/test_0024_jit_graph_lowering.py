@@ -148,9 +148,10 @@ def test_a_changed_body_is_lowered_afresh_without_clearing_the_cache(box):
 
 
 def _guarded_tree(e):
-    """The expanded-tree Newton source the graph replaced: every non-constant atom
-    expanded, then 1e-36 added to the base of every half-integer power with free
-    symbols, by SymPy's own replace."""
+    """The expanded-tree Newton source the graph replaced, with the guard it had then:
+    every non-constant atom expanded, then 1e-36 added to the base of every
+    half-integer power with free symbols, by SymPy's own replace. (Both routes have
+    guarded every fractional power since #841.)"""
     eps2 = sympy.Float(1.0e-36)
     tree = ex.unwrap_expression(e, mode="symbolic_keep_constants")
     return tree.replace(

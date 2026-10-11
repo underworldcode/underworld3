@@ -135,6 +135,13 @@ class SolveReport:
         ``True`` when a wall-clock guard armed with ``solver.guard(...)`` cut this solve
         short. Distinguishes "the budget ran out" from a genuine divergence: both report
         ``DIVERGED_LINEAR_SOLVE``.
+    config
+        The numerical configuration the solve RAN with, snapshotted from the live PETSc
+        objects immediately before ``snes.solve`` (#806): ``snes`` (type, rtol, atol, stol,
+        max_it, Eisenstat-Walker), ``linesearch`` (type, order, tolerances), ``ksp`` (type,
+        tolerances, pc, and each fieldsplit sub-solver once set up), and ``tangent``
+        (``consistent_jacobian``, alpha, continuation parameters). Two solves that should
+        be the same computation can be compared field by field.
     """
 
     reason: int
@@ -151,6 +158,12 @@ class SolveReport:
     bounded: bool = False
     sub: Mapping[str, "SubSolveReport"] = field(default_factory=dict)
     deadline_expired: bool = False
+    # The numerical configuration in force during the solve, read from the live PETSc
+    # objects immediately before ``snes.solve`` (#806): SNES/line-search/KSP types and
+    # tolerances, Eisenstat-Walker, fieldsplit sub-solvers, tangent mode and alpha.
+    # Captured AT the solve because some paths switch settings for its duration and
+    # restore them before the report is taken. Empty when no snapshot was taken.
+    config: Mapping[str, object] = field(default_factory=dict)
 
     def __str__(self) -> str:
         rho = f"{self.rho:.3f}" if self.rho is not None else "n/a"

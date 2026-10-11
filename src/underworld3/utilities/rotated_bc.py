@@ -983,13 +983,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
       the loose ``solver.newton_switch_rtol`` (and at least ``picard`` iterations if
       given) to enter Newton's basin; phase 2 sets α=1 (consistent Newton tangent) and
       drives to the requested tolerance. α is restored to 0 afterwards.
-    * ``consistent_jacobian is True`` (pure Newton) with ``picard > 0`` — a Picard
-      warmup needs the frozen tangent, which the pure-Newton compile does not carry, so
-      this **raises** ``NotImplementedError`` pointing to ``"continuation"`` rather than
-      silently ignoring the request.
-    * ``consistent_jacobian is False`` (default, frozen/Picard) — the whole solve is
-      already the frozen tangent, so ``picard`` is inherently satisfied (matches the
-      standard path, whose post-warmup Newton phase also uses the frozen tangent here).
+    * ``consistent_jacobian is True`` (the default, consistent Newton) with
+      ``picard > 0`` — the same two-phase solve on the blended Jacobian that
+      ``solve()`` compiles for an explicit warm-up. A cold start takes NO automatic
+      Picard step on this path (pure Newton from rest converges here). Called directly,
+      without that compile, a nonlinear residual **raises** ``NotImplementedError``
+      rather than silently ignoring the request.
+    * ``consistent_jacobian is False`` (frozen/Picard) — the whole solve is already the
+      frozen tangent, so ``picard`` is inherently satisfied.
 
     Returns
     -------
@@ -1051,10 +1052,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         rtol = float(solver.tolerance)
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
-    # staged α=0 → α=1 solve; pure Newton + picard>0 is unsupported (no frozen tangent
-    # to warm up with) and errors loudly; frozen (default) already satisfies a warmup.
+    # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
+    # picard>0 runs the same staging on the blended Jacobian that solve() compiled for
+    # it (_plan_picard_warmup, staged_loop); the frozen tangent already satisfies a
+    # warmup. No automatic cold-start step is taken here: from rest, pure Newton on
+    # this path converges (measured 8-9 its against 27-29 frozen on a VP box).
     mode = getattr(solver, "consistent_jacobian", False)
-    continuation = (mode == "continuation")
+    continuation = (mode == "continuation"
+                    or (mode is True and bool(picard) and picard > 0
+                        and getattr(solver, "_picard_blend", False)))
     if picard and not continuation and mode is True:
         # The ONLY place linearity must be known in advance (hence the lazy probe —
         # two trial assemblies, paid only by this contradictory configuration): a
