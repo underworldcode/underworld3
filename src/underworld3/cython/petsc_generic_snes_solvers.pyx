@@ -134,6 +134,50 @@ def _public_names(cls):
                   if obj is cls and not name.startswith("SNES_"))
 
 
+_GUARD_EPS2 = sympy.Float(1.0e-36)
+
+
+def _guard_sqrts(e):
+    """``e`` with every half-integer power of a non-constant base ``g`` replaced by the
+    same power of ``g + 1e-36``: differentiation-safe at a zero-argument state (a
+    strain-rate invariant at rest), and within one part in 1e24 of ``e`` at any
+    resolvable value. Used by :func:`_jacobian_unwrap` for the Newton flux and for the
+    frozen (Picard) source of the coupled-field rows."""
+    eps2 = _GUARD_EPS2
+    # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
+    # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
+    # derivatives), ... — all singular in value or derivative at a
+    # zero-argument state.
+    # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
+    # identity: the unwrapped flux repeats its shared sub-expressions as the same
+    # object, and `replace` walked every occurrence (measured 16 s of a 108 s
+    # notch compile, #823).
+    memo = {}
+
+    def guard(n):
+        hit = memo.get(id(n))
+        if hit is not None:
+            return hit[1]
+        out = n
+        args = getattr(n, "args", None)
+        if args:
+            new_args = tuple(guard(a) for a in args)
+            if any(a is not b for a, b in zip(args, new_args)) and args != new_args:
+                out = n.func(*new_args)
+                # replace(simultaneous=True): a rebuild that collapses to one of
+                # the changed arguments is not matched again
+                if any(out == a and a != b for a, b in zip(args, new_args)):
+                    memo[id(n)] = (n, out)
+                    return out
+            if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
+                    and out.args[0].free_symbols):
+                out = sympy.Pow(out.args[0] + eps2, out.exp)
+        memo[id(n)] = (n, out)
+        return out
+
+    return guard(e)
+
+
 def _jacobian_unwrap(expr):
     """Expand UWexpressions down to (but NOT including) constant atoms, for use
     as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
@@ -164,45 +208,12 @@ def _jacobian_unwrap(expr):
     guard makes the derivative exactly zero at the singular point and
     perturbs it by under one part in 1e24 at any resolvable strain rate.
     The RESIDUAL is never routed through here, and the frozen (Picard)
-    tangent never calls this function, so both remain bit-identical.
+    tangent of the Stokes rows never calls this function, so both remain
+    bit-identical. (The frozen source of a coupled-field row is guarded by
+    :func:`_guard_sqrts` directly: see ``_setup_pointwise_functions``.)
 
     See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
     """
-    eps2 = sympy.Float(1.0e-36)
-
-    def _guard_sqrts(e):
-        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
-        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
-        # derivatives), ... — all singular in value or derivative at a
-        # zero-argument state.
-        # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
-        # identity: the unwrapped flux repeats its shared sub-expressions as the same
-        # object, and `replace` walked every occurrence (measured 16 s of a 108 s
-        # notch compile, #823).
-        memo = {}
-
-        def guard(n):
-            hit = memo.get(id(n))
-            if hit is not None:
-                return hit[1]
-            out = n
-            args = getattr(n, "args", None)
-            if args:
-                new_args = tuple(guard(a) for a in args)
-                if any(a is not b for a, b in zip(args, new_args)) and args != new_args:
-                    out = n.func(*new_args)
-                    # replace(simultaneous=True): a rebuild that collapses to one of
-                    # the changed arguments is not matched again
-                    if any(out == a and a != b for a, b in zip(args, new_args)):
-                        memo[id(n)] = (n, out)
-                        return out
-                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
-                        and out.args[0].free_symbols):
-                    out = sympy.Pow(out.args[0] + eps2, out.exp)
-            memo[id(n)] = (n, out)
-            return out
-
-        return guard(e)
 
     f = lambda e: _guard_sqrts(
         _unwrap_expression(e, mode="symbolic_keep_constants"))
@@ -9550,9 +9561,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 c_F1 = None if coupled.F1 is None else sympy.ImmutableDenseMatrix(coupled.F1)
                 self._coupled_residuals.append((c_F0, c_F1))
                 fns_residual += [fn for fn in (c_F0, c_F1) if fn is not None]
-                rows[k] = (self._jacobian_source(sympy.Array(coupled.F0)),
-                           None if coupled.F1 is None
-                           else self._jacobian_source(sympy.Array(coupled.F1)))
+                # The frozen (Picard) source is GUARDED: a coupled source is usually
+                # written with the bare invariant Unknowns.Einv2 = sqrt(...), whose
+                # derivative is 0/0 at rest, and the frozen form is differentiated as
+                # written (for the Stokes rows the viscosity is an opaque expression
+                # there, so it never arose). Unguarded, a cold solve's Picard step,
+                # consistent_jacobian=False and the continuation blend all assembled
+                # NaN (2026-10-11). The Newton source is the RAW form unwrapped
+                # (_jacobian_unwrap guards it itself), so the full-Newton tangent is
+                # unchanged; the residual is c_F0 / c_F1 above, also unchanged.
+                rows[k] = tuple(
+                    None if F is None else self._jacobian_source(
+                        sympy.Array(F).applyfunc(_guard_sqrts),
+                        newton_expr=_jacobian_unwrap(sympy.Array(F)))
+                    for F in (coupled.F0, coupled.F1))
 
             for row, (f0, f1) in rows.items():
                 for column, (values, gradient) in columns.items():

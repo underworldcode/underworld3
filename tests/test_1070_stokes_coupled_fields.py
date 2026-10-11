@@ -308,3 +308,53 @@ def test_default_fieldsplit_with_a_coupled_field_has_no_velocity_block_size():
     assert "fieldsplit_0_mat_block_size" not in stokes.petsc_options.getAll()
     assert stokes.snes.getConvergedReason() > 0
     assert stokes.snes.getFunctionNorm() < 1.0e-6
+
+
+def _cold_bare_invariant_solver(dim, mode):
+    # The chi source is the BARE invariant Unknowns.Einv2 = sqrt(...), whose
+    # derivative is 0/0 at rest, and the solve starts cold (interior at rest).
+    mesh, stokes = _driven_stokes(dim=dim)
+    chi = _scalar_field(mesh, f"chi_cold_{mode}")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + 0.5 * chi.sym[0] ** 2
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    stokes.consistent_jacobian = {"frozen": False, "continuation": "continuation"}.get(mode, True)
+    picard = int(mode[6:]) if mode.startswith("picard") else None
+    return mesh, stokes, chi, picard
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("mode", ["picard1", "picard3", "frozen", "continuation"])
+def test_cold_frozen_tangent_of_a_bare_invariant_source_is_finite(dim, mode):
+    # The frozen (Picard) form of a coupled row is differentiated as written, so a
+    # bare sqrt invariant made it 0/0 at rest, and alpha * NaN is NaN even at alpha
+    # = 0: every frozen-tangent path (a Picard warm-up, consistent_jacobian=False,
+    # the continuation blend) assembled NaN and its first linear solve failed
+    # (DIVERGED_LINEAR_SOLVE at iteration 0, 2-D and 3-D, 2026-10-11). Only the
+    # tangent is guarded; the residual is the raw form.
+    mesh, stokes, chi, picard = _cold_bare_invariant_solver(dim, mode)
+    stokes.petsc_options["snes_max_it"] = 1
+    if picard:
+        stokes.solve(picard=picard)
+    else:
+        stokes.solve()
+    reason = stokes.snes.getConvergedReason()
+    assert reason != -3, "DIVERGED_LINEAR_SOLVE: the cold frozen tangent is not finite"
+    assert np.isfinite(stokes.snes.getFunctionNorm())
+    assert np.all(np.isfinite(chi.array)) and np.all(np.isfinite(stokes.Unknowns.u.array))
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("picard", [1, 3])
+def test_cold_coupled_solve_with_a_picard_warmup_converges(dim, picard):
+    # The same cold problem, solved through: a Picard warm-up hands Newton a finite
+    # iterate. (Pure Picard and the continuation ramp do not converge on this
+    # strongly two-way problem -- the frozen tangent drops the u-chi cross blocks,
+    # so its direction is no descent direction for the line search; a separate
+    # matter from the NaN.)
+    mesh, stokes, chi, _ = _cold_bare_invariant_solver(dim, f"picard{picard}")
+    stokes.petsc_options["snes_rtol"] = 1.0e-10
+    stokes.solve(picard=picard)
+    assert stokes.snes.getConvergedReason() > 0
+    assert stokes.snes.getFunctionNorm() < 1.0e-6

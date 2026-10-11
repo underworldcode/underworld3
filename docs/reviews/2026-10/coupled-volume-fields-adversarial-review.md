@@ -127,6 +127,37 @@ strengthening; the campaign report is `notch_length_scale/REPORT.md` in uw3-camp
     - Left open with that evidence. The fixture change (a traction-free wall) removes the
       singular system from test_1070 either way.
 
+11. **Every frozen-tangent path assembled NaN on a cold coupled solve (fixed, with
+    test).** A coupled source written with the bare invariant `Unknowns.Einv2 =
+    sqrt(...)` has a derivative of 0/0 at rest.
+    - The frozen (Picard) form of a coupled row is differentiated as written: the
+      `expr` passed to `_jacobian_source`.
+    - The Newton form is guarded by `_jacobian_unwrap` (`sqrt(g)` becomes
+      `sqrt(g + 1e-36)`).
+    - So a cold solve's Picard warm-up (`solve(picard=n)`), `consistent_jacobian = False`
+      and the continuation blend `J_P + alpha (J_N - J_P)` all assembled NaN; alpha * NaN
+      is NaN at alpha = 0.
+    - Symptom: DIVERGED_LINEAR_SOLVE at iteration 0, 2-D and 3-D (GAMG sub-PC failure on
+      split 0, or LU failure).
+    - The Stokes rows never showed it: there the viscosity is an opaque expression in the
+      frozen form.
+    - The default cold solve escaped because it took no warm-up here, and the notch runs
+      start from a viscous seed.
+    - Fix: `_guard_sqrts` lifted to a module-level helper, unchanged, and applied to the
+      coupled rows' frozen source. The Newton source is the raw form unwrapped, so the
+      full-Newton tangent is unchanged; the residual is unchanged.
+    - Ordinary Stokes C is byte-identical to the base (`stokes_c_md5.py`: 655ff38a,
+      d5a5ba4b, 4fc089ca).
+    - Tests: `test_cold_frozen_tangent_of_a_bare_invariant_source_is_finite` (picard 1
+      and 3, frozen, continuation; 2-D and 3-D) and
+      `test_cold_coupled_solve_with_a_picard_warmup_converges` (picard 1 and 3; 2-D and
+      3-D). All 12 fail without the fix and pass with it; the file is 24/24 serially and
+      at np = 3.
+    - Not fixed here, and not the NaN: on this strongly two-way problem pure Picard
+      (`False`) stops with DIVERGED_LINE_SEARCH after 1-4 steps, and the continuation ramp
+      reaches only |F| = 1.5e-4 in 58 steps in 2-D and stalls near 1.9 in 3-D. The frozen
+      tangent drops the u-chi cross blocks, so its direction need not descend.
+
 ## Not covered
 
 - Coupled fields at np ≥ 3 on the notch.
