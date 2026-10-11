@@ -67,6 +67,51 @@ Every reviewer was told to break the change and to verify each finding by probe.
 - **Rank uniformity:** the ladder runs at np=3. Every new collective is reached by every rank.
 - **Restart:** reaches the live KSP for default, fast, robust, gamg and refinement=2 FMG Stokes, and for plain, gamg and fmg Poisson. A user value is kept. The composed solver keeps its 200.
 
+## Round 3 — the merge with development (2c6bc2f9: #823 tier 2, #835)
+
+The textual conflicts were five hunks in three files: `_jacobian_source` takes the
+solver's JIT route and keeps the warm-up blend, the `consistent_jacobian` docstring keeps
+this branch's defaults with tier 2's description of the Newton source, `Stokes.solve`
+keeps `_skip_stress_history` and the untyped `homotopy`, and `test_0104` keeps the frozen
+tangent and the route. The review then attacked the seams between this branch's tangent
+machinery and the two JIT routes.
+
+- **blocker, fixed (#841, 4cdc00dd).** A fractional power of the bare invariant,
+  `eta = 1/(1 + Einv2**(1/3))`, raised PETSc error 77 on a cold solve under the default
+  tangent, on both routes: SymPy merges `sqrt(g)**(1/3)` into `g**(1/6)`, which the
+  half-integer guard missed, so `J(0)` was NaN and the blended warm-up kernel inherited it
+  at alpha = 0. The guard now covers every non-integer exponent on a base with free
+  symbols, on both routes. `test_1067` raised 77 on both routes before the change.
+- **should-fix, fixed (bf4c32ff).** The rate-strengthening probe projection compiled on
+  the process default route, so `jit_route = "expanded"` did not rule the graph out of the
+  ladder's entry multiplier. It now takes its solver's route.
+- **should-fix, fixed (bf4c32ff).** Docstrings: `True` returns the blend once a cold start
+  has planned its Picard step; alpha = 0 is bit-identical to Picard only while the Newton
+  blocks are finite. The consistent-tangent design note said "default off" (3eaa99be).
+- **open.** `solve(homotopy=True)` ends the delta march at the power-mean law with
+  delta = 9.8e-4, not at the model's stated delta = 0.1 and sqrt smoother; the manifest
+  carries `{s_{y}}` in place of `{\updelta_{y,0}}`. The rate-strengthening ladder ends at
+  the stated problem; the march does not.
+- **open.** On the DP box the automatic warm-up doubles the iteration count (19–20 against
+  9 with `picard=-1`): after the Picard step the backtracking line search sits at
+  lambda = 0.1 for 13 steps. `plasticity-solvers.md` reads a linear tail as "you are on
+  the Picard tangent", which this case contradicts.
+- **open, #827.** The PETSc banner from `_check_velocity_preconditioner` also prints after
+  a rewire followed by a warm solve that converges at iteration 0 (a tangent toggle, a
+  route switch, the tangent restored after either homotopy). Triggers added to #827.
+
+Attacks that failed: every `_jacobian_unwrap` and `getext` call passes the solver's
+route; with the solver on `"expanded"` the Jacobian blocks hold no graph nodes and the C
+no `uwt_` temporaries, for the default tangent, `"continuation"` and
+`newton_pressure_coupling=False`. `\alpha_{N}`, the yield softness, `m_reg` and `\eta_reg` are
+constants[] slots on both routes, and ramping them leaves the cache key unchanged. A
+mid-run route switch keeps `_picard_blend` and recompiles the blend on the new route with
+the same answer. On the DP box with the default law, the default tangent takes 20
+iterations on both routes and the solutions agree to 2.2e-16 (v) and 7e-16 (p); `J(0)` is
+finite and equal on both routes. `test_0104` under the default tangent: the ramp keeps its
+cache key and matches a fresh build to 1e-13, and the stale-slot check still raises on a
+warm solve, so the frozen-tangent pin hides nothing.
+
 ## Open (not fixed on this branch)
 
 - **#817 is misdiagnosed.** `Stokes_Constrained` fails on its second Newton iteration whatever the tangent:
