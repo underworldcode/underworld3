@@ -117,6 +117,33 @@ def _tangent_projector(mesh):
     return sympy.eye(mesh.cdim) - n.T * n
 
 
+def _surface_spin(mesh, L):
+    r"""Spin of a material element of a sheet on a curved surface,
+
+    .. math::
+
+        \mathbf{W} = \mathrm{skew}(\mathbf{P}\mathbf{L}\mathbf{P})
+        + \dot{\mathbf{n}}\mathbf{n}^T - \mathbf{n}\dot{\mathbf{n}}^T,
+        \qquad \dot{\mathbf{n}} = -\mathbf{L}^T\mathbf{n},
+
+    with :math:`\mathbf{n}` the cell's facet normal, :math:`\mathbf{P}` its
+    projector and :math:`\mathbf{L}` the surface velocity gradient the
+    assembler supplies (projected on the derivative index only). The first term
+    is the rotation within the surface; the second turns the normal, which for
+    a tangential flow rotates at :math:`-\mathbf{L}^T\mathbf{n}` because
+    :math:`\nabla_s(\mathbf{u}\cdot\mathbf{n}) = 0`. For a rigid rotation
+    :math:`\mathbf{u} = \boldsymbol\omega\times\mathbf{X}` (exact in the P2
+    space) this is the rotation tensor :math:`\boldsymbol\Omega` itself, so a
+    Jaumann-rate stress is carried rigidly; :math:`\mathrm{skew}(\mathbf{L})`
+    alone misses the turning of the normal."""
+    n = sympy.Matrix(_facet_normal_field(mesh).sym).reshape(mesh.cdim, 1)
+    P = sympy.eye(mesh.cdim) - n * n.T
+    L = sympy.Matrix(L)
+    PLP = P * L * P
+    ndot = -L.T * n
+    return (PLP - PLP.T) / 2 + ndot * n.T - n * ndot.T
+
+
 class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vector):
     r"""Vertically averaged thin sheet (plane stress), viscous or viscoelastic.
 
@@ -174,6 +201,8 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
                 inner_self._E = P * inner_self._E * P
                 inner_self._Einv2 = sympy.sqrt(
                     (sympy.Matrix(inner_self._E) ** 2).trace() / 2)
+                if new_u.mesh.dim < new_u.mesh.cdim:
+                    inner_self._W = _surface_spin(new_u.mesh, inner_self._L)
 
     _solver_terms = (
         ("thickness", "sheet thickness L multiplying the in-plane stress"),
@@ -253,13 +282,18 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             raise ValueError(
                 "timestep is required for a viscoelastic sheet: call "
                 "sheet.solve(timestep=dt)")
+        if (self.mesh.dim < self.mesh.cdim
+                and getattr(self.constitutive_model, "_objective_rate", "none") == "upper_convected"):
+            raise NotImplementedError(
+                "the upper-convected rate needs the full velocity gradient of a "
+                "material element, which a sheet on a curved surface does not yet "
+                "supply; use objective_rate='jaumann' (the spin is supplied) or 'none'.")
         self._stress_history_prepare(timestep, _force_setup=_force_setup)
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
             self._setup_solver(verbose)
         self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
-        self._keep_history_tangent()
         super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
                       divergence_retries=divergence_retries)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
@@ -276,10 +310,17 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         components, which the plane-stress closure reads as a trace and so as a
         spurious pressure. Measured without this, an unfaulted Maxwell sheet
         driven by a divergence-free flow carried normal components up to 31% of
-        the stress by t = 3 and thickened at both poles (an uplift rate of 0.15
-        against 1.7e-4 for the same sheet solved viscously). The projection
-        removes the normal part; the in-plane orientation is still carried
-        without rotation, as on a flat mesh."""
+        the stress by t = 3. The projection removes the normal part left after
+        the rotation.
+
+        It is applied to the COMMITTED stress, after the solve, never between the
+        transport and the solve. After the transport the history at a node still
+        carries the components it had upstream, tangent to the upstream plane;
+        the objective rotation inside the solve (the spin includes the turning of
+        the normal) turns them into the node's own plane. Projecting first throws
+        those components away before the rotation can use them: measured on a
+        rigid quarter-turn of the sphere, a first-order error (4.0e-2 at 40 steps,
+        1.9e-2 at 80) where the flat sheet carries the stress to 5e-4."""
         if self.mesh.dim == self.mesh.cdim:
             return
         for level in self.Unknowns.DFDt.psi_star:

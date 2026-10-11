@@ -106,3 +106,24 @@ vertices need snapping back to the sphere.
 4. Sheet on the sphere with strong tangency and the Killing null space.
 5. Faults on the sphere.
 6. Results and examples.
+
+## One model, thin or thick
+
+Principle (maintainer, 2026-10-10): the same physics is the same model script. A model
+must move between the thin sheet (`ThinSheet` on a surface mesh) and a thick sheet
+(`Stokes` on a thin 3-D mesh) by changing the mesh and the solver class, nothing else.
+The solver owns the kinematics, the closure and the geometry; the model owns the
+rheology. What is already shared: the constitutive models, the fault interface API, the
+boundary-condition methods, the stress history and `solve(timestep=)`.
+
+Still to align:
+
+| | thin sheet | thick sheet | aligned form |
+|---|---|---|---|
+| construction | `ThinSheet(mesh)` | `Stokes(mesh, v, p)` | same signature; the sheet exposes `p = -tr(tau)` as a diagnostic |
+| forcing | per unit area | per unit volume | per unit volume; the sheet multiplies by its thickness |
+| basal coupling | `basal_drag` | traction on the base | one method, `add_basal_drag(c, boundary)` |
+| fault geometry | `add_fault` with a trace | `add_conforming_sheet` | `add_fault` with a surface trace extrudes it through a thin 3-D mesh |
+| stress | in-plane sigma | 3-D sigma | one resolved-traction / Delta CFF helper |
+| nonlinear invariants | in-plane only (wrong where the sheet thins) | 3-D | the sheet supplies the invariant with eps_nn = -tr(eps_s) |
+| topography | implied isostatic rate | free surface | one diagnostic name |
