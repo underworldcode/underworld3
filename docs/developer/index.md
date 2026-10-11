@@ -202,6 +202,7 @@ design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
 design/eulerian-supg-transport
+design/jit-shared-graph-codegen
 ```
 
 ```{toctree}

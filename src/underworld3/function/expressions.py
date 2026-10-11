@@ -169,10 +169,13 @@ def _unwrap_expression_once(expr, mode='nondimensional'):
         Expression with UW atoms substituted
     """
     from underworld3.coordinates import UWCoordinate
+    from underworld3.utilities import _jit_graph
 
     # Handle non-expression types directly
     if isinstance(expr, UWQuantity) and not isinstance(expr, UWexpression):
         return _unwrap_atom(expr, mode)
+
+    expr = _jit_graph.expand_nodes(expr)
 
     if isinstance(expr, UWCoordinate):
         return _unwrap_atom(expr, mode)
@@ -222,6 +225,11 @@ def _unwrap_expression_complete(expr, mode):
     same Python object, which identity-memoised walks downstream exploit.
     """
     from underworld3.coordinates import UWCoordinate
+    from underworld3.utilities import _jit_graph
+
+    # a block lowered onto the JIT's graph holds node applications: each is one more
+    # atom, whose expansion is its body (#823)
+    expr = _jit_graph.expand_nodes(expr)
 
     uw_types = (UWexpression, UWQuantity, UWCoordinate)
     expanded = {}       # id(atom) -> (atom, expansion); the atom is held so its id stays valid
@@ -618,6 +626,10 @@ def unwrap_for_evaluate(expr, scaling_active=None):
         sym_expr = expr.sym
     else:
         sym_expr = expr
+
+    # a block lowered onto the JIT's graph: nodes expand to their bodies (#823)
+    from underworld3.utilities import _jit_graph
+    sym_expr = _jit_graph.expand_nodes(sym_expr)
 
     # Step 4: Process composite expressions - TYPE-BASED DISPATCH
     if isinstance(sym_expr, sympy.Expr):
