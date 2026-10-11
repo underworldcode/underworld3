@@ -104,6 +104,10 @@ class _DDtCoreState(SnapshottableState):
     history_initialised: bool = False
     n_solves_completed: int = 0
     dt: Any = None
+    # the characteristic trace this history samples from, when it has one:
+    # which recorded velocity levels are valid decides the mid-time velocity
+    # of the next trace-back (see CharacteristicTrace._step_state)
+    characteristics: Any = None
 
 
 @dataclass
@@ -870,11 +874,13 @@ class _DDtBase(uw_object):
 
     def _core_state_kwargs(self):
         """Common evolution-tracking fields for the State dataclasses."""
+        trace = getattr(self, "_characteristics", None)
         return dict(
             dt_history=list(self._dt_history),
             history_initialised=bool(self._history_initialised),
             n_solves_completed=int(self._n_solves_completed),
             dt=self._dt,
+            characteristics=trace._step_state() if trace is not None else None,
         )
 
     def _validate_state_schema(self, s, state_cls):
@@ -913,6 +919,9 @@ class _DDtBase(uw_object):
         self._history_initialised = bool(s.history_initialised)
         self._n_solves_completed = int(s.n_solves_completed)
         self._dt = s.dt
+        trace = getattr(self, "_characteristics", None)
+        if trace is not None:
+            trace._restore_step_state(s.characteristics)
         _update_bdf_values(
             self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
         )
@@ -2614,6 +2623,24 @@ class CharacteristicTrace:
         return np.asarray(out).reshape(coords.shape[0], self.mesh.dim)
 
     # -- the steps and the trace -----------------------------------------------
+
+    def _step_state(self):
+        """What the trace carries from one step to the next: how many recorded
+        velocity levels are valid (which decides the mid-time velocity of the
+        next trace-back), the step count and the last step length. The levels'
+        values are mesh variables and travel with the fields."""
+        return {"levels_valid": int(self._levels_valid), "step": int(self._step),
+                "dt": self._dt}
+
+    def _restore_step_state(self, record):
+        """Put back a :meth:`_step_state` record; ``None`` (a trace made after
+        the record was taken) returns the trace to its state before any step."""
+        if record is None:
+            record = {"levels_valid": 0, "step": 0, "dt": None}
+        self._levels_valid = int(record["levels_valid"])
+        self._step = int(record["step"])
+        self._dt = record["dt"]
+        self._cache.clear()
 
     def begin_step(self, dt):
         self._step += 1
