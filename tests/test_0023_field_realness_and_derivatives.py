@@ -251,7 +251,6 @@ def test_parameters_given_with_units_are_known_real():
     source on the Spiegelman notch (#823). A UWQuantity is real when its value is."""
     from underworld3.cython.generic_solvers import _jacobian_unwrap
     from underworld3.function.expressions import UWexpression
-    from underworld3.utilities._jitextension import _unique_symbols
 
     uw.reset_default_model()
     orchestration_model = uw.get_default_model()
@@ -282,7 +281,7 @@ def test_parameters_given_with_units_are_known_real():
     assert nan.is_extended_real is None and nan.is_finite is None
 
     flux = _jacobian_unwrap(stokes.constitutive_model.flux)
-    held = [a for a in _unique_symbols(flux) if isinstance(a, UWexpression)]
+    held = [a for a in flux.free_symbols if isinstance(a, UWexpression)]
     assert held, "the Newton flux keeps its constant parameters as atoms"
     unknown = [a for a in held if a.is_extended_real is not True]
     assert not unknown, unknown
@@ -316,10 +315,9 @@ def test_the_power_mean_sharpness_follows_the_softness():
     uw.reset_default_model()
     ramped, v_ramped = yielding_box("0023s", 1.0)
     from underworld3.cython.generic_solvers import _jacobian_unwrap
-    from underworld3.utilities._jitextension import _unique_symbols
 
     sharpness = ramped.constitutive_model._get_yield_sharpness()
-    assert sharpness in _unique_symbols(_jacobian_unwrap(ramped.constitutive_model.flux))
+    assert sharpness in _jacobian_unwrap(ramped.constitutive_model.flux).free_symbols
     ramped.solve()
     assert ramped.snes.getConvergedReason() > 0
     at_one = np.array(v_ramped.array)
