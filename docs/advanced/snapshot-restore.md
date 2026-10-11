@@ -78,7 +78,14 @@ of the model automatically:
 - all swarm particle positions and swarm-variable values,
 - solver-internal time-integration history (the `DDt` operators that
   drive `AdvDiffusion`, viscoelastic stress history, etc.),
+- what each solver carries from one solve to the next (whether it holds a
+  converged solution to warm-start from, the last timestep, the rate of
+  change `estimate_dt` reads),
 - everything on the model tracker (see below).
+
+A restore also discards each solver's preconditioner setup, so the solves
+after a restore run exactly as they would in a run started from the
+restored state — whatever was solved between the save and the restore.
 
 Restore rebuilds swarm populations from the snapshot, so it is correct
 even if particles migrated, were added, or were lost between snapshot
@@ -212,10 +219,13 @@ attempt starts from precisely where the failed one began.
   rather than corrupting state.
 - **Recovery vs. a never-snapshotted run** is bit-exact for the
   *discarded-step* guarantee above. Continuing after a load_state
-  that ran a real solver may differ from a run that never
-  snapshotted by a small amount within solver tolerance — load_state
-  resyncs solver fields rather than reproducing their exact internal
-  buffers. This does not affect the correctness of backtracking.
+  may differ from a run that never snapshotted by a small amount
+  within solver tolerance: the restore rebuilds each preconditioner
+  from the restored state, while the never-snapshotted run keeps its
+  algebraic multigrid warm from earlier solves. This does not affect
+  the correctness of backtracking.
+- **Solver step state is in-memory only.** A disk snapshot does not
+  yet carry it, so a run restarted from a file starts its solvers cold.
 ```
 
 ## On-disk file layout (when ``save_state(file=…)`` is used)

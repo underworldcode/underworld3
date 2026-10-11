@@ -30,9 +30,11 @@ import warnings
 
 import numpy as np
 import sympy
+from dataclasses import dataclass
 from typing import Optional, Union
 
 import underworld3 as uw
+from underworld3.checkpoint.state import SolverStepState
 import underworld3.timing as timing
 from underworld3.function import expression as public_expression
 from underworld3.systems.ddt import _DDtBase
@@ -41,6 +43,17 @@ from underworld3.systems.advection_diffusion_eulerian import _check_supplied_man
 from underworld3.systems.solvers import SNES_Stokes, _dimensionalise_dt
 
 _ADVECTION_MODES = ("extrapolated", "implicit")
+
+
+@dataclass
+class NavierStokesStepState(SolverStepState):
+    """:class:`SolverStepState` plus the step length a solve without
+    ``timestep`` reuses, the velocity's rate of change ``estimate_dt`` reads,
+    and whether the extrapolation level has been primed."""
+
+    last_timestep: Optional[float] = None
+    last_change_rate: Optional[float] = None
+    history_primed: bool = False
 
 
 class SNES_NavierStokes_Composed(SNES_Stokes):
@@ -483,6 +496,21 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
     def _set_advecting_velocity(self, values):
         self._a_var.array[...] = values
+
+    @property
+    def state(self):
+        return NavierStokesStepState(
+            has_solution=bool(self._has_solution),
+            last_timestep=self._last_timestep,
+            last_change_rate=self._last_change_rate,
+            history_primed=bool(self._history_primed))
+
+    @state.setter
+    def state(self, s):
+        SNES_Stokes.state.fset(self, s)
+        self._last_timestep = s.last_timestep
+        self._last_change_rate = s.last_change_rate
+        self._history_primed = bool(s.history_primed)
 
     def _prime_history(self):
         """First solve: the extrapolation level equals the current velocity."""
