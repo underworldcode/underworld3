@@ -31,11 +31,22 @@ _serial = itertools.count(1)
 _nodes_made = False
 
 
-def guard_half_integer_powers(e):
-    r"""``e`` with :math:`10^{-36}` added to the base of every half-integer power
-    whose base has free symbols: the sqrt guard of ``_jacobian_unwrap``, the same rule
-    and the same rebuild. Node applications are not entered (a guarded node's body was
-    guarded when it was made)."""
+def is_fractional_power(n):
+    """True for a power with a non-integer exponent whose base has free symbols: its
+    value or its derivative can be singular where the base is zero, as the strain-rate
+    invariant is at rest. Half-integer powers are the invariant and its reciprocal;
+    SymPy merges a power of the bare invariant into others, ``sqrt(g)**(1/3)`` into
+    ``g**(1/6)`` (#841)."""
+    return n.is_Pow and n.exp.is_integer is not True and bool(n.args[0].free_symbols)
+
+
+def guard_fractional_powers(e):
+    r"""``e`` with :math:`10^{-36}` added to the base of every fractional power
+    (:func:`is_fractional_power`): the guard of ``_jacobian_unwrap``, the same rule
+    and the same rebuild on both routes. In floating point the added term vanishes
+    against any base above about :math:`10^{-20}`, so only a state at rest sees it.
+    Node applications are not entered (a guarded node's body was guarded when it was
+    made)."""
     memo = {}
 
     def guard(n):
@@ -53,8 +64,7 @@ def guard_half_integer_powers(e):
                 if any(out == a and a != b for a, b in zip(args, new_args)):
                     memo[id(n)] = (n, out)
                     return out
-            if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
-                    and out.args[0].free_symbols):
+            if is_fractional_power(out):
                 out = sympy.Pow(out.args[0] + _EPS2, out.exp)
         memo[id(n)] = (n, out)
         return out
@@ -332,7 +342,7 @@ class KernelGraph:
         try:
             body = self.lower(atom.sym, guarded)
             if guarded:
-                body = guard_half_integer_powers(body)
+                body = guard_fractional_powers(body)
             # a matrix-valued atom cannot be one scalar temporary: it is expanded
             # in place, as the tree route expands it
             out = self.make_node(body, label=atom.name) if _is_scalar(body) else body

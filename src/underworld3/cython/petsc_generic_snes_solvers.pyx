@@ -148,7 +148,7 @@ def _jacobian_unwrap(expr, route=None):
     No-op for constant-viscosity problems (eta has no grad-v dependence).
 
     The source is DIFFERENTIATION-SAFE: in every node body and at the top level,
-    each half-integer power whose base has free symbols gets ``+1e-36`` in its base.
+    each fractional power whose base has free symbols gets ``+1e-36`` in its base.
     Differentiating a bare invariant
     :math:`\dot\varepsilon_{II} = \sqrt{g}` produces
     :math:`\partial\sqrt{g}/\partial L = \dot\varepsilon/(2\dot\varepsilon_{II})`
@@ -160,6 +160,9 @@ def _jacobian_unwrap(expr, route=None):
     kernel inherits it even at alpha = 0 because IEEE 0*NaN = NaN). The
     guard makes the derivative exactly zero at the singular point and
     perturbs it by under one part in 1e24 at any resolvable strain rate.
+    SymPy merges a power of the bare invariant into one that is not a
+    half-integer (``sqrt(g)**(1/3)`` is ``g**(1/6)``), so the guard covers
+    every non-integer exponent (#841).
     The RESIDUAL is never routed through here, and the frozen (Picard)
     tangent never calls this function.
 
@@ -172,21 +175,23 @@ def _jacobian_unwrap(expr, route=None):
         from underworld3.utilities import _jit_graph
 
         graph = _jit_graph.KernelGraph()
-        f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
+        f = lambda e: _jit_graph.guard_fractional_powers(graph.lower(e, guarded=True))
         if isinstance(expr, sympy.MatrixBase):
             return expr.applyfunc(f)
         if isinstance(expr, sympy.NDimArray):
             return sympy.Array([f(e) for e in expr], expr.shape)
         return f(expr)  # scalar expression
 
-    # the expanded route: development's body, unchanged
+    # the expanded route: the JIT before #823 tier 2, with the guard of #841
+    from underworld3.utilities._jit_graph import is_fractional_power
+
     eps2 = sympy.Float(1.0e-36)
 
     def _guard_sqrts(e):
-        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
-        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
-        # derivatives), ... — all singular in value or derivative at a
-        # zero-argument state.
+        # every FRACTIONAL power (is_fractional_power): +1/2 (the invariant
+        # itself), -1/2 (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2
+        # (their derivatives), and the powers SymPy merges them into — all
+        # singular in value or derivative at a zero-argument state.
         # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
         # identity: the unwrapped flux repeats its shared sub-expressions as the same
         # object, and `replace` walked every occurrence (measured 16 s of a 108 s
@@ -208,8 +213,7 @@ def _jacobian_unwrap(expr, route=None):
                     if any(out == a and a != b for a, b in zip(args, new_args)):
                         memo[id(n)] = (n, out)
                         return out
-                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
-                        and out.args[0].free_symbols):
+                if is_fractional_power(out):
                     out = sympy.Pow(out.args[0] + eps2, out.exp)
             memo[id(n)] = (n, out)
             return out
@@ -11070,7 +11074,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Still true from the retired warm-up (#507): a zero strain rate is not only
         # a start-up state — a rigidly translating stuck region has edot = 0 at the
         # CONVERGED solution — so finiteness of the consistent tangent at edot = 0 is
-        # owned by the half-integer-power guard in _jacobian_unwrap, not by any
+        # owned by the fractional-power guard in _jacobian_unwrap, not by any
         # warm-up.
         #
         # The policy (and the per-solve resets of _continuation_min_picard,
