@@ -157,6 +157,16 @@ strengthening; the campaign report is `notch_length_scale/REPORT.md` in uw3-camp
       (`False`) stops with DIVERGED_LINE_SEARCH after 1-4 steps, and the continuation ramp
       reaches only |F| = 1.5e-4 in 58 steps in 2-D and stalls near 1.9 in 3-D. The frozen
       tangent drops the u-chi cross blocks, so its direction need not descend.
+      **Note, nothing to fix:** coupled-field problems use Newton only, plus the automatic
+      cold Picard warm-up step (ruling, 2026-10-11).
+    - Where the frozen tangent runs on a coupled problem under that ruling: only in the
+      automatic cold warm-up, and that is armed only when the STOKES flux is nonlinear in
+      u. `_flux_is_linear_in_unknowns()` does not count coupled fields as unknowns.
+      - In the test_1070 problem (eta = 1 + 0.5 chi^2) it returns True, so a cold solve
+        takes no warm-up. That is why the default path converged before the fix.
+      - A cold notch (a viscoplastic flux, nonlinear in u) does arm it. That is the case
+        this fix protects, for example a cold 3-D notch.
+      - The campaign's notch runs start from a viscous seed and take no warm-up.
 
 ## Not covered
 
