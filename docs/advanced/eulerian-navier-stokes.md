@@ -29,8 +29,9 @@ has no history.
 The nonlinear term is $(\mathbf{a}\cdot\nabla)\mathbf{u}^{n+1}$ with $\mathbf{a}$
 chosen by `advection=`:
 
-- `"extrapolated"` (default): $\mathbf{a} = 2\mathbf{u}^n - \mathbf{u}^{n-1}$, a
-  second-order lag. Each step is one linear solve through the Stokes fieldsplit.
+- `"extrapolated"` (default): $\mathbf{a} = \mathbf{u}^n + r(\mathbf{u}^n - \mathbf{u}^{n-1})$,
+  with $r = \Delta t_n / \Delta t_{n-1}$ the ratio of this step to the last
+  ($2\mathbf{u}^n - \mathbf{u}^{n-1}$ for equal steps), a second-order lag. Each step is one linear solve through the Stokes fieldsplit.
 - `picard_iterations=n` re-solves up to `n` more times with the latest iterate as
   $\mathbf{a}$, stopping when the velocity stops changing (`picard_tolerance`).
   The fixed point is the fully implicit scheme.
