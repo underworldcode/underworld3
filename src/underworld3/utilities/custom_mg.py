@@ -381,6 +381,43 @@ def _reduced_map(dm, field_id=None):
     return r2f, n_full
 
 
+def _split_index_maps(dm, fields):
+    """Index maps from each field's own global numbering into the global numbering
+    of the split ``fields`` (as PCFieldSplit builds it with DMCreateSubDM).
+
+    Returns ``{f: int64 array over field f's GLOBAL indices (complete, on every
+    rank) -> split global index, "nloc": owned split size, "nglobal": split
+    size}``. Both sub-DMs list OWNED parent-global indices, so the match is
+    rank-local; the per-field maps are then all-gathered (they are needed for
+    the coarse-side columns, which may be off-rank)."""
+    m4 = dm.comm.tompi4py()
+    is_s, sdm = dm.createSubDM(list(fields))
+    ps = np.asarray(is_s.getIndices(), dtype=np.int64)
+    gs = sdm.getGlobalVec()
+    s0, s1 = gs.getOwnershipRange()
+    nglobal = gs.getSize()
+    sdm.restoreGlobalVec(gs)
+    if s1 - s0 != ps.size:
+        raise RuntimeError("custom_mg: split IS and split sub-DM disagree in size")
+    order = np.argsort(ps, kind="stable")
+    out = {"nloc": int(s1 - s0), "nglobal": int(nglobal)}
+    for f in fields:
+        is_f, fdm = dm.createSubDM(f)
+        pf = np.asarray(is_f.getIndices(), dtype=np.int64)
+        gf = fdm.getGlobalVec()
+        f0, f1 = gf.getOwnershipRange()
+        fdm.restoreGlobalVec(gf)
+        if f1 - f0 != pf.size:
+            raise RuntimeError(f"custom_mg: field {f} IS and sub-DM disagree in size")
+        k = np.searchsorted(ps[order], pf)
+        if pf.size and (np.any(k >= ps.size) or np.any(ps[order][np.minimum(k, ps.size - 1)] != pf)):
+            raise RuntimeError(f"custom_mg: field {f}'s DOFs are not all in the split "
+                               f"(owned on another rank?)")
+        local = (s0 + order[k]).astype(np.int64)
+        out[f] = np.concatenate(m4.allgather(local))
+    return out
+
+
 def _clone_dm_with_solver_discretisation(solver, coarse_mesh):
     """Clone a coarse mesh DM carrying the finest ``solver``'s discretisation.
 
@@ -1361,7 +1398,31 @@ class CustomMGHierarchy:
             return None
         return sp.csr_matrix((vals, (rows, cols)), shape=(n_fine, n_coarse))
 
-    def build(self, solver):
+    def _split_fields(self, solver):
+        """The fields of the target split. ``field_id=0`` on a solver with coupled
+        fields means the whole velocity split, which always groups the coupled
+        fields with velocity (``pc_fieldsplit_0_fields = 0,<coupled ids>``): a
+        velocity-only transfer would not match that operator."""
+        fid = self.field_id
+        if isinstance(fid, (list, tuple)):
+            return [int(f) for f in fid]
+        coupled = getattr(solver, "_coupled_fields", None) or []
+        if fid == 0 and coupled:
+            return [0] + [int(c.field._solver_field_id) for c in coupled]
+        return None
+
+    @staticmethod
+    def _field_variable(solver, f):
+        """The MeshVariable that owns solver field ``f`` (its degree / continuity
+        set the node cloud of that field's transfer)."""
+        if f == 0:
+            return solver.Unknowns.u
+        for c in getattr(solver, "_coupled_fields", None) or []:
+            if int(c.field._solver_field_id) == f:
+                return c.field
+        raise ValueError(f"custom_mg: no velocity-split field with id {f}")
+
+    def build(self, solver, _var=None):
         """Build the BC-reduced prolongations. ``solver`` is the (built) finest
         solver. Each COARSE level's BC-constrained reduced map is derived directly
         from the coarse mesh DM by copying the finest solver's fields + DS onto it
@@ -1371,7 +1432,11 @@ class CustomMGHierarchy:
         weights assembled into MPIAIJ transfers with global-section reduced
         numbering (nested co-partitioned path)."""
         from underworld3 import mpi
-        var = solver.Unknowns.u
+        if _var is None:
+            fields = self._split_fields(solver)
+            if fields is not None and len(fields) > 1:
+                return self._build_multifield(solver, fields)
+        var = solver.Unknowns.u if _var is None else _var
         degree = var.degree
         continuous = getattr(var, "continuous", True)
         nlev = len(self.level_meshes)
@@ -1567,6 +1632,52 @@ class CustomMGHierarchy:
                             Pr, coords[l - 1], coords[l], maps[l - 1],
                             maps[l], nc)
                 Ps.append(_to_petsc_aij(Pr))
+        self.transfers = Ps
+        return Ps
+
+    def _build_multifield(self, solver, fields):
+        """Transfers for a split holding several fields (velocity + coupled).
+
+        Each field's transfer is built exactly as a single-field one (its own
+        degree, continuity and component count; BC-reduced on every level), in
+        that field's own global numbering. They are then scattered into the
+        split's global numbering, which interleaves the fields point by point
+        (DMCreateSubDM over ``fields``): P = sum_f E_f(fine) P_f E_f(coarse)^T.
+        Fields do not couple in the transfer. Serial and parallel alike (the
+        per-field transfers are PETSc matrices either way). FAC patch smoothing
+        is per-field row-numbered, so it is left off (whole-level smoothing)."""
+        nlev = len(self.level_meshes)
+        per_field = {}
+        for f in fields:
+            sub = CustomMGHierarchy(self.level_meshes, builder=self.builder_name,
+                                    field_id=f, cross_partition=self.cross_partition)
+            per_field[f] = sub.build(solver, _var=self._field_variable(solver, f))
+        dms = [(_clone_dm_with_solver_discretisation(solver, m) if k < nlev - 1
+                else solver.dm) for k, m in enumerate(self.level_meshes)]
+        maps = [_split_index_maps(dm, fields) for dm in dms]
+        comm = solver.dm.comm
+        Ps = []
+        for l in range(1, nlev):
+            nloc_f, nloc_c = maps[l]["nloc"], maps[l - 1]["nloc"]
+            P = PETSc.Mat().create(comm=comm)
+            P.setSizes(((nloc_f, None), (nloc_c, None)))
+            P.setType("aij")
+            P.setUp()
+            for f in fields:
+                Pf = per_field[f][l - 1]
+                rmap, cmap = maps[l][f], maps[l - 1][f]
+                r0, r1 = Pf.getOwnershipRange()
+                for r in range(r0, r1):
+                    cols, vals = Pf.getRow(r)
+                    if len(cols):
+                        P.setValues([int(rmap[r])], cmap[cols].astype(PETSc.IntType),
+                                    vals, addv=PETSc.InsertMode.INSERT_VALUES)
+            P.assemble()
+            Ps.append(P)
+        n_split = maps[-1]["nglobal"]
+        self.level_patch_rows = [None] * nlev
+        self.split_fields = list(fields)
+        self.split_size = n_split
         self.transfers = Ps
         return Ps
 
