@@ -175,9 +175,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     ):
         if DFDt is not None:
             raise ValueError(
-                "AdvDiffusion-style Navier-Stokes carries no stress history: "
-                "the viscous stress at earlier levels is rebuilt from the stored "
-                "velocity. Do not pass DFDt."
+                "Do not pass DFDt: a stress history is created by assigning a "
+                "constitutive model that asks for one (a viscoelastic model), and "
+                "`stress_transport` chooses the flavour that carries it."
             )
         if restore_points_func is not None:
             warnings.warn(
@@ -409,13 +409,41 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         return 2 * eta * sympy.Matrix(self.mesh.vector.strain_tensor(u_row))
 
     def _viscous_flux(self):
+        r"""The flux of the time scheme: the new stress, blended with the stored levels.
+
+        The theta rule weights the flux across time levels, so it needs the stress
+        at the stored levels as well as the new one. For a viscous fluid that is
+        rebuilt from the stored velocity, :math:`2\eta\dot\varepsilon(\mathbf{u}^{n})`.
+        For a viscoelastic one that rebuild is wrong -- the stress there is not a
+        viscous stress -- and the right object is already held by the stress
+        history, which is the same quantity the theta rule is asking for. So the
+        two histories meet here: the flux history of the time scheme IS the
+        elastic stress history. BDF puts every spatial term at the new level and
+        the question does not arise.
+        """
         states = self.DuDt.states()
         weights = self.DuDt.spatial_weights()
         total = weights[0] * self.stress_deviator
-        for w, u_k in zip(weights[1:], states[1:]):
+        stress_history = self.Unknowns.DFDt
+        for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
             if w == 0:
                 continue
-            total = total + w * self._viscous_stress(u_k)
+            if stress_history is None:
+                total = total + w * self._viscous_stress(u_k)
+            elif level < len(stress_history.psi_star):
+                # the history carries the memory part only; a solvent viscosity
+                # is rebuilt from the stored velocity, as the new level has it
+                eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
+                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
+                carried = self.constitutive_model._carried_stress_sym(level) \
+                    if hasattr(self.constitutive_model, "_carried_stress_sym") \
+                    else stress_history.psi_star[level].sym
+                total = total + w * (sympy.Matrix(carried) + solvent)
+            else:
+                raise ValueError(
+                    f"the time scheme weights the flux at level {level + 1}, but the "
+                    f"stress history holds {len(stress_history.psi_star)} level(s): "
+                    "give the constitutive model a higher order, or the solver a lower one.")
         return total
 
     def _stabilisation_flux(self):
@@ -442,7 +470,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
         F1 = public_expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self._viscous_flux() - sympy.eye(dim) * mechanical_pressure
+            self._viscous_flux() + self._devss_flux() - sympy.eye(dim) * mechanical_pressure
             + self._stabilisation_flux(),
             "Navier-Stokes SUPG: viscous flux of the time scheme, pressure, tau R (x) a",
         )
@@ -523,7 +551,17 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # The base _build resolves the preconditioner choice against the mesh
         # before the SNES reads its options; the setup stages must not be run
         # directly here (they mark the solver set up first, #683).
+        carries_stress = self.Unknowns.DFDt is not None
+        if carries_stress:
+            # BEFORE the build: the order ramp decides whether the compiled
+            # functions must be rewired, and the build reads that flag (#727).
+            self._stress_history_prepare(dt)
+
         self._build(verbose)
+
+        if carries_stress:
+            # AFTER the build, once per step -- not once per pass.
+            self._stress_history_advance(dt, verbose=verbose, evalf=False)
 
         self._prime_history()
         u_n = np.array(self.u.array[...])
@@ -546,6 +584,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
                 self, zero_init_guess if k == 0 else False,
                 _force_setup=_force_setup if k == 0 else False,
                 verbose=verbose, picard=0, divergence_retries=divergence_retries,
+                _skip_stress_history=True,
             )
             # The reductions run on every pass, outside any branch: a rank must
             # never skip a collective its peers take (tests/test_0052).
@@ -563,6 +602,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             (np.asarray(self.u.array[...]) - u_n).reshape(-1, self.mesh.dim), axis=1)
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = comm.allreduce(local, op=MPI.MAX) / dt
+
+        if carries_stress:
+            self._stress_history_post_solve(dt, verbose=verbose, evalf=False)
 
         # Shift the extrapolation level, then the history.
         self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]

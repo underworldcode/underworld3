@@ -262,21 +262,22 @@ def _yielding_box(tag, tau_y, cellSize=0.2):
 
 @pytest.mark.level_2
 def test_homotopy_rescues_a_solve_the_cold_start_cannot_do():
-    """THE user-level guarantee: ``solve(homotopy=True)`` converges on a genuinely
-    yielding problem where a direct cold solve of the sharp law does not.
+    """``solve(homotopy=True)`` converges on a genuinely yielding problem where a direct
+    cold solve of the sharp law under the FROZEN (Picard) tangent does not.
 
-    This is a CAPABILITY test, deliberately asserting both halves on the same problem,
-    so the feature cannot silently regress into "runs without error but no longer
-    rescues anything". At tau_y = 0.30 (~45% of the domain yielding) the cold hard-Min
-    solve gives DIVERGED_MAX_IT; the march settles near 1e-4 and converges.
+    A CAPABILITY test, asserting both halves on the same problem, so the feature cannot
+    silently regress into "runs without error but no longer rescues anything". At
+    tau_y = 0.30 (~45% of the domain yielding) the cold hard-Min Picard solve gives
+    DIVERGED_MAX_IT; the march settles near 1e-4 and converges. Since 2026-10-05 the
+    DEFAULT cold solve (one Picard step, then Newton) converges on this box too, so the
+    rescue is measured against the Picard-throughout solve, not the default one.
     """
     import numpy as np
 
-    # (a) the direct cold solve of the sharp law FAILS — under the Picard
-    # tangent, which is what the hard-yield entry problem is about. With the
-    # consistent tangent (the default since 2026-09) this cold solve
-    # CONVERGES on its own, so Picard is set explicitly here: the rescue
-    # being demonstrated is of the Picard solve that homotopy was built for.
+    # (a) the direct cold solve of the sharp law under the FROZEN tangent FAILS. Pinned to
+    # consistent_jacobian=False: with the Newton default (2026-10-05, one automatic cold
+    # Picard step then Newton) this cold hard-Min solve CONVERGES (reason 3), so the
+    # baseline the homotopy is measured against is the Picard-throughout solve.
     mesh, cold, cm_cold = _yielding_box("c", 0.30)
     cm_cold.yield_mode = "min"
     cold.consistent_jacobian = False

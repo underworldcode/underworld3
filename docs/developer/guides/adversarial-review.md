@@ -18,8 +18,12 @@ matters.
 2. Run the review on the branch diff — an independent pass whose goal is to
    break the change, not to confirm it.
 3. Fix what it finds, then open the PR.
-4. Post the findings on the PR, including the attacks that failed.
-5. Run it **again** after any substantial post-review commit. A refactor
+4. Adjudicate every open issue in the territory the branch touches: mark it
+   fixed with evidence, or refuse to and say what is still live. See
+   [Issues the review adjudicates](#issues-the-review-adjudicates).
+5. Post the findings and the adjudications on the PR, including the attacks
+   that failed.
+6. Run it **again** after any substantial post-review commit. A refactor
    landing after the review is when a second pass is worth most.
 
 The posted review is terse: findings and evidence (numbers, `file:line`, probe
@@ -93,6 +97,59 @@ that records no verdict lets a run claim invertibility it does not have.
 name. An anonymous float collapses into the assembled product and the
 transcript can only show the number. Examples in `docs/` name their
 coefficients.
+
+**A family's guide says what the family can do now.** The curated guides in
+`docs/developer/guides/` carry front matter naming the families they apply
+to, and `uw.capabilities()` lists them beside each family. A change to a
+solver family, a constitutive model, a history scheme or a boundary
+mechanism is reviewed against every guide that names it: the guide is
+updated in the same change, or the review says why it still holds. The AI
+skills in `.claude/skills` are symlinks to those pages;
+`tests/test_0030_capability_guides.py` fails on a copy, on a guide without
+front matter, and on a family name no class carries.
+
+## Issues the review adjudicates
+
+The review decides issue state, and it is the only pass that is in a position
+to. It has the branch diff, it has just read the code the issue is about, and
+it is already looking for the ways a fix fails to be a fix.
+
+**Before opening the PR, list the open issues in the territory the branch
+touches** — the files in the diff, the subsystem, the symptom. For each one,
+the review returns exactly one of three verdicts, and every verdict is posted
+on the PR with its evidence:
+
+| verdict | what it means | what it requires |
+|---|---|---|
+| **Fixed by this branch** | the defect is gone because of this change | the PR body carries `Closes #N`, and the branch carries the regression test that would have caught it; the issue is labelled `fixed-in-PR` while the PR is open and `fixed-in-development` when it merges, and is closed at release (`Closes #N` fires only on `main`; see [Planning on GitHub](planning-on-github.md)) |
+| **Already fixed** | it was fixed earlier and nobody marked it | a probe run against `development`, pasted into the issue, showing the behaviour the issue describes no longer happens; the issue is then closed if the fix is already in a release on `main`, and labelled `fixed-in-development` if not |
+| **Still live** | the branch passes through it and leaves it | one line saying which part still reproduces, so the next session does not re-derive it |
+
+**Refusing to mark an issue fixed is a verdict, not a gap.** A branch that touches the
+territory of an issue and does not fix it says so, in a line. The failure this
+replaces is silence: the fix lands, the issue reads as familiar to anyone who
+knows the PR work, and nothing ever goes back to adjudicate it. Measured over
+2026-09: 61 issues filed, 19 closed, and a random sample of five found two
+already fixed on `development` and still open.
+
+`python scripts/triage.py` does the cross-referencing this needs: open issues
+referenced by a merged PR (candidates to probe, not verdicts), the PR queue by
+mergeable x CI with what each bucket closes, and red PRs whose failing tests no
+longer exist on `development`. `--verbose` lists every row. Run it at the start
+of a session -- the reason the sweep was not being done is that it was
+expensive.
+
+**Mark fixed on a probe, never on a claim.** "PR #NNN fixed this" is not
+evidence — a PR that merged in the territory of an issue very often addressed its
+neighbour. The probe goes in the issue so any verdict can be audited and
+reversed.
+
+**What becomes an issue in the first place.** A finding the branch fixes is a
+commit and a line in the posted review. It is not also an issue. Only a finding
+we decide **not** to fix in this branch is filed, and then the PR body says
+which issues it is leaving open and why. One defect produced an issue and a PR
+comment through 2026-09, the comment was addressed on merge, and the issue
+stayed — which is most of the backlog.
 
 ## Where the reviews live
 

@@ -1842,28 +1842,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             return result
 
-    def _object_viewer(self):
-        """This will substitute specific information about this object"""
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        # feedback on this instance
-        #
-        display(
-            Markdown(
-                f"""**SwarmVariable:**
-  > symbol:  ${self.symbol}$\n
-  > shape:   ${self.shape}$\n
-  > proxy:   ${self._proxy}$\n
-  > proxy_location:  `{self._proxy_location}`\n
-  > proxy_degree:  ${self._proxy_degree}$\n
-  > proxy_continuous:  `{self._proxy_continuous}`\n
-  > type:    `{self.vtype.name}`"""
-            ),
-        )
-
-        display(self.data),
-        return
+    def describe(self, depth=4):
+        """What this swarm variable is, as data: its symbol, shape, type and
+        how it is proxied onto the mesh."""
+        from underworld3.utilities.describe import record
+        facts = {
+            "symbol": str(getattr(self, "symbol", "")),
+            "shape": str(getattr(self, "shape", "")),
+            "type": getattr(getattr(self, "vtype", None), "name", None),
+            "proxy": bool(getattr(self, "_proxy", False)),
+            "proxy location": str(getattr(self, "_proxy_location", "")),
+            "proxy degree": getattr(self, "_proxy_degree", None),
+            "proxy continuous": bool(getattr(self, "_proxy_continuous", True)),
+        }
+        return record("swarm_variable", getattr(self, "name", None),
+                      f"{facts['type'] or 'particle field'}, proxied at {facts['proxy location'] or 'nodes'}",
+                      facts=facts)
 
     def _resolve_stencil(self, nnn, order, n_particles):
         """Stencil size and reproduction order this rank can actually support.
@@ -3314,6 +3308,31 @@ class Swarm(Stateful, uw_object):
     """
 
     instances = 0
+
+    def describe(self, depth=4):
+        """What this swarm is, as data: its particle count and its mesh, with
+        its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"mesh": getattr(getattr(self, "mesh", None), "name", None)}
+        try:
+            facts["particles on this rank"] = int(self.local_size)
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            try:
+                variables = list(self.vars.values())
+            except Exception:
+                variables = []
+            for var in variables:
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = "particle swarm" + (f", {facts['particles on this rank']} particles on this rank"
+                                      if "particles on this rank" in facts else "")
+        return record("swarm", getattr(self, "name", None), summary, facts=facts, children=children)
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
@@ -5465,7 +5484,9 @@ class Swarm(Stateful, uw_object):
 
         Returns
         -------
-        (added, removed) : the counts on this rank.
+        (added, removed) : the counts on this rank. New particles follow the
+            existing ones in storage order, so the last ``added`` rows of every
+            variable are the ones just created.
         """
         mesh = self.mesh
         dim = self.cdim
@@ -5512,12 +5533,22 @@ class Swarm(Stateful, uw_object):
                 surplus = int(npc[c] - max_per_cell)
                 drop.extend(idx[np.argsort(nearest_all[idx])[:surplus]].tolist())
             if drop:
+                # PETSc removes a point by copying the LAST point into its
+                # slot (DMSwarmDataBucketRemovePointAtIndex), so the survivors
+                # are reordered in storage. The reconstruction below reads
+                # values in storage order, and the tree it is built on must
+                # share it: the same moves are replayed on the local copies
+                # (#784). Descending order, so a moved point is never one
+                # still to be removed.
+                last = X.shape[0]
                 for index in sorted(drop, reverse=True):
                     self.dm.removePointAtIndex(int(index))
+                    last -= 1
+                    if index != last:
+                        X[index] = X[last]
+                        cells[index] = cells[last]
+                X, cells = X[:last], cells[:last]
                 removed = len(drop)
-                keep = np.ones(X.shape[0], dtype=bool)
-                keep[drop] = False
-                X, cells = X[keep], cells[keep]
                 npc = np.bincount(cells[cells >= 0], minlength=ncells)
                 self._invalidate_canonical_data()
 
@@ -5705,6 +5736,12 @@ class Swarm(Stateful, uw_object):
         import underworld3 as uw
 
         delta_t_model = uw.scaling.non_dimensionalise(delta_t)
+        # The particle arithmetic is in model units: a velocity read by
+        # global_evaluate comes back dimensional in a units model and is reduced.
+        from underworld3.systems.ddt import _to_nondim_ndarray
+
+        def _nondim_velocity(value):
+            return np.asarray(_to_nondim_ndarray(value))[:, 0, :]
 
         dt_limit = self.estimate_dt(V_fn)
 
@@ -5814,9 +5851,9 @@ class Swarm(Stateful, uw_object):
                 # rank-local evaluation silently extrapolates wrong values
                 # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.global_evaluate(
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(
                     V_fn_matrix, self._particle_coordinates.data
-                )[:, 0, :]
+                ))
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -5831,7 +5868,7 @@ class Swarm(Stateful, uw_object):
                 # (since the mid-points might have moved off-proc)
                 #
 
-                v_at_Vpts[...] = uw.function.global_evaluate(v_mid_matrix, mid_pt_coords)[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(v_mid_matrix, mid_pt_coords))
 
                 new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
@@ -5851,7 +5888,7 @@ class Swarm(Stateful, uw_object):
                     print(f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 v_at_Vpts = np.zeros_like(coords)
-                v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, coords[...])[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(V_fn_matrix, coords[...]))
 
                 if self.verbose:
                     print(f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)

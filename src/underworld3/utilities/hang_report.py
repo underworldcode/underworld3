@@ -31,10 +31,21 @@ import sys
 #: SIGNAL handler -- how the watchdog works since #661 -- carry no header, so
 #: it cannot be the only thing that separates one dump from the next.
 _TIMEOUT = re.compile(r"^Timeout \(")
-#: Start of the stack of the thread that took the dump. faulthandler prints
-#: exactly one of these per dump, ahead of the other threads, so it separates
-#: dumps in a headerless file and in a headed one alike.
-_CURRENT_THREAD = re.compile(r"^Current thread 0x[0-9a-fA-F]+")
+#: Start of the stack of the thread that took the dump, in whichever of the two
+#: forms faulthandler wrote it. Dumping every thread labels that stack ``Current
+#: thread 0x...``; dumping the signalled thread alone (``all_threads=False``,
+#: which is how the watchdog registers since #793) writes ``Stack (most recent
+#: call first):`` and nothing else. Exactly one of these appears per dump either
+#: way, so it separates dumps in a headerless file and in a headed one alike.
+#:
+#: Both forms are needed. The watchdog writes the second, and the supervisor
+#: (``scripts/mpi_supervisor.py``) registers all_threads=True and writes the
+#: first; a reader that knows only one of them silently finds no dumps at all in
+#: the other's files, and then reports a job with no evidence rather than a
+#: parse it could not do.
+_DUMP_START = re.compile(
+    r"^(?:Current thread 0x[0-9a-fA-F]+|Stack \(most recent call first\):)"
+)
 #: Start of one thread's stack within a dump.
 _THREAD = re.compile(r"^(?:Current thread|Thread) 0x[0-9a-fA-F]+")
 #: A single frame.
@@ -77,11 +88,12 @@ def parse_dump_file(text):
         if _TIMEOUT.match(raw):
             close_dump()
             continue
-        # A headerless dump starts at its "Current thread" line. Closing the
-        # previous dump here is what keeps repeated signal dumps from merging
-        # into one; a "Timeout (" header immediately before simply closes an
-        # already-empty dump, so headed files parse exactly as they did.
-        if _CURRENT_THREAD.match(raw):
+        # A headerless dump starts at the line labelling the signalled
+        # thread's stack. Closing the previous dump here is what keeps
+        # repeated signal dumps from merging into one; a "Timeout (" header
+        # immediately before simply closes an already-empty dump, so headed
+        # files parse exactly as they did.
+        if _DUMP_START.match(raw):
             close_dump()
             continue
         if _THREAD.match(raw):

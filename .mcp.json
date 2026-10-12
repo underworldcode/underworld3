@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "underworld": {
+      "command": "scripts/mcp-server.sh",
+      "args": []
+    }
+  }
+}

@@ -793,6 +793,44 @@ class UWQuantity:
         except (TypeError, ValueError):
             return sympy.sympify(self._value)
 
+    def _numeric_value(self):
+        """The value as a numpy array, or None for one numpy cannot read as a number."""
+        try:
+            value = np.asarray(self._value)
+            return value if np.iscomplexobj(value) else value.astype(float)
+        except (TypeError, ValueError):
+            # Sanctioned: a value that is not a number (a string, an object); the
+            # realness questions below then answer "unknown", as SymPy would
+            return None
+
+    @property
+    def is_extended_real(self):
+        """True when the value is real (or :math:`\\pm\\infty`), as SymPy's assumption;
+        None (unknown) for NaN or a value that is not a number.
+
+        A UW expression holding this quantity reports its realness from here. Without
+        it every constitutive parameter given with units was "not known real", and
+        SymPy evaluated each power over a sum containing one in the complex plane
+        (#823).
+        """
+        if isinstance(self._value, sympy.Basic):
+            return self._value.is_extended_real
+        value = self._numeric_value()
+        if value is None or np.any(np.isnan(value)):
+            return None
+        return bool(np.all(np.imag(value) == 0))
+
+    @property
+    def is_finite(self):
+        """True when the value is finite, as SymPy's assumption (``yield_stress = oo``
+        is real but not finite); None for NaN or a value that is not a number."""
+        if isinstance(self._value, sympy.Basic):
+            return self._value.is_finite
+        value = self._numeric_value()
+        if value is None or np.any(np.isnan(value)):
+            return None
+        return bool(np.all(np.isfinite(value)))
+
     def __float__(self):
         """Convert to float."""
         return float(self._value)

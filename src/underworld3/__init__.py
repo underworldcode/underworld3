@@ -223,6 +223,9 @@ from .model import (
     create_thermal_convection_model,
 )
 from . import adjoint
+from .utilities.describe import render, view
+from .utilities.capabilities import capabilities
+from .utilities.transcript_query import Transcript
 from .utilities.transcript_report import (
     transcript_diagram,
     transcript_flowchart,
@@ -422,6 +425,46 @@ def use_nondimensional_scaling(enabled=True):
     """
     global _USE_NONDIMENSIONAL_SCALING
     _USE_NONDIMENSIONAL_SCALING = bool(enabled)
+
+
+def use_jit_route(route):
+    """
+    Set the JIT route solvers compile their kernels with, for this process.
+
+    Parameters
+    ----------
+    route : {"graph", "expanded"} or None
+        ``"graph"`` (the default) compiles each named quantity of a law once, as
+        one C temporary, and forms the Newton tangent through it by the chain rule.
+        ``"expanded"`` is the JIT before #823 tier 2: every named quantity is
+        expanded into one expression, differentiated and printed whole. ``None``
+        returns to the ``UW_JIT_ROUTE`` environment variable (default ``"graph"``).
+
+    Notes
+    -----
+    A solver's own ``jit_route`` overrides this. A solver already set up keeps its
+    kernels until it is rebuilt. The two routes agree to round-off; if a model
+    misbehaves on one and not the other, the JIT is at fault.
+
+    Examples
+    --------
+    >>> uw.use_jit_route("expanded")      # every solver built after this
+    >>> stokes.jit_route = "expanded"     # or one solver, rebuilt at its next solve
+
+    See Also
+    --------
+    jit_route : The route in use
+    """
+    from underworld3.utilities._jitextension import use_jit_route as _use
+
+    _use(route)
+
+
+def jit_route():
+    """The process's JIT route, ``"graph"`` or ``"expanded"`` (see ``use_jit_route``)."""
+    from underworld3.utilities._jitextension import resolve_jit_route
+
+    return resolve_jit_route()
 
 
 def is_nondimensional_scaling_active():

@@ -48,11 +48,44 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
-from underworld3.systems.ddt import _bdf_coefficients
+from underworld3.systems.ddt import _bdf_coefficients, _as_float
 from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
 from underworld3.function import expression as public_expression
+
+
+def _parameter_is_zero(par):
+    """True when a constitutive parameter is exactly zero: ``0``, ``0.0``, a units
+    quantity of zero, or an expression that unwraps to zero. ``None`` counts as zero.
+
+    The one test every "is this term stated?" decision uses. ``sympy.Float(0.0) == 0``
+    is False (SymPy >= 1.13), so ``== 0`` / ``!= 0`` on a parameter's ``.sym`` gives
+    different answers for ``0`` and ``0.0``; ``is_zero`` does not.
+    """
+    if par is None:
+        return True
+    from underworld3.function.expressions import unwrap_expression
+    try:
+        value = unwrap_expression(par, mode="nondimensional")
+        value = getattr(value, "magnitude", value)
+        return sympy.sympify(value).is_zero is True
+    except (TypeError, ValueError, AttributeError, sympy.SympifyError):
+        # an expression we cannot reduce to a number is a stated (non-zero) term
+        return False
+
+
+def _plastic_rate_strengthening_parameter():
+    """The declared plastic rate strengthening, shared by every yielding model's
+    Parameters (ViscoPlastic, ViscoElasticPlastic, TransverseIsotropicVEP)."""
+    import underworld3.utilities._api_tools as api_tools
+    return api_tools.Parameter(
+        R"{\eta_{\mathrm{reg}}}",
+        lambda inner_self: 0,
+        "Plastic rate strengthening: eta_pl -> tau_y/(2 edot_II) + m eta_reg (a stated "
+        "regularisation; floors the plastic viscosity AND its tangent modulus; 0 = no term)",
+        units="Pa*s",
+    )
 
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
@@ -739,15 +772,93 @@ class Constitutive_Model(uw_object):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The family: its parameters, with symbol, units and description,
+        from the descriptors on its ``_Parameters`` class, and its
+        documentation — with no instance."""
+        from underworld3.utilities.describe import record
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+        doc = (cls.__doc__ or "").strip()
+        terms = []
+        params = getattr(cls, "_Parameters", None)
+        if params is not None:
+            seen = set()
+            for base in params.__mro__:
+                for key, attr in base.__dict__.items():
+                    if isinstance(attr, ExpressionDescriptor) and key not in seen:
+                        seen.add(key)
+                        terms.append({"name": key, "symbol": getattr(attr, "name", None), "latex": None,
+                                      "text": None, "units": getattr(attr, "units", None),
+                                      "description": (getattr(attr, "description", "") or "").strip(),
+                                      "where": []})
+        facts = {}
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass
+        return record("constitutive_model_family", cls.__name__, doc.split("\n")[0],
+                      documentation=doc or None, facts=facts or None, terms=terms or None)
 
-        display(
-            Markdown(
-                rf"This consititutive model is formulated for {self.dim} dimensional equations"
-            )
-        )
+    def describe(self, depth=4):
+        """What this constitutive model is, as data: its parameters as terms,
+        with the named expressions inside each followed to ``depth``, and
+        the flux it defines as a form where it can be formed."""
+        import sympy
+        from underworld3.utilities.describe import record, term
+
+        def unpack(expression, level, seen):
+            out = []
+            if level > depth or expression is None:
+                return out
+            try:
+                found = list(uw.function.fn_extract_expressions(expression))
+            except Exception:
+                return out
+            for named in sorted(found, key=lambda e: str(getattr(e, "symbol", e))):
+                symbol = str(getattr(named, "symbol", named))
+                if symbol in seen:
+                    continue
+                seen.add(symbol)
+                entry = term(symbol, named)
+                entry["where"] = unpack(getattr(named, "sym", None), level + 1, seen)
+                out.append(entry)
+            return out
+
+        terms = []
+        params = getattr(self, "Parameters", None)
+        if params is not None:
+            from underworld3.utilities._api_tools import ExpressionDescriptor
+            names = []
+            for cls in type(params).__mro__:
+                for key, attr in cls.__dict__.items():
+                    if isinstance(attr, ExpressionDescriptor) and key not in names:
+                        names.append(key)          # a property is an alias of one of these
+            for name in names:
+                try:
+                    value = getattr(params, name)
+                except Exception:
+                    continue
+                if not (hasattr(value, "sym") and hasattr(value, "symbol")):
+                    continue
+                entry = term(name, value)
+                entry["where"] = unpack(value.sym, 1, set())
+                terms.append(entry)
+        forms = {}
+        try:
+            flux = self.flux
+            forms["flux"] = {"symbol": r"\mathbf{F}", "description": "the flux this model defines",
+                             "latex": sympy.latex(flux), "text": str(flux), "where": []}
+        except Exception:
+            pass
+        doc = (type(self).__doc__ or "").strip().split("\n")[0]
+        return record("constitutive_model", type(self).__name__, doc,
+                      facts={"dimension": getattr(self, "dim", None)},
+                      terms=terms, forms=forms or None)
+
 
 
 class ViscousFlowModel(Constitutive_Model):
@@ -958,17 +1069,6 @@ class ViscousFlowModel(Constitutive_Model):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta_\textrm{eff} = $ " + sympy.sympify(self.viscosity.sym)._repr_latex_()
-            )
-        )
 
     # --- Yield soft-min smoother (shared by the visco-plastic subclasses) -----------
     # The δ soft-min regularisation and the smooth-min FAMILY selection live on the
@@ -1001,6 +1101,18 @@ class ViscousFlowModel(Constitutive_Model):
                 self._yield_offset_for_anchor(),
                 "Yield soft-min offset; tracks δ so the chosen anchor is exact",
             )
+            # The power mean's sharpness, held as its own atom like the offset. δ is
+            # floored SMOOTHLY (+0.001, not Max()) so 1/δ stays finite as δ → 0 (a Max
+            # on the δ atom triggers an unsupported symbolic numeric comparison).
+            # Written inline, the exponent -1/(δ + 0.001) has a sum in its
+            # denominator, and SymPy then evaluates im() of the whole base each time
+            # it builds a**(-s) (its test for a power of E): 40 s of the notch Newton
+            # source, 0.1 s with the atom (#823).
+            self._yield_sharpness_expr = expression(
+                R"{s_{y}}",
+                1 / (self._yield_softness_expr + sympy.Rational(1, 1000)),
+                "Power-mean soft-min sharpness s = 1/(δ + 0.001); tracks δ",
+            )
         else:
             self._yield_softness_expr.sym = sympy.Float(delta_value)
         return self._yield_softness_expr
@@ -1012,11 +1124,94 @@ class ViscousFlowModel(Constitutive_Model):
             return delta / 2
         return (-1 + sympy.sqrt(1 + delta**2)) / 2
 
+    def _with_rate_strengthening(self, viscosity_yield, parameters):
+        """``viscosity_yield + m * eta_reg`` when the model states a plastic rate
+        strengthening, else ``viscosity_yield`` unchanged (no term compiled)."""
+        eta_reg = getattr(parameters, "plastic_rate_strengthening", None)
+        if _parameter_is_zero(eta_reg):
+            return viscosity_yield
+        return viscosity_yield + self._get_rate_strengthening_scale() * eta_reg
+
+    def _get_rate_strengthening_scale(self):
+        r"""The homotopy multiplier on ``plastic_rate_strengthening`` as a ``constants[]`` atom.
+
+        The law is ``eta_pl -> tau_y/(2 edot_II) + m * eta_reg`` with ``m = 1`` the stated
+        problem. A ladder in ``m`` from a large value (effectively viscous) down to 1 is an
+        approach from above that ends at the problem as stated; ``m`` is a rampable
+        constant, so each rung is a repack and not a recompile. The
+        regularisation is a DECLARED parameter with its scale stated per model — there is
+        no universal dimensionless value.
+        """
+        value = getattr(self, "_rate_strengthening_scale", 1.0)
+        if getattr(self, "_rate_strengthening_scale_expr", None) is None:
+            self._rate_strengthening_scale_expr = expression(
+                R"{m_{\mathrm{reg}}}",
+                sympy.Float(value),
+                "Homotopy multiplier on the plastic rate strengthening (1 = the stated problem)",
+            )
+        else:
+            self._rate_strengthening_scale_expr.sym = sympy.Float(value)
+        return self._rate_strengthening_scale_expr
+
+    @property
+    def rate_strengthening_scale(self):
+        """Multiplier ``m`` on ``Parameters.plastic_rate_strengthening``; 1 = as stated."""
+        return getattr(self, "_rate_strengthening_scale", 1.0)
+
+    @rate_strengthening_scale.setter
+    def rate_strengthening_scale(self, value):
+        # No _reset(): m is a constants[] atom and the next solve repacks it. A reset
+        # would force a JIT rewire on every rung (measured 5.2 s against 0.23 s per rung
+        # on a 0.25 box). Before the atom exists the value is read when it is created.
+        self._rate_strengthening_scale = float(value)
+        if getattr(self, "_rate_strengthening_scale_expr", None) is not None:
+            self._rate_strengthening_scale_expr.sym = sympy.Float(self._rate_strengthening_scale)
+
+    def _rate_strengthening_control(self):
+        """How the solver ladders the declared rate strengthening (``m`` from the viscous
+        limit down to 1). ``None`` when the model states no ``plastic_rate_strengthening``."""
+        from underworld3.systems.yield_continuation import RateStrengtheningControl
+        eta_reg = getattr(self.Parameters, "plastic_rate_strengthening", None)
+        if _parameter_is_zero(eta_reg):
+            return None
+
+        def set_scale(value):
+            self.rate_strengthening_scale = value
+
+        return RateStrengtheningControl(
+            set_scale=set_scale,
+            tangent=self._yield_homotopy_tangent,
+            scale=self._get_rate_strengthening_scale(),
+            parameter=eta_reg,
+            probe_terms=self._rate_strengthening_probe_terms(),
+        )
+
+    def _rate_strengthening_probe_terms(self):
+        r"""Cell-wise terms the rate-strengthening ladder reads to place its rungs, or
+        ``None`` when this model does not provide them (the ladder then needs an
+        explicit ``scale0``).
+
+        Returns a dict of expressions: ``viscous`` and ``eta_reg`` (their ratio, at any
+        state, sets an entry ``m`` at which nothing yields), and ``onset_num`` /
+        ``onset_den``, :math:`2\dot\varepsilon_{II}\eta_{ve} - \tau_y` and
+        :math:`2\dot\varepsilon_{II}\eta_{reg}`, whose ratio is the ``m`` at which a cell
+        just stops yielding at the current fields. Kept as a numerator/denominator pair
+        so a rigid cell (zero strain rate) or a material with no regularisation (zero
+        ``eta_reg``) gives finite values that the ladder masks, instead of an infinite
+        or undefined quotient inside the kernel.
+        """
+        return None
+
     def _get_yield_offset(self):
         """The offset constant atom (lazily created alongside δ)."""
         if getattr(self, "_yield_offset_expr", None) is None:
             self._get_yield_softness()
         return self._yield_offset_expr
+
+    def _get_yield_sharpness(self):
+        """The power-mean sharpness atom ``s = 1/(δ + 0.001)`` (created alongside δ)."""
+        self._get_yield_softness()
+        return self._yield_sharpness_expr
 
     @property
     def yield_anchor(self):
@@ -1030,9 +1225,15 @@ class ViscousFlowModel(Constitutive_Model):
         :math:`f = \eta_{ve} / \eta_{pl}` for the overstress ratio (so :math:`f = 1` is
         the yield point and :math:`f < 1` is unyielded):
 
-        ``"onset"`` (default, historical)
+        ``"onset"`` (default)
             Pins the unyielded limit :math:`f \to 0`, where :math:`\eta = \eta_{ve}`
-            exactly. The curve then sits BELOW the exact law at and above the yield
+            exactly, so a material that never yields gives the viscous answer. At the
+            default δ = 0.1 the sqrt law under-stresses the yield point by 4.5%
+            (:math:`\tau/\tau_y = 0.955` at :math:`f = 1`), recovers the plastic limit
+            :math:`\tau \to \tau_y` from within 0.04%, and its tangent above yield is
+            at least :math:`-10^{-4}` of the viscous one — perfect plasticity to within
+            rounding, made positive by any ``plastic_rate_strengthening``. For a large
+            homotopy δ the curve sits well BELOW the exact law at and above the yield
             point — the sqrt family undershoots for :math:`f < 2` (at
             :math:`\delta = 64`, :math:`\eta/\eta_{ve} = 0.80` at :math:`f = 0.5` where
             the exact law gives 1.0, and the yield point itself is a third
@@ -1054,7 +1255,13 @@ class ViscousFlowModel(Constitutive_Model):
             arguments are equal. The cost is stiffened unyielded material, bounded by a
             factor 2 for the sqrt family and by :math:`2^{\delta}` for the power mean,
             both decaying to 1 as :math:`\delta \to 0`. The power-mean bound is why its
-            entry δ is O(1) and not O(10).
+            entry δ is O(1) and not O(10). The stiffening is not confined to the corner:
+            the sqrt law is :math:`1/(1 - \delta/2)` times the viscous one for EVERY
+            :math:`f \ll 1` (5% at δ = 0.1), and above yield its stress falls back to
+            :math:`\tau_y` from :math:`1.033\,\tau_y` at :math:`f = 1.2`, so the
+            yielded tangent is NEGATIVE (−0.029 of the viscous slope at δ = 0.1); the
+            power mean's plastic limit is :math:`2^{\delta}\tau_y`, not :math:`\tau_y`.
+            Use it for a δ march's entry, not as a single-solve law.
         """
         return getattr(self, "_yield_anchor", "onset")
 
@@ -1079,6 +1286,7 @@ class ViscousFlowModel(Constitutive_Model):
         # (#490).
         self._yield_offset_expr = None
         self._yield_softness_expr = None
+        self._yield_sharpness_expr = None
         self._reset()
 
     def _combine_yield(self, eta_ve, eta_pl):
@@ -1116,10 +1324,8 @@ class ViscousFlowModel(Constitutive_Model):
         delta = self._get_yield_softness()
         f = eta_ve / eta_pl
         if smoother == "powermean":
-            # Soft-min of order -s in an overflow-safe harmonic-normalised form. δ is
-            # floored SMOOTHLY (+ε, not Max()) so 1/δ stays finite as δ→0 (a Max on
-            # the δ atom triggers an unsupported symbolic numeric comparison).
-            s = 1 / (delta + sympy.Float(0.001))
+            # Soft-min of order -s in an overflow-safe harmonic-normalised form.
+            s = self._get_yield_sharpness()
             a = 1 + f
             b = 1 + 1 / f
             # Harmonic mean written as eta_ve/(1+f), NOT eta_ve*eta_pl/(eta_ve+eta_pl).
@@ -1392,10 +1598,16 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
     .. math::
 
-        \eta_\mathrm{eff} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+        \eta_\mathrm{eff} = \operatorname{softmin}_\delta\left(\eta_0,
+            \frac{\tau_y}{2\dot{\varepsilon}_{II}} + m\,\eta_\mathrm{reg}\right)
 
     and :math:`\tau_y` is the yield stress and :math:`\dot{\varepsilon}_{II}`
-    is the second invariant of the strain rate.
+    is the second invariant of the strain rate. The combination is the δ-smoothed
+    minimum by default (sqrt family, ``"onset"`` anchor, δ = 0.1: see
+    :attr:`yield_mode`); ``yield_mode="min"`` gives the exact ``min``.
+    :math:`\eta_\mathrm{reg}` is the declared ``plastic_rate_strengthening``
+    (default 0, no term) and :math:`m` its homotopy multiplier
+    (``rate_strengthening_scale``, 1 = as stated).
 
     Parameters
     ----------
@@ -1437,14 +1649,23 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         )
 
         # Yield-combination mode (see _combine_yield on the base class). Default
-        # "min" = the exact hard Min(η_0, η_yield) this model has always used, so the
-        # default behaviour is unchanged. Opt into "softmin" (+ yield_smoother /
-        # yield_softness) for the δ-parameterised smooth-min homotopy.
-        self._yield_mode = "min"
-        self._yield_softness = 0.0        # δ; 0 ⇒ exact Min
+        # DEFAULT = the smooth yield law (since 2026-10-05): the exact hard Min is no
+        # longer the default. The kink broke the consistent tangent at the yield corner
+        # (and sympy's fuzzy comparisons on UWexpressions), and every hard case in the
+        # Spiegelman campaign had to set these by hand. The "onset" anchor keeps the
+        # viscous branch exact (a material that never yields is unchanged) and the
+        # plastic limit exact; delta = 0.1 under-stresses the yield point itself by
+        # 4.5% and leaves the yielded tangent at >= -1e-4 of the viscous one. (The
+        # "yield" anchor was tried as the default and refused in review: 5% stiffer
+        # unyielded material everywhere and a negative yielded tangent.) yield_mode =
+        # "min" with yield_softness = 0 is still available, as an explicit choice.
+        self._yield_mode = "softmin"
+        self._yield_softness = 0.1        # δ (sqrt family: width of the rounding in f)
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
+        self._yield_anchor = "onset"      # exact viscous branch and plastic limit
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
+        self._yield_sharpness_expr = None  # power-mean sharpness atom (created lazily)
 
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
@@ -1495,6 +1716,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Strain rate invariant minimum value",
             units="1/s",
         )
+        plastic_rate_strengthening = _plastic_rate_strengthening_parameter()
 
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
@@ -1505,9 +1727,11 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         r"""Effective viscosity with plastic yielding.
 
         .. math::
-            \eta_{\mathrm{eff}} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+            \eta_{\mathrm{eff}} = \operatorname{softmin}_\delta\left(\eta_0,
+                \frac{\tau_y}{2\dot{\varepsilon}_{II}} + m\,\eta_\mathrm{reg}\right)
 
-        where :math:`\dot{\varepsilon}_{II}` is the second invariant of strain rate.
+        where :math:`\dot{\varepsilon}_{II}` is the second invariant of strain rate
+        (see the class docstring for the combination and the regularisation).
         """
         inner_self = self.Parameters
         # detect if values we need are defined or are placeholder symbols
@@ -1548,11 +1772,16 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             )
         else:
             viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
+        # The declared rate strengthening: eta_pl -> eta_pl + m * eta_reg. It floors the
+        # plastic viscosity AND the tangent modulus along the strain-rate direction in
+        # every yielded element (a static viscosity floor clips only the fastest cells and
+        # leaves the tangent at zero elsewhere — the mechanism mode of a yielded layer).
+        # Scale stated by the model; m is the homotopy multiplier, 1 = as stated.
+        viscosity_yield = self._with_rate_strengthening(viscosity_yield, inner_self)
 
-        # Combine the viscous and plastic (yield) viscosities. The default
-        # yield_mode="min" gives the exact hard Min(η_0, η_yield); yield_mode="softmin"
-        # opts into the δ-parameterised smooth-min (sqrt or powermean family) for a
-        # scalable homotopy toward the sharp yield surface.
+        # Combine the viscous and plastic (yield) viscosities: the δ-parameterised
+        # smooth-min by default (see yield_mode / yield_smoother / yield_anchor);
+        # yield_mode="min" gives the exact hard Min(η_0, η_yield).
         effective_viscosity = self._combine_yield(
             inner_self.shear_viscosity_0, viscosity_yield
         )
@@ -1578,15 +1807,35 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         can march it. See :meth:`_yield_homotopy_control`."""
         return True
 
+    def _rate_strengthening_probe_terms(self):
+        # See ViscousFlowModel._rate_strengthening_probe_terms: the same floors as
+        # the viscosity above, so the ladder reads the law the solve runs.
+        inner_self = self.Parameters
+        tau = inner_self.yield_stress
+        if inner_self.yield_stress_min.sym != -sympy.oo:
+            tau = self._apply_floor(tau, inner_self.yield_stress_min)
+        edot = self._strainrate_inv_II
+        if not _parameter_is_zero(inner_self.strainrate_inv_II_min):
+            edot = edot + inner_self.strainrate_inv_II_min
+        eta_reg = inner_self.plastic_rate_strengthening
+        return dict(
+            viscous=inner_self.shear_viscosity_0,
+            eta_reg=eta_reg,
+            onset_num=2 * edot * inner_self.shear_viscosity_0 - tau,
+            onset_den=2 * edot * eta_reg,
+        )
+
     @property
     def yield_mode(self):
         r"""How the viscous and plastic (yield) viscosities are combined.
 
-        - ``"min"`` (default): exact hard ``Min(η_0, η_yield)`` — the sharp yield
-          surface this model has always used.
+        - ``"softmin"`` (default since 2026-10-05): the δ-parameterised smooth-min
+          (family set by ``yield_smoother``, pinned by ``yield_anchor``, rounded by
+          ``yield_softness``; default sqrt, "onset", δ = 0.1) — smooth enough for the
+          consistent tangent, and the scale of a homotopy toward the sharp surface.
+        - ``"min"``: exact hard ``Min(η_0, η_yield)`` — the sharp yield surface this
+          model used until 2026-10-05; its kink breaks the Newton tangent at yield.
         - ``"harmonic"``: ``1/(1/η_0 + 1/η_yield)`` — a smooth blend.
-        - ``"softmin"``: the δ-parameterised smooth-min (family set by
-          ``yield_smoother``), for a scalable homotopy toward the sharp surface.
         """
         return self._yield_mode
 
@@ -1640,24 +1889,41 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         return correction
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
 
-        super()._object_viewer()
 
-        ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta_\textrm{0} = $"
-                + sympy.sympify(self.Parameters.shear_viscosity_0.sym)._repr_latex_()
-            ),
-            Latex(
-                r"$\quad\tau_\textrm{y} = $"
-                + sympy.sympify(self.Parameters.yield_stress.sym)._repr_latex_(),
-            ),
-        )
+#: Smallest conformation eigenvalue the log-conformation history takes the
+#: logarithm of. The positive-definite step never produces a smaller one except
+#: by round-off, so this only bounds psi; the health check counts where it acts.
+_CONFORMATION_FLOOR = 1.0e-12
 
-        return
+
+def _sym2_parts(m):
+    """Mean and half-spread of the eigenvalues of a symmetric 2x2 matrix; the
+    spread is lifted by 1e-8 so the closed forms below stay finite at an
+    isotropic point (the lift is far below the solver tolerance)."""
+    a, b, c = m[0, 0], m[1, 1], m[0, 1]
+    mean = (a + b) / 2
+    d = sympy.sqrt(((a - b) / 2) ** 2 + c ** 2 + 1.0e-16)
+    return a, b, c, mean, d
+
+
+def _expm_sym2(m):
+    r"""Closed-form :math:`e^{M}` of a symmetric 2x2 matrix: positive-definite for any M."""
+    a, b, c, mean, d = _sym2_parts(m)
+    ch, sh = sympy.cosh(d), sympy.sinh(d) / d
+    return sympy.exp(mean) * sympy.Matrix([[ch + sh * (a - mean), sh * c],
+                                           [sh * c, ch + sh * (b - mean)]])
+
+
+def _logm_sym2(m):
+    r"""Closed-form :math:`\log M` of a symmetric 2x2 matrix, eigenvalues floored
+    at :data:`_CONFORMATION_FLOOR`."""
+    a, b, c, mean, d = _sym2_parts(m)
+    l1 = sympy.log(sympy.Max(mean + d, _CONFORMATION_FLOOR))
+    l2 = sympy.log(sympy.Max(mean - d, _CONFORMATION_FLOOR))
+    k = (l1 - l2) / (2 * d)
+    return sympy.Matrix([[(l1 + l2) / 2 + k * (a - mean), k * c],
+                         [k * c, (l1 + l2) / 2 + k * (b - mean)]])
 
 
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
@@ -1683,7 +1949,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     """
 
     def __init__(self, unknowns, order=1, integrator: str = "bdf",
-                 material_name: str = None):
+                 material_name: str = None, objective_rate: str = "none",
+                 stress_history: str = "stress", convected_step: str = None):
         """Construct a viscoelastic-plastic flow model.
 
         Parameters
@@ -1718,6 +1985,28 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
               See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
         material_name : str, optional
             Name identifier for this material.
+        objective_rate : {"none", "upper_convected", "jaumann"}, default "none"
+            The objective stress rate the carried stress obeys (see
+            :meth:`_objective_term`).
+        stress_history : {"stress", "log_conformation"}, default "stress"
+            What the stress history stores. ``"log_conformation"`` stores
+            :math:`\psi = \log(\sigma/G + I)` and the model reads
+            :math:`\sigma^* = G(e^{\psi^*} - I)`, a conformation whatever the
+            history's interpolation, projection or fit did to :math:`\psi`.
+            The step is still taken on the conformation, where the relaxation
+            is linear, so neither integrator changes. Upper-convected, first
+            order, 2-D; it implies ``convected_step="deformation"``.
+        convected_step : {"linear", "deformation"}, optional
+            How the upper-convected stretching is taken over one step. In the
+            conformation :math:`c = \sigma/G + I`, ``"linear"`` advances the
+            carried state by :math:`c^* + \Delta t\,(Lc^* + c^*L^T)`, which
+            loses positive-definiteness once :math:`\Delta t\,|L|` is of
+            order one; ``"deformation"`` uses :math:`F c^* F^T` with
+            :math:`F = I + \Delta t\,L`, positive-definite for any step and
+            equally first order (with the exponential integrator the
+            stretching of the relaxation target is completed the same way).
+            Default ``"linear"``, or ``"deformation"`` with the
+            log-conformation history, which requires it.
         """
         if integrator not in ("bdf", "etd"):
             raise ValueError(
@@ -1730,6 +2019,35 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 f"VEP where it produces global runaway). Got order={order}."
             )
         self._integrator = integrator
+        if objective_rate not in ("none", "upper_convected", "jaumann"):
+            raise ValueError(
+                f"objective_rate must be 'none', 'upper_convected' or 'jaumann', got {objective_rate!r}")
+        # Which objective stress rate the carried stress obeys. "none" transports
+        # the components as a passive tensor (a linear Maxwell fluid carried by
+        # the flow); "upper_convected" adds L.sigma + sigma.L^T, which makes
+        # the element the UCM / Oldroyd-B fluid; "jaumann" adds W.sigma -
+        # sigma.W (co-rotational). The term is taken on the carried stress and
+        # the CURRENT velocity gradient, so it is linear in the unknown and
+        # first order in time.
+        self._objective_rate = objective_rate
+        if stress_history not in ("stress", "log_conformation"):
+            raise ValueError(f"stress_history must be 'stress' or 'log_conformation', got {stress_history!r}")
+        if convected_step is None:
+            convected_step = "deformation" if stress_history == "log_conformation" else "linear"
+        if convected_step not in ("linear", "deformation"):
+            raise ValueError(f"convected_step must be 'linear' or 'deformation', got {convected_step!r}")
+        if stress_history == "log_conformation" and convected_step != "deformation":
+            raise ValueError("the log-conformation history needs convected_step='deformation': the "
+                             "linear step can hand it an indefinite conformation, which has no logarithm")
+        if convected_step == "deformation":
+            if objective_rate != "upper_convected":
+                raise ValueError("convected_step='deformation' and the log-conformation history describe a "
+                                 "conformation tensor: they need objective_rate='upper_convected'")
+            if stress_history == "log_conformation" and unknowns.u.mesh.dim != 2:
+                raise NotImplementedError("the log-conformation history uses the closed-form 2x2 matrix "
+                                          "logarithm and exponential; 3-D is not implemented")
+        self._stress_history = stress_history
+        self._convected_step = convected_step
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -1762,12 +2080,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Equivalent value of strain rate 2nd invariant (accounting for stress history)",
         )
 
+        self._check_order_supported(order)
         self._order = order
         self._yield_mode = "softmin"  # "min", "harmonic", "smooth", or "softmin"
+        self._yield_anchor = "onset"  # exact viscous branch and plastic limit
         self._yield_softness = 0.1  # δ parameter for "softmin" mode
         self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None  # constants[] δ atom (created lazily)
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
+        self._yield_sharpness_expr = None  # power-mean sharpness atom (created lazily)
 
         # Timestep — set by the solver before each solve(). Not a user parameter.
         # Initialised to oo (viscous limit). The solver overwrites this with the
@@ -1785,7 +2106,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # Persistent container for the yield-limited VEP effective viscosity
         # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
         # combined coefficient is stored INSIDE this atom so the c-tensor
-        # bakes a wrapped atom and the default (Picard) tangent stays frozen;
+        # bakes a wrapped atom and the frozen (Picard, consistent_jacobian=False) tangent stays frozen;
         # only _jacobian_unwrap (Newton) sees the strain-rate dependence of
         # the yield law. Same freezing contract as the TI classes (#457/#493).
         self._vep_eff_viscosity = expression(
@@ -1825,6 +2146,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             lambda inner_self: sympy.oo,
             "Shear modulus",
             units="Pa",
+        )
+        solvent_viscosity = api_tools.Parameter(
+            R"{\eta_s}",
+            lambda inner_self: 0,
+            "Solvent viscosity in parallel with the Maxwell element (Oldroyd-B when non-zero)",
+            units="Pa*s",
         )
 
         @property
@@ -1872,6 +2199,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Strain rate invariant minimum value",
             units="1/s",
         )
+        plastic_rate_strengthening = _plastic_rate_strengthening_parameter()
 
         def __init__(
             inner_self,
@@ -1955,6 +2283,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         warn if the DFDt was created with a lower order (since it can't be
         changed after creation — the DFDt allocates history buffers at init).
         """
+        self._check_order_supported(value)
         self._order = value
         self._reset()
 
@@ -2020,7 +2349,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             dt_history = self.Unknowns.DFDt._dt_history
             if order >= 2 and len(dt_history) > 0 and dt_history[0] is not None:
                 try:
-                    ratio = float(dt_current) / float(dt_history[0])
+                    # both as non-dimensional model time: the history keeps its
+                    # steps reduced, while dt_elastic may be a quantity
+                    ratio = _as_float(dt_current) / _as_float(dt_history[0])
                     if ratio > self._max_dt_ratio_for_higher_order:
                         order = 1
                 except (TypeError, ZeroDivisionError):
@@ -2102,12 +2433,36 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             return {"with_forcing_history": True}
         return {}
 
+    def _check_order_supported(self, order):
+        """The positive-definite step (and so the log-conformation history) is
+        first order: the second-order schemes combine history levels with
+        negative weights, which does not preserve positivity."""
+        if order != 1 and self._convected_step == "deformation":
+            raise NotImplementedError("convected_step='deformation' and the log-conformation history "
+                                      "are first order only")
+
+    def _carried_stress_sym(self, level=0):
+        r"""The carried stress :math:`\sigma^*` of history level ``level``: the
+        stored level, or :math:`G(e^{\psi^*} - I)` for the log-conformation
+        history (the modulus as its expression, so a read of it carries units)."""
+        stored = self.Unknowns.DFDt.psi_star[level].sym
+        if self._stress_history == "stress":
+            return stored
+        return (_expm_sym2(sympy.Matrix(stored)) - sympy.eye(2)) * self.Parameters.shear_modulus
+
+    def encode_history(self, stress):
+        r"""What the history stores for a stress: the stress, or
+        :math:`\log(\sigma/G + I)` for the log-conformation history."""
+        if self._stress_history == "stress":
+            return stress
+        return _logm_sym2(sympy.Matrix(stress) / self.Parameters.shear_modulus + sympy.eye(2))
+
     # The following should have no setters
     @property
     def stress_star(self):
         r"""Previous timestep stress :math:`\boldsymbol{\sigma}^*` from history."""
         if self.Unknowns.DFDt is not None:
-            self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
+            self._stress_star.sym = self._carried_stress_sym(0)
 
         return self._stress_star
 
@@ -2119,7 +2474,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.order >= 2:
-                self._stress_2star.sym = self.Unknowns.DFDt.psi_star[1].sym
+                self._stress_2star.sym = self._carried_stress_sym(1)
             else:
                 self._stress_2star.sym = sympy.sympify(0)
 
@@ -2128,6 +2483,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     @property
     def E_eff(self):
         r"""Effective strain rate including elastic-history coupling.
+
+        With an objective rate the newest level also contributes the explicit
+        source :math:`S(\sigma^*)/(2\mu)` (see :meth:`_objective_term`).
 
         For BDF integration:
 
@@ -2162,26 +2520,193 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # expression tree, no separate code path needed.
             alpha = DDt._exp_alpha
             phi = DDt._exp_phi
-            sigma_star = DDt.psi_star[0].sym
+            sigma_star = self._carried_stress_sym(0)
             if DDt.forcing_star is not None:
                 edot_star = DDt.forcing_star.sym
             else:
                 edot_star = sympy.zeros(*E.shape)
             eta_raw = self.Parameters.shear_viscosity_0
-            self._E_eff.sym = (
+            E_eff = (
                 (1 - phi) * E
                 + (alpha / (2 * eta_raw)) * sigma_star
                 + (phi - alpha) * edot_star
+                # objective rate: the flux gains alpha * dt * S(sigma*)
+                + alpha * self.Parameters.dt_elastic * self._objective_term(sigma_star) / (2 * eta_raw)
             )
+            if self._convected_step == "deformation":
+                # The relaxation target is stretched during the step too. The
+                # exponential step carries that as (1-a) I + b (L + L^T) with
+                # b = lam (1 - (1+x) e^-x), x = dt/lam, exact to first order in L;
+                # adding (b^2/(1-a)) L L^T makes it the product
+                # (sqrt(1-a) I + b L/sqrt(1-a))(...)^T, positive semi-definite,
+                # without touching the first-order part. Written in x, not in the
+                # integrator's alpha, which is clamped to one in the elastic limit.
+                L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
+                lam = eta_raw / self.Parameters.shear_modulus
+                x = self.Parameters.dt_elastic / lam
+                decay = sympy.exp(-x)
+                b = lam * (1 - (1 + x) * decay)
+                E_eff = E_eff + (b ** 2 / (1 - decay)) * L * L.T / (2 * lam)
+            self._E_eff.sym = E_eff
             return self._E_eff
 
         # BDF default
         mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
         bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
         for i in range(DDt.order):
-            E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
+            E += -bdf_cs[i] * self._carried_stress_sym(i) / (2 * mu_dt)
+        # objective rate on the newest level, explicit and first order: the
+        # constitutive law is sigma + (eta/mu)(Dsigma/Dt - S) = 2 eta E, so the
+        # flux gains (eta/mu) S(sigma*) and E_eff gains S/(2 mu) with weight
+        # ONE whatever the BDF order (the BDF weights belong to the time
+        # derivative, not to the source; -c1 = 2 at order 2 would double it).
+        E += self._objective_term(self._carried_stress_sym(0)) / (2 * self.Parameters.shear_modulus)
         self._E_eff.sym = E
         return self._E_eff
+
+    def _objective_term(self, sigma):
+        r"""The stretching / rotation source of the chosen objective rate,
+        :math:`S(\sigma)`, on the carried stress with the current velocity
+        gradient :math:`L_{ij} = \partial u_i / \partial x_j`: zero for
+        ``"none"``, :math:`L\sigma + \sigma L^T` for ``"upper_convected"``,
+        :math:`W\sigma - \sigma W` with :math:`W = (L - L^T)/2` for
+        ``"jaumann"``. Symmetric whenever ``sigma`` is."""
+        dim = self.Unknowns.u.mesh.dim
+        if self._objective_rate == "none":
+            return sympy.zeros(dim, dim)
+        sigma = sympy.Matrix(sigma)
+        L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
+        if self._objective_rate == "upper_convected":
+            if self._convected_step == "deformation":
+                # F c* F^T - c* = dt (L c* + c* L^T) + dt^2 L c* L^T with
+                # c = sigma/G + I: the second-order term, in stress, is
+                # dt (L sigma L^T + G L L^T).
+                dt = self.Parameters.dt_elastic
+                G = self.Parameters.shear_modulus
+                return L * sigma + sigma * L.T + dt * (L * sigma * L.T + G * L * L.T)
+            return L * sigma + sigma * L.T
+        W = (L - L.T) / 2
+        return W * sigma - sigma * W
+
+    # ----- Health of the carried stress (#768) -----
+
+    def _carried_stress(self):
+        """The carried polymer stress as tensors at its own points, non-dimensional.
+        Only the trace-back histories carry one tensor per point; a particle
+        history does not, and is refused rather than misread."""
+        DDt = self.Unknowns.DFDt
+        if DDt is None:
+            raise RuntimeError("the model has no stress history yet: assign it to a solver and solve once")
+        if not hasattr(DDt, "carried_tensors"):
+            raise NotImplementedError(f"{type(DDt).__name__} does not expose the carried stress as "
+                                      "one tensor per point; the conformation check reads a "
+                                      "per-point tensor history (the trace-back flavours)")
+        tau, points = DDt.carried_tensors()
+        if self._stress_history == "log_conformation":
+            from underworld3.systems.ddt import _to_nondim_ndarray
+            G = np.asarray(_to_nondim_ndarray(
+                uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
+            w, v = np.linalg.eigh(tau)
+            c = v @ (np.exp(w)[:, :, None] * np.transpose(v, (0, 2, 1)))
+            tau = G[:, None, None] * (c - np.eye(tau.shape[-1])[None])
+        return tau, points
+
+    def max_elastic_timestep(self, safety: float = 0.3) -> float:
+        r"""The largest step the explicit stretching term tolerates:
+        ``safety`` divided by the largest strain rate anywhere.
+
+        The objective-rate source :math:`L\sigma^* + \sigma^* L^T` is taken on
+        the carried stress with the current gradient, so over one step it
+        stretches the conformation by about :math:`(1 + \Delta t\,\dot\gamma)^2`
+        before relaxation acts. With :math:`\Delta t\,\dot\gamma` of order one
+        that update loses the positive-definiteness of the conformation in the
+        first step (measured on the confined cylinder at Courant one on the
+        far-field mesh, where the wall shear rate is ten times the far-field
+        one), and no operator split recovers it. A run should take
+        ``dt = min(courant_dt, model.max_elastic_timestep())``; 0.3 keeps the
+        conformation positive on the cylinder to Wi 0.6. Like ``estimate_dt``,
+        the value is a physical time when reference scales are active and a
+        plain number otherwise, so the two can be compared directly.
+
+        The strain-rate measure is :math:`\dot\gamma = \sqrt{2\,\mathbf{D}:\mathbf{D}}`,
+        the shear rate in simple shear, read from the continuous projection of
+        the strain rate (what ``evaluate`` returns for a gradient) at the points
+        of the carried stress. That projection sits a little below the per-cell
+        gradient at a wall, which the safety factor covers. Reduced over
+        ranks. ``inf`` when there is no objective rate (nothing stretches),
+        with ``convected_step="deformation"`` (the step is positive-definite
+        for any timestep, so this limit does not apply) or with no flow; a
+        velocity that is not finite raises rather than returning a silent ``nan``.
+        """
+        if self._objective_rate == "none" or self._convected_step == "deformation":
+            return float("inf")
+        E = sympy.Matrix(self.Unknowns.E)
+        rate = sympy.sqrt(2 * (E.T * E).trace())
+        _, points = self._carried_stress()
+        # evaluate is collective: every rank calls it, with its own (possibly empty) points
+        from underworld3.systems.ddt import _to_nondim_ndarray
+        values = np.asarray(_to_nondim_ndarray(uw.function.evaluate(rate, points))).reshape(-1)
+        local = float(np.abs(values).max()) if values.size else 0.0
+        finite = bool(np.all(np.isfinite(values))) if values.size else True
+        peak = float(uw.mpi.comm.allreduce(local, op=uw.MPI.MAX))
+        finite = bool(uw.mpi.comm.allreduce(finite, op=uw.MPI.LAND))
+        if not finite:
+            raise RuntimeError("max_elastic_timestep: the strain rate is not finite")
+        if peak == 0.0:
+            return float("inf")
+        dt = float(safety) / peak
+        try:
+            return uw.dimensionalise(dt, {"[time]": 1})
+        except Exception:
+            return dt
+
+    def conformation_min_eigenvalue(self):
+        r"""Smallest eigenvalue of the conformation :math:`c = \sigma^*/G + I` on
+        the carried polymer stress, with where it is and how much of the field
+        is below zero.
+
+        An Oldroyd-B or Maxwell stress is :math:`G(c - I)` with :math:`c`
+        positive-definite, so the most compressive eigenvalue of the polymer
+        stress is bounded by :math:`-G`. The symmetric part of the momentum
+        tangent stays positive exactly as long as that holds. A negative value
+        here is a discretisation defect (the step against the local strain rate,
+        or a wall-layer excess of the nodal history), and it separates a solve
+        that has lost its preconditioner from one that has lost its problem:
+        the first is a solver setting, the second is not.
+
+        Returns a dict: ``min`` and ``max`` (reduced over ranks),
+        ``fraction_negative``, and ``where``, the coordinates of the minimum on
+        any rank whose local minimum is the global one (``None`` on the others).
+        Non-dimensional throughout. Needs a per-point stress history.
+        """
+        tau, points = self._carried_stress()
+        dim = tau.shape[-1]
+        from underworld3.systems.ddt import _to_nondim_ndarray
+        G = np.asarray(_to_nondim_ndarray(
+            uw.function.evaluate(self.Parameters.shear_modulus.sym, points))).reshape(-1)
+        c = tau / G[:, None, None] + np.eye(dim)[None, :, :]
+        ev = np.linalg.eigvalsh(c)                       # ascending per point
+        lo = ev[:, 0]
+        n_local = lo.size
+        local_min = float(lo.min()) if n_local else float("inf")
+        local_max = float(ev[:, -1].max()) if n_local else float("-inf")
+        n_neg = int((lo < 0.0).sum())
+        comm = uw.mpi.comm
+        gmin = float(comm.allreduce(local_min, op=uw.MPI.MIN))
+        gmax = float(comm.allreduce(local_max, op=uw.MPI.MAX))
+        n_all = int(comm.allreduce(n_local, op=uw.MPI.SUM))
+        n_neg_all = int(comm.allreduce(n_neg, op=uw.MPI.SUM))
+        where = tuple(float(x) for x in points[int(lo.argmin())]) if (n_local and local_min == gmin) else None
+        health = {"min": gmin, "max": gmax, "fraction_negative": (n_neg_all / n_all) if n_all else 0.0, "where": where}
+        if self._stress_history == "log_conformation":
+            # A decoded conformation is positive by construction, so the check
+            # that matters is where the logarithm's floor acted on the record.
+            psi, _ = self.Unknowns.DFDt.carried_tensors()
+            n_floor = int((np.linalg.eigvalsh(psi)[:, 0] <= np.log(_CONFORMATION_FLOOR) + 1.0e-6).sum()) \
+                if psi.shape[0] else 0
+            n_floor_all = int(comm.allreduce(n_floor, op=uw.MPI.SUM))
+            health["fraction_floored"] = (n_floor_all / n_all) if n_all else 0.0
+        return health
 
     @property
     def E_eff_inv_II(self):
@@ -2274,7 +2799,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # Store the combined coefficient INSIDE the persistent container (the
         # ViscoPlasticFlowModel._plastic_eff_viscosity pattern) so the
         # c-tensor bakes ONE wrapped atom: sympy.diff treats it as a constant
-        # and the default (Picard) tangent stays frozen; only the Newton path
+        # and the frozen (Picard) tangent stays frozen; only the Newton path
         # (_jacobian_unwrap) sees the yield law's strain-rate dependence.
         # (Same freezing contract as the TI classes — issue #457 / PR #493.)
         self._vep_eff_viscosity._sym = effective_viscosity
@@ -2286,7 +2811,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     # consistent tangent of the *harmonic* problem) and converges WORSE than
     # Picard on hard-yield VEP; the robust route is problem-space homotopy
     # (ramp the softmin softness δ→0), not a smooth tangent. See the design doc
-    # docs/developer/design/jacobian-unwrap-constants-bug.md. The generic
+    # docs/developer/design/jacobian-consistent-tangent.md. The generic
     # Constitutive_Model.flux_jacobian hook (default None) remains available.
 
     @property
@@ -2329,6 +2854,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             )
         else:
             viscosity_yield = yield_stress / (2 * strainrate_inv_II)
+        viscosity_yield = self._with_rate_strengthening(viscosity_yield, parameters)
 
         return viscosity_yield
 
@@ -2384,13 +2910,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         stress = 2 * self.Parameters.ve_effective_viscosity * edot
 
         if self.Unknowns.DFDt is not None:
-            stress_star = self.Unknowns.DFDt.psi_star[0]
-
             if self.is_elastic:
                 # 1st order
                 stress += (
                     self.Parameters.ve_effective_viscosity
-                    * stress_star.sym
+                    * self._carried_stress_sym(0)
                     / (self.Parameters.dt_elastic * self.Parameters.shear_modulus)
                 )
 
@@ -2405,8 +2929,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         wrapped effective viscosity (``ve_effective_viscosity`` for BDF,
         raw ``η`` for ETD-2 since the time factor is in ``E_eff``).
         """
+        solvent = 2 * self.Parameters.solvent_viscosity * self.Unknowns.E
         if not self.is_elastic or self.Unknowns.DFDt is None:
-            return 2 * self.viscosity * self.grad_u
+            return 2 * self.viscosity * self.grad_u + solvent
 
         # ETD-1 (order=1) uses the same E_eff machinery but with φ=α, so
         # forcing_star is not required (the (φ-α)·ε̇* term zeros out).
@@ -2417,12 +2942,23 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             and self.Unknowns.DFDt.forcing_star is None
         ):
             raise RuntimeError(
-                "integrator='etd' requires a SemiLagrangian DDt with "
-                "with_forcing_history=True. The auto-DDt creation path "
+                "integrator='etd' at order 2 needs a stress history with a "
+                "forcing slot (with_forcing_history=True: the nodal or the "
+                "integration-point flavour). The auto-DDt creation path "
                 "reads stress_history_ddt_kwargs — re-create the solver/"
                 "model so the kwargs propagate."
             )
 
+        return 2 * self.viscosity * self.E_eff.sym + solvent
+
+    @property
+    def history_flux(self):
+        """The stress the history carries: the Maxwell element's own stress,
+        without the solvent's Newtonian part. The momentum flux is
+        :attr:`flux` = this + 2 eta_s E; committing the total would put the
+        solvent stress into the memory and feed it back a step later."""
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return 2 * self.viscosity * self.grad_u
         return 2 * self.viscosity * self.E_eff.sym
 
     # def eff_edot(self):
@@ -2446,38 +2982,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     #     return edot_inv_II
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        # super()._object_viewer()
-
-        display(Markdown(r"### Viscous deformation"))
-        display(
-            Latex(
-                r"$\quad\eta_\textrm{0} = $ "
-                + sympy.sympify(self.Parameters.shear_viscosity_0.sym)._repr_latex_()
-            ),
-        )
-
-        display(Markdown(r"#### Elastic deformation"))
-        display(
-            Latex(
-                r"$\quad\mu = $ " + sympy.sympify(self.Parameters.shear_modulus.sym)._repr_latex_(),
-            ),
-            Latex(
-                r"$\quad\Delta t_e = $ "
-                + sympy.sympify(self.Parameters.dt_elastic.sym)._repr_latex_(),
-            ),
-        )
-
-        display(Markdown(r"#### Plastic deformation"))
-        display(
-            Latex(
-                r"$\quad\tau_\textrm{y} = $ "
-                + sympy.sympify(self.Parameters.yield_stress.sym)._repr_latex_(),
-            )
-            ## Todo: add all the other properties in here
-        )
 
     @property
     def yield_mode(self):
@@ -2487,8 +2991,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             ``η_ve / g(f)`` where ``g(f) ≈ max(1, f)`` with smoothing
             parameter δ (``yield_softness``, default 0.1).  Approaches
             exact Min as δ → 0; smooth derivatives at the kink.
-            Recommended default: gets within ~2 % of the true yield
-            surface while avoiding the SNES kink penalties of ``"min"``.
+            Recommended default: with the "onset" anchor it under-stresses the
+            yield point itself by 4.5 % and recovers the plastic limit to
+            0.04 %, while avoiding the SNES kink penalties of ``"min"``.
         ``"harmonic"``: parallel blending — ``1/(1/η_ve + 1/η_pl)``.
             Smooth but undershoots τ_y for soft materials.
         ``"min"``: sharp cutoff — ``Min(η_ve, η_pl)``.
@@ -2707,17 +3212,6 @@ class DiffusionModel(Constitutive_Model):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
-        )
-
-        return
 
 
 # AnisotropicDiffusionModel: expects a diffusivity vector and builds a diagonal tensor.
@@ -2778,15 +3272,6 @@ class AnisotropicDiffusionModel(DiffusionModel):
         self._c = self.Parameters.diffusivity
         self._is_setup = True
 
-    def _object_viewer(self):
-        from IPython.display import Latex, display
-
-        super()._object_viewer()
-
-        diagonal = self.Parameters.diffusivity.diagonal()
-        latex_entries = ", ".join([sympy.latex(k) for k in diagonal])
-        kappa_latex = r"\kappa = \mathrm{diag}\left(" + latex_entries + r"\right)"
-        display(Latex(r"$\quad " + kappa_latex + r"$"))
 
 
 class GenericFluxModel(Constitutive_Model):
@@ -2825,7 +3310,7 @@ class GenericFluxModel(Constitutive_Model):
 
             Stores the raw sympy expression directly. Previously each component
             was wrapped in a UWexpression via ``validate_parameters`` — and the
-            default (Picard) tangent differentiates the flux WITHOUT unwrapping
+            frozen (Picard, consistent_jacobian=False) tangent differentiates the flux WITHOUT unwrapping
             (frozen-coefficient semantics; unwrap-before-differentiate runs only
             on the consistent-Newton path). An opaque wrapper holding the ENTIRE
             flux therefore has zero derivative w.r.t. the unknown and its
@@ -2859,14 +3344,6 @@ class GenericFluxModel(Constitutive_Model):
         #     raise RuntimeError("Flux expression has not been set.")
         return self.Parameters.flux
 
-    def _object_viewer(self):
-        from IPython.display import display, Latex
-
-        super()._object_viewer()
-        if self.flux is not None:
-            display(Latex(r"$\vec{q} = " + sympy.latex(self.flux) + "$"))
-        else:
-            display(Latex(r"No flux expression set."))
 
 
 class DarcyFlowModel(Constitutive_Model):
@@ -2992,17 +3469,6 @@ class DarcyFlowModel(Constitutive_Model):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(
-            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
-        )
-
-        return
 
     @property
     def flux(self):
@@ -3156,7 +3622,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
         # Bake the WRAPPED Parameter atoms into the tensor, exactly like the
         # isotropic ViscousFlowModel path. sympy.diff treats a UWexpression
-        # atom as a constant, so the default (Picard) tangent stays genuinely
+        # atom as a constant, so the frozen (Picard) tangent stays genuinely
         # frozen even when eta_0/eta_1 depend on strain rate; only the Newton
         # path (_jacobian_unwrap) exposes that dependence. Baking `.sym`
         # (unwrapped contents) here silently un-froze the TI Picard tangent —
@@ -3216,20 +3682,6 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
         return
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.shear_viscosity_0)._repr_latex_()))
-        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.shear_viscosity_1)._repr_latex_()))
-        display(
-            Latex(
-                r"$\quad\hat{\mathbf{n}} = $ "
-                + sympy.sympify(self.Parameters.director.T)._repr_latex_()
-            )
-        )
 
 
 class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
@@ -3465,6 +3917,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             lambda inner_self: 0,
             "Strain rate invariant minimum value", units="1/s",
         )
+        plastic_rate_strengthening = _plastic_rate_strengthening_parameter()
 
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
@@ -3632,7 +4085,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             dt_history = self.Unknowns.DFDt._dt_history
             if order >= 2 and len(dt_history) > 0 and dt_history[0] is not None:
                 try:
-                    ratio = float(dt_current) / float(dt_history[0])
+                    # both as non-dimensional model time: the history keeps its
+                    # steps reduced, while dt_elastic may be a quantity
+                    ratio = _as_float(dt_current) / _as_float(dt_history[0])
                     if ratio > self._max_dt_ratio_for_higher_order:
                         order = 1
                 except (TypeError, ZeroDivisionError):
@@ -3827,6 +4282,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             )
         else:
             viscosity_yield = tau_y / (2 * gamma_dot_abs)
+        viscosity_yield = self._with_rate_strengthening(viscosity_yield, parameters)
 
         return viscosity_yield
 
@@ -4553,11 +5009,15 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             Default: False (assumes IndexSwarmVariable maintains partition of unity)
         """
         # Constituents that share a parameter name (every ViscousFlowModel
-        # calls its viscosity \eta) rely on _JITConstant keeping its
-        # constants[] slots distinct; see utilities/_jitextension.py and the
-        # regression in tests/test_0103_jit_rampable_constants.py.
+        # calls its viscosity \eta) rely on the constants manifest keeping their
+        # constants[] slots distinct (by object, ordered by creation); see
+        # utilities/_jitextension.py and tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
+        if any(getattr(m, "_stress_history", "stress") != "stress" for m in constitutive_models):
+            raise NotImplementedError(
+                "the multi-material model stores its averaged flux as a stress; a constituent "
+                "with stress_history='log_conformation' cannot share that history")
 
         self._material_var = material_swarmVariable
         self._constitutive_models = constitutive_models
@@ -4700,15 +5160,3 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         # Return harmonic average
         return 1 / combined_inv_K
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        display(Markdown(f"**Multi-Material Model**: {len(self._constitutive_models)} materials"))
-
-        for i, model in enumerate(self._constitutive_models):
-            display(Markdown(f"**Material {i}**: {type(model).__name__}"))
-
-        if self.flux is not None:
-            display(Latex(r"$\mathbf{f}_{\text{composite}} = " + sympy.latex(self.flux) + "$"))

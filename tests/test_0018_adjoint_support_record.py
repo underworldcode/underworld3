@@ -233,22 +233,30 @@ def test_a_swarm_step_on_a_fixed_particle_set_is_supported(mesh):
 
 
 def test_a_swarm_step_that_loses_particles_refuses_with_the_count():
-    """Particles leave the domain, the box's own return-to-bounds is switched
+    """Particles leave the domain, the mesh's return-to-bounds is switched
     off, so the migrate deletes them: the state changed dimension, and no
     linear map can be transposed across that.
 
     On its own mesh: switching the return-to-bounds off is a change to the
-    mesh, and the module's shared one is used by the semi-Lagrangian test."""
+    mesh, and the module's shared one is used by the semi-Lagrangian test.
+
+    Switched off means an IDENTITY closure, not ``None``: ``None`` now selects
+    the general facet restore (a mesh with no analytic closure, every mesh read
+    from a file, used to restore nothing at all), so it returns the particles
+    rather than letting them go.
+    """
     uw, model = _fresh_model()
     own = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
     )
-    V = sympy.Matrix([[10.0, 0.0]])            # everything exits to the right
+    V = sympy.Matrix([[10.0, 0.0]])            # the right-hand share exits
     swarm = _swarm_in_flow(uw, own, V)
-    own.return_coords_to_bounds = None
+    own.return_coords_to_bounds = lambda coords: coords
     model.tracker.time, model.tracker.step = 0.0, 0
-    with model.step(0.5):
-        swarm.advection(V, 0.5)
+    # Partially, so the refusal is read off a genuine change of dimension
+    # rather than an empty swarm: measured 972 -> 482 at this step.
+    with model.step(0.05):
+        swarm.advection(V, 0.05)
     event = [e for e in model.transcript[0].events if e["kind"] == "swarm_advect"][-1]
     assert event["n_after"] < event["n_before"], event
     assert event["adjoint"]["supported"] is False

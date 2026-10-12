@@ -254,7 +254,8 @@ class TestConsistentJacobianValidation:
         """Newton by default: the residual is symbolic, so the tangent is
         exact and cheap, and it is the matrix the adjoint transposes. Picard
         (``False``) is the opt-in for the hard-yield solves that need it as
-        an entry requirement (flipped 2026-09)."""
+        an entry requirement (the default became Newton with one automatic
+        cold Picard step on 2026-10-05, #794)."""
         solver = uw.systems.Poisson(mesh)
         assert solver.consistent_jacobian is True
 
