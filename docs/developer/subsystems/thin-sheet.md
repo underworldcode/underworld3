@@ -82,9 +82,10 @@ composed with each solver's own closure (`_flux_closure`).
 
 Measured (`test_1083`, $L = 0.04$, $cL/\eta = 0.04$): the layer's mid-plane
 velocity matches the sheet's to 0.7 % unfaulted and 0.5 % faulted, the slip to
-1.6 %. Limits: serial only; a faulted layer gets no geometric-multigrid tail yet
-(the rotated 3-D pair operator fails under custom multigrid, marked TODO(BUG) in
-`meshing/extrude.py`), so it solves with algebraic multigrid. On the sphere (radial extrusion) the
+1.6 %. Limits: serial only. The layer's multigrid tail coarsens through the
+thickness first, then laterally through the sheet's own levels, and every coarse
+level is fault-free (taken from the split sheet's ancestors: a coarse level with a
+slit has coincident nodes, which the transfer builders cannot place). On the sphere (radial extrusion) the
 difference is first order in $L$ — the curvature the sheet neglects and the
 drag-driven shear: 3.3 % at $L = 0.04$, 1.35 % at $L = 0.02$.
 

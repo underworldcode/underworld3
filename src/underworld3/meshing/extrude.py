@@ -282,32 +282,53 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
     # coarse end of the hierarchy is then essentially the thin sheet. Without a
     # tail the solve falls back to algebraic multigrid. The coarse levels do not
     # carry the faults (the fine level alone is cut).
-    # TODO(BUG): with a split fault the layer's solve goes through the rotated
-    # pair constraints, and custom geometric multigrid on that 3-D rotated
-    # operator fails on its first application (DIVERGED_PC_FAILED, a NaN
-    # residual) with any tail tried — barycentric or RBF transfers, with or
-    # without the through-thickness levels — where algebraic multigrid
-    # converges. The 2-D rotated pairs take an inherited tail without trouble.
-    # Until that is found, a faulted layer is built without a tail.
-    # Found 2026-10-12; see the thin-sheet plan file.
-    if with_tail and not pairs2:
-        if len(getattr(mesh, "dm_hierarchy", []) or []) > 1:
-            sheet_levels = list(mesh._coarse_level_meshes())[:-1]
-        else:
-            sheet_levels = []
-        vertical = []
-        n = layers // 2
-        while n >= 1:
-            vertical.append(extrude_sheet(mesh, thickness, layers=n, base=base,
-                                          surface=surface, qdegree=qdegree,
-                                          with_tail=False))
-            n //= 2
-        lateral = [extrude_sheet(level, thickness, layers=1, base=base, surface=surface,
-                                 qdegree=qdegree, with_tail=False)
-                   for level in sheet_levels]
-        tail = lateral + list(reversed(vertical))
+    if with_tail:
+        tail = _extruded_tail(mesh, thickness, layers, base, surface, qdegree)
         if tail:
             thick._custom_mg_coarse_meshes = tail
             thick._custom_mg_builder = getattr(mesh, "_custom_mg_builder", "barycentric")
             thick._custom_mg_fac_zone = None
     return thick
+
+
+def _extruded_tail(mesh, thickness, layers, base, surface, qdegree):
+    """The coarse levels of the layer, coarsest first (see the note in
+    :func:`extrude_sheet`): the sheet with the layer count halved down to one,
+    then the sheet's own coarse levels at one layer.
+
+    Every coarse level must be free of the faults. The transfer builders locate
+    fine nodes among the coarse ones, and a split level has coincident nodes along
+    its slit: the transfers degenerate and the multigrid returns NaN on its first
+    application (measured; this was first misread as a failure of geometric
+    multigrid on the rotated 3-D pair operator — on fault-free levels the faulted
+    layer's velocity block takes 14 iterations where algebraic multigrid takes
+    about 180). So the levels come from the split sheet's ancestors: the conforming
+    cut it was split from (same nodes, no slit) for the through-thickness levels,
+    and the first ancestor with a refinement hierarchy for the lateral ones.
+    """
+    def ancestors(m):
+        while m is not None:
+            yield m
+            m = getattr(m, "parent", None)
+
+    unsplit = next((m for m in ancestors(mesh)
+                    if not getattr(m, "_fault_point_pairs", None)), None)
+    if unsplit is None:
+        return []
+    own = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own is not None:
+        sheet_levels = [m for m in own if not getattr(m, "_fault_point_pairs", None)]
+    else:
+        refined = next((m for m in ancestors(unsplit)
+                        if len(getattr(m, "dm_hierarchy", []) or []) > 1), None)
+        sheet_levels = list(refined._coarse_level_meshes())[:-1] if refined is not None else []
+    vertical = []
+    n = layers // 2
+    while n >= 1:
+        vertical.append(extrude_sheet(unsplit, thickness, layers=n, base=base,
+                                      surface=surface, qdegree=qdegree, with_tail=False))
+        n //= 2
+    lateral = [extrude_sheet(level, thickness, layers=1, base=base, surface=surface,
+                             qdegree=qdegree, with_tail=False)
+               for level in sheet_levels]
+    return lateral + list(reversed(vertical))

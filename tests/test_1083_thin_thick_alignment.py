@@ -117,6 +117,11 @@ def test_faulted_plate_thin_and_thick_agree():
     the slit (point evaluation within a cell of a slit reads across it); the
     fault must slip, or the comparison is vacuous."""
     sheet, layer = _run(faulted=True)
+    # the layer's velocity block is geometric multigrid over fault-free coarse
+    # levels; a split coarse level (coincident nodes on the slit) made the
+    # transfers degenerate and the first cycle returned NaN
+    info = layer._rotated_freeslip_info
+    assert info["velocity_pc"] == "custom-FMG" and info["converged"], info
     xy = sheet.u.coords
     u_sheet = np.asarray(sheet.u.array).reshape(-1, 2)
     away = np.abs(xy[:, 1] - 0.5) > 0.06
