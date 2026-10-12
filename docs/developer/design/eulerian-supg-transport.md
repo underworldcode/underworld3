@@ -141,6 +141,50 @@ Three facts follow.
 The new class reproduces the prototype's Crank-Nicolson numbers to four digits
 (0.5993% and 9.777% at Courant 0.5 and 2 on the uniform mesh).
 
+### The predictor-corrector manager (#689), measured against the implicit scheme
+
+gthyagi's `EulerianSUPGPC` (PR #689) is the Brooks-Hughes predictor-multicorrector as
+carried through ConMan and CitcomS: a persistent rate field, a predictor
+$\tilde T = T^n + (1-\gamma)\Delta t\,\dot T^n$, and corrector passes that assemble the SUPG
+residual and apply a lumped-mass update $\Delta\dot T = -M_L^{-1} R$, $T \mathrel{+}= \gamma\Delta t\,\Delta\dot T$.
+The `citcoms` preset is two fixed passes, so the implicit $\gamma$-method it targets is never
+converged and the scheme carries the explicit stability limit (its own step, $0.9\times$ the
+directional cell-crossing time); `pc_converged` iterates the passes to a residual tolerance and
+is the implicit Crank-Nicolson step solved by lumped-mass Richardson iteration instead of
+GMRES-ILU. Its $\tau$ is the steady CitcomS one (directional element length, no transient
+term). It is P1 only and wraps into the solver through one execution hook (`_solve_transport`);
+it cannot be given to the Navier-Stokes solver or used as a stress history.
+
+Same case as the table above (one revolution of the Gaussian, $\sigma = 0.12$, 32 cells across,
+serial), the predictor-corrector at its own stability step and the implicit P1 solver at that
+same step for the like-for-like cost (`~/+Simulations/supg_vs_slcn_657/rotation_pc/`):
+
+| scheme | field | $\Delta t$ (Courant) | steps | round-trip error | peak (of 1) | s per step | s per revolution |
+|---|---|---|---|---|---|---|---|
+| predictor-corrector, `citcoms` (2 passes) | P1 | 0.0130 (0.60) | 485 | 51% | 0.59 | 0.030 | 16 |
+| predictor-corrector, `pc_converged` | P1 | 0.0130 (0.60) | 485 | 18% | 0.77 | 0.63 | 306 |
+| `EulerianSUPG`, Crank-Nicolson | P1 | 0.0130 (0.60) | 485 | 6.7% | 0.94 | 0.030 | 18 |
+| `EulerianSUPG`, Crank-Nicolson | P1 | 0.0108 (0.5) | 580 | 6.3% | 0.95 | 0.029 | 18 |
+| `EulerianSUPG`, Crank-Nicolson | P2 | 0.0108 (0.5) | 580 | 0.60% | 0.99 | 0.036 | 22 |
+| `EulerianSUPG`, Crank-Nicolson | P2 | 0.0433 (2) | 145 | 9.8% | 0.99 | 0.036 | 6.5 |
+| SLCN | P2 | 0.0108 (0.5) | 580 | 21% | 0.84 | 0.29 | 170 |
+| SLCN | P2 | 0.0433 (2) | 145 | 7.7% | 0.93 | 0.27 | 40 |
+| SLCN | P1 | 0.0108 (0.5) | 580 | 84% | 0.15 | 0.15 | 89 |
+
+What the numbers say. A two-pass step costs exactly what the implicit P1 step costs here
+(one assembled residual against one GMRES-ILU solve of a P1 system, 0.030 s each), and it is
+eight times less accurate; it also has no choice of step. The converged mode reaches the same
+implicit system as `EulerianSUPG` on P1 at twenty times the cost per step, and lands three
+times less accurate than it because its steady $\tau$ (no transient cap, the directional length)
+puts more streamline diffusion into the same equation: the peak drops to 0.77 against 0.94. The
+P2 implicit rows are the ones in the table above (0.60% and 9.8%), reproduced. The semi-Lagrangian
+scheme on P1 is unusable at this Courant number (84%, one interpolation per step through linear
+elements). None of this is a mesh-refinement study: one mesh, one flow, serial.
+
+The case for the predictor-corrector is therefore fidelity to CitcomS results, not cost or
+accuracy, and the manager is the right home for it: the same residual, a different time
+marcher behind one hook, and a preset that names the settings it reproduces.
+
 ### BDF against Adams-Moulton
 
 `time_integrator_study.py`: the same rotating Gaussian, res 32, every scheme
@@ -741,6 +785,49 @@ is what the Richards and Darcy solvers rely on; `EulerianSUPG` sets the mode to
 semi-Lagrangian Stokes stress history (`DFDt` on a viscoelastic Stokes solve) is
 untouched: it advects a stress that is not an unknown of the solve, which is a different
 job from the one the contract describes.
+
+### The histories share one characteristic trace
+
+The composable terms are the right design, and they exposed a cost: two histories on
+the same nodes each traced their own characteristics. A profile of the nodal
+`AdvDiffusionSLCN` step (2026-09-08) counted, per step, two managers (the value and the
+flux history) each recording its field, tracing the same nodes with the same velocity
+(two evaluations), sampling its history and caching the same velocity level: ten
+evaluate-class calls and a projection where the work is one trace, two samples and a
+copy. A hidden `simplify` in the parallel evaluator, run on every evaluation of an
+expression holding a mesh variable, had been adding 14 of 25 seconds on top.
+
+The mathematics stays with the term. What the terms now share is the evaluation behind
+`update_pre_solve`: a `CharacteristicTrace` (`systems/ddt.py`) owned by the solver
+holds the departure points per node set and segment structure for the current step, and
+the velocity levels $v^{n-1}, v^{n-2}, \dots$ cached by evaluation at the true nodes. Each
+history asks it for "the feet of my nodes through these segments" and samples its own
+field; the second history on the same nodes, and the older slots of a one-segment
+history, are served from the cache. The solver delimits the step (`begin_step`,
+`finish_step`, which records the velocity used this step); a manager used on its own
+owns a private trace and delimits its own steps, so nothing changes for standalone use.
+`share_characteristics(DuDt, DFDt)` attaches one trace to every manager that follows
+the same velocity on the same mesh; the Navier-Stokes SLCN solver shares the velocity
+levels this way even though its stress history lives on different nodes.
+
+A history is skipped only when it is a derived quantity the weak form does not read:
+the diffusive flux history under BDF or theta = 1, whose old-level weight is zero. It is
+never a state history. The flux history of a viscoelastic solve is state (the stress at
+the old time cannot be rebuilt from the present velocity gradient and rheology), and
+Crank-Nicolson is what keeps the elastic response undamped, so that history is always
+carried.
+
+Measured on the rotating Gaussian (h = 0.1, C = 0.25, one revolution, answer identical
+to every printed digit, L2 5.142e-2, peak 0.6859):
+
+| | nodal SLCN | integration-point SLCN |
+|---|---|---|
+| before | 1350 ms per step | 2250 |
+| `simplify` forwarded | 510 | 1250 |
+| shared trace, unread flux skipped | 250 | 660 |
+
+The cost ratio against SUPG in the convection comparison above was measured before
+both fixes and should be re-read with that in mind.
 
 ## What the timestep estimate means
 

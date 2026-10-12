@@ -15,9 +15,12 @@ import underworld3 as uw
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 
-# Serial reference, res 16, BDF2, dt 0.05, 8 steps (re-recorded with the local cell size, #687;
-# np=2 reproduced it to 1.4e-12).
-SERIAL_ERROR = 0.030152131513640566
+# Serial reference, res 16, BDF2, dt 0.05, 8 steps. Re-recorded for #694: SUPG
+# stabilisation scales with h, and h is now PETSc's volume**(1/dim) rather than
+# the vertex-RMS about the centroid, which moved this by 1.9e-5 relative —
+# nineteen times the 1e-6 tolerance, which is the baseline doing its job.
+# Local and CI agree on the new value to 1.4e-9 relative.
+SERIAL_ERROR = 0.030152707070617707
 
 
 def _run():
