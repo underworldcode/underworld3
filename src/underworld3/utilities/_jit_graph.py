@@ -434,9 +434,10 @@ def lower_callbacks(fns, mesh):
             fn = fn.doit()
         fn = graph.lower(fn)
         if isinstance(fn, sympy.vector.Vector):
-            fn = fn.to_matrix(mesh.N)[0:mesh.dim, 0]
+            # one component per EMBEDDING dimension (three on a surface mesh in 3-D)
+            fn = fn.to_matrix(mesh.N)[0:mesh.cdim, 0]
         elif isinstance(fn, sympy.vector.Dyadic):
-            fn = fn.to_matrix(mesh.N)[0:mesh.dim, 0:mesh.dim]
+            fn = fn.to_matrix(mesh.N)[0:mesh.cdim, 0:mesh.cdim]
         else:
             fn = sympy.Matrix([fn])
         out.append(fn)
