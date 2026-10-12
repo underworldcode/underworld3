@@ -250,9 +250,9 @@ class TestConsistentJacobianValidation:
             with pytest.raises(ValueError, match="consistent_jacobian"):
                 stokes.consistent_jacobian = value
 
-    def test_default_is_false(self, mesh):
+    def test_default_is_true(self, mesh):
         solver = uw.systems.Poisson(mesh)
-        assert solver.consistent_jacobian is False
+        assert solver.consistent_jacobian is True
 
 
 # ---------------------------------------------------------------------------

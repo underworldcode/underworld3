@@ -381,6 +381,10 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             for key in self._SCHWARZ_OPTIONS:
                 opts.delValue(key)
             self._push_managed_option("ksp_type", "gmres")
+            # the Schwarz route's restart 200 is gone with its keys; the multigrid
+            # route takes the solvers' default (see SolverBaseClass), not PETSc's 30
+            from underworld3.cython.generic_solvers import _DEFAULT_KRYLOV_RESTART
+            self._push_managed_option("ksp_gmres_restart", _DEFAULT_KRYLOV_RESTART)
             for key, value in multigrid_options.gamg_bundle().settings.items():
                 self._push_managed_option(key, value)
         else:

@@ -291,11 +291,15 @@ pytest -m "not tier_c"
 
 ### When Writing a New Test
 
-1. **Start at Tier C**: All new tests begin as experimental
+1. **A proven test starts at Tier B**: a regression test written first and shown to
+   fail without the fix it guards, or a test asserting a hard baseline whose own
+   correctness has been checked, gates from the start. Tier C is for a test that is
+   not yet proven, so that it cannot derail the code it was written against (the C2
+   population above); it is otherwise close to obsolete (Louis, 2026-10-11).
 2. **Document Intent**: Clear docstring explaining what behavior is tested
 3. **Use xfail Appropriately**: If testing unimplemented feature, mark with xfail
 4. **Don't Break CI**: Tier C tests with xfail won't break automated testing
-5. **Promote Deliberately**: Don't rush promotion - let tests prove reliability
+5. **Promote Deliberately**: Tier B → A is the review step described above
 
 ### When a Test Fails
 

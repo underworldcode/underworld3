@@ -200,8 +200,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # CI). The band runs as a whole now, so the named line is gone rather than
   # running it twice.
 
-  # Diffusion / Advection tests
-  "${PYTEST[@]}" tests/test_1100*py || status=1
+  # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
+  "${PYTEST[@]}" tests/test_110*py || status=1
   "${PYTEST[@]}" tests/test_1110*py tests/test_1120*py || status=1  # Annulus + vector SL
   "${PYTEST[@]}" tests/test_1450*py || status=1
 

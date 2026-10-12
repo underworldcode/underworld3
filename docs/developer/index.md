@@ -201,6 +201,7 @@ design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
 design/eulerian-supg-transport
+design/jit-shared-graph-codegen
 ```
 
 ```{toctree}
@@ -232,6 +233,7 @@ subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
 subsystems/constitutive-models-anisotropy
+subsystems/stress-transport
 subsystems/swarm-system
 subsystems/data-access
 subsystems/interpolation

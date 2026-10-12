@@ -128,10 +128,17 @@ Post the findings on the PR.
 
 **The review also decides issue state.** It lists the open issues in the
 territory the branch touches and returns one of three verdicts for each —
-closed by this branch, already fixed (closed on a probe run against
-`development`, pasted into the issue), or still live with one line saying
-which part. Refusing to close is a verdict, not a gap. Close on a probe,
-never on the word of a PR that merged nearby.
+fixed by this branch, already fixed (on a probe run against `development`,
+pasted into the issue), or still live with one line saying which part.
+Refusing to mark an issue fixed is a verdict, not a gap. Mark it fixed on a
+probe, never on the word of a PR that merged nearby.
+
+**An issue's label says where its fix is; the issue closes at release.**
+`Closes #N` fires only on merges to `main`, and our PRs merge to `development`.
+While the fix is in an open PR, label the issue `fixed-in-PR`; when the PR merges,
+relabel it `fixed-in-development`, comment with the PR and the merge commit, and
+leave it open. Issues are closed when `development` is released to `main`. Detail:
+[`guides/planning-on-github.md`](docs/developer/guides/planning-on-github.md).
 
 **A finding the branch fixes is a commit, not an issue.** Only a finding we
 decide *not* to fix in this branch is filed, and the PR body then says which
@@ -204,10 +211,11 @@ pytest -m "level_1 and tier_a"     # quick
 pytest -m "tier_a or tier_b"       # full validation
 ```
 
-Tier A is hardened and reviewed — safe to build code around. Tier C is not mature
-enough to drive coding. Every bug fix ships the regression test that would have
-caught it, written first and shown to fail. Validate a new test's own correctness
-before changing library code to satisfy it.
+Tier A is hardened and reviewed — safe to build code around. Every bug fix ships
+the regression test that would have caught it, written first and shown to fail;
+such a proven test starts at tier B, so it gates. Tier C is only for a test not yet
+proven, so it cannot derail the code. Validate a new test's own correctness before
+changing library code to satisfy it.
 
 Every test file must be reachable from a glob in `scripts/test.sh`;
 `scripts/check_test_coverage.py` enforces it.
