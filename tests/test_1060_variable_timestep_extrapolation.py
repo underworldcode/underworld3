@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 import sympy
 
-pytestmark = [pytest.mark.tier_a]
+pytestmark = [pytest.mark.tier_b]
 
 
 @pytest.fixture(autouse=True)
