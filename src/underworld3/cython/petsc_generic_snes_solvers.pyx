@@ -585,10 +585,10 @@ class SolverBaseClass(uw_object):
         if newton_expr is None:
             # Atoms the constitutive model freezes because they are too costly to
             # differentiate are swapped for its differentiable stand-ins first
-            # (tangent_surrogates); applied to the solver's own flux, so the
-            # solver's closure terms stay in the tangent.
+            # (its private _tangent_surrogates); applied to the solver's own
+            # flux, so the solver's closure terms stay in the tangent.
             surrogates = getattr(getattr(self, "_constitutive_model", None),
-                                 "tangent_surrogates", None) or {}
+                                 "_tangent_surrogates", None) or {}
             source = expr.xreplace(surrogates) if surrogates else expr
             newton_expr = _jacobian_unwrap(source, route=self._jit_route_in_use())
         if mode == "continuation":
@@ -611,22 +611,23 @@ class SolverBaseClass(uw_object):
     def _newton_flux(self, exact_F1):
         """Newton (consistent) flux for the bulk ``F1`` Jacobian source.
 
-        Returns the constitutive model's own smooth tangent law
-        (``constitutive_model.flux_jacobian``) when it supplies one — matched to
-        the container/shape of ``exact_F1`` — otherwise ``None`` so that
-        :meth:`_jacobian_source` falls back to the exact flux unwrapped. Lets a
-        model whose flux has a non-smooth yield kink provide a physically
-        motivated smooth tangent without changing the residual.
+        When the constitutive model supplies a tangent flux
+        (``constitutive_model.flux_jacobian``), it is a DEVIATORIC stress, like
+        the model's ``flux``: the solver applies its own closure to it
+        (``_flux_closure`` — Stokes: less the mechanical pressure with the
+        penalty, plus DEVSS; the thin sheet: the plane-stress trace term times
+        the thickness), so the tangent differentiates the same momentum flux as
+        the residual with only the model's part exchanged. A solver without a
+        closure uses the model flux as its F1, and the tangent flux stands in for
+        it directly. Returns ``None`` when there is no tangent flux, so that
+        :meth:`_jacobian_source` differentiates the exact flux.
+
+        Before 2026-10-12 the tangent flux replaced the WHOLE F1 (Stokes lost the
+        pressure, penalty and DEVSS terms from its tangent), and on vector and
+        scalar solvers it was silently ignored: a 2-D Array was flattened with
+        ``list()`` (which yields rows) and the error swallowed. See
+        ``tests/test_1082_flux_jacobian_closure.py``.
         """
-        # TODO(BUG): the model's flux_jacobian REPLACES the whole F1 in the Newton
-        # tangent. Stokes' F1 is stress(flux) + DEVSS, and stress carries the
-        # augmented-Lagrangian penalty lambda K (div u) I, so with a flux_jacobian
-        # set the uu tangent silently loses the penalty and DEVSS terms (both
-        # depend on the velocity gradient); a thin sheet's closure tr(tau) P would
-        # be lost the same way. The composing form: each solver builds F1 from the
-        # model flux through one function and applies it to flux_jacobian too.
-        # Found 2026-10-12 (thin-sheet work); tangent_surrogates works around it
-        # for frozen atoms. Not fixed here.
         # Default (Picard) path never needs the Newton flux — short-circuit so
         # the (potentially expensive) model.flux_jacobian is not even evaluated,
         # keeping the default assembly allocation-free and bit-identical.
@@ -636,16 +637,27 @@ class SolverBaseClass(uw_object):
         smooth = getattr(cm, "flux_jacobian", None) if cm is not None else None
         if smooth is None:
             return None
-        try:
-            sm = sympy.Array(smooth)
-            ex = sympy.Array(exact_F1)
-            if sm.shape != ex.shape:
-                sm = sm.reshape(*ex.shape)
-            if isinstance(exact_F1, sympy.MatrixBase):
-                return sympy.Matrix(exact_F1.shape[0], exact_F1.shape[1], list(sm))
-            return sm
-        except Exception:
-            return None
+        closure = getattr(self, "_flux_closure", None)
+        if closure is not None:
+            smooth = closure(sympy.Matrix(smooth))
+        n_exact = int(np.prod(sympy.Array(exact_F1).shape))
+        flat = list(sympy.Array(smooth).reshape(n_exact)) \
+            if int(np.prod(sympy.Array(smooth).shape)) == n_exact else None
+        if flat is None:
+            raise ValueError(
+                f"constitutive_model.flux_jacobian has shape "
+                f"{sympy.Array(smooth).shape}; this solver's flux has shape "
+                f"{sympy.Array(exact_F1).shape}")
+        shape = sympy.Array(exact_F1).shape
+        if isinstance(exact_F1, sympy.MatrixBase):
+            composed = sympy.Matrix(shape[0], shape[1], flat)
+        else:
+            composed = sympy.Array(flat, shape)
+        surrogates = getattr(cm, "_tangent_surrogates", None) or {}
+        if surrogates:
+            composed = composed.xreplace(surrogates)
+        # differentiated as the exact flux would be: named quantities unwrapped
+        return _jacobian_unwrap(composed, route=self._jit_route_in_use())
 
     def _get_newton_alpha(self):
         """Lazily construct the Picard->Newton continuation parameter.
@@ -1481,6 +1493,17 @@ class SolverBaseClass(uw_object):
         def Einv2(inner_self):
             """Second invariant of strain rate tensor."""
             return inner_self._Einv2
+
+        def second_invariant(inner_self, M):
+            r"""Second invariant :math:`\sqrt{M_{ij} M_{ij} / 2}` of a deviatoric
+            tensor built on these kinematics (a strain rate, a stress).
+
+            Constitutive models take every invariant through here, so a solver
+            whose tensors are a reduced representation of the 3-D ones supplies
+            the missing components: the thin sheet adds the out-of-plane
+            component :math:`M_{nn} = -\operatorname{tr} M` that incompressibility
+            implies. The default is the plain contraction."""
+            return sympy.sqrt((M**2).trace() / 2)
 
         @property
         def CoordinateSystem(inner_self):
@@ -5624,6 +5647,14 @@ class SNES_Vector(SolverBaseClass):
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
+        # The coarse levels take the fields first: the decomposition below builds
+        # a sub-DM, which recurses into the coarse DMs (measured: PETSc error 62,
+        # "number of requested fields 1 greater than number of DM fields 0", on
+        # any mesh with refinement levels).
+        for coarse_dm in self.dm_hierarchy:
+            self.dm.copyFields(coarse_dm)
+            self.dm.copyDS(coarse_dm)
+
         # The single field, registered AFTER the boundaries are on the DM (the
         # decomposition finalises the DM, and DMAddBoundary refuses afterwards),
         # under the name the rotated solve and the copy-back address it by —
@@ -5632,10 +5663,6 @@ class SNES_Vector(SolverBaseClass):
         names, isets, dms = self.dm.createFieldDecomposition()
         self.fields = {"velocity": self.u}
         self._subdict = {"velocity": (isets[0], dms[0])}
-
-        for coarse_dm in self.dm_hierarchy:
-            self.dm.copyFields(coarse_dm)
-            self.dm.copyDS(coarse_dm)
 
         self.is_setup = False
 

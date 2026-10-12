@@ -1860,6 +1860,38 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         if F1_source is not None and linesearch is not None:
             self.petsc_options["snes_linesearch_type"] = linesearch
 
+    def add_basal_drag(self, coefficient, boundary, reference_velocity=None):
+        r"""Couple the model to what lies beneath ``boundary`` by a drag
+        :math:`-c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})` per unit area: a
+        natural condition :math:`c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})`.
+
+        The thick form of ``ThinSheet.add_basal_drag``: a thin sheet modelled as
+        a thin 3-D layer takes the same line. ``reference_velocity`` is the
+        velocity of the substrate (``None``: a fixed base); for a viscous
+        substrate of viscosity :math:`\eta_a` and thickness :math:`h_a`,
+        :math:`c = \eta_a / h_a`. The drag acts on every component, so the base
+        also resists normal motion, which the sheet never has."""
+        u = self.Unknowns.u.sym
+        dim = self.mesh.dim
+        if reference_velocity is None:
+            reference = sympy.zeros(1, dim)
+        elif isinstance(reference_velocity, uw.discretisation.MeshVariable):
+            reference = sympy.Matrix(reference_velocity.sym).reshape(1, dim)
+        else:
+            reference = sympy.Matrix(list(reference_velocity)).reshape(1, dim)
+        self.add_natural_bc(coefficient * (u - reference), boundary)
+
+    def add_basal_traction(self, traction, boundary):
+        r"""Apply a traction :math:`\mathbf{t}` (force per unit area, exerted on
+        the model) on ``boundary``; the thick form of
+        ``ThinSheet.add_basal_traction``."""
+        dim = self.mesh.dim
+        if isinstance(traction, uw.discretisation.MeshVariable):
+            row = sympy.Matrix(traction.sym).reshape(1, dim)
+        else:
+            row = sympy.Matrix(list(traction)).reshape(1, dim)
+        self.add_natural_bc(-row, boundary)
+
     # ----- DEVSS: stabilising a discontinuous elastic stress -----
 
     @property
@@ -2176,7 +2208,7 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: self.stress + self._devss_flux(),
+        lambda self: self._flux_closure(self.stress_deviator),
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
@@ -2357,11 +2389,23 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         stress_deviator : Deviatoric (traceless) part, penalty-free.
         penalty : The augmentation, and its effect on the recovered pressure.
         """
+        return self._stress_from_deviator(self.stress_deviator)
+
+    def _stress_from_deviator(self, tau):
+        """The total stress built on a deviatoric stress ``tau``: less the
+        mechanical pressure, which carries the grad-div penalty."""
         mechanical_pressure = (
             self.p.sym[0]
             - self.penalty * self.constitutive_model.K * self.div_u
         )
-        return self.stress_deviator - sympy.eye(self.mesh.dim) * mechanical_pressure
+        return sympy.Matrix(tau) - sympy.eye(self.mesh.dim) * mechanical_pressure
+
+    def _flux_closure(self, tau):
+        """The momentum flux built on a deviatoric stress: the total stress
+        plus the DEVSS term. ``F1`` is this applied to the constitutive model's
+        flux; the Newton tangent applies it to the model's tangent flux
+        (``flux_jacobian``), so those terms stay in the tangent."""
+        return self._stress_from_deviator(tau) + self._devss_flux()
 
     @property
     def stress_1d(self):

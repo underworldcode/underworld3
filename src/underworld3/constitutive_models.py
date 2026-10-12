@@ -446,6 +446,19 @@ class Constitutive_Model(uw_object):
         self._solver_is_setup = False
         return
 
+    def _second_invariant(self, M):
+        r"""Second invariant of a deviatoric tensor of this model (a strain
+        rate, a stress), as the solver's kinematics define it.
+
+        The solver supplies it (``Unknowns.second_invariant``) because only the
+        solver knows what its tensors leave out: the thin sheet's in-plane
+        tensors stand for 3-D ones with :math:`M_{nn} = -\operatorname{tr}M`.
+        Otherwise the plain contraction :math:`\sqrt{M_{ij}M_{ij}/2}`."""
+        invariant = getattr(self.Unknowns, "second_invariant", None)
+        if invariant is None:
+            return sympy.sqrt((M**2).trace() / 2)
+        return invariant(M)
+
     @property
     def K(self):
         r"""Primary constitutive property (viscosity, diffusivity, etc.).
@@ -1505,7 +1518,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         self._strainrate_inv_II = expression(
             r"\dot\varepsilon_{II}",
-            sympy.sqrt((self.grad_u**2).trace() / 2),
+            self._second_invariant(self.grad_u),
             "Strain rate 2nd Invariant",
         )
 
@@ -1714,7 +1727,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
 
-        stress_II = sympy.sqrt((stress**2).trace() / 2)
+        stress_II = self._second_invariant(stress)
 
         correction = parameters.yield_stress / stress_II
 
@@ -2463,7 +2476,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         else:
             K = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
         # the first-order step, kept as the Newton tangent's stand-in for the
-        # frozen carried stress (see tangent_surrogates)
+        # frozen carried stress (see _tangent_surrogates)
         self._carried_step_linear = sigma + dt * (K * sigma + sigma * K.T)
         if self._objective_order == "cayley":
             A = dt * K / 2
@@ -2483,7 +2496,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return self._frozen_carried_stress(carried)
 
     @property
-    def tangent_surrogates(self):
+    def _tangent_surrogates(self):
         r"""Frozen atoms of this model's flux and the differentiable stand-in
         the Newton tangent uses for each, ``{atom: expression}``; empty when
         nothing is frozen.
@@ -2687,7 +2700,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def E_eff_inv_II(self):
         r"""Second invariant of effective strain rate: :math:`\dot{\varepsilon}_{II} = \sqrt{\frac{1}{2}\dot{\varepsilon}_{ij}\dot{\varepsilon}_{ij}}`."""
         E_eff = self.E_eff.sym
-        self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
+        self._E_eff_inv_II.sym = self._second_invariant(E_eff)
 
         return self._E_eff_inv_II
 
@@ -2803,7 +2816,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         strainrate_inv_II = expression(
             R"{\dot\varepsilon_{II}'}",
-            sympy.sqrt((Edot**2).trace() / 2),
+            self._second_invariant(Edot),
             "Strain rate 2nd Invariant including elastic strain rate term",
         )
 
@@ -2842,7 +2855,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         stress = self.stress_projection()
 
         # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
-        stress_inv_II = sympy.sqrt((stress**2).trace() / 2)
+        stress_inv_II = self._second_invariant(stress)
         correction = parameters.yield_stress / stress_inv_II
 
         return correction
@@ -4177,7 +4190,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def E_eff_inv_II(self):
         r"""Second invariant of effective strain rate."""
         E_eff = self.E_eff.sym
-        self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
+        self._E_eff_inv_II.sym = self._second_invariant(E_eff)
         return self._E_eff_inv_II
 
     @property

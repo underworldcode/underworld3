@@ -193,6 +193,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # hardened, fast, and exactly what CI exists to run. test_1064 is the slow one
   # and it is excluded by WHAT IT IS (tier_c) below, not by its number.
   "${PYTEST[@]}" tests/test_106*py tests/test_107*py || status=1
+  # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
+  # thick, the quadratic benchmark); the slow ones are level_3 and marked so.
+  "${PYTEST[@]}" tests/test_108*py || status=1
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign

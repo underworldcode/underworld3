@@ -87,8 +87,8 @@ def test_rigid_motion_carries_no_stress():
 
 @pytest.mark.tier_b
 def test_basal_drag_balances_a_uniform_load():
-    """With no kinematic boundary condition, a uniform force per unit area
-    against a basal drag c gives the uniform velocity u = f / c exactly."""
+    """With no kinematic boundary condition, a uniform body force against a
+    basal drag c gives the uniform velocity u = L f / c exactly (L = 1)."""
     mesh = _box()
     sheet = _sheet(mesh)
     c = sympy.Rational(5, 2)
@@ -131,3 +131,87 @@ def test_manufactured_solution_converges_at_third_order():
 
     order = np.log(errors[0.2] / errors[0.1]) / np.log(2.0)
     assert order > 2.6, f"convergence order {order:.2f}, errors {errors}"
+
+
+@pytest.mark.tier_b
+def test_basal_coupling_and_body_force_per_unit_volume():
+    """The aligned forcing: a body force per unit VOLUME (integrated through
+    the thickness L, as Stokes integrates it through a thick layer), a drag
+    against a moving base and a basal traction. Uniform, so exactly
+    u = u_ref + (L f + t) / c."""
+    mesh = _box()
+    sheet = _sheet(mesh)
+    L, c = sympy.Integer(2), sympy.Rational(5, 2)
+    f = (sympy.Rational(3, 4), sympy.Rational(-1, 3))
+    t = (sympy.Rational(1, 5), sympy.Rational(1, 2))
+    u_ref = (sympy.Rational(-1, 2), sympy.Rational(1, 7))
+    sheet.thickness = L
+    sheet.bodyforce = f
+    sheet.add_basal_drag(c, "Bottom", reference_velocity=u_ref)
+    sheet.add_basal_traction(t, "Bottom")
+    sheet.solve()
+
+    u = np.asarray(sheet.u.array).reshape(-1, 2)
+    exact = np.array([float(u_ref[i] + (L * f[i] + t[i]) / c) for i in range(2)])
+    assert np.abs(u - exact).max() < 1.0e-8
+
+
+@pytest.mark.tier_b
+def test_pressure_diagnostic_is_minus_the_trace():
+    """Uniaxial stretch: the plane-stress pressure p = -tr(tau) = -eta edot,
+    recovered into the diagnostic field ``sheet.p`` after the solve."""
+    mesh = _box()
+    x, y = mesh.X
+    edot, eta = sympy.Rational(1, 2), 2
+    sheet = _sheet(mesh, eta=eta)
+    u_y = -edot * (y - sympy.Rational(1, 2)) / 2
+    sheet.add_essential_bc([0, u_y], "Left")
+    sheet.add_essential_bc([edot, u_y], "Right")
+    p = sheet.p                               # created before the solve
+    sheet.solve()
+    assert np.abs(np.asarray(p.array) + eta * float(edot)).max() < 1.0e-6
+
+
+@pytest.mark.tier_b
+def test_plastic_sheet_yields_at_the_von_mises_stress():
+    """A perfectly plastic sheet (viscosity far above tau_y / edot) in
+    uniaxial stretch carries sigma_xx = sqrt(3) tau_y, the von Mises uniaxial
+    yield stress: the invariant includes the out-of-plane strain rate
+    eps_nn = -tr(eps_s) (with the in-plane invariant alone the sheet yields at
+    sqrt(18/5) tau_y = 1.897 tau_y)."""
+    mesh = _box()
+    x, y = mesh.X
+    edot, tau_y = sympy.Rational(1, 2), 1
+    sheet = uw.systems.ThinSheet(mesh)
+    sheet.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    sheet.constitutive_model.Parameters.shear_viscosity_0 = 1.0e4
+    sheet.constitutive_model.Parameters.yield_stress = tau_y
+    sheet.tolerance = 1.0e-10
+    u_y = -edot * (y - sympy.Rational(1, 2)) / 2
+    sheet.add_essential_bc([0, u_y], "Left")
+    sheet.add_essential_bc([edot, u_y], "Right")
+    # start from the uniform stretch: the plastic viscosity is singular at rest
+    sheet.u.array[:, 0, 0] = float(edot) * sheet.u.coords[:, 0]
+    sheet.u.array[:, 0, 1] = -float(edot) * (sheet.u.coords[:, 1] - 0.5) / 2
+    sheet.solve(zero_init_guess=False)
+
+    sigma = uw.function.evaluate(sheet.stress, _probe_points()).reshape(-1, 2, 2)
+    assert np.abs(sigma[:, 0, 0] - np.sqrt(3.0) * tau_y).max() < 1.0e-3
+    assert np.abs(sigma[:, 1, 1]).max() < 1.0e-3
+
+
+@pytest.mark.tier_b
+def test_sheet_solves_on_a_refined_mesh_with_a_hierarchy():
+    """On a mesh with refinement levels the field decomposition (which the
+    rotated solves address the field by) recurses into the coarse levels; it
+    must run after the fields are copied there. Before, it raised PETSc error
+    62 ("number of requested fields 1 greater than number of DM fields 0")."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, refinement=1, qdegree=3)
+    sheet = _sheet(mesh)
+    c = sympy.Rational(5, 2)
+    sheet.basal_drag = c
+    sheet.bodyforce = (1, 0)
+    sheet.solve()
+    u = np.asarray(sheet.u.array).reshape(-1, 2)
+    assert np.abs(u - np.array([1 / 2.5, 0.0])).max() < 1.0e-8

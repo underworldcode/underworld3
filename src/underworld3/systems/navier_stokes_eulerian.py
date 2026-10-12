@@ -413,8 +413,11 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         eta = self.constitutive_model.K
         return 2 * eta * sympy.Matrix(self.mesh.vector.strain_tensor(u_row))
 
-    def _viscous_flux(self):
+    def _viscous_flux(self, tau_new=None):
         r"""The flux of the time scheme: the new stress, blended with the stored levels.
+
+        ``tau_new`` replaces the constitutive model's stress at the new level (the
+        Newton tangent passes the model's tangent flux through here).
 
         The theta rule weights the flux across time levels, so it needs the stress
         at the stored levels as well as the new one. For a viscous fluid that is
@@ -428,7 +431,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         """
         states = self.DuDt.states()
         weights = self.DuDt.spatial_weights()
-        total = weights[0] * self.stress_deviator
+        total = weights[0] * (self.stress_deviator if tau_new is None
+                              else sympy.Matrix(tau_new))
         stress_history = self.Unknowns.DFDt
         for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
             if w == 0:
@@ -470,17 +474,24 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     @property
     def F1(self):
         """Pointwise flux: weighted viscous stress, mechanical pressure, SUPG term."""
-        dim = self.mesh.dim
-        mechanical_pressure = (
-            self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
         F1 = public_expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self._viscous_flux() + self._devss_flux() - sympy.eye(dim) * mechanical_pressure
-            + self._stabilisation_flux(),
+            self._flux_closure(self.stress_deviator),
             "Navier-Stokes SUPG: viscous flux of the time scheme, pressure, tau R (x) a",
         )
         self._u_f1 = F1
         return F1
+
+    def _flux_closure(self, tau):
+        """The momentum flux built on the new-level deviatoric stress ``tau``:
+        the time scheme's viscous flux, DEVSS, the mechanical pressure and the
+        SUPG term. ``F1`` applies it to the constitutive model's flux, the Newton
+        tangent to the model's tangent flux (``flux_jacobian``)."""
+        dim = self.mesh.dim
+        mechanical_pressure = (
+            self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
+        return (self._viscous_flux(tau) + self._devss_flux()
+                - sympy.eye(dim) * mechanical_pressure + self._stabilisation_flux())
 
     # ------------------------------------------------------------------
     # Timestep and solve

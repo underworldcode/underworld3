@@ -22,12 +22,16 @@ limit is the Trouton viscosity :math:`3\eta`. The momentum balance solved is
 
 .. math::
 
-    -\nabla_s \cdot \left( L\,\boldsymbol{\sigma} \right) + c\,\mathbf{u}
-    = \mathbf{f},
+    -\nabla_s \cdot \left( L\,\boldsymbol{\sigma} \right)
+    + c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})
+    = L\,\mathbf{f} + \mathbf{t}_b,
 
 with :math:`c` a basal drag coefficient (:math:`\eta_a/h_a` for a viscous
-substrate) and :math:`\mathbf{f}` a force per unit area. There is no pressure
-unknown, so this is a vector problem, not a saddle point.
+substrate) against a reference velocity, :math:`\mathbf{f}` a body force per
+unit volume (as for ``Stokes``) and :math:`\mathbf{t}_b` a basal traction. There
+is no pressure unknown, so this is a vector problem, not a saddle point; the
+plane-stress pressure :math:`-\operatorname{tr}\boldsymbol\tau` is available as
+the diagnostic ``p``.
 
 On a flat mesh :math:`\mathbf{P} = \mathbf{I}` and the velocity has two
 components. On a manifold (``mesh.dim < mesh.cdim``, e.g.
@@ -151,8 +155,9 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
 
     .. math::
 
-        -\nabla_s \cdot \left( L\,\boldsymbol{\sigma} \right) + c\,\mathbf{u}
-        = \mathbf{f},
+        -\nabla_s \cdot \left( L\,\boldsymbol{\sigma} \right)
+        + c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})
+        = L\,\mathbf{f} + \mathbf{t}_b,
         \qquad
         \boldsymbol{\sigma} = \boldsymbol{\tau}
         + \operatorname{tr}(\boldsymbol{\tau})\,\mathbf{P},
@@ -168,8 +173,16 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         A flat mesh (``dim == cdim``) or a spherical manifold.
     velocityField : MeshVariable, optional
         Sheet velocity, ``cdim`` components. Created if not supplied.
+    pressureField : MeshVariable, optional
+        Receives the plane-stress pressure :math:`p = -\operatorname{tr}\boldsymbol\tau`
+        after each solve (a diagnostic; the sheet has no pressure unknown).
+        Created on first access of :attr:`p` if not supplied. The signature is
+        Stokes', so a model script moves between a thin sheet and a thick one
+        (``Stokes`` on a thin 3-D mesh) by changing the mesh and the class.
     degree : int, default 2
         Polynomial degree of the velocity space.
+    p_continuous : bool, default True
+        Continuity of the pressure diagnostic (degree ``degree - 1``).
     verbose : bool, default False
     DuDt, DFDt : optional
         Time-derivative managers; a viscoelastic constitutive model creates
@@ -199,14 +212,26 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             if new_u is not None:
                 P = _tangent_projector(new_u.mesh)
                 inner_self._E = P * inner_self._E * P
-                inner_self._Einv2 = sympy.sqrt(
-                    (sympy.Matrix(inner_self._E) ** 2).trace() / 2)
+                inner_self._Einv2 = inner_self.second_invariant(sympy.Matrix(inner_self._E))
                 if new_u.mesh.dim < new_u.mesh.cdim:
                     inner_self._W = _surface_spin(new_u.mesh, inner_self._L)
 
+        def second_invariant(inner_self, M):
+            r"""Second invariant of the 3-D deviatoric tensor that an in-plane
+            tensor :math:`M` stands for: incompressibility puts
+            :math:`M_{nn} = -\operatorname{tr} M` on the sheet normal, so
+
+            .. math:: M_{II} = \sqrt{\tfrac12\left(M_{ij}M_{ij}
+                + (\operatorname{tr} M)^2\right)}.
+
+            Without the normal component a plane-stress uniaxial stretch yields
+            at :math:`\sqrt{18/5}\,\tau_y` instead of the von Mises
+            :math:`\sqrt{3}\,\tau_y` (the sheet thins where it stretches)."""
+            return sympy.sqrt(((M**2).trace() + M.trace() ** 2) / 2)
+
     _solver_terms = (
         ("thickness", "sheet thickness L multiplying the in-plane stress"),
-        ("bodyforce", "force per unit area; F0 is its negative"),
+        ("bodyforce", "body force per unit volume; F0 carries -L f"),
         ("basal_drag", "drag coefficient c on the sheet velocity (eta_a / h_a)"),
     )
 
@@ -215,7 +240,9 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self,
         mesh: uw.discretisation.Mesh,
         velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
         degree: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
@@ -228,8 +255,19 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._bodyforce = expression(
             Rf"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
             sympy.Matrix([[0] * self.mesh.cdim]),
-            "Thin-sheet force per unit area: f_0(u)",
+            "Thin-sheet body force per unit volume: f_0(u)",
         )
+        # basal coupling added by add_basal_drag / add_basal_traction: a list of
+        # (1, cdim) rows entering F0 as residual terms (a drag c (u - u_ref),
+        # a traction with its sign reversed)
+        self._basal_terms = []
+        # The pressure is not an unknown of the sheet; p = -tr(tau) is recovered
+        # after each solve into a diagnostic field, created on demand so a script
+        # written for Stokes (which reads solver.p) runs unchanged.
+        self._p_degree = max(degree - 1, 1)
+        self._p_continuous = p_continuous
+        self._p_field = pressureField
+        self._p_projection = None
         self._needs_function_rewire = True
         self._constitutive_model = None
         # On a manifold the velocity is carried in the embedding space; its
@@ -277,6 +315,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         if self.Unknowns.DFDt is None:
             super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
                           divergence_retries=divergence_retries)
+            self._refresh_pressure(verbose)
             return
         if timestep is None:
             raise ValueError(
@@ -298,6 +337,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
                       divergence_retries=divergence_retries)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
         self._keep_history_tangent()
+        self._refresh_pressure(verbose)
 
     def _keep_history_tangent(self):
         r"""On a manifold, project every stored history level onto the tangent
@@ -389,10 +429,74 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._needs_function_rewire = True
         self._basal_drag.sym = value
 
+    def add_basal_drag(self, coefficient, boundary=None, reference_velocity=None):
+        r"""Couple the sheet to its base by a drag
+        :math:`-c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})` per unit area.
+
+        ``reference_velocity`` is the velocity of what lies beneath (a viscous
+        substrate's flow, a mantle convection model's surface velocity, plate
+        motions); ``None`` drags against a fixed base. For a viscous substrate
+        of viscosity :math:`\eta_a` and thickness :math:`h_a`,
+        :math:`c = \eta_a / h_a`. Calls accumulate.
+
+        ``boundary`` names the base of a thick sheet (``Stokes`` on a thin 3-D
+        mesh applies the same drag there as a natural condition). The thin sheet
+        is its own base, so it is accepted and not used — the same model line
+        serves both."""
+        self._needs_function_rewire = True
+        u = self.Unknowns.u.sym
+        if reference_velocity is None:
+            reference = sympy.zeros(1, self.mesh.cdim)
+        elif isinstance(reference_velocity, uw.discretisation.MeshVariable):
+            reference = sympy.Matrix(reference_velocity.sym).reshape(1, self.mesh.cdim)
+        else:
+            reference = _nondimensional_row(reference_velocity, self.mesh.cdim)
+        self._basal_terms.append(coefficient * (u - reference))
+
+    def add_basal_traction(self, traction, boundary=None):
+        r"""Apply a traction :math:`\mathbf{t}` (force per unit area, exerted
+        on the sheet) at its base — the shear stress of a convection model
+        resolved at the base of the lithosphere, say. Calls accumulate.
+        ``boundary`` as in :meth:`add_basal_drag`."""
+        self._needs_function_rewire = True
+        if isinstance(traction, uw.discretisation.MeshVariable):
+            row = sympy.Matrix(traction.sym).reshape(1, self.mesh.cdim)
+        else:
+            row = _nondimensional_row(traction, self.mesh.cdim)
+        self._basal_terms.append(-row)
+
+    def _basal_residual(self):
+        total = self.basal_drag.sym * self.Unknowns.u.sym
+        for term in self._basal_terms:
+            total = total + term
+        return total
+
+    @property
+    def p(self):
+        r"""Plane-stress pressure :math:`p = -\operatorname{tr}\boldsymbol\tau`
+        (the out-of-plane deviatoric stress), refreshed after each solve. A
+        diagnostic: the sheet has no pressure unknown."""
+        if self._p_field is None:
+            self._p_field = uw.discretisation.MeshVariable(
+                f"p_sheet_{self.instance_number}", self.mesh, 1,
+                degree=self._p_degree, continuous=self._p_continuous)
+        return self._p_field
+
+    def _refresh_pressure(self, verbose=False):
+        if self._p_field is None:
+            return
+        if self._p_projection is None:
+            self._p_projection = uw.systems.Projection(self.mesh, self._p_field)
+            self._p_projection.smoothing = 0.0
+        self._p_projection.uw_function = -sympy.Matrix(self.stress_deviator).trace()
+        self._p_projection.solve(verbose=verbose)
+
     @property
     def bodyforce(self):
-        r"""Force per unit area :math:`\mathbf{f}` on the right-hand side of
-        the momentum balance."""
+        r"""Body force per unit VOLUME :math:`\mathbf{f}`, as for ``Stokes``;
+        the sheet integrates it through its thickness, :math:`L\mathbf{f}`.
+        Forcing that acts on the base of the sheet (per unit area) belongs in
+        :meth:`add_basal_traction` or :meth:`add_basal_drag`."""
         return self._bodyforce
 
     @bodyforce.setter
@@ -427,20 +531,30 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         tau = self.stress_deviator
         return tau + tau.trace() * self._P
 
+    def _flux_closure(self, tau):
+        r"""The momentum flux built on a deviatoric stress,
+        :math:`L(\boldsymbol\tau + \operatorname{tr}(\boldsymbol\tau)\mathbf{P})`.
+        ``F1`` is this applied to the constitutive model's flux; the Newton
+        tangent applies it to the model's tangent flux (``flux_jacobian``), so
+        the plane-stress closure stays in the tangent."""
+        tau = sympy.Matrix(tau)
+        return self.thickness.sym * (tau + tau.trace() * self._P)
+
     # ------------------------------------------------------------------
     # PETSc residual templates
     # ------------------------------------------------------------------
 
     F0 = Template(
         r"\mathbf{f}_0\left( \mathbf{u} \right)",
-        lambda self: -self.bodyforce.sym + self.basal_drag.sym * self.u.sym,
-        r"""Pointwise term: basal drag :math:`c\,\mathbf{u}` less the force per
-        unit area :math:`\mathbf{f}`.""",
+        lambda self: -self.thickness.sym * self.bodyforce.sym + self._basal_residual(),
+        r"""Pointwise term: the basal coupling (drag
+        :math:`c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})`, less any basal
+        traction) less the depth-integrated body force :math:`L\mathbf{f}`.""",
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: self.thickness.sym * self.stress,
+        lambda self: self._flux_closure(self.stress_deviator),
         r"""Flux term: the depth-integrated in-plane stress :math:`L\,
         \boldsymbol{\sigma}`.""",
     )

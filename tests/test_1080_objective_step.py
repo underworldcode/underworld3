@@ -116,7 +116,7 @@ def test_a_rigid_rotation_carries_the_stress_rigidly():
 @pytest.mark.tier_b
 def test_the_newton_tangent_converges_to_the_same_stress():
     """The Newton tangent replaces the frozen carried stress by its first-order
-    form (tangent_surrogates); the residual is unchanged, so the converged
+    form (the private _tangent_surrogates); the residual is unchanged, so the converged
     stress is the frozen-tangent one to solver tolerance."""
     picard, _ = _rigid_carry(8, tangent=False, cell_size=0.2)
     newton, _ = _rigid_carry(8, tangent=True, cell_size=0.2)

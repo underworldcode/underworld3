@@ -395,3 +395,54 @@ def rank2_inner_product(A, B):
     return sympy.tensorcontraction(
         sympy.tensorcontraction(sympy.tensorproduct(A, B), (1, 3)), (0, 1)
     )
+
+
+def resolved_traction(stress, normal, direction):
+    r"""Normal and shear traction of a stress on a plane.
+
+    .. math::
+
+        \sigma_n = \hat{\mathbf{n}}\cdot\boldsymbol\sigma\cdot\hat{\mathbf{n}},
+        \qquad
+        \tau_s = \hat{\mathbf{s}}\cdot\boldsymbol\sigma\cdot\hat{\mathbf{n}},
+
+    with :math:`\hat{\mathbf{n}}` the plane's unit normal and
+    :math:`\hat{\mathbf{s}}` a unit direction in the plane (the slip direction
+    of a receiver fault). Tension is positive, as in the solvers' ``stress``.
+
+    Written on any solver's ``stress``, so the same line resolves a thin
+    sheet's in-plane stress (normal and direction in the sheet) and a thick
+    sheet's 3-D stress.
+
+    Parameters
+    ----------
+    stress : sympy.Matrix
+        A ``(d, d)`` stress, e.g. ``solver.stress``.
+    normal, direction : sequence or sympy.Matrix
+        ``d`` components each; normalised here.
+
+    Returns
+    -------
+    (sympy.Expr, sympy.Expr)
+        ``(sigma_n, tau_s)``.
+    """
+    sigma = sympy.Matrix(stress)
+    d = sigma.shape[0]
+    n = sympy.Matrix(list(normal)).reshape(d, 1)
+    s = sympy.Matrix(list(direction)).reshape(d, 1)
+    n = n / sympy.sqrt((n.T * n)[0, 0])
+    s = s / sympy.sqrt((s.T * s)[0, 0])
+    return (n.T * sigma * n)[0, 0], (s.T * sigma * n)[0, 0]
+
+
+def coulomb_failure_stress(stress, normal, direction, friction):
+    r"""Coulomb failure stress on a receiver plane,
+    :math:`\mathrm{CFS} = \tau_s + \mu\,\sigma_n` (tension positive, shear
+    signed along ``direction``): a rise moves the receiver towards failure.
+
+    The change against a reference state, :math:`\Delta\mathrm{CFS}`, is the
+    difference of two of these (the same receivers, two stresses). See
+    :func:`resolved_traction` for the arguments; ``friction`` is :math:`\mu`.
+    """
+    sigma_n, tau_s = resolved_traction(stress, normal, direction)
+    return tau_s + friction * sigma_n
