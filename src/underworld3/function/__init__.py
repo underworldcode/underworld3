@@ -28,6 +28,8 @@ underworld3.swarm : Particle swarm evaluation targets.
 from . import _function
 from ._function import (
     UnderworldFunction,
+    diff_wrt_field,
+    derive_by_array_wrt_field,
     global_evaluate_nd as _global_evaluate_nd,
     evaluate_nd as _evaluate_nd,
     dm_swarm_get_migrate_type,
@@ -193,11 +195,7 @@ def derivative(expression, variable, evaluate=True):
             return_self=False,
         )
 
-        derivative = sympy.diff(
-            subbed_expr,
-            variable,
-            evaluate=True,
-        )
+        derivative = diff_wrt_field(subbed_expr, variable)
 
     else:
         # Use the new natural syntax internally for deferred derivatives

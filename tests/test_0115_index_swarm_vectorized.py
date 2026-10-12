@@ -118,6 +118,7 @@ def _build_mesh_and_swarm(fill_param=5, nnn=5, radius=0.5, update_type=0,
     swarm = uw.swarm.Swarm(mesh)
     material = uw.swarm.IndexSwarmVariable(
         "M_test", swarm, indices=2, proxy_degree=1, proxy_continuous=True,
+        proxy_location="nodes",          # update_type only means anything here
         update_type=update_type, npoints=nnn, radius=radius,
         npoints_bc=nnn_bc if nnn_bc is not None else 2,
         ind_bc=ind_bc,

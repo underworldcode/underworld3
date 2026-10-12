@@ -139,7 +139,7 @@ class TestRecursionPreventionInMathematicalObjects:
         temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 
         # Create advection-diffusion solver
-        adv_diff = uw.systems.AdvDiffusion(mesh, u_Field=temperature, V_fn=velocity)
+        adv_diff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=temperature, V_fn=velocity)
 
         # Set constitutive model with UWexpression diffusivity (this was failing)
         adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -254,7 +254,7 @@ class TestRecursionPreventionInSolvers:
         temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 
         # Create solver
-        adv_diff = uw.systems.AdvDiffusion(mesh, u_Field=temperature, V_fn=velocity)
+        adv_diff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=temperature, V_fn=velocity)
         adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
         adv_diff.constitutive_model.Parameters.diffusivity = uw.function.expression(
             r"\kappa", sym=1e-6

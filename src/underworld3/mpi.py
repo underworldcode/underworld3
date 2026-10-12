@@ -26,10 +26,12 @@ import atexit as _atexit
 import faulthandler as _faulthandler
 import os as _os
 import secrets as _secrets
+import signal as _signal
 import sys as _sys
 import io as _io
 import threading as _threading
 import time as _time
+import warnings as _warnings
 from contextlib import contextmanager as _contextmanager
 
 # Pre-import EVERYTHING the watchdog reporter thread can touch. The
@@ -306,18 +308,37 @@ def collective_operation(func):
 # The reporting has to survive the main thread being inside MPI, and a Python
 # thread does not: measured at np=4 against a 4 s block in `comm.allreduce`,
 # a re-arming `threading.Timer` set to 0.5 s fired ZERO times on the blocked
-# ranks -- the interpreter lock is held for the duration -- while
-# `faulthandler.dump_traceback_later` produced all 7 expected dumps. It is
-# written in C for exactly this case and does not need the lock.
+# ranks -- the interpreter lock is held for the duration.
 #
-# So faulthandler is the mechanism, and the price is that it writes to a file
-# DESCRIPTOR: the destination must be a real file or stream, never a buffer.
-# The Python timer is kept alongside it, because it is the only one that can
-# print the checkpoint LABEL, and it does run for the many hangs that are not
-# inside MPI -- a spin in Python, a stuck read, a solve that releases the lock.
+# So the timing is done by the KERNEL and the dump by a SIGNAL handler:
+# `signal.setitimer` raises SIGALRM whether or not the interpreter can run,
+# and faulthandler's handler for it dumps on whichever thread receives the
+# signal. Measured the same way, 8 of 8 expected dumps on every rank blocked
+# in a 4 s `allreduce`, and 300 rounds of allreduce/barrier/bcast under a
+# 100 Hz timer completed with zero collective errors, so the signal does not
+# disturb the traffic it is watching.
+#
+# This deliberately does NOT use `faulthandler.dump_traceback_later`, which
+# was the mechanism until #661. That runs a C thread walking every other
+# thread's LIVE frames, and both arming and disarming it wait on that thread
+# while holding the interpreter lock -- so `unwatch()` could wedge or crash
+# the process it exists to diagnose. Nothing here runs concurrently with the
+# interpreter, and disarming is a syscall that cannot wait on anything.
+#
+# The price is that faulthandler writes to a file DESCRIPTOR: the destination
+# must be a real file or stream, never a buffer. The Python timer is kept
+# alongside it, because it is the only one that can print the checkpoint
+# LABEL, and it does run for the many hangs that are not inside MPI -- a spin
+# in Python, a stuck read, a solve that releases the lock.
 
 _watchdog = None
 _watchdog_lock = _threading.Lock()
+
+# POSIX only. Without it the watchdog still reports through its Python timer,
+# which covers every hang that leaves the interpreter lock free but not a rank
+# blocked inside MPI. Underworld runs on Linux and macOS, so this is a
+# statement about what degrades rather than a platform we support.
+_INTERVAL_TIMER_AVAILABLE = hasattr(_signal, "setitimer") and hasattr(_signal, "SIGALRM")
 
 
 def _stack_dump():
@@ -366,7 +387,14 @@ class _Watchdog:
         self.seconds = float(seconds)
         self.stream = stream
         self.abort = bool(abort)
-        self.timer = None
+        # One reporter thread for the life of this watchdog; arm() moves its
+        # deadline instead of starting a new one. See _rearm_timer.
+        self._reporter = None
+        self._stop_reporter = _threading.Event()
+        # Guards the pair (self._reporter, self.cancelled) against a report in
+        # flight on the reporter thread racing cancel() on the main one.
+        self._reporter_lock = _threading.Lock()
+        self._deadline = _time.monotonic() + float(seconds)
         # Set by cancel(). A report already running when the watchdog is
         # disarmed must not re-arm behind it: the caller is about to close the
         # stream, and faulthandler holds the DESCRIPTOR, so the next dump
@@ -395,6 +423,60 @@ class _Watchdog:
             flush=True,
         )
 
+        # The signal side is set up ONCE, here, rather than on every arm().
+        # `checkpoint()` re-arms and is meant to be cheap enough to leave in a
+        # production loop, and `signal.signal` refuses to run anywhere but the
+        # main thread -- so doing this per checkpoint would make a checkpoint
+        # from a worker thread raise, with `abort` on, which is CI's setting.
+        self._previous_sigalrm = None
+        self._handler_installed = False
+        if _INTERVAL_TIMER_AVAILABLE:
+            pending, _interval = _signal.getitimer(_signal.ITIMER_REAL)
+            if pending > 0.0:
+                _warnings.warn(
+                    f"the hang watchdog takes over ITIMER_REAL, and one was "
+                    f"already armed with {pending:.3g} s to run. That timer is "
+                    f"now cancelled. There is one interval timer per process, "
+                    f"so the watchdog and any other user of signal.alarm() or "
+                    f"setitimer(ITIMER_REAL) cannot both have it.",
+                    RuntimeWarning, stacklevel=3,
+                )
+            self._install_signal_handler()
+
+    def _install_signal_handler(self):
+        """Take SIGALRM, remembering what was there.
+
+        Separate from ``__init__`` because a watchdog can be disarmed and armed
+        again -- ``watching`` cancels the outer one and restores it on exit. A
+        resumed watchdog that moved the clock without re-registering would let
+        the next SIGALRM reach the disposition underneath, which for ``abort``
+        is SIG_DFL: the timer would silently kill the process instead of
+        dumping.
+        """
+        self._previous_sigalrm = _signal.getsignal(_signal.SIGALRM)
+        if self.abort:
+            # Dump, then let SIGALRM's default action terminate us. The handler
+            # chains, so the disposition underneath has to be the default one
+            # rather than whatever was there before.
+            _signal.signal(_signal.SIGALRM, _signal.SIG_DFL)
+        # all_threads=False is load-bearing. With it True the dump reads
+        # EVERY thread state (_Py_DumpTracebackThreads), so a dump landing
+        # while any thread is starting or exiting reads freed memory and the
+        # process dies inside dump_traceback. Measured against a thread
+        # started and cancelled in a loop: 2 of 8 runs segfaulted with
+        # all_threads=True, 0 of 8 with it False.
+        #
+        # Nothing is lost by it. This is the C path, and it exists for the
+        # one case the Python path cannot cover: a rank blocked inside MPI,
+        # where the thread in the collective is the thread that takes the
+        # signal and the only one worth naming. The labelled report from
+        # _stack_dump() still carries every thread, through
+        # sys._current_frames(), which holds the interpreter lock and so
+        # cannot read a half-built thread state.
+        _faulthandler.register(_signal.SIGALRM, file=self.stream,
+                               all_threads=False, chain=self.abort)
+        self._handler_installed = True
+
     def arm(self, label=None, resume=False):
         # `resume` is the deliberate re-arm of a watchdog that was cancelled on
         # purpose -- restoring an outer one after a nested `watching` block.
@@ -408,43 +490,102 @@ class _Watchdog:
             self.label = label
         self.since = _time.monotonic()
 
-        # The mechanism. Re-arming resets the countdown, so a job that keeps
-        # checking in never reaches it. `repeat` keeps it dumping once stuck:
-        # two identical stacks a minute apart say "stuck", one says "slow".
-        _faulthandler.dump_traceback_later(
-            self.seconds, repeat=True, file=self.stream, exit=self.abort
-        )
+        # The mechanism: a kernel interval timer, and faulthandler's SIGNAL
+        # handler to dump when it fires. Re-arming resets the countdown, so a
+        # job that keeps checking in never reaches it, and the timer's repeat
+        # interval keeps it dumping once stuck: two identical stacks a minute
+        # apart say "stuck", one says "slow".
+        #
+        # NOT dump_traceback_later. It does reach a rank blocked in MPI --
+        # 5 dumps of 5 through a 6 s allreduce, where a Python watcher thread
+        # managed 1, since that needs the GIL and a blocked rank never yields
+        # it -- and it survives a live interpreter. But
+        # cancel_dump_traceback_later() hangs against an in-flight dump, 3 of
+        # 3, to a file and to a pipe alike, so unwatch() could wedge the very
+        # process it exists to diagnose. That is #661.
+        #
+        # The signal path is safe only with the two properties below, and both
+        # were bought with a crash. The dump READS THREAD STATE, so a thread
+        # appearing or disappearing underneath it is a segfault in CPython's
+        # dump_traceback -- on the main thread, even while that thread sits in
+        # nanosleep with its own frames untouched:
+        #   * the dump takes this thread only (_install_signal_handler), and
+        #   * the reporter is one long-lived thread, not one per check-in
+        #     (_rearm_timer).
+        # With a Timer per check-in and all_threads=True, test_0053 took down
+        # about one pytest session in four. With both, 0 of 30.
+        if _INTERVAL_TIMER_AVAILABLE:
+            # Normally only the clock -- one syscall, safe from any thread,
+            # because the handler went in when the watchdog was built. A
+            # RESUMED watchdog has had its handler removed by the cancel that
+            # suspended it, so it goes back first.
+            if not self._handler_installed:
+                self._install_signal_handler()
+            _signal.setitimer(_signal.ITIMER_REAL, self.seconds, self.seconds)
         self._rearm_timer()
 
     def _rearm_timer(self):
-        # Secondary, and only for hangs that leave the interpreter lock free.
-        # It adds the checkpoint label, which faulthandler cannot know about.
-        #
-        # The REPORTER re-arms through this method ALONE, never through
-        # arm(): dump_traceback_later() internally cancels the running C
-        # watchdog thread and waits on its lock, and when that thread is
-        # mid-dump — walking frames the main thread is churning (an
-        # import in progress) — the wait never returns. Measured as the
-        # test_0054 deadlock triangle (native `sample`): the C thread
-        # pinned in dump_traceback, the reporter cond-waiting inside
-        # cancel_dump_traceback_later, the main thread starved in the
-        # import machinery — 12 of 15 runs frozen at a 0.2 s watchdog.
-        # faulthandler was armed with repeat=True; it needs no re-arm
-        # from the reporter. Checkpoints (watch()) still go through
-        # arm(), where resetting the countdown is the point and the main
-        # thread is in ordinary running state.
-        if self.timer is not None:
-            self.timer.cancel()
-        self.timer = _threading.Timer(self.seconds, self.report)
-        self.timer.daemon = True
-        self.timer.start()
+        """Push the reporter's deadline out. ONE thread, started once.
+
+        Secondary, and only for hangs that leave the interpreter lock free.
+        It adds the checkpoint label, which faulthandler cannot know about,
+        and it carries `abort` -- the signal handler cannot exit the process
+        for us. A rank blocked inside MPI never reaches this; the signal dump
+        covers that case.
+
+        Moving a deadline rather than starting a ``threading.Timer`` per
+        arm() is not tidying up. ``checkpoint()`` calls ``arm()``, so a Timer
+        per arm created and destroyed a thread on every check-in, underneath
+        a dump that reads thread state -- the other half of the crash
+        described in ``arm``.
+        """
+        self._deadline = _time.monotonic() + self.seconds
+        # Under the lock, and refusing once cancelled. A report already in
+        # flight when cancel() runs can reach here after cancel() has cleared
+        # self._reporter and stopped waiting for the thread, and would then
+        # clear the stop event and start a replacement -- a reporter nobody
+        # holds, writing into a stream the caller is about to close. The
+        # `cancelled` test in report() is not enough on its own: it is read
+        # before cancel() sets it and acted on afterwards.
+        with self._reporter_lock:
+            if self.cancelled or self._reporter is not None:
+                return
+            self._stop_reporter.clear()
+            self._reporter = _threading.Thread(
+                target=self._reporter_loop, name="uw-watchdog", daemon=True)
+            self._reporter.start()
+
+    def _reporter_loop(self):
+        """Wait out the deadline, report, wait again."""
+        while not self._stop_reporter.is_set():
+            remaining = self._deadline - _time.monotonic()
+            if remaining > 0.0:
+                if self._stop_reporter.wait(remaining):
+                    return
+                continue
+            self.report()
+            self._deadline = _time.monotonic() + self.seconds
 
     def cancel(self):
         self.cancelled = True
-        _faulthandler.cancel_dump_traceback_later()
-        if self.timer is not None:
-            self.timer.cancel()
-            self.timer = None
+        if _INTERVAL_TIMER_AVAILABLE:
+            _signal.setitimer(_signal.ITIMER_REAL, 0.0, 0.0)
+            _faulthandler.unregister(_signal.SIGALRM)
+            self._handler_installed = False
+            # Leave the process's signal state as it was found. unregister()
+            # restores whatever was installed when register() ran, which for
+            # `abort` is the SIG_DFL we put there ourselves, so the caller's
+            # own handler has to be put back explicitly. signal.signal only
+            # runs on the main thread; a disarm from elsewhere leaves the
+            # handler in place, which is inert once the timer is off.
+            if (self._previous_sigalrm is not None
+                    and _threading.current_thread() is _threading.main_thread()):
+                _signal.signal(_signal.SIGALRM, self._previous_sigalrm)
+        self._stop_reporter.set()
+        with self._reporter_lock:
+            reporter, self._reporter = self._reporter, None
+        if reporter is not None and reporter is not _threading.current_thread():
+            reporter.join(timeout=5.0)
 
     def report(self):
         """The labelled report, when this thread can get the interpreter lock.
@@ -505,6 +646,22 @@ def watch(seconds=300, stream=None, abort=False):
 
     Warnings
     --------
+    Two reports land in *stream*, and they carry different things. The
+    labelled one, under a ``UW HANG WATCHDOG`` banner, is formatted in Python
+    from ``sys._current_frames()`` and carries EVERY thread, main thread
+    first. It needs the interpreter lock, so it is the one that goes missing
+    on a rank blocked inside MPI.
+
+    Behind it is an unlabelled ``Stack (most recent call first):`` block from
+    :mod:`faulthandler`, written by a C signal handler that needs no lock.
+    That is the report that arrives from a blocked rank, and it carries the
+    signalled thread only --- which on a stuck rank is the thread sitting in
+    the collective. It does not walk the other threads on purpose: reading
+    every thread state races any thread that is starting or exiting, and the
+    process then dies inside CPython's dump (#793). To see a whole job at
+    once, or to supervise a run from outside it, use
+    ``scripts/mpi_supervisor.py``.
+
     Call :func:`unwatch` before closing *stream*. faulthandler holds the file
     DESCRIPTOR, not the Python object, so an armed watchdog over a closed file
     writes into whatever that descriptor is reused for next. It is the default

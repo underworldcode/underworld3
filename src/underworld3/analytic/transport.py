@@ -231,6 +231,92 @@ class AdvectedFront(_Transport):
         )
 
 
+class RotatingGaussian(_Transport):
+    r"""A Gaussian carried round the origin by rigid rotation while it diffuses.
+
+    The velocity :math:`\mathbf{u} = \omega(-y, x)` is solenoidal and rigid, so
+    it commutes with the Laplacian: the exact field is the free-space diffusing
+    Gaussian with its centre following the rotation,
+
+    .. math::
+        \phi(\mathbf{x}, t) = \frac{\sigma^2}{\sigma^2 + 2\kappa t}
+            \exp\!\left(-\frac{|\mathbf{x} - \mathbf{c}(t)|^2}
+                               {2(\sigma^2 + 2\kappa t)}\right),
+        \qquad
+        \mathbf{c}(t) = R\,(\cos(\omega t + \varphi_0),\ \sin(\omega t + \varphi_0)).
+
+    The transport test with a known answer at every time: after one
+    revolution, :math:`t = 2\pi/\omega`, a pure-advection field must return
+    to its initial state, so the round-trip error is an absolute measure and
+    the quarter-turn errors give the growth in between. With
+    :math:`\kappa = 0` the solution is regular at :math:`t = 0` and a
+    benchmark may start there.
+
+    The domain is whatever mesh is supplied; the solution is exact on the
+    plane, so the walls should sit where the field is negligible (a few
+    :math:`\sigma` from the orbit) and carry :math:`\phi = 0`.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh containing the orbit.
+    sigma : float
+        Standard deviation of the initial Gaussian.
+    centre_radius : float
+        Orbit radius :math:`R`.
+    omega : float
+        Angular velocity; the period is :math:`2\pi/\omega`.
+    diffusivity : float
+        :math:`\kappa \ge 0`; zero is pure advection.
+    phase : float
+        Initial angular position :math:`\varphi_0` of the centre.
+    """
+
+    reference = (
+        "Rigid rotation of a diffusing Gaussian; classical (e.g. the rotating "
+        "cone/Gaussian tests of Zalesak 1979 and LeVeque 1996, here in closed form)."
+    )
+    eqn_solution = (
+        r"\frac{\sigma^2}{\sigma^2 + 2\kappa t}"
+        r"\exp\left(-\frac{|\mathbf{x}-\mathbf{c}(t)|^2}{2(\sigma^2+2\kappa t)}\right)"
+    )
+    singular_at_origin = False
+
+    def __init__(self, mesh, sigma=0.12, centre_radius=0.5, omega=1.0,
+                 diffusivity=0.0, phase=0.0):
+        super().__init__(mesh)
+
+        if float(sigma) <= 0.0:
+            raise ValueError("sigma must be positive.")
+        if float(diffusivity) < 0.0:
+            raise ValueError("diffusivity must not be negative.")
+
+        self.sigma = float(sigma)
+        self.centre_radius = float(centre_radius)
+        self.omega = float(omega)
+        self.diffusivity = float(diffusivity)
+        self.kappa = float(diffusivity)
+        self.phase = float(phase)
+        self.t = sympy.Symbol("t", positive=True)
+
+        x, y = mesh.X
+        angle = self.omega * self.t + self.phase
+        cx = self.centre_radius * sympy.cos(angle)
+        cy = self.centre_radius * sympy.sin(angle)
+        variance = self.sigma ** 2 + 2 * self.kappa * self.t
+        profile = (self.sigma ** 2 / variance) * sympy.exp(
+            -((x - cx) ** 2 + (y - cy) ** 2) / (2 * variance))
+
+        self.set_scalar_field(
+            profile, coefficient=self.kappa, source=0,
+            advection=(-self.omega * y, self.omega * x))
+
+    @property
+    def period(self):
+        r"""Time of one revolution, :math:`2\pi/\omega`."""
+        return 2.0 * sympy.pi.evalf() / self.omega
+
+
 class TwoLayerDarcy(_Transport):
     r"""Steady Darcy flow through two layers of different permeability.
 

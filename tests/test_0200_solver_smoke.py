@@ -97,7 +97,7 @@ class TestSolverSmoke:
             T.array[:, 0, 0] = 0.5
             v.array[:, 0, :] = 0.0
 
-        adv_diff = uw.systems.AdvDiffusion(
+        adv_diff = uw.systems.AdvDiffusionSLCN(
             mesh,
             u_Field=T,
             V_fn=v.sym,

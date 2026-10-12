@@ -732,7 +732,7 @@ with openmesh.access(v_phi):
 
 
 # %%
-field_advection = uw.systems.AdvDiffusion(openmesh, u_Field=obstruction, V_fn=v_phi, order=1)
+field_advection = uw.systems.AdvDiffusionSLCN(openmesh, u_Field=obstruction, V_fn=v_phi, order=1)
 field_advection.constitutive_model = uw.constitutive_models.DiffusionModel
 field_advection.constitutive_model.Parameters.diffusivity = 1.0
 field_advection.estimate_dt()

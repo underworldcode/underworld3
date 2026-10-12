@@ -89,7 +89,7 @@ def test_navier_stokes_solve_does_not_trigger_ddt_fallback():
     v = uw.discretisation.MeshVariable("u", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True)
 
-    ns = uw.systems.NavierStokes(
+    ns = uw.systems.NavierStokesSLCN(
         mesh, velocityField=v, pressureField=p, rho=1.0, order=2
     )
     ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
