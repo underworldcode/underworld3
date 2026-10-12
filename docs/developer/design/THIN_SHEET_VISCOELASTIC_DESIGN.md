@@ -124,7 +124,7 @@ State of the alignment (2026-10-12):
 | mesh | the sheet mesh | `mesh.extrude(L, layers)` | the thick twin keeps the sheet's boundaries as walls (same names) and adds `Base` / `Surface` | done (serial); MG tail coarsens through the thickness first |
 | forcing | body force per unit volume, times $L$ | per unit volume | `bodyforce` means the same on both | done |
 | basal coupling | `add_basal_drag(c, "Base", reference_velocity=)`, `add_basal_traction(t, "Base")` | the same, as natural conditions on `Base` | one line serves both; the sheet ignores the boundary name | done |
-| fault geometry | `mesh.add_fault` | extruded with the mesh: a vertical fault through the layer, split at surface and base, tips shared | `add_fault_bc` on either | done flat (test_1083: velocity 0.5 %, slip 1.6 %); sphere implemented, untested; faulted layer has no MG tail yet (TODO(BUG)) |
+| fault geometry | `mesh.add_fault` | extruded with the mesh: a vertical fault through the layer, split at surface and base, tips shared | `add_fault_bc` on either | done flat (test_1083: velocity 0.5 %, slip 1.6 %); sphere: first order in L, 1.35 % at L = 0.02; faulted layer has no MG tail yet (TODO(BUG)) |
 | stress | `solver.stress` (in-plane, tension positive) | `solver.stress` (3-D) | `uw.maths.tensor.resolved_traction` / `coulomb_failure_stress` on `solver.stress` | done |
 | nonlinear invariants | `Unknowns.second_invariant` adds $M_{nn} = -\operatorname{tr}M$ | plain contraction | every model invariant goes through the solver | done |
 | Newton tangent | `_flux_closure` | `_flux_closure` | the model's `flux_jacobian` is composed with the solver's closure (it used to replace the whole flux, and was ignored on vector solvers) | done |

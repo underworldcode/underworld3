@@ -146,3 +146,35 @@ def test_faulted_plate_thin_and_thick_agree():
     slip_s = np.array([spread_s[p] for p in common])
     assert np.linalg.norm(slip_l - slip_s) < 0.05 * np.linalg.norm(slip_s), (
         f"slip thick {slip_l} thin {slip_s}")
+
+
+@pytest.mark.tier_b
+def test_dragged_shell_thin_and_thick_agree_on_the_sphere():
+    """The same model on the sphere: a sheet on the unit-sphere manifold and the
+    shell extruded radially from it, dragged by a base in the toroidal flow
+    rhat x grad(z^2). The difference is first order in L — the curvature the
+    thin sheet neglects (the base has 1 - L/R of the mid-surface's area) and the
+    drag-driven shear c L / eta both scale with L. Measured 2026-10-12
+    (h = 0.15, two layers): 3.32 % at L = 0.04, 1.35 % at L = 0.02."""
+    sphere = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.15, degree=1, qdegree=3)
+
+    def shell_model(mesh, Solver):
+        solver = Solver(mesh)
+        solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        solver.constitutive_model.Parameters.shear_viscosity_0 = 1
+        x, y, z = mesh.X
+        solver.add_basal_drag(1, "Base", reference_velocity=[2 * y * z, -2 * x * z, 0])
+        solver.tolerance = 1.0e-5
+        return solver
+
+    thickness = 0.02
+    sheet = shell_model(sphere, uw.systems.ThinSheet)
+    sheet.thickness = thickness
+    sheet.solve()
+    shell = shell_model(sphere.extrude(thickness, layers=2), uw.systems.Stokes)
+    shell.solve()
+    pts = sheet.u.coords
+    u_sheet = np.asarray(sheet.u.array).reshape(-1, 3)
+    u_shell = np.asarray(uw.function.evaluate(shell.u.sym, pts)).reshape(-1, 3)
+    error = np.linalg.norm(u_shell - u_sheet) / np.linalg.norm(u_sheet)
+    assert error < 2.5e-2, f"relative difference {error:.3e}"

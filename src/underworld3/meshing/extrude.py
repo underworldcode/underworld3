@@ -187,11 +187,20 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
     for b in mesh.boundaries:
         if b.name == "All_Boundaries":
             continue
-        members[b.name] = b.value
         lab = dm2.getLabel(b.name)
         if not lab or lab.getStratumSize(b.value) == 0:
             continue
         edges = [int(q) for q in lab.getStratumIS(b.value).getIndices() if e_start <= q < e_end]
+        if not edges:
+            # not a boundary of the sheet's area (a manifold labels the whole
+            # surface, for one): nothing to stand up as a wall
+            continue
+        if b.name in (base, surface):
+            raise ValueError(
+                f"the sheet has a boundary called {b.name!r}, which the layer's "
+                f"{'base' if b.name == base else 'surface'} would take; pass "
+                "another name for it")
+        members[b.name] = b.value
         faces3 = [f for e in edges for f in quad_faces(*_edge_vertices(dm2, e, v_start))]
         if b.name in fault_side_names:
             label_faces(b.name, b.value, faces3)
