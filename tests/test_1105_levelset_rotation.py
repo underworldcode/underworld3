@@ -69,7 +69,27 @@ def test_circle_returns_after_one_revolution(advection):
     assert mismatch < 0.01, mismatch
 
 
-def test_initialise_from_polygon_needs_shapely_or_a_distance():
+def test_the_geometry_helpers_refuse_clearly_without_shapely(monkeypatch):
+    """shapely is deliberately NOT a dependency of underworld3, so for most
+    installs this refusal is what the polygon route actually does. The import
+    is forced to fail so the message is asserted on every machine, with or
+    without shapely present; the signed_distance= route it points at is the
+    one exercised by test_circle_returns_after_one_revolution above."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_shapely(name, *args, **kwargs):
+        if name == "shapely" or name.startswith("shapely."):
+            raise ImportError("no shapely")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_shapely)
+    with pytest.raises(ImportError, match="signed_distance"):
+        level_set._shapely()
+
+
+def test_initialise_from_polygon():
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
     psi = uw.discretisation.MeshVariable("psi_poly", mesh, 1, degree=1)
