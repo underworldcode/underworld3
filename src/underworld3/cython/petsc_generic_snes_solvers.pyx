@@ -583,7 +583,14 @@ class SolverBaseClass(uw_object):
         if not mode:
             return expr
         if newton_expr is None:
-            newton_expr = _jacobian_unwrap(expr, route=self._jit_route_in_use())
+            # Atoms the constitutive model freezes because they are too costly to
+            # differentiate are swapped for its differentiable stand-ins first
+            # (tangent_surrogates); applied to the solver's own flux, so the
+            # solver's closure terms stay in the tangent.
+            surrogates = getattr(getattr(self, "_constitutive_model", None),
+                                 "tangent_surrogates", None) or {}
+            source = expr.xreplace(surrogates) if surrogates else expr
+            newton_expr = _jacobian_unwrap(source, route=self._jit_route_in_use())
         if mode == "continuation":
             a = self._get_newton_alpha()
             if isinstance(expr, sympy.MatrixBase):

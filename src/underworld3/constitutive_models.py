@@ -2462,6 +2462,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             K = sympy.Matrix(self.Unknowns.W)
         else:
             K = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
+        # the first-order step, kept as the Newton tangent's stand-in for the
+        # frozen carried stress (see tangent_surrogates)
+        self._carried_step_linear = sigma + dt * (K * sigma + sigma * K.T)
         if self._objective_order == "cayley":
             A = dt * K / 2
             A2 = A * A
@@ -2478,6 +2481,29 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 for j in range(q + 1 - i):
                     carried += powers[i] * sigma * powers[j].T / (sympy.factorial(i) * sympy.factorial(j))
         return self._frozen_carried_stress(carried)
+
+    @property
+    def tangent_surrogates(self):
+        r"""Frozen atoms of this model's flux and the differentiable stand-in
+        the Newton tangent uses for each, ``{atom: expression}``; empty when
+        nothing is frozen.
+
+        The carried stress after an objective step above first order is frozen
+        (see :meth:`_frozen_carried_stress`): differentiating the Cayley rotation
+        or a long series directly is prohibitively expensive. Its first-order
+        form :math:`\sigma^* + \Delta t\,(K\sigma^* + \sigma^*K^T)` carries the
+        same leading dependence on the velocity gradient and is cheap to
+        differentiate, so the Newton tangent (``consistent_jacobian``) uses it in
+        place of each frozen entry. The residual keeps the exact step; the solver
+        applies the substitution to its own flux, so a solver's closure (the
+        thin sheet's plane-stress trace term) stays in the tangent."""
+        atoms = getattr(self, "_carried_step_atoms", None)
+        linear = getattr(self, "_carried_step_linear", None)
+        if atoms is None or linear is None or self._objective_order == 1:
+            return {}
+        dim = atoms.shape[0]
+        return {atoms[i, j]: (linear[i, j] + linear[j, i]) / 2
+                for i in range(dim) for j in range(i, dim)}
 
     def _frozen_carried_stress(self, carried):
         r"""The carried stress as one wrapped atom per independent entry.
