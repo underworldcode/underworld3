@@ -12,6 +12,7 @@ on:
     branches:
       - main
       - development
+      - ci/gadi-container          # TESTING ONLY — remove before the upstream PR
     paths:
       - 'docs/developer/hpc_containers/petsc.hpc'
       - 'petsc-custom/patches/**'
@@ -121,13 +122,17 @@ jobs:
         run: docker pull ${{ steps.meta.outputs.image }}
 
       # petsc4py importing is what actually breaks when the build goes subtly
-      # wrong (shared libraries, PYTHONPATH, the meson petsc4py step).
-      - name: Import petsc4py and slepc4py
+      # wrong (shared libraries, PYTHONPATH, the meson petsc4py step). NumPy is
+      # checked too: petsc4py is compiled against it (see petsc.hpc).
+      - name: Import petsc4py and slepc4py; check NumPy range
         run: |
           docker run --rm ${{ steps.meta.outputs.image }} python -c "
-          import petsc4py, slepc4py
+          import numpy, petsc4py, slepc4py
           petsc4py.init()
           from petsc4py import PETSc
+          v = numpy.lib.NumpyVersion(numpy.__version__)
+          assert v >= '2.0.0' and v < '2.5.0', numpy.__version__
+          print('numpy', numpy.__version__)
           print('petsc4py', petsc4py.__version__)
           print('slepc4py', slepc4py.__version__)
           print('PETSc', PETSc.Sys.getVersion())

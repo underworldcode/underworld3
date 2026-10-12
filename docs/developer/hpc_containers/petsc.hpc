@@ -32,13 +32,17 @@ ARG PETSC_VERSION="3.25.0"
 # values); CI on a native runner passes 4.
 ARG PETSC_MAKE_NP="2"
 
+# NumPy 2 as in pixi.toml, capped below 2.5 for the reason given there: 2.5.0
+# breaks a locally built petsc4py at import. underworld3.hpc pins the same range,
+# since petsc4py and mpi4py are compiled against the NumPy installed here.
+#
 # Upper bound is load-bearing: petsc4py 3.25.0 declares only "cython >= 3" but
 # PC.pyx:1256 fails to cythonize under 3.3.0 ("Invalid index type 'int'").
 # Bisected against the 3.25.0 source: 3.2.9 is the last version that builds.
 # mpi4py from source so it links this base's MPI, not a wheel's bundled one.
 RUN pip install --no-cache-dir \
         wheel \
-        "numpy<2" \
+        "numpy>=2,<2.5" \
         "cython>=3.1,<3.3" \
         "setuptools>=75" \
         meson \
