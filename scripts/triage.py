@@ -120,9 +120,17 @@ def issues():
                    "number,title,labels,author,createdAt,body")
 
 
+def _reached_base(pr):
+    """Whether a merged PR's merge commit is on ``origin/BASE``."""
+    oid = (pr.get("mergeCommit") or {}).get("oid")
+    if not oid:
+        return False
+    return f"origin/{BASE}" in sh("git", "branch", "-r", "--contains", oid, check=False)
+
+
 def prs(state="open"):
     fields = ("number,title,mergeable,additions,deletions,changedFiles,"
-              "statusCheckRollup,body,headRefName,baseRefName,author,updatedAt")
+              "statusCheckRollup,body,headRefName,baseRefName,mergeCommit,author,updatedAt")
     args = ["pr", "list", "--limit", "400", "--json", fields]
     if state != "open":
         args += ["--state", state]
@@ -273,11 +281,14 @@ def main():
     labels = {i["number"]: {l["name"] for l in i["labels"]} for i in iss}
     declared = {}
     for p in merged:
-        if p.get("baseRefName") not in (None, BASE):
-            continue
+        # A stacked PR merged into its feature base is a written fix that has
+        # reached `development` only if that base has since landed there: the
+        # merge commit says which.
+        base = p.get("baseRefName") or BASE
+        state = "merged" if base == BASE or _reached_base(p) else f"merged to {base}"
         for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}:
             if n in open_numbers:
-                declared.setdefault(n, []).append((p["number"], "merged"))
+                declared.setdefault(n, []).append((p["number"], state))
     for p in opn:
         for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}:
             if n in open_numbers:
@@ -293,8 +304,9 @@ def main():
         print("\n  Probe each. Three outcomes, and the third is why this is a list")
         print("  of candidates rather than a list of fixes:")
         print("    already in a release on main          -> gh issue close <N>")
-        print(f"    fix is in an OPEN pr                  -> gh issue edit <N> "
+        print(f"    fix is in an OPEN pr, or merged to a  -> gh issue edit <N> "
               f"--add-label {LABEL_IN_PR}")
+        print("    feature base that has not landed")
         print(f"    its PR has MERGED to {BASE:<13}    -> gh issue edit <N> "
               f"--add-label {LABEL_IN_DEV}")
         print("    NOT fixed -- the PR addressed a neighbour, or papered over it")
