@@ -47,6 +47,8 @@ import numpy as np
 
 import underworld3 as uw
 
+from .snapshot import _solvers_of
+
 
 DISK_SNAPSHOT_SCHEMA_VERSION = 1
 
@@ -58,6 +60,10 @@ _GROUP_METADATA = "metadata"
 _GROUP_MESHES = "meshes"
 _GROUP_SWARMS = "swarms"
 _GROUP_PYTHON_STATE = "python_state"
+# What each solver carries from one solve to the next (SolverStepState), keyed
+# by solver name. A group of its own: solvers are not registered state-bearers,
+# and some are built on first use.
+_GROUP_SOLVER_STATES = "solver_states"
 
 _TOP_LEVEL_GROUPS = (
     _GROUP_METADATA,
@@ -405,6 +411,13 @@ def write_snapshot(model, path: str) -> str:
                     bg = ps_group.create_group(key)
                     _write_state_bearer_to_group(bg, obj)
 
+                # Phase 3c: solver step state.
+                solver_group = f.require_group(_GROUP_SOLVER_STATES)
+                for solver in _solvers_of(model):
+                    if solver.name not in solver_group:
+                        _write_state_bearer_to_group(
+                            solver_group.create_group(solver.name), solver)
+
     # Phase 3b + 6: swarms — per-rank sidecar files in the bulk dir,
     # referenced from /swarms/{swarm_safe}/ via a sidecar_pattern attr.
     # Every rank writes its own sidecar; all-ranks-participate so the
@@ -553,6 +566,22 @@ def read_snapshot(model, path: str) -> None:
                         f"that is not registered on this model"
                     )
                 _read_state_bearer_into(ps_group[key], obj)
+
+        # Phase 3c: solver step state. A solver the file does not describe
+        # (built since, or a file written before solver states were kept) goes
+        # back to the state of one that has never solved, as in a new run.
+        stored = f[_GROUP_SOLVER_STATES] if _GROUP_SOLVER_STATES in f else {}
+        for solver in _solvers_of(model):
+            if solver.name in stored:
+                _read_state_bearer_into(stored[solver.name], solver)
+            else:
+                solver.state = type(solver.state)()
+        # A swarm's mid-time advection trace is not in the file: back to its
+        # state before any step, as in a new run.
+        for swarm in list(model._swarms.values()):
+            trace = getattr(swarm, "_characteristics", None)
+            if trace is not None:
+                trace._restore_step_state(None)
 
         # Phase 3b + 6: restore swarms from per-rank sidecars.
         if _GROUP_SWARMS in f:

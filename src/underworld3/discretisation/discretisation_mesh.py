@@ -5349,8 +5349,15 @@ class Mesh(Stateful, uw_object):
             )
         # Snapshot restore: variables are reloaded just below, so this is a
         # sanctioned internal coordinate move (no live-state transfer needed).
-        with self._coord_mutation():
-            self._deform_mesh(coords)
+        # Only when the geometry actually moved: a move bumps the mesh version
+        # and makes every solver on the mesh rebuild, and a rebuilt solver starts
+        # from a different place, so a restore of an undeformed mesh would no
+        # longer be invisible. Decided on every rank together, since the move
+        # is collective.
+        moved = int(not numpy.array_equal(coords, numpy.asarray(self._coords)))
+        if self.dm.comm.tompi4py().allreduce(moved):
+            with self._coord_mutation():
+                self._deform_mesh(coords)
 
         current_vars = {var.clean_name: var for var in self.vars.values()}
         for var_clean_name, saved_array in payload["vars"].items():
