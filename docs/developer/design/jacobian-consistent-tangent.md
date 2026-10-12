@@ -2,6 +2,11 @@
 
 **Status**: Implemented — PR #258 (2026-07-02): opt-in `solver.consistent_jacobian`, default off (Picard tangent unchanged).
 
+**Since #794** the consistent tangent is the default (`consistent_jacobian = True`), and a
+cold start takes one automatic Picard step first; `False` is the frozen tangent as an
+explicit choice. The defaults named below are those of #258. See the `nonlinear-solver`
+guide.
+
 **Since #823 (tier 2)** the Newton source is no longer the `symbolic_keep_constants`
 expansion described below. `_jacobian_unwrap` replaces each non-constant atom by a
 *node* of the shared graph (`_jit_graph`), whose partial derivatives SymPy's chain rule

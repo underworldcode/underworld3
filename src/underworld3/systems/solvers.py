@@ -1921,7 +1921,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         picard: int = 0,
         divergence_retries: int = 0,
         _skip_stress_history: bool = False,
-        homotopy: bool = False,
+        homotopy=False,
         homotopy_options: dict = None,
     ):
         """Solve the Stokes system, with optional viscoelastic stress history.
@@ -1967,19 +1967,26 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             kinks) to step off a bad Newton iterate. ``0`` preserves legacy
             behaviour (divergence is terminal). Typical useful value is 1.
             Only applies in the VE/VEP branch (``DFDt is not None``).
-        homotopy : bool, default=False
-            Solve a yielding model by marching the **yield homotopy** — the model's
-            δ-parameterised yield law is sharpened toward the exact ``Min`` over a
-            sequence of warm-started solves — instead of attempting the sharp surface
-            in one go. Requires ``constitutive_model.supports_yield_homotopy``.
-            Returns the march summary instead of ``None``.
+        homotopy : bool or "rate_strengthening", default=False
+            Solve a yielding model as a sequence of warm-started solves instead of
+            one. ``True`` marches the **yield homotopy** — the model's
+            δ-parameterised yield law is sharpened toward the exact ``Min`` —
+            and requires ``constitutive_model.supports_yield_homotopy``.
+            ``"rate_strengthening"`` ladders the model's declared
+            ``Parameters.plastic_rate_strengthening`` from the viscous limit down
+            to the problem as stated (``m = 1``). Any other value raises. Returns
+            the march summary instead of ``None``.
         homotopy_options : dict, optional
             March settings for
             :func:`~underworld3.systems.yield_continuation.yield_continuation`
             (``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
-            ``retries``). All defaulted.
+            ``retries``) or
+            :func:`~underworld3.systems.yield_continuation.rate_strengthening_continuation`.
+            All defaulted.
         """
 
+        from underworld3.cython.generic_solvers import _check_homotopy_value
+        _check_homotopy_value(homotopy)
         if homotopy:
             # Each δ-step re-enters this method with homotopy=False, so per-solve
             # arguments are forwarded to EVERY step of the march rather than dropped.
@@ -2004,6 +2011,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                     "picard. Use homotopy_options={'entry_maxit': ...} to size the "
                     "first solve."
                 )
+            if homotopy == "rate_strengthening":
+                from underworld3.systems.yield_continuation import rate_strengthening_continuation
+                options = dict(homotopy_options or {})
+                options.setdefault("verbose", verbose)
+                options.setdefault("solve_kwargs", inner)
+                return rate_strengthening_continuation(self, **options)
             return self._solve_yield_homotopy(
                 homotopy_options, verbose=verbose, solve_kwargs=inner
             )
