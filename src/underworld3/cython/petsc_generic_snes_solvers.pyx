@@ -2190,8 +2190,8 @@ class SolverBaseClass(uw_object):
         F1 = self._peel_except(self.F1.sym, wrt)
         import sympy
 
-        d0 = sympy.diff(F0, wrt)
-        d1 = sympy.diff(F1, wrt)
+        d0 = diff_wrt_field(F0, wrt)
+        d1 = diff_wrt_field(F1, wrt)
         mu_sym = mu.sym
         if getattr(mu, "num_components", 1) == 1:
             grad_mu = self.mesh.vector.gradient(mu_sym[0])
@@ -2424,7 +2424,7 @@ class SolverBaseClass(uw_object):
         from underworld3.adjoint import _shared_scratch
         derivatives = {}
         for index, bc in enumerate(self.essential_bcs):
-            d = sympy.diff(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
+            d = diff_wrt_field(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
             if d.is_zero_matrix:
                 continue
             if int(bc.f_id) != 0:
@@ -2625,7 +2625,11 @@ class SolverBaseClass(uw_object):
                 if not atoms:
                     continue
                 scaled = expression.subs({a: s * a for a in atoms})
-                second = sympy.diff(scaled, s, 2)
+                # s is a Symbol this method makes, so diff_wrt_field delegates
+                # straight to sympy.diff; it is used anyway so that every
+                # derivative in the solvers reads the same and the census in
+                # test_0023 stays a blunt textual one with nothing to audit.
+                second = diff_wrt_field(diff_wrt_field(scaled, s), s)
                 if isinstance(second, sympy.MatrixBase):
                     if any(x != 0 for x in second):
                         return False
@@ -2686,7 +2690,7 @@ class SolverBaseClass(uw_object):
             fn = getattr(bc, "fn_f", None)
             if fn is None:
                 continue
-            d = sympy.diff(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+            d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
             if d.is_zero_matrix:
                 continue
             values = list(d)
