@@ -175,3 +175,178 @@ def test_tracker_continuation_with_solver_loop():
         do_step(0.05)
     assert model.tracker.step == s_snap + 2
     assert abs(model.tracker.time - (t_snap + 0.10)) < 1e-12
+
+
+def test_mesh_t_resolves_to_the_model_clock():
+    """The other clock. `mesh.t` is what users reach for in a time-dependent
+    boundary condition, and it is NOT `model.tracker.time` — so a source term
+    proportional to it should scale with the clock, and today does not.
+
+    The constant-source control is what makes the assertion meaningful: it
+    proves the Poisson problem produces a non-trivial solution at all, so a
+    zero answer with `mesh.t` is the clock's fault and not the setup's.
+    """
+    uw, model = _fresh_model()
+    import sympy
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+    T = uw.discretisation.MeshVariable("T_clock", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    for boundary in ("Top", "Bottom", "Left", "Right"):
+        poisson.add_dirichlet_bc(0.0, boundary)
+    poisson.petsc_options.delValue("ksp_monitor")
+
+    poisson.f = sympy.sympify(1.0)
+    poisson.solve()
+    control = np.abs(np.asarray(T.array)).max()
+    assert control > 1.0e-3, "control failed: the Poisson setup itself is trivial"
+
+    poisson.f = 1.0 * mesh.t
+    model.tracker.time = 5.0
+    poisson.solve()
+    at_five = np.abs(np.asarray(T.array)).max()
+    assert at_five > 0.1 * control
+
+    # and it must TRACK the clock, not merely be non-zero once
+    model.tracker.time = 10.0
+    poisson.solve()
+    at_ten = np.abs(np.asarray(T.array)).max()
+    assert at_ten == pytest.approx(2.0 * at_five, rel=1e-6)
+
+
+def test_a_dimensional_clock_survives_a_disk_snapshot(tmp_path):
+    """The pattern asks scripts to define units, which makes the clock
+    dimensional. That clock must survive a restart.
+
+    The plain-float control is what makes this specific: it shows the disk
+    path works for ordinary values, so a dropped quantity would be about
+    units and not about the tracker or the file.
+    """
+    uw, model = _fresh_model()
+
+    model.set_reference_quantities(
+        domain_depth=uw.quantity(500, "km"),
+        material_density=uw.quantity(3300, "kg/m**3"),
+        material_viscosity=uw.quantity(1e21, "Pa*s"),
+    )
+    uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+
+    model.tracker.plain_control = 3.25
+    model.tracker.time = uw.quantity(4.5, "Myr")
+
+    path = str(tmp_path / "units.snap.h5")
+    model.save_state(file=path)
+
+    model.tracker.plain_control = -1.0
+    model.tracker.time = uw.quantity(-1.0, "Myr")
+    model.load_state(path)
+
+    assert model.tracker.plain_control == pytest.approx(3.25), (
+        "control failed: the disk snapshot lost an ordinary float too"
+    )
+    assert model.tracker.time.magnitude == pytest.approx(4.5)
+    assert str(model.tracker.time.units) == "megayear"
+
+
+def test_a_dimensional_array_survives_a_disk_snapshot(tmp_path):
+    """The magnitude may be an array, which is stored as a dataset rather
+    than an attribute — the other half of the quantity round-trip."""
+    uw, model = _fresh_model()
+
+    model.set_reference_quantities(
+        domain_depth=uw.quantity(500, "km"),
+        material_density=uw.quantity(3300, "kg/m**3"),
+        material_viscosity=uw.quantity(1e21, "Pa*s"),
+    )
+    uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+
+    model.tracker.depths = uw.quantity(np.array([10.0, 20.0, 30.0]), "km")
+
+    path = str(tmp_path / "arr.snap.h5")
+    model.save_state(file=path)
+    model.tracker.depths = uw.quantity(np.array([0.0]), "km")
+    model.load_state(path)
+
+    assert np.allclose(model.tracker.depths.magnitude, [10.0, 20.0, 30.0])
+    assert str(model.tracker.depths.units) == "kilometer"
+
+
+def test_mesh_t_drives_a_time_dependent_boundary_condition():
+    """The headline use case, and the one mesh.t's own docstring advertises:
+    a boundary value that varies with time. Boundary terms are assembled
+    through a different residual path from the source, so this is not implied
+    by the source-term test above.
+    """
+    uw, model = _fresh_model()
+    import sympy
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+    T = uw.discretisation.MeshVariable("T_bc", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    # A boundary condition takes a Matrix / array form, not a bare scalar
+    # expression, so the clock is wrapped rather than passed directly.
+    poisson.add_dirichlet_bc(sympy.Matrix([mesh.t]), "Top")
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.petsc_options.delValue("ksp_monitor")
+
+    model.tracker.time = 1.0
+    poisson.solve(zero_init_guess=True)
+    at_one = float(np.asarray(T.data)[:, 0].max())
+
+    model.tracker.time = 3.0
+    poisson.solve(zero_init_guess=True)
+    at_three = float(np.asarray(T.data)[:, 0].max())
+
+    assert at_one > 0.5, "the driven boundary never reached the solution"
+    assert at_three == pytest.approx(3.0 * at_one, rel=1e-6)
+
+
+def test_a_bare_rampable_atom_is_not_baked_by_the_source_setter():
+    """`solver.f = <atom>` must keep the atom symbolic.
+
+    The setter's `.value`/`.units` duck-test for a dimensional quantity also
+    matches a UWexpression, which is a symbolic atom rather than a plain
+    quantity — so a bare assignment used to bake a live-rampable constant to a
+    literal at assignment time, and it never ramped again.
+    """
+    uw, model = _fresh_model()
+    import sympy
+
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
+    )
+    T = uw.discretisation.MeshVariable("T_bare", mesh, 1, degree=2)
+    c = uw.expression(r"c_bare", 0.5, "a rampable atom")
+
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = c
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.petsc_options.delValue("ksp_monitor")
+
+    poisson.solve(zero_init_guess=True)
+    at_half = float(np.asarray(T.data)[:, 0].mean())
+
+    # the manifest is populated at setup, which happens on the first solve
+    assert "c_bare" in {e.name for _i, e in poisson.constants_manifest}
+
+    c.sym = sympy.sympify(1.5)
+    poisson.solve(zero_init_guess=True)
+    at_one_and_a_half = float(np.asarray(T.data)[:, 0].mean())
+
+    assert at_one_and_a_half == pytest.approx(3.0 * at_half, rel=1e-6)

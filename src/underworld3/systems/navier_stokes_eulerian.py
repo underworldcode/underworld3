@@ -17,11 +17,12 @@ constitutive model.
 
 The advecting velocity :math:`\mathbf{a}` in :math:`(\mathbf{a}\cdot\nabla)\mathbf{u}^{n+1}`
 is a choice (``advection=``): ``"extrapolated"`` (default) uses
-:math:`2\mathbf{u}^n - \mathbf{u}^{n-1}`, a second-order lag that makes
-each step one linear (Oseen) solve; ``picard_iterations`` re-solves with
-the latest iterate for the fully implicit fixed point; ``"implicit"`` puts
-:math:`\mathbf{u}^{n+1}` itself in the advection and lets the SNES take
-Newton steps on the quadratic term.
+:math:`\mathbf{u}^n + r(\mathbf{u}^n - \mathbf{u}^{n-1})` (:math:`r` the ratio
+of this step to the last; :math:`2\mathbf{u}^n - \mathbf{u}^{n-1}` for equal
+steps), a second-order lag that makes each step one linear (Oseen) solve;
+``picard_iterations`` re-solves with the latest iterate for the fully
+implicit fixed point; ``"implicit"`` puts :math:`\mathbf{u}^{n+1}` itself in
+the advection and lets the SNES take Newton steps on the quadratic term.
 
 Design note: ``docs/developer/design/eulerian-supg-transport.md``.
 """
@@ -30,9 +31,12 @@ import warnings
 
 import numpy as np
 import sympy
+from dataclasses import dataclass
 from typing import Optional, Union
 
 import underworld3 as uw
+from underworld3.checkpoint.state import SolverStepState
+from underworld3.systems.ddt import _step_ratio
 import underworld3.timing as timing
 from underworld3.function import expression as public_expression
 from underworld3.systems.ddt import _DDtBase
@@ -41,6 +45,19 @@ from underworld3.systems.advection_diffusion_eulerian import _check_supplied_man
 from underworld3.systems.solvers import SNES_Stokes, _dimensionalise_dt
 
 _ADVECTION_MODES = ("extrapolated", "implicit")
+
+
+@dataclass
+class NavierStokesStepState(SolverStepState):
+    """:class:`SolverStepState` plus the step length a solve without
+    ``timestep`` reuses, the velocity's rate of change ``estimate_dt`` reads,
+    whether the extrapolation level has been primed, and the length of the step
+    that ended at the current velocity (the extrapolation's step ratio)."""
+
+    last_timestep: Optional[float] = None
+    last_change_rate: Optional[float] = None
+    history_primed: bool = False
+    previous_timestep: Optional[float] = None
 
 
 class SNES_NavierStokes_Composed(SNES_Stokes):
@@ -99,7 +116,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         Order 2 takes ``theta=1.0`` and refuses anything else.
     advection : {"extrapolated", "implicit"}, default "extrapolated"
         The advecting velocity at the new time level: the second-order
-        extrapolation :math:`2\mathbf{u}^n - \mathbf{u}^{n-1}` (a linear
+        extrapolation :math:`\mathbf{u}^n + r(\mathbf{u}^n - \mathbf{u}^{n-1})`, with
+        :math:`r = \Delta t_n/\Delta t_{n-1}` (a linear
         step) or the unknown itself (Newton on the quadratic term).
     picard_iterations : int, default 0
         With ``"extrapolated"``, the number of further passes per step that
@@ -148,6 +166,10 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
       extrapolation level are mesh variables the solver owns.
     """
 
+    _solver_terms = SNES_Stokes._solver_terms + (
+        ("rho", "density multiplying the inertial terms"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -171,9 +193,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     ):
         if DFDt is not None:
             raise ValueError(
-                "AdvDiffusion-style Navier-Stokes carries no stress history: "
-                "the viscous stress at earlier levels is rebuilt from the stored "
-                "velocity. Do not pass DFDt."
+                "Do not pass DFDt: a stress history is created by assigning a "
+                "constitutive model that asks for one (a viscoelastic model), and "
+                "`stress_transport` chooses the flavour that carries it."
             )
         if restore_points_func is not None:
             warnings.warn(
@@ -206,6 +228,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         self._picard_count = 0
         self._last_timestep = None
         self._last_change_rate = None
+        self._previous_timestep = None   # the step that ended at u^n
 
         tag = self.instance_number
         self._rho = public_expression(rf"\rho_{{{tag}}}", rho, "Density")
@@ -405,13 +428,41 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         return 2 * eta * sympy.Matrix(self.mesh.vector.strain_tensor(u_row))
 
     def _viscous_flux(self):
+        r"""The flux of the time scheme: the new stress, blended with the stored levels.
+
+        The theta rule weights the flux across time levels, so it needs the stress
+        at the stored levels as well as the new one. For a viscous fluid that is
+        rebuilt from the stored velocity, :math:`2\eta\dot\varepsilon(\mathbf{u}^{n})`.
+        For a viscoelastic one that rebuild is wrong -- the stress there is not a
+        viscous stress -- and the right object is already held by the stress
+        history, which is the same quantity the theta rule is asking for. So the
+        two histories meet here: the flux history of the time scheme IS the
+        elastic stress history. BDF puts every spatial term at the new level and
+        the question does not arise.
+        """
         states = self.DuDt.states()
         weights = self.DuDt.spatial_weights()
         total = weights[0] * self.stress_deviator
-        for w, u_k in zip(weights[1:], states[1:]):
+        stress_history = self.Unknowns.DFDt
+        for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
             if w == 0:
                 continue
-            total = total + w * self._viscous_stress(u_k)
+            if stress_history is None:
+                total = total + w * self._viscous_stress(u_k)
+            elif level < len(stress_history.psi_star):
+                # the history carries the memory part only; a solvent viscosity
+                # is rebuilt from the stored velocity, as the new level has it
+                eta_s = getattr(self.constitutive_model.Parameters, "solvent_viscosity", 0)
+                solvent = 2 * eta_s * sympy.Matrix(self.mesh.vector.strain_tensor(u_k))
+                carried = self.constitutive_model._carried_stress_sym(level) \
+                    if hasattr(self.constitutive_model, "_carried_stress_sym") \
+                    else stress_history.psi_star[level].sym
+                total = total + w * (sympy.Matrix(carried) + solvent)
+            else:
+                raise ValueError(
+                    f"the time scheme weights the flux at level {level + 1}, but the "
+                    f"stress history holds {len(stress_history.psi_star)} level(s): "
+                    "give the constitutive model a higher order, or the solver a lower one.")
         return total
 
     def _stabilisation_flux(self):
@@ -438,7 +489,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
         F1 = public_expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self._viscous_flux() - sympy.eye(dim) * mechanical_pressure
+            self._viscous_flux() + self._devss_flux() - sympy.eye(dim) * mechanical_pressure
             + self._stabilisation_flux(),
             "Navier-Stokes SUPG: viscous flux of the time scheme, pressure, tau R (x) a",
         )
@@ -451,6 +502,25 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
     def _set_advecting_velocity(self, values):
         self._a_var.array[...] = values
+
+    @property
+    def state(self):
+        """:class:`NavierStokesStepState`: what the last solve left that steers
+        the next one (see :attr:`SolverBaseClass.state`)."""
+        return NavierStokesStepState(
+            has_solution=bool(self._has_solution),
+            last_timestep=self._last_timestep,
+            last_change_rate=self._last_change_rate,
+            history_primed=bool(self._history_primed),
+            previous_timestep=self._previous_timestep)
+
+    @state.setter
+    def state(self, s):
+        SNES_Stokes.state.fset(self, s)
+        self._last_timestep = s.last_timestep
+        self._last_change_rate = s.last_change_rate
+        self._history_primed = bool(s.history_primed)
+        self._previous_timestep = s.previous_timestep
 
     def _prime_history(self):
         """First solve: the extrapolation level equals the current velocity."""
@@ -519,12 +589,26 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # The base _build resolves the preconditioner choice against the mesh
         # before the SNES reads its options; the setup stages must not be run
         # directly here (they mark the solver set up first, #683).
+        carries_stress = self.Unknowns.DFDt is not None
+        if carries_stress:
+            # BEFORE the build: the order ramp decides whether the compiled
+            # functions must be rewired, and the build reads that flag (#727).
+            self._stress_history_prepare(dt)
+
         self._build(verbose)
+
+        if carries_stress:
+            # AFTER the build, once per step -- not once per pass.
+            self._stress_history_advance(dt, verbose=verbose, evalf=False)
 
         self._prime_history()
         u_n = np.array(self.u.array[...])
         if self._advection_mode == "extrapolated":
-            self._set_advecting_velocity(2.0 * u_n - np.asarray(self._u_prev.array[...]))
+            # linear in time to t^{n+1}: u^n + r (u^n - u^{n-1}), r the ratio of
+            # this step to the last (written so that r = 1 is 2 u^n - u^{n-1}
+            # to the last bit)
+            r = float(_step_ratio(dt, self._previous_timestep))
+            self._set_advecting_velocity((1.0 + r) * u_n - r * np.asarray(self._u_prev.array[...]))
         self.DuDt.update_pre_solve(dt, verbose=verbose)
 
         passes = 1
@@ -542,6 +626,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
                 self, zero_init_guess if k == 0 else False,
                 _force_setup=_force_setup if k == 0 else False,
                 verbose=verbose, picard=0, divergence_retries=divergence_retries,
+                _skip_stress_history=True,
             )
             # The reductions run on every pass, outside any branch: a rank must
             # never skip a collective its peers take (tests/test_0052).
@@ -560,8 +645,12 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = comm.allreduce(local, op=MPI.MAX) / dt
 
+        if carries_stress:
+            self._stress_history_post_solve(dt, verbose=verbose, evalf=False)
+
         # Shift the extrapolation level, then the history.
         self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]
+        self._previous_timestep = dt
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True

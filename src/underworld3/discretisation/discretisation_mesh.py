@@ -1385,13 +1385,16 @@ class Mesh(Stateful, uw_object):
         self._Gamma.y._ccodestr = "petsc_n[1]"
         self._Gamma.z._ccodestr = "petsc_n[2]"
 
-        # Time coordinate — PETSc passes this as petsc_t to all pointwise
-        # functions. Solvers set dm.time before each solve via solve(time=t).
-        # Users reference it as mesh.t in expressions (e.g. V0 * sympy.sin(omega * mesh.t))
-        from ..utilities.unit_aware_coordinates import TimeSymbol
-
-        self._t = TimeSymbol("t")
-        self._t._units = None  # patched below by _patch_time_units
+        # Time coordinate. This is a live-rampable ``constants[]`` atom, NOT
+        # PETSc's ``petsc_t``: the high-level solve() wrappers never set
+        # petsc_t, so an expression built on it evaluated to zero inside every
+        # solve (silently — a time-dependent BC was identically zero). Time is
+        # owned by the orchestration model; ``mesh.t`` reads that clock.
+        # ``_sync_time_from_model`` repacks it before each solve, from the
+        # solver's ``_update_constants``, so no kernel is recompiled per step.
+        self._t = uw.expression(
+            r"t", 0.0, "model time — the clock on uw.get_default_model().tracker"
+        )
 
         # Add unit awareness to coordinate symbols if mesh has units or model has scales
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
@@ -1764,7 +1767,46 @@ class Mesh(Stateful, uw_object):
 
         uw.pprint("\n")
 
-    def view(self, level=0):
+    def describe(self, depth=4):
+        """What this mesh is, as data: dimension, coordinate system, size,
+        units and boundaries, with its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"dimension": self.dim, "coordinate dimension": self.cdim}
+        try:
+            facts["coordinate system"] = self.CoordinateSystem.coordinate_type.name
+        except Exception:
+            pass
+        try:
+            nstart, nend = self.dm.getHeightStratum(0)
+            facts["cells"] = int(nend - nstart)
+        except Exception:
+            pass
+        units = getattr(self, "units", None)
+        if units:
+            facts["coordinate units"] = str(units)
+        try:
+            facts["boundaries"] = [b.name for b in self.boundaries]
+        except Exception:
+            pass
+        try:
+            Q = self.quality()
+            if Q.get("element") == "2D-simplex":
+                facts["cell quality"] = (f"q_min {Q['q_min']:.3f}, mean {Q['q_mean']:.2f}, "
+                                         f"{Q['n_q_lt_0p3']} cells below 0.3")
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            for var in list(self.vars.values()):
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = f"{self.dim}-D mesh" + (f", {facts['cells']} cells" if "cells" in facts else "")
+        return record("mesh", getattr(self, "name", None), summary, facts=facts, children=children)
+
+    def view(self, level=0, format=None):
         """
         Displays mesh information at different levels.
 
@@ -1778,87 +1820,12 @@ class Mesh(Stateful, uw_object):
         import numpy as np
 
         if level == 0:
-            uw.pprint(f"\n")
-            uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
-
-            # Display coordinate units if set
-            if hasattr(self, "units") and self.units is not None:
-                uw.pprint(f"Coordinate units: {self.units}\n")
-                uw.pprint(f"  Access unit-aware coordinates via: mesh.X.coords\n")
-                uw.pprint(f"  Query units with: uw.get_units(mesh.X.coords)\n")
-
-            # Display length scale for non-dimensionalization
-            if hasattr(self, "_length_scale"):
-                if self._length_scale != 1.0:
-                    uw.pprint(
-                        f"Length scale (non-dimensionalization): {self._length_scale} {self._length_units}\n"
-                    )
-                else:
-                    uw.pprint(f"Length scale: 1.0 (no scaling)\n")
-
-            # Display coordinate system information
-            coord_sys = self.CoordinateSystem
-            coord_type = coord_sys.coordinate_type
-            uw.pprint(f"Coordinate system: {coord_type.name}\n")
-
-            # Show available coordinate accessors
-            accessors = ["mesh.X.coords (Cartesian)"]  # Always available
-            if coord_sys._spherical_accessor is not None:
-                if self.dim == 2:
-                    accessors.append("mesh.X.spherical (r, θ)")
-                else:
-                    accessors.append("mesh.X.spherical (r, θ, φ)")
-            if coord_sys._geo_accessor is not None:
-                accessors.append("mesh.X.geo (lon, lat, depth)")
-
-            uw.pprint(f"Coordinate access:\n")
-            for acc in accessors:
-                uw.pprint(f"  • {acc}\n")
-
-            # Only if notebook and serial
-            if uw.is_notebook and uw.mpi.size == 1:
+            # every rank describes (the cell-quality summary is a collective);
+            # the renderer prints on rank 0 only
+            from underworld3.utilities.describe import view as _view
+            _view(self, format=format)
+            if uw.is_notebook() and uw.mpi.size == 1:
                 uw.visualisation.plot_mesh(self, window_size=(600, 400))
-
-            # Total number of cells
-            nstart, nend = self.dm.getHeightStratum(0)
-            num_cells = nend - nstart
-
-            uw.pprint(f"Number of cells: {num_cells}\n")
-
-            # Cell-quality summary (the conditioning-relevant tail;
-            # full metrics + per-cell arrays via mesh.quality()).
-            try:
-                Q = self.quality()
-                if Q.get("element") == "2D-simplex":
-                    uw.pprint(
-                        f"Cell quality: q_min={Q['q_min']:.3f} "
-                        f"mean={Q['q_mean']:.2f} | poor(q<0.3): "
-                        f"{Q['n_q_lt_0p3']} | worst aspect "
-                        f"{Q['aspect_max']:.1f} | max size-jump "
-                        f"{Q['sizejump_max']:.1f}\n")
-                    if Q["n_q_lt_0p2"] > 0:
-                        uw.pprint(
-                            f"  ! {Q['n_q_lt_0p2']} cell(s) "
-                            f"q<0.2 (near-degenerate — solver "
-                            f"conditioning hazard)\n")
-                else:
-                    uw.pprint(
-                        f"Cell quality: vol_min/mean="
-                        f"{Q['vol_min_over_mean']:.3f} "
-                        f"(2-D triangle mesh needed for shape "
-                        f"metrics)\n")
-                uw.pprint("  (full metrics: mesh.quality())\n")
-            except Exception:
-                pass
-
-            self._print_variable_table()
-
-            ## Boundary information — sizes are omitted at level 0, so no
-            ## collective gathers are needed (they were dead results here).
-            self._print_boundary_table(with_sizes=False)
-
-            uw.pprint(f"Use view(1) to view detailed mesh information.\n")
-
         elif level == 1:
             if uw.mpi.rank == 0:
                 print(f"\n")
@@ -3556,7 +3523,8 @@ class Mesh(Stateful, uw_object):
         * **analytic** (default) — the closure installed by the mesh constructor
           (radial on an annulus/sphere, face clamps on a box). Cheap and exact **while
           the boundary keeps the shape it was written for**.
-        * **general facet restore** (once :meth:`deform` has moved the geometry) — the
+        * **general facet restore** (once :meth:`deform` has moved the geometry, and for
+          any mesh with no analytic closure at all — every mesh read from a file) — the
           nearest point on the mesh's CURRENT boundary facets, with an outward-normal
           side test (:meth:`_facet_return_coords_to_bounds`).
 
@@ -3571,7 +3539,14 @@ class Mesh(Stateful, uw_object):
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
         """
-        if getattr(self, "_geometry_deformed", False):
+        if (getattr(self, "_geometry_deformed", False)
+                or self._analytic_return_coords_to_bounds is None):
+            # No analytic closure means a mesh built from a file (every gmsh mesh), which
+            # is where the benchmark geometries live. Without this they returned None and
+            # a trace-back foot leaving through an inlet was never restored: it fell
+            # through to the evaluator's distance-weighted fallback, which is both slow
+            # and wrong. The general restore already handles that case, and returns
+            # interior points untouched, so it is the right fallback rather than nothing.
             return self._facet_return_coords_to_bounds
         return self._analytic_return_coords_to_bounds
 
@@ -3591,7 +3566,13 @@ class Mesh(Stateful, uw_object):
             return cache[1], cache[2]
 
         cdim = self.cdim
-        facets, opp = _boundary_facets(self, cdim)
+        # The DM's boundary label separates domain faces from partition faces;
+        # the topological search (a facet in exactly one local cell) cannot, and
+        # on a distributed mesh would restore every foot crossing a rank seam to
+        # that seam. Only a mesh without the label falls back to the search.
+        facets, opp = self._labelled_boundary_facets()
+        if facets is None:
+            facets, opp = _boundary_facets(self, cdim)
         if facets is None:                      # non-simplicial: no general restore
             self._bnd_restore_cache = (stamp, None, None)
             return None, None
@@ -3608,6 +3589,31 @@ class Mesh(Stateful, uw_object):
         n[flip] *= -1.0
         self._bnd_restore_cache = (stamp, fpts, n)
         return fpts, n
+
+    def _labelled_boundary_facets(self):
+        """Boundary facets and the opposite cell vertex from the DM's own
+        ``All_Boundaries`` label: ``(facets, opp)`` as :func:`_boundary_facets`
+        returns them (vertex indices in point order), or ``(None, None)`` when
+        the label is absent or the mesh is not simplicial."""
+        dm = self.dm
+        if not dm.hasLabel("All_Boundaries"):
+            return None, None
+        label = dm.getLabel("All_Boundaries")
+        d = self.dim
+        f0, f1 = dm.getHeightStratum(1)
+        v0, v1 = dm.getDepthStratum(0)
+        facets, opp = [], []
+        for f in range(f0, f1):
+            if dm.getSupportSize(f) != 1 or label.getValue(f) == -1:
+                continue
+            fverts = [p for p in dm.getTransitiveClosure(f)[0] if v0 <= p < v1]
+            cverts = [p for p in dm.getTransitiveClosure(dm.getSupport(f)[0])[0] if v0 <= p < v1]
+            if len(fverts) != d or len(cverts) != d + 1:
+                return None, None
+            facets.append([p - v0 for p in fverts])
+            opp.append([p for p in cverts if p not in fverts][0] - v0)
+        return (numpy.array(facets, dtype=int).reshape(-1, d),
+                numpy.array(opp, dtype=int).reshape(-1))
 
     def _facet_return_coords_to_bounds(self, coords):
         """General restore: snap points lying OUTSIDE the current boundary to just inside
@@ -3632,8 +3638,10 @@ class Mesh(Stateful, uw_object):
         owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
         nvec = nrm[owner]
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
+        # get_min_radius is collective: read it on every rank, not only on the
+        # ranks that have a point to restore
+        eps = 1.0e-3 * float(self.get_min_radius())
         if numpy.any(outside):
-            eps = 1.0e-3 * float(self.get_min_radius())
             pts[outside] = closest[outside] - eps * nvec[outside]
         return pts
 
@@ -4532,29 +4540,59 @@ class Mesh(Stateful, uw_object):
 
     @property
     def t(self):
-        r"""Symbolic time coordinate.
+        r"""Symbolic model time.
 
-        PETSc passes a time value (``petsc_t``) to all pointwise residual
-        and Jacobian functions. Use ``mesh.t`` in expressions to reference
-        this time without forcing JIT recompilation each timestep.
+        A live-rampable ``constants[]`` atom carrying the clock owned by the
+        orchestration model, ``uw.get_default_model().tracker.time``. Every
+        solver repacks it from that clock immediately before solving, so an
+        expression built on ``mesh.t`` follows time with no JIT recompilation
+        per step.
 
-        The low-level PETSc solver accepts ``time=t`` to set the value
-        of ``petsc_t`` for pointwise functions. If not provided, ``petsc_t``
-        defaults to 0. Note: the high-level Python ``solve()`` wrappers
-        do not yet pass ``time=`` through — set it directly via
-        ``UW_DMSetTime`` at the Cython level if needed.
+        Maintain the clock as part of the timestepping loop (see
+        ``docs/developer/guides/HOW-TO-WRITE-UW3-SCRIPTS.md``). A script that
+        never advances it leaves ``mesh.t`` at zero.
 
-        When the scaling system is active, ``mesh.t`` carries time units
-        (derived from the model's time scale) so that dimensional analysis
-        works correctly in expressions.
+        A dimensional clock is non-dimensionalised on the way in, so the value
+        the kernels see is always in solver units.
+
+        .. note::
+            Assign it as part of an expression rather than bare. A boundary
+            condition takes a Matrix / array form, and a bare atom handed to a
+            scalar setter is stored by value.
 
         Examples
         --------
         >>> omega = 2 * np.pi / period
         >>> stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
-        >>> stokes.solve(time=current_time)   # sets petsc_t before SNES
+        >>> model.tracker.time = 1.5 * uw.quantity(1, "Myr")
+        >>> stokes.solve()                    # mesh.t picks the clock up
         """
         return self._t
+
+    def _sync_time_from_model(self):
+        """Repack ``mesh.t`` from the model clock. Called by every solver's
+        ``_update_constants`` immediately before a solve, so an expression
+        containing ``mesh.t`` sees the current time without a rebuild.
+
+        Silent no-op when the model has no clock: ``mesh.t`` then stays at
+        whatever it was last set to (0.0 for a fresh mesh), which is the
+        behaviour a script that never advances a clock already expects.
+        """
+        try:
+            model = uw.get_default_model()
+            time = model.tracker.time
+        except Exception:
+            return
+        if time is None:
+            return
+        try:
+            if hasattr(time, "magnitude") or hasattr(time, "_pint_qty"):
+                time = float(uw.non_dimensionalise(time))
+            self._t.sym = sympy.sympify(float(time))
+        except Exception:
+            # A clock we cannot reduce to a number is not worth failing a
+            # solve over; leave mesh.t as it stands.
+            return
 
     @property
     def nullspace_rotations(self):
@@ -4893,11 +4931,31 @@ class Mesh(Stateful, uw_object):
             exists. If ``True``, write an indexed mesh file for this timestep.
         create_xdmf
             Write ParaView/XDMF-compatible datasets and companion XDMF file.
+            DG1 on full-dimensional triangles/tetrahedra uses a separate grid
+            with independent vertices per cell, preserving jumps without
+            smoothing. Visualization-only arrays live under ``/dg1`` in the
+            variable files; native checkpoint and reload data are unchanged.
+            Higher-order discontinuous and non-simplex DG visualization are
+            not supported (use ``create_xdmf=False`` for native-only output).
         petsc_reload
             Write PETSc DMPlex section/vector metadata for reload with
             ``MeshVariable.read_checkpoint()``.
 
         """
+        if create_xdmf:
+            for var in meshVars or []:
+                integration_point = getattr(var, "is_integration_point", False)
+                if integration_point or (not var.continuous and var.degree > 0):
+                    if (
+                        var.degree != 1 or not self.isSimplex
+                        or self.dim not in (2, 3) or self.cdim != self.dim
+                        or integration_point
+                    ):
+                        raise NotImplementedError(
+                            "DG XDMF supports degree-one fields on full-dimensional "
+                            "triangle/tetrahedron meshes only; use create_xdmf=False "
+                            "for native-only checkpoints."
+                        )
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
@@ -5224,7 +5282,12 @@ class Mesh(Stateful, uw_object):
 
         - ``name``: stable string identifier for the mesh.
         - ``mesh_version``: current ``_mesh_version`` integer.
-        - ``coords``: deformed mesh coordinates (numpy array).
+        - ``coords``: deformed mesh coordinates, in MODEL UNITS — the
+          representation :meth:`_deform_mesh` writes back. ``mesh.X.coords``
+          is the unit-aware view and returns metres when a model declares a
+          length scale; capturing that and restoring it through
+          ``_deform_mesh`` would multiply the mesh by the length scale on
+          every restore, silently and without changing any array's shape.
         - ``vars``: ``{var.clean_name: gvec_array.copy()}`` for every
           mesh variable on this mesh.
 
@@ -5232,7 +5295,7 @@ class Mesh(Stateful, uw_object):
         section / DM-topology data sufficient to rebuild the DM on
         restore.
         """
-        coords = numpy.asarray(self.X.coords).copy()
+        coords = numpy.asarray(self._coords).copy()
         var_arrays: dict[str, numpy.ndarray] = {}
         for var in self.vars.values():
             var._sync_lvec_to_gvec()
@@ -5277,7 +5340,7 @@ class Mesh(Stateful, uw_object):
             )
 
         coords = numpy.asarray(payload["coords"])
-        expected_shape = numpy.asarray(self.X.coords).shape
+        expected_shape = numpy.asarray(self._coords).shape
         if coords.shape != expected_shape:
             raise SnapshotInvalidatedError(
                 f"mesh {self.name!r}: coordinate shape changed "
@@ -5286,8 +5349,15 @@ class Mesh(Stateful, uw_object):
             )
         # Snapshot restore: variables are reloaded just below, so this is a
         # sanctioned internal coordinate move (no live-state transfer needed).
-        with self._coord_mutation():
-            self._deform_mesh(coords)
+        # Only when the geometry actually moved: a move bumps the mesh version
+        # and makes every solver on the mesh rebuild, and a rebuilt solver starts
+        # from a different place, so a restore of an undeformed mesh would no
+        # longer be invisible. Decided on every rank together, since the move
+        # is collective.
+        moved = int(not numpy.array_equal(coords, numpy.asarray(self._coords)))
+        if self.dm.comm.tompi4py().allreduce(moved):
+            with self._coord_mutation():
+                self._deform_mesh(coords)
 
         current_vars = {var.clean_name: var for var in self.vars.values()}
         for var_clean_name, saved_array in payload["vars"].items():
@@ -9643,6 +9713,8 @@ def _write_compat_groups(mesh, var, var_h5_path):
     Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
     ViewerHDF5) for continuous variables, and
     ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
+    DG1 uses ``/dg1`` with disconnected simplex vertices and nodal traces,
+    never the one-value-per-cell compatibility path.
     PETSc handles all parallel I/O natively.
 
     Vertex coordinates are also written to ``/vertex_fields/coordinates``
@@ -9660,8 +9732,9 @@ def _write_compat_groups(mesh, var, var_h5_path):
     """
     import underworld3 as uw
 
-    is_cell = (not var.continuous) or (var.degree == 0)
-    group = "cell_fields" if is_cell else "vertex_fields"
+    is_dg1 = not var.continuous and var.degree == 1
+    is_cell = var.degree == 0
+    group = "dg1" if is_dg1 else ("cell_fields" if is_cell else "vertex_fields")
 
     # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
     # automatically during var.write().  Remove any pre-existing group so
@@ -9679,13 +9752,28 @@ def _write_compat_groups(mesh, var, var_h5_path):
         var_h5_path, "a", comm=PETSc.COMM_WORLD,
     )
 
-    if is_cell:
+    if is_dg1:
+        from underworld3.function.field_projection import _write_dg1_to_viewer
+        _write_dg1_to_viewer(var, viewer)
+    elif is_cell:
         uw.function.write_cell_field_to_viewer(var, viewer)
     else:
         uw.function.write_vertices_to_viewer(var, viewer)
         uw.function.write_coordinates_to_viewer(mesh, viewer)
 
     viewer.destroy()
+
+    if is_dg1:
+        # Only topology is generated on rank zero; field values and vertices
+        # were written collectively by PETSc in the same owned-cell order.
+        if uw.mpi.rank == 0:
+            with h5py.File(var_h5_path, "a") as f:
+                nvertices = f["dg1/vertices"].shape[0]
+                ncorners = mesh.dim + 1
+                f["dg1"].create_dataset(
+                    "cells", data=numpy.arange(nvertices, dtype=numpy.int64).reshape(-1, ncorners)
+                )
+        uw.mpi.barrier()
 
 
 def checkpoint_xdmf(
@@ -9813,6 +9901,13 @@ def checkpoint_xdmf(
     header += """
 ]>"""
 
+    dg_vars = [var for var in meshVars if not var.continuous and var.degree == 1]
+    collection_start = (
+        '<Grid Name="fields" GridType="Collection" CollectionType="Spatial">'
+        f'<Time Value="{index}"/>'
+        if dg_vars else ""
+    )
+    collection_end = "</Grid>" if dg_vars else ""
     xdmf_start = f"""
 <Xdmf>
   <Domain Name="domain">
@@ -9829,6 +9924,7 @@ def checkpoint_xdmf(
       &MeshData;:/{geomPath}/vertices
     </DataItem>
     <!-- ============================================================ -->
+      {collection_start}
       <Grid Name="domain" GridType="Uniform">
         <Topology
            TopologyType="{topology_type}"
@@ -9873,6 +9969,8 @@ def checkpoint_xdmf(
 
     attributes = ""
     for var in meshVars:
+        if not var.continuous and var.degree == 1:
+            continue
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
 
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
@@ -9957,8 +10055,54 @@ def checkpoint_xdmf(
     """
         attributes += var_attribute
 
+    dg_grid = ""
+    if dg_vars:
+        first = dg_vars[0]
+        first_filename = filename + f".mesh.{first.clean_name}.{index:05}.h5"
+        with h5py.File(first_filename, "r") as f:
+            dg_cells = f["dg1/cells"].shape
+            dg_points = f["dg1/vertices"].shape
+        if dg_cells != (numCells, numCorners) or dg_points != (numCells * numCorners, spaceDim):
+            raise ValueError("DG1 visualization topology does not match the checkpoint mesh")
+        dg_grid = f"""
+    <Grid Name="DG1" GridType="Uniform">
+      <Topology TopologyType="{topology_type}" NumberOfElements="{numCells}">
+        <DataItem Format="HDF" NumberType="Int" Precision="8" Dimensions="{numCells} {numCorners}">
+          &{first.clean_name}_Data;:/dg1/cells
+        </DataItem>
+      </Topology>
+      <Geometry GeometryType="{geomType}">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dg_points[0]} {spaceDim}">
+          &{first.clean_name}_Data;:/dg1/vertices
+        </DataItem>
+      </Geometry>
+"""
+        for var in dg_vars:
+            var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+            with h5py.File(var_filename, "r") as f:
+                shape = f["dg1/values"].shape
+            if shape[0] != dg_points[0]:
+                raise ValueError(f"DG1 visualization size mismatch for {var.clean_name}")
+            components = shape[1] if len(shape) == 2 else 1
+            if var.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR):
+                kind = "Tensor"
+            elif var.vtype == uw.VarType.MATRIX:
+                kind = "Matrix"
+            else:
+                kind = "Scalar" if components == 1 else "Vector"
+            dimensions = " ".join(str(value) for value in shape)
+            dg_grid += f"""
+      <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
+          &{var.clean_name}_Data;:/dg1/values
+        </DataItem>
+      </Attribute>
+"""
+        dg_grid += "    </Grid>"
     xdmf_end = f"""
     </Grid>
+    {dg_grid}
+    {collection_end}
   </Domain>
 </Xdmf>
     """

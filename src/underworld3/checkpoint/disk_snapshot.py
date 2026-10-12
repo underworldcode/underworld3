@@ -47,6 +47,8 @@ import numpy as np
 
 import underworld3 as uw
 
+from .snapshot import _solvers_of
+
 
 DISK_SNAPSHOT_SCHEMA_VERSION = 1
 
@@ -58,6 +60,10 @@ _GROUP_METADATA = "metadata"
 _GROUP_MESHES = "meshes"
 _GROUP_SWARMS = "swarms"
 _GROUP_PYTHON_STATE = "python_state"
+# What each solver carries from one solve to the next (SolverStepState), keyed
+# by solver name. A group of its own: solvers are not registered state-bearers,
+# and some are built on first use.
+_GROUP_SOLVER_STATES = "solver_states"
 
 _TOP_LEVEL_GROUPS = (
     _GROUP_METADATA,
@@ -405,6 +411,13 @@ def write_snapshot(model, path: str) -> str:
                     bg = ps_group.create_group(key)
                     _write_state_bearer_to_group(bg, obj)
 
+                # Phase 3c: solver step state.
+                solver_group = f.require_group(_GROUP_SOLVER_STATES)
+                for solver in _solvers_of(model):
+                    if solver.name not in solver_group:
+                        _write_state_bearer_to_group(
+                            solver_group.create_group(solver.name), solver)
+
     # Phase 3b + 6: swarms — per-rank sidecar files in the bulk dir,
     # referenced from /swarms/{swarm_safe}/ via a sidecar_pattern attr.
     # Every rank writes its own sidecar; all-ranks-participate so the
@@ -553,6 +566,22 @@ def read_snapshot(model, path: str) -> None:
                         f"that is not registered on this model"
                     )
                 _read_state_bearer_into(ps_group[key], obj)
+
+        # Phase 3c: solver step state. A solver the file does not describe
+        # (built since, or a file written before solver states were kept) goes
+        # back to the state of one that has never solved, as in a new run.
+        stored = f[_GROUP_SOLVER_STATES] if _GROUP_SOLVER_STATES in f else {}
+        for solver in _solvers_of(model):
+            if solver.name in stored:
+                _read_state_bearer_into(stored[solver.name], solver)
+            else:
+                solver.state = type(solver.state)()
+        # A swarm's mid-time advection trace is not in the file: back to its
+        # state before any step, as in a new run.
+        for swarm in list(model._swarms.values()):
+            trace = getattr(swarm, "_characteristics", None)
+            if trace is not None:
+                trace._restore_step_state(None)
 
         # Phase 3b + 6: restore swarms from per-rank sidecars.
         if _GROUP_SWARMS in f:
@@ -770,7 +799,8 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
 #
 # Serialisation is *generic over dataclass fields* — no per-class
 # special code. Handled value types: None, bool, int, float, str,
-# numpy.ndarray, list (JSON-encoded), dict (recursive subgroup). Other
+# numpy.ndarray, list (JSON-encoded), dict (recursive subgroup),
+# dimensional quantities (magnitude + unit string). Other
 # types (notably sympy expressions in DDtSymbolicState.psi_star) are
 # marked with `<field>_skipped` and not round-tripped — documented as
 # a v1.x limitation; consumers either use a non-Symbolic DDt flavor
@@ -788,6 +818,40 @@ def _is_h5_attr_scalar(value: Any) -> bool:
     ) or isinstance(value, (bool, str))
 
 
+_MAGNITUDE_SUFFIX = "__magnitude"
+_UNITS_SUFFIX = "__units"
+
+
+def _is_quantity(value: Any) -> bool:
+    """A dimensional value, duck-typed.
+
+    ``uw.quantity`` returns a ``UWQuantity``, which is NOT a
+    ``pint.Quantity`` subclass, so an isinstance test against either would
+    miss one of them. Both carry ``magnitude`` and ``units``.
+    """
+    return hasattr(value, "magnitude") and hasattr(value, "units")
+
+
+def _write_quantity(h5group, name: str, value: Any) -> None:
+    """Store a dimensional value as magnitude + unit string.
+
+    The magnitude goes through the ordinary dispatch (attr for a scalar,
+    dataset for an array), so an array-valued quantity round-trips too.
+    """
+    h5group.attrs[name + _UNITS_SUFFIX] = str(value.units)
+    _serialise_field(h5group, name + _MAGNITUDE_SUFFIX, np.asarray(value.magnitude).item()
+                     if np.ndim(value.magnitude) == 0 else np.asarray(value.magnitude))
+
+
+def _read_quantity(h5group, name: str) -> Any:
+    """Inverse of :func:`_write_quantity`."""
+    units = h5group.attrs[name + _UNITS_SUFFIX]
+    if isinstance(units, bytes):
+        units = units.decode()
+    magnitude = _deserialise_field(h5group, name + _MAGNITUDE_SUFFIX, None)
+    return uw.quantity(magnitude, str(units))
+
+
 def _serialise_field(h5group, name: str, value: Any) -> None:
     """Write a Python value into an HDF5 group as attr/dataset/subgroup.
 
@@ -797,6 +861,7 @@ def _serialise_field(h5group, name: str, value: Any) -> None:
       - attr `<name>__json` for JSON-encodable lists / nested simple structures
       - dataset `<name>` for numpy arrays
       - subgroup `<name>` for dict values, recursing
+      - attrs `<name>__magnitude` + `<name>__units` for dimensional values
       - attr `<name>__skipped` = '<type>' for anything else
     """
     if value is None:
@@ -807,6 +872,9 @@ def _serialise_field(h5group, name: str, value: Any) -> None:
         return
     if isinstance(value, str):
         h5group.attrs[name] = value
+        return
+    if _is_quantity(value):
+        _write_quantity(h5group, name, value)
         return
     if isinstance(value, np.ndarray):
         if name in h5group:
@@ -860,6 +928,21 @@ def _group_to_dict(h5group) -> dict:
             out[k] = _group_to_dict(item)
         else:
             out[k] = np.asarray(item[...])
+
+    # Fold `<name>__magnitude` + `<name>__units` back into one dimensional
+    # value. Done as a post-pass because the two halves may arrive from
+    # different loops above (a scalar magnitude is an attr, an array
+    # magnitude a dataset).
+    for units_key in [k for k in out if k.endswith(_UNITS_SUFFIX)]:
+        base = units_key[: -len(_UNITS_SUFFIX)]
+        magnitude_key = base + _MAGNITUDE_SUFFIX
+        if magnitude_key not in out:
+            continue
+        units = out.pop(units_key)
+        magnitude = out.pop(magnitude_key)
+        if isinstance(units, bytes):
+            units = units.decode()
+        out[base] = uw.quantity(magnitude, str(units))
     return out
 
 
@@ -885,6 +968,9 @@ def _deserialise_field(h5group, name: str, fallback: Any) -> Any:
 
     if (name + "__json") in h5group.attrs:
         return json.loads(h5group.attrs[name + "__json"])
+
+    if (name + _UNITS_SUFFIX) in h5group.attrs:
+        return _read_quantity(h5group, name)
 
     if (name + "__skipped") in h5group.attrs:
         # Skipped at write time — keep the current value rather than

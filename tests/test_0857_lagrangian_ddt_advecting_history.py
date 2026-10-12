@@ -237,7 +237,7 @@ def test_lagrangian_object_viewers_do_not_raise():
         order=1,
         fill_param=2,
     )
-    lag_ddt._object_viewer()
+    lag_ddt.view()
 
     swarm = uw.swarm.Swarm(mesh)
     lag_swarm_ddt = ddt_module.Lagrangian_Swarm(
@@ -249,4 +249,4 @@ def test_lagrangian_object_viewers_do_not_raise():
         order=1,
     )
     swarm.populate(fill_param=2)
-    lag_swarm_ddt._object_viewer()
+    lag_swarm_ddt.view()

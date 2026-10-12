@@ -1842,28 +1842,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             return result
 
-    def _object_viewer(self):
-        """This will substitute specific information about this object"""
-        from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
-
-        # feedback on this instance
-        #
-        display(
-            Markdown(
-                f"""**SwarmVariable:**
-  > symbol:  ${self.symbol}$\n
-  > shape:   ${self.shape}$\n
-  > proxy:   ${self._proxy}$\n
-  > proxy_location:  `{self._proxy_location}`\n
-  > proxy_degree:  ${self._proxy_degree}$\n
-  > proxy_continuous:  `{self._proxy_continuous}`\n
-  > type:    `{self.vtype.name}`"""
-            ),
-        )
-
-        display(self.data),
-        return
+    def describe(self, depth=4):
+        """What this swarm variable is, as data: its symbol, shape, type and
+        how it is proxied onto the mesh."""
+        from underworld3.utilities.describe import record
+        facts = {
+            "symbol": str(getattr(self, "symbol", "")),
+            "shape": str(getattr(self, "shape", "")),
+            "type": getattr(getattr(self, "vtype", None), "name", None),
+            "proxy": bool(getattr(self, "_proxy", False)),
+            "proxy location": str(getattr(self, "_proxy_location", "")),
+            "proxy degree": getattr(self, "_proxy_degree", None),
+            "proxy continuous": bool(getattr(self, "_proxy_continuous", True)),
+        }
+        return record("swarm_variable", getattr(self, "name", None),
+                      f"{facts['type'] or 'particle field'}, proxied at {facts['proxy location'] or 'nodes'}",
+                      facts=facts)
 
     def _resolve_stencil(self, nnn, order, n_particles):
         """Stencil size and reproduction order this rank can actually support.
@@ -3314,6 +3308,31 @@ class Swarm(Stateful, uw_object):
     """
 
     instances = 0
+
+    def describe(self, depth=4):
+        """What this swarm is, as data: its particle count and its mesh, with
+        its variables as children."""
+        from underworld3.utilities.describe import record
+        facts = {"mesh": getattr(getattr(self, "mesh", None), "name", None)}
+        try:
+            facts["particles on this rank"] = int(self.local_size)
+        except Exception:
+            pass
+        children = []
+        if depth > 0:
+            try:
+                variables = list(self.vars.values())
+            except Exception:
+                variables = []
+            for var in variables:
+                if hasattr(var, "describe"):
+                    try:
+                        children.append(var.describe(depth=depth - 1))
+                    except Exception:
+                        continue
+        summary = "particle swarm" + (f", {facts['particles on this rank']} particles on this rank"
+                                      if "particles on this rank" in facts else "")
+        return record("swarm", getattr(self, "name", None), summary, facts=facts, children=children)
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
@@ -5205,12 +5224,16 @@ class Swarm(Stateful, uw_object):
                 continue
             var_arrays[var.clean_name] = np.asarray(var.data).copy()
 
+        trace = getattr(self, "_characteristics", None)
         return {
             "name": self._snapshot_stable_name(),
             "mesh_name": self.mesh.name,
             "population_generation": int(self._population_generation),
             "coords": coords,
             "vars": var_arrays,
+            # the mid-time advection's trace: which velocity level is valid
+            # and the length of the step it belongs to
+            "characteristics": trace._step_state() if trace is not None else None,
         }
 
     def apply_snapshot_payload(self, payload: dict) -> None:
@@ -5329,6 +5352,12 @@ class Swarm(Stateful, uw_object):
             # of advection) silently replaced the restored values with
             # that garbage (exposed by the SWARM-01 invalidation fix).
             var.data[...] = saved
+
+        # The mid-time advection's trace: a trace built since the capture (or a
+        # payload without one) goes back to its state before any step.
+        trace = getattr(self, "_characteristics", None)
+        if trace is not None:
+            trace._restore_step_state(payload.get("characteristics"))
 
     def access(self, *writeable_vars: SwarmVariable):
         """
@@ -5465,7 +5494,9 @@ class Swarm(Stateful, uw_object):
 
         Returns
         -------
-        (added, removed) : the counts on this rank.
+        (added, removed) : the counts on this rank. New particles follow the
+            existing ones in storage order, so the last ``added`` rows of every
+            variable are the ones just created.
         """
         mesh = self.mesh
         dim = self.cdim
@@ -5512,12 +5543,22 @@ class Swarm(Stateful, uw_object):
                 surplus = int(npc[c] - max_per_cell)
                 drop.extend(idx[np.argsort(nearest_all[idx])[:surplus]].tolist())
             if drop:
+                # PETSc removes a point by copying the LAST point into its
+                # slot (DMSwarmDataBucketRemovePointAtIndex), so the survivors
+                # are reordered in storage. The reconstruction below reads
+                # values in storage order, and the tree it is built on must
+                # share it: the same moves are replayed on the local copies
+                # (#784). Descending order, so a moved point is never one
+                # still to be removed.
+                last = X.shape[0]
                 for index in sorted(drop, reverse=True):
                     self.dm.removePointAtIndex(int(index))
+                    last -= 1
+                    if index != last:
+                        X[index] = X[last]
+                        cells[index] = cells[last]
+                X, cells = X[:last], cells[:last]
                 removed = len(drop)
-                keep = np.ones(X.shape[0], dtype=bool)
-                keep[drop] = False
-                X, cells = X[keep], cells[keep]
                 npc = np.bincount(cells[cells >= 0], minlength=ncells)
                 self._invalidate_canonical_data()
 
@@ -5678,7 +5719,9 @@ class Swarm(Stateful, uw_object):
             ``uw.function.global_evaluate``. Default ``False``.
         midtime_velocity : bool, optional
             Take the mid-point velocity of the RK2 step at the mid TIME,
-            :math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, from a
+            :math:`v^n + \tfrac{r}{2}(v^n - v^{n-1})` with :math:`r` the ratio
+            of this step to the last (:math:`\tfrac32 v^n - \tfrac12 v^{n-1}`
+            for equal steps), from a
             :class:`~underworld3.systems.ddt.CharacteristicTrace` the swarm
             owns (the previous velocity is cached by evaluation at the nodes
             at the end of each call). Second order in an unsteady flow; a
@@ -5705,6 +5748,12 @@ class Swarm(Stateful, uw_object):
         import underworld3 as uw
 
         delta_t_model = uw.scaling.non_dimensionalise(delta_t)
+        # The particle arithmetic is in model units: a velocity read by
+        # global_evaluate comes back dimensional in a units model and is reduced.
+        from underworld3.systems.ddt import _to_nondim_ndarray
+
+        def _nondim_velocity(value):
+            return np.asarray(_to_nondim_ndarray(value))[:, 0, :]
 
         dt_limit = self.estimate_dt(V_fn)
 
@@ -5718,6 +5767,11 @@ class Swarm(Stateful, uw_object):
 
         for hook in list(getattr(self, "_pre_advection_hooks", ())):
             hook()
+
+        # The particle count before the move. advection() is collective, so
+        # the reduction is safe here; the count after the migrate at the end
+        # is what decides whether this step kept the particle set fixed.
+        n_before = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
@@ -5783,7 +5837,7 @@ class Swarm(Stateful, uw_object):
             owns_trace = True
         v_mid_matrix = V_fn_matrix
         if trace is not None and substeps == 1:
-            v_mid_matrix = trace.midtime_expr()
+            v_mid_matrix = trace.midtime_expr(delta_t_model)
 
         self._deferred_migration_suspended = True
 
@@ -5809,9 +5863,9 @@ class Swarm(Stateful, uw_object):
                 # rank-local evaluation silently extrapolates wrong values
                 # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.global_evaluate(
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(
                     V_fn_matrix, self._particle_coordinates.data
-                )[:, 0, :]
+                ))
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -5826,7 +5880,7 @@ class Swarm(Stateful, uw_object):
                 # (since the mid-points might have moved off-proc)
                 #
 
-                v_at_Vpts[...] = uw.function.global_evaluate(v_mid_matrix, mid_pt_coords)[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(v_mid_matrix, mid_pt_coords))
 
                 new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
@@ -5846,7 +5900,7 @@ class Swarm(Stateful, uw_object):
                     print(f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 v_at_Vpts = np.zeros_like(coords)
-                v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, coords[...])[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(V_fn_matrix, coords[...]))
 
                 if self.verbose:
                     print(f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
@@ -5864,7 +5918,7 @@ class Swarm(Stateful, uw_object):
         ## End of substepping loop
         self._deferred_migration_suspended = False
         if owns_trace:
-            trace.finish_step()          # the velocity used this step becomes v^{n-1}
+            trace.finish_step(delta_t_model)   # the velocity used this step becomes v^{n-1}
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that
@@ -5879,6 +5933,7 @@ class Swarm(Stateful, uw_object):
         if self.population_control is not None:
             self.repopulate(**self.population_control)
 
+        self._note_advection(delta_t_model, substeps, order, n_before)
         return
 
     def _characteristics_for(self, V_fn):
@@ -5891,6 +5946,29 @@ class Swarm(Stateful, uw_object):
             tr = CharacteristicTrace(self.mesh, V_fn, midtime_velocity=True)
             self._characteristics = tr
         return tr
+
+    def _note_advection(self, dt, substeps, order, n_before):
+        """Tell the model's open step that this swarm moved.
+
+        Recorded with the particle count before and after: a swarm that
+        quietly lost forty particles to the boundary is the kind of thing a
+        run should say.
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            n_after = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+            uw.get_default_model()._record_step_event(
+                "swarm_advect", f"{type(self).__name__}#{self.instance_number}",
+                part=f"{type(self).__name__}#{self.instance_number}",
+                dt=float(dt), substeps=int(substeps), order=int(order),
+                n_before=int(n_before), n_after=int(n_after),
+            )
+        except Exception:
+            # Charter S4 — sanctioned: the same rule as the history shift in
+            # systems/ddt.py. Noting that a swarm advected is a RECORD of work
+            # already done; failing to write it (no open model.step, no default
+            # model) must not undo the advection itself.
+            pass
 
     @timing.routine_timer_decorator
     def estimate_dt(self, V_fn):
