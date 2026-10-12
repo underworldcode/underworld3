@@ -1,7 +1,10 @@
-# Eulerian advection-diffusion (SUPG): a drop-in for SLCN
+# Advection-diffusion composed from a transport manager (Eulerian SUPG by default)
 
-`uw.systems.AdvDiffusionSUPG` solves the same scalar transport equation as the
-semi-Lagrangian solver `uw.systems.AdvDiffusionSLCN`,
+`uw.systems.AdvDiffusion` is the general scalar transport solver. It assembles the
+diffusive flux and the source itself and takes the transport from the history manager
+it holds (`DuDt`); with the default manager, `uw.systems.ddt.EulerianSUPG`, it is the
+Eulerian SUPG scheme this page describes, a drop-in for the semi-Lagrangian solver
+`uw.systems.AdvDiffusionSLCN`. Both solve
 
 $$
 \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
@@ -13,7 +16,7 @@ but assembles every term on the mesh, implicit in time, with streamline-upwind
 classes share their interface, so switching is one line:
 
 ```python
-adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0e-3
 adv.add_dirichlet_bc(1.0, "Bottom")
@@ -72,15 +75,54 @@ the RK2 trace-back, a property of the flow rather than the mesh. Above roughly
 Courant 2 on the feature's own scale it keeps its accuracy where the Eulerian
 scheme loses it.
 
-In parallel the Eulerian step stays seven times cheaper in serial and about five
-times at eight ranks (the departure-point search parallelises perfectly, the
-ILU preconditioner a little less), and its answer is identical to ten digits
-at every rank count, where the semi-Lagrangian answer moves with the partition.
-
 A practical rule: if the timestep is chosen so that the temperature field itself
 is resolved in time (a fraction of a feature width per step), the Eulerian solver
 is cheaper and more accurate; if the step is deliberately long relative to the
 transported features, the semi-Lagrangian solver is the one that survives it.
+
+## The three transport managers
+
+`DuDt` selects the transport, and three managers are worth considering for a
+scalar field. The choice turns on the Courant number the model runs at and on
+whether the model is carrying particles for another reason.
+
+**Eulerian SUPG** (`uw.systems.ddt.EulerianSUPG`, the default) is the general
+choice. Its error falls as $\Delta t^2$, it puts no lower limit on the Courant
+number, and it conserves the integral of the transported field to solver
+tolerance. On the LeVeque deformation test at its standard period it matches the
+integration-point history's accuracy at a third of the cost, and holds the
+enclosed volume to 4e-5 against that scheme's 5e-3. Use it unless something
+below applies.
+
+**Semi-Lagrangian on the integration points**
+(`uw.systems.ddt.IntegrationPointSemiLagrangian`) is the accurate choice at
+larger Courant numbers. Its error is flat between Courant 0.5 and 2, so a model
+that takes long steps keeps its accuracy where the Eulerian scheme loses it, and
+it loses 45 times less of the second moment than the nodal scheme does. It
+carries a history at the integration points rather than at nodes, which is the
+reason to prefer it for tensor transport, where the extra sub-cell resolution
+has more to represent. It has a low Courant number limit: the fit it performs is
+not contractive under pure advection, and below about Courant 0.5 a mode grows.
+The growth is suppressed by physical diffusion and is unreachable when the
+timestep comes from the Courant condition, but it is a real limit for
+advection-dominated flow with sharp interfaces. Adding diffusivity to damp it
+makes the answer worse at every strength, so the limit is a reason to choose a
+different manager rather than something to correct. The measurements are in
+`docs/developer/subsystems/integration-point-variables.md`.
+
+**Lagrangian on a swarm** (`uw.systems.ddt.Lagrangian_Swarm`) transports the
+field on particles, and is **in development**: it is being measured as part of
+the particle-in-cell work and its accuracy and cost are not yet settled, so
+treat what follows as the intended role rather than a recommendation. It is
+aimed at models that already carry a swarm for material tracking, where the
+transport rides on particles the model is advecting anyway. We would not expect
+to introduce particles in order to use it.
+
+**Semi-Lagrangian at the nodes** (`uw.systems.ddt.SemiLagrangian`) remains the
+historical default of `AdvDiffusionSLCN`. It re-interpolates once per step, which
+costs it accuracy at small Courant numbers, and on a deforming flow with a sharp
+interface it diverges below a Courant number that depends on the problem. Prefer
+one of the three above.
 
 ## Choosing the time scheme
 
@@ -106,7 +148,12 @@ of the compiled kernels; nothing is recompiled.
   derivatives only. For linear elements the missing term is identically zero.
 - The stabilisation parameter uses the local cell size (`mesh.cell_size()`) and
   three weights that are runtime constants (`solver.tau_weights`);
-  `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison.
+  `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison. The term is
+  also weighted by the cell Péclet number, $Pe^2/(Pe^2 + Pe_c^2)$ with
+  $Pe = |\mathbf{u}| h / 2\kappa$ and $Pe_c$ the `peclet_weight` argument (default 4),
+  so the stabilisation is off where a cell is diffusion-dominated and full where advection
+  dominates (pure advection, $\kappa = 0$, is unaffected); `peclet_weight=0` gives the
+  uniform weight.
 - The linear system is nonsymmetric, so the solver uses GMRES with an
   additive-Schwarz ILU preconditioner, with the Krylov tolerance matched to the
   SNES tolerance so that a step is one Newton iteration. Measured, this is the
@@ -115,6 +162,33 @@ of the compiled kernels; nothing is recompiled.
   switches to geometric multigrid over the mesh's refinement hierarchy
   (`refinement >= 1`) for very large rank counts. Every option can be
   overridden through `solver.petsc_options`.
+
+## The history manager is the transport plugin
+
+The solver does not assemble its transport itself. Its history manager (`solver.DuDt`)
+contributes three symbolic terms, and the solver composes its residual from them:
+the time derivative of the scheme, the advection, and the stabilisation flux of the
+strong residual. The default manager is `uw.systems.ddt.EulerianSUPG`, which owns the
+advecting velocity (`V_fn` is data on it), the time scheme (`order`, `theta`), and the
+stabilisation knobs (`supg_weight`, `tau_weights`, `tau_shape`, `peclet_weight`); the
+solver's properties of the same names pass through to it.
+
+Any history manager that follows the contract can be supplied instead. A semi-Lagrangian
+manager answers zero for the advection and the stabilisation, because its history is
+already traced back along the characteristics, so the same solver becomes a
+semi-Lagrangian scheme on the field history:
+
+```python
+history = uw.systems.ddt.SemiLagrangian(mesh, T.sym, v.sym, vtype=uw.VarType.SCALAR,
+                                        degree=T.degree, continuous=True, order=1)
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, DuDt=history)   # no assembled advection
+```
+
+On pure advection this reproduces `AdvDiffusionSLCN` to the solver tolerance; with
+diffusion the two differ in where the diffusive flux history comes from (the traced-back
+field here, the traced-back flux there). The manager works for a vector or tensor unknown
+as well (`vtype`), applying the advection component by component, which is how the
+Navier-Stokes solver and a transported stress use it.
 
 ## Further reading
 

@@ -264,7 +264,7 @@ print("\nBoundary conditions:")
 print("  Top/Bottom: No-slip, v = 0")
 print("  Left/Right: Free-slip, vx = 0")
 
-thermal = uw.systems.AdvDiffusion(
+thermal = uw.systems.AdvDiffusionSLCN(
     mesh,
     u_Field=temperature,
     V_fn=velocity,

@@ -712,10 +712,42 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
     return np.array([sig[gi[_key(x, dim)]] for x in xs])
 
 
+def _refuse_a_constrained_boundary(solver, boundary):
+    """CBF recovery reads the VELOCITY residual. On a boundary held by
+    ``add_constraint_bc`` the traction has been moved into the multiplier block, so
+    what remains in the velocity rows is a CONSTANT traction — the reaction comes back
+    exactly proportional to the nodal boundary mass, and de-smearing hands that constant
+    straight back (#614).
+
+    That is not an approximation, it is the wrong quantity: measured on SolCx the
+    recovered flux had a standard deviation of 2e-15 across the boundary while the
+    equivalent ``Stokes`` solve varied correctly and correlated -0.997 with the exact
+    topography. It returns a plausible-looking number, which is why it went unnoticed.
+
+    Refuse rather than mislead. The traction on such a boundary is
+    ``solver.traction(boundary)`` — ``h + r(n·u − g)``, the multiplier plus its
+    augmented-Lagrangian share (#607). ``solver.multiplier()`` returns ``h`` alone and
+    is short by that share, so it is not the thing to redirect a caller to."""
+    constraints = getattr(solver, "_block_constraint_bcs", None)
+    if not constraints:
+        return
+    if any(getattr(c, "boundary", None) == boundary for c in constraints):
+        raise NotImplementedError(
+            f"boundary_flux cannot recover the traction on {boundary!r}: it is held "
+            "by add_constraint_bc, so the traction is carried by the multiplier and "
+            "the velocity residual this reads holds only a constant (#614). Use "
+            f"solver.traction({boundary!r}) — h + r(n·u − g) — or "
+            f"solver.topography({boundary!r}) for the scaled version. "
+            "solver.multiplier() returns h alone and is short by the "
+            "augmented-Lagrangian share (#607)."
+        )
+
+
 def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None):
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
+    _refuse_a_constrained_boundary(solver, boundary)
     dm = solver.dm; dim = solver.mesh.dim
     ra = np.asarray(solver._assemble_volume_reaction()).ravel()
     nodes, lsec, csec, cvec, v0, v1, edge_nodes = _boundary_field_nodes(
@@ -749,6 +781,57 @@ def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None)
                      mass, remove_mean, edge_node_coords=edge_nodes)
             for k in range(ncomp)]
     return xs, (np.column_stack(cols) if nodes else np.zeros((0, ncomp)))
+
+
+def boundary_flux_integral(solver, boundary):
+    r"""Return the integrated scalar flux through ``boundary``.
+
+    For a scalar solver, summing the consistent nodal reactions on the queried
+    boundary gives :math:`\int_\Gamma F\cdot\hat n\,d\Gamma` directly because
+    the boundary basis is a partition of unity. The raw reactions are partial
+    on partition-cut nodes, so the final sum is collective across ranks.
+
+    This path is intended for integral diagnostics such as Nusselt numbers. It
+    avoids pointwise boundary-mass recovery and a temporary MeshVariable. Use
+    :meth:`boundary_flux` or :meth:`boundary_flux_field` when nodal values are
+    required.
+
+    Call collectively after solving a continuous scalar problem with an
+    essential boundary condition on the queried boundary. The sign is the
+    raw CBF residual sign, identical to ``boundary_flux``; no mean is removed
+    and no area normalization is applied. For a mean flux divide by the
+    boundary area. At intersections of driven boundaries a nodal reaction
+    includes both contributions, so this is not a facet-separated flux there.
+    """
+    dm = solver.dm
+    if dm.getLocalSection().getFieldComponents(0) != 1:
+        raise ValueError(
+            "boundary_flux_integral requires a scalar solver field; use "
+            "boundary_flux(..., normal=...) for vector traction."
+        )
+    nodes, lsec, _csec, _cvec, _v0, _v1, _edge_nodes = _boundary_field_nodes(
+        solver, boundary, field_id=0
+    )
+    # A rank may share a boundary node without holding a labelled facet.
+    # Propagate membership through the point SF before summing raw reactions.
+    boundary_points = np.zeros(dm.getChart()[1], dtype=np.int32)
+    for point, _slot, _coordinate in nodes:
+        boundary_points[point] = 1
+    if dm.comm.size > 1:
+        sf = dm.getPointSF()
+        roots = boundary_points.copy()
+        sf.reduceBegin(MPI.INT32_T, boundary_points, roots, MPI.MAX)
+        sf.reduceEnd(MPI.INT32_T, boundary_points, roots, MPI.MAX)
+        sf.bcastBegin(MPI.INT32_T, roots, boundary_points, MPI.MAX)
+        sf.bcastEnd(MPI.INT32_T, roots, boundary_points, MPI.MAX)
+        np.maximum(boundary_points, roots, out=boundary_points)
+    ra = np.asarray(solver._assemble_volume_reaction()).ravel()
+    local_integral = sum(
+        float(np.sum(ra[lsec.getFieldOffset(point, 0):
+                        lsec.getFieldOffset(point, 0) + lsec.getFieldDof(point, 0)]))
+        for point in np.flatnonzero(boundary_points)
+    )
+    return float(dm.comm.tompi4py().allreduce(local_integral, op=MPI.SUM))
 
 
 def write_boundary_scalar_field(solver, field, value_by_key, dim):

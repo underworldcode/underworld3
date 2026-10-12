@@ -114,7 +114,7 @@ $[\theta,\,1-\theta]$:
 
 ## The Eulerian alternative
 
-`uw.systems.AdvDiffusionSUPG` solves the same equation without a trace-back:
+`uw.systems.AdvDiffusion` solves the same equation without a trace-back:
 all terms are assembled on the mesh, implicit in time, with SUPG
 stabilisation. Its `order=` and `theta=` arguments mean what they mean here:
 `order=1, theta=0.5` is Crank-Nicolson, `order=2` is BDF2, built from the same

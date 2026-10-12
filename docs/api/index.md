@@ -30,6 +30,7 @@ utilities
 visualisation
 adaptivity
 analytic
+postprocessing
 ```
 
 ## Quick Links
@@ -53,6 +54,9 @@ analytic
 
 ### Validation
 - **{doc}`analytic`** - Exact solutions for benchmarking and convergence testing
+
+### Post-processing
+- **{doc}`postprocessing`** - Boundary-response, geoid, and self-gravity coefficients
 
 ### Infrastructure
 - **{doc}`model`** - Model management and configuration

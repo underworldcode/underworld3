@@ -54,7 +54,7 @@ def test_stokes_advdiff_memory_leak():
     stokes.add_dirichlet_bc([0.0, sympy.oo], "Right")
 
     # AdvDiff
-    advdiff = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=v)
+    advdiff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v)
     advdiff.constitutive_model = uw.constitutive_models.DiffusionModel
     advdiff.constitutive_model.Parameters.diffusivity = 1.0
     advdiff.add_dirichlet_bc([0.0], "Top")

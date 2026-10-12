@@ -15,9 +15,12 @@ import underworld3 as uw
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 
-# Serial reference, res 16, BDF2, dt 0.05, 8 steps (recorded with this file;
-# np=2 reproduced it to 1.4e-12).
-SERIAL_ERROR = 0.0301522514
+# Serial reference, res 16, BDF2, dt 0.05, 8 steps. Re-recorded for #694: SUPG
+# stabilisation scales with h, and h is now PETSc's volume**(1/dim) rather than
+# the vertex-RMS about the centroid, which moved this by 1.9e-5 relative —
+# nineteen times the 1e-6 tolerance, which is the baseline doing its job.
+# Local and CI agree on the new value to 1.4e-9 relative.
+SERIAL_ERROR = 0.030152707070617707
 
 
 def _run():
@@ -28,7 +31,7 @@ def _run():
     sol = uw.analytic.RotatingGaussian(mesh, sigma=0.12, centre_radius=0.5, omega=1.0)
     T = uw.discretisation.MeshVariable("T1077", mesh, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(sol.at(0.0), T.coords).reshape(-1)
-    adv = uw.systems.AdvDiffusionSUPG(mesh, T, sympy.Matrix([[-y, x]]), order=2)
+    adv = uw.systems.AdvDiffusion(mesh, T, sympy.Matrix([[-y, x]]), order=2)
     for b in ("Left", "Right", "Top", "Bottom"):
         adv.add_dirichlet_bc(0.0, b)
     dt = 0.05
@@ -46,4 +49,5 @@ def test_error_is_partition_independent():
     gathered = uw.mpi.comm.allgather(err)
     assert max(gathered) - min(gathered) < 1e-12, gathered
     if SERIAL_ERROR is not None:
-        assert abs(err - SERIAL_ERROR) < 1e-8, (err, SERIAL_ERROR)
+        # the partition effect this guards against was 5e-4 (#687); platforms differ at 1e-7
+        assert abs(err - SERIAL_ERROR) < 1e-6 * SERIAL_ERROR, (err, SERIAL_ERROR)

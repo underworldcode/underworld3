@@ -22,7 +22,7 @@
 ## Description
 
 A Gaussian anomaly carried round the origin by rigid rotation, solved with
-the fully implicit Eulerian solver `uw.systems.AdvDiffusionSUPG`. The exact
+the fully implicit Eulerian solver `uw.systems.AdvDiffusion`. The exact
 solution is known at every time (`uw.analytic.RotatingGaussian`), so the
 error is measured directly rather than inferred from a picture.
 
@@ -104,7 +104,7 @@ walls carry T = 0, which is exact to rounding a few sigma from the orbit.
 """
 
 # %%
-adv_diff = uw.systems.AdvDiffusionSUPG(
+adv_diff = uw.systems.AdvDiffusion(
     mesh, T, velocity, order=params.uw_order, theta=params.uw_theta)
 adv_diff.constitutive_model.Parameters.diffusivity = params.uw_diffusivity
 for boundary in ("Left", "Right", "Top", "Bottom"):

@@ -94,10 +94,26 @@ def test_box_topography_is_normal_traction(box):
 
 
 def test_multiplier_and_topography_api(box):
+    """The accessors return what they say, and topography is the WHOLE traction.
+
+    This asserted `topography == h / scale` until 2026-08-19, which pinned the
+    defect in underworld3#607: the momentum row carries `h + r(n.u - g)`, so the
+    bare multiplier is short by the augmented-Lagrangian share. The outcome to
+    assert is that topography is the traction divided by the scale, and that the
+    traction is not just the multiplier.
+    """
     blk, hL = box["blk"], box["hL"]
     assert blk.multiplier("Left") is hL
     assert blk.multiplier("Nonexistent") is None
-    assert blk.topography("Left", buoyancy_scale=2.0) == hL.sym[0] / 2.0
+
+    traction = blk.traction("Left")
+    assert sympy.simplify(blk.topography("Left", buoyancy_scale=2.0)
+                          - traction / 2.0) == 0
+
+    # the share the multiplier alone leaves out is really there
+    share = sympy.simplify(traction - hL.sym[0])
+    assert share != 0
+    assert blk.u.sym[0] in share.atoms(sympy.Function)
 
 
 def test_rejects_unknown_boundary(box):
