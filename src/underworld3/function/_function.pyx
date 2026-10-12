@@ -188,6 +188,12 @@ class UnderworldFunction(sympy.Function):
         # even if they have the same display name, solving the "funny whitespace" problem
         mesh = meshvar.mesh
         uw_id = mesh.instance_number if mesh.instance_number > 1 else None
+        # A mesh-variable value (and its derivative) is a real, finite number at every
+        # point. An undefined function is complex to SymPy by default, so every power
+        # with a symbolic exponent made it work out real and imaginary parts before
+        # combining powers (#823). Differentiate WITH RESPECT TO these through
+        # diff_wrt_field: sympy.diff swaps them for an assumption-free Dummy.
+        options.setdefault("real", True)
         ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), _uw_id=uw_id, **options)
         # Grab weakref to meshvar.
         import weakref
@@ -213,6 +219,101 @@ class UnderworldFunction(sympy.Function):
             ourcls._diff.append(diffcls)
 
         return ourcls
+
+
+def diff_wrt_field(expr, wrt):
+    r"""Partial derivative :math:`\partial f / \partial u` of ``expr`` with respect
+    to a field value or a field gradient component ``wrt``.
+
+    Use this, not ``sympy.diff``, to differentiate with respect to a mesh variable
+    (writing a Newton tangent or a ``flux_jacobian``). Field values are declared
+    real, so SymPy writes :math:`\sqrt{g^2}` as :math:`|g|`. ``sympy.diff``
+    differentiates with respect to anything that is not a Symbol by swapping it for
+    a stand-in ``Dummy`` with no assumptions, differentiating and substituting back,
+    so the field is complex while it is differentiated: :math:`|u - c|` gives
+    :math:`\mathrm{sign}(u - c)\,\partial u/\partial u` with the last factor left
+    unevaluated, which cannot be compiled. Here the stand-in carries the field's
+    realness; otherwise it is the same swap.
+
+    ``wrt`` that is a Symbol (a coordinate, a parameter) goes to ``sympy.diff``
+    unchanged. So does an ``expr`` holding an unevaluated ``Derivative``, which the
+    swap would hide from the variable it differentiates by; the
+    :math:`\partial u/\partial u` that SymPy then leaves beside a ``sign`` is set
+    to 1.
+
+    Parameters
+    ----------
+    expr : sympy.Expr or sympy.Matrix
+        The expression to differentiate.
+    wrt : sympy.Expr
+        A mesh-variable value such as ``T.sym[0]``, a gradient component such as
+        ``T.sym[0].diff(mesh.N.x)``, or any SymPy variable.
+
+    Returns
+    -------
+    sympy.Expr or sympy.Matrix
+        The derivative, the same shape as ``expr``.
+
+    Examples
+    --------
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25)
+    >>> T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    >>> c = sympy.Symbol("c", real=True)
+    >>> uw.function.diff_wrt_field(sympy.Abs(T.sym[0] - c), T.sym[0])
+    sign(-c + T(N.x, N.y))
+    """
+    if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)):
+        expr = sympy.sympify(expr)
+    from underworld3.utilities._jitextension import _holds_instance
+
+    if not isinstance(wrt, sympy.core.function.AppliedUndef):
+        return sympy.diff(expr, wrt)
+    if _holds_instance(expr, sympy.Derivative):
+        # SymPy's own path, so the held Derivative still sees what it differentiates
+        # by; the d(u)/d(u) it then leaves next to an Abs or sign of u is 1
+        return sympy.diff(expr, wrt).xreplace(
+            {sympy.Derivative(wrt, wrt, evaluate=False): sympy.S.One})
+    stand_in = sympy.Dummy("xi", real=True) if wrt.is_real else sympy.Dummy("xi")
+    return sympy.diff(expr.xreplace({wrt: stand_in}), stand_in).subs(stand_in, wrt)
+
+
+def derive_by_array_wrt_field(expr, dx):
+    r"""``sympy.derive_by_array(expr, dx)`` through :func:`diff_wrt_field`: every
+    derivative of ``expr`` with respect to every entry of ``dx``, keeping the
+    fields' realness.
+
+    Parameters
+    ----------
+    expr : sympy.Expr, sympy.Matrix, sympy.Array or list
+        The expression or array of expressions to differentiate.
+    dx : sympy.Matrix, sympy.Array or list
+        The variables: field values, gradient components (``solver.Unknowns.L``)
+        or SymPy symbols.
+
+    Returns
+    -------
+    sympy.Array
+        Entry ``[i..., j...]`` is
+        :math:`\partial\, \mathrm{expr}[j...] / \partial\, dx[i...]`, the layout
+        of ``sympy.derive_by_array``; its shape is ``dx.shape + expr.shape``.
+
+    Examples
+    --------
+    >>> F1 = sympy.Array(stokes.F1.sym)
+    >>> G = uw.function.derive_by_array_wrt_field(F1, stokes.Unknowns.L)
+    """
+    from sympy.tensor.array import ImmutableDenseNDimArray, NDimArray
+    from sympy.tensor.array.arrayop import Flatten
+
+    dx = ImmutableDenseNDimArray(dx)
+    if isinstance(expr, (list, tuple, sympy.MatrixBase, NDimArray)):
+        expr = (expr.as_immutable() if isinstance(expr, NDimArray)
+                else ImmutableDenseNDimArray(expr))
+        return type(expr)([[diff_wrt_field(y, x) for y in Flatten(expr)]
+                           for x in Flatten(dx)], dx.shape + expr.shape)
+    expr = sympy.sympify(expr)
+    return ImmutableDenseNDimArray([diff_wrt_field(expr, x) for x in Flatten(dx)],
+                                   dx.shape)
 
 
 # =============================================================================
@@ -271,6 +372,9 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
     import random
     from sympy import lambdify
     from sympy.vector import CoordSys3D
+    from underworld3.utilities._jitextension import _without_dirac_deltas
+
+    expr = _without_dirac_deltas(expr, "evaluate")
 
     # 1. Replace mesh variables with random symbol placeholders
     varfns_symbols = {}
@@ -897,6 +1001,9 @@ def _clement_to_work_variable(expr, mesh, derivfns):
     import underworld3 as uw
     import sympy
     from underworld3.function.gradient_evaluation import compute_clement_gradient_at_nodes
+    from underworld3.utilities._jitextension import _without_dirac_deltas
+
+    expr = _without_dirac_deltas(expr, "evaluate")
 
     # Get work variable (scalar, P1)
     if not hasattr(mesh, '_clement_work_scalar'):

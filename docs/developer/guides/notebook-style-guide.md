@@ -187,6 +187,98 @@ viscosity = 1e21        # defined in cell 3
 params.uw_viscosity = viscosity   # reader has lost context
 ```
 
+## The workflow pattern (provisional)
+
+> **Status: provisional.** The pattern below is the target for example
+> notebooks. It depends on `uw.workflows`, which lives on
+> `feature/fault-system-workflow` and is not in a release, and on
+> [#760](https://github.com/underworldcode/underworld3/issues/760), which has
+> to be settled before `produces`/`requires` mean what this section says they
+> mean. Until both land, examples are plain scripts and notebooks following
+> the rest of this guide. Written down now so the design is not lost.
+
+An example is **two files**, not one:
+
+- `<topic>_config.py` — the library half. In a standalone package this is what
+  gets pip-installed.
+- `<topic>_notebook.py` — the user half, in jupytext percent format, which
+  opens as a notebook and stores as reviewable text.
+
+Calls in the notebook read `convection.create_mesh(config)`, so where every
+helper comes from is visible on the page.
+
+### One validated config object
+
+Every tunable is a field on a `WorkflowConfig` subclass, carrying its own
+bounds and description:
+
+```python
+class ConvectionConfig(WorkflowConfig):
+    """Parameters for constant-viscosity Rayleigh–Bénard convection."""
+
+    rayleigh: float = Field(default=1e6, gt=0, description="Rayleigh number")
+    cellsize: float = Field(default=1.0 / 16, gt=0, description="Mesh cell size")
+    n_steps: int = Field(default=50, ge=0, description="Number of time steps")
+```
+
+`config.save_yaml(...)` and `Config.from_yaml(...)` make the parameters of a
+run a file rather than a memory of which flags were typed. (This overlaps with
+[Parameters and Configuration](#parameters-and-configuration) above, which
+specifies `uw.Params`; which applies where is part of #760.)
+
+### Steps declare what they make and what they need
+
+```python
+@workflow_step(
+    description="Solve to steady state and checkpoint",
+    produces=["T_checkpoint"],
+    requires=["mesh"],
+)
+def solve(mesh, config): ...
+```
+
+`uw.workflows.view(module)` renders those as a table, so the dependency chart
+is generated from the steps and nobody maintains a diagram separately.
+`step.view()` shows one step's source.
+
+**Name products, not objects.** A product is a file that outlives the process
+— a checkpoint, a figure, a dump — not a live Python object like `mesh` or
+`stokes`. The dependency that matters runs over files:
+
+```
+figure  ←  checkpoint  ←  solve  ←  mesh
+```
+
+That is the chain that lets a reader open the notebook, load the checkpoint
+and redraw a figure in seconds instead of re-solving. An example whose figures
+can only be had by running the whole simulation is not launchable in one click,
+whatever its decorators say. `WorkflowProducts` is the layer for this;
+#760 covers the file product type and the staleness check it still needs.
+
+### Helpers return standard UW3 objects
+
+No wrapper types. A helper returns a mesh, a solver, a variable — the same
+things the rest of Underworld3 takes — so a reader can step outside the
+pattern at any point without unpicking it.
+
+### The notebook opens with its own description
+
+```
+# Thermal Convection — Workflow Pattern Example
+
+**PHYSICS:** convection
+**DIFFICULTY:** intermediate
+**RUNTIME:** ~2 minutes (50 steps at 1/16 resolution)
+```
+
+then a short Description, Key Concepts, and a Physical Setup table. Someone
+arriving from a one-click launch reads that before anything runs, and it is
+what tells them whether this is the example they wanted.
+
+Reference implementation: `docs/examples/workflows/convection_config.py` and
+`convection_notebook.py` (on `feature/fault-system-workflow`). They show the
+semantics; neither yet shows products as files, which is #760.
+
 ## What to Avoid
 
 - ❌ Excessive congratulation ("Great job!", "Excellent!")

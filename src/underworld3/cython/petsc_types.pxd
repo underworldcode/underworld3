@@ -1,7 +1,9 @@
 # Underworld Cython declarations to use PetscDS functionality
 # The following aren't available via petsc4py - Oct2021
 
-ctypedef int    PetscInt
+# PETSc selects this width in petscconf.h; a local C int alias breaks int64 builds.
+cdef extern from "petscsystypes.h":
+    ctypedef int PetscInt
 ctypedef double PetscReal
 ctypedef double PetscScalar
 ctypedef int    PetscErrorCode

@@ -48,6 +48,27 @@ expression = lambda *x, **X: underworld3.function.expressions.UWexpression(
 from sympy.vector.scalar import BaseScalar
 
 
+# Coordinates are real and finite. sympy.vector does not say so (BaseScalar.is_real is
+# None), so every unwrapped kernel, which holds the plain BaseScalars of mesh.N, was
+# complex as far as SymPy's simplification knew (#823). Stated on the class, so it
+# covers mesh.N, mesh.Gamma and every UWCoordinate, and, because it is the class,
+# every sympy.vector coordinate system created after underworld3 is imported (a
+# BaseScalar whose realness was asked before the import keeps its cached None).
+def _coordinate_is_real_and_finite(self):
+    return True
+
+
+BaseScalar._eval_is_real = _coordinate_is_real_and_finite
+BaseScalar._eval_is_extended_real = _coordinate_is_real_and_finite
+BaseScalar._eval_is_finite = _coordinate_is_real_and_finite
+# SymPy collects a class's _eval_is_* handlers into _prop_handler when the class is
+# CREATED, so a handler added afterwards is never consulted: register it there too.
+# _prop_handler is SymPy-private; test_0022 fails if a SymPy release changes it.
+BaseScalar._prop_handler["real"] = _coordinate_is_real_and_finite
+BaseScalar._prop_handler["extended_real"] = _coordinate_is_real_and_finite
+BaseScalar._prop_handler["finite"] = _coordinate_is_real_and_finite
+
+
 class UWCoordinate(BaseScalar):
     """
     A Cartesian coordinate variable (x, y, or z).

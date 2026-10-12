@@ -102,7 +102,10 @@ def test_refinement_the_scalar_does_not_need_leaves_the_error_alone():
         return 1.0 / hh ** 2
 
     child = base.adapt(metric, max_levels=3)
-    assert float(np.min(child._radii)) < 0.3 * float(np.min(uniform._radii))
+    # get_min_radius(), not the private array: #694 renamed the attribute and
+    # made both it and cell_size() read PETSc's volume**(1/dim), so the public
+    # accessor is the one that keeps meaning the same thing.
+    assert child.get_min_radius() < 0.3 * uniform.get_min_radius()
 
     sol_c, T_c, adv_c = _problem(child, "b", 2)
     err_band = _run(sol_c, T_c, adv_c, dt, t_end)
