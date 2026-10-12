@@ -299,13 +299,42 @@ def test_lagrangian_swarm_history_is_sampled_before_the_first_move():
         swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR, degree=2, continuous=False,
         order=1, proxy_location="cells",
     )
+    X0 = uw.swarm.SwarmVariable("X0", swarm, 2)               # launch position, carried by the particle
     swarm.populate(fill_param=2)
     assert not lag._history_initialised
-    X_before = np.array(swarm._particle_coordinates.data, copy=True)
+    with uw.synchronised_array_update():
+        X0.data[...] = np.asarray(swarm._particle_coordinates.data)
     swarm.advection(sympy.Matrix([[0.1, 0.0]]), 0.5, order=2)   # every particle moves +0.05 in x
-    X_after = np.asarray(swarm._particle_coordinates.data)
     assert lag._history_initialised
+    # Particles may have changed rank: compare each against the launch
+    # position it carries, not against a rank-local array from before.
+    X_before = np.asarray(X0.data)
+    X_after = np.asarray(swarm._particle_coordinates.data)
     kept = np.abs(X_after[:, 0] - X_before[:, 0] - 0.05) < 1e-12  # particles not returned to bounds
     vals = np.asarray(lag.psi_star[0].data[:, 0])
     assert np.allclose(vals[kept], X_before[kept, 0], atol=1e-10)   # launch positions ...
     assert not np.allclose(vals[kept], X_after[kept, 0], atol=1e-3) # ... not landing positions
+
+
+def test_cells_proxy_collinear_particles_do_not_blow_up():
+    """Particles clamped onto a wall lie on a line; the P2 fit of a line is
+    singular. The fit routes such cells to the patch on the Gram condition
+    number, and a patch that is itself flat keeps only its mean."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2)
+    swarm = uw.swarm.Swarm(mesh)
+    M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)
+    swarm.populate(fill_param=3)
+    X = np.array(swarm._particle_coordinates.data, copy=True)
+    # Pile every particle of the bottom row of cells onto the wall y = 1e-9
+    bottom = X[:, 1] < 0.1
+    X[bottom, 1] = 1e-9
+    with uw.synchronised_array_update():
+        M.data[:, 0] = 1.0 + X[:, 0]          # values first: the move below migrates
+    with uw.synchronised_array_update():
+        swarm._particle_coordinates.data[...] = X
+    swarm.migrate()
+    M._update_proxy_if_stale()
+    pr = M._cell_projector
+    assert pr.n_ill_conditioned > 0
+    vals = np.asarray(M._meshVar.data[:, 0])
+    assert np.isfinite(vals).all() and vals.min() > 0.5 and vals.max() < 2.5, (vals.min(), vals.max())

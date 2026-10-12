@@ -174,6 +174,25 @@ class DDtSemiLagrangianState(_DDtCoreState):
 
 
 @dataclass
+class DDtIntegrationPointState(_DDtCoreState):
+    """Snapshot of an :class:`IntegrationPointSemiLagrangian` instance: the
+    point-value slots and their nodal snapshots are mesh variables captured
+    by name; this carries the bookkeeping."""
+    psi_star_var_names: list[str] = field(default_factory=list)
+    psi_snap_var_names: list[str] = field(default_factory=list)
+    with_forcing_history: bool = False
+    history_committed: bool = False
+
+
+@dataclass
+class DDtForwardState(_DDtCoreState):
+    """Snapshot of a :class:`ForwardSemiLagrangian` instance: the fitted
+    field and the launch values are mesh variables captured by name."""
+    psi_star_var_names: list[str] = field(default_factory=list)
+    launch_var_name: str = ""
+
+
+@dataclass
 class DDtLagrangianState(_DDtCoreState):
     """Snapshot of a :class:`Lagrangian` DDt instance.
 
@@ -219,6 +238,31 @@ def _as_float(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _history_units(psi_fn, units=None):
+    """The units a history's stores are built with: ``units`` when given (a
+    solver knows what its history carries), else those of ``psi_fn``; ``None``
+    outside a model with reference quantities. The stores hold non-dimensional
+    values in ``.data`` whatever the units; the units only say what ``.array``
+    and ``evaluate`` read back as."""
+    if not uw.get_default_model().has_units():
+        return None
+    return units if units is not None else uw.get_units(psi_fn)
+
+
+def _write_evaluated(var, values):
+    """Write an evaluation of a store's quantity into the store.
+
+    ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
+    when it carries units (it is reduced), non-dimensional when it does not.
+    It is written component by component into ``.data``, the store's
+    non-dimensional storage, whatever units the store is built with.
+    """
+    shape = tuple(var.sym.shape)
+    values = np.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
+    for (i, j) in _storage_components(var.vtype, shape):
+        var.data[:, var._data_layout(i, j)] = values[:, i, j]
 
 
 def _to_nondim_ndarray(value, units=None):
@@ -399,6 +443,10 @@ def _bdf_coefficients(order, dt_current, dt_history):
 from underworld3.function.expressions import UWexpression as _UWexpression
 
 
+_SCHEME_NAMES = {"c^{BDF}": "BDF", r"c^{\mathrm{BDF}}": "BDF",
+                 "a^{AM}": "Adams-Moulton", r"a^{\mathrm{AM}}": "Adams-Moulton"}
+
+
 def _create_coefficients(order, prefix, instance_id):
     """Create UWexpression objects for BDF or AM coefficients.
 
@@ -421,7 +469,8 @@ def _create_coefficients(order, prefix, instance_id):
         c = _UWexpression(
             rf"{prefix}_{{{i},{instance_id}}}",
             sym=0.0,
-            description=f"{prefix} coefficient {i} (DDt instance {instance_id})",
+            description=(f"{_SCHEME_NAMES.get(prefix, prefix)} coefficient {i} "
+                         f"of history {instance_id}"),
             _unique_name_generation=True,
         )
         coeffs.append(c)
@@ -449,19 +498,24 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
     - Order 2: [5/12, 8/12, -1/12]
     - Order 3: [9/24, 19/24, -5/24, 1/24]
     """
+    # Exact, so the scheme's form prints as it is written: a^AM = 1/2, not
+    # 0.5, and 5/12 rather than 0.41666. The JIT sees the same double.
+    one = sympy.Integer(1)
     if effective_order <= 0:
-        values = [1.0]
+        values = [one]
     elif effective_order == 1:
-        values = [float(theta), 1.0 - float(theta)]
+        theta = sympy.nsimplify(theta, rational=True)
+        values = [theta, one - theta]
     elif effective_order == 2:
-        values = [5.0 / 12, 8.0 / 12, -1.0 / 12]
+        values = [sympy.Rational(5, 12), sympy.Rational(8, 12), sympy.Rational(-1, 12)]
     elif effective_order >= 3:
-        values = [9.0 / 24, 19.0 / 24, -5.0 / 24, 1.0 / 24]
+        values = [sympy.Rational(9, 24), sympy.Rational(19, 24),
+                  sympy.Rational(-5, 24), sympy.Rational(1, 24)]
 
     for i, v in enumerate(values):
         coeffs[i].sym = v
     for i in range(len(values), len(coeffs)):
-        coeffs[i].sym = 0.0
+        coeffs[i].sym = sympy.Integer(0)
 
 
 def _create_exp_coefficients(instance_id):
@@ -571,10 +625,60 @@ class _DDtBase(uw_object):
     - **History symbols**: Symbolic stores raw sympy matrices in
       ``psi_star``; the storage-backed flavors store variables and
       contribute ``.sym`` (see :meth:`_history_syms`).
-    - **ETD-2 exp coefficients** exist only on the flavors used by the
-      Maxwell / viscoelastic relaxation path (``with_exp=True``:
-      Symbolic, Eulerian, SemiLagrangian).
+    - **ETD-2 exp coefficients** exist on every flavour that can carry a
+      viscoelastic stress (``with_exp=True``: all but the particle flavours).
     """
+
+    @classmethod
+    def describe_class(cls, depth=4):
+        """The scheme: its documentation and the arguments that set its
+        order and weighting — with no instance."""
+        import inspect
+        from underworld3.utilities.describe import record
+        doc = (cls.__doc__ or "").strip()
+        facts = {"scheme": cls.__name__}
+        try:
+            params = inspect.signature(cls.__init__).parameters
+            for key in ("order", "theta"):
+                if key in params and params[key].default is not inspect.Parameter.empty:
+                    facts[f"default {key}"] = params[key].default
+        except (TypeError, ValueError):
+            pass        # a class whose signature cannot be inspected reports no defaults
+        try:
+            from underworld3.utilities.capabilities import guides_for
+            linked = guides_for(cls.__name__)
+            if linked:
+                facts["guides"] = linked
+        except Exception:
+            pass        # outside a checkout there are no guides to list
+        return record("history_family", cls.__name__, doc.split("\n")[0], documentation=doc or None, facts=facts)
+
+    def describe(self, depth=4):
+        """What this history is, as data: the scheme (the class), its order,
+        its weighting, the field it tracks and the history slots it keeps.
+        The method metadata a run record needs to say which time integrator
+        a part used."""
+        import sympy
+        from underworld3.utilities.describe import record, term
+
+        facts = {"scheme": type(self).__name__, "order": getattr(self, "order", None)}
+        theta = getattr(self, "theta", None)
+        if theta is not None:
+            facts["theta"] = theta
+        terms = []
+        psi = getattr(self, "_psi_fn", None)
+        if psi is not None:
+            terms.append(term(getattr(self, "_psi_fn_symbol", "psi"), psi,
+                              description="the quantity tracked",
+                              symbol=getattr(self, "_psi_fn_symbol", None)))
+        slots = getattr(self, "psi_star", None) or []
+        if slots:
+            terms.append({"name": "history", "symbol": getattr(self, "_psi_star_symbol", None),
+                          "latex": ", ".join(sympy.latex(s) for s in slots),
+                          "text": ", ".join(str(s) for s in slots), "units": None,
+                          "description": f"{len(slots)} history slot(s)", "where": []})
+        doc = (type(self).__doc__ or "").strip().split("\n")[0]
+        return record("history", type(self).__name__, doc, facts=facts, terms=terms)
 
     def _init_history_tracking(self, order):
         """Deferred-initialisation and variable-dt bookkeeping attributes."""
@@ -583,11 +687,23 @@ class _DDtBase(uw_object):
         # composes its residual from :meth:`time_derivative` never recompiles
         # when the step changes.
         self._delta_t = _UWexpression(
-            rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep",
+            rf"\Delta t_{{{self.instance_number}}}", 1.0, "timestep of this history",
             _unique_name_generation=True)
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
         self._n_solves_completed = 0
+        # Snapshot substitution in the projection's source (see
+        # enable_source_snapshot): every flavour that projects a flux into its
+        # own history needs it, not only the semi-Lagrangian one.
+        self._psi_snapshot_enabled = False
+        self._psi_snapshot = None
+        # Set by commit_flux_to_history: the levels are already placed for this
+        # step, so a post-solve must not shift or re-record them again.
+        self._history_committed = False
+        # What the transported quantity is worth where the flow enters. Held on
+        # the base so a driver can set it whatever flavour it holds; see the
+        # inflow_value property for which flavours act on it.
+        self._inflow_value = None
         self._dt = None  # current timestep (set by solver or update_pre_solve)
         self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
@@ -636,7 +752,7 @@ class _DDtBase(uw_object):
             Also create the ETD-2 ``[α, φ]`` coefficients used by
             Maxwell-relaxation integration; values are pushed via
             PetscDSSetConstants every step in ``update_exp_coefficients``
-            (Symbolic, Eulerian, SemiLagrangian only).
+            (every flavour but the particle ones, #739).
         """
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
@@ -647,6 +763,121 @@ class _DDtBase(uw_object):
         _update_am_values(self._am_coeffs, 1, theta)
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
+
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Set the exponential (ETD) coefficients for this step.
+
+        ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
+        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)``, with τ_eff the
+        Maxwell relaxation time :math:`\eta_\mathrm{eff}/\mu`. Called by the
+        constitutive model, which owns τ_eff, before each solve -- peer to the
+        BDF/AM coefficient updates that ``update_pre_solve`` makes itself.
+        Every flavour that can carry a Maxwell stress allocates these
+        coefficients (#739); the particle flavours do not.
+        """
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
+    @property
+    def _exp_alpha(self):
+        """The ETD ``α`` coefficient UWexpression."""
+        return self._exp_coeffs[0]
+
+    @property
+    def _exp_phi(self):
+        """The ETD ``φ`` coefficient UWexpression."""
+        return self._exp_coeffs[1]
+    def _note_history_shift(self, dt, **detail):
+        """Tell the model's open step that this history advanced.
+
+        ``detail`` is whatever the scheme knows about the shift that a reader
+        of the record would want — for a semi-Lagrangian history, which
+        velocity levels the trace-back read, because that is the tie from
+        this step to the last one.
+
+        A history manager should shift EXACTLY ONCE per model step. Shifting
+        twice means the step was taken twice — a Picard iteration, a corrector
+        or a retry that called the solver again — and the field advances twice
+        while ``n_solves_completed`` (capped at ``order``) and ``dt_history``
+        look identical. Recording the shift lets ``model.step`` say so; without
+        it the mistake is invisible.
+
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            import underworld3 as uw
+
+            part = f"{type(self).__name__}#{self.instance_number}"
+            uw.get_default_model()._part_objects[part] = self
+            uw.get_default_model()._record_step_event(
+                "history_shift", self._history_label(), dt=float(dt),
+                part=part,
+                tracks=self._tracked_expression(),
+                **detail,
+            )
+        except Exception:
+            # Charter S4 — sanctioned: the transcript is a RECORD of the run,
+            # never a participant in it. Every failure here is a failure to
+            # describe a step that has already happened correctly (no open
+            # model.step, no default model, a detail that will not serialise),
+            # and none of them is a reason to take down the solve that the
+            # record exists to describe. A step that goes unrecorded shows up
+            # as a gap in the transcript, which is the visible symptom.
+            pass
+
+    def _tracked_expression(self):
+        """What this history holds, as text, for the record."""
+        try:
+            return str(self.psi_fn)
+        except Exception:
+            return None
+
+    def _history_label(self):
+        """Name this history by what it TRACKS, for the step record.
+
+        Not by its ``psi_star`` slot, whose name is generated from the instance
+        number and tells a reader nothing.
+
+        A solver can carry two histories on one field: the field itself
+        (``DuDt``) and its flux (``DFDt``, the Crank–Nicolson midpoint's
+        :math:`\kappa \nabla T`). Both are semi-Lagrangian, both follow the
+        same characteristics, and only the first is the history of ``T``. They
+        are distinct parts in the record — different instance numbers — but
+        they must also READ as distinct, so a history of an expression in the
+        field is labelled ``F[T]`` rather than ``T``.
+        """
+        import re
+
+        tracked, bare = None, False
+        try:
+            psi = self.psi_fn
+            tracked = getattr(psi, "name", None)
+            if tracked is not None:
+                bare = True
+            else:
+                # a MeshVariable's .sym prints as "{name}(N.x, N.y)", possibly
+                # wrapped in a Matrix for a vector or tensor unknown; a
+                # derivative prints as "{name}_{,0}(N.x, N.y)"
+                text = str(psi)
+                match = re.search(r"\{([^{}]+)\}", text)
+                if match:
+                    tracked = match.group(1)
+                    bare = re.fullmatch(
+                        r"(Matrix\(\[\[)?\{" + re.escape(tracked)
+                        + r"\}\(N\.x(?:, N\.y)?(?:, N\.z)?\)(\]\]\))?",
+                        text) is not None
+        except Exception:
+            # Charter S4 — sanctioned: this is a best-effort READ of what the
+            # history tracks, for the label a report prints. The patterns above
+            # are matched against sympy's own printing, which is not a contract;
+            # when it does not match, `tracked` stays None and the report says
+            # less rather than saying something wrong. Nothing downstream
+            # depends on the name.
+            pass
+        if tracked is None:
+            tracked = getattr(self, "instance_number", "?")
+        elif not bare:
+            tracked = f"F[{tracked}]"
+        return f"{type(self).__name__}({tracked})"
 
     def _register_with_default_model(self):
         """Register with the active default model as a snapshot state-bearer.
@@ -842,6 +1073,152 @@ class _DDtBase(uw_object):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
 
+    def _build_projection_source(self, source_fn):
+        """Construct the row matrix used as the projection's ``uw_function``.
+
+        Applies snapshot substitution (psi_star[0] → snap) when enabled.
+        Used by both ``psi_fn.setter`` and the ``initialise_history``
+        fallback path so substitution semantics are consistent.
+        """
+        if getattr(self, '_psi_star_use_multicomponent', False):
+            indep = self._psi_star_indep_indices
+            row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
+            if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+                ps0 = self.psi_star[0]
+                psi_snapshot = self._psi_snapshot
+                substitutions = {
+                    ps0.sym[i, j]: psi_snapshot.sym[i, j]
+                    for i in range(self.mesh.dim)
+                    for j in range(self.mesh.dim)
+                }
+                row = row.subs(substitutions)
+            return row
+        else:
+            # Scalar / vector path: psi_star[0] is a scalar/vector field. If
+            # snapshot is needed for these vtypes, extend here similarly.
+            return source_fn
+
+    def enable_source_snapshot(self):
+        """Enable snapshot substitution in the projection's source field.
+
+        Call this once when the source expression (``psi_fn``) references
+        ``psi_star[0]`` itself — without it the projection's residual
+        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
+        because target and source share the same data field. With Min-mode
+        plasticity at the yield kink, the implicit projection admits two
+        fixed points (elastic and yield branches); under timestep change the
+        iteration drifts to the elastic-branch fixed point and σ violates
+        the yield surface.
+
+        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
+        shape/vtype/degree. Each call to ``update_pre_solve`` copies
+        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
+        input for the upcoming projection. Substitution makes the
+        projection's compiled C code read from ``psi_snapshot.array``
+        instead of ``psi_star[0].array`` — there's no recompile per step,
+        just a memcpy.
+
+        Idempotent: safe to call more than once.
+        """
+        if not getattr(self, '_psi_star_use_multicomponent', False):
+            # Currently only wired for tensor projections (the case that
+            # exposed the bug).  Scalar/vector extension is straightforward
+            # if needed later.
+            return
+
+        if self._psi_snapshot is None:
+            ps0 = self.psi_star[0]
+            # NOTE: this currently registers a persistent MeshVariable in the
+            # mesh DM, which is overkill for a transient buffer that's only
+            # read by this DDt's projection.  A future improvement would be
+            # a transient/scratch-variable mechanism (likely backed by
+            # PETSc's auxiliary Vec machinery — already used elsewhere in
+            # the codebase via DMSetAuxiliaryVec_UW) so the snapshot doesn't
+            # accumulate in the DM across DDt creations.  See:
+            # docs/developer/ai-notes/historical-notes.md for the
+            # variable-deletion limitation context.
+            self._psi_snapshot = uw.discretisation.MeshVariable(
+                f"psi_snapshot_{self.instance_number}",
+                self.mesh,
+                ps0.shape,
+                vtype=ps0.vtype,
+                degree=ps0.degree,
+                continuous=ps0.continuous,
+            )
+            # Initialise psi_snapshot's data to current psi_star[0]'s data
+            # so the source evaluates consistently before the first refresh.
+            self._psi_snapshot.data[...] = ps0.data[...]
+
+        self._psi_snapshot_enabled = True
+
+        # Re-run the psi_fn setter so the substitution is applied to the
+        # currently-installed projection source.
+        self.psi_fn = self._psi_fn
+
+    def _refresh_source_snapshot(self):
+        """Freeze the projection's input for this step (a memcpy, no recompile).
+
+        Routes through ``.data`` rather than ``.array`` to skip unit conversion
+        (both variables are non-dimensional) while keeping the callback sync
+        that pushes values into the underlying PETSc local vector.
+        """
+        if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+            self._psi_snapshot.data[...] = self.psi_star[0].data[...]
+
+    #: A history that places the new flux on its own storage during
+    #: ``update_post_solve`` (the particle flavours evaluate it at their
+    #: particles) rather than through :meth:`commit_flux_to_history`.
+    commits_flux_in_post_solve = False
+
+    #: The forcing (strain-rate) history the second-order exponential
+    #: integrator reads; only :class:`SemiLagrangian` allocates one, on
+    #: request. ``None`` means the integrator runs at first order (#739).
+    forcing_star = None
+
+    def commit_flux_to_history(self, flux, verbose=False):
+        r"""Project ``flux`` into ``psi_star[0]`` and shift the history levels.
+
+        What a solver does after solving with a flux history (a viscoelastic
+        stress, say): the flux the constitutive model has just formed becomes
+        the new level 0, and the level that was 0 -- already carried to the new
+        configuration by ``update_pre_solve``, whether by a trace-back or by an
+        assembled transport -- becomes level 1. The shift is the history
+        manager's business, so every flavour does it the same way and a solver
+        does not need to know which one it holds.
+
+        ``flux`` is the expression to project (the constitutive model's flux).
+        It is ignored on the multi-component path, where the projection's source
+        was compiled once and is refreshed through the snapshot machinery (see
+        :meth:`enable_source_snapshot`).
+        """
+        if not hasattr(self, "_psi_star_projection_solver"):
+            self._setup_projections()
+
+        # The stores are non-dimensional work arrays: copies between them go
+        # through .data, never the unit-aware .array (#788).
+        level_0 = self.psi_star[0]
+        transported = np.array(level_0.data)
+
+        if getattr(self, "_psi_star_use_multicomponent", False):
+            # The snapshot machinery has frozen the projection's input, so this
+            # is a one-shot Galerkin projection and not a fixed-point iteration
+            # (which at a yield kink admits the wrong branch).
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve(verbose=verbose)
+            for k, (i, j) in enumerate(self._psi_star_indep_indices):
+                values = np.asarray(self._psi_star_flat_var.data[:, k])
+                level_0.data[:, level_0._data_layout(i, j)] = values
+        else:
+            self._psi_star_projection_solver.uw_function = flux
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve(verbose=verbose)
+
+        for level in range(self.order - 1, 0, -1):
+            self.psi_star[level].data[...] = (
+                transported if level == 1 else np.asarray(self.psi_star[level - 1].data))
+
+        self._history_committed = True
+
     # ----- The transport contract -----
     #
     # A solver that owns an unknown composes its residual from these terms
@@ -859,6 +1236,91 @@ class _DDtBase(uw_object):
     def integrator(self) -> str:
         """``"am"`` (the theta rule on the spatial terms) at order 1, ``"bdf"`` above."""
         return "am" if self.order == 1 else "bdf"
+
+    @property
+    def inflow_value(self):
+        r"""What enters the domain where the flow comes in, or ``None``.
+
+        A transported quantity needs data wherever the flow enters, and nowhere
+        else. Which parts of the boundary those are is not fixed: on a shedding
+        wake the outflow boundary carries reversed flow that migrates along it,
+        so the condition is applied by the sign of :math:`\mathbf{u}\cdot\mathbf{n}`
+        rather than by naming a boundary. Left ``None`` the transport is
+        unconstrained at an inflow, and whatever the solve produces there is
+        carried into the domain: measured on the viscoelastic cylinder, that is
+        what destroys the run (the stress maximum leaves the cylinder for the
+        outlet as soon as the wake reverses through it).
+
+        Set it to an expression of the unknown's shape -- for a stress history,
+        the relaxed stress of the incoming flow.
+
+        :class:`EulerianSUPG` compiles the value into a boundary term of its
+        transport solve; :class:`IntegrationPointSemiLagrangian` gives it to a
+        departure point restored to the boundary; :class:`ForwardSemiLagrangian`
+        fills the uncovered share of an inflow cell with it;
+        :class:`Lagrangian` gives it to every particle that entered through
+        an inflow: one whose back-trace over the step, or over one cell for a
+        particle the refill created, leaves the domain there (#783). The nodal
+        trace-back and :class:`Lagrangian_Swarm` (a swarm the caller advects)
+        do not use it: a departure point or a particle that lands outside the
+        domain is restored to the boundary and takes the transported field's
+        value THERE, which constrains the inflow but is not the value set.
+        Setting a value on such a flavour says so once rather than dropping it
+        in silence (#733).
+        """
+        return self._inflow_value
+
+    @inflow_value.setter
+    def inflow_value(self, value):
+        if value is not None:
+            value = sympy.Matrix(value)
+            if value.shape != self._unknown_shape():
+                raise ValueError(
+                    f"inflow_value has shape {value.shape}, but the transported "
+                    f"quantity is {self._unknown_shape()}.")
+            if not self.applies_inflow_value:
+                warnings.warn(
+                    f"{type(self).__name__} does not apply inflow_value: it "
+                    "restores an out-of-bounds departure point to the boundary "
+                    "and reads the transported field there, which constrains "
+                    "the inflow but is not the value you set. EulerianSUPG, "
+                    "IntegrationPointSemiLagrangian, ForwardSemiLagrangian and "
+                    "Lagrangian apply it (#733, #783).",
+                    stacklevel=2)
+        self._inflow_value = value
+
+    #: Whether this flavour compiles :attr:`inflow_value` into its transport.
+    applies_inflow_value = False
+
+    #: The owner's map from the carried quantity to what the history stores
+    #: (a solver sets its constitutive model's ``encode_history``); ``None``
+    #: stores the quantity itself.
+    _encode = None
+
+    def _inflow_record(self):
+        """:attr:`inflow_value` in the form the history stores."""
+        if self._encode is None:
+            return self._inflow_value
+        return sympy.Matrix(self._encode(self._inflow_value))
+
+    def _nondim_timestep(self, dt):
+        """The timestep as a non-dimensional model time (:func:`_as_float`); a
+        symbolic timestep passes through unchanged."""
+        reduced = _as_float(dt)
+        return dt if reduced is None else reduced
+
+    def _write_inflow(self, var, coords, rows):
+        """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
+        ``coords`` (the positions of ALL the points, so that the read, which
+        is collective when the value holds a field, is made on every rank;
+        only ``rows`` are written). Storage is non-dimensional, so a value
+        that evaluates with units is reduced. A flavour that calls this sets
+        ``_components`` (its stored columns)."""
+        expr = self._inflow_record()
+        for column, (i, j) in enumerate(self._components):
+            vals = uw.function.evaluate(expr[i, j], coords)
+            var.data[rows, column] = np.asarray(
+                _to_nondim_ndarray(vals)).reshape(-1)[rows]
 
     def _unknown_shape(self):
         """Shape of the unknown as a matrix (``Symbolic`` stores ``_shape`` as data)."""
@@ -992,6 +1454,7 @@ class Symbolic(_DDtBase):
     Lagrangian : Swarm-based material tracking.
     """
 
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -1090,15 +1553,7 @@ class Symbolic(_DDtBase):
         self._shape = new_fn.shape
         return
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, display
 
-        # Display the primary variable
-        display(Latex(rf"$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$"))
-        # Display the history variable using the different symbol.
-        history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
-        display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to the first history slot ``psi_star[0]``."""
@@ -1135,7 +1590,7 @@ class Symbolic(_DDtBase):
         verbose: Optional[bool] = False,
     ):
         """Pre-solve update hook. Auto-initialises history on first call."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -1153,7 +1608,7 @@ class Symbolic(_DDtBase):
         verbose: Optional[bool] = False,
     ):
         r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
@@ -1162,6 +1617,7 @@ class Symbolic(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         # Shift history: copy each element down the chain.
         for i in range(self.order - 1, 0, -1):
@@ -1176,18 +1632,6 @@ class Symbolic(_DDtBase):
     def _history_syms(self):
         """Symbolic stores raw sympy matrices in ``psi_star`` — return them as-is."""
         return list(self.psi_star)
-
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the ETD-2 (exponential) coefficient values for this step.
-
-        Sets ``self._exp_coeffs[0].sym = α`` and ``self._exp_coeffs[1].sym = φ``
-        from current ``dt`` and ``tau_eff`` (Maxwell relaxation time
-        :math:`\tau = \eta_\mathrm{eff}/\mu`). Called by the constitutive
-        model (which owns τ_eff) before each solve, peer to the BDF/AM
-        coefficient updates that happen automatically in
-        ``update_pre_solve``.
-        """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
 
 
 class Eulerian(_DDtBase):
@@ -1254,6 +1698,7 @@ class Eulerian(_DDtBase):
     Symbolic : For purely symbolic history (no mesh storage).
     """
 
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -1273,6 +1718,7 @@ class Eulerian(_DDtBase):
         order=1,
         smoothing=0.0,
         num_components=None,
+        units=None,
     ):
         super().__init__()
 
@@ -1326,6 +1772,7 @@ class Eulerian(_DDtBase):
                     degree=degree,
                     continuous=continuous,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                    units=_history_units(self._psi_fn, units),
                 )
             )
 
@@ -1358,22 +1805,16 @@ class Eulerian(_DDtBase):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
-        """Set the tracked expression."""
+        """Set the tracked expression, and the source of any live projection."""
         self._psi_fn = new_fn
-        # self._psi_star_projection_solver.uw_function = self.psi_fn
-        return
+        if getattr(self, "_psi_star_projection_solver", None) is not None:
+            self._psi_star_projection_solver.uw_function = self._build_projection_source(new_fn)
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
-        """Initialize projection solvers for history updates."""
+        """Initialize projection solvers for history updates (once)."""
+        if getattr(self, "_psi_star_projection_solver", None) is not None:
+            return
         ### using this to store terms that can't be evaluated (e.g. derivatives)
         # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
         if self.vtype == uw.VarType.SCALAR:
@@ -1427,13 +1868,8 @@ class Eulerian(_DDtBase):
             )
             self._psi_star_use_multicomponent = True
 
-        if getattr(self, '_psi_star_use_multicomponent', False):
-            # Flatten tensor to (1, Nc) row for multicomponent solver
-            indep = self._psi_star_indep_indices
-            row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
-            self._psi_star_projection_solver.uw_function = row
-        else:
-            self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.uw_function = self._build_projection_source(
+            self.psi_fn)
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
@@ -1457,11 +1893,11 @@ class Eulerian(_DDtBase):
                 pass
 
         try:
-            self.psi_star[0].data[...] = uw.function.evaluate(
+            self.psi_star[0].data[...] = np.asarray(_to_nondim_ndarray(uw.function.evaluate(
                 self.psi_fn,
                 self.psi_star[0].coords,
                 evalf=self.evalf,
-            ).reshape(-1, max(self.psi_fn.shape))
+            ))).reshape(-1, max(self.psi_fn.shape))
         except Exception:
             # Sanctioned fallback: evaluate() cannot interpolate
             # expressions containing derivatives (e.g. flux terms) —
@@ -1487,6 +1923,9 @@ class Eulerian(_DDtBase):
 
     def set_initial_history(self, values, dt=None):
         r"""Plant history values for BDF restart or analytical IC.
+
+        The values are what the history stores: for a stress history whose
+        model stores the log-conformation, ``log(sigma/G + I)``.
 
         Bypasses the automatic ``effective_order`` ramp so the very
         first solve runs at the full BDF order rather than starting at
@@ -1542,20 +1981,27 @@ class Eulerian(_DDtBase):
         dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        store_result: Optional[bool] = True,
     ):
         """Pre-solve: auto-initialise history and apply advection correction.
+
+        ``store_result`` is accepted for interface parity with the
+        semi-Lagrangian flavour (which can sample without storing) and is not
+        used here: this flavour has nothing to sample.
 
         On the first call, automatically initialises history from the
         current field values. If V_fn is set, also applies an explicit
         grid-based advection correction so that bdf() approximates the
         material derivative Dφ/Dt rather than ∂φ/∂t.
         """
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
 
         # Update coefficient values for current effective_order and dt
+        self._refresh_source_snapshot()
+
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
@@ -1595,8 +2041,15 @@ class Eulerian(_DDtBase):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
-        self._dt = dt
+        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`.
+
+        A history committed this step (a flux projected into level 0 and the
+        levels shifted by :meth:`commit_flux_to_history`) is already placed:
+        shifting again pushes the new value straight into level 1 and loses the
+        level it should hold. Invisible at order 1, a 150-fold error at order 2
+        on the analytic Maxwell shear box.
+        """
+        self._dt = dt = self._nondim_timestep(dt)
 
         if verbose and uw.mpi.rank == 0:
             print(f"Update {self.psi_fn}", flush=True)
@@ -1605,22 +2058,22 @@ class Eulerian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
-        ### copy values down the chain
-        for i in range(self.order - 1, 0, -1):
-            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+        if self._history_committed:
+            self._history_committed = False
+        else:
+            ### copy values down the chain
+            for i in range(self.order - 1, 0, -1):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
-        ### update the history fn
-        self.update_history_fn()
+            ### update the history fn
+            self.update_history_fn()
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
 
         return
-
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the ETD-2 (exponential) coefficient values for this step."""
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
 
 
 class EulerianSUPG(Eulerian):
@@ -1702,6 +2155,8 @@ class EulerianSUPG(Eulerian):
         tau_shape: str = "inverse_sum",
         peclet_weight: float = 4.0,
         num_components=None,
+        transport_on_update: bool = False,
+        units=None,
     ):
         order = int(order)
         if order not in (1, 2, 3):
@@ -1722,15 +2177,25 @@ class EulerianSUPG(Eulerian):
         super().__init__(
             mesh, psi_fn, vtype, degree, continuous, V_fn=None, theta=theta,
             varsymbol=varsymbol, verbose=verbose, bcs=[] if bcs is None else bcs,
-            order=order, smoothing=smoothing, num_components=num_components,
+            order=order, smoothing=smoothing, num_components=num_components, units=units,
         )
         self._advection_mode = "assembled"
         self._integrator = "am" if order == 1 else "bdf"
+        # When the unknown is not the solver's own (a stress carried by a Stokes
+        # solve, say) the manager transports its history itself, on the grid,
+        # in place of a semi-Lagrangian trace-back. See _transport_history.
+        self.transport_on_update = bool(transport_on_update)
+        self._transport_theta = 0.5
+        self._transport_flat = None
+        self._transport_old = None
+        self._transport_solver = None
+        self._inflow_value = None
         self.V_fn = V_fn
         self.V_fn_history = None
         self.diffusivity = diffusivity
         self._tau_shape = str(tau_shape)
-        self._peclet_weight = float(peclet_weight)
+        # Exact, so 4 Pe_c^2 prints and cancels as 64, not 64.0.
+        self._peclet_weight = sympy.nsimplify(peclet_weight, rational=True)
 
         # The stabilisation knobs are runtime constants.
         tag = self.instance_number
@@ -1772,7 +2237,7 @@ class EulerianSUPG(Eulerian):
 
     @property
     def peclet_weight(self) -> float:
-        return self._peclet_weight
+        return float(self._peclet_weight)
 
     @property
     def supg_weight(self) -> float:
@@ -1829,23 +2294,26 @@ class EulerianSUPG(Eulerian):
         ct, cu, cv = self._tau_weights
         transient = (ct * c0 / self._delta_t) ** 2
         weight = self._supg_weight
+        # The regulariser that keeps every denominator finite is the library's
+        # named vanishing value, so the form prints it as a symbol.
+        eps = uw.maths.functions.vanishing
         if self._peclet_weight > 0.0:
             # Pe^2 / (Pe^2 + Pe_c^2) written without dividing by nu (1 for nu = 0).
             ah2 = a_mag2 * h ** 2
-            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + 1.0e-30)
+            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + eps)
         if self._tau_shape == "inverse_sum":
             advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
             viscous = (cv * nu / h ** 2) ** 2
-            return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+            return weight / sympy.sqrt(transient + advective + viscous + eps)
         # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
-        a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
-        Pe = a_mag * h / (2 * nu + 1.0e-30)      # finite at zero diffusivity (the default)
+        a_mag = sympy.sqrt(a_mag2 + eps)
+        Pe = a_mag * h / (2 * nu + eps)      # finite at zero diffusivity (the default)
         if self._tau_shape == "brooks_hughes":
             xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
         else:
             xi = sympy.Min(Pe / 3, 1)
         tau_steady = h / (2 * a_mag) * xi
-        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
+        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + eps))
 
     def stabilisation_flux(self, R):
         r"""The SUPG flux :math:`\tau\,R\otimes\mathbf{a}`, one row per component of ``R``.
@@ -1858,6 +2326,161 @@ class EulerianSUPG(Eulerian):
         R = _as_matrix(R)
         column = R.reshape(len(R), 1)
         return self.tau() * (column * self.advecting_velocity(0))
+
+    applies_inflow_value = True
+
+    @_DDtBase.inflow_value.setter
+    def inflow_value(self, value):
+        """As the base class, and then drop the transport solver: this flavour
+        compiles the condition into the weak form, so the solver is stale."""
+        _DDtBase.inflow_value.fset(self, value)
+        self._transport_solver = None
+
+    # ----- transporting the history on the grid -----
+
+    def _transport_components(self):
+        """Independent components of the history variable as ``(i, j)`` pairs.
+
+        A symmetric tensor contributes its upper triangle; every other shape
+        contributes every entry.
+        """
+        rows, cols = self.psi_star[0].shape
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            return [(i, j) for i in range(rows) for j in range(i, cols)]
+        return [(i, j) for i in range(rows) for j in range(cols)]
+
+    @property
+    def transport_theta(self) -> float:
+        r"""Blend of the transport step: 0.5 Crank-Nicolson (default), 1 backward Euler.
+
+        Distinct from :attr:`theta`, which weights the SCHEME's spatial terms at
+        each stored level. The transport of a history level is a time
+        discretisation of the same physical step as the scheme around it, so it
+        must be of the same order: backward Euler here is first order and costs
+        a factor of eight on uniform translation (0.0139 against 0.109 at
+        Courant 0.6). There is no reason to lower it; the setter exists to make
+        that measurable rather than to recommend it.
+        """
+        return self._transport_theta
+
+    @transport_theta.setter
+    def transport_theta(self, value):
+        value = float(value)
+        if not 0.0 < value <= 1.0:
+            raise ValueError(f"transport_theta must be in (0, 1], not {value}.")
+        self._transport_theta = value
+
+    def _transport_residual(self, solver):
+        r"""Strong residual of one transport step, one entry per component.
+
+        The theta rule at :attr:`transport_theta`, Crank-Nicolson by default.
+        """
+        dim = self.mesh.dim
+        S, S_old = solver.u.sym, self._transport_old.sym
+        gradient = self.mesh.vector.gradient
+        a = self.advecting_velocity(0)
+        theta = self._transport_theta
+        entries = []
+        for k in range(S.shape[1]):
+            new = sum(a[0, i] * gradient(S[0, k])[0, i] for i in range(dim))
+            old = sum(a[0, i] * gradient(S_old[0, k])[0, i] for i in range(dim))
+            entries.append((S[0, k] - S_old[0, k]) / self._delta_t
+                           + theta * new + (1 - theta) * old)
+        return sympy.Matrix([entries])
+
+    def _transport_flux(self, solver):
+        """The SUPG flux of the transport step, one row per component."""
+        return self.stabilisation_flux(self._transport_residual(solver))
+
+    def _build_transport_solver(self):
+        """The implicit SUPG solve that carries one history level over a step.
+
+        The history's independent components are flattened onto one matrix
+        variable and marched together: backward Euler in time (the step is a
+        transport within a step, not the scheme's own time discretisation),
+        the manager's advecting velocity and its stabilisation parameter. No
+        boundary condition is imposed: the transported quantity is not the
+        solver's unknown and what enters at an inflow is the caller's to say.
+        """
+        from underworld3.utilities._api_tools import Template
+
+        components = len(self._transport_components())
+        tag = self.instance_number
+        self._transport_flat = uw.discretisation.MeshVariable(
+            f"psi_transport_{tag}", self.mesh, (1, components),
+            vtype=uw.VarType.MATRIX, degree=self.degree,
+            continuous=self.continuous, varsymbol=rf"{{\psi^{{T}}_{{{tag}}}}}")
+        self._transport_old = uw.discretisation.MeshVariable(
+            f"psi_transport_old_{tag}", self.mesh, (1, components),
+            vtype=uw.VarType.MATRIX, degree=self.degree,
+            continuous=self.continuous, varsymbol=rf"{{\psi^{{T-}}_{{{tag}}}}}")
+
+        class _HistoryTransport(uw.systems.SNES_MultiComponent):
+            F0 = Template(r"f_0", lambda solver: solver._manager._transport_residual(solver),
+                          "Transport of a history level: time derivative and advection.")
+            F1 = Template(r"\mathbf{F}_1", lambda solver: solver._manager._transport_flux(solver),
+                          "The SUPG flux of the transported history level.")
+
+        solver = _HistoryTransport(self.mesh, u_Field=self._transport_flat, verbose=self.verbose)
+        solver._manager = self
+        solver.constitutive_model = uw.constitutive_models.Constitutive_Model
+        if self._inflow_value is not None:
+            # The inflow condition, weakly: on every boundary, the term is the
+            # NEGATIVE part of u.n, so it is active exactly where the flow enters
+            # and vanishes where it leaves. Walls (u.n = 0) contribute nothing,
+            # so no boundary needs naming and a migrating inflow patch is covered.
+            a = self.advecting_velocity(0)
+            normal_flow = sum(a[0, i] * self.mesh.Gamma[i] for i in range(self.mesh.dim))
+            entering = sympy.Min(normal_flow, 0)
+            indices = self._transport_components()
+            incoming = self._inflow_record()
+            # Sign: `entering` is non-positive, so -entering is |u.n| on the
+            # inflow and zero elsewhere, and the term is dissipative in
+            # (sigma - sigma_in). With the sign the other way it amplifies:
+            # measured on the cylinder, the stress reached 16 within ten steps.
+            condition = sympy.Matrix([[
+                -entering * (self._transport_flat.sym[0, k] - incoming[i, j])
+                for k, (i, j) in enumerate(indices)]])
+            for boundary in self.mesh.boundaries:
+                solver.add_natural_bc(condition, boundary.name)
+        solver.petsc_options["snes_rtol"] = 1.0e-8
+        solver.petsc_options["ksp_rtol"] = 1.0e-9
+        solver.petsc_options["ksp_type"] = "gmres"
+        solver.petsc_options["pc_type"] = "asm"
+        solver.petsc_options["sub_pc_type"] = "ilu"
+        self._transport_solver = solver
+        return solver
+
+    def _transport_history(self, dt, verbose=False):
+        """Carry every stored level forward by one step of the flow.
+
+        Each level is transported once per step, so the level that is two
+        steps old has been carried twice: the grid counterpart of sampling
+        the semi-Lagrangian trace-back at two departure points.
+        """
+        if self._transport_solver is None:
+            self._build_transport_solver()
+        indices = self._transport_components()
+        flat, previous = self._transport_flat, self._transport_old
+
+        for level in range(self.order):
+            history = self.psi_star[level]
+            for k, (i, j) in enumerate(indices):
+                flat.data[:, k] = np.asarray(history.data[:, history._data_layout(i, j)])
+            previous.data[...] = np.asarray(flat.data)
+            self._transport_solver.solve(verbose=verbose)
+            for k, (i, j) in enumerate(indices):
+                values = np.asarray(flat.data[:, k])
+                history.data[:, history._data_layout(i, j)] = values
+
+    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True):
+        """Refresh the scheme's coefficients and, when this manager owns the
+        transport of its history, carry every level forward by one step."""
+        dt = self._nondim_timestep(dt)
+        super().update_pre_solve(dt, evalf=evalf, verbose=verbose,
+                                 store_result=store_result)
+        if self.transport_on_update and self.V_fn is not None and dt:
+            self._transport_history(dt, verbose=verbose)
 
     def _object_viewer(self):
         from IPython.display import Latex, display
@@ -2108,6 +2731,13 @@ def _matrix_of(V):
     return V
 
 
+# TODO(BUG): a non-symmetric psi_fn under vtype=SYM_TENSOR is silently
+# reduced here, and this class keeps the LOWER entry where
+# IntegrationPointSemiLagrangian keeps the UPPER one. Measured 2026-09-10 on
+# [[1+x, 2+y], [100.0, 3+x*y]]: nodal psi_star -> [[1.45, 100.0], [100.0, 3.21]],
+# integration-point -> [[1.46, 2.47], [2.47, 3.21]]. Neither averages and
+# neither warns. The integration-point path now warns; this one should too,
+# and the two should agree on which triangle wins.
 class SemiLagrangian(_DDtBase):
     r"""
     Semi-Lagrangian history manager.
@@ -2247,6 +2877,7 @@ class SemiLagrangian(_DDtBase):
     Lagrangian : For full particle-following Lagrangian tracking.
     """
 
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -2267,6 +2898,7 @@ class SemiLagrangian(_DDtBase):
         theta: float = 0.5,
         old_frame_traceback: bool = False,
         midtime_velocity: bool = True,
+        units=None,
     ):
         super().__init__()
 
@@ -2364,8 +2996,6 @@ class SemiLagrangian(_DDtBase):
         # substituted with a frozen snapshot variable that's refreshed each
         # step from psi_star[0]'s data array. The projection becomes a true
         # one-shot Galerkin projection.
-        self._psi_snapshot_enabled = False
-        self._psi_snapshot = None
 
 
         if varsymbol is None:
@@ -2384,16 +3014,7 @@ class SemiLagrangian(_DDtBase):
         psi_star = []
         self.psi_star = psi_star
 
-        # Propagate units from psi_fn to psi_star if the model supports units.
-        # Internal psi_star variables should match the user's variable units when possible,
-        # but if no reference quantities are set, use unitless variables to avoid strict mode errors.
-        psi_units = uw.get_units(psi_fn)
-
-        # Check if the model can handle units (has reference quantities set)
-        model = uw.get_default_model()
-        if psi_units is not None and not model.has_units():
-            # Model doesn't have reference quantities - don't propagate units to internal vars
-            psi_units = None
+        psi_units = _history_units(psi_fn, units)
 
         for i in range(order):
             self.psi_star.append(
@@ -2404,7 +3025,7 @@ class SemiLagrangian(_DDtBase):
                     degree=self.degree,
                     continuous=self.continuous,
                     varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
-                    units=psi_units,  # Inherit units from psi_fn (or None if model has no units)
+                    units=psi_units,
                 )
             )
 
@@ -2684,95 +3305,7 @@ class SemiLagrangian(_DDtBase):
         self._psi_star_projection_solver.uw_function = self._build_projection_source(new_fn)
         return
 
-    def _build_projection_source(self, source_fn):
-        """Construct the row matrix used as the projection's ``uw_function``.
 
-        Applies snapshot substitution (psi_star[0] → snap) when enabled.
-        Used by both ``psi_fn.setter`` and the ``initialise_history``
-        fallback path so substitution semantics are consistent.
-        """
-        if getattr(self, '_psi_star_use_multicomponent', False):
-            indep = self._psi_star_indep_indices
-            row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
-            if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-                ps0 = self.psi_star[0]
-                psi_snapshot = self._psi_snapshot
-                substitutions = {
-                    ps0.sym[i, j]: psi_snapshot.sym[i, j]
-                    for i in range(self.mesh.dim)
-                    for j in range(self.mesh.dim)
-                }
-                row = row.subs(substitutions)
-            return row
-        else:
-            # Scalar / vector path: psi_star[0] is a scalar/vector field. If
-            # snapshot is needed for these vtypes, extend here similarly.
-            return source_fn
-
-    def enable_source_snapshot(self):
-        """Enable snapshot substitution in the projection's source field.
-
-        Call this once when the source expression (``psi_fn``) references
-        ``psi_star[0]`` itself — without it the projection's residual
-        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
-        because target and source share the same data field. With Min-mode
-        plasticity at the yield kink, the implicit projection admits two
-        fixed points (elastic and yield branches); under timestep change the
-        iteration drifts to the elastic-branch fixed point and σ violates
-        the yield surface.
-
-        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
-        shape/vtype/degree. Each call to ``update_pre_solve`` copies
-        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
-        input for the upcoming projection. Substitution makes the
-        projection's compiled C code read from ``psi_snapshot.array``
-        instead of ``psi_star[0].array`` — there's no recompile per step,
-        just a memcpy.
-
-        Idempotent: safe to call more than once.
-        """
-        if not getattr(self, '_psi_star_use_multicomponent', False):
-            # Currently only wired for tensor projections (the case that
-            # exposed the bug).  Scalar/vector extension is straightforward
-            # if needed later.
-            return
-
-        if self._psi_snapshot is None:
-            ps0 = self.psi_star[0]
-            # NOTE: this currently registers a persistent MeshVariable in the
-            # mesh DM, which is overkill for a transient buffer that's only
-            # read by this DDt's projection.  A future improvement would be
-            # a transient/scratch-variable mechanism (likely backed by
-            # PETSc's auxiliary Vec machinery — already used elsewhere in
-            # the codebase via DMSetAuxiliaryVec_UW) so the snapshot doesn't
-            # accumulate in the DM across DDt creations.  See:
-            # docs/developer/ai-notes/historical-notes.md for the
-            # variable-deletion limitation context.
-            self._psi_snapshot = uw.discretisation.MeshVariable(
-                f"psi_snapshot_{self.instance_number}",
-                self.mesh,
-                ps0.shape,
-                vtype=ps0.vtype,
-                degree=ps0.degree,
-                continuous=ps0.continuous,
-            )
-            # Initialise psi_snapshot's data to current psi_star[0]'s data
-            # so the source evaluates consistently before the first refresh.
-            self._psi_snapshot.data[...] = ps0.data[...]
-
-        self._psi_snapshot_enabled = True
-
-        # Re-run the psi_fn setter so the substitution is applied to the
-        # currently-installed projection source.
-        self.psi_fn = self._psi_fn
-
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -2785,11 +3318,7 @@ class SemiLagrangian(_DDtBase):
         coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
 
         try:
-            eval_result = uw.function.evaluate(self.psi_fn, coords_nd)
-            psi_units = self.psi_star[0].units
-            if psi_units is not None and not isinstance(eval_result, UnitAwareArray):
-                eval_result = UnitAwareArray(eval_result, units=psi_units)
-            self.psi_star[0].array[...] = eval_result
+            _write_evaluated(self.psi_star[0], uw.function.evaluate(self.psi_fn, coords_nd))
         except Exception:
             # Fallback: project psi_fn onto psi_star[0] via the SNES projector.
             # Route through the shared builder so snapshot substitution
@@ -2814,6 +3343,9 @@ class SemiLagrangian(_DDtBase):
 
     def set_initial_history(self, values, dt=None):
         r"""Plant history values for BDF restart or analytical IC.
+
+        The values are what the history stores: for a stress history whose
+        model stores the log-conformation, ``log(sigma/G + I)``.
 
         Bypasses the automatic ``effective_order`` ramp so the very
         first solve runs at the full BDF order rather than starting
@@ -3043,12 +3575,23 @@ class SemiLagrangian(_DDtBase):
         dt_physical: Optional[float] = None,
     ):
         """Post-solve: record timestep and increment solve counter."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        # The tie to the previous step: the trace-back read the velocity at
+        # this step and, for the midpoint, at the last one. That dependence
+        # on v and its history is what the record has to carry for a reader
+        # asking what this shift was computed FROM.
+        trace = getattr(self, "characteristics", None)
+        self._note_history_shift(
+            dt,
+            velocity=str(getattr(trace, "V_fn", self.V_fn))[:80],
+            past_velocity_levels=int(getattr(trace, "_levels_valid", 0)),
+            midtime_velocity=bool(getattr(trace, "midtime_velocity", False)),
+        )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
@@ -3088,6 +3631,15 @@ class SemiLagrangian(_DDtBase):
             self.psi_star[i].array[...] = (
                 phi * self.psi_star[i - 1].array[...] + (1 - phi) * self.psi_star[i].array[...]
             )
+
+    def carried_tensors(self, level: int = 0):
+        """The carried history as one tensor per vertex, non-dimensional, with the
+        vertices: ``(values[n, d, d], coords[n, cdim])``."""
+        history = self.psi_star[level]
+        dim = self.mesh.dim
+        values = np.asarray(_to_nondim_ndarray(np.asarray(history.array), units=history.units)).reshape(-1, dim, dim)
+        points = _to_nondim_ndarray(history.coords).reshape(-1, self.mesh.cdim)
+        return values, points
 
     def _centroid_shifted_node_coords(self):
         r"""ND node coordinates of ``psi_star[0]``, nudged toward cell centroids.
@@ -3165,12 +3717,7 @@ class SemiLagrangian(_DDtBase):
                     node_coords_nd,
                     evalf=evalf,
                 )
-            # Wrap result with units if psi_star has units but eval didn't return UnitAwareArray
-            psi_star_units = self.psi_star[0].units
-            if psi_star_units is not None and not isinstance(eval_result, UnitAwareArray):
-                eval_result = UnitAwareArray(eval_result, units=psi_star_units)
-
-            self.psi_star[0].array[...] = eval_result
+            _write_evaluated(self.psi_star[0], eval_result)
 
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
@@ -3195,32 +3742,6 @@ class SemiLagrangian(_DDtBase):
                     self.psi_star[0].array[:, i, j] = vals
                     if i != j:
                         self.psi_star[0].array[:, j, i] = vals
-
-    def _nondim_timestep(self, dt):
-        r"""Reduce ``dt`` to a plain non-dimensional model-time value.
-
-        The semi-Lagrangian trace-back is performed ENTIRELY in the mesh's
-        NON-DIMENSIONAL (DM) coordinate space: evaluate()/global_evaluate
-        treat plain arrays as DM coords and the DM point-location uses DM
-        values (0..L_model, NOT dimensional metres). So coords, velocity
-        AND dt are all reduced to non-dimensional values, whether or not
-        the model carries units. (Previously the has_units branch kept
-        dimensional coords/velocity and left dt unitless -> a 'meter' vs
-        'meter/second' subtraction crash and mislocation against the ND
-        DM; UW3 issue #267.)
-        """
-        if hasattr(dt, "magnitude") or hasattr(dt, "value"):
-            # dt carries units -> non-dimensionalise it
-            dt_nondim = uw.non_dimensionalise(dt, uw.get_default_model())
-            if hasattr(dt_nondim, "magnitude"):
-                return float(dt_nondim.magnitude)
-            elif hasattr(dt_nondim, "value"):
-                return float(dt_nondim.value)
-            else:
-                return float(dt_nondim)
-        else:
-            # already non-dimensional model-time
-            return dt
 
     def _trace_departure_points(
         self, i, node_coords_nd, dt_for_calc, evalf, subtract_v_mesh, oldframe_active
@@ -3314,13 +3835,7 @@ class SemiLagrangian(_DDtBase):
                 monotone=monotone_mode,
             )
 
-        # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
-        # value also has units. global_evaluate may return plain arrays.
-        psi_star_units = self.psi_star[i].units
-        if psi_star_units is not None and not isinstance(value_at_end_points, UnitAwareArray):
-            value_at_end_points = UnitAwareArray(value_at_end_points, units=psi_star_units)
-
-        self.psi_star[i].array[...] = value_at_end_points
+        _write_evaluated(self.psi_star[i], value_at_end_points)
 
         # TODO(DESIGN): a moment-preserving correction (restore mean and L2
         # moment of psi_star after the semi-Lagrangian update) was removed
@@ -3364,7 +3879,7 @@ class SemiLagrangian(_DDtBase):
             to force a particular mode for one call.
         """
 
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         # Resolve monotone_mode: explicit kwarg overrides instance attr.
         if monotone_mode == "__instance__":
@@ -3401,8 +3916,7 @@ class SemiLagrangian(_DDtBase):
         # variables already live in non-dimensional space) while keeping
         # the callback sync that pushes values into the underlying PETSc
         # local Vec.
-        if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-            self._psi_snapshot.data[...] = self.psi_star[0].data[...]
+        self._refresh_source_snapshot()
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
@@ -3429,7 +3943,7 @@ class SemiLagrangian(_DDtBase):
         # 3. Trace the characteristics back and sample each history slot
         #    at its departure points. Work from the oldest slot backwards
         #    so we don't overwrite history terms we still need to sample.
-        dt_for_calc = self._nondim_timestep(dt)
+        dt_for_calc = dt
 
         # Phase-2 ALE: if an adapt stashed Δx, build v_mesh = Δx / dt as
         # a per-DDt MeshVariable now so the trace-back below can use
@@ -3485,26 +3999,6 @@ class SemiLagrangian(_DDtBase):
             self._oldframe_X = None
 
         return
-
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the scalar ETD-2 (exponential) coefficient UWexpressions.
-
-        Sets ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
-        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)`` so the next solve
-        uses the correct exponential coefficients via PetscDSSetConstants
-        on the next ``_update_constants`` call.
-        """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
-
-    @property
-    def _exp_alpha(self):
-        """Convenience accessor for the ETD-2 ``α`` coefficient UWexpression."""
-        return self._exp_coeffs[0]
-
-    @property
-    def _exp_phi(self):
-        """Convenience accessor for the ETD-2 ``φ`` coefficient UWexpression."""
-        return self._exp_coeffs[1]
 
     def update_forcing_history(self, forcing_fn=None, evalf=False, verbose=False):
         r"""Refresh ``forcing_star`` from ``forcing_fn`` via direct nodal evaluation.
@@ -3658,6 +4152,12 @@ class Lagrangian(_DDtBase):
     Lagrangian_Swarm : For user-provided swarms.
     """
 
+    commits_flux_in_post_solve = True
+
+    #: A particle that entered through an inflow this step takes
+    #: :attr:`inflow_value` (see :meth:`_apply_inflow_value`).
+    applies_inflow_value = True
+
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
     )
@@ -3677,6 +4177,9 @@ class Lagrangian(_DDtBase):
         order=1,
         smoothing=0.0,
         fill_param=3,
+        proxy_location="cells",
+        proxy_sampling="reconstruct",
+        units=None,
     ):
         super().__init__()
 
@@ -3689,6 +4192,8 @@ class Lagrangian(_DDtBase):
         self.V_fn = V_fn
         self.verbose = verbose
         self.order = order
+        psi_units = _history_units(psi_fn, units)
+        self._components = _storage_components(vtype, tuple(sympy.Matrix(psi_fn).shape))
 
         self._init_history_tracking(order)
 
@@ -3703,7 +4208,10 @@ class Lagrangian(_DDtBase):
                     vtype=vtype,
                     proxy_degree=degree,
                     proxy_continuous=continuous,
+                    proxy_location=proxy_location,
+                    proxy_sampling=proxy_sampling,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
+                    units=psi_units,
                 )
             )
 
@@ -3712,6 +4220,24 @@ class Lagrangian(_DDtBase):
         self._init_coefficient_expressions(order, 0.5, with_exp=False)
 
         dudt_swarm.populate(fill_param)
+        # The class owns this swarm and carries the stress on it, so it also
+        # keeps it populated: without refilling starved cells, a flow that
+        # carries particles out through an open boundary empties the downstream
+        # cells and the proxy has nothing to interpolate. The control both fills
+        # starved cells and caps over-full ones (a bare refill-only dict grows
+        # the swarm without bound where particles pile up against a wall): the
+        # bounds are set from the initial occupancy, with a floor at the linear
+        # fit minimum.
+        # The manager applies the control itself after each advection rather
+        # than leaving it on the swarm, so it knows which particles the refill
+        # created: those are the ones an inflow datum must reach (#783).
+        _npart = int(uw.mpi.comm.allreduce(np.asarray(dudt_swarm._particle_coordinates.data).shape[0], op=uw.MPI.SUM))
+        _ncell = int(uw.mpi.comm.allreduce(mesh._centroids.shape[0], op=uw.MPI.SUM))
+        _mean = _npart / max(_ncell, 1)
+        self._population_control = {
+            "min_per_cell": max(mesh.dim + 1, int(0.5 * _mean)),
+            "max_per_cell": max(2 * (mesh.dim + 1), int(3.0 * _mean)),
+        }
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -3759,17 +4285,6 @@ class Lagrangian(_DDtBase):
         # No theta parameter on this flavor — fixed Crank-Nicolson value.
         self._restore_core_state(s, am_theta=0.5)
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
-        # so the viewer reports the expression and history depth only.
-        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -3778,20 +4293,21 @@ class Lagrangian(_DDtBase):
         be called manually after setting initial conditions.
         """
         psi_star_0 = self.psi_star[0]
-        # Component-wise write through the canonical (N, components) storage.
-        # Indexing the SwarmVariable itself (``psi_star_0[i, j]``) returns a
-        # *symbolic* component with no ``.data`` — the modern component
-        # address is ``.data[:, var._data_layout(i, j)]`` (audit SWARM-06).
+        # Every component evaluated before any is written (audit SWARM-06): a
+        # partial write marks the proxy stale and a later evaluation of a psi_fn
+        # that reads psi_star would see a half-updated history.
         coords = np.asarray(self.swarm._particle_coordinates.data)
+        updated = {}
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
-                updated_psi = uw.function.evaluate(
-                    self.psi_fn[i, j],
-                    coords,
-                )
-                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
-                    updated_psi
-                ).reshape(-1)
+                ij = psi_star_0._data_layout(i, j)
+                if ij in updated:
+                    continue
+                updated[ij] = np.asarray(_to_nondim_ndarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords)
+                )).reshape(-1)
+        for ij, vals in updated.items():
+            psi_star_0.data[:, ij] = vals
 
         # Copy to all other history slots
         for k in range(1, self.order):
@@ -3822,9 +4338,15 @@ class Lagrangian(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        store_result: bool = True,
+        **_ignored,
     ):
-        """Pre-solve: auto-initialise history on first call."""
-        self._dt = dt
+        """Pre-solve: auto-initialise history on first call.
+
+        ``store_result`` is accepted for a uniform hook signature and ignored:
+        this flavour records the stress at its particles in the post-solve.
+        """
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -3835,19 +4357,85 @@ class Lagrangian(_DDtBase):
 
         return
 
+    def _apply_inflow_value(self, dt, created):
+        r"""Give every particle that entered this step the inflow datum.
+
+        No particle arrives from outside: the population control CREATES the
+        particles of an emptied inlet cell, at lattice points anywhere in the
+        cell, and gives them a reconstruction from the nearest old particles,
+        which is the wrong state for fluid that has just entered. The inlet
+        then carries a smear of whatever was upstream a step ago and hands it
+        downstream (#783).
+
+        A particle entered if its back-trace leaves the domain and the flow
+        comes in where it left. The trace is :math:`x - \hat{u}\,s` with
+        :math:`s = |u|\,\Delta t` for a particle that moved (the test the
+        integration-point flavour applies to a restored departure point,
+        #745) and :math:`s = 2\,r_{\rm cell}` for one created this step, the
+        last ``created`` rows in storage, whose position inside the cell says
+        nothing about when it entered; :math:`r_{\rm cell}` is the RMS
+        vertex-to-centroid distance, so :math:`2r` is the cell's own extent
+        (0.9 to 1.3 of the edge on triangles). The trace of a particle beside
+        a wall can leave through the wall, at a corner, along a curved wall,
+        or where the flow separates, so the boundary velocity decides: at the
+        point where the trace left, the flow must cross the boundary inward
+        at more than 30 degrees. A no-slip wall has no velocity there and a
+        free-slip wall only a tangential one. Collective: the velocities and
+        the datum are read on every rank.
+
+        TODO(DESIGN): a trace that wraps through a periodic seam also reads as
+        entered, as it does in the integration-point rule (#745).
+        """
+        if self._inflow_value is None:
+            return
+        swarm = self.swarm
+        dim = self.mesh.dim
+        dt = self._nondim_timestep(dt)
+        X = np.asarray(swarm._particle_coordinates.data).reshape(-1, dim)
+        U = np.asarray(_to_nondim_ndarray(uw.function.evaluate(self.V_fn, X))).reshape(X.shape[0], dim)
+        speed = np.linalg.norm(U, axis=1)
+        moving = speed > 0.0
+        direction = np.zeros_like(U)
+        direction[moving] = U[moving] / speed[moving, None]
+        distance = speed * dt
+        if created > 0:
+            cells = np.asarray(swarm._owning_cells())[-created:]
+            distance[-created:] = np.maximum(
+                distance[-created:], 2.0 * np.asarray(self.mesh._cell_radii)[cells])
+        departure = X - direction * distance[:, None]
+        restored = np.asarray(self.mesh.return_coords_to_bounds(departure.copy())).reshape(departure.shape)
+        outward = departure - restored
+        left = moving & np.any(outward != 0.0, axis=1)
+        # The boundary velocity where each trace left; read on every rank.
+        U_boundary = np.asarray(_to_nondim_ndarray(
+            uw.function.evaluate(self.V_fn, restored[left]))).reshape(-1, dim)
+        crossing = np.einsum("ij,ij->i", U_boundary, outward[left])
+        steep = crossing < -0.5 * np.linalg.norm(U_boundary, axis=1) * np.linalg.norm(outward[left], axis=1)
+        entered = np.zeros(X.shape[0], dtype=bool)
+        entered[np.nonzero(left)[0][steep]] = True
+        n_entered = int(entered.sum())
+        if uw.mpi.size > 1:
+            n_entered = uw.mpi.comm.allreduce(n_entered, op=uw.MPI.SUM)
+        if n_entered == 0:
+            return
+        for slot in self.psi_star:
+            self._write_inflow(slot, X, entered)
+
     def update_post_solve(
         self,
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
         """Shift history chain and advect swarm after solve."""
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
@@ -3859,22 +4447,24 @@ class Lagrangian(_DDtBase):
 
             self.psi_star[i].array[...] = self.psi_star[i - 1].array[...]
 
-        # Now update the swarm variable
-
+        # Now update the swarm variable. psi_fn is the constitutive flux and
+        # reads psi_star[0] itself, so every component is evaluated BEFORE any is
+        # written: writing one marks the proxy stale, and a later evaluation
+        # would then read a history that is half new (audit SWARM-06, the reason
+        # Lagrangian_Swarm computes all its components first).
         psi_star_0 = self.psi_star[0]
-        # Grab the current psi values at the (pre-advection) particle
-        # positions via the canonical component storage (audit SWARM-06).
         coords = np.asarray(self.swarm._particle_coordinates.data)
+        updated = {}
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
-                updated_psi = uw.function.evaluate(
-                    self.psi_fn[i, j],
-                    coords,
-                    evalf=evalf,
-                )
-                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
-                    updated_psi
-                ).reshape(-1)
+                ij = psi_star_0._data_layout(i, j)
+                if ij in updated:
+                    continue
+                updated[ij] = np.asarray(_to_nondim_ndarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
+                )).reshape(-1)
+        for ij, vals in updated.items():
+            psi_star_0.data[:, ij] = vals
 
         # Now update the swarm locations
 
@@ -3883,6 +4473,8 @@ class Lagrangian(_DDtBase):
             delta_t=dt,
             restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
         )
+        created, _ = self.swarm.repopulate(**self._population_control)
+        self._apply_inflow_value(dt, created)
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
@@ -3937,6 +4529,15 @@ class Lagrangian_Swarm(_DDtBase):
         ``"cells"`` fits a least-squares polynomial of degree ``degree`` per
         cell, exact for polynomial histories and integrated exactly by the
         default rule.
+    proxy_sampling : {"reconstruct", "share"}, optional
+        How each slot's proxy reads the particles (default ``"reconstruct"``).
+        ``"share"`` requires ``proxy_location="integration_points"`` and gives
+        every integration point the mean of the particles it speaks for — the
+        cell-restricted Voronoi share. For a HISTORY that is usually what is
+        wanted: every particle's state contributes, the average is bounded by
+        the particle values so it cannot invent a stress the swarm never held,
+        and the stencil cannot reach across a cell wall into another material.
+        See :doc:`../../advanced/particle-population-and-materials`.
     step_averaging : int, optional
         Number of steps for history averaging (default ``2``).
 
@@ -3974,6 +4575,8 @@ class Lagrangian_Swarm(_DDtBase):
     Eulerian : Pure mesh-based history (no particle tracking).
     """
 
+    commits_flux_in_post_solve = True
+
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
     )
@@ -3993,6 +4596,7 @@ class Lagrangian_Swarm(_DDtBase):
         smoothing=0.0,
         step_averaging=2,
         proxy_location="nodes",
+        proxy_sampling="reconstruct",
         particle_update="pic",
         residual_retention=1.0,
     ):
@@ -4022,6 +4626,11 @@ class Lagrangian_Swarm(_DDtBase):
         # (discontinuous, degree `degree`), exact for polynomial histories
         # and integrated exactly by the default rule.
         self.proxy_location = proxy_location
+        # "share": each integration point averages the particles whose nearest
+        # point within their own cell it is, so every particle's history
+        # reaches the assembly and the average stays inside the range the
+        # particles hold.
+        self.proxy_sampling = proxy_sampling
 
         self._init_history_tracking(order)
 
@@ -4055,6 +4664,7 @@ class Lagrangian_Swarm(_DDtBase):
                     proxy_degree=degree,
                     proxy_continuous=continuous,
                     proxy_location=proxy_location,
+                    proxy_sampling=proxy_sampling,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
                 )
             )
@@ -4083,17 +4693,6 @@ class Lagrangian_Swarm(_DDtBase):
         # No theta parameter on this flavor — fixed Crank-Nicolson value.
         self._restore_core_state(s, am_theta=0.5)
 
-    def _object_viewer(self):
-        # Local import: IPython is an optional, notebook-only dependency.
-        from IPython.display import Latex, Markdown, display
-
-        super()._object_viewer()
-
-        ## feedback on this instance
-        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
-        # so the viewer reports the expression and history depth only.
-        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
-        display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -4114,7 +4713,7 @@ class Lagrangian_Swarm(_DDtBase):
                     coords,
                 )
                 psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
-                    updated_psi
+                    _to_nondim_ndarray(updated_psi)
                 ).reshape(-1)
 
         # Copy to all other history slots
@@ -4146,9 +4745,13 @@ class Lagrangian_Swarm(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
-        """Pre-solve: auto-initialise history on first call."""
-        self._dt = dt
+        """Pre-solve: auto-initialise history on first call. Extra keyword
+        arguments (the nodal manager's ``store_result``, ``dt_physical``,
+        ``monotone_mode``) are accepted and ignored so a solver written for
+        the nodal history can drive this one."""
+        self._dt = dt = self._nondim_timestep(dt)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -4179,9 +4782,9 @@ class Lagrangian_Swarm(_DDtBase):
         for i in range(slot.shape[0]):
             for j in range(slot.shape[1]):
                 ij = slot._data_layout(i, j)
-                out[:, ij] = np.asarray(
+                out[:, ij] = np.asarray(_to_nondim_ndarray(
                     uw.function.evaluate(mv.sym[i, j], coords, evalf=evalf)
-                ).reshape(-1)
+                )).reshape(-1)
         return out
 
     def update_post_solve(
@@ -4189,62 +4792,105 @@ class Lagrangian_Swarm(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
-        r"""Shift history chain and evaluate current :math:`\psi` on swarm."""
-        self._dt = dt
+        r"""Evaluate the current :math:`\psi` at the particles, then shift the
+        history chain and store it in slot 0.
 
-        # Record timestep history for variable-dt BDF
-        for i in range(self.order - 1, 0, -1):
-            self._dt_history[i] = self._dt_history[i - 1]
-        self._dt_history[0] = dt
-
-        for h in range(self.order - 1):
-            i = self.order - (h + 1)
-
-            # copy the information down the chain
-            if verbose:
-                print(f"Lagrange swarm order = {self.order}", flush=True)
-                print(
-                    f"Mesh interpolant order = {self.psi_star[0]._meshVar.degree}",
-                    flush=True,
-                )
-                print(f"Lagrange swarm copying {i-1} to {i}", flush=True)
-
-            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+        The evaluation comes FIRST, every component of it: ``psi_fn`` may
+        read the history itself (a viscoelastic stress is
+        :math:`2\eta_{\rm eff}E_{\rm eff}(\sigma^*, \sigma^{**})`), and
+        writing a component of slot 0 marks its proxy stale, so an
+        evaluation after a partial write would read a history that is half
+        new (audit SWARM-06); a shift before the evaluation would hand the
+        stress expression the wrong levels.
+        """
+        self._dt = dt = self._nondim_timestep(dt)
 
         phi = 1 / self.step_averaging
-
         psi_star_0 = self.psi_star[0]
         coords = np.asarray(self.swarm._particle_coordinates.data)
         if self.particle_update == "flip":
             # The proxy the mesh saw during this solve, at the particles: the
             # residual psi_p - proxy(x_p) is what the mesh never resolved.
             proxy_at_p = self._proxy_values_at_particles(psi_star_0, coords, evalf)
-        # Blend the freshly-evaluated psi into slot 0 component-by-component
-        # through the canonical (N, components) storage (audit SWARM-06).
+        updated = {}
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
                 ij = psi_star_0._data_layout(i, j)
-                updated_psi = np.asarray(
-                    uw.function.evaluate(
-                        self.psi_fn[i, j],
-                        coords,
-                        evalf=evalf,
-                    )
-                ).reshape(-1)
-                if self.particle_update == "flip":
-                    residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
-                    psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
-                else:
-                    psi_star_0.data[:, ij] = (
-                        phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
-                    )
+                if ij in updated:
+                    continue                       # symmetric storage: one evaluation per slot
+                updated[ij] = np.asarray(_to_nondim_ndarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
+                )).reshape(-1)
+
+        # Record timestep history for variable-dt BDF
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+        self._note_history_shift(dt)
+
+        for h in range(self.order - 1):
+            i = self.order - (h + 1)
+            if verbose:
+                print(f"Lagrange swarm order = {self.order}: copying slot {i-1} to {i}", flush=True)
+            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+
+        # Store slot 0 component-by-component through the canonical
+        # (N, components) storage (audit SWARM-06).
+        for ij, updated_psi in updated.items():
+            if self.particle_update == "flip":
+                residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
+                psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
+            else:
+                psi_star_0.data[:, ij] = (
+                    phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
+                )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
 
         return
 
+
+
+def _psi_shape_for(vtype, cdim):
+    """The symbolic shape a history of ``vtype`` must have."""
+    if vtype == uw.VarType.SCALAR:
+        return (1, 1)
+    if vtype == uw.VarType.VECTOR:
+        return (1, cdim)
+    if vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR):
+        return (cdim, cdim)
+    return None                     # MATRIX and friends: shape is the caller's
+
+
+def _storage_components(vtype, shape):
+    """(i, j) of the symbolic matrix that each stored column holds.
+
+    A vector or tensor field stores one dof per INDEPENDENT component, which
+    is not the same as one per matrix entry: a symmetric tensor in 2-D has a
+    2x2 symbolic form and three stored columns. The order is the one the
+    variable's own ``.sym`` reconstructs from — diagonal first, then the
+    off-diagonals in row-major upper-triangular order — and
+    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
+    a change of convention fails there rather than silently transposing a
+    stress.
+
+    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
+    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
+    variable sizes its storage by the embedding dimension, which is what
+    ``.sym`` is shaped by.
+    """
+    if vtype == uw.VarType.SCALAR or shape == (1, 1):
+        return [(0, 0)]
+    if shape[0] == 1:                                    # VECTOR
+        return [(0, j) for j in range(shape[1])]
+    if vtype == uw.VarType.SYM_TENSOR:
+        dim = shape[0]
+        return ([(i, i) for i in range(dim)]
+                + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
+    return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
 
 
 class IntegrationPointSemiLagrangian(_DDtBase):
@@ -4269,19 +4915,85 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     ``n-k`` at the foot. Every slot carries one evaluation error rather than
     one per generation.
 
-    What is not here (yet): vector/tensor histories, units-aware velocity
-    reduction, ALE / old-frame trace-back, forcing history, checkpoint state.
-    Use :class:`SemiLagrangian` for those.
+    Scalar, vector and tensor histories are all carried: pass ``vtype``, and
+    the slots hold one value per INDEPENDENT component per integration point
+    (a symmetric tensor in 2-D is 2x2 symbolically and three columns in
+    storage). The trace-back and the weighted sums are shape-agnostic; only
+    the fills know the shape. A vector history is what a Navier-Stokes
+    momentum term needs, a symmetric tensor what a viscoelastic stress
+    history needs.
+
+    What is not here (yet): units-aware velocity reduction, ALE / old-frame
+    trace-back. Use
+    :class:`SemiLagrangian` for those, or :class:`Lagrangian_Swarm` when the
+    history should ride on particles rather than on the rule.
 
     Parameters
     ----------
     mesh, psi_fn, V_fn, degree, continuous, varsymbol, verbose, bcs, order, theta
-        As for :class:`SemiLagrangian`. ``psi_fn`` may be a scalar
-        ``MeshVariable`` (its nodal data is then copied into the snapshot
-        rather than re-evaluated) or a scalar expression.
+        As for :class:`SemiLagrangian`. ``psi_fn`` may be a ``MeshVariable``
+        (its nodal data is then copied into the snapshot rather than
+        re-evaluated) or an expression, of any ``vtype``.
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
     velocity history caches it by evaluation at each time level.
     """
+
+    #: Departure points restored to the boundary take :attr:`inflow_value`
+    #: there when one is set (#745); without one they sample the edge.
+    applies_inflow_value = True
+
+    _commit_projection = None
+    _commit_flat = None
+
+    def commit_flux_to_history(self, flux, verbose=False):
+        """Project the new flux into the nodal snapshot and read it at the
+        points, then shift both ladders.
+
+        Two ladders have to move together here. ``psi_star`` holds the history
+        at the integration points, where the assembler reads it; ``psi_snap``
+        holds it nodally, which is what the next trace-back samples at the
+        departure points. A flux committed only to ``psi_star`` does not
+        survive a step -- the fill overwrites it from ``psi_snap`` -- so the
+        committed stress goes to both.
+
+        The projection, rather than a pointwise evaluation, is what the nodal
+        trace-back does and is what the snapshot needs: the trace-back samples
+        the snapshot between its nodes, so the snapshot has to be the L2 fit of
+        the flux on the history space, not the flux read at the nodes. Its
+        target is a separate field from the flux's inputs, so the projection is
+        explicit and needs no snapshot substitution.
+        """
+        history = self.psi_star[0]
+        flux = sympy.Matrix(flux)
+        columns = _storage_components(self.vtype, flux.shape)
+
+        if self._commit_projection is None:
+            self._commit_flat = uw.discretisation.MeshVariable(
+                f"flux_nodal_{self.instance_number}", self.mesh, (1, len(columns)),
+                vtype=uw.VarType.MATRIX, degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=rf"{{F^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
+            self._commit_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=self._commit_flat, n_components=len(columns),
+                verbose=self.verbose)
+        self._commit_projection.uw_function = sympy.Matrix(
+            [[flux[i, j] for (i, j) in columns]])
+        self._commit_projection.smoothing = self._store_smoothing_alpha()
+        self._commit_projection.solve(verbose=verbose)
+
+        # Oldest first, so each level reads the one above before it is written.
+        for level in range(self.order - 1, 0, -1):
+            self.psi_star[level].data[...] = self.psi_star[level - 1].data[...]
+            self.psi_snap[level].data[...] = self.psi_snap[level - 1].data[...]
+
+        points = np.asarray(history.integration_points).reshape(-1, self.mesh.cdim)
+        for column in range(len(columns)):
+            nodal = self._commit_flat.data[:, column]
+            self.psi_snap[0].data[:, column] = np.asarray(nodal).reshape(-1)
+            history.data[:, column] = np.asarray(uw.function.evaluate(
+                self._commit_flat.sym[0, column], points)).reshape(-1)
+
+        self._history_committed = True
 
     def __init__(
         self,
@@ -4297,16 +5009,21 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         order: int = 1,
         theta: float = 0.5,
         monotone_mode: Optional[str] = None,
-        **_unsupported,
+        with_forcing_history: bool = False,
+        store_smoothing: float = 0.0,
+        units=None,
+        **_unsupported,      # TODO(BUG): swallowed without a stated failure mode (Charter 5)
     ):
         super().__init__()
-        if vtype != VarType.SCALAR:
-            raise NotImplementedError(
-                "IntegrationPointSemiLagrangian: scalar histories only for now"
-            )
+        self.vtype = vtype
         self.monotone_mode = monotone_mode
+        self.with_forcing_history = bool(with_forcing_history)
+        self.store_smoothing = store_smoothing
         self.mesh = mesh
-        self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
+        if bcs:
+            raise ValueError("IntegrationPointSemiLagrangian applies no boundary conditions to its "
+                             "store; an inflow is set through inflow_value")
+        self.bcs = []
         self.verbose = verbose
         self.degree = degree
         self.continuous = continuous
@@ -4321,6 +5038,8 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self._psi_meshVar = None
             self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
 
+        self._check_psi_shape(self._psi_fn)
+
         self._init_history_tracking(order)
         self._check_rule_oversampling(degree)
 
@@ -4328,15 +5047,19 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             varsymbol = rf"u_{{ [{self.instance_number}] }}"
         inst = self.instance_number
 
-        psi_units = uw.get_units(self._psi_fn)
-        if psi_units is not None and not uw.get_default_model().has_units():
-            psi_units = None
-        self._psi_units = psi_units
+        psi_units = _history_units(self._psi_fn, units)
+
+        # A vector or tensor history is one dof per INDEPENDENT component per
+        # point. The trace-back and the weighted sums are shape-agnostic, so
+        # the shape changes only how much each slot stores and how many
+        # columns the fills write. Let the variable derive its own count from
+        # the vtype (a symmetric tensor in 2-D is 2x2 symbolically and three
+        # columns in storage) and read it back.
 
         # History slots at the integration points (injected, never sampled).
         self.psi_star = [
             uw.discretisation.IntegrationPointVariable(
-                f"psi_star_ip_{inst}_{k}", mesh,
+                f"psi_star_ip_{inst}_{k}", mesh, vtype=vtype,
                 varsymbol=rf"{{ {varsymbol}^{{ {'*' * (k + 1)} }} }}",
                 units=psi_units,
             )
@@ -4346,18 +5069,126 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # (sampled at the departure points).
         self.psi_snap = [
             uw.discretisation.MeshVariable(
-                f"psi_snap_ip_{inst}_{k}", mesh, 1, degree=degree, continuous=continuous,
+                f"psi_snap_ip_{inst}_{k}", mesh, vtype=vtype,
+                degree=degree, continuous=continuous,
                 varsymbol=rf"{{ {varsymbol}^{{ (n-{k}) }} }}",
                 units=psi_units,
             )
             for k in range(order)
         ]
+        self.num_components = int(self.psi_star[0].num_components)
+        self._components = _storage_components(
+            vtype, tuple(self.psi_star[0].sym.shape)
+        )
+        if len(self._components) != self.num_components:
+            raise RuntimeError(
+                f"IntegrationPointSemiLagrangian: {vtype} maps "
+                f"{len(self._components)} components onto "
+                f"{self.num_components} stored columns"
+            )
         # At least two velocity levels: the current interval's mid-time
         # velocity is extrapolated from v^n and v^{n-1}. Each level caches
         # V_fn evaluated at the nodes at that time, so V_fn may be any
         # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)          # velocity levels the segments read
-        self._init_coefficient_expressions(order, self.theta, with_exp=False)
+        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._register_with_default_model()
+        # The forcing (strain-rate) history the second-order exponential
+        # integrator reads. Unlike the nodal flavour, which re-evaluates the
+        # strain rate at its nodes, this one is carried along the same
+        # characteristic as the stress: ``forcing_star`` at the points is what
+        # the parcel saw a step ago, sampled from the continuous snapshot at
+        # the departure point. Committed from the solved strain rate in
+        # :meth:`update_forcing_history` (the constitutive model's post-solve
+        # hook), traced in :meth:`_fill_slots`.
+        self.forcing_star = None
+        self._forcing_projection = None
+        self._forcing_flat = None
+        if self.with_forcing_history:
+            self.forcing_star = uw.discretisation.IntegrationPointVariable(
+                f"forcing_star_ip_{inst}", mesh, vtype=vtype,
+                varsymbol=rf"{{ \dot\varepsilon^{{ * }}_{{ [{inst}] }} }}", units=None)
+            self.forcing_snap = uw.discretisation.MeshVariable(
+                f"forcing_snap_ip_{inst}", mesh, vtype=vtype,
+                degree=degree, continuous=continuous,
+                varsymbol=rf"{{ \dot\varepsilon^{{ (n) }}_{{ [{inst}] }} }}", units=None)
+
+    @property
+    def state(self) -> "DDtIntegrationPointState":
+        return DDtIntegrationPointState(
+            **self._core_state_kwargs(),
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+            psi_snap_var_names=[ps.clean_name for ps in self.psi_snap],
+            with_forcing_history=bool(self.with_forcing_history),
+            history_committed=bool(getattr(self, "_history_committed", False)),
+        )
+
+    @state.setter
+    def state(self, s: "DDtIntegrationPointState") -> None:
+        self._validate_state_schema(s, DDtIntegrationPointState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        if s.psi_snap_var_names != [ps.clean_name for ps in self.psi_snap]:
+            raise ValueError("psi_snap variable names changed since snapshot")
+        if s.with_forcing_history != bool(self.with_forcing_history):
+            raise ValueError("with_forcing_history differs between snapshot and instance")
+        self._restore_core_state(s, am_theta=self.theta)
+        self._history_committed = bool(s.history_committed)
+
+    @property
+    def store_smoothing(self) -> float:
+        r"""Coefficient :math:`c` of the Laplacian term in the store projection,
+        :math:`\alpha = c\,h(\mathbf{x})^2` with :math:`h` the local cell size.
+
+        Every step the new flux is L2-projected onto the continuous snapshot and
+        read back at the points. That cycle is a consistent-mass Galerkin
+        transport of the carried stress and has no dissipation at the cell
+        scale, so below Courant one a cell-scale mode of the stress grows from
+        round-off at a rate :math:`\gamma` set by the elastic feedback (about
+        2.4 per unit time on the Maxwell Waters-King start-up, 1.8 with a
+        solvent fraction of 0.2, and negligible at 0.59). The term
+        :math:`\alpha\nabla^2` in the projection multiplies wavenumber
+        :math:`k` by :math:`1/(1+\alpha k^2)` once per step, so the mode is held
+        when :math:`\alpha (\pi/h)^2 \gtrsim \gamma\,\Delta t`, i.e.
+        :math:`\alpha \approx \gamma\,\Delta t\,(h/\pi)^2`. Measured on the
+        1/32 mesh at :math:`\Delta t = 0.01`: 1e-5 holds it for eight time
+        units at 0.1% on the peak, 3e-5 holds it unconditionally at 0.5%,
+        1e-4 costs 3%. In units of the mesh cell-size field (RMS vertex-to-
+        centroid distance, about 2h/3 on triangles) that is :math:`c` between
+        0.03 and 0.07; the irregular mesh needs 0.07. Zero (the default) is
+        the plain projection. Only the stress store is smoothed; the forcing
+        history is not.
+        """
+        return self._store_smoothing
+
+    @store_smoothing.setter
+    def store_smoothing(self, value):
+        value = float(value)
+        if value < 0.0:
+            raise ValueError(f"store_smoothing must be >= 0, got {value}")
+        self._store_smoothing = value
+
+    def carried_tensors(self, level: int = 0):
+        """The carried history as one tensor per point, non-dimensional, with the
+        points: ``(values[n, d, d], coords[n, cdim])``. The integration-point
+        storage keeps the independent components in columns; this is the one
+        place that unpacks them."""
+        history = self.psi_star[level]
+        dim = self.mesh.dim
+        cols = _storage_components(self.vtype, (dim, dim))
+        data = np.asarray(history.data)
+        values = np.zeros((data.shape[0], dim, dim))
+        for k, (i, j) in enumerate(cols):
+            values[:, i, j] = data[:, k]
+            values[:, j, i] = data[:, k]
+        points = np.asarray(history.integration_points).reshape(-1, self.mesh.cdim)
+        return values, points
+
+    def _store_smoothing_alpha(self):
+        """The smoothing the store projection uses this step: a field, so the
+        dose follows the local cell on a graded mesh."""
+        if self._store_smoothing <= 0.0:
+            return 0.0
+        return self._store_smoothing * self.mesh.cell_size() ** 2
 
     def spatial_weights(self):
         """As the base class, except that at ``theta = 1`` the old-level
@@ -4434,15 +5265,71 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        # Re-checked on every assignment, not only at construction: a solver
+        # reassigns this on each setup (``DFDt.psi_fn = flux.T``), so the
+        # constructor's guard would be bypassed on the one path that is
+        # actually driven. A wrong shape here silently truncates -- the
+        # component writer reads psi_fn[i, j] for the slots it already has.
+        new_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        self._check_psi_shape(new_fn)
         self._psi_meshVar = None
-        self._psi_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        self._psi_fn = new_fn
 
-    def _object_viewer(self):
-        from IPython.display import Latex, Markdown, display
-        super()._object_viewer()
-        display(Latex(r"$\quad\psi = $ " + self.psi_fn._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + sympy.Matrix(self.V_fn)._repr_latex_()))
-        display(Latex(rf"$\quad$History steps = {self.order} (at the integration points)"))
+    def _check_psi_shape(self, psi_fn):
+        """Refuse a psi_fn whose shape does not match this history's vtype."""
+        expected = _psi_shape_for(self.vtype, self.mesh.cdim)
+        if expected is not None and tuple(psi_fn.shape) != expected:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn has shape "
+                f"{tuple(psi_fn.shape)} but vtype={self.vtype} on a cdim="
+                f"{self.mesh.cdim} mesh needs {expected}. Pass the vtype that "
+                "matches the field, or reshape psi_fn."
+            )
+        # SYM_TENSOR and TENSOR have the SAME symbolic shape and different
+        # storage widths (3 and 4 in 2-D), so shape alone cannot tell them
+        # apart. When psi_fn is a variable, it knows its own width; without
+        # this a full tensor handed to a symmetric history passes the check
+        # above and dies later in the component writer with a bare broadcast
+        # error that names neither vtype.
+        supplied_var = getattr(self, "_psi_meshVar", None)
+        wanted = len(_storage_components(self.vtype, tuple(psi_fn.shape)))
+        if supplied_var is not None and expected is not None:
+            if int(supplied_var.num_components) != wanted:
+                raise ValueError(
+                    f"IntegrationPointSemiLagrangian: psi_fn stores "
+                    f"{supplied_var.num_components} components but vtype="
+                    f"{self.vtype} stores {wanted}. A full tensor and a "
+                    "symmetric tensor share a shape; pass the vtype the field "
+                    "was built with."
+                )
+        components = getattr(self, "num_components", None)
+        if components is not None and expected is not None and wanted != components:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn needs {wanted} stored "
+                f"components but this history has {components}; vtype="
+                f"{self.vtype} is probably not the vtype of the field."
+            )
+
+        # A symmetric history stores the upper triangle, so an asymmetric
+        # psi_fn loses its lower entries without trace. Say so rather than
+        # quietly transporting half the field the user wrote.
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            dropped = [
+                (i, j) for i in range(psi_fn.shape[0])
+                for j in range(i + 1, psi_fn.shape[1])
+                if psi_fn[i, j] != psi_fn[j, i]
+            ]
+            if dropped:
+                import warnings
+
+                warnings.warn(
+                    f"IntegrationPointSemiLagrangian: psi_fn is not symmetric at "
+                    f"{dropped} but vtype=SYM_TENSOR stores only the upper "
+                    "triangle, so the lower entries are discarded (not averaged). "
+                    "Symmetrise psi_fn explicitly, or use VarType.TENSOR.",
+                    stacklevel=3,
+                )
+
 
     # ------------------------------------------------------------------
     def _nudged_node_coords(self, var):
@@ -4463,8 +5350,22 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         ):
             ps.data[...] = self._psi_meshVar.data[...]
         else:
-            vals = uw.function.evaluate(self.psi_fn[0], self._nudged_node_coords(ps))
-            ps.data[:, 0] = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+            self._write_components(ps, self.psi_fn, self._nudged_node_coords(ps))
+
+    def _write_components(self, var, expr, coords, evaluate=None, **kwargs):
+        """Evaluate ``expr`` at ``coords`` and store it component by component.
+
+        One evaluation per independent component rather than one of the whole
+        matrix: a symmetric tensor's symbolic form repeats its off-diagonals,
+        and only the independent columns exist in storage.
+        """
+        if evaluate is None:
+            evaluate = uw.function.evaluate
+        for column, (i, j) in enumerate(self._components):
+            vals = evaluate(expr[i, j], coords, **kwargs)
+            var.data[:, column] = np.asarray(
+                _to_nondim_ndarray(vals)
+            ).reshape(-1)
 
     def _segment_dt(self, j, dt):
         """Length of segment ``j`` (0 = the current step)."""
@@ -4487,38 +5388,106 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             segments.append(("first", 0, self._segment_dt(0, dt)) if k == 0
                             else ("older", k, self._segment_dt(k, dt)))
             X = trace.departure_points(key, X0, tuple(segments), evalf=evalf)
-            vals = uw.function.global_evaluate(
-                self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
+            self._write_components(
+                self.psi_star[k], self.psi_snap[k].sym, X,
+                evaluate=uw.function.global_evaluate,
+                evalf=evalf, monotone=self.monotone_mode,
             )
-            self.psi_star[k].data[:, 0] = np.asarray(
-                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+            if self._inflow_value is not None:
+                # A departure point that left the domain was restored to the
+                # boundary by the trace. What it should carry is the stress of
+                # the fluid ENTERING there, not a sample of the boundary edge:
+                # on a box channel that edge sample fed a growing mode in the
+                # inlet cell column (#745). The unclamped end point says which
+                # points left.
+                X_raw = trace.departure_points(key, X0, tuple(segments), evalf=evalf,
+                                               clamp_final=False)
+                left = np.any(np.abs(np.asarray(X_raw) - np.asarray(X)) > 0.0, axis=1)
+                # every rank decides together whether the (collective) read happens
+                any_left = uw.mpi.comm.allreduce(int(left.any()), op=uw.MPI.SUM) if uw.mpi.size > 1 else int(left.any())
+                if any_left:
+                    self._write_inflow(self.psi_star[k], X, left)
+            if k == 0 and self.forcing_star is not None:
+                # the strain rate the parcel saw a step ago, at the same
+                # departure point as its stress
+                self._write_components(
+                    self.forcing_star, self.forcing_snap.sym, X,
+                    evaluate=uw.function.global_evaluate, evalf=evalf,
+                )
+
+    def update_forcing_history(self, forcing_fn=None, evalf=False, verbose=False):
+        """Commit the solved strain rate as the forcing history: an L2 fit onto
+        the continuous snapshot, read back at the points. Same construction
+        as :meth:`commit_flux_to_history`, for the same reason -- the next
+        trace-back samples the snapshot between its nodes. A no-op unless
+        ``with_forcing_history`` was asked for."""
+        if self.forcing_star is None or forcing_fn is None:
+            return
+        forcing = sympy.Matrix(forcing_fn)
+        columns = _storage_components(self.vtype, forcing.shape)
+        if self._forcing_projection is None:
+            self._forcing_flat = uw.discretisation.MeshVariable(
+                f"forcing_nodal_{self.instance_number}", self.mesh, (1, len(columns)),
+                vtype=uw.VarType.MATRIX, degree=self.degree, continuous=self.continuous,
+                varsymbol=rf"{{E^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
+            self._forcing_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=self._forcing_flat, n_components=len(columns),
+                verbose=self.verbose)
+        self._forcing_projection.uw_function = sympy.Matrix(
+            [[forcing[i, j] for (i, j) in columns]])
+        self._forcing_projection.smoothing = 0.0
+        self._forcing_projection.solve(verbose=verbose)
+        points = np.asarray(self.forcing_star.integration_points).reshape(-1, self.mesh.cdim)
+        for column in range(len(columns)):
+            self.forcing_snap.data[:, column] = np.asarray(
+                self._forcing_flat.data[:, column]).reshape(-1)
+            self.forcing_star.data[:, column] = np.asarray(uw.function.evaluate(
+                self._forcing_flat.sym[0, column], points)).reshape(-1)
 
     def initialise_history(self):
         """Start every snapshot and slot from the current field, so
-        ``bdf()`` is zero on the first step."""
+        ``bdf()`` is zero on the first step. A history already placed by
+        :meth:`commit_flux_to_history` is the start, and is kept."""
+        if self._history_committed:
+            self.characteristics.initialise_levels(self._n_v)
+            self._history_initialised = True
+            return
         self._record_current()
         for k in range(1, self.order):
             self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
         self.characteristics.initialise_levels(self._n_v)
         X = np.asarray(self.psi_star[0].coords_nd)
-        vals = uw.function.evaluate(self.psi_snap[0].sym[0], X)
-        vals = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
-        for k in range(self.order):
-            self.psi_star[k].data[:, 0] = vals
+        self._write_components(self.psi_star[0], self.psi_snap[0].sym, X)
+        for k in range(1, self.order):
+            self.psi_star[k].data[...] = self.psi_star[0].data[...]
         self._history_initialised = True
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False, **_ignored):
-        self._dt = dt
+    def update_pre_solve(self, dt, evalf=False, verbose=False,
+                         store_result=True, **_ignored):
+        """Carry the history to the departure points of this step.
+
+        ``store_result=False`` says the snapshots already hold what is to be
+        transported and must not be rebuilt from ``psi_fn`` -- the viscoelastic
+        case, where ``psi_fn`` is the constitutive flux and the flux is a
+        function of the history. Recording it there applies the constitutive
+        update a second time on a field that is already the stress: on the
+        analytic Maxwell shear box that overshoots the relaxed stress by 12.8%
+        where the nodal and grid flavours sit at 1.5% (#732). The snapshots are
+        placed by ``commit_flux_to_history`` instead, and the shift with them.
+        """
+        self._dt = dt = self._nondim_timestep(dt)
         if not self._history_initialised:
             self.initialise_history()
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
-        for k in range(self.order - 1, 0, -1):
-            self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
+        if store_result:
+            for k in range(self.order - 1, 0, -1):
+                self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
         trace = self.characteristics
         if self._owns_characteristics:
             trace.begin_step(dt)
-        self._record_current()
+        if store_result:
+            self._record_current()
         self._fill_slots(dt, evalf)
         if self._owns_characteristics:
             trace.finish_step()
@@ -4527,9 +5496,427 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
 
     def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
-        self._dt = dt
+        self._dt = dt = self._nondim_timestep(dt)
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
+
+
+class ForwardSemiLagrangian(_DDtBase):
+    r"""Semi-Lagrangian history carried forward from a fixed set of launch
+    points inside the cells, read by the weak form through a per-cell fit.
+
+    The carried field is known at the launch points, the mesh's integration
+    points with their quadrature weights scaled by the cell measure. Each step
+    every point is moved forward one step along the velocity, the arrivals in
+    each cell are fitted by weighted least squares to a linear polynomial, and
+    that discontinuous P1 field is ``psi_star[0]``, what the weak form reads.
+    After the solve the new flux is projected onto the continuous P1 space and
+    read at the launch points. Nothing persists at the arrivals: one fixed
+    point set, one velocity-dependent map, one fit, no particle state and no
+    repopulation.
+
+    Why this form. The launch points are inside the cells, so no point sits
+    on a no-slip wall with zero velocity (the nodal history's wall-layer
+    defect); the arrivals are fitted per cell (measured 17 s a step on the
+    confined cylinder against 28 for the integration-point history, which
+    samples its store at every foot); and the wall stress it carries is the
+    more self-consistent (the drag by stress integral and by reaction agree
+    to 1.4% where the integration-point history has them 12% apart).
+    It is, like the integration-point history, a consistently transported
+    scheme with no dissipation of its own at the cell scale: below Courant one
+    on a Maxwell element a cell-scale mode grows from round-off, and the
+    read-back projection needs :attr:`flux_smoothing` for the same reason and
+    at the same dose as the integration-point store. See
+    :doc:`/developer/subsystems/stress-transport`.
+
+    First order only. In parallel the arrivals that left their rank travel
+    with their values and weights to every rank, and each rank keeps the ones
+    that landed in its own cells, so a point that crosses a seam is fitted by
+    the rank that owns its arrival cell. A point that leaves the domain is
+    dropped, so a periodic seam is not crossed. The launch set and the cell
+    geometry are taken once from the mesh, so the flavour does not follow a
+    mesh that moves. An inflow cell (a boundary cell whose boundary face has
+    fluid entering) that receives less than it launched has the missing share
+    filled with :attr:`inflow_value` when one is set; a cell whose arrivals
+    cannot determine a linear fit keeps its previous fit, the one piece of
+    state carried between steps.
+
+    TODO(DESIGN): periodic seams (wrap the end point), moving meshes (refresh
+    on the topology version).
+    """
+
+    applies_inflow_value = True
+
+    def __init__(
+        self,
+        mesh,
+        psi_fn,
+        V_fn,
+        vtype=VarType.SCALAR,
+        varsymbol: Optional[str] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        units=None,
+        **_unsupported,
+    ):
+        super().__init__()
+        if order != 1:
+            raise NotImplementedError("ForwardSemiLagrangian carries one level; order must be 1")
+        if mesh.cdim != mesh.dim:
+            raise NotImplementedError("ForwardSemiLagrangian fits in the embedding coordinates; no manifolds")
+        if _unsupported:
+            warnings.warn(f"ForwardSemiLagrangian ignores {sorted(_unsupported)}: it has one level, "
+                          "a linear fit per cell and no smoothing or monotone option", stacklevel=2)
+        self.vtype = vtype
+        self.mesh = mesh
+        self.degree = 1
+        self.continuous = False
+        self.order = 1
+        self.theta = float(theta)
+        self.V_fn = V_fn
+        self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
+        expected = _psi_shape_for(vtype, mesh.cdim)
+        if expected is not None and tuple(self._psi_fn.shape) != expected:
+            raise ValueError(f"ForwardSemiLagrangian: psi_fn has shape {tuple(self._psi_fn.shape)} "
+                             f"but vtype={vtype} on a cdim={mesh.cdim} mesh needs {expected}")
+        self._init_history_tracking(1)
+        if varsymbol is None:
+            varsymbol = rf"u_{{ [{self.instance_number}] }}"
+        inst = self.instance_number
+        psi_units = _history_units(self._psi_fn, units)
+        self.psi_star = [
+            uw.discretisation.MeshVariable(
+                f"psi_star_fwd_{inst}", mesh, vtype=vtype, degree=1, continuous=False,
+                varsymbol=rf"{{ {varsymbol}^{{ * }} }}", units=psi_units)
+        ]
+        self._components = _storage_components(vtype, tuple(self.psi_star[0].sym.shape))
+        self.num_components = len(self._components)
+        # The launch set: the integration points, cell-major in the rule's order,
+        # with the rule's weights scaled by the cell measure (a share of area).
+        # The launch values live in an integration-point variable so a snapshot
+        # captures them with every other variable; the class reads them as columns.
+        self._launch_var = uw.discretisation.IntegrationPointVariable(
+            f"launch_fwd_{inst}", mesh, vtype=vtype,
+            varsymbol=rf"{{ {varsymbol}^{{ \ell }} }}", units=psi_units)
+        launch_var = self._launch_var
+        self._launch = np.array(np.asarray(launch_var.coords_nd).reshape(-1, mesh.cdim))
+        self._nq = int(launch_var.num_points_per_cell)
+        if self._nq < mesh.dim + 1:
+            raise ValueError(f"ForwardSemiLagrangian needs at least {mesh.dim + 1} integration points per "
+                             f"cell for a linear fit; this mesh's rule has {self._nq} (raise qdegree)")
+        w_ref = np.asarray(mesh.integration_rule.getData()[1]).reshape(-1)
+        self._cell_measure = self._cell_measures()
+        self._launch_cell = np.repeat(np.arange(self._cell_measure.size), self._nq)
+        self._launch_weights = np.tile(w_ref, self._cell_measure.size) * self._cell_measure[self._launch_cell] / w_ref.sum()
+        self._n_relocated = 0          # arrivals this rank took from other ranks at the last carry
+        self._launch_geometry = self._geometry_stamp()
+        self._bface_cell, self._bface_centroid, self._bface_normal = self._boundary_faces()
+        # The flux read at the launch points, through a continuous P1 projection.
+        # `flux_smoothing` is the Laplacian coefficient of that projection, a
+        # number or a field (length^2): c * mesh.cell_size()**2 with c between
+        # 0.03 and 0.07 is the dose the integration-point store needs below
+        # Courant one on a Maxwell element, and this cycle needs the same.
+        self.flux_smoothing = 0.0
+        self._flux_var = uw.discretisation.MeshVariable(
+            f"flux_fwd_{inst}", mesh, (1, self.num_components), vtype=VarType.MATRIX,
+            degree=1, continuous=True, varsymbol=rf"{{ F^{{\mathrm{{nodal}}}}_{{ [{inst}] }} }}")
+        self._flux_projection = None
+        self._n_v = 2
+        self._init_coefficient_expressions(1, self.theta, with_exp=True)
+        self._register_with_default_model()
+
+    @property
+    def _launch_values(self):
+        """The carried values at the launch points, one column per component."""
+        return np.asarray(self._launch_var.data)
+
+    @_launch_values.setter
+    def _launch_values(self, values):
+        # one write, one PETSc flush (a per-column write is a collective
+        # round trip per component)
+        self._launch_var.data[:, :] = np.asarray(values).reshape(self._launch.shape[0], self.num_components)
+
+    @property
+    def state(self) -> "DDtForwardState":
+        return DDtForwardState(
+            **self._core_state_kwargs(),
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+            launch_var_name=self._launch_var.clean_name,
+        )
+
+    @state.setter
+    def state(self, s: "DDtForwardState") -> None:
+        self._validate_state_schema(s, DDtForwardState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        if s.launch_var_name != self._launch_var.clean_name:
+            raise ValueError("launch variable name changed since snapshot")
+        self._restore_core_state(s, am_theta=self.theta)
+
+    # ------------------------------------------------------------------
+    def _geometry_stamp(self):
+        """The mesh geometry the launch set was built for: the vertex count and
+        the coordinate sum (a moved or re-meshed mesh changes one of them; adding
+        a variable, which rebuilds the DM, changes neither)."""
+        coords = np.asarray(self.mesh.X.coords)
+        return (coords.shape, float(coords.sum()))
+
+    def _cell_measures(self):
+        """Area (2-D) or volume (3-D) of every cell, in cell order."""
+        dm = self.mesh.dm
+        c0, c1 = dm.getHeightStratum(0)
+        return np.array([dm.computeCellGeometryFVM(c)[0] for c in range(c0, c1)])
+
+    def _boundary_faces(self):
+        """For every face on the domain boundary: its owning cell, its centroid
+        and its outward normal (centroid of the face away from the centroid of
+        the cell: outward on a convex cell). The inflow test reads the velocity
+        at these centroids."""
+        dm = self.mesh.dm
+        d = self.mesh.dim
+        c0, c1 = dm.getHeightStratum(0)
+        f0, f1 = dm.getHeightStratum(1)
+        cells, centroids, normals = [], [], []
+        # A face with one local cell is a domain boundary face OR a partition face;
+        # the mesh's own boundary label tells them apart.
+        label = dm.getLabel("All_Boundaries") if dm.hasLabel("All_Boundaries") else None
+        if label is None and uw.mpi.size > 1:
+            raise RuntimeError("ForwardSemiLagrangian: the mesh has no All_Boundaries label, so "
+                               "partition faces cannot be told from domain faces in parallel")
+        for f in range(f0, f1):
+            if dm.getSupportSize(f) != 1:
+                continue
+            if label is not None and label.getValue(f) == -1:
+                continue
+            c = dm.getSupport(f)[0] - c0
+            _, fc, fn = dm.computeCellGeometryFVM(f)
+            _, cc, _ = dm.computeCellGeometryFVM(c + c0)
+            # the face's own normal (the centroid difference is the cell's median,
+            # normal to the face only on a right cell), pointing out of the cell
+            n = np.asarray(fn[:d], dtype=float)
+            if np.dot(n, np.asarray(fc[:d]) - np.asarray(cc[:d])) < 0.0:
+                n = -n
+            cells.append(c); centroids.append(np.asarray(fc[:d])); normals.append(n / np.linalg.norm(n))
+        return (np.array(cells, dtype=int),
+                np.array(centroids).reshape(-1, d), np.array(normals).reshape(-1, d))
+
+    def _inflow_cells(self, trace, evalf):
+        """Boundary cells whose boundary face has fluid entering now. The
+        velocity read is collective, so a rank with no boundary face still
+        takes part, with no points."""
+        mask = np.zeros(self._cell_measure.size, dtype=bool)
+        v = trace.velocity_at(trace.V_matrix(), self._bface_centroid, use_global=True, evalf=evalf)
+        if self._bface_cell.size == 0:
+            return mask
+        v = np.asarray(v).reshape(-1, self.mesh.dim)
+        # a wall with u.n = 0 to round-off (free slip) must not flip in and out
+        entering = np.einsum("fi,fi->f", v, self._bface_normal) < -1.0e-10 * (np.abs(v).max() if v.size else 0.0)
+        mask[self._bface_cell[entering]] = True
+        return mask
+
+    @property
+    def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        new_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        expected = _psi_shape_for(self.vtype, self.mesh.cdim)
+        if expected is not None and tuple(new_fn.shape) != expected:
+            raise ValueError(f"ForwardSemiLagrangian: psi_fn has shape {tuple(new_fn.shape)}, needs {expected}")
+        self._psi_fn = new_fn
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+        super()._object_viewer()
+        display(Latex(r"$\quad\psi = $ " + self.psi_fn._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{v} = $ " + sympy.Matrix(self.V_fn)._repr_latex_()))
+        display(Latex(r"$\quad$Carried forward from the integration points, fitted per cell"))
+
+    def _evaluate_at_launch(self, expr):
+        """Every stored component of ``expr`` at the launch points, as columns,
+        through the continuous P1 projection."""
+        expr = sympy.Matrix(expr)
+        if self._flux_projection is None:
+            self._flux_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=self._flux_var, n_components=self.num_components)
+        self._flux_projection.uw_function = sympy.Matrix([[expr[i, j] for (i, j) in self._components]])
+        self._flux_projection.smoothing = self.flux_smoothing
+        self._flux_projection.solve()
+        out = np.empty_like(self._launch_values)
+        for k in range(self.num_components):
+            out[:, k] = _to_nondim_ndarray(uw.function.evaluate(self._flux_var.sym[0, k], self._launch)).reshape(-1)
+        return out
+
+    def carried_tensors(self, level: int = 0):
+        """The carried values as one tensor per launch point, non-dimensional,
+        with the points: ``(values[n, d, d], coords[n, cdim])``."""
+        dim = self.mesh.dim
+        values = np.zeros((self._launch.shape[0], dim, dim))
+        for k, (i, j) in enumerate(self._components):
+            values[:, i, j] = self._launch_values[:, k]
+            if self.vtype == VarType.SYM_TENSOR:
+                values[:, j, i] = self._launch_values[:, k]
+        return values, self._launch
+
+    # ------------------------------------------------------------------
+    def _fit_arrivals(self, X, values, cell=None, inflow=None):
+        """Weighted least-squares linear fit of the carried values at their
+        arrival points, cell by cell, written into ``psi_star[0]``.
+
+        ``cell`` is the owning cell of each arrival when it is known exactly
+        (the launch points themselves). Otherwise the arrivals of every rank
+        are gathered with their values and weights, each rank keeps the ones
+        in its partition and locates them in its cells; a point outside the
+        domain (it left through an outflow) is dropped.
+        A boundary cell that lost more points than it received has the
+        missing share filled with the inflow value at its own dofs, weighted
+        by that share: the state of the part of the cell nothing has reached
+        is the incoming fluid. A cell whose arrivals cannot determine a linear
+        fit keeps its previous one.
+        """
+        mesh = self.mesh
+        d = mesh.dim
+        npar = d + 1
+        ncell = self._cell_measure.size
+        w = self._launch_weights
+        if cell is None:
+            if uw.mpi.size > 1:
+                # Only the points that left this rank's partition travel: each rank
+                # offers its leavers to everyone and keeps the offered points that
+                # land in its own cells. At Courant one that is the seam layer, not
+                # the whole set. A rank with no cells owns nothing and keeps nothing.
+                # Ownership is by strict containment (face tolerance zero), not the
+                # evaluation locator's slab: a point a hair across a seam face would
+                # otherwise be kept by the rank it left and fitted into the wrong
+                # cell. The locators are local; the exchange is the only collective
+                # and every rank makes it, a rank with no cells contributing and
+                # taking nothing. (comm.allgather rather than gather_data: the rows
+                # are vectors, and gather_data flattens.)
+                X, values = np.asarray(X), np.asarray(values)
+                own = np.asarray(mesh._get_closest_local_cells_internal(X, tol=0.0), dtype=int).reshape(-1)
+                stay = own >= 0
+                comm = uw.mpi.comm
+                offered = np.concatenate(comm.allgather(X[~stay]), axis=0)
+                offered_values = np.concatenate(comm.allgather(values[~stay]), axis=0)
+                offered_w = np.concatenate(comm.allgather(w[~stay]), axis=0)
+                taken = np.asarray(mesh._get_closest_local_cells_internal(offered, tol=0.0), dtype=int).reshape(-1)
+                take = taken >= 0
+                self._n_relocated = int(take.sum())
+                X = np.concatenate([X[stay], offered[take]], axis=0)
+                values = np.concatenate([values[stay], offered_values[take]], axis=0)
+                w = np.concatenate([w[stay], offered_w[take]], axis=0)
+                cell = np.concatenate([own[stay], taken[take]])
+            else:
+                # the same strict rule as the parallel path, so a partition does
+                # not change which cell a point on a face is fitted into
+                cell = np.asarray(mesh._get_closest_local_cells_internal(X, tol=0.0), dtype=int).reshape(-1)
+                inside = cell >= 0
+                X, values, w, cell = X[inside], values[inside], w[inside], cell[inside]
+        centroid = np.asarray(mesh._centroids)[:, :d]
+        h = np.sqrt(self._cell_measure) if d == 2 else np.cbrt(self._cell_measure)
+        # centred on the cell and scaled by its size, so the constant is c0 and the
+        # moment matrix is well conditioned exactly when the arrivals span the cell
+        A = np.concatenate([np.ones((X.shape[0], 1)), (X[:, :d] - centroid[cell]) / h[cell, None]], axis=1)
+        M = np.zeros((ncell, npar, npar))
+        np.add.at(M, cell, w[:, None, None] * A[:, :, None] * A[:, None, :])
+        R = np.zeros((ncell, npar, self.num_components))
+        np.add.at(R, cell, w[:, None, None] * A[:, :, None] * values[:, None, :])
+        received = np.bincount(cell, weights=w, minlength=ncell)
+        dofs = np.asarray(self.psi_star[0].coords_nd).reshape(-1, mesh.cdim)
+        ndof = dofs.shape[0] // ncell if ncell else 0
+        dofs = dofs.reshape(ncell, ndof, mesh.cdim)
+        Adof = np.concatenate([np.ones((ncell, ndof, 1)), (dofs[:, :, :d] - centroid[:, None, :]) / h[:, None, None]], axis=2)
+        if self._inflow_value is not None and inflow is not None:
+            deficit = np.clip(self._cell_measure - received, 0.0, None) * inflow
+            fed = deficit > 0.0
+            # evaluate is collective: every rank reads the inflow value at every
+            # boundary-cell dof, whether or not any of its cells is short
+            bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
+            filled = np.column_stack([
+                _to_nondim_ndarray(uw.function.evaluate(self._inflow_record()[i, j],
+                                                        dofs[bcells].reshape(-1, mesh.cdim))
+                                   ).reshape(-1)
+                for (i, j) in self._components]).reshape(bcells.size, ndof, self.num_components)
+            short = fed[bcells]
+            if short.any():
+                sel = bcells[short]
+                wi = np.broadcast_to((deficit[sel] / ndof)[:, None], (sel.size, ndof))       # per dof
+                M[sel] += np.einsum("cq,cqi,cqj->cij", wi, Adof[sel], Adof[sel])
+                R[sel] += np.einsum("cq,cqi,cqk->cik", wi, Adof[sel], filled[short])
+        # with the columns scaled, the eigenvalue ratio of the moment matrix is a
+        # conditioning number: 1e-6 rejects a cell whose arrivals sit on a line
+        ev = np.linalg.eigvalsh(M)
+        fit_ok = ev[:, 0] > 1.0e-6 * np.maximum(ev[:, -1], 1.0e-300)
+        beta = np.zeros_like(R)
+        beta[fit_ok] = np.linalg.solve(M[fit_ok], R[fit_ok])
+        fitted = np.einsum("cqi,cik->cqk", Adof, beta).reshape(ncell * ndof, self.num_components)
+        rows_ok = np.repeat(fit_ok, ndof)
+        for k in range(self.num_components):
+            column = np.array(self.psi_star[0].data[:, k])
+            column[rows_ok] = fitted[rows_ok, k]
+            self.psi_star[0].data[:, k] = column
+
+    def initialise_history(self):
+        """Start from the current field: its values at the launch points, and
+        their fit, so ``bdf()`` is zero on the first step. A history already
+        placed by :meth:`commit_flux_to_history` is the start, and is kept."""
+        self.characteristics.initialise_levels(self._n_v)
+        if self._history_committed:
+            self._history_initialised = True
+            return
+        self._launch_values = self._evaluate_at_launch(self._psi_fn)
+        self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)
+        self._history_initialised = True
+
+    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True, **_ignored):
+        """Carry the launch values forward one step and fit the arrivals.
+
+        ``store_result=False`` says the launch values were placed by
+        :meth:`commit_flux_to_history` (the viscoelastic case); otherwise the
+        tracked field is read at the launch points first.
+        """
+        self._dt = dt = self._nondim_timestep(dt)
+        if self._geometry_stamp() != self._launch_geometry:
+            raise NotImplementedError(
+                "ForwardSemiLagrangian: the launch set, cell measures and boundary faces were "
+                "built for the mesh as it was, and the mesh has moved or been re-meshed since; "
+                "this flavour does not follow a changing mesh")
+        if not self._history_initialised:
+            self.initialise_history()
+        _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        trace = self.characteristics
+        if self._owns_characteristics:
+            trace.begin_step(dt)
+        if store_result:
+            self._launch_values = self._evaluate_at_launch(self._psi_fn)
+        # forward along the same characteristic the backward flavours trace, with
+        # the step reversed: start velocity v^n, mid-time velocity at n+1/2. The
+        # end point is not restored to the domain: a point that leaves has left.
+        key = (_basis_key_of(self.psi_star[0]), "launch")
+        X = trace.departure_points(key, self._launch, (("first", 0, -float(dt)),),
+                                   evalf=evalf, clamp_final=False)
+        self._fit_arrivals(np.asarray(X), self._launch_values, inflow=self._inflow_cells(trace, evalf))
+        if self._owns_characteristics:
+            trace.finish_step()
+
+    def update(self, dt, evalf=False, verbose=False, **kwargs):
+        self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
+
+    def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
+        self._dt = dt = self._nondim_timestep(dt)
+        self._dt_history[0] = dt
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
+
+    def commit_flux_to_history(self, flux, verbose=False):
+        """Read the new flux at the launch points, and leave its fit in the
+        slot until the next carry, as the other flavours do."""
+        self._launch_values = self._evaluate_at_launch(flux)
+        self._fit_arrivals(self._launch, self._launch_values, cell=self._launch_cell)
+        self._history_committed = True

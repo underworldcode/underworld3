@@ -918,7 +918,8 @@ def _powerlaw_stokes(mesh, prefix, amp=2.0, nexp=3.0, cj=None):
     """A genuinely NONLINEAR Stokes: power-law viscosity eta = eps_II^(1/n - 1)
     (smooth, so Newton/Picard iterates robustly), driven by a horizontally-varying
     vertical body force so there is real shear. ``cj`` sets ``consistent_jacobian``
-    (None=default frozen/Picard, True=consistent Newton, "continuation"=staged)."""
+    (None = the solver default, consistent Newton since 2026-10-05; False = frozen/
+    Picard; True = consistent Newton; "continuation" = staged)."""
     x, y = mesh.X
     v = uw.discretisation.MeshVariable(prefix + "v", mesh, mesh.dim, degree=2, continuous=True)
     p = uw.discretisation.MeshVariable(prefix + "p", mesh, 1, degree=1, continuous=False)
@@ -962,12 +963,14 @@ def plaw_box_ref():
 
 
 def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
-    """Default (frozen/Picard) tangent through the rotated path: genuinely iterates
-    and converges to the native essential nonlinear free-slip answer (both impose
-    v_n=0 — identical discrete problem), with machine-zero wall-normal flow on every
-    wall. Exercises the rotated constraint INSIDE the nonlinear iteration."""
+    """Frozen (Picard) tangent through the rotated path: genuinely iterates and
+    converges to the native essential nonlinear free-slip answer (both impose v_n=0 —
+    identical discrete problem), with machine-zero wall-normal flow on every wall.
+    Exercises the rotated constraint INSIDE the nonlinear iteration. Pinned to
+    consistent_jacobian=False: the default is Newton since 2026-10-05, and this is the
+    rotated path's only frozen-tangent nonlinear test."""
     mesh, vE, _ = plaw_box_ref
-    s, vR, pR = _powerlaw_stokes(mesh, "nlP")           # default (Picard) tangent
+    s, vR, pR = _powerlaw_stokes(mesh, "nlP", cj=False)  # frozen (Picard) tangent
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(0, wall)
     s.solve()
@@ -1028,17 +1031,23 @@ def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
         "picard did not extend the continuation Picard phase")
 
 
-def test_rotated_freeslip_picard_newton_unsupported_raises(plaw_box_ref):
-    """picard>0 with the pure consistent-Newton tangent has no frozen warmup tangent
-    to form, so the rotated path raises a clear NotImplementedError pointing to
-    'continuation' rather than silently ignoring it. Also confirms the SNES_Stokes
-    wrapper forwards picard to the plain-Stokes solve at all."""
-    mesh, _, _ = plaw_box_ref
-    s, v, p = _powerlaw_stokes(mesh, "prN", cj=True)
+def test_rotated_freeslip_picard_under_newton_stages_picard_then_newton(plaw_box_ref):
+    """picard>0 under the consistent-Newton tangent (the default since 2026-10-05) stages
+    at least N Picard iterations, then Newton, on the blended Jacobian solve() compiles
+    for it, and converges to the essential-BC answer. It used to RAISE
+    NotImplementedError, which made solve(picard=N) — the guides' recipe — fail on
+    every nonlinear rotated free-slip model under the new default. Also confirms the
+    SNES_Stokes wrapper forwards picard to the plain-Stokes solve at all (without it
+    there is no Picard phase to switch from)."""
+    mesh, vE, _ = plaw_box_ref
+    s, vR, pR = _powerlaw_stokes(mesh, "prN", cj=True)
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(0, wall)
-    with pytest.raises(NotImplementedError, match="continuation"):
-        s.solve(picard=3)
+    s.solve(picard=3)
+    info = s._rotated_freeslip_info
+    assert info["continuation_switched"], "no Picard phase: picard was not staged"
+    assert info["nonlinear_iterations"] >= 3, info["nonlinear_iterations"]
+    assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
 
 
 def test_rotated_freeslip_nonlinear_warm_start(plaw_box_ref):

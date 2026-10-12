@@ -245,6 +245,25 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
     # === CRITICAL: Direct property access for assignment operations ===
 
+    def describe(self, depth=4):
+        """What this variable is, as data: the base variable's description
+        with the units and persistence this wrapper adds."""
+        d = self._base_var.describe(depth=depth)
+        facts = d.setdefault("facts", {})
+        try:
+            facts["units"] = str(self.units) if self.has_units else "none (dimensionless)"
+            if self.has_units:
+                facts["dimensionality"] = str(self.dimensionality)
+        except Exception:
+            pass        # a variable whose units cannot be read is described without them
+        facts["persistent"] = bool(getattr(self, "_persistent", False))
+        return d
+
+    def view(self, format=None, depth=None):
+        """Show what this variable is; see :func:`underworld3.utilities.describe.view`."""
+        from underworld3.utilities.describe import view as _view
+        _view(self, format=format, depth=depth)
+
     @property
     def data(self):
         """Direct access to data array (supports += and other assignment ops)."""
@@ -324,6 +343,20 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
     def units(self):
         """Units for this variable."""
         return self._base_var.units
+
+    def _data_layout(self, i, j=None):
+        """Column of a component in the flat ``.data`` storage.
+
+        Parameters
+        ----------
+        i, j : int
+            Component indices; ``j`` is omitted for a vector.
+
+        Returns
+        -------
+        int
+        """
+        return self._base_var._data_layout(i, j)
 
     @property
     def has_units(self) -> bool:
@@ -744,45 +777,6 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         """String representation."""
         return self.__repr__()
 
-    def view(self):
-        """
-        Display detailed information about the enhanced variable including units.
-
-        Shows variable name, dimensions, shape, units information, and sample data.
-        """
-        print(f"Enhanced MeshVariable: {self.name}")
-        print(f"  Components: {self.num_components}")
-        print(f"  Degree: {self.degree}")
-        print(f"  Array shape: {self.array.shape}")
-
-        # Units information
-        if self.has_units:
-            print(f"  Units: {self.units}")
-            print(f"  Dimensionality: {self.dimensionality}")
-            print(f"  Units backend: pint")
-        else:
-            print(f"  Units: None (dimensionless)")
-
-        # Persistence information
-        if self._persistent:
-            print(f"  Persistence: Enabled")
-        else:
-            print(f"  Persistence: Disabled")
-
-        # Sample data (first few elements)
-        try:
-            if len(self.array.shape) > 0 and self.array.shape[0] > 0:
-                print(f"  Data sample: {self.array[:3]}")
-            else:
-                print(f"  Data sample: No data")
-        except:
-            print(f"  Data sample: Unable to display")
-
-        # Mathematical capabilities
-        if hasattr(self, "sym"):
-            print(f"  Symbolic form: {self.sym}")
-
-        return self  # Allow chaining
 
 
 def create_enhanced_mesh_variable(
@@ -957,6 +951,14 @@ class IntegrationPointVariable(EnhancedMeshVariable):
     >>> eta_q.cell_data[...] = 1.0          # (ncells, Nq, 1)
     >>> eta_q.coords                         # the physical integration points
     >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_q.sym
+    
+    Gradients: this variable has none of its own (it stores a value at each
+    integration point and nothing between them, so its tabulated derivative is
+    identically zero). A derivative of its symbol in a WEAK FORM is refused
+    rather than answered with that zero; use a discontinuous mesh variable, or
+    ``SwarmVariable(proxy_location="cells")``, when a solve needs the gradient.
+    ``uw.function.evaluate`` of the same derivative does answer, by fitting the
+    values per cell first: a recovered gradient, for inspection.
     """
 
     _base_variable_class = _BaseIntegrationPointVariable

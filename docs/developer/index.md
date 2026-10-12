@@ -41,8 +41,29 @@ same topic are reference or historical material subordinate to the governing doc
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
 | Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
+| Planning (GitHub Project, issues, discussions, wiki) | [guides/planning-on-github.md](guides/planning-on-github.md) |
 | Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
 | Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
+
+## Capability guides
+
+Curated guidance that the code cannot state about itself: which scheme to
+choose, which boundary treatment to prefer, how to make a hard solve
+converge. Each is one page with front matter naming the families it applies
+to, so `uw.capabilities()`, `uw.systems.Stokes.view()` and the MCP server list
+it beside the family; the AI skills in `.claude/skills` are symlinks to these
+pages, never copies. A change to a family is reviewed against its guides.
+
+| Guide | Applies to |
+|---|---|
+| [Transport schemes](guides/transport-schemes.md) | advection-diffusion, Navier-Stokes, the history schemes |
+| [Boundary-condition rulings](guides/boundary-condition-rulings.md) | every solver |
+| [Nonlinear solver recipe](guides/nonlinear-solver.md) | viscoplastic Stokes |
+| [Plasticity solvers](guides/plasticity-solvers.md) | viscoplastic and VEP Stokes |
+| [Adaptive meshing](guides/adaptive-meshing.md) | moving-mesh convection |
+| [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
+| [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
+| [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
 
 ## Documentation Structure
 
@@ -130,14 +151,26 @@ guides/HOW-TO-WRITE-UW3-SCRIPTS
 guides/notebook-style-guide
 guides/GMSH_INTEGRATION_GUIDE
 guides/CODE-REVIEW-PROCESS
+guides/adversarial-review
+guides/mcp-server
 guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
+guides/planning-on-github
 guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
 guides/mpi-hang-supervision
+guides/transport-schemes
+guides/boundary-condition-rulings
+guides/nonlinear-solver
+guides/plasticity-solvers
+guides/adaptive-meshing
+guides/adapt-on-top-faults
+guides/free-surface-convection
+guides/uw-visualisation
+guides/cetz-figures
 ```
 
 ```{toctree}
@@ -145,6 +178,7 @@ guides/mpi-hang-supervision
 :hidden:
 :caption: Design Documents
 
+design/run-plan-and-transcript
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
 design/ND_UNITS_BOUNDARY_CONTRACT
 design/WHY_UNITS_NOT_DIMENSIONALITY
@@ -167,6 +201,7 @@ design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
 design/eulerian-supg-transport
+design/jit-shared-graph-codegen
 ```
 
 ```{toctree}
@@ -198,6 +233,7 @@ subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
 subsystems/constitutive-models-anisotropy
+subsystems/stress-transport
 subsystems/swarm-system
 subsystems/data-access
 subsystems/interpolation
@@ -206,6 +242,8 @@ subsystems/expressions-functions
 subsystems/containers
 subsystems/checkpointing-system
 subsystems/model-orchestration
+subsystems/describe-and-view
+subsystems/transcript-query
 subsystems/jit-cache
 ```
 

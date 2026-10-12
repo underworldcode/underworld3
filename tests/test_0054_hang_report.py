@@ -171,17 +171,49 @@ def _wait_for(condition, what, cap=600.0, poll=0.25):
     raise AssertionError(f"gave up after {cap:g} s waiting for {what}")
 
 
+def _tear_down(process, grace=5.0):
+    """Stop a planted hang: SIGTERM the group, then SIGKILL what is left.
+
+    SIGKILL alone removes ``mpirun`` from under its own ranks, which is how a
+    rank ends up re-parented to init and spinning forever (#639). SIGTERM
+    gives it the chance to tear them down itself; the SIGKILL behind it is
+    what makes this bounded.
+    """
+    group = os.getpgid(process.pid)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(group, sig)
+        except ProcessLookupError:
+            return
+        if sig is signal.SIGTERM:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline and process.poll() is None:
+                time.sleep(0.1)
+            if process.poll() is not None:
+                return
+
+
 def _dump_count(dumps, rank):
     """How many times this rank has dumped so far.
 
-    Counted by the "Current thread" line rather than the "Timeout (" header:
-    the watchdog dumps through faulthandler's signal handler (#661), which
-    writes no header, and there is exactly one such line per dump either way.
+    Counted by the line labelling the signalled thread's stack rather than by
+    the "Timeout (" header: the watchdog dumps through faulthandler's signal
+    handler (#661), which writes no header, and there is exactly one such
+    label per dump either way.
+
+    Both labels are counted because faulthandler writes a different one in
+    each thread mode -- "Current thread 0x..." when it walks every thread,
+    "Stack (most recent call first):" when it walks the signalled thread alone
+    (#793). Counting only the first is how this test came to sit out its whole
+    600 s cap when the watchdog stopped walking every thread: the dumps were
+    arriving, and nothing here could see them.
     """
     path = dumps / f"rank{rank:04d}.log"
     if not path.exists():
         return 0
-    return path.read_text(errors="replace").count("Current thread ")
+    text = path.read_text(errors="replace")
+    return text.count("Current thread ") + text.count(
+        "Stack (most recent call first):")
 
 
 def _run_until_the_evidence_exists(argv, ranks, environment, dumps, ready,
@@ -217,12 +249,58 @@ def _run_until_the_evidence_exists(argv, ranks, environment, dumps, ready,
         _wait_for(lambda: all(_dump_count(dumps, r) >= 2 for r in blocked_ranks),
                   f"ranks {sorted(blocked_ranks)} to dump twice while blocked")
     finally:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        _tear_down(process)
         _out, err = process.communicate()
     return err or ""
 
 
-DIVERGENT = """
+# A child that outlives the test must die on its own. Both scripts below are
+# designed never to exit and both busy-poll, so a leaked one costs a full core
+# until it is found -- #639 was filed on seven of sixteen cores, from five
+# killed pytest sessions, and four ranks orphaned for 15 hours were still
+# running on this machine when the fix was written.
+#
+# start_new_session=True detaches them from pytest's group, so the killpg in
+# each `finally` is the only thing that reaps them, and a killed pytest never
+# runs its finally. This does not depend on cleanup code running in the
+# parent.
+#
+# The signal is the TEST RUNNER's pid, injected at spawn, not the child's own
+# parent. Watching os.getppid() looks equivalent and is not: under mpirun a
+# rank's parent is prterun, so when pytest is killed the rank's parent is
+# still very much alive and the rank never notices. Measured -- all four ranks
+# and prterun survived a SIGKILLed pytest for the full 70 s of the probe, at
+# 100% CPU. os.kill(pid, 0) raises once that pid is gone, whatever the tree
+# looks like in between.
+#
+# The cap behind it is a backstop against a pid being recycled onto something
+# live, not a measurement. It sits far above the test's own 600 s evidence
+# wait for the same reason _wait_for's cap does.
+DEAD_MAN = """
+import os as _os
+import threading as _threading
+import time as _time
+
+_DEAD_MAN_CAP_S = 900.0
+
+def _exit_when_the_runner_is_gone(_poll=0.5):
+    # _exit, not sys.exit: this runs on a daemon thread and must not be caught
+    # by anything on the way out.
+    _started = _time.monotonic()
+    while True:
+        try:
+            _os.kill(WATCH_PID, 0)
+        except (ProcessLookupError, PermissionError):
+            _os._exit(0)
+        if _time.monotonic() - _started > _DEAD_MAN_CAP_S:
+            _os._exit(0)
+        _time.sleep(_poll)
+
+_threading.Thread(target=_exit_when_the_runner_is_gone, daemon=True).start()
+"""
+
+
+DIVERGENT = DEAD_MAN + """
 import pathlib
 import time
 import underworld3 as uw
@@ -275,6 +353,7 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
     script = tmp_path / "divergent.py"
     script.write_text(
         f"DUMPS = {str(dumps)!r}\nREADY = {str(ready)!r}\n"
+        f"WATCH_PID = {os.getpid()}\n"
         + textwrap.dedent(DIVERGENT)
     )
 
@@ -310,7 +389,7 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
     assert "where the bug is" in report
 
 
-ARMED_BY_ENVIRONMENT = """
+ARMED_BY_ENVIRONMENT = DEAD_MAN + """
 import time
 import underworld3 as uw
 time.sleep(3600)
@@ -335,7 +414,8 @@ def test_the_environment_variable_arms_the_watchdog_at_import():
     with tempfile.TemporaryDirectory() as workspace:
         root = pathlib.Path(workspace)
         script = root / "sleepy.py"
-        script.write_text(textwrap.dedent(ARMED_BY_ENVIRONMENT))
+        script.write_text(f"WATCH_PID = {os.getpid()}\n"
+                          + textwrap.dedent(ARMED_BY_ENVIRONMENT))
         dumps = root / "dumps"
 
         process = subprocess.Popen(
@@ -356,5 +436,5 @@ def test_the_environment_variable_arms_the_watchdog_at_import():
                 "the dump did not carry the stack of the script that hung"
             )
         finally:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            _tear_down(process)
             process.communicate()

@@ -22,6 +22,27 @@ Viscoelastic extension of the Stokes solver.
 
 ## Scalar Equations
 
+### Integrated Boundary Flux
+
+After solving a continuous scalar problem, call collectively on all ranks:
+
+```python
+total_flux = poisson.boundary_flux_integral("Top")
+```
+
+This sums consistent nodal volume reactions on the requested essential
+boundary. It has the same raw CBF sign as `boundary_flux()`, without mass
+recovery, a temporary flux field, or boundary quadrature. Boundary membership
+is propagated through the PETSc point SF so ranks sharing a boundary node
+include their partial reactions even when they hold no labelled facet.
+
+The return value is an integral: no mean removal, area division or Nusselt
+normalization is applied. Divide by the boundary area and the appropriate
+reference conductive flux when a normalized diagnostic is required. At
+intersections of driven walls, a shared nodal reaction mixes contributions
+from both walls; this method does not separate those by facet. Use
+`boundary_flux()` or `boundary_flux_field()` for pointwise values instead.
+
 ### SNES_Poisson
 
 ```{eval-rst}
