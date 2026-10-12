@@ -13,6 +13,7 @@ on:
     branches:
       - main
       - development
+      - ci/gadi-container          # TESTING ONLY — remove before the upstream PR
     tags: ['v*']
     paths:
       - 'docs/developer/hpc_containers/underworld3.hpc'
@@ -197,10 +198,15 @@ jobs:
 
       # The recipe installs gmsh and vtk-osmesa behind `|| echo skip`, so a
       # failed install is silent. Import them explicitly or it ships broken.
-      - name: Import optional stack (gmsh, vtk, pyvista, h5py, petsc4py)
+      # NumPy is checked too: the compiled extensions depend on its range.
+      - name: Import optional stack (gmsh, vtk, pyvista, h5py, petsc4py); check NumPy range
         run: |
-          docker run --rm ${{ steps.meta.outputs.image }} \
-            python -c "import gmsh, vtk, pyvista, h5py, petsc4py; print('optional stack OK')"
+          docker run --rm ${{ steps.meta.outputs.image }} python -c "
+          import gmsh, vtk, pyvista, h5py, petsc4py, numpy
+          v = numpy.lib.NumpyVersion(numpy.__version__)
+          assert v >= '2.0.0' and v < '2.5.0', numpy.__version__
+          print('optional stack OK, numpy', numpy.__version__)
+          "
 
       # Assert the MPI flavour too: a silently wrong libmpi is exactly the
       # failure that would otherwise only surface on a compute node.

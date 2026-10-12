@@ -46,12 +46,14 @@ COPY --from=petsc-image /usr/local /usr/local
 ENV PETSC_DIR=/usr/local
 ENV PYTHONPATH=$PYTHONPATH:$PETSC_DIR/lib
 
+# NumPy must stay in petsc.hpc's range: the petsc4py and mpi4py copied in above
+# were compiled against it, and a different major version breaks their ABI.
 RUN pip install --no-cache-dir \
         "setuptools>=75" \
         "setuptools-scm>=8" \
         "cython>=3.1" \
         "scipy>=1.15" \
-        "numpy<2" \
+        "numpy>=2,<2.5" \
         matplotlib \
         pint \
         pytest \
