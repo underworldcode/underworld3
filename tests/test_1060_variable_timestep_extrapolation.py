@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 import sympy
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.tier_a]
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +31,7 @@ def _reset():
     uw.reset_default_model()
 
 
+@pytest.mark.level_1
 def test_the_trace_back_mid_time_velocity_is_exact_for_a_linear_history():
     """A velocity that grows linearly in time, a step of 0.1 then one of 0.05:
     the mid-time velocity is the velocity at the middle of the second step."""
@@ -56,6 +57,7 @@ def test_the_trace_back_mid_time_velocity_is_exact_for_a_linear_history():
         "(linear extrapolation to t + dt/2 with the step ratio)")
 
 
+@pytest.mark.level_2
 def test_the_navier_stokes_advecting_velocity_is_the_linear_extrapolation():
     """After a step of 0.02, a step of 0.01: the advecting velocity is the
     linear extrapolation of the last two velocity levels to the new time."""
@@ -88,3 +90,55 @@ def test_the_navier_stokes_advecting_velocity_is_the_linear_extrapolation():
     assert np.allclose(advecting, expected, rtol=0.0, atol=1.0e-12 * scale), (
         f"advecting velocity departs from the extrapolation with the step ratio by "
         f"{np.abs(advecting - expected).max():.3e}")
+
+
+@pytest.mark.level_1
+def test_swarm_advection_takes_the_mid_time_velocity_with_the_step_ratio():
+    """Through the real path: a swarm advected through a uniform velocity
+    that grows linearly in time, with steps of 0.02, 0.01, 0.02 and 0.005.
+    Once a velocity level is recorded, each step moves a particle by exactly
+    dt times the velocity at the middle of that step."""
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8), minCoords=(0.0, 0.0),
+                                        maxCoords=(1.0, 1.0))
+    v = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=1)
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_coordinates(np.array([[0.3, 0.5]]))
+    speed, rate = 1.0, 2.0
+    t = 0.0
+    errors = []
+    for dt in (0.02, 0.01, 0.02, 0.005):
+        v.array[:, 0, 0] = speed + rate * t
+        x0 = np.asarray(swarm._particle_coordinates.data).copy()
+        swarm.advection(v.sym, dt, order=2, midtime_velocity=True)
+        x1 = np.asarray(swarm._particle_coordinates.data)
+        moved = float(x1[0, 0] - x0[0, 0]) if x1.size else 0.0
+        errors.append(abs(moved - dt * (speed + rate * (t + 0.5 * dt))) / dt)
+        t += dt
+    # the first step has no recorded level and takes v^n alone
+    assert max(errors[1:]) < 1.0e-12, (
+        f"mid-time displacement error per unit step {errors[1:]} "
+        "(expected round-off once a level is recorded)")
+
+
+@pytest.mark.level_1
+def test_a_restore_brings_back_the_step_length_of_a_swarm_trace():
+    """A swarm's own mid-time trace records the length of the step its
+    velocity level belongs to; a regretted step of another length must not
+    leave that length behind."""
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8), minCoords=(0.0, 0.0),
+                                        maxCoords=(1.0, 1.0))
+    v = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=1)
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_coordinates(np.array([[0.3, 0.5]]))
+    v.array[:, 0, 0] = 1.0
+    orchestration_model = uw.get_default_model()
+    for _ in range(2):
+        swarm.advection(v.sym, 0.02, order=2, midtime_velocity=True)
+    token = orchestration_model.save_state()
+    swarm.advection(v.sym, 0.04, order=2, midtime_velocity=True)
+    orchestration_model.load_state(token)
+    assert swarm._characteristics._recorded_dt == 0.02

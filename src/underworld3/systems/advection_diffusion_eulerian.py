@@ -576,6 +576,8 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
 
     @property
     def state(self):
+        """:class:`AdvectionDiffusionStepState`: what the last solve left that
+        steers the next one (see :attr:`SolverBaseClass.state`)."""
         return AdvectionDiffusionStepState(
             has_solution=bool(self._has_solution),
             last_timestep=self._last_timestep,

@@ -5355,7 +5355,7 @@ class Mesh(Stateful, uw_object):
         # longer be invisible. Decided on every rank together, since the move
         # is collective.
         moved = int(not numpy.array_equal(coords, numpy.asarray(self._coords)))
-        if uw.mpi.comm.allreduce(moved):
+        if self.dm.comm.tompi4py().allreduce(moved):
             with self._coord_mutation():
                 self._deform_mesh(coords)
 

@@ -36,6 +36,7 @@ from typing import Optional, Union
 
 import underworld3 as uw
 from underworld3.checkpoint.state import SolverStepState
+from underworld3.systems.ddt import _step_ratio
 import underworld3.timing as timing
 from underworld3.function import expression as public_expression
 from underworld3.systems.ddt import _DDtBase
@@ -504,6 +505,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
     @property
     def state(self):
+        """:class:`NavierStokesStepState`: what the last solve left that steers
+        the next one (see :attr:`SolverBaseClass.state`)."""
         return NavierStokesStepState(
             has_solution=bool(self._has_solution),
             last_timestep=self._last_timestep,
@@ -604,7 +607,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             # linear in time to t^{n+1}: u^n + r (u^n - u^{n-1}), r the ratio of
             # this step to the last (written so that r = 1 is 2 u^n - u^{n-1}
             # to the last bit)
-            r = dt / self._previous_timestep if self._previous_timestep else 1.0
+            r = float(_step_ratio(dt, self._previous_timestep))
             self._set_advecting_velocity((1.0 + r) * u_n - r * np.asarray(self._u_prev.array[...]))
         self.DuDt.update_pre_solve(dt, verbose=verbose)
 

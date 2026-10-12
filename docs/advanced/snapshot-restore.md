@@ -224,8 +224,10 @@ attempt starts from precisely where the failed one began.
   from the restored state, while the never-snapshotted run keeps its
   algebraic multigrid warm from earlier solves. This does not affect
   the correctness of backtracking.
-- **Solver step state is in-memory only.** A disk snapshot does not
-  yet carry it, so a run restarted from a file starts its solvers cold.
+- **A swarm's mid-time advection trace is in-memory only.** A disk
+  snapshot does not carry its step state, so after a restore from a file
+  the first swarm advection takes its mid-point velocity at the start of
+  the step (first order for that one step), as in a new run.
 ```
 
 ## On-disk file layout (when ``save_state(file=…)`` is used)

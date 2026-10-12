@@ -98,7 +98,9 @@ converges quadratically. Use `solve_with_diagnostics()`, not a hand-rolled monit
 solve whose SNES converged; reset on a structural rebuild (remesh / adapt /
 mesh-mover — the `is_setup=False` hook); kept through coefficient changes (viscosity,
 δ, BC values, time step). A **diverged** solve leaves it `False`, so the next solve
-auto-cold-starts rather than warming off a corrupted iterate.
+auto-cold-starts rather than warming off a corrupted iterate. `load_state` puts
+it back as it was when the state was saved, so a regretted diverged step does not
+leave the next solve cold.
 
 On a **cold** (`zero_init_guess=True`) Stokes solve under the **consistent-Newton
 tangent**, a single Picard step is now taken automatically (reusing the existing
