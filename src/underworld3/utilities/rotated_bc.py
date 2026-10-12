@@ -470,7 +470,14 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # rows fall outside [rstart, rend)). A fault PAIR block spans two points, but
     # both are rank-local (a seam-touching fault is redistributed onto one rank
     # before the split), so the diagonal-portion argument carries over unchanged.
+    # The row layout comes from the solver's Jacobian. _build() leaves the SNES
+    # set up only on some paths (with essential conditions registered it is;
+    # without them the matrix is never created), so set it up here rather than
+    # read a null matrix — that was a segmentation fault (test_1085).
     A = solver.snes.getJacobian()[0]
+    if A is None or A.handle == 0:
+        solver.snes.setUp()
+        A = solver.snes.getJacobian()[0]
     rstart, rend = A.getOwnershipRange()
     nloc = rend - rstart
     N = A.getSize()[0]
