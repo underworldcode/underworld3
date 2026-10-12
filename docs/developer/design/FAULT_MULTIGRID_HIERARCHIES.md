@@ -75,7 +75,7 @@ Viscous fault:
 | 2 | 12 | 19 | 7 | 9 |
 | 3 | 17 | 53 | 6 | 8 |
 | 4 | 22 | 200 (cap) | 6 | 7 |
-| 5 | 30 | — | 5 | 6 |
+| 5 | 30 | 200 (cap; stopped at 1 h) | 5 | 6 |
 
 The peak slip agrees to five figures across all alternatives at each $k$, so only the
 solver path changes.
