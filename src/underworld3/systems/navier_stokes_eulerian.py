@@ -17,11 +17,12 @@ constitutive model.
 
 The advecting velocity :math:`\mathbf{a}` in :math:`(\mathbf{a}\cdot\nabla)\mathbf{u}^{n+1}`
 is a choice (``advection=``): ``"extrapolated"`` (default) uses
-:math:`2\mathbf{u}^n - \mathbf{u}^{n-1}`, a second-order lag that makes
-each step one linear (Oseen) solve; ``picard_iterations`` re-solves with
-the latest iterate for the fully implicit fixed point; ``"implicit"`` puts
-:math:`\mathbf{u}^{n+1}` itself in the advection and lets the SNES take
-Newton steps on the quadratic term.
+:math:`\mathbf{u}^n + r(\mathbf{u}^n - \mathbf{u}^{n-1})` (:math:`r` the ratio
+of this step to the last; :math:`2\mathbf{u}^n - \mathbf{u}^{n-1}` for equal
+steps), a second-order lag that makes each step one linear (Oseen) solve;
+``picard_iterations`` re-solves with the latest iterate for the fully
+implicit fixed point; ``"implicit"`` puts :math:`\mathbf{u}^{n+1}` itself in
+the advection and lets the SNES take Newton steps on the quadratic term.
 
 Design note: ``docs/developer/design/eulerian-supg-transport.md``.
 """
@@ -49,11 +50,13 @@ _ADVECTION_MODES = ("extrapolated", "implicit")
 class NavierStokesStepState(SolverStepState):
     """:class:`SolverStepState` plus the step length a solve without
     ``timestep`` reuses, the velocity's rate of change ``estimate_dt`` reads,
-    and whether the extrapolation level has been primed."""
+    whether the extrapolation level has been primed, and the length of the step
+    that ended at the current velocity (the extrapolation's step ratio)."""
 
     last_timestep: Optional[float] = None
     last_change_rate: Optional[float] = None
     history_primed: bool = False
+    previous_timestep: Optional[float] = None
 
 
 class SNES_NavierStokes_Composed(SNES_Stokes):
@@ -112,7 +115,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         Order 2 takes ``theta=1.0`` and refuses anything else.
     advection : {"extrapolated", "implicit"}, default "extrapolated"
         The advecting velocity at the new time level: the second-order
-        extrapolation :math:`2\mathbf{u}^n - \mathbf{u}^{n-1}` (a linear
+        extrapolation :math:`\mathbf{u}^n + r(\mathbf{u}^n - \mathbf{u}^{n-1})`, with
+        :math:`r = \Delta t_n/\Delta t_{n-1}` (a linear
         step) or the unknown itself (Newton on the quadratic term).
     picard_iterations : int, default 0
         With ``"extrapolated"``, the number of further passes per step that
@@ -223,6 +227,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         self._picard_count = 0
         self._last_timestep = None
         self._last_change_rate = None
+        self._previous_timestep = None   # the step that ended at u^n
 
         tag = self.instance_number
         self._rho = public_expression(rf"\rho_{{{tag}}}", rho, "Density")
@@ -503,7 +508,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             has_solution=bool(self._has_solution),
             last_timestep=self._last_timestep,
             last_change_rate=self._last_change_rate,
-            history_primed=bool(self._history_primed))
+            history_primed=bool(self._history_primed),
+            previous_timestep=self._previous_timestep)
 
     @state.setter
     def state(self, s):
@@ -511,6 +517,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         self._last_timestep = s.last_timestep
         self._last_change_rate = s.last_change_rate
         self._history_primed = bool(s.history_primed)
+        self._previous_timestep = s.previous_timestep
 
     def _prime_history(self):
         """First solve: the extrapolation level equals the current velocity."""
@@ -594,7 +601,11 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         self._prime_history()
         u_n = np.array(self.u.array[...])
         if self._advection_mode == "extrapolated":
-            self._set_advecting_velocity(2.0 * u_n - np.asarray(self._u_prev.array[...]))
+            # linear in time to t^{n+1}: u^n + r (u^n - u^{n-1}), r the ratio of
+            # this step to the last (written so that r = 1 is 2 u^n - u^{n-1}
+            # to the last bit)
+            r = dt / self._previous_timestep if self._previous_timestep else 1.0
+            self._set_advecting_velocity((1.0 + r) * u_n - r * np.asarray(self._u_prev.array[...]))
         self.DuDt.update_pre_solve(dt, verbose=verbose)
 
         passes = 1
@@ -636,6 +647,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
         # Shift the extrapolation level, then the history.
         self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]
+        self._previous_timestep = dt
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True

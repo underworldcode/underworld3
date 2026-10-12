@@ -5825,7 +5825,7 @@ class Swarm(Stateful, uw_object):
             owns_trace = True
         v_mid_matrix = V_fn_matrix
         if trace is not None and substeps == 1:
-            v_mid_matrix = trace.midtime_expr()
+            v_mid_matrix = trace.midtime_expr(delta_t_model)
 
         self._deferred_migration_suspended = True
 
@@ -5906,7 +5906,7 @@ class Swarm(Stateful, uw_object):
         ## End of substepping loop
         self._deferred_migration_suspended = False
         if owns_trace:
-            trace.finish_step()          # the velocity used this step becomes v^{n-1}
+            trace.finish_step(delta_t_model)   # the velocity used this step becomes v^{n-1}
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that

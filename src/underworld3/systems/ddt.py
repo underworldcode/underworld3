@@ -215,6 +215,16 @@ def _as_float(value):
         return None
 
 
+def _step_ratio(dt, dt_previous):
+    r"""The ratio :math:`\Delta t / \Delta t_{n-1}` of a step to the one before,
+    exact (a rational) so that equal steps reproduce the equal-step weights to
+    the last bit; 1 when either length is unknown or symbolic."""
+    current, previous = _as_float(dt), _as_float(dt_previous)
+    if current is None or previous is None or previous == 0.0:
+        return sympy.Integer(1)
+    return sympy.nsimplify(abs(current) / abs(previous), rational=True)
+
+
 def _history_units(psi_fn, units=None):
     """The units a history's stores are built with: ``units`` when given (a
     solver knows what its history carries), else those of ``psi_fn``; ``None``
@@ -2515,6 +2525,7 @@ class CharacteristicTrace:
         self._cache = {}
         self._step = 0
         self._dt = None
+        self._recorded_dt = None       # length of the step that began with v^{n-1}
         self.n_velocity_evaluations = 0
         self.n_cache_hits = 0
 
@@ -2586,14 +2597,20 @@ class CharacteristicTrace:
         self._evaluate_into(self._levels[1])
         self._levels_valid = min(self._levels_valid + 1, len(self._levels) - 1)
 
-    def midtime_expr(self):
-        r""":math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, or :math:`v^n` alone."""
+    def midtime_expr(self, dt=None):
+        r"""The velocity at the middle of a step of length ``dt``,
+        :math:`v^n + \tfrac{r}{2}(v^n - v^{n-1})` with
+        :math:`r = \Delta t / \Delta t_{n-1}` the ratio of this step to the one
+        that began with :math:`v^{n-1}` (:math:`\tfrac32 v^n - \tfrac12 v^{n-1}`
+        for equal steps, and when either length is unknown); or :math:`v^n` alone
+        until a level is recorded."""
         if not self.midtime_velocity:
             return self.V_matrix()
         self.ensure_levels(2)
         if not self.level_valid(1):
             return self.V_matrix()
-        return self.V_matrix() * sympy.Rational(3, 2) - self.level_expr(1) * sympy.Rational(1, 2)
+        half_ratio = _step_ratio(dt, self._recorded_dt) / 2
+        return self.V_matrix() * (1 + half_ratio) - self.level_expr(1) * half_ratio
 
     def velocity_at(self, expr, coords, use_global=False, evalf=False,
                     subtract_v_mesh=False, v_mesh_var=None):
@@ -2630,16 +2647,17 @@ class CharacteristicTrace:
         next trace-back), the step count and the last step length. The levels'
         values are mesh variables and travel with the fields."""
         return {"levels_valid": int(self._levels_valid), "step": int(self._step),
-                "dt": self._dt}
+                "dt": self._dt, "recorded_dt": self._recorded_dt}
 
     def _restore_step_state(self, record):
         """Put back a :meth:`_step_state` record; ``None`` (a trace made after
         the record was taken) returns the trace to its state before any step."""
         if record is None:
-            record = {"levels_valid": 0, "step": 0, "dt": None}
+            record = {"levels_valid": 0, "step": 0, "dt": None, "recorded_dt": None}
         self._levels_valid = int(record["levels_valid"])
         self._step = int(record["step"])
         self._dt = record["dt"]
+        self._recorded_dt = record["recorded_dt"]
         self._cache.clear()
 
     def begin_step(self, dt):
@@ -2647,14 +2665,16 @@ class CharacteristicTrace:
         self._dt = dt
         self._cache.clear()
 
-    def finish_step(self):
-        """The velocity used this step becomes :math:`v^{n-1}`."""
+    def finish_step(self, dt=None):
+        """The velocity used this step becomes :math:`v^{n-1}`; ``dt`` is the
+        step's length, by default the one :meth:`begin_step` was given."""
         self.record_velocity()
+        self._recorded_dt = self._dt if dt is None else dt
 
     def _segment_exprs(self, seg):
         kind, k, _ = seg
         if kind == "first":
-            return self.V_matrix(), self.midtime_expr()
+            return self.V_matrix(), self.midtime_expr(seg[2])
         half = sympy.Rational(1, 2)
         return self.level_expr(k - 1), (self.level_expr(k - 1) + self.level_expr(k)) * half
 
@@ -3483,7 +3503,7 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             return None
 
-    def _midtime_velocity_expr(self):
+    def _midtime_velocity_expr(self, dt=None):
         r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
         trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
         velocity has been recorded, else :math:`v^n`. :math:`v^{n-1}` is
@@ -3492,7 +3512,7 @@ class SemiLagrangian(_DDtBase):
         carried as it was then."""
         if not getattr(self, "midtime_velocity", True):
             return None
-        return self.characteristics.midtime_expr()
+        return self.characteristics.midtime_expr(dt)
 
     def _record_velocity_history(self):
         """Cache ``V_fn`` evaluated at the true nodes as v^{n-1} for the
