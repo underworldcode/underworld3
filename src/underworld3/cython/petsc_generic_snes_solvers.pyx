@@ -618,6 +618,15 @@ class SolverBaseClass(uw_object):
         model whose flux has a non-smooth yield kink provide a physically
         motivated smooth tangent without changing the residual.
         """
+        # TODO(BUG): the model's flux_jacobian REPLACES the whole F1 in the Newton
+        # tangent. Stokes' F1 is stress(flux) + DEVSS, and stress carries the
+        # augmented-Lagrangian penalty lambda K (div u) I, so with a flux_jacobian
+        # set the uu tangent silently loses the penalty and DEVSS terms (both
+        # depend on the velocity gradient); a thin sheet's closure tr(tau) P would
+        # be lost the same way. The composing form: each solver builds F1 from the
+        # model flux through one function and applies it to flux_jacobian too.
+        # Found 2026-10-12 (thin-sheet work); tangent_surrogates works around it
+        # for frozen atoms. Not fixed here.
         # Default (Picard) path never needs the Newton flux — short-circuit so
         # the (potentially expensive) model.flux_jacobian is not even evaluated,
         # keeping the default assembly allocation-free and bit-identical.
