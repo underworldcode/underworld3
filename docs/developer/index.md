@@ -189,6 +189,7 @@ design/mesh-adaptation-formulation
 design/LAYER2_SBR_ADAPT_ON_TOP
 design/NVB_GRADED_ADAPT
 design/MULTIGRID_MINIMAL_CONTROL_2026-07
+design/FAULT_MULTIGRID_HIERARCHIES
 design/solver-wall-clock-guard
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
