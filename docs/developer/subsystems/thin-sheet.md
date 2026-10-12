@@ -5,7 +5,7 @@ mesh or on the surface of a sphere, with any deviatoric constitutive model —
 Newtonian, Maxwell viscoelastic, or yielding — and the split-node fault machinery.
 
 Design record: `docs/developer/design/THIN_SHEET_VISCOELASTIC_DESIGN.md`.
-Tests: `tests/test_1075`–`test_1079`. Session drivers: `scripts/sessions/thin_sheet_*.py`.
+Tests: `tests/test_1075`–`test_1084`. Session drivers: `scripts/sessions/thin_sheet_*.py`.
 
 ## The equations
 
@@ -14,7 +14,8 @@ $\sigma_{nn} = 0$ on the dynamic stress, the pressure of an incompressible mater
 $p = \tau_{nn} = -\operatorname{tr}\boldsymbol\tau$ and
 
 $$
--\nabla_s\cdot\big(L\,\boldsymbol\sigma\big) + c\,\mathbf u = \mathbf f,
+-\nabla_s\cdot\big(L\,\boldsymbol\sigma\big) + c\,(\mathbf u - \mathbf u_\mathrm{ref})
+= L\,\mathbf f + \mathbf t_b,
 \qquad
 \boldsymbol\sigma = \boldsymbol\tau + \operatorname{tr}(\boldsymbol\tau)\,\mathbf P,
 \qquad
@@ -23,9 +24,13 @@ $$
 
 $\boldsymbol\tau$ is the deviatoric stress the constitutive model returns for the
 in-plane strain rate $\dot{\boldsymbol\varepsilon}_s$; $c$ is a basal drag
-coefficient ($\eta_a/h_a$ for a viscous channel); $\mathbf f$ a force per unit
-area, which for a sheet dragged by a moving substrate is $c\,\mathbf u_s$. There is
-no pressure unknown: the solver is an `SNES_Vector`.
+coefficient ($\eta_a/h_a$ for a viscous channel) against the velocity of what lies
+beneath; $\mathbf f$ a body force per unit **volume** (as for `Stokes`) and
+$\mathbf t_b$ a basal traction. There is no pressure unknown: the solver is an
+`SNES_Vector`, and $p = -\operatorname{tr}\boldsymbol\tau$ is available as the
+diagnostic `sheet.p`. Every invariant a constitutive model forms includes the
+out-of-plane component $M_{nn} = -\operatorname{tr}M$ (`Unknowns.second_invariant`),
+so a yielding sheet yields at the von Mises stress.
 
 Closed forms the tests pin: uniaxial stretch with free edges gives the Trouton
 stress $3\eta\dot\varepsilon$; a rigid motion carries no stress; the Maxwell
@@ -41,11 +46,46 @@ sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
 sheet.constitutive_model.Parameters.shear_viscosity_0 = eta
 sheet.constitutive_model.Parameters.shear_modulus = mu
 sheet.thickness = L
-sheet.basal_drag = c
-sheet.bodyforce = list(c * u_substrate)
+sheet.add_basal_drag(c, "Base", reference_velocity=u_substrate)
 sheet.add_fault_bc(0, "Flt")             # after mesh.add_fault(("Flt", points))
 sheet.solve(timestep=dt)
 ```
+
+## One model, thin or thick
+
+The same model function runs as a thin sheet and as a thick one — `Stokes` on a
+thin 3-D layer — by changing the mesh and the solver class:
+
+```python
+def model(mesh, Solver):
+    solver = Solver(mesh)
+    solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    solver.constitutive_model.Parameters.shear_viscosity_0 = eta
+    solver.add_basal_drag(c, "Base", reference_velocity=u_base)
+    solver.add_fault_bc(0, "Flt")
+    return solver
+
+sheet = model(sheet_mesh, uw.systems.ThinSheet)             # sheet.thickness = L
+layer = model(sheet_mesh.extrude(L, layers=2), uw.systems.Stokes)
+```
+
+`mesh.extrude(L, layers)` (`uw.meshing.extrude_sheet`) builds the layer from the
+sheet mesh: the sheet's boundaries become its walls under the same names, its faces
+are `Base` and `Surface`, and every split-node fault of the sheet becomes a vertical
+fault through the whole layer — open at the surface and the base, its tips shared
+vertical edges — with the side labels and the pairing rebuilt, so
+`Stokes.add_fault_bc` works on it. The thin sheet accepts the boundary name of
+`add_basal_drag` / `add_basal_traction` and ignores it (it is its own base).
+`uw.maths.tensor.resolved_traction` and `coulomb_failure_stress` act on either
+solver's `stress`. A constitutive model's tangent flux (`flux_jacobian`) is
+composed with each solver's own closure (`_flux_closure`).
+
+Measured (`test_1083`, $L = 0.04$, $cL/\eta = 0.04$): the layer's mid-plane
+velocity matches the sheet's to 0.7 % unfaulted and 0.5 % faulted, the slip to
+1.6 %. Limits: serial only; a faulted layer gets no geometric-multigrid tail yet
+(the rotated 3-D pair operator fails under custom multigrid, marked TODO(BUG) in
+`meshing/extrude.py`), so it solves with algebraic multigrid; the radial extrusion of a spherical
+manifold is implemented but not yet tested.
 
 ## On a sphere
 
@@ -90,8 +130,16 @@ Known limits: faults may not reach the mesh boundary (2-D rule); on a split mesh
 pair data there; `mesh.adapt` runs on a manifold but does not yet snap the refined
 vertices back to the sphere.
 
+## The quadratic benchmark
+
+On the sphere a divergence-free toroidal drag thins a corotational Maxwell sheet at
+second order (the Weissenberg effect): $-\nabla_s\cdot\mathbf u/A^2 =
+(24/91)P_2 - (24/287)P_4$ in steady state, scaled by ETD-1's effective relaxation
+time $\alpha\Delta t/(1-\alpha)$. `test_1084`; the closed form is derived by
+`scripts/sessions/thin_sheet_quadratic_closed_form.py`.
+
 ## Round 2 (not yet)
 
 Thickness evolution with the gravitational potential energy term (England &
 McKenzie's Argand number) — on the sphere with the Eulerian advection–diffusion —
-and yield in the sheet with the invariant that includes $\tau_{nn}$.
+and topography from it.

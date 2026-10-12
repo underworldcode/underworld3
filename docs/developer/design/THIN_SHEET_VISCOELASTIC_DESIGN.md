@@ -116,14 +116,25 @@ The solver owns the kinematics, the closure and the geometry; the model owns the
 rheology. What is already shared: the constitutive models, the fault interface API, the
 boundary-condition methods, the stress history and `solve(timestep=)`.
 
-Still to align:
+State of the alignment (2026-10-12):
 
-| | thin sheet | thick sheet | aligned form |
-|---|---|---|---|
-| construction | `ThinSheet(mesh)` | `Stokes(mesh, v, p)` | same signature; the sheet exposes `p = -tr(tau)` as a diagnostic |
-| forcing | per unit area | per unit volume | per unit volume; the sheet multiplies by its thickness |
-| basal coupling | `basal_drag` | traction on the base | one method, `add_basal_drag(c, boundary)` |
-| fault geometry | `add_fault` with a trace | `add_conforming_sheet` | `add_fault` with a surface trace extrudes it through a thin 3-D mesh |
-| stress | in-plane sigma | 3-D sigma | one resolved-traction / Delta CFF helper |
-| nonlinear invariants | in-plane only (wrong where the sheet thins) | 3-D | the sheet supplies the invariant with eps_nn = -tr(eps_s) |
-| topography | implied isostatic rate | free surface | one diagnostic name |
+| | thin sheet | thick sheet | aligned form | state |
+|---|---|---|---|---|
+| construction | `ThinSheet(mesh, v, p, degree, p_continuous)` | `Stokes(mesh, v, p, ...)` | same signature; the sheet's `p` is the diagnostic $-\operatorname{tr}\tau$, refreshed after each solve | done |
+| mesh | the sheet mesh | `mesh.extrude(L, layers)` | the thick twin keeps the sheet's boundaries as walls (same names) and adds `Base` / `Surface` | done (serial); MG tail coarsens through the thickness first |
+| forcing | body force per unit volume, times $L$ | per unit volume | `bodyforce` means the same on both | done |
+| basal coupling | `add_basal_drag(c, "Base", reference_velocity=)`, `add_basal_traction(t, "Base")` | the same, as natural conditions on `Base` | one line serves both; the sheet ignores the boundary name | done |
+| fault geometry | `mesh.add_fault` | extruded with the mesh: a vertical fault through the layer, split at surface and base, tips shared | `add_fault_bc` on either | done flat (test_1083: velocity 0.5 %, slip 1.6 %); sphere implemented, untested; faulted layer has no MG tail yet (TODO(BUG)) |
+| stress | `solver.stress` (in-plane, tension positive) | `solver.stress` (3-D) | `uw.maths.tensor.resolved_traction` / `coulomb_failure_stress` on `solver.stress` | done |
+| nonlinear invariants | `Unknowns.second_invariant` adds $M_{nn} = -\operatorname{tr}M$ | plain contraction | every model invariant goes through the solver | done |
+| Newton tangent | `_flux_closure` | `_flux_closure` | the model's `flux_jacobian` is composed with the solver's closure (it used to replace the whole flux, and was ignored on vector solvers) | done |
+| topography | implied isostatic rate | free surface | with thickness transport (round 2) | open |
+
+Mesh-pairing notes. A thin 3-D fault cannot come from the 3-D splitter: it keeps
+the patch rim welded (the tip rule one dimension up), so a fault through a layer
+would be locked at the surface and the base, and it needs about nine cells of
+depth. Extruding the already-split sheet avoids both: the slit is duplicated at
+every level, so the fault is open where it meets the faces, and the two sides are
+cut into tetrahedra identically (the minus copy of a vertex takes its plus copy's
+place in the vertex order), so the pairing is rebuilt by joining mapped vertex
+tuples.

@@ -8270,6 +8270,22 @@ class Mesh(Stateful, uw_object):
         return self._adopt_cut_child(cut_dm, boundaries, info,
                                      mg_coarsening_ratio, verbose)
 
+    def extrude(self, thickness, layers=2, base="Base", surface="Surface",
+                qdegree=None, verbose=False):
+        r"""The thick twin of this sheet mesh: a layer of tetrahedra
+        ``thickness`` deep, centred on the sheet.
+
+        The sheet's boundaries become the layer's walls under the same names,
+        its two faces are ``base`` and ``surface``, and every split-node fault
+        of the sheet becomes a vertical fault through the whole layer, with its
+        side labels and pairing. A model written for ``ThinSheet`` on this mesh
+        runs as ``Stokes`` on the result by changing the mesh and the solver
+        class. See :func:`underworld3.meshing.extrude_sheet`.
+        """
+        from underworld3.meshing.extrude import extrude_sheet
+        return extrude_sheet(self, thickness, layers=layers, base=base,
+                             surface=surface, qdegree=qdegree, verbose=verbose)
+
     def add_fault(self, faults, verbose=False):
         """Cut AND split one or more faults; return the split mesh.
 
