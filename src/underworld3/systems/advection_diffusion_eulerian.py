@@ -36,9 +36,11 @@ import warnings
 
 import numpy as np
 import sympy
+from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
 import underworld3 as uw
+from underworld3.checkpoint.state import SolverStepState
 import underworld3.timing as timing
 from underworld3.systems import SNES_Scalar
 from underworld3.utilities._api_tools import Template
@@ -63,6 +65,15 @@ def _check_supplied_manager(DuDt, order, theta):
     if theta is not None and hasattr(DuDt, "theta") and float(DuDt.theta) != float(theta):
         raise ValueError(
             f"DuDt supplied has theta={DuDt.theta} but theta={theta} was asked for.")
+
+
+@dataclass
+class AdvectionDiffusionStepState(SolverStepState):
+    """:class:`SolverStepState` plus the step length a solve without
+    ``timestep`` reuses and the field's rate of change ``estimate_dt`` reads."""
+
+    last_timestep: Optional[float] = None
+    last_change_rate: Optional[float] = None
 
 
 class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
@@ -381,6 +392,10 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             for key in self._SCHWARZ_OPTIONS:
                 opts.delValue(key)
             self._push_managed_option("ksp_type", "gmres")
+            # the Schwarz route's restart 200 is gone with its keys; the multigrid
+            # route takes the solvers' default (see SolverBaseClass), not PETSc's 30
+            from underworld3.cython.generic_solvers import _DEFAULT_KRYLOV_RESTART
+            self._push_managed_option("ksp_gmres_restart", _DEFAULT_KRYLOV_RESTART)
             for key, value in multigrid_options.gamg_bundle().settings.items():
                 self._push_managed_option(key, value)
         else:
@@ -564,6 +579,21 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     # ------------------------------------------------------------------
     # Timestep and solve
     # ------------------------------------------------------------------
+
+    @property
+    def state(self):
+        """:class:`AdvectionDiffusionStepState`: what the last solve left that
+        steers the next one (see :attr:`SolverBaseClass.state`)."""
+        return AdvectionDiffusionStepState(
+            has_solution=bool(self._has_solution),
+            last_timestep=self._last_timestep,
+            last_change_rate=self._last_change_rate)
+
+    @state.setter
+    def state(self, s):
+        SNES_Scalar.state.fset(self, s)
+        self._last_timestep = s.last_timestep
+        self._last_change_rate = s.last_change_rate
 
     @timing.routine_timer_decorator
     def estimate_dt(self, fraction: float = 0.02, basis: str = "accuracy",

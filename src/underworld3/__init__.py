@@ -222,6 +222,7 @@ from .model import (
     ThermalConvectionConfig,
     create_thermal_convection_model,
 )
+from . import adjoint
 from .utilities.describe import render, view
 from .utilities.capabilities import capabilities
 from .utilities.transcript_query import Transcript
@@ -231,6 +232,7 @@ from .utilities.transcript_report import (
     transcript_table,
     transcript_figure,
     transcript_key,
+    transcript_adjoint_segments,
 )
 from .parameters import ParameterRegistry, ParameterType
 from .materials import (

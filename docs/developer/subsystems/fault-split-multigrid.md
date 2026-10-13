@@ -104,6 +104,13 @@ np = 2, slip 0.19382 on both. The thin layer's iteration count still grows with
 refinement; the through-thickness coupling and the pressure Schur complement on a
 thin layer are their own question, outside this hierarchy.
 
+A planar fault patch in a 3-D box (sheet placed on the NVB-refined child with
+`clearance=0.9`, 35712 tetrahedra at one add-on level): 5 velocity iterations, slip
+0.18113. One isotropic add-on level in 3-D is three bisection passes, which the
+tail's one-level-per-halving rule folds into the finest, so there is no intermediate
+level to split at k = 1 and the two tails coincide there; k = 2 is the first with a
+split 3-D level.
+
 ## Tests
 
 `tests/test_1087_fault_split_multigrid.py` (tail structure, iterations falling with
@@ -114,8 +121,18 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
 
 ## Not yet done
 
-- The 3-D sheet placement refuses an NVB-refined child (its volume guard fires), so the
-  general 3-D path is exercised only on meshes the placement accepts.
+- The 3-D sheet placement on an NVB-refined child needs `clearance` of about 0.9 at
+  one add-on level (its volume guard fires at the default 0.6) and refuses the
+  two-level child at every clearance and sheet size tried (volume change 4e-6 to
+  5e-5 against a guard of 1e-9). General 3-D patches on add-on meshes wait on the
+  placement; `add_fault` passes the placement options through.
+- A placed band's spines (`cut=False`) are not replayed on the levels; such a fault
+  keeps the welded tail and the FAC patch of the fault-network work.
+- The replay runs from the finest add-on level down and stops, with a warning, at the
+  first level the faults cannot be carried onto; that level and those beneath it stay
+  welded. A network whose junction ligament is one fine cell wide closes at the next
+  coarser spacing (the two labels meet), so such a network gets split levels only where
+  the ligament survives — on `test_0866`'s kissing Y with one add-on level, none.
 - Co-locating the add-on levels with the finest in parallel is an optimisation the
   query path makes unnecessary for correctness; not measured at scale.
 - The one-rank build of `extrude_sheet` bounds the layer size by one rank's memory.

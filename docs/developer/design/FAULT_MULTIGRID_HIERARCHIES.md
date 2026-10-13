@@ -178,6 +178,7 @@ In the library: the add-on levels of one `adapt` call, each split by `add_fault`
 cell-located transfer (serial and parallel) and the per-level frames in
 `utilities/fault_mg.py`, installed through `custom_mg` and the rotated solve; the 3-D
 layer with every level split, extruded in parallel; 3-D sheet faults on add-on meshes.
-Not yet: fault networks through the levels (one `add_fault` call with several faults
-replays them all, untested), faults near a boundary, co-locating the levels with the
-finest as an optimisation.
+Not yet: fault networks through the levels (a network is replayed on every level, but
+a one-cell junction ligament closes at the coarser spacing and the replay then stops
+there, leaving that level and those beneath welded), faults near a boundary,
+co-locating the levels with the finest as an optimisation.

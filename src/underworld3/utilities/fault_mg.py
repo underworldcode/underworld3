@@ -385,13 +385,26 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
 #  Splitting the add-on levels
 # --------------------------------------------------------------------------- #
 def split_tail_levels(levels, fault_specs, verbose=False):
-    """Replay the finest mesh's faults on each add-on level; return the split
-    levels (same order). ``fault_specs`` is the list ``fault_split.add_fault``
-    records on its child: ``("line", name, polyline)`` in 2-D, ``("sheet", name,
-    points, triangles)`` in 3-D. Each level is cut and split exactly as the
+    """Replay the finest mesh's faults on each add-on level; return the levels
+    (same order), split where the replay succeeds.
+
+    ``fault_specs`` is the list ``fault_split.add_fault`` records on its child:
+    ``("line", name, polyline)`` in 2-D, ``("sheet", name, points, triangles,
+    placement options)`` in 3-D. Each level is cut and split exactly as the
     finest was, so its slit lies on the same geometry and the centroid rule of
     the transfer assigns sides consistently across levels. A level carries no
-    tail of its own."""
+    tail of its own.
+
+    The replay runs from the finest level down. A level the faults cannot be
+    carried onto — a network whose one-cell ligament closes at the coarser
+    spacing, so two labels meet; a sheet the placement refuses — is left WELDED,
+    and so is every level beneath it (a split level under a welded one would
+    hand the welded level's single trace node one side's value). The hierarchy
+    then has split levels down to the finest coarsening the geometry allows,
+    and a warning says where the replay stopped and why.
+    """
+    import warnings
+
     from underworld3.utilities.fault_split import add_fault
 
     entries = [tuple(spec[1:4]) for spec in fault_specs]
@@ -399,12 +412,22 @@ def split_tail_levels(levels, fault_specs, verbose=False):
     for spec in fault_specs:
         if spec[0] == "sheet" and len(spec) > 4:
             kwargs.update(spec[4])
-    out = []
-    for level in levels:
-        split = (add_fault(level, entries, verbose=verbose, **kwargs)
-                 if entries else level)
+    out = list(levels)
+    if not entries:
+        return out
+    for k in range(len(levels) - 1, -1, -1):
+        level = levels[k]
+        try:
+            split = add_fault(level, entries, verbose=verbose, **kwargs)
+        except (ValueError, RuntimeError, NotImplementedError) as exc:
+            warnings.warn(
+                f"fault_mg: the fault(s) could not be carried onto add-on "
+                f"level {k} of {len(levels)} ({exc}); that level and the "
+                f"levels beneath it stay welded, the {len(levels) - 1 - k} "
+                f"finer add-on level(s) are split.")
+            break
         split._custom_mg_coarse_meshes = None
-        out.append(split)
+        out[k] = split
     return out
 
 

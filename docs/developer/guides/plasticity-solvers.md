@@ -1,6 +1,6 @@
 ---
 name: plasticity-solvers
-description: How to get hard-Min viscoplastic / visco-elastic-plastic (VEP) Stokes solves to CONVERGE in Underworld3 — Newton with the automatic Picard entry (solver.consistent_jacobian), which tangent per model, grid sequencing for the hard cases, and the δ-soft-min substrate (yield_mode / yield_smoother / yield_anchor) as a modelling choice. Reach for THIS first when a Drucker-Prager / yield-stress Stokes solve stalls, diverges (DIVERGED_LINEAR_SOLVE / line-search fail), or grinds through ~20+ nonlinear iterations. Tells you which tangent to use per model, how to confirm you are actually running Newton, and the measured failure modes. For the solver-config trap list and multigrid, see `nonlinear-solver`.
+description: How to get hard-Min viscoplastic / visco-elastic-plastic (VEP) Stokes solves to CONVERGE in Underworld3 — Newton (solver.consistent_jacobian) warmed by real Picard steps via solve(picard=N) (one is automatic on a cold start), which tangent per model, grid sequencing for the hard cases, and the δ-soft-min substrate (yield_mode / yield_smoother / yield_anchor) as a modelling choice. Reach for THIS first when a Drucker-Prager / yield-stress Stokes solve stalls, diverges (DIVERGED_LINEAR_SOLVE / line-search fail), or grinds through ~20+ nonlinear iterations. Tells you which tangent to use per model, how to confirm you are actually running Newton, and the measured failure modes. For the solver-config trap list and multigrid, see `nonlinear-solver`.
 families: [Stokes, ViscoPlasticFlowModel, ViscoElasticPlasticFlowModel]
 kind: recipe
 ---
@@ -18,7 +18,8 @@ and records what was retired.
 stokes.constitutive_model = cm           # ViscoPlastic / ViscoElasticPlastic / TI-VEP
 cm.Parameters.yield_stress = tau_y       # finite -> plasticity active
 stokes.consistent_jacobian = True        # Newton tangent (non-elastic DP; see table)
-stokes.solve()                           # cold start takes ONE Picard step automatically
+stokes.solve()                           # cold: ONE Picard step automatically, then Newton
+stokes.solve(picard=3)                   # the recipe: a few Picard steps, then Newton
 ```
 
 ---
@@ -28,20 +29,25 @@ stokes.solve()                           # cold start takes ONE Picard step auto
 Yielding viscoplasticity is `η_eff = Min(η_visc, η_yield)`,
 `η_yield = τ_y/(2·ε̇_II)`. The `Min` kink is what makes it hard.
 
-1. **Picard is an ENTRY requirement, not an accelerator.** On a cold start under
-   the consistent tangent, `solve()` takes one automatic Picard (frozen-tangent)
-   step and then runs Newton (fires only when `picard==0`,
-   `consistent_jacobian is True`, and the start is cold — from a warm iterate,
-   0 Picard really is 0). Do NOT front-load Picard where Newton works: measured,
-   opening with 5 / 25 Picard steps cost 12 / 30 total iterations against pure
-   Newton's 7.
+1. **"A few Picard steps, then Newton" is one flag: `solve(picard=N)`.** Under
+   `consistent_jacobian=True` it takes exactly N Picard steps — successive substitution,
+   a linear Stokes solve with the viscosity frozen at the current state — then Newton.
+   A cold start takes ONE automatically; `picard=-1` switches it off. It matters most for
+   BOUNDARY-DRIVEN problems: measured on a sheared box, pure Newton from rest stalls on
+   step size (`CONVERGED_SNORM_RELATIVE` at ||F|| = 4.5e-5 — reported as "converged"),
+   while one or three Picard steps first give true residual convergence in fewer
+   iterations. (Mechanism: the Jacobian is compiled in the blended form
+   J_p + alpha (J_n - J_p); alpha = 0 is the Picard step, alpha = 1 is Newton, and
+   switching needs no recompile.) ⚠️ #791: the former warm-up was an nrichardson
+   residual sweep, not a Picard step; measurements quoted for "opening Picard steps"
+   before 2026-09-26 were of that sweep and are withdrawn.
 
 2. **Newton-first; spend Picard only to rescue.** When Newton fails
    (`DIVERGED_LINE_SEARCH` / `DIVERGED_LINEAR_SOLVE`) **or stalls admissibly**
    (steps accepted, residual flat — no FAIL reason ever fires), revert to the best
-   iterate and buy a Picard block: `solve(picard=N)`, or
-   `consistent_jacobian="continuation"` (staged Picard→Newton α-blend; α is a
-   `constants[]` atom, no recompile). Rescue on *stagnation*, not only on a
+   iterate and buy a Picard block: `solve(picard=N)` (N Picard steps, then Newton), or
+   `consistent_jacobian="continuation"` (one solve, α-blend keyed on the residual
+   relative to ‖F(u=0)‖, α a `constants[]` atom, no recompile), or `consistent_jacobian=False` for Picard throughout. Rescue on *stagnation*, not only on a
    failure reason — the failure-only trigger measured byte-identical to doing
    nothing at the cliff.
 
@@ -55,7 +61,7 @@ Yielding viscoplasticity is `η_eff = Min(η_visc, η_yield)`,
 
 4. **`solver.has_solution` / tri-state `zero_init_guess`** make warm-started
    campaigns safe: `None` (default) auto-detects; a diverged solve or a remesh
-   clears the flag so the next solve cold-starts (with its Picard entry) instead
+   clears the flag so the next solve cold-starts instead
    of warming off a corrupted iterate.
 
 ---
@@ -84,14 +90,16 @@ rescue, and grid sequencing are.
 
 ## Which tangent for which model (measured)
 
-`solver.consistent_jacobian` takes `False` | `True` | `"continuation"`:
+`solver.consistent_jacobian` takes `False` | `True` | `"continuation"`; the default is
+`True` for every solver class since 2026-10-05, so a model that wants the frozen tangent
+must ask for it:
 
 | Model | Use | Why |
 |-------|-----|-----|
-| `ViscoPlasticFlowModel` (non-elastic) | **`True`** (Newton) | Quadratic near the solution; the automatic Picard entry handles the cold start. |
-| `ViscoElasticPlasticFlowModel` (VEP) | **`False`** (Picard) | The consistent yield tangent over the elastic stress-history block makes the Jacobian **indefinite → `DIVERGED_LINEAR_SOLVE`**. Picard is contractive. |
+| `ViscoPlasticFlowModel` (non-elastic) | **`True`** (Newton) | Quadratic near the solution; a cold start takes one Picard step automatically — use `solve(picard=N)` for more. |
+| `ViscoElasticPlasticFlowModel` (VEP) | **`False`** (Picard), set explicitly | The consistent yield tangent over the elastic stress-history block makes the Jacobian **indefinite → `DIVERGED_LINEAR_SOLVE`**. Picard is contractive. (The review of PR #794 found `test_1052`'s loading-through-yield converging under the Newton default with the smooth law, nl = 1 per step; the measurement below predates the smooth default.) |
 | `TransverseIsotropicVEPFlowModel` (TI-VEP) | **`False`** (Picard) | Same as VEP (elastic). |
-| Any, far from the solution | **`"continuation"`** | Staged Picard→Newton; Picard locates the basin, Newton finishes. Beat pure Newton at every notch point measured — but its stage switch is a residual LEVEL and one-way, so it can overspend Picard on easy problems. |
+| Any, far from the solution | **`"continuation"`** | One solve: α (0 Picard → 1 Newton) set each iteration from F/‖F(u=0)‖ — leaves 0 at 0.1, reaches 1 at 5e-4 — with an `l2` line search (`bt` stops the Picard end). Warm starts enter at the α their residual calls for. Converged the hard notch (η_bg 5e24, also at δ 0.1) and a power law n = 5 where pure Newton fails; 3–9x fewer KSP than cold Newton where both converge. Known stall: the blended iteration oscillates at α ≈ 0.4–0.6 (notch at refinement 2; power law n = 3 with yield). |
 
 > Measured: VEP loading-through-yield — Picard converges (σ locks at τ_y),
 > Newton diverges every step (`DIVERGED_LINEAR_SOLVE`).
@@ -155,8 +163,11 @@ If you want a *rounded* yield law at all (as physics or as a formulation choice)
 the substrate is three model properties; δ is a `constants[]` atom, so changing it
 never recompiles:
 
-- **`yield_mode`**: `"min"` (default — exact hard `Min`), `"softmin"` (the
-  δ-parameterised family below), `"harmonic"` (a **distinct physical model**, a
+- **`yield_mode`**: `"softmin"`, the δ-parameterised family below (DEFAULT since
+  2026-10-05: `sqrt` smoother, `"onset"` anchor, δ = 0.1 — the viscous branch and
+  the plastic limit exact, the yield point itself 4.5 % under-stressed, the yielded
+  tangent ≥ −1e-4 of the viscous one); `"min"` (exact hard `Min`, an explicit choice,
+  the default until 2026-10-05); `"harmonic"` (a **distinct physical model**, a
   parallel blend — not an approximation to `Min`).
 - **`yield_smoother`**: `"sqrt"` or `"powermean"`. **δ is NOT the same parameter
   in the two families**: the power mean's sharpness is `s = 1/(δ + 0.001)`, so
@@ -165,11 +176,15 @@ never recompiles:
   δ = 0 lands within 0.07 % of `Min` — an order of magnitude inside a 1e-8 solver
   tolerance.
 - **`yield_anchor`**: which point is pinned to the exact law — the SIDE of `Min`
-  belongs to the anchor, not the family. `"onset"` (default, historical) is exact
-  on the unyielded branch but sits BELOW `Min` at and above yield — a *weaker*
-  problem than the sharp one. `"yield"` pins τ/τ_y = 1 exactly and sits on-or-above
-  `Min` everywhere; the cost is stiffer unyielded material (bounded ×2 sqrt,
-  ×2^δ powermean, both → 1 as δ → 0).
+  belongs to the anchor, not the family. `"onset"` (default) is exact on the
+  unyielded branch but sits BELOW `Min` at and above yield — a *weaker* problem than
+  the sharp one, by 4.5 % at the yield point at δ = 0.1 and by a third at δ = 64.
+  `"yield"` pins τ/τ_y = 1 exactly and sits on-or-above `Min` everywhere; the cost is
+  stiffer unyielded material EVERYWHERE below yield, not just near it (×1/(1 − δ/2)
+  for sqrt — 5 % at δ = 0.1; ×2^δ for powermean), and for sqrt a stress that falls back
+  to τ_y from 1.033 τ_y above yield, i.e. a NEGATIVE yielded tangent (−0.029 of the
+  viscous slope at δ = 0.1). A δ-march entry, not a single-solve law; it was refused
+  as the default in review (PR #794).
 
 **If you march δ toward the sharp law, the only sound discipline is multi-solve:**
 hold δ constant for a full solve to tolerance, warm-start the next smaller δ,
@@ -184,7 +199,42 @@ measured, it never has.
 
 ---
 
+## Declared regularisation: `plastic_rate_strengthening`
+
+A yielded cell's consistent tangent has no modulus along its own strain-rate direction
+(perfect plasticity), so a yielded layer is a near-null mechanism mode of the velocity
+block (Spiegelman notch: Rayleigh quotient 1.8e-7). The model can state a
+regularisation for it:
+
+```python
+cm.Parameters.plastic_rate_strengthening = 1.0e19      # eta_reg, units of viscosity
+```
+
+The law becomes `eta_pl -> tau_y / (2 edot_II) + m * eta_reg` on ViscoPlastic, VEP and
+TI-VEP. It floors the plastic viscosity AND adds `2 m eta_reg` to the tangent along the
+flow in every yielded cell. Its scale is the model's: there is no universal
+dimensionless value (a 1 % overstress on the notch is 20 x sigma_y in a convective lid),
+which is why the default is 0 (no term) and a pressure-dependent yield stress under the
+consistent tangent without it warns. `m` (`rate_strengthening_scale`, default 1) is a
+`constants[]` multiplier, so changing it is a repack, not a recompile.
+
+`stokes.solve(homotopy="rate_strengthening")` ladders `m` from the viscous limit down to
+exactly 1 (ViscoPlastic only — the elastic models would advance their stress history on
+every rung): one solve at an entry multiplier `1e3 x max(eta_ve / eta_reg)` at which
+nothing yields, then the largest `m` at which a cell still yields there, read from the
+fields, then rungs down to `m = 1`, each warm-started, failed rungs retried from the last
+converged one. A ladder that stops above 1 leaves the model at `m = 1`, the fields at
+the last converged rung, and warns. The summary carries `scale0`, `rungs`,
+`reached_one`, `converged`. Measured on the notch: the equivalent ladder keeps the
+velocity block healthy on every rung and reaches a converged state no single solve
+could.
+
 ## Floors
+
+- With `plastic_rate_strengthening` stated, the viscosity floor is redundant on the
+  plastic branch wherever `m * eta_reg >= shear_viscosity_min`; the floor remains a
+  safeguard for the creep branch. `yield_stress_min` (the POSITIVE residual strength in
+  tension) is a statement of the yield law and stays.
 
 - **`shear_viscosity_min`** (default `-oo` = off) is applied through
   `uw.maths.smooth_max`, but the default rounding scale is zero under
@@ -208,8 +258,8 @@ measured, it never has.
 |---------|-------|-----|
 | `DIVERGED_LINEAR_SOLVE`, 0 iters, VEP | consistent Newton over the elastic block → indefinite | Picard (`consistent_jacobian=False`) |
 | `DIVERGED_LINEAR_SOLVE` at nl=0 with a viscosity floor set | δ→0 leaves the floor's `Max` corner exact | set `viscosity_min_rounding` |
-| Newton stalls with no divergence reason | admissible uselessness — steps accepted, residual flat | revert to best iterate, Picard block (`picard=N` / `"continuation"`); consider grid sequencing |
-| Converges but σ sits **below** τ_y | a fixed δ>0 soft-min under the default `"onset"` anchor is a WEAKER law | that is the modelling choice you made — use `yield_anchor="yield"`, or δ→0 / `yield_mode="min"` for the exact surface |
+| Newton stalls with no divergence reason | admissible uselessness — steps accepted, residual flat | revert to best iterate, Picard block (`solve(picard=N)` or `"continuation"`); consider grid sequencing |
+| Converges but σ sits **below** τ_y | a fixed δ>0 soft-min under the default `"onset"` anchor is a WEAKER law (4.5 % at the yield point at δ = 0.1) | that is the modelling choice you made — a smaller δ, or `yield_mode="min"` for the exact surface (`yield_anchor="yield"` reaches τ_y but stiffens every unyielded cell and softens above yield) |
 | Linear (~20-iter) convergence | Picard tangent when you wanted Newton | `consistent_jacobian=True` on a non-elastic model (see "Confirm" above) |
 
 ---

@@ -1058,13 +1058,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
       the loose ``solver.newton_switch_rtol`` (and at least ``picard`` iterations if
       given) to enter Newton's basin; phase 2 sets α=1 (consistent Newton tangent) and
       drives to the requested tolerance. α is restored to 0 afterwards.
-    * ``consistent_jacobian is True`` (pure Newton) with ``picard > 0`` — a Picard
-      warmup needs the frozen tangent, which the pure-Newton compile does not carry, so
-      this **raises** ``NotImplementedError`` pointing to ``"continuation"`` rather than
-      silently ignoring the request.
-    * ``consistent_jacobian is False`` (default, frozen/Picard) — the whole solve is
-      already the frozen tangent, so ``picard`` is inherently satisfied (matches the
-      standard path, whose post-warmup Newton phase also uses the frozen tangent here).
+    * ``consistent_jacobian is True`` (the default, consistent Newton) with
+      ``picard > 0`` — the same two-phase solve on the blended Jacobian that
+      ``solve()`` compiles for an explicit warm-up. A cold start takes NO automatic
+      Picard step on this path (pure Newton from rest converges here). Called directly,
+      without that compile, a nonlinear residual **raises** ``NotImplementedError``
+      rather than silently ignoring the request.
+    * ``consistent_jacobian is False`` (frozen/Picard) — the whole solve is already the
+      frozen tangent, so ``picard`` is inherently satisfied.
 
     Returns
     -------
@@ -1126,10 +1127,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         rtol = float(solver.tolerance)
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
-    # staged α=0 → α=1 solve; pure Newton + picard>0 is unsupported (no frozen tangent
-    # to warm up with) and errors loudly; frozen (default) already satisfies a warmup.
+    # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
+    # picard>0 runs the same staging on the blended Jacobian that solve() compiled for
+    # it (_plan_picard_warmup, staged_loop); the frozen tangent already satisfies a
+    # warmup. No automatic cold-start step is taken here: from rest, pure Newton on
+    # this path converges (measured 8-9 its against 27-29 frozen on a VP box).
     mode = getattr(solver, "consistent_jacobian", False)
-    continuation = (mode == "continuation")
+    continuation = (mode == "continuation"
+                    or (mode is True and bool(picard) and picard > 0
+                        and getattr(solver, "_picard_blend", False)))
     if picard and not continuation and mode is True:
         # The ONLY place linearity must be known in advance (hence the lazy probe —
         # two trial assemblies, paid only by this contradictory configuration): a
@@ -1712,16 +1718,23 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
         return Pl
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
+    g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
     Pfine = Qv.matMult(Ps[-1])
-    # zeroRows takes GLOBAL rows of the velocity block. getIndices() holds this
-    # rank's entries only, so a position in it is a LOCAL row: offset it by the
-    # rank's first owned row. (Without the offset the wrong rows were zeroed at
-    # np > 1 — 232 coarse unknowns lost every fine image and the Galerkin product
-    # failed on empty rows; serial, where local and global coincide, was fine.)
+    # The constrained rows (rotated normals, fault-pair contact rows) take
+    # no coarse correction. ``g2blk`` enumerates THIS rank's entries of the
+    # velocity IS, so its values are local block rows; zeroRows takes
+    # global ones, which on the sub-matrix are the rank's ownership offset
+    # plus the local index. Passing the local index zeroed the wrong rows
+    # on every rank but the first (#671): a rank's own constrained rows
+    # kept their coarse correction while rows of the first rank lost
+    # theirs — and where those were the only fine images of a coarse
+    # DOF, the Galerkin coarse operator got a zero row PETSc could not
+    # repair (MatGalerkin writes an identity diagonal that was never
+    # allocated).
     rstart = Pfine.getOwnershipRange()[0]
-    g2blk = {int(g): rstart + k for k, g in enumerate(vis)}
-    nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
+    nrows_blk = sorted({rstart + g2blk[g] for g in normal_rows
+                        if g in g2blk})
     Pfine.zeroRows(nrows_blk, diag=0.0)
     # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
     # (rotated or not) reuses the hierarchy instead of re-resolving it.
@@ -1860,7 +1873,16 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # iteration counts (measured, both velocity-block routes, isotropic and
             # TI); a too-loose inner solve fails by silent stagnation, not loudly.
             "fieldsplit_pres_ksp_type": "fgmres",
-            "fieldsplit_pres_ksp_rtol": str(tol * 0.1),
+            # TODO(MEASURE): the 0.1 margin sits BELOW the floor the inexact
+            # velocity solve leaves in the Schur residual (measured on the
+            # fault-network layouts: the pressure residual falls 5e-3 in 20
+            # iterations, then creeps to the 200 cap at ~7e-6 relative, each
+            # iteration a velocity-preconditioner apply). The attribute is
+            # the knob for the measurement in
+            # docs/developer/design/fault-parallel-placement-2026-09.md;
+            # the resolved rule replaces it.
+            "fieldsplit_pres_ksp_rtol": str(
+                getattr(solver, "_rotated_pres_rtol", tol * 0.1)),
             "fieldsplit_pres_ksp_max_it": "200",
         }
         if Mp is not None:

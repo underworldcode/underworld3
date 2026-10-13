@@ -39,6 +39,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
 | Thin sheet (plane stress, sphere, faults) | [subsystems/thin-sheet.md](subsystems/thin-sheet.md) |
 | Fault multigrid (split-level hierarchy, parallel pairing) | [subsystems/fault-split-multigrid.md](subsystems/fault-split-multigrid.md) |
+| Fault networks in parallel (placement, split, tail) | [design/fault-parallel-placement-2026-09.md](design/fault-parallel-placement-2026-09.md) (subsystem reference: [conforming-surfaces-and-fault-zones.md](subsystems/conforming-surfaces-and-fault-zones.md)) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
@@ -205,6 +206,7 @@ design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
 design/eulerian-supg-transport
 design/jit-shared-graph-codegen
+design/fault-parallel-placement-2026-09
 ```
 
 ```{toctree}

@@ -54,6 +54,159 @@ from underworld3.function._function import diff_wrt_field, derive_by_array_wrt_f
 from underworld3.function.expressions import unwrap_expression as _unwrap_expression
 
 
+_DEFAULT_KRYLOV_RESTART = 100
+
+
+def _transpose_kernels(G0, G1, G2, G3, nc_test, nc_trial, dim):
+    """The pointwise Jacobian kernels of the TRANSPOSED bilinear form.
+
+    PETSc reads a Jacobian block (test field with ``nc_test`` components,
+    trial field with ``nc_trial``) from four flat buffers laid out
+    ``g0[fc, gc]``, ``g1[fc, gc, d]``, ``g2[fc, gc, d]``, ``g3[fc, gc, d, e]``
+    — ``fc`` the test component, ``gc`` the trial component, ``d`` the
+    test-side derivative direction in g2/g3 and the trial-side one in g1,
+    ``e`` the trial-side direction in g3. The form is
+
+        phi_fc g0 u_gc + phi_fc g1 d_d u_gc + d_d phi_fc g2 u_gc + d_d phi_fc g3 d_e u_gc.
+
+    Swapping trial and test gives the block of K^T with the roles of the
+    two fields exchanged: h0 is g0 transposed, h1 and h2 are g2 and g1 with
+    the components exchanged, and h3 is g3 with both index pairs exchanged.
+    Nothing is differentiated again; the derivatives are the forward ones,
+    evaluated at the same state. Matrices are returned whose row-major
+    flattening is PETSc's layout for the transposed block. A ``None``
+    kernel is an absent (zero) one.
+    """
+    import sympy
+
+    def flat(G, n):
+        if G is None:
+            return [sympy.Integer(0)] * n
+        values = list(G)
+        if len(values) != n:
+            raise ValueError(f"kernel has {len(values)} entries, expected {n}")
+        return values
+
+    nt, nu = nc_test, nc_trial
+    g0 = flat(G0, nt * nu)
+    g1 = flat(G1, nt * nu * dim)
+    g2 = flat(G2, nt * nu * dim)
+    g3 = flat(G3, nt * nu * dim * dim)
+    H0 = sympy.zeros(nu, nt)
+    H1 = sympy.zeros(nu * nt, dim)
+    H2 = sympy.zeros(nu * nt, dim)
+    H3 = sympy.zeros(nu * nt, dim * dim)
+    for fc in range(nt):
+        for gc in range(nu):
+            H0[gc, fc] = g0[fc * nu + gc]
+            for d in range(dim):
+                H1[gc * nt + fc, d] = g2[(fc * nu + gc) * dim + d]
+                H2[gc * nt + fc, d] = g1[(fc * nu + gc) * dim + d]
+                for e in range(dim):
+                    H3[gc * nt + fc, e * dim + d] = g3[((fc * nu + gc) * dim + d) * dim + e]
+    return (sympy.ImmutableMatrix(H0), sympy.ImmutableMatrix(H1),
+            sympy.ImmutableMatrix(H2), sympy.ImmutableMatrix(H3))
+
+
+def _solve_transposed(ksp, J, P, b, x):
+    """Solve :math:`J^T x = b` with the solver's OWN KSP and preconditioner.
+
+    ``KSP.solveTranspose`` applies the transpose of the preconditioner, which
+    PETSc refuses for a multigrid whose smoother is a one-sided SOR sweep —
+    the velocity block of every Stokes solve with a mesh hierarchy. So the
+    matrices are transposed explicitly and the same KSP solves the
+    transposed system forwards: every preconditioner the forward solve can
+    use, the adjoint can use, set up on :math:`J^T` exactly as it was on
+    :math:`J`. The forward operators are put back afterwards. A null space
+    attached to ``J`` (the pressure constant on an enclosed domain) is the
+    transpose null space of ``J^T``, and is carried across.
+    """
+    # Mat.transpose() with no target transposes IN PLACE; give it a new Mat.
+    Jt = PETSc.Mat()
+    J.transpose(Jt)
+    if P.handle == J.handle:
+        Pt = Jt
+    else:
+        Pt = PETSc.Mat()
+        P.transpose(Pt)
+    for source, put in ((J.getNullSpace(), Jt.setTransposeNullSpace),
+                        (J.getTransposeNullSpace(), Jt.setNullSpace),
+                        (J.getNearNullSpace(), Jt.setNearNullSpace)):
+        if source is not None and source.handle != 0:
+            put(source)
+    ksp.setOperators(Jt, Pt)
+    try:
+        ksp.solve(b, x)
+        reason = int(ksp.getConvergedReason())
+    finally:
+        ksp.setOperators(J, P)
+        if Pt is not Jt:
+            Pt.destroy()
+        Jt.destroy()
+    return reason
+
+
+def _warn_from_caller(message, category=RuntimeWarning):
+    """Warn, attributed to the first frame outside the underworld3 package, so the
+    warning names the user's ``solve()`` call rather than an internal frame."""
+    import os
+    import sys
+    import warnings
+    if sys.version_info >= (3, 12):
+        warnings.warn(message, category,
+                      skip_file_prefixes=(os.path.dirname(uw.__file__),))
+    else:
+        warnings.warn(message, category, stacklevel=3)
+
+
+def _reaches(expr, targets):
+    """True when ``expr`` reaches any of ``targets``, following each UWexpression into
+    its contents. Every node is visited once.
+
+    Unwrapping an expression and then searching it rebuilds the shared expression
+    graph as a tree, which is exponential in the nesting. Measured on the Spiegelman
+    notch (Drucker-Prager yield, residual strength, viscosity floor, smooth yield law):
+    the unwrap-and-differentiate linearity test ran for hours, and the unwrap-and-search
+    pressure test for minutes. This walk is linear in the size of the graph.
+    """
+    from underworld3.function.expressions import UWexpression
+    targets = set(targets)
+    if not targets:
+        return False
+    seen = set()
+    stack = [expr]
+    while stack:
+        e = stack.pop()
+        key = id(e)
+        if key in seen:
+            continue
+        seen.add(key)
+        if isinstance(e, (sympy.MatrixBase, sympy.NDimArray)):
+            stack.extend(e)
+            continue
+        if not isinstance(e, sympy.Basic):
+            continue
+        if e in targets:
+            return True
+        if isinstance(e, UWexpression):
+            inner = getattr(e, "_sym", None)
+            if isinstance(inner, sympy.Basic) or isinstance(inner, (sympy.MatrixBase, sympy.NDimArray)):
+                stack.append(inner)
+            continue
+        stack.extend(e.args)
+    return False
+
+
+def _check_homotopy_value(homotopy):
+    """``solve(homotopy=...)`` takes False, True or "rate_strengthening"; anything else
+    (a misspelt string is truthy) would silently run the δ march."""
+    if homotopy is False or homotopy is None or homotopy is True or homotopy == "rate_strengthening":
+        return
+    raise ValueError(
+        f"homotopy must be False, True (the yield-softness march) or "
+        f"'rate_strengthening' (the declared regularisation ladder), got {homotopy!r}")
+
+
 def _public_names(cls):
     """The names ``uw.systems`` exports a solver class under."""
     try:
@@ -84,7 +237,7 @@ def _jacobian_unwrap(expr, route=None):
     No-op for constant-viscosity problems (eta has no grad-v dependence).
 
     The source is DIFFERENTIATION-SAFE: in every node body and at the top level,
-    each half-integer power whose base has free symbols gets ``+1e-36`` in its base.
+    each fractional power whose base has free symbols gets ``+1e-36`` in its base.
     Differentiating a bare invariant
     :math:`\dot\varepsilon_{II} = \sqrt{g}` produces
     :math:`\partial\sqrt{g}/\partial L = \dot\varepsilon/(2\dot\varepsilon_{II})`
@@ -96,7 +249,10 @@ def _jacobian_unwrap(expr, route=None):
     kernel inherits it even at alpha = 0 because IEEE 0*NaN = NaN). The
     guard makes the derivative exactly zero at the singular point and
     perturbs it by under one part in 1e24 at any resolvable strain rate.
-    The RESIDUAL is never routed through here, and the default (Picard)
+    SymPy merges a power of the bare invariant into one that is not a
+    half-integer (``sqrt(g)**(1/3)`` is ``g**(1/6)``), so the guard covers
+    every non-integer exponent (#841).
+    The RESIDUAL is never routed through here, and the frozen (Picard)
     tangent never calls this function.
 
     See ``docs/developer/design/jit-shared-graph-codegen.md`` and
@@ -108,21 +264,23 @@ def _jacobian_unwrap(expr, route=None):
         from underworld3.utilities import _jit_graph
 
         graph = _jit_graph.KernelGraph()
-        f = lambda e: _jit_graph.guard_half_integer_powers(graph.lower(e, guarded=True))
+        f = lambda e: _jit_graph.guard_fractional_powers(graph.lower(e, guarded=True))
         if isinstance(expr, sympy.MatrixBase):
             return expr.applyfunc(f)
         if isinstance(expr, sympy.NDimArray):
             return sympy.Array([f(e) for e in expr], expr.shape)
         return f(expr)  # scalar expression
 
-    # the expanded route: development's body, unchanged
+    # the expanded route: the JIT before #823 tier 2, with the guard of #841
+    from underworld3.utilities._jit_graph import is_fractional_power
+
     eps2 = sympy.Float(1.0e-36)
 
     def _guard_sqrts(e):
-        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
-        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
-        # derivatives), ... — all singular in value or derivative at a
-        # zero-argument state.
+        # every FRACTIONAL power (is_fractional_power): +1/2 (the invariant
+        # itself), -1/2 (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2
+        # (their derivatives), and the powers SymPy merges them into — all
+        # singular in value or derivative at a zero-argument state.
         # The same bottom-up rebuild as `e.replace(query, value)`, memoised on node
         # identity: the unwrapped flux repeats its shared sub-expressions as the same
         # object, and `replace` walked every occurrence (measured 16 s of a 108 s
@@ -144,8 +302,7 @@ def _jacobian_unwrap(expr, route=None):
                     if any(out == a and a != b for a, b in zip(args, new_args)):
                         memo[id(n)] = (n, out)
                         return out
-                if (out.is_Pow and out.exp.is_Rational and out.exp.q == 2
-                        and out.args[0].free_symbols):
+                if is_fractional_power(out):
                     out = sympy.Pow(out.args[0] + eps2, out.exp)
             memo[id(n)] = (n, out)
             return out
@@ -162,6 +319,39 @@ def _jacobian_unwrap(expr, route=None):
 
 
 include "petsc_extras.pxi"
+
+
+def _discard_preconditioner_setup(pc):
+    """Make ``pc`` build itself afresh on its next setup, as it would in a new run.
+
+    A field split passes the request to each block. An algebraic multigrid
+    keeps state through ``PCReset`` (it reuses its hierarchy and the
+    eigenvalue estimates that go with it), so it is replaced by a new instance
+    of the same type, configured from the same options. Every other
+    preconditioner in use rebuilds what it needs from the operator on its next
+    setup and is left alone: a geometric multigrid in particular holds
+    transfers set in code, which a reset would drop.
+    """
+    kind = pc.getType()
+    if kind == "fieldsplit":
+        # A split that was never set up has no blocks, and asking for them
+        # is a PETSc error; it is printed even when caught, so silence it.
+        PETSc.Sys.pushErrorHandler("return")
+        try:
+            blocks = pc.getFieldSplitSubKSP()
+        except PETSc.Error:
+            # never set up: there is no setup to discard
+            blocks = []
+        finally:
+            PETSc.Sys.popErrorHandler()
+        for ksp in blocks:
+            _discard_preconditioner_setup(ksp.getPC())
+        return
+    if kind == "gamg":
+        pc.setType("none")
+        pc.setType(kind)
+        pc.setFromOptions()
+
 
 class SolverBaseClass(uw_object):
     r"""
@@ -184,16 +374,69 @@ class SolverBaseClass(uw_object):
 
         # Jacobian tangent selection — validated property, see the
         # consistent_jacobian docstring below for the mode semantics.
-        self.consistent_jacobian = False
+        # DEFAULT = the consistent (Newton) tangent (since 2026-10-05): every Jacobian is
+        # assembled anyway; Picard is only the ONE automatic frozen-tangent step a cold
+        # start takes before Newton (see solve()). False (Picard throughout) and
+        # "continuation" (the residual-keyed blend) remain explicit choices.
+        self.consistent_jacobian = True
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
         # Created LAZILY (see _get_newton_alpha) only when continuation is used,
         # so the default path constructs no extra UWexpression and therefore
         # cannot perturb global symbol-naming / JIT-cache state.
         self._newton_alpha = None
-        # Switch threshold: ramp alpha toward 1 once the relative residual falls
-        # below this (the basin-of-attraction heuristic for Newton).
+        # True once a Picard warm-up has been requested under the consistent tangent:
+        # the Jacobian is then compiled in the blended form J_p + alpha (J_n - J_p),
+        # alpha = 0 for the Picard steps, alpha = 1 for Newton. Sticky, so a solver
+        # that has warmed up once does not recompile back and forth (#791).
+        self._picard_blend = False
+        # Per-solve warm-up records (reset by _plan_picard_warmup); initialised here so
+        # a solver whose path never plans one (rotated free-slip) still has them.
+        self._picard_stages = None
+        self._picard_warmup_record = None
+        self._pending_picard = 0
+        # Switch threshold of the rotated-free-slip two-phase path (rotated_bc.py):
+        # Picard until the relative residual falls below this, then Newton.
         self.newton_switch_rtol = 1.0e-2
+        # consistent_jacobian = "continuation" (#791): alpha is keyed on the residual,
+        #     alpha = clip(log10(F_ref / F) - log10(1 / start)) / (log10(1 / newton_at)
+        #             - log10(1 / start)), never decreasing,
+        # with F_ref = ||F(u = 0)||, the problem's own residual scale (so a warm start
+        # enters the ramp where its residual puts it, not at alpha = 0). alpha leaves 0
+        # at F = start * F_ref and reaches 1 (Newton) at F = newton_at * F_ref: the
+        # consistent tangent's linear solve fails from partly-yielded states above
+        # ~1e-3 F_ref on the Spiegelman notch. `l2` rather than `bt`: backtracking on
+        # ||F|| stops the frozen-tangent end, whose direction need not descend ||F||.
+        self.continuation_alpha_start = 1.0e-1
+        self.continuation_newton_at = 5.0e-4
+        self.continuation_linesearch = "l2"
+        # Back-off: when F climbs above `continuation_backoff` x the lowest F of the solve,
+        # alpha falls to the value F calls for (and the minimum resets). Without it, alpha
+        # cannot leave a high value once reached: measured on a power law n = 5, alpha
+        # reached 0.95, F then grew 40x and the solve ran out of iterations. None disables.
+        self.continuation_backoff = 10.0
+        # Optional: switch the line search to `bt` (monotone ||F||) once alpha reaches this
+        # value; below it the frozen-tangent direction need not descend ||F||, so `bt`
+        # would stop it. None keeps `continuation_linesearch` throughout. (Experimental.)
+        self.continuation_bt_from = None
+        # When a continuation solve diverges after leaving alpha = 0 (Newton's linear
+        # solve failing, or a line-search failure), re-enter it warm up to
+        # `continuation_restarts` times, holding alpha = 0 (Picard) for the first
+        # `continuation_fallback_picard` iterations of each re-entry.
+        self.continuation_restarts = 3
+        self.continuation_fallback_picard = 10
+        # Whether the consistent (Newton) tangent differentiates the viscosity with respect
+        # to PRESSURE. With a pressure-dependent yield stress (Drucker-Prager, sigma_y =
+        # C + sin(phi) p) that derivative puts a d(2 eta eps)/dp term in the velocity-
+        # pressure block, so J_vp is no longer -B^T and the Schur complement is no longer
+        # negative definite: measured on the Spiegelman notch at eta_bg 5e24 the Newton
+        # J_vp was 41% away from -B^T, 40 of 1968 Schur eigenvalues changed sign, and the
+        # fieldsplit Schur preconditioner diverged at 0.99 per iteration with the velocity
+        # block solved EXACTLY, while the same operator with J_vp := -B^T converged.
+        # False keeps the Newton velocity block and takes the pressure column from the
+        # exact (frozen-viscosity) flux: a partial Newton tangent with the standard
+        # saddle-point structure. The residual is untouched either way.
+        self._newton_pressure_coupling = True
 
         # Fine-grained rebuild flags backing the is_setup property. See the
         # is_setup docstring and _build() for how these are consumed.
@@ -321,6 +564,15 @@ class SolverBaseClass(uw_object):
         # the `tolerance` and `strategy` setters defeated an earlier attempt (#477).
         # Internal writers therefore go through _push_managed_option().
         self._managed_pc_options = {}
+        # Krylov restart 100, not PETSc's 30, for every solver's outer KSP (Stokes adds
+        # its velocity split). The cost is memory (two vectors per iteration for FGMRES)
+        # and a general problem rarely runs past 30 anyway; the gain is that a near-null
+        # mode of the operator — a yielded layer's mechanism mode on the Spiegelman notch
+        # — stalls FGMRES(30) completely (rate 1.000) and is resolved by FGMRES(100)
+        # (188 its). Set once here, as a managed option, so a later `tolerance` or
+        # `strategy` assignment does not overwrite a user's own value. Recorded in
+        # solve_report.config["ksp"]["restart"].
+        self._push_managed_option("ksp_gmres_restart", _DEFAULT_KRYLOV_RESTART)
         # Has _apply_preconditioner_options actually made the resolution decision
         # yet? Until it has, the options database holds only this solver's __init__
         # defaults, which is NOT what the next solve will run — reporting them as
@@ -471,31 +723,46 @@ class SolverBaseClass(uw_object):
         dispatch; the residual is never affected, so the converged solution
         always satisfies the exact constitutive law.
 
-        ``False`` (default)
+        ``False``
             Differentiate the residual flux *as wrapped* — the effective
-            viscosity is frozen, giving a Picard / defect-correction tangent.
-            Globally robust; load-bearing for the tuned hard-yield viscoplastic
-            paths.
-        ``True``
+            viscosity is frozen, giving a Picard / defect-correction tangent at
+            every iteration. The default until 2026-10-05; now an explicit choice.
+        ``True`` (default)
             Differentiate through the named quantities of the flux, so the
             tangent captures :math:`\partial\eta/\partial(\nabla v)` (full
-            Newton). Fast near the solution; its yield kink can stall the line
-            search far from it.
+            Newton). A COLD start takes one automatic Picard step first
+            (``solve(picard=...)`` adjusts it); a warm start takes none. With the
+            smooth yield law that is now the model default the yield kink is gone;
+            far from the solution a pressure-dependent yield still needs
+            ``newton_pressure_coupling`` / ``"continuation"`` (see the
+            ``nonlinear-solver`` guide).
         ``"continuation"``
             Picard :math:`\rightarrow` Newton. Blend
             :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
             - J_{\mathrm{picard}})` with :math:`\alpha` a ``constants[]``
-            parameter ramped :math:`0 \rightarrow 1` by a SNES monitor as the
-            residual drops. Picard locates the basin, Newton gives quadratic
-            convergence inside it (cf. Spiegelman et al. 2016; ASPECT
-            defect-correction-then-Newton). :math:`\alpha = 0` is bit-identical
-            to Picard, so no recompile is needed to switch.
+            parameter set at the start of every iteration from the residual:
+            :math:`\alpha` leaves 0 at :math:`F = s\,F_{\mathrm{ref}}` and reaches 1
+            at :math:`F = n\,F_{\mathrm{ref}}`, linear in :math:`\log F`, never
+            decreasing, with :math:`F_{\mathrm{ref}} = \lVert F(u=0)\rVert`,
+            :math:`s` = ``continuation_alpha_start`` (0.1) and :math:`n` =
+            ``continuation_newton_at`` (5e-4). One SNES solve, ``l2`` line search
+            (``continuation_linesearch``), stopping at ``tolerance`` times
+            :math:`F_{\mathrm{ref}}`; a warm start enters the ramp at the
+            :math:`\alpha` its residual calls for. Picard locates the basin, Newton
+            converges inside it (cf. Spiegelman et al. 2016). :math:`\alpha = 0` is
+            bit-identical to Picard while the Newton blocks are finite (the guard of
+            :func:`_jacobian_unwrap` keeps them finite at rest), so no recompile is
+            needed to switch.
 
         The Newton flux for a model whose flux has a non-smooth yield kink is
         the model's own smooth law (``constitutive_model.flux_jacobian``) when
         it provides one; otherwise the exact flux with its named quantities as
         graph nodes (``_jacobian_unwrap``). See
         ``docs/developer/design/jacobian-consistent-tangent.md``.
+
+        The consistent tangent is also the matrix the discrete adjoint
+        transposes, so an adjoint solve inherits whichever choice is made
+        here (see :meth:`adjoint_solve`).
 
         Raises
         ------
@@ -511,13 +778,32 @@ class SolverBaseClass(uw_object):
     @consistent_jacobian.setter
     def consistent_jacobian(self, mode):
         if not mode:
-            self._consistent_jacobian = False
-        elif mode is True or mode == "continuation":
-            self._consistent_jacobian = mode
-        else:
+            mode = False
+        elif not (mode is True or mode == "continuation"):
             raise ValueError(
                 f"consistent_jacobian must be False, True or 'continuation'; "
                 f"got {mode!r}")
+        previous = getattr(self, "_consistent_jacobian", None)
+        self._consistent_jacobian = mode
+        if previous is not None and previous != mode:
+            # The tangent is compiled into the Jacobian kernel: a change after the
+            # first build must recompile it, or the next solve runs the old tangent
+            # while the solve report records the new one.
+            self._needs_function_rewire = True
+
+    @property
+    def newton_pressure_coupling(self):
+        """Whether the consistent tangent differentiates the viscosity with respect to
+        the pressure (see the constructor comment). A change recompiles the Jacobian."""
+        return getattr(self, "_newton_pressure_coupling", True)
+
+    @newton_pressure_coupling.setter
+    def newton_pressure_coupling(self, value):
+        value = bool(value)
+        previous = getattr(self, "_newton_pressure_coupling", None)
+        self._newton_pressure_coupling = value
+        if previous is not None and previous != value:
+            self._needs_function_rewire = True
 
     @property
     def jit_route(self):
@@ -564,18 +850,21 @@ class SolverBaseClass(uw_object):
         """Prepare a residual flux for Jacobian differentiation.
 
         ``expr`` is the exact (Picard) flux; ``newton_expr`` is the consistent
-        (Newton) flux to use — when None it is the unwrapped ``expr`` (the
-        derivative then captures d(eta)/d(grad v)). The residual itself is never
+        (Newton) flux to use — when None it is ``_jacobian_unwrap(expr)`` on the
+        solver's JIT route (the derivative then captures d(eta)/d(grad v)). The residual itself is never
         passed through here, so the converged solution always satisfies the
         exact constitutive law.
 
         Returns, by ``consistent_jacobian`` mode:
           * False  -> ``expr``  (frozen viscosity; bit-identical Picard tangent)
-          * True   -> ``newton_expr``  (full consistent Newton tangent)
+          * True   -> ``newton_expr``  (full consistent Newton tangent); once a
+            cold start has planned its Picard step (``_picard_blend``), the
+            blend below, held at alpha = 1 except during that step
           * "continuation" -> ``expr + alpha*(newton_expr - expr)`` with alpha a
             constants[] parameter ramped 0->1 at solve time. Differentiating
             this gives ``G_picard + alpha*(G_newton - G_picard)`` because alpha
-            is constant w.r.t. the unknowns. alpha=0 is bit-identical to Picard.
+            is constant w.r.t. the unknowns. alpha=0 is bit-identical to Picard
+            while ``newton_expr``'s blocks are finite (0 * NaN is NaN).
 
         No-op for constant viscosity (``newton_expr`` == ``expr``).
         """
@@ -591,7 +880,7 @@ class SolverBaseClass(uw_object):
                                  "_tangent_surrogates", None) or {}
             source = expr.xreplace(surrogates) if surrogates else expr
             newton_expr = _jacobian_unwrap(source, route=self._jit_route_in_use())
-        if mode == "continuation":
+        if mode == "continuation" or (mode is True and getattr(self, "_picard_blend", False)):
             a = self._get_newton_alpha()
             if isinstance(expr, sympy.MatrixBase):
                 ne = newton_expr if isinstance(newton_expr, sympy.MatrixBase) \
@@ -628,7 +917,7 @@ class SolverBaseClass(uw_object):
         ``list()`` (which yields rows) and the error swallowed. See
         ``tests/test_1082_flux_jacobian_closure.py``.
         """
-        # Default (Picard) path never needs the Newton flux — short-circuit so
+        # The frozen (Picard) path never needs the Newton flux — short-circuit so
         # the (potentially expensive) model.flux_jacobian is not even evaluated,
         # keeping the default assembly allocation-free and bit-identical.
         if not self.consistent_jacobian:
@@ -662,12 +951,14 @@ class SolverBaseClass(uw_object):
     def _get_newton_alpha(self):
         """Lazily construct the Picard->Newton continuation parameter.
 
-        Built on first use (continuation mode only) so the default Picard path
-        creates no extra UWexpression and leaves global symbol-naming / JIT-cache
-        state byte-identical to historical behaviour.
+        Built on first use (blended Jacobian only) so the plain Picard path
+        creates no extra UWexpression. One per solver: expressions are persistent
+        containers keyed by NAME, so a shared ``\alpha_{N}`` let one solver's
+        warm-up or ramp move another solver's tangent (measured: a second solver's
+        lazy creation reset the first one's alpha from 0.7 to 0.0).
         """
         if self._newton_alpha is None:
-            self._newton_alpha = uw.function.expression(
+            self._newton_alpha = expression(
                 r"\alpha_{N}", sympy.Float(0.0),
                 "Picard->Newton continuation fraction (0=Picard, 1=Newton)",
             )
@@ -678,13 +969,15 @@ class SolverBaseClass(uw_object):
 
         alpha is routed through ``constants[]`` (it appears as a constant atom
         in the blended Jacobian), so this updates the live tangent WITHOUT a JIT
-        recompile. No-op outside ``consistent_jacobian == "continuation"`` (alpha
-        is then absent from the constants manifest).
+        recompile. Without a blended Jacobian (pure Newton never warmed up, or the
+        frozen tangent) alpha is absent from the constants manifest and has no effect.
         """
         self._get_newton_alpha().sym = sympy.Float(value)
         try:
             self._update_constants()
         except Exception:
+            # Sanctioned: before the first build there is no DS to push constants to;
+            # the value is read when the constants are first packed.
             pass
 
     def set_custom_mg(self, coarse_meshes, kind="barycentric", verbose=False):
@@ -1278,6 +1571,8 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = False
             self._needs_bc_reregister = False
             self._needs_function_rewire = False
+            self._adjoint_kernel_installed = False
+            self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         else:
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
@@ -1290,6 +1585,39 @@ class SolverBaseClass(uw_object):
             # _update_constants / a direct _needs_function_rewire and keep
             # has_solution, so continuation and time-stepping warm-start correctly.
             self._has_solution = False
+
+    @property
+    def state(self):
+        """What the last solve left on this solver that steers the next one,
+        as a :class:`~underworld3.checkpoint.state.SolverStepState`."""
+        from underworld3.checkpoint.state import SolverStepState
+        return SolverStepState(has_solution=bool(self._has_solution))
+
+    @state.setter
+    def state(self, s):
+        """Put the solver back as a snapshot captured it. The preconditioner's
+        setup (and the rotated free-slip workspace) is discarded too, so the
+        next solve runs as it would in a run started cold from the restored
+        fields."""
+        self._has_solution = bool(s.has_solution)
+        self._reset_preconditioner()
+        # the rotated free-slip path solves with its own cached operator and
+        # preconditioner, and a hint that licenses a shortcut on the next solve
+        self._reset_rotated_solver_cache()
+
+    def _reset_preconditioner(self):
+        """Discard the preconditioner's setup so the next solve builds it afresh.
+
+        A preconditioner can carry history of its own between solves: an
+        algebraic multigrid keeps the hierarchy and smoother eigenvalue
+        estimates it built on earlier operators. None of it is model state,
+        so a snapshot cannot hold it; discarding it on restore makes the
+        solves that follow a restore the same as those of a run started cold
+        from the same state, whatever was solved in between.
+        """
+        if self.snes is None:
+            return
+        _discard_preconditioner_setup(self.snes.getKSP().getPC())
 
     @property
     def has_solution(self):
@@ -1311,6 +1639,153 @@ class SolverBaseClass(uw_object):
         """
         return self._has_solution
 
+    def _plan_picard_warmup(self, picard, zero_init_guess, own_loop=False, staged_loop=False):
+        """Decide this solve's Picard warm-up (Layer 1). Every solver class calls this
+        from ``solve()`` before ``_build``.
+
+        Arms ``self._pending_picard``, the number of frozen-tangent steps
+        :meth:`_snes_solve_with_retries` takes before Newton (inside the solve's
+        update hooks, wall-clock guard, iteration cap and report), and resets the
+        per-solve records. By :attr:`consistent_jacobian`:
+
+        * ``True``: ``picard`` Picard steps, then Newton. A cold start takes ONE
+          automatically, except for a ``ksponly`` solve, a flux whose coefficient does
+          not depend on the unknowns, and a solver that runs its own loop
+          (``own_loop``: rotated free-slip, fault contact). ``picard < 0`` forbids it.
+          The first warm-up compiles the Jacobian in the blended form
+          ``J_p + alpha (J_n - J_p)`` (one rewire; sticky).
+        * ``"continuation"``: ``picard`` holds alpha = 0 for the first ``picard``
+          iterations of the ramp.
+        * ``False``: every iteration already is a Picard step.
+
+        ``staged_loop``: the solver's own loop stages Picard then Newton itself
+        (rotated free-slip); an explicit ``picard > 0`` under ``True`` then only
+        compiles the blended Jacobian for it to stage with.
+        """
+        picard = int(picard or 0)
+        self._picard_stages = None
+        self._picard_warmup_record = None
+        self._pending_picard = 0
+        self._warned_this_solve = set()
+        self._continuation_min_picard = 0
+        self._continuation_stages = None      # never report a previous solve's stages
+        mode = self.consistent_jacobian
+        if mode == "continuation":
+            self._continuation_min_picard = max(picard, 0)
+            return
+        if mode is not True:
+            return
+        if own_loop:
+            if staged_loop and picard > 0 and not self._picard_blend:
+                self._picard_blend = True
+                self._needs_function_rewire = True
+            return
+        # Cheapest test first: warm solves (every time step after the first) stop at
+        # zero_init_guess / the norm and never reach the symbolic linearity test.
+        if (picard == 0 and (zero_init_guess or self._solution_is_trivially_zero())
+                and not self._snes_is_linear() and not self._flux_is_linear_in_unknowns()):
+            picard = 1
+        if picard <= 0:
+            return
+        self._pending_picard = picard
+        if not self._picard_blend:
+            self._picard_blend = True
+            self._needs_function_rewire = True     # recompile J in the blended form
+
+    def _form_fact(self, key, compute):
+        """A symbolic fact about the solver's forms, cached until they can have changed.
+
+        Recomputed whenever a rewire is pending or the solver is not set up (a
+        constitutive-parameter change sets ``_needs_function_rewire``; a new model or
+        new terms clear ``is_setup``), and dropped wherever ``_build`` consumes a
+        rewire or completes a setup — a warm solve's plan never reads the cache, so
+        without the drop the read after the build saw the facts from before the change
+        (measured: a viscous model switched to Drucker-Prager recorded
+        ``pressure_in_rheology=False`` and fired no warning). The facts cached here (flux linearity, pressure in the rheology) cost a
+        symbolic unwrap-and-differentiate — measured 3.7 s per call on a 16x8 VEP box —
+        which a time step must not pay on every warm solve.
+        """
+        facts = getattr(self, "_form_facts", None)
+        if (facts is None or getattr(self, "_needs_function_rewire", False)
+                or not getattr(self, "is_setup", False)):
+            facts = self._form_facts = {}
+        if key not in facts:
+            facts[key] = compute()
+        return facts[key]
+
+    def _flux_is_linear_in_unknowns(self):
+        """True when the residual flux's coefficient does not depend on the unknowns
+        (cached: see :meth:`_form_fact`).
+
+        The frozen and consistent tangents then coincide, so the automatic cold-start
+        Picard step would be a second linear solve of the same operator for nothing
+        (and, through the blended kernel it compiles, a different code path — measured:
+        it diverged a linear constrained Stokes solve that Newton and Picard each solve
+        in one iteration). Test, on the WRAPPED flux: the coefficient is
+        unknown-dependent if any named sub-expression in it (the viscosity, the yield
+        stress) reaches an unknown — velocity, gradient or pressure symbol — searched
+        by :func:`_reaches` rather than unwrapped (see there for why), or if the flux
+        differentiated by a gradient symbol still carries an unknown at top level. A
+        spatially varying coefficient passes as linear, as it should. Scope: the flux F1 by the
+        gradient only — a nonlinear F0 (source) term, or F1 = grad u + b(u), reads as
+        linear here; that is what the guard needs (the warm-up changes the TANGENT of
+        the flux) but not a general linearity test.
+        """
+        return self._form_fact("flux_linear", self._compute_flux_linearity)
+
+    def _compute_flux_linearity(self):
+        try:
+            F1 = getattr(self, "F1", None)
+            if F1 is None:
+                return False
+            unknowns = set()
+            u = getattr(self, "u", None)
+            if u is not None:
+                unknowns.update(sympy.Matrix(u.sym))
+            L = getattr(getattr(self, "Unknowns", None), "L", None)
+            if L is not None:
+                unknowns.update(sympy.Matrix(L))
+            p = getattr(self, "p", None)
+            if p is not None:
+                unknowns.update(sympy.Matrix(p.sym))
+            grads = list(sympy.Matrix(L)) if L is not None else []
+            if not unknowns or not grads:
+                return False
+            # The WRAPPED flux: its named sub-expressions (the viscosity, the yield
+            # stress) are atoms here, so this is small. (1) Any named sub-expression that
+            # reaches an unknown makes the coefficient unknown-dependent; (2) the top
+            # level, differentiated by each gradient symbol, must carry no unknown.
+            from underworld3.function.expressions import UWexpression
+            flux = sympy.Array(F1.sym)
+            named = [a for a in flux.atoms(sympy.Symbol) if isinstance(a, UWexpression)]
+            if any(_reaches(a, unknowns) for a in named):
+                return False
+            for g in grads:
+                d = sympy.Array(diff_wrt_field(flux, g))
+                if any(sympy.sympify(e).has(*unknowns) for e in sympy.flatten(d.tolist())):
+                    return False
+            return True
+        except Exception:
+            # Sanctioned: a flux we cannot analyse is treated as nonlinear, so the cold
+            # start keeps the documented Layer-1 Picard step.
+            return False
+
+    def _snes_is_linear(self):
+        """True when the configured SNES type is ``ksponly`` (a linear solve).
+
+        A linear solve takes no automatic Picard step: the frozen and consistent
+        tangents coincide, and under Eisenstat-Walker the extra step only loosens the
+        first linear tolerance (measured on the spherical-shell Nitsche response: 12%
+        error with the step, 2% without — PR #716's finding, re-applied here).
+        """
+        try:
+            opts = self.petsc_options
+            return opts.hasName("snes_type") and opts.getString("snes_type") == "ksponly"
+        except Exception:
+            # Sanctioned: an options database we cannot read means "not ksponly" — the
+            # nonlinear default, under which the automatic Picard step is the rule
+            return False
+
     def _solution_is_trivially_zero(self):
         """True when the solution field is still identically zero.
 
@@ -1323,13 +1798,18 @@ class SolverBaseClass(uw_object):
         the viscous one) but its derivative is not, and assembling the consistent
         tangent produces NaN.
 
-        Uses the PETSc vector norm, which is collective and therefore rank-uniform,
-        so every rank reaches the same decision.
+        Collective and rank-uniform: ``u.vec`` is the variable's LOCAL (sequential)
+        vector, so its norm differs between ranks, and the verdict decides a rewire and
+        an extra ``snes.solve`` — a rank-dependent answer hangs the job (measured at
+        np=2: one rank took the warm-up, the other did not). Each rank tests its own
+        entries and the answer is reduced over all of them.
         """
         u = getattr(self, "u", None)
         if u is None:
             return False
-        return float(u.vec.norm()) == 0.0
+        from mpi4py import MPI
+        local_nonzero = int(bool(np.any(np.asarray(u.vec.array) != 0.0)))
+        return not bool(uw.mpi.comm.allreduce(local_nonzero, op=MPI.MAX))
 
     def _resolve_zero_init_guess(self, zero_init_guess):
         """Resolve the tri-state ``zero_init_guess`` argument of ``solve()``.
@@ -1550,6 +2030,798 @@ class SolverBaseClass(uw_object):
             model._record_solve_outcome(part, report)
         except Exception:
             pass
+
+    def _adjoint_support(self):
+        """Whether this solve, as configured, admits a discrete adjoint.
+
+        ``(supported, reason)``. The verdict is STRUCTURAL — about the
+        operator, not about whether a driver exists yet — and it is written
+        into the transcript when the solve is recorded, so a run says where
+        its adjoint breaks while it runs, not three hours into an inversion.
+
+        An implicit step is a residual, so its adjoint is the Jacobian
+        transpose for the state and the symbolic derivative of the residual
+        for a parameter. What removes that:
+
+        * a rotated constraint — free-slip or fault contact — solves on a
+          rotated operator inside its own Krylov loop (``rotated_bc.py``),
+          and there is no transpose path through it;
+        * an unconverged solve, which is caught after the fact by
+          :meth:`_record_solve_outcome`: a linearisation about a state the
+          solve never reached is not the adjoint of anything.
+
+        A subclass whose operator is not a residual overrides this and says
+        why. The contract is enforced by
+        ``tests/test_0018_adjoint_support_record.py``.
+        """
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        if rotated:
+            return (False,
+                    f"{len(rotated)} rotated constraint(s): the solve runs on a "
+                    f"rotated operator with its own Krylov loop, and there is "
+                    f"no transpose path through it")
+        if not self.consistent_jacobian and not self._residual_is_linear_in_unknown():
+            return (True,
+                    "implicit residual: Jacobian transpose for the state, symbolic "
+                    "derivative of the residual for a parameter. The forward solve "
+                    "used the Picard tangent, so the consistent tangent is assembled "
+                    "for the adjoint (a rebuild of the Jacobian kernel)")
+        return (True,
+                "implicit residual: Jacobian transpose for the state, symbolic "
+                "derivative of the residual for a parameter")
+
+    # ------------------------------------------------------------------
+    # The discrete adjoint of one solve
+    # ------------------------------------------------------------------
+
+    def adjoint_support(self):
+        """``(supported, reason)``: whether this solve admits a discrete adjoint.
+
+        The same verdict the transcript records on the solve event. See
+        :meth:`_adjoint_support` for what refuses and why.
+        """
+        return self._adjoint_support()
+
+    def adjoint_solve(self, rhs, target=None):
+        r"""Solve the adjoint of the LAST solve: :math:`K^T \mu = b`.
+
+        An implicit step is a residual :math:`R(u; m) = 0`, and the SNES
+        already assembles its Jacobian :math:`K = \partial R / \partial u`.
+        The adjoint state is the transpose solve against that same matrix,
+        taken at the state the forward solve ended in — so call this after
+        ``solve()``, on the solver that did the solving, before anything
+        moves the fields.
+
+        The essential boundary conditions come out homogenised for free:
+        PETSc's global vector holds only the unconstrained degrees of freedom,
+        so :math:`K` is the operator on those, and the multiplier written back
+        to ``target`` is zero on every Dirichlet node.
+
+        **The state matters, and ``solve()`` moves it.** A time step's
+        residual is :math:`F(u_{n+1}; u_n, v, \\Delta t)`: the step's OUTPUT in
+        the unknown and its INPUT in the history slot. The history manager
+        shifts that slot forward in its post-solve hook, so straight after
+        ``solve()`` the slot holds :math:`u_{n+1}`, and a sensitivity read
+        there is 5% wrong on a SUPG step (measured, ``test_0019``). Put the
+        step's input back — ``solver.DuDt.psi_star[0].array[...] = u_n`` —
+        before calling this and :meth:`sensitivity`. A driver that walks the
+        transcript restores the step's snapshot, replays the solve, and does
+        exactly that; see ``docs/examples/adjoint``.
+
+        Parameters
+        ----------
+        rhs : numpy.ndarray or petsc4py.PETSc.Vec
+            The right-hand side :math:`b`, in the global ordering of this
+            solver's DM — a DUAL vector, an integral against the basis, not a
+            field. :meth:`dual_of` builds one from an expression.
+        target : MeshVariable, optional
+            A variable on the same space as the unknown to receive
+            :math:`\mu` as a field. Constrained nodes are set to zero.
+
+        Returns
+        -------
+        (numpy.ndarray, int)
+            :math:`\mu` in the global ordering, and the KSP converged reason
+            (positive means converged).
+
+        Raises
+        ------
+        RuntimeError
+            If this solve refuses an adjoint (:meth:`adjoint_support` says
+            why), or no solve has run.
+        """
+        supported, why = self._adjoint_support()
+        if not supported:
+            raise RuntimeError(f"adjoint_solve: this solve refuses an adjoint — {why}")
+        if self.snes is None or (not self.is_setup
+                                 and not getattr(self, "_adjoint_kernel_installed", False)):
+            raise RuntimeError(
+                "adjoint_solve: no forward solve to take the adjoint of. Call "
+                "solve() first; the adjoint is taken about the state it ended in.")
+        import numpy as np
+
+        cdef DM dm
+        cdef Vec cmesh_lvec
+
+        # The kernel first: if the forward ran Picard, the rebuild below may
+        # replace the DS the SNES assembles with, so every handle taken from
+        # the DM must be taken AFTER it.
+        by_kernels = self._adjoint_by_kernels()
+        tangent = (self._install_adjoint_kernels() if by_kernels
+                   else self._consistent_tangent_for_adjoint())
+        dm = self.dm
+
+        # The Jacobian at the state the forward solve ended in.
+        gvec = self.dm.getGlobalVec()
+        self.dm.localToGlobal(self.u.vec, gvec)
+        self.mesh.update_lvec()
+        cmesh_lvec = self.mesh.lvec
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        jacobian = self.snes.getJacobian()        # (J, P, callback, args)
+        J, P = jacobian[0], jacobian[1]
+        alpha_before = self._newton_alpha_for_adjoint()
+        self.snes.computeJacobian(gvec, J, P)
+        self._restore_newton_alpha(alpha_before)
+
+        b = gvec.duplicate()
+        if isinstance(rhs, PETSc.Vec):
+            rhs.copy(b)
+        elif hasattr(rhs, "vec") and hasattr(rhs, "array"):
+            # A dual held as a FIELD on the unknown's space: one coefficient
+            # per node. localToGlobal keeps the unconstrained ones, which is
+            # the restriction to this solver's rows.
+            self.dm.localToGlobal(rhs.vec, b)
+        else:
+            values = np.asarray(rhs, dtype=float).ravel()
+            bad = uw.mpi.comm.allreduce(int(values.size != b.getLocalSize()), op=uw.MPI.MAX)
+            if bad:
+                raise ValueError(
+                    f"adjoint_solve: rhs has {values.size} entries; this solver's "
+                    f"global vector has {b.getLocalSize()} on rank {uw.mpi.rank}")
+            b.array[:] = values
+        x = gvec.duplicate()
+        x.set(0.0)
+
+        if by_kernels:
+            # J IS K^T: assembled from the transposed kernels. Solve forwards.
+            ksp = self.snes.getKSP()
+            ksp.setOperators(J, P)
+            ksp.solve(b, x)
+            reason = int(ksp.getConvergedReason())
+            self._uninstall_adjoint_kernels(tangent)
+        else:
+            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+            self._restore_tangent(tangent)
+
+        if target is not None:
+            # Homogeneous constraints: the local vector is zeroed before the
+            # scatter, so every constrained node reads zero rather than the
+            # forward Dirichlet value that ComputeBoundaryFEM would insert.
+            lvec = self.dm.getLocalVec()
+            lvec.set(0.0)
+            self.dm.globalToLocal(x, lvec)
+            target.vec.array[:] = lvec.array[:]
+            self.mesh._stale_lvec = True
+            try:
+                target._sync_lvec_to_gvec()
+            except AttributeError:
+                pass
+            self.dm.restoreLocalVec(lvec)
+
+        out = np.array(x.array, copy=True)
+        self.dm.restoreGlobalVec(gvec)
+        b.destroy(); x.destroy()
+
+        try:
+            model = uw.get_default_model()
+            part, label = self._transcript_identity()
+            model._record_step_event(
+                "adjoint_solve", label, part=part,
+                converged=reason > 0, ksp_reason=reason)
+        except Exception:
+            pass
+        return out, reason
+
+    def dual_of(self, expression):
+        r"""The dual of an expression on this solver's unknown space.
+
+        :math:`b_j = \int e \, \phi_j` for every basis function of the
+        unknown — the form :meth:`adjoint_solve` wants its right-hand side in.
+        A misfit :math:`J = \tfrac12 \int (u - u^*)^2` has
+        :math:`\partial J/\partial u` dual ``dual_of(u - u_target)``.
+
+        Assembled as the residual of a projection at zero: the projection's
+        residual is :math:`\int (0 - e)\phi_j`, so no linear solve is taken.
+        """
+        import numpy as np
+
+        proj = self._dual_projection()
+        proj.uw_function = expression
+        proj._build(False, False, None)
+        gvec = proj.dm.getGlobalVec()
+        gvec.set(0.0)
+        proj.mesh.update_lvec()
+        cdef DM dm = proj.dm
+        cdef Vec cmesh_lvec = proj.mesh.lvec
+        ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
+        F = gvec.duplicate()
+        proj.snes.computeFunction(gvec, F)
+        out = -np.array(F.array, copy=True)
+        expected = self.dm.getGlobalVec()
+        n_solver = expected.getLocalSize()
+        self.dm.restoreGlobalVec(expected)
+        bad = uw.mpi.comm.allreduce(int(out.size != n_solver), op=uw.MPI.MAX)
+        if bad:
+            raise RuntimeError(
+                f"dual_of: the dual has {out.size} entries and the solver's "
+                f"global vector {n_solver} on rank {uw.mpi.rank}; the two spaces "
+                f"constrain different nodes. Essential conditions added through "
+                f"a route other than add_dirichlet_bc are not mirrored onto the "
+                f"dual space.")
+        F.destroy()
+        proj.dm.restoreGlobalVec(gvec)
+        return out
+
+    def _dual_projection(self):
+        """One projection onto the unknown's space, built on first use.
+
+        It carries the solver's essential conditions, homogenised: PETSc's
+        global vector holds only unconstrained degrees of freedom, so the
+        projection's global ordering agrees with the solver's only if the two
+        constrain the same nodes. Rebuilt if the solver's conditions change.
+        """
+        import sympy
+
+        u = self.u
+        n = getattr(u, "num_components", 1)
+        signature = tuple(
+            (str(bc.boundary), tuple(int(c) for c in bc.components))
+            for bc in self.essential_bcs)
+        proj = getattr(self, "_dual_projection_solver", None)
+        if proj is None or getattr(self, "_dual_projection_signature", None) != signature:
+            scratch = uw.discretisation.MeshVariable(
+                f"_dual_{type(self).__name__}_{self.instance_number}_"
+                f"{abs(hash(signature)) % 100000}",
+                self.mesh, num_components=n, vtype=u.vtype, degree=u.degree,
+                continuous=getattr(u, "continuous", True))
+            if n == 1:
+                proj = uw.systems.Projection(self.mesh, scratch)
+            else:
+                proj = uw.systems.Vector_Projection(self.mesh, scratch)
+            proj.smoothing = 0.0
+            proj.petsc_options.delValue("ksp_monitor")
+            for boundary, components in signature:
+                if n == 1:
+                    proj.add_dirichlet_bc(0.0, boundary)
+                else:
+                    conds = [0.0 if i in components else sympy.oo for i in range(n)]
+                    proj.add_dirichlet_bc(tuple(conds), boundary)
+            self._dual_projection_solver = proj
+            self._dual_projection_signature = signature
+        return proj
+
+    def adjoint_integrand(self, mu, wrt):
+        r"""The integrand whose integral is :math:`\mu^T \partial R/\partial m`.
+
+        :math:`(\partial F_0/\partial m)\,\mu + (\partial F_1/\partial m)\cdot\nabla\mu`,
+        with :math:`F_0`, :math:`F_1` the residual templates AS IMPLEMENTED —
+        read after the solve, because they are live — and the derivatives
+        taken symbolically. For a scalar parameter its integral is the
+        sensitivity; for a field, project it to get the dual on that field.
+        """
+        F0 = self._peel_except(self.F0.sym, wrt)
+        F1 = self._peel_except(self.F1.sym, wrt)
+        import sympy
+
+        d0 = diff_wrt_field(F0, wrt)
+        d1 = diff_wrt_field(F1, wrt)
+        mu_sym = mu.sym
+        if getattr(mu, "num_components", 1) == 1:
+            grad_mu = self.mesh.vector.gradient(mu_sym[0])
+            out = d0[0] * mu_sym[0] if hasattr(d0, "shape") else d0 * mu_sym[0]
+            for i in range(self.mesh.dim):
+                out = out + d1[i] * grad_mu[i]
+            return out
+        grad_mu = self.mesh.vector.jacobian(mu_sym)
+        out = 0
+        for i in range(self.mesh.dim):
+            out = out + d0[i] * mu_sym[i]
+        return out + uw.maths.tensor.rank2_inner_product(d1, grad_mu)
+
+    def gradient(self, misfit, parameters=(), fields=(), boundary=None):
+        r"""``dJ/dm`` for each parameter, and the dual on each field, by the
+        adjoint of this solve.
+
+        ``misfit`` is :math:`J` as an integrand over the mesh in the state
+        the solve ended in. The three steps — the dual of :math:`J` on the
+        unknown, the transposed solve, the sensitivities — are
+        :func:`underworld3.adjoint.gradient`; this is the method form of it.
+        Returns ``{"J", "parameters": {expr: dJ/dm}, "fields": {var: dual}}``.
+        """
+        from underworld3.adjoint import gradient as _gradient
+        return _gradient(self, misfit, parameters=parameters, fields=fields,
+                         boundary=boundary)
+
+    def adjoint_kernels(self):
+        """The pointwise kernels of the adjoint operator, as SymPy matrices.
+
+        ``{"F0_u", "F0_grad_u", "F1_u", "F1_grad_u"}`` per block, in
+        PETSc's flat layout: the forward Jacobian kernels with trial and
+        test exchanged (:func:`_transpose_kernels`), which is what
+        :meth:`adjoint_solve` assembles. Read-only; the solver must have
+        been built.
+        """
+        if getattr(self, "_forward_kernels", None) is None:
+            self._build(False, False, None)
+        dim = self.mesh.cdim
+        # The forward derivatives, kept at build time: after an adjoint solve
+        # the installed set IS the transposed one, and transposing it again
+        # would hand back the forward operator.
+        forward = self._forward_kernels
+        names = ("F0_u", "F0_grad_u", "F1_u", "F1_grad_u")
+        if len(forward) == 10:
+            uu0, uu1, uu2, uu3, up0, up1, up2, up3, pu0, pu1 = forward
+            uu = _transpose_kernels(uu0, uu1, uu2, uu3, dim, dim, dim)
+            up = _transpose_kernels(pu0, pu1, None, None, 1, dim, dim)
+            pu = _transpose_kernels(up0, up1, up2, up3, dim, 1, dim)
+            return {"uu": dict(zip(names, uu)), "up": dict(zip(names, up)), "pu": dict(zip(names, pu))}
+        G0, G1, G2, G3 = forward
+        nc = int(G0.shape[0])
+        H = _transpose_kernels(G0, G1, G2, G3, nc, nc, dim)
+        return dict(zip(names, H))
+
+    def adjoint_templates(self):
+        r"""The adjoint problem in the residual template form.
+
+        :math:`K^T\mu = b` is linear in :math:`\mu`, so it is a solver in
+        the same language as the forward one:
+
+        .. math::
+
+            f_0^{\rm adj} = g_0^T\mu + g_2^T\!:\!\nabla\mu, \qquad
+            \mathbf f_1^{\rm adj} = g_1^T\mu + g_3^T\nabla\mu,
+
+        the forward Jacobian kernels with trial and test exchanged, applied
+        to the adjoint variable. Returns ``(F0_adj, F1_adj)`` as SymPy
+        expressions in :math:`\mu` (a scalar or a row vector of the
+        unknown's size) for a single-field solver, and the same per block
+        for a saddle point, which :meth:`adjoint_view` typesets.
+        """
+        import sympy
+        kernels = self.adjoint_kernels()
+        dim = self.mesh.cdim
+
+        def apply(block, nc, mu, grad_mu):
+            H0, H1, H2, H3 = (block["F0_u"], block["F0_grad_u"], block["F1_u"], block["F1_grad_u"])
+            nt = int(H0.shape[0])            # test components of the adjoint block
+            f0 = sympy.zeros(nt, 1)
+            f1 = sympy.zeros(nt, dim)
+            for a in range(nt):
+                for c in range(nc):
+                    f0[a] += H0[a, c] * mu[c]
+                    for d in range(dim):
+                        f0[a] += H1[a * nc + c, d] * grad_mu[c, d]
+                        f1[a, d] += H2[a * nc + c, d] * mu[c]
+                        for e in range(dim):
+                            f1[a, d] += H3[a * nc + c, d * dim + e] * grad_mu[c, e]
+            return f0, f1
+
+        if "uu" in kernels:
+            mu = sympy.Matrix([sympy.Symbol(f"\\mu_{{{i}}}") for i in range(dim)])
+            gmu = sympy.Matrix(dim, dim, lambda i, j: sympy.Symbol(f"\\mu_{{{i},{j}}}"))
+            lam = sympy.Matrix([sympy.Symbol(r"\lambda")])
+            glam = sympy.Matrix(1, dim, lambda i, j: sympy.Symbol(f"\\lambda_{{,{j}}}"))
+            f0_uu, f1_uu = apply(kernels["uu"], dim, mu, gmu)
+            f0_up, f1_up = apply(kernels["up"], 1, lam, glam)
+            f0_pu, f1_pu = apply(kernels["pu"], dim, mu, gmu)
+            return {"u": (f0_uu + f0_up, f1_uu + f1_up), "p": (f0_pu, f1_pu)}
+        nc = int(kernels["F0_u"].shape[0])
+        if nc == 1:
+            mu = sympy.Matrix([sympy.Symbol(r"\mu")])
+            gmu = sympy.Matrix(1, dim, lambda i, j: sympy.Symbol(f"\\mu_{{,{j}}}"))
+        else:
+            mu = sympy.Matrix([sympy.Symbol(f"\\mu_{{{i}}}") for i in range(nc)])
+            gmu = sympy.Matrix(nc, dim, lambda i, j: sympy.Symbol(f"\\mu_{{{i},{j}}}"))
+        return apply(kernels, nc, mu, gmu)
+
+    def _adjoint_forms(self, mu, lam=None):
+        r"""``(f0, f1)`` of the adjoint operator applied to the fields ``mu``
+        (and ``lam``, the pressure adjoint of a saddle point), on the
+        unknown's rows: :meth:`adjoint_templates` with the fields in place of
+        the symbols. ``f0`` is a row of the unknown's size, ``f1`` that row
+        by the coordinate dimension."""
+        import sympy
+        kernels = self.adjoint_kernels()
+        dim = self.mesh.cdim
+
+        def apply(block, nc, mu_vec, grad_mu):
+            H0, H1, H2, H3 = (block["F0_u"], block["F0_grad_u"], block["F1_u"], block["F1_grad_u"])
+            nt = int(H0.shape[0])
+            f0 = sympy.zeros(1, nt)
+            f1 = sympy.zeros(nt, dim)
+            for a in range(nt):
+                for c in range(nc):
+                    f0[a] += H0[a, c] * mu_vec[c]
+                    for d in range(dim):
+                        f0[a] += H1[a * nc + c, d] * grad_mu[c, d]
+                        f1[a, d] += H2[a * nc + c, d] * mu_vec[c]
+                        for e in range(dim):
+                            f1[a, d] += H3[a * nc + c, d * dim + e] * grad_mu[c, e]
+            return f0, f1
+
+        n = getattr(mu, "num_components", 1)
+        mu_vec = sympy.Matrix([mu.sym[i] for i in range(n)])
+        grad_mu = (sympy.Matrix(self.mesh.vector.gradient(mu.sym[0])).reshape(1, dim) if n == 1
+                   else sympy.Matrix(self.mesh.vector.jacobian(mu.sym)))
+        if "uu" in kernels:
+            if lam is None:
+                raise ValueError("_adjoint_forms: a saddle-point adjoint needs the pressure adjoint too")
+            lam_vec = sympy.Matrix([lam.sym[0]])
+            grad_lam = sympy.Matrix(self.mesh.vector.gradient(lam.sym[0])).reshape(1, dim)
+            f0_uu, f1_uu = apply(kernels["uu"], dim, mu_vec, grad_mu)
+            f0_up, f1_up = apply(kernels["up"], 1, lam_vec, grad_lam)
+            return f0_uu + f0_up, f1_uu + f1_up
+        return apply(kernels, n, mu_vec, grad_mu)
+
+    def _essential_reaction(self, mu, lam=None):
+        r"""``K^T \mu`` on every node of the unknown's space, the constrained
+        ones included.
+
+        The global vector holds only the unconstrained degrees of freedom and
+        the local residual assembly skips the constrained rows, so neither
+        the assembled operator nor a residual evaluation carries the rows on
+        a Dirichlet boundary. They are assembled here as the load
+        :math:`\int \phi\, f_0^{\rm adj} + \nabla\phi \cdot \mathbf f_1^{\rm adj}`
+        of the adjoint templates on an unconstrained copy of the space. On
+        the constrained rows that is the reaction of the adjoint constraint,
+        which multiplies the derivative of the datum in the sensitivity.
+        Returns a scratch field; give it back to ``uw.adjoint._shared_scratch``.
+        """
+        import sympy
+        from underworld3.adjoint import dual_on
+        f0, f1 = self._adjoint_forms(mu, lam)
+        n = getattr(self.u, "num_components", 1)
+        if n == 1:
+            return dual_on(self.u, f0[0], sympy.Matrix(f1).reshape(1, self.mesh.cdim))
+        return dual_on(self.u, sympy.Matrix(f0).reshape(1, n), sympy.Matrix(f1))
+
+    def _unknown_dm(self):
+        """The DM whose local section lays out the unknown's own vector: the
+        velocity sub-DM of a saddle point, the solver's DM otherwise."""
+        sub = getattr(self, "_subdict", None)
+        if sub:
+            return list(sub.values())[0][1]
+        return self.dm
+
+    def _essential_datum_owner(self):
+        """``{(node, component): index into essential_bcs}`` for every
+        constrained degree of freedom of the unknown, on this rank's owned
+        points.
+
+        PETSc constrains the closure of each boundary's labelled points, the
+        corner vertices included, and inserts the data boundary by boundary
+        in the order they were registered, so where two boundaries meet the
+        later one's datum is the one applied. The map is built the same way.
+        """
+        dm = self._unknown_dm()
+        section = dm.getLocalSection()
+        label = dm.getLabel("UW_Boundaries")
+        n = getattr(self.u, "num_components", 1)
+        ghost = set()
+        try:
+            graph = dm.getPointSF().getGraph()
+            if graph[1] is not None:
+                ghost = set(int(q) for q in graph[1])
+        except Exception:
+            ghost = set()
+        owner = {}
+        for index, bc in enumerate(self.essential_bcs):
+            if int(bc.f_id) != 0:
+                continue
+            stratum = label.getStratumIS(int(bc.boundary_label_val))
+            if stratum is None:
+                continue
+            points = set()
+            for q in stratum.getIndices():
+                closure = dm.getTransitiveClosure(int(q))[0]
+                points.update(int(r) for r in closure)
+            for q in points:
+                if q in ghost or section.getFieldDof(q, 0) == 0:
+                    continue
+                node = section.getFieldOffset(q, 0) // n
+                for c in section.getFieldConstraintIndices(q, 0):
+                    if int(c) in [int(k) for k in bc.components]:
+                        owner[(int(node), int(c))] = index
+        return owner
+
+    def _essential_datum_sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
+        r"""The part of ``dJ/dm`` through the essential data:
+        :math:`\big[(K^T\mu)_\Gamma + (\partial J/\partial u)_\Gamma\big]
+        \cdot \partial g/\partial m` over the constrained degrees of freedom.
+        The second term is the misfit reading the prescribed values
+        directly; ``misfit_dual`` is :math:`\partial J/\partial u` on every
+        node of the unknown's space, the rows the adjoint solve leaves out.
+        Zero, at no cost, when no datum reads ``wrt``."""
+        import numpy as np
+        import sympy
+        from underworld3.adjoint import _shared_scratch
+        derivatives = {}
+        for index, bc in enumerate(self.essential_bcs):
+            d = diff_wrt_field(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
+            if d.is_zero_matrix:
+                continue
+            if int(bc.f_id) != 0:
+                raise NotImplementedError(
+                    f"sensitivity: {wrt} enters an essential datum on field {bc.f_id} "
+                    f"of this solver; only data on the unknown carry a reaction term yet")
+            derivatives[index] = d
+        if not derivatives:
+            return 0.0
+        self._refuse_essential_datum_parameter(wrt)
+        reaction = self._essential_reaction(mu, lam)
+        try:
+            n = getattr(self.u, "num_components", 1)
+            rows = np.array(np.asarray(reaction.array), dtype=float).reshape(-1, n)
+            if misfit_dual is not None:
+                rows = rows + np.asarray(misfit_dual, dtype=float).reshape(-1, n)
+            X = np.asarray(self.u.coords_nd)
+            total = 0.0
+            for (node, comp), index in self._essential_datum_owner().items():
+                d = derivatives.get(index)
+                if d is None or d[comp] == 0:
+                    continue
+                expr = sympy.sympify(d[comp])
+                if expr.is_Number:
+                    value = float(expr)
+                else:
+                    value = float(np.asarray(uw.function.evaluate(expr, X[node:node + 1])).ravel()[0])
+                total += float(rows[node, comp]) * value
+        finally:
+            _shared_scratch.give(reaction)
+        return float(uw.mpi.comm.allreduce(total, op=uw.MPI.SUM))
+
+    def _refuse_essential_datum_parameter(self, wrt):
+        """A datum that reads a parameter is handled through the reaction of
+        the adjoint operator assembled from the volume kernels. That leaves
+        out a boundary tangent — a natural condition that reads the unknown,
+        a rotated constraint, a fault contact, a multiplier — so those refuse
+        rather than return a term that is missing a piece."""
+        mechanisms = self._constraint_mechanisms()
+        for kind in ("rotated_freeslip", "fault_contact", "multipliers"):
+            if mechanisms.get(kind):
+                raise NotImplementedError(
+                    f"sensitivity: {wrt} enters an essential datum, and this solver "
+                    f"also carries a {kind} constraint whose tangent the reaction "
+                    f"term does not include yet")
+        for bc in (getattr(self, "natural_bcs", None) or []):
+            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+                if fn is None:
+                    continue
+                import sympy
+                if sympy.Matrix(self._peel_except(sympy.Matrix(fn), wrt)).has(*list(self.u.sym)):
+                    raise NotImplementedError(
+                        f"sensitivity: {wrt} enters an essential datum, and the natural "
+                        f"condition on {bc.boundary} reads the unknown; its boundary "
+                        f"tangent is not in the reaction term yet")
+
+    def adjoint_view(self):
+        """Typeset the adjoint problem this solver assembles, in a notebook."""
+        from IPython.display import Latex, Markdown, display
+        import sympy
+        templates = self.adjoint_templates()
+        display(Markdown("### Adjoint problem, as assembled"))
+        display(Markdown(r"$\int \phi\, f_0^{\rm adj}(\mu,\nabla\mu) + \nabla\phi\cdot\mathbf f_1^{\rm adj}(\mu,\nabla\mu) = b(\phi)$ with"))
+        if isinstance(templates, dict):
+            for block, (f0, f1) in templates.items():
+                display(Latex(f"$f_0^{{\\rm adj}}[{block}] = {sympy.latex(f0)}$"))
+                display(Latex(f"$\\mathbf f_1^{{\\rm adj}}[{block}] = {sympy.latex(f1)}$"))
+        else:
+            f0, f1 = templates
+            display(Latex(f"$f_0^{{\\rm adj}} = {sympy.latex(f0)}$"))
+            display(Latex(f"$\\mathbf f_1^{{\\rm adj}} = {sympy.latex(f1)}$"))
+
+    def _adjoint_by_kernels(self):
+        """Whether the adjoint operator is ASSEMBLED from the transposed
+        kernels rather than obtained by transposing the assembled matrix.
+        The kernel route covers the volume terms; a boundary Jacobian (a
+        natural or Nitsche condition with a tangent) is not swapped yet, so
+        such a solver takes the matrix route."""
+        return not (getattr(self, "natural_bcs", None) or [])
+
+    def _install_adjoint_kernels(self):
+        """Rewire the solver to the kernels of the transposed form.
+
+        The Jacobian the SNES then assembles IS K^T at the state the forward
+        solve ended in: the consistent tangent's derivatives with trial and
+        test exchanged (:func:`_transpose_kernels`), compiled and cached like
+        any other kernel set. Returns what to hand back to
+        :meth:`_uninstall_adjoint_kernels`.
+        """
+        previous = self._consistent_jacobian
+        if self.consistent_jacobian is False and not self._residual_is_linear_in_unknown():
+            self._consistent_jacobian = True          # transpose dR/du, not the Picard kernel
+        self._adjoint_kernels = True
+        self._needs_function_rewire = True
+        self._build(False, False, None)
+        self.snes.setUp()                             # a direct computeJacobian needs it
+        return previous
+
+    def _uninstall_adjoint_kernels(self, previous):
+        """Mark the forward kernels as wanted again. The next forward solve's
+        own build rewires; nothing is torn down here, so a second adjoint on
+        the same forward state reuses the installed set."""
+        self._consistent_jacobian = previous
+        self._adjoint_kernels = False
+        self._adjoint_kernel_installed = True
+        self._needs_function_rewire = True
+
+    def _consistent_tangent_for_adjoint(self):
+        """Make sure the Jacobian kernel the adjoint assembles is dR/du.
+
+        The converged state is the same whichever tangent the forward
+        iteration used, and dR/du is a function of that state alone — so
+        Picard iterations spoil nothing. What they leave behind is a SNES
+        whose Jacobian KERNEL is the frozen-coefficient one, and assembling
+        that at the converged state gives the wrong matrix to transpose. If
+        the forward ran Picard on a nonlinear residual, switch the kernel to
+        the consistent tangent here (a JIT rebuild of the pointwise
+        functions; the DM, SNES and KSP are kept) and return a token so
+        :meth:`_restore_tangent` can put the Picard kernel back for the next
+        forward solve. Returns None when nothing had to change.
+        """
+        if self.consistent_jacobian is not False:
+            return None
+        if self._residual_is_linear_in_unknown():
+            return None                       # the two tangents coincide
+        if getattr(self, "_adjoint_kernel_installed", False):
+            return "picard"                   # still there from the last adjoint
+        self._consistent_jacobian = True
+        self._needs_function_rewire = True
+        self._build(False, False, None)
+        # The rewire hands back a new DM and SNES on the saddle-point class.
+        # snes.solve() would set them up itself; a direct computeJacobian
+        # will not, and segfaults on the unset-up SNES (measured).
+        self.snes.setUp()
+        return "picard"
+
+    def _restore_tangent(self, token):
+        """Put the Picard setting back, but LEAVE the consistent kernel
+        installed: a second adjoint (a second misfit on the same forward)
+        reuses it, and the next forward solve's own build rewires to Picard.
+        Tearing it down here made a second adjoint_solve refuse with "no
+        forward solve" (found in review)."""
+        if token is None:
+            return
+        self._consistent_jacobian = False
+        self._adjoint_kernel_installed = True
+        self._needs_function_rewire = True    # the next forward solve rewires
+
+    def _newton_alpha_for_adjoint(self):
+        """Under ``"continuation"``, put the tangent at full Newton for the
+        adjoint's Jacobian assembly; return what alpha was so it can be put back.
+
+        The forward solve ramps alpha from 0 towards 1 as the residual drops
+        and may converge before it arrives, leaving the SNES holding a blend.
+        The blend is a fine tangent to converge on and the wrong matrix to
+        transpose: the adjoint wants dR/du, which is alpha = 1. Returns None
+        when continuation is not in use, and nothing is touched.
+        """
+        if self.consistent_jacobian != "continuation":
+            return None
+        import sympy
+
+        before = self._get_newton_alpha().sym
+        self._set_newton_alpha(1.0)
+        return before
+
+    def _restore_newton_alpha(self, before):
+        if before is None:
+            return
+        self._get_newton_alpha().sym = before
+        try:
+            self._update_constants(record=False)
+        except Exception:
+            pass
+
+    def _residual_is_linear_in_unknown(self):
+        """Whether the residual templates are linear in the unknown.
+
+        Scale every occurrence of the unknown (and its derivatives) by ``s``
+        and ask whether the second derivative in ``s`` vanishes. A viscosity
+        that depends on the strain rate fails this; a constant one passes. The
+        adjoint cares because a nonlinear residual solved with the Picard
+        tangent leaves the SNES holding a Jacobian that is NOT
+        :math:`\\partial R/\\partial u`.
+        """
+        import sympy
+
+        try:
+            name = self.u.name
+            s = sympy.Symbol("s_scale_adjoint")
+            for template in ("F0", "F1", "PF0"):
+                form = getattr(self, template, None)
+                if form is None:
+                    continue
+                expression = self._peel_except(form.sym, None)
+                atoms = [a for a in expression.atoms(sympy.Function)
+                         if str(a).startswith("{" + name)]
+                if not atoms:
+                    continue
+                scaled = expression.subs({a: s * a for a in atoms})
+                # s is a Symbol this method makes, so diff_wrt_field delegates
+                # straight to sympy.diff; it is used anyway so that every
+                # derivative in the solvers reads the same and the census in
+                # test_0023 stays a blunt textual one with nothing to audit.
+                second = diff_wrt_field(diff_wrt_field(scaled, s), s)
+                if isinstance(second, sympy.MatrixBase):
+                    if any(x != 0 for x in second):
+                        return False
+                elif second != 0:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _peel_except(expression, wrt, depth=8):
+        """Expand every named expression in ``expression`` except ``wrt``.
+
+        A parameter reaches the residual through the constitutive model's own
+        named symbol — ``Parameters.diffusivity = kappa`` puts ``\\upkappa`` in
+        ``F1`` with ``kappa`` as its value — so differentiating the residual
+        as written with respect to ``kappa`` gives zero. ``fn_unwrap`` will not
+        do either: it substitutes every constant's VALUE, and the derivative
+        of a number is zero too. This substitutes each named expression by its
+        definition, one level at a time, and stops at ``wrt`` so the chain
+        rule has something to hold on to.
+        """
+        # A named expression whose value is a bare number is left as it is:
+        # the JIT passes it as a run-time constant, so the kernel compiled
+        # for the integrand survives a change of its value. Substituting the
+        # number recompiled every sensitivity at every evaluation of an
+        # inversion (four compiles per evaluation on the fault example).
+        for _ in range(depth):
+            named = [e for e in uw.function.fn_extract_expressions(expression)
+                     if e is not wrt and e != wrt
+                     and not getattr(getattr(e, "sym", None), "is_Number", False)]
+            if not named:
+                break
+            expression = expression.subs({e: e.sym for e in named})
+        return expression
+
+    def sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
+        r"""``d J / d m`` for a scalar parameter ``wrt``, given the adjoint state.
+
+        :math:`\int` of :meth:`adjoint_integrand` — with :math:`\mu` the
+        solution of :math:`K^T \mu = -\partial J/\partial u`, this is the
+        implicit part of the gradient; add :math:`\partial J/\partial m` if
+        the misfit depends on the parameter directly. A parameter in a
+        natural condition adds a facet part; one in an essential datum adds
+        the reaction part :math:`(K^T\mu)_\Gamma \cdot \partial g/\partial m`
+        (:meth:`_essential_datum_sensitivity`), which for a saddle point
+        needs the pressure adjoint ``lam`` as well, and the misfit's own
+        dual on every node, ``misfit_dual``, where the misfit reads the
+        prescribed values.
+        """
+        total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
+        # A parameter that enters through a natural condition — a prescribed
+        # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
+        import sympy
+        mu_sym = mu.sym
+        for bc in (getattr(self, "natural_bcs", None) or []):
+            fn = getattr(bc, "fn_f", None)
+            if fn is None:
+                continue
+            d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+            if d.is_zero_matrix:
+                continue
+            values = list(d)
+            comps = getattr(mu, "num_components", 1)
+            integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
+            total += float(uw.maths.BdIntegral(self.mesh, integrand, bc.boundary).evaluate())
+        return total
 
     def _constraint_mechanisms(self):
         """Every way a constraint can have been put on this solver.
@@ -1923,6 +3195,121 @@ class SolverBaseClass(uw_object):
     def solve_history(self, value):
         raise AttributeError("solve_history is read-only (set by solve()).")
 
+    def _snapshot_numerics(self):
+        """Record the numerical configuration in force for the NEXT ``snes.solve`` (#806).
+
+        Read from the live PETSc objects, not from ``petsc_options``: a path that switches
+        a setting for the duration of one solve (the continuation ramp's line search and
+        atol, the difficulty probe's max_it) restores it before the report is captured,
+        so only a snapshot taken here, at the call, shows what actually ran. Stored for
+        :meth:`_capture_solve_report`. Read-only: nothing is set up or changed.
+        """
+        snes = self.snes
+        cfg = {}
+
+        def _safe(fn, default=None):
+            # Sanctioned swallow: a getter PETSc refuses on this object/state (e.g. a PC
+            # not yet set up) leaves the field at its honest "unavailable" value.
+            try:
+                return fn()
+            except Exception:
+                return default
+
+        rtol, atol, stol, max_it = snes.getTolerances()
+        cfg["snes"] = dict(type=snes.getType(), rtol=rtol, atol=atol, stol=stol,
+                           max_it=max_it,
+                           max_funcs=_safe(snes.getMaxFunctionEvaluations),
+                           ew=bool(_safe(snes.getUseEW, False)))
+        if cfg["snes"]["ew"]:
+            cfg["snes"]["ew_params"] = _safe(snes.getParamsEW)
+        # ⚠️ SNESGetNPC CREATES a nonlinear preconditioner when there is none, and the solve
+        # then runs it (measured: DIVERGED_INNER at iteration 0). Ask first.
+        if _safe(snes.hasNPC, False):
+            cfg["snes"]["npc"] = _safe(lambda: snes.getNPC().getType())
+        # SNESGetLineSearch also creates one when absent; only line-search SNES types
+        # own one to report.
+        ls = (_safe(snes.getLineSearch)
+              if cfg["snes"]["type"] in ("newtonls", "nrichardson", "ncg", "qn",
+                                         "ngmres", "anderson", "ms")
+              else None)
+        if ls is not None:
+            cfg["linesearch"] = dict(type=_safe(ls.getType), order=_safe(ls.getOrder),
+                                     tolerances=_safe(ls.getTolerances))
+
+        def _ksp(k):
+            kr, ka, kd, km = k.getTolerances()
+            pc = k.getPC()
+            d = dict(prefix=_safe(k.getOptionsPrefix), type=_safe(k.getType), rtol=kr,
+                     atol=ka, divtol=kd, max_it=km, pc=_safe(pc.getType))
+            # The Krylov restart decides whether a near-null mode of the operator can be
+            # resolved at all (measured on the Spiegelman notch: a yielded layer gives the
+            # Newton velocity block a mechanism mode; FGMRES(30) stalls on it with NO
+            # progress, FGMRES(100) converges). petsc4py has no getter; read the option
+            # PETSc read, with PETSc's default.
+            if d["type"] in ("gmres", "fgmres", "lgmres", "dgmres", "pgmres", "pipefgmres"):
+                pfx = d["prefix"] or ""
+                d["restart"] = _safe(lambda: PETSc.Options().getInt(pfx + "ksp_gmres_restart", 30), 30)
+            return d, pc
+
+        ksp = _safe(snes.getKSP)
+        if ksp is not None:
+            cfg["ksp"], pc = _ksp(ksp)
+        # The fieldsplit sub-solvers are read AFTER the solve (_capture_solve_report):
+        # before the first solve the PC is not set up, and PCFieldSplitGetSubKSP then
+        # errors (and prints, even when caught). Nothing switches them per solve, so the
+        # post-solve read is what ran.
+
+        tangent = dict(consistent_jacobian=self.consistent_jacobian,
+                       newton_pressure_coupling=getattr(self, "newton_pressure_coupling", True))
+        # alpha only where it is live: the blended Jacobian (a warm-up compiled it, or
+        # the continuation ramp). Its value before the solve is the one the solve
+        # starts from; the ramp's end value is added by _capture_solve_report.
+        a = getattr(self, "_newton_alpha", None)
+        if a is not None and (self.consistent_jacobian == "continuation"
+                              or (self.consistent_jacobian is True and self._picard_blend)):
+            tangent["alpha"] = _safe(lambda: float(a.sym))
+        if self.consistent_jacobian == "continuation":
+            tangent["continuation_alpha_start"] = self.continuation_alpha_start
+            tangent["continuation_newton_at"] = self.continuation_newton_at
+            tangent["continuation_linesearch"] = self.continuation_linesearch
+            tangent["continuation_backoff"] = self.continuation_backoff
+            tangent["continuation_bt_from"] = self.continuation_bt_from
+        cfg["tangent"] = tangent
+        # Model-level facts a solver class knows about its own formulation (the pressure
+        # gauge for Stokes). Recorded WITH the numerics so a transcript can say what
+        # convention a solve ran under without introspecting a live process.
+        try:
+            self._snapshot_model_facts(cfg)
+        except Exception:
+            # Sanctioned: formulation facts are a record, never a reason to stop a
+            # solve; a class whose facts cannot be read records none.
+            pass
+        notes = cfg.pop("_warnings", ())
+        self._numerics_at_solve = cfg
+        self._emit_solve_notes(notes)
+        return cfg
+
+    def _emit_solve_notes(self, notes):
+        """Emit formulation warnings noted by :meth:`_snapshot_model_facts`, once per
+        solve (retries and re-entries snapshot again), attributed to the caller."""
+        warned = getattr(self, "_warned_this_solve", None)
+        if warned is None:
+            warned = self._warned_this_solve = set()
+        for msg in notes:
+            if msg not in warned:
+                warned.add(msg)
+                _warn_from_caller(msg)
+
+    def _snapshot_model_facts(self, cfg):
+        """Add formulation facts to the solve configuration snapshot (``solve_report.config``).
+
+        Base: nothing. Stokes adds ``cfg["gauge"]``: whether a pressure nullspace was
+        requested and is attached, whether the rheology reads the pressure, pressure
+        Dirichlet BCs and natural (open) boundaries — the facts that decide whether the
+        pressure level a pressure-dependent yield law sees is physical or a gauge choice.
+        """
+        return
+
     def _capture_solve_report(self, *, bounded=False):
         """Record a SolveReport for the just-completed solve into ``self._solve_report`` and
         append it to ``self._solve_history``. Reads SNES state only (side-effect free).
@@ -1960,6 +3347,15 @@ class SolverBaseClass(uw_object):
             hist = tuple(float(h) for h in self.snes.getConvergenceHistory()[0])
         except Exception:
             hist = ()
+        # A Picard warm-up ran as its own snes.solve just before this one: count it, and
+        # start the history (so fnorm0 and the reduction) at the cold residual.
+        warm = getattr(self, "_picard_warmup_record", None)
+        self._picard_warmup_record = None
+        if warm:
+            nl_its += warm["nl_its"]
+            ksp_its += warm["ksp_its"]
+            if warm["history"]:
+                hist = warm["history"] + hist[1:]
         fnorm0 = hist[0] if hist else None
         reduction = (fnorm / fnorm0) if (fnorm0 not in (None, 0.0)) else None
         rho = contraction(hist)
@@ -1970,6 +3366,34 @@ class SolverBaseClass(uw_object):
         sub = instrumentation.sub_reports() if instrumentation is not None else {}
         deadline_expired = (instrumentation is not None
                             and instrumentation.deadline_expired)
+
+        config = getattr(self, "_numerics_at_solve", None) or {}
+        if warm and "tangent" in config:
+            config["tangent"]["picard_warmup_its"] = warm["nl_its"]
+        if "alpha" in config.get("tangent", {}):
+            try:
+                config["tangent"]["alpha_end"] = float(self._newton_alpha.sym)
+            except (AttributeError, TypeError):
+                # Sanctioned: no alpha container (never built); the start value stands
+                pass
+        _kcfg = config.get("ksp")
+        # Only once a linear solve has run: before that the PC is not set up, and
+        # PCFieldSplitGetSubKSP errors — printing to stderr even when caught (measured on
+        # a zero-iteration build solve).
+        if (_kcfg is not None and _kcfg.get("pc") == "fieldsplit" and "splits" not in _kcfg
+                and ksp_its > 0):
+            try:
+                _splits = []
+                for _sk in self.snes.getKSP().getPC().getFieldSplitSubKSP():
+                    _r, _a, _d, _m = _sk.getTolerances()
+                    _splits.append(dict(prefix=_sk.getOptionsPrefix(), type=_sk.getType(),
+                                        rtol=_r, atol=_a, divtol=_d, max_it=_m,
+                                        pc=_sk.getPC().getType()))
+                _kcfg["splits"] = _splits
+            except Exception:
+                # Sanctioned swallow: a solve that failed before PC set-up has no
+                # sub-solvers to report; the field stays absent.
+                pass
 
         report = SolveReport(
             reason=reason,
@@ -1986,7 +3410,9 @@ class SolverBaseClass(uw_object):
             bounded=bool(bounded),
             sub=sub,
             deadline_expired=deadline_expired,
+            config=config,
         )
+        self._numerics_at_solve = None       # never report a previous solve's config
         self._solve_report = report
         self._solve_history.append(report)
         self._record_solve_outcome(report)
@@ -2025,11 +3451,23 @@ class SolverBaseClass(uw_object):
         rnorm0 = info.get("rnorm0")
         fnorm0 = float(rnorm0) if rnorm0 else None
         reduction = (fnorm / fnorm0) if (fnorm0 and fnorm == fnorm) else None
+        # The rotated loop runs its own Krylov solves, so there is no SNES snapshot to
+        # read; record the formulation facts the transcript needs (tangent, gauge,
+        # regularisation) from the solver itself.
+        config = dict(tangent=dict(consistent_jacobian=self.consistent_jacobian,
+                                   newton_pressure_coupling=self.newton_pressure_coupling,
+                                   path="rotated_freeslip"))
+        try:
+            self._snapshot_model_facts(config)
+        except Exception:
+            # Sanctioned: formulation facts are a record; none is recorded on failure
+            pass
+        self._emit_solve_notes(config.pop("_warnings", ()))
         report = SolveReport(
             reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
             nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
             fnorm0=fnorm0, reduction=reduction, rho=None, fev=None, history=(),
-            bounded=False,
+            bounded=False, config=config,
         )
         self._solve_report = report
         self._solve_history.append(report)
@@ -2146,8 +3584,8 @@ class SolverBaseClass(uw_object):
         -----
         Not available with rotated free-slip BCs: that path solves outside
         ``self.snes``, so the cap and anchor cannot reach it. Under
-        ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
-        then Newton), so one probe may run up to twice ``max_nl_its``.
+        ``consistent_jacobian="continuation"`` the cap applies to the one ramped
+        solve (Picard and Newton iterations together).
         """
         if getattr(self, "_rotated_freeslip_bcs", None) \
                 or getattr(self, "_fault_contact_faults", None):
@@ -2402,19 +3840,14 @@ class SolverBaseClass(uw_object):
         Parameters
         ----------
         phase : str
-            ``"picard"`` -- ignore ``DIVERGED_MAX_IT`` (truncation is
-            intentional during the Picard-to-Newton transition).
-            ``"solve"``  -- any divergence is a real problem.
+            Label for the report. (A ``"picard"`` phase that ignored
+            ``DIVERGED_MAX_IT`` served the nrichardson warm-up removed in #791.)
         """
 
         reason = self.snes.getConvergedReason()
 
         if reason >= 0:
             return                          # converged -- nothing to report
-
-        # Picard truncation (DIVERGED_MAX_IT) is expected and harmless
-        if phase == "picard" and reason == -5:
-            return
 
         # Bounded difficulty probe: hitting the iteration cap (DIVERGED_MAX_IT) is
         # the intended stop, not a failure — the effort is reported, not warned.
@@ -2489,18 +3922,26 @@ class SolverBaseClass(uw_object):
         #     start/stop/restart terminates at the same point an uninterrupted solve would.
         # Tolerances are saved and restored so nothing leaks into later solves.
         _probe = bool(self._difficulty_probe)
+        _warm = int(getattr(self, "_pending_picard", 0) or 0)
+        self._pending_picard = 0
         _saved_tol = None
-        if _probe:
+        if _probe or _warm:
             _saved_tol = self.snes.getTolerances()
+        if _probe:
             if self._difficulty_max_it is not None:
                 self.snes.setTolerances(max_it=int(self._difficulty_max_it))
             if self._resume_abs_target is not None:
                 self.snes.setTolerances(atol=float(self._resume_abs_target))
 
         try:
+            if _warm:
+                # The planned Picard warm-up (_plan_picard_warmup), inside this solve's
+                # hooks, guard, cap and report rather than before them.
+                self._picard_warmup(gvec, _warm, count_against_cap=_probe, verbose=verbose)
             if self.consistent_jacobian == "continuation":
                 self._continuation_solve(gvec, verbose=verbose)
             else:
+                self._snapshot_numerics()
                 self.snes.solve(None, gvec)
             if divergence_retries > 0:
                 for _r in range(divergence_retries):
@@ -2513,7 +3954,13 @@ class SolverBaseClass(uw_object):
                             f"warm-start retry {_r + 1}/{divergence_retries}",
                             flush=True,
                         )
-                    self.snes.solve(None, gvec)
+                    if self.consistent_jacobian == "continuation":
+                        # a warm re-entry: the residual-keyed ramp resumes at the alpha
+                        # the current residual calls for
+                        self._continuation_solve(gvec, verbose=verbose)
+                    else:
+                        self._snapshot_numerics()
+                        self.snes.solve(None, gvec)
         finally:
             if _saved_tol is not None:
                 self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
@@ -2525,32 +3972,204 @@ class SolverBaseClass(uw_object):
             # produced under an estimate_difficulty cap.
             self._capture_solve_report(bounded=_probe)
 
-    def _continuation_solve(self, gvec, verbose=False):
-        """Picard -> Newton continuation via the constants[]-routed alpha.
+    def _picard_warmup(self, gvec, n, count_against_cap=False, verbose=False):
+        """Take ``n`` Picard steps — Newton iterations with the FROZEN tangent — in place,
+        and set the tolerances of the Newton solve that follows.
 
-        Stage 1 solves with the frozen (Picard) tangent (alpha=0) to a loose
-        tolerance to enter Newton's basin of attraction; stage 2 ramps to the
-        consistent (Newton) tangent (alpha=1) and warm-starts to the requested
-        tolerance. alpha is toggled through ``constants[]`` so neither stage
-        triggers a JIT recompile (cf. Spiegelman et al. 2016; ASPECT).
+        Called by :meth:`_snes_solve_with_retries` (which saves and restores the SNES
+        tolerances around the whole solve). Requires the blended Jacobian
+        (``_picard_blend``): alpha = 0 is the frozen (Picard) operator, i.e. a linear
+        solve with the coefficient held at the current state; alpha is a
+        ``constants[]`` atom, so switching costs no recompile. Runs exactly ``n`` steps
+        (no relative stop; an absolute stop at the solve's ``atol`` is honoured), then
+        restores alpha = 1. The Newton solve is then anchored to the COLD residual:
+        ``atol >= rtol * ||F(u_cold)||``, so the solve stops where one uninterrupted
+        solve would. Without the anchor PETSc measures ``rtol`` from the post-warm-up
+        residual and asks Newton for a further ``rtol`` below an already-converged
+        state (measured: SNORM stagnation on a near-linear viscoplastic box that
+        converges in 2 iterations without the warm-up). With ``count_against_cap``
+        (an ``estimate_difficulty`` probe) the steps come out of the probe's
+        iteration cap. Recorded in ``_picard_stages`` and, for the solve report,
+        ``_picard_warmup_record``.
         """
         rtol, atol, stol, max_it = self.snes.getTolerances()
+        n = int(n)
+        if count_against_cap and max_it:
+            n = min(n, int(max_it))
+        its = 0
+        hist = ()
+        try:
+            self._set_newton_alpha(0.0)
+            self.snes.setTolerances(rtol=0.0, atol=atol, stol=stol, max_it=n)
+            self.snes.solve(None, gvec)
+            its = int(self.snes.getIterationNumber())
+            reason = int(self.snes.getConvergedReason())
+            try:
+                hist = tuple(float(h) for h in self.snes.getConvergenceHistory()[0])
+            except Exception:
+                # Sanctioned: no history recorded; the report keeps the Newton one
+                hist = ()
+            # Kept for the solve report, which reads only the SNES state of the Newton
+            # solve that follows: without this the warm-up's iterations, linear solves
+            # and initial residual vanish from it (measured: a two-step solve reported
+            # nl_its = 1 and a reduction relative to the post-warm-up residual).
+            self._picard_warmup_record = dict(
+                nl_its=its, ksp_its=int(self.snes.getLinearSolveIterations()), history=hist)
+            if reason < 0 and reason != int(PETSc.SNES.ConvergedReason.DIVERGED_MAX_IT):
+                from underworld3.systems.solve_report import reason_string
+                inst = getattr(self, "_instrumentation", None)
+                if inst is not None and getattr(inst, "deadline_expired", False):
+                    _warn_from_caller(
+                        f"[{self.name}] the wall-clock deadline expired during the Picard "
+                        f"warm-up ({reason_string(reason)}); the solve stops there.")
+                else:
+                    _warn_from_caller(
+                        f"[{self.name}] the Picard warm-up step ended {reason_string(reason)} "
+                        f"({reason}); Newton continues from its iterate.")
+            if verbose:
+                uw.pprint(f"Picard warm-up: {its} frozen-tangent step(s), reason={reason}")
+        finally:
+            self._set_newton_alpha(1.0)
+            new_atol = atol
+            if hist and rtol > 0.0:
+                new_atol = max(atol, rtol * hist[0])
+            new_max_it = max(int(max_it) - its, 0) if (count_against_cap and max_it) else max_it
+            self.snes.setTolerances(rtol=rtol, atol=new_atol, stol=stol, max_it=new_max_it)
+        self._picard_stages = dict(picard_iterations=its)
 
-        # Stage 1 — Picard (alpha=0), loose tolerance.
-        self._set_newton_alpha(0.0)
-        self.snes.setTolerances(rtol=max(self.newton_switch_rtol, rtol))
-        self.snes.solve(None, gvec)
-        if verbose and uw.mpi.rank == 0:
-            print(f"continuation Picard: reason={self.snes.getConvergedReason()} "
-                  f"it={self.snes.getIterationNumber()}", flush=True)
+    def _continuation_alpha(self, F, F_ref):
+        """alpha for residual norm ``F`` on the continuation ramp (before monotonicity)."""
+        if F <= 0.0:
+            return 1.0
+        L = np.log10(F_ref / F)
+        L0 = np.log10(1.0 / self.continuation_alpha_start)
+        L1 = np.log10(1.0 / self.continuation_newton_at)
+        if L1 <= L0:
+            # start == newton_at: a SWITCH, Picard above the gate and Newton below it,
+            # no blended tangent in between
+            return 1.0 if L >= L1 else 0.0
+        return float(min(1.0, max(0.0, (L - L0) / (L1 - L0))))
 
-        # Stage 2 — Newton (alpha=1), requested tolerance, warm-started.
-        self._set_newton_alpha(1.0)
-        self.snes.setTolerances(rtol=rtol, atol=atol, stol=stol, max_it=max_it)  # restore
-        self.snes.solve(None, gvec)
-        if verbose and uw.mpi.rank == 0:
-            print(f"continuation Newton: reason={self.snes.getConvergedReason()} "
-                  f"it={self.snes.getIterationNumber()}", flush=True)
+    def _continuation_solve(self, gvec, verbose=False):
+        """Picard -> Newton continuation in ONE SNES solve, alpha keyed on the residual.
+
+        The Jacobian is the blended form J_p + alpha (J_n - J_p) (alpha a
+        ``constants[]`` atom, so no recompile). At the start of every iteration alpha
+        is set from the current residual F relative to F_ref = ||F(u = 0)||
+        (:meth:`_continuation_alpha`, never decreasing within a solve); an explicit
+        ``solve(picard=N)`` holds alpha = 0 for the first N iterations. The solve
+        stops on the ABSOLUTE target ``tolerance * F_ref`` (or tighter, if already
+        set), the point a cold solve stops at, so a warm start is not asked for a
+        further ``tolerance`` reduction of an already small residual. The line search
+        is ``continuation_linesearch`` for this solve (None leaves it alone).
+
+        Measured (Spiegelman notch, power-law and DP cases; #791): converges cases
+        where both pure Newton and the old two-stage continuation fail, and makes
+        warm starts cheaper than cold ones. Known limitation: at intermediate alpha
+        the iteration can oscillate and stall (notch at refinement 2; power law n=3
+        with yield).
+        """
+        rtol, atol, stol, max_it = self.snes.getTolerances()
+        ls = self.snes.getLineSearch()
+        ls_type = ls.getType()
+
+        # F_ref: the residual at u = 0 — one residual evaluation, whatever the start.
+        _x = gvec.duplicate()
+        _x.zeroEntries()
+        _f = gvec.duplicate()
+        self.snes.computeFunction(_x, _f)
+        F_ref = _f.norm()
+        _x.destroy()
+        _f.destroy()
+        _fs = gvec.duplicate()
+        self.snes.computeFunction(gvec, _fs)
+        F_start = _fs.norm()
+        _fs.destroy()
+        # u = 0 can be (near) the solution, e.g. a problem driven only by a weak body
+        # force from a good guess: never key on a scale below the starting residual.
+        F_ref = max(F_ref, F_start)
+
+        hold = dict(n=int(getattr(self, "_continuation_min_picard", 0) or 0))
+        backoff = self.continuation_backoff
+        state = dict(alpha=0.0, frozen=0, blended=0, newton=0, backoffs=0, F_min=None,
+                     restarts=0, nl=0, ksp=0)
+        user_hook = bool(self._snes_update_callbacks)
+
+        def _ramp(snes, k):
+            F = snes.getFunctionNorm()
+            a_key = self._continuation_alpha(F, F_ref)
+            if state["F_min"] is None or F < state["F_min"]:
+                state["F_min"] = F
+            if k < hold["n"]:
+                a = 0.0
+            elif backoff and F > backoff * state["F_min"] and a_key < state["alpha"]:
+                # the iteration is moving away from the solution: follow F back down
+                a = a_key
+                state["F_min"] = F
+                state["backoffs"] += 1
+            else:
+                a = max(state["alpha"], a_key)
+            state["alpha"] = a
+            self._set_newton_alpha(a)
+            bt_from = self.continuation_bt_from
+            if bt_from is not None:
+                want = "bt" if a >= bt_from else (self.continuation_linesearch or ls_type)
+                if ls.getType() != want:
+                    ls.setType(want)
+            if a <= 0.0:
+                state["frozen"] += 1
+            elif a >= 1.0:
+                state["newton"] += 1
+            else:
+                state["blended"] += 1
+            if user_hook:
+                self._dispatch_snes_update(snes, k)
+
+        try:
+            if self.continuation_linesearch:
+                ls.setType(str(self.continuation_linesearch))
+            self.snes.setTolerances(rtol=rtol, atol=max(atol, self.tolerance * F_ref),
+                                    stol=stol, max_it=max_it)
+            self.snes.setUpdate(_ramp)
+            self._snapshot_numerics()
+            self.snes.solve(None, gvec)
+            state["nl"] += int(self.snes.getIterationNumber())
+            state["ksp"] += int(self.snes.getLinearSolveIterations())
+            # Fall back to Picard when the solve diverged after leaving alpha = 0.
+            # Only failures a Picard block can repair: Newton's linear solve failing, the
+            # line search finding no step, a non-finite residual. NOT DIVERGED_MAX_IT —
+            # restarting an exhausted budget just spends it again (measured: 4 x 800).
+            _R = PETSc.SNES.ConvergedReason
+            _recoverable = (_R.DIVERGED_LINEAR_SOLVE, _R.DIVERGED_LINE_SEARCH,
+                            _R.DIVERGED_FUNCTION_NANORINF, _R.DIVERGED_INNER)
+            while (self.snes.getConvergedReason() in _recoverable and state["alpha"] > 0.0
+                   and state["restarts"] < int(self.continuation_restarts or 0)):
+                state["restarts"] += 1
+                if verbose:
+                    uw.pprint(f"continuation: {self.snes.getConvergedReason()} at alpha="
+                              f"{state['alpha']:.3f}; Picard fallback "
+                              f"{state['restarts']}/{self.continuation_restarts}")
+                hold["n"] = int(self.continuation_fallback_picard or 0)
+                state["alpha"] = 0.0
+                state["F_min"] = None
+                self.snes.solve(None, gvec)
+                state["nl"] += int(self.snes.getIterationNumber())
+                state["ksp"] += int(self.snes.getLinearSolveIterations())
+        finally:
+            self.snes.setUpdate(None)
+            self._attach_snes_update_hook()
+            ls.setType(ls_type)
+            self.snes.setTolerances(rtol=rtol, atol=atol, stol=stol, max_it=max_it)
+
+        # Iterations by tangent (the hook fires once at the start of each iteration).
+        self._continuation_stages = dict(
+            frozen_iterations=state["frozen"], blended_iterations=state["blended"],
+            newton_iterations=state["newton"], final_alpha=state["alpha"],
+            backoffs=state["backoffs"], restarts=state["restarts"],
+            total_nl_iterations=state["nl"], total_ksp_iterations=state["ksp"], F_ref=F_ref)
+        if verbose:
+            uw.pprint(f"continuation: reason={self.snes.getConvergedReason()} "
+                      f"it={self.snes.getIterationNumber()} {self._continuation_stages}")
 
         # Restore a clean Picard tangent for any subsequent solve (next step).
         self._set_newton_alpha(0.0)
@@ -2596,6 +4215,7 @@ class SolverBaseClass(uw_object):
                self._current_jit_cache_key == self._last_jit_cache_key:
                 self._update_constants()
                 self.is_setup = True
+                self._form_facts = None     # forms (re)built: cached symbolic facts are stale
                 if hasattr(self, "constitutive_model") and \
                    self.constitutive_model is not None and \
                    hasattr(self.constitutive_model, "_solver_is_setup"):
@@ -2616,6 +4236,7 @@ class SolverBaseClass(uw_object):
             self._setup_solver(verbose, _rewire_only=True)
 
             self.is_setup = True
+            self._form_facts = None     # forms (re)built: cached symbolic facts are stale
 
             # _last_jit_cache_key must track "which bundle the solver is
             # currently wired for", not "what the last full-build was".
@@ -2719,6 +4340,7 @@ class SolverBaseClass(uw_object):
         self._setup_solver(verbose)
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
 
         # Record cache key after full build — used by the fast path
         # on subsequent _build() calls to detect constants-only changes.
@@ -2802,8 +4424,11 @@ class SolverBaseClass(uw_object):
                                  and not str(getattr(expr, "name", "")).startswith("\\Delta t")}
                 except Exception:
                     constants = None
+                supported, why = self._adjoint_support()
                 model._describe_part(self, part, label, constants=constants)
-                model._record_step_event("solve", label, part=part)
+                model._record_step_event(
+                    "solve", label, part=part,
+                    adjoint={"supported": bool(supported), "reason": why})
             except Exception:
                 pass
 
@@ -4781,6 +6406,13 @@ class SNES_Scalar(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        self._forward_kernels = (self._G0, self._G1, self._G2, self._G3)
+        if getattr(self, "_adjoint_kernels", False):
+            # The adjoint's operator: the same derivatives, trial and test
+            # exchanged. Compiled as its own kernel set and cached.
+            _nc = int(self._G0.shape[0])
+            self._G0, self._G1, self._G2, self._G3 = _transpose_kernels(
+                self._G0, self._G1, self._G2, self._G3, _nc, _nc, self.mesh.cdim)
 
         ##################
 
@@ -4959,6 +6591,7 @@ class SNES_Scalar(SolverBaseClass):
             UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
@@ -4969,7 +6602,8 @@ class SNES_Scalar(SolverBaseClass):
               debug:           bool=False,
               debug_name:      str=None,
               time=None,
-              divergence_retries: int=0, ):
+              divergence_retries: int=0,
+              picard: int = 0, ):
         """
         Solve the system of equations.
 
@@ -5006,6 +6640,11 @@ class SNES_Scalar(SolverBaseClass):
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. A single retry rescues most VEP
             yield-surface kink divergences. 0 preserves legacy behaviour.
+        picard : int, default=0
+            Picard (frozen-tangent) steps before Newton under the default
+            ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
+            ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
+            Keyword only in practice: it follows every other argument.
 
         Returns
         -------
@@ -5051,7 +6690,13 @@ class SNES_Scalar(SolverBaseClass):
         # and resolving earlier would warm-start off the flag it just cleared.
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
+        # Layer 1: the Picard warm-up for this solve, decided before _build (a warm-up
+        # under the consistent tangent needs the blended Jacobian compiled in).
+        self._plan_picard_warmup(picard, zero_init_guess,
+                                 own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
         self._build(verbose, debug, debug_name)
+        if self._picard_blend and self.consistent_jacobian is True:
+            self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
 
         # Set time on the DM so petsc_t is available in pointwise functions
         cdef DM _time_dm
@@ -5781,6 +7426,13 @@ class SNES_Vector(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        self._forward_kernels = (self._G0, self._G1, self._G2, self._G3)
+        if getattr(self, "_adjoint_kernels", False):
+            # The adjoint's operator: the same derivatives, trial and test
+            # exchanged. Compiled as its own kernel set and cached.
+            _nc = int(self._G0.shape[0])
+            self._G0, self._G1, self._G2, self._G3 = _transpose_kernels(
+                self._G0, self._G1, self._G2, self._G3, _nc, _nc, self.mesh.cdim)
 
         ##################
 
@@ -6035,6 +7687,7 @@ class SNES_Vector(SolverBaseClass):
 
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
 
@@ -6046,6 +7699,7 @@ class SNES_Vector(SolverBaseClass):
               debug=False,
               debug_name=None,
               divergence_retries: int=0,
+              picard: int = 0,
                ):
         """
         Solve the vector field system of equations.
@@ -6075,6 +7729,11 @@ class SNES_Vector(SolverBaseClass):
         divergence_retries : int, default=0
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. 0 preserves legacy behaviour.
+        picard : int, default=0
+            Picard (frozen-tangent) steps before Newton under the default
+            ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
+            ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
+            Keyword only in practice: it follows every other argument.
 
         Returns
         -------
@@ -6103,7 +7762,13 @@ class SNES_Vector(SolverBaseClass):
         # and resolving earlier would warm-start off the flag it just cleared.
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
+        # Layer 1: the Picard warm-up for this solve, decided before _build (a warm-up
+        # under the consistent tangent needs the blended Jacobian compiled in).
+        self._plan_picard_warmup(picard, zero_init_guess,
+                                 own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
         self._build(verbose, debug, debug_name)
+        if self._picard_blend and self.consistent_jacobian is True:
+            self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
         if self._solve_rotated_if_registered(zero_init_guess, verbose, 0, None):
             return
 
@@ -6540,6 +8205,13 @@ class SNES_MultiComponent(SolverBaseClass):
         self._G1 = sympy.ImmutableMatrix(G1)
         self._G2 = sympy.ImmutableMatrix(G2)
         self._G3 = sympy.ImmutableMatrix(G3)
+        self._forward_kernels = (self._G0, self._G1, self._G2, self._G3)
+        if getattr(self, "_adjoint_kernels", False):
+            # The adjoint's operator: the same derivatives, trial and test
+            # exchanged. Compiled as its own kernel set and cached.
+            _nc = int(self._G0.shape[0])
+            self._G0, self._G1, self._G2, self._G3 = _transpose_kernels(
+                self._G0, self._G1, self._G2, self._G3, _nc, _nc, self.mesh.cdim)
 
         fns_jacobian = (self._G0, self._G1, self._G2, self._G3)
 
@@ -6753,6 +8425,7 @@ class SNES_MultiComponent(SolverBaseClass):
             UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
     @timing.routine_timer_decorator
@@ -6763,6 +8436,7 @@ class SNES_MultiComponent(SolverBaseClass):
               debug=False,
               debug_name=None,
               divergence_retries: int=0,
+              picard: int = 0,
                ):
         """Solve the multi-component SNES problem.
 
@@ -6774,6 +8448,11 @@ class SNES_MultiComponent(SolverBaseClass):
         divergence_retries : int, default=0
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. 0 preserves legacy behaviour.
+        picard : int, default=0
+            Picard (frozen-tangent) steps before Newton under the default
+            ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
+            ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
+            Keyword only in practice: it follows every other argument.
         """
 
 
@@ -6789,7 +8468,13 @@ class SNES_MultiComponent(SolverBaseClass):
         # and resolving earlier would warm-start off the flag it just cleared.
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
+        # Layer 1: the Picard warm-up for this solve, decided before _build (a warm-up
+        # under the consistent tangent needs the blended Jacobian compiled in).
+        self._plan_picard_warmup(picard, zero_init_guess,
+                                 own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
         self._build(verbose, debug, debug_name)
+        if self._picard_blend and self.consistent_jacobian is True:
+            self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
 
         gvec = self.dm.getGlobalVec()
 
@@ -7046,6 +8731,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._tolerance = 1.0e-4
         self._strategy = "default"
+        # the velocity split's Krylov restart, beside the outer one set in the base
+        # constructor (see there): the yielded layer's mechanism mode lives in this block
+        self._push_managed_option("fieldsplit_velocity_ksp_gmres_restart", _DEFAULT_KRYLOV_RESTART)
 
         # Owned-option latch state (see _resolve_owned_option): the value THIS
         # solver last pushed per key, and any user value latched per key.
@@ -8033,6 +9721,115 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # changes (e.g. mesh deformation) — see _build_velocity_rotation_nullspace.
         self._velocity_rotation_nullspace = None
 
+    def _pressure_in_rheology(self):
+        """True when the constitutive model's viscosity depends on the solver's pressure.
+
+        Drucker-Prager (``tau_y = C + sin(phi) p``) is the usual case. It matters because
+        the pressure LEVEL is then physics, not a gauge: a mean-pressure nullspace projection
+        changes the yield stress, and the Newton tangent gains a d(stress)/dp column.
+        """
+        return self._form_fact("pressure_in_rheology",
+                               lambda: self._reads_pressure(lambda cm: cm.viscosity))
+
+    def _yield_reads_pressure(self):
+        """True when the YIELD STRESS depends on the pressure (Drucker-Prager), as opposed
+        to a pressure-dependent viscous branch. ``None`` when it cannot be determined."""
+        return self._form_fact(
+            "yield_reads_pressure",
+            lambda: self._reads_pressure(
+                lambda cm: getattr(getattr(cm, "Parameters", None), "yield_stress", None)))
+
+    def _reads_pressure(self, pick):
+        cm = getattr(self, "constitutive_model", None)
+        psym = getattr(getattr(self, "p", None), "sym", None)
+        if cm is None or psym is None:
+            return False
+        try:
+            expr = pick(cm)
+            if expr is None:
+                return False
+            return _reaches(expr, {psym[0]})
+        except Exception:
+            # Sanctioned: an expression we cannot unwrap is recorded as unknown (None),
+            # and neither pressure warning fires on an unknown.
+            return None
+
+    def _snapshot_model_facts(self, cfg):
+        """``cfg["gauge"]``: the pressure-level convention this Stokes solve runs under."""
+        attached = False
+        try:
+            # Before the first solve SNESGetJacobian hands back NULL matrices; a method
+            # call on one is a segfault, not an exception. Check the handle first.
+            if self.snes is not None:
+                jac = self.snes.getJacobian()
+                J = jac[0] if jac else None
+                if J is not None and J.handle != 0:
+                    ns = J.getNullSpace()
+                    attached = bool(ns is not None and ns.handle != 0)
+        except Exception:
+            # Sanctioned: a Jacobian PETSc will not describe yet records "not attached"
+            attached = False
+        try:
+            pbcs = sorted({bc.boundary for bc in self._pressure_dirichlet_bcs()})
+        except Exception:
+            # Sanctioned: no pressure field decomposition yet; recorded as none
+            pbcs = []
+        cm = getattr(self, "constitutive_model", None)
+        reg = {}
+        for name in ("plastic_rate_strengthening", "shear_viscosity_min", "yield_stress_min", "strainrate_inv_II_min"):
+            par = getattr(getattr(cm, "Parameters", None), name, None)
+            if par is not None:
+                try:
+                    reg[name] = str(par.sym)
+                except Exception:
+                    # Sanctioned: a value with no printable form is recorded as None
+                    reg[name] = None
+        for name in ("yield_mode", "yield_smoother", "yield_anchor", "yield_softness", "rate_strengthening_scale"):
+            if hasattr(cm, name):
+                reg[name] = getattr(cm, name)
+        cfg["regularisation"] = reg
+        in_rheology = self._pressure_in_rheology()
+        # Warnings are NOTED here and emitted by _snapshot_numerics after the snapshot is
+        # stored (so a warnings-as-errors caller cannot leave the config half-written),
+        # once per solve.
+        notes = []
+        if self.consistent_jacobian is not False and self._yield_reads_pressure() is True:
+            eta_reg = getattr(getattr(cm, "Parameters", None), "plastic_rate_strengthening", None)
+            from underworld3.constitutive_models import _parameter_is_zero
+            if eta_reg is not None and _parameter_is_zero(eta_reg):
+                notes.append(
+                    f"[{self.name}] a pressure-dependent yield law with no stated "
+                    f"plastic_rate_strengthening under the consistent tangent: the yielded "
+                    f"tangent has no modulus along the strain-rate direction, which is the "
+                    f"near-singular velocity block measured on the Spiegelman notch. State "
+                    f"the regularisation (Parameters.plastic_rate_strengthening, units of "
+                    f"viscosity) — its scale is the model's, there is no universal default "
+                    f"— or accept the risk. Recorded in solve_report.config['regularisation'].")
+        if self._petsc_use_pressure_nullspace and in_rheology is True:
+            # The projection fixes mean(p) = 0 on every Krylov solve. With a pressure-
+            # dependent viscosity (Drucker-Prager) the yield stress then follows that
+            # gauge choice, and moves with it as the yielded region changes between
+            # iterations. Legitimate only when the physical level is supplied separately
+            # (lithostatic pressure written into the yield law, p the dynamic part).
+            notes.append(
+                f"[{self.name}] petsc_use_pressure_nullspace=True with a viscosity that "
+                f"depends on the pressure: the nullspace projection imposes mean(p) = 0, so "
+                f"the yield stress / viscosity reads a GAUGE-fixed pressure, not a physical "
+                f"one. Either the yield law must add the reference (lithostatic) pressure "
+                f"explicitly, or the level must come from the boundary conditions (a free "
+                f"surface or traction boundary, in which case turn the nullspace flag off; "
+                f"a pressure Dirichlet BC for a closed box). Recorded in "
+                f"solve_report.config['gauge'].")
+        if notes:
+            cfg["_warnings"] = notes
+        cfg["gauge"] = dict(
+            pressure_nullspace_requested=bool(self._petsc_use_pressure_nullspace),
+            pressure_nullspace_attached=attached,
+            pressure_in_rheology=in_rheology,
+            pressure_dirichlet_bcs=pbcs,
+            natural_bcs=sorted({bc.boundary for bc in (getattr(self, "natural_bcs", None) or [])}),
+        )
+
     def _pressure_dirichlet_bcs(self):
         """Return essential boundary conditions applied to the pressure field."""
 
@@ -8453,7 +10250,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # a no-op (eta has no grad-v dependence). See
         # docs/developer/design/jacobian-consistent-tangent.md
         #
-        # (see consistent_jacobian / _jacobian_source: default Picard, bit-
+        # (see consistent_jacobian / _jacobian_source: False = Picard, bit-
         # identical; True -> Newton; "continuation" -> alpha-blended.)
         F0_jac  = self._jacobian_source(F0)
         PF0_jac = self._jacobian_source(PF0)
@@ -8560,8 +10357,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 G1[fc, dg] = dF0_dGp[fc]
 
         # up_G2[fc, df]                  = dF1[fc, df] / dp
+        # newton_pressure_coupling=False differentiates the exact flux here: its viscosity
+        # is an opaque UWexpression atom, so d/dp sees only the -p I term (= Picard's
+        # pressure column, -B^T) while the uu block above keeps the Newton tangent.
+        F1_for_up = F1_for_jac if self.newton_pressure_coupling \
+            else sympy.Array(F1).reshape(dim, dim)
         G2 = sympy.zeros(dim, dim)
-        dF1_dp = diff_wrt_field(F1_for_jac, p_scalar)
+        dF1_dp = diff_wrt_field(F1_for_up, p_scalar)
         for fc in range(dim):
             for df in range(dim):
                 G2[fc, df] = dF1_dp[fc, df]
@@ -8569,7 +10371,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # up_G3[fc*dim + df, dg]         = dF1[fc, df] / d(dp/dx_dg)
         G3 = sympy.zeros(dim * dim, dim)
         for dg in range(dim):
-            dF1_dGp = diff_wrt_field(F1_for_jac, Gp[0, dg])
+            dF1_dGp = diff_wrt_field(F1_for_up, Gp[0, dg])
             for fc in range(dim):
                 for df in range(dim):
                     G3[fc * dim + df, dg] = dF1_dGp[fc, df]
@@ -8599,6 +10401,26 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._pp_G0 = 1 / self.constitutive_model.K
 
         fns_jacobian.append(self._pp_G0)
+
+        self._forward_kernels = (self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3,
+                                 self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                                 self._pu_G0, self._pu_G1)
+        if getattr(self, "_adjoint_kernels", False):
+            # K^T block by block: uu transposed in place; the (u,p) block of
+            # K^T is the transpose of K's (p,u) block and vice versa; pp is a
+            # scalar. Same derivatives, trial and test exchanged.
+            forward = list(self._forward_kernels)
+            up_from_pu = _transpose_kernels(self._pu_G0, self._pu_G1, None, None, 1, dim, dim)
+            pu_from_up = _transpose_kernels(self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                                            dim, 1, dim)
+            self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3 = _transpose_kernels(
+                self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3, dim, dim, dim)
+            self._up_G0, self._up_G1, self._up_G2, self._up_G3 = up_from_pu
+            self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3 = pu_from_up
+            fns_jacobian = [f for f in fns_jacobian if not any(f is g for g in forward)]
+            fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3,
+                             self._up_G0, self._up_G1, self._up_G2, self._up_G3,
+                             self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
 
         ## Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
         ## for ordinary Stokes. Each multiplier h_k contributes an interior
@@ -9276,10 +11098,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
         PetscDSSetJacobian(              ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        if getattr(self, "_adjoint_kernels", False):
+            # the transposed (p,u) block carries the flux derivatives of K's (u,p) block
+            PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]], ext.fns_jacobian[i_jac[self._pu_G2]], ext.fns_jacobian[i_jac[self._pu_G3]])
+        else:
+            PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
-        PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
+        if getattr(self, "_adjoint_kernels", False):
+            PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]], ext.fns_jacobian[i_jac[self._pu_G2]], ext.fns_jacobian[i_jac[self._pu_G3]])
+        else:
+            PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
 
         # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
@@ -9601,6 +11430,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._setup_region_ds()
 
         self.is_setup = True
+        self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
 
     def set_active_region(self, region_label_name, region_label_value):
@@ -9938,6 +11768,197 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.restoreLocalVec(xlocal)
             self.dm.restoreGlobalVec(gvec)
 
+    def _adjoint_support(self):
+        """The base verdict, plus the tangent the forward solve used.
+
+        A nonlinear rheology solved with the default Picard tangent leaves
+        the SNES holding the frozen-viscosity operator, not
+        :math:`\\partial R/\\partial u`. The forward solve converges either way
+        (defect correction), so nothing complains — and the transposed adjoint
+        would be silently wrong. Refused here, with the fix in the reason.
+        """
+        supported, why = SolverBaseClass._adjoint_support(self)
+        if not supported:
+            return supported, why
+        # The verdict is written on EVERY solve inside a step, so it must be
+        # cheap: the symbolic test, cached until the residual can change. The
+        # numerical probe (two assemblies) belongs in adjoint_solve, where an
+        # adjoint is actually being taken and the cost is paid once.
+        key = (self.consistent_jacobian, id(getattr(self, "_constitutive_model", None)),
+               self.is_setup, self._needs_function_rewire)
+        cached = getattr(self, "_adjoint_linearity_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, self._residual_is_linear_in_unknown())
+            self._adjoint_linearity_cache = cached
+        nonlinear = not cached[1]
+        if not self.consistent_jacobian and nonlinear:
+            return (True,
+                    why + ". The forward solve used the Picard tangent, so the "
+                    "consistent tangent is assembled for the adjoint (a rebuild "
+                    "of the Jacobian kernel)")
+        return supported, why
+
+    def adjoint_solve(self, rhs, target=None):
+        r"""Solve :math:`K^T (\\mu, \\lambda) = b` on the composite (u, p) system.
+
+        The same transpose the scalar solvers take, on the two-field DM.
+        With a linear viscosity :math:`K` is symmetric and this reproduces
+        the second-solver construction of ``docs/examples/adjoint``; with a
+        strain-rate- or pressure-dependent viscosity it is the transpose of
+        the consistent tangent, which that construction cannot build.
+
+        Parameters
+        ----------
+        rhs : numpy.ndarray or petsc4py.PETSc.Vec
+            The dual on the composite global vector; :meth:`dual_of` builds
+            one from a velocity-space expression.
+        target : (MeshVariable, MeshVariable), optional
+            ``(u_adj, p_adj)`` on the velocity and pressure spaces, to receive
+            the multipliers as fields. Constrained nodes are set to zero.
+
+        Returns
+        -------
+        (numpy.ndarray, int)
+        """
+        supported, why = self._adjoint_support()
+        if not supported:
+            raise RuntimeError(f"adjoint_solve: this solve refuses an adjoint — {why}")
+        if self.snes is None or (not self.is_setup
+                                 and not getattr(self, "_adjoint_kernel_installed", False)):
+            raise RuntimeError(
+                "adjoint_solve: no forward solve to take the adjoint of. Call "
+                "solve() first; the adjoint is taken about the state it ended in.")
+
+        import numpy as np
+
+        by_kernels = self._adjoint_by_kernels()            # before any DM vector
+        tangent = (self._install_adjoint_kernels() if by_kernels
+                   else self._consistent_tangent_for_adjoint())
+        gvec = self.dm.getGlobalVec()
+        gvec.setArray(0.0)
+        self._gather_fields_to_global(gvec)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        jacobian = self.snes.getJacobian()
+        J, P = jacobian[0], jacobian[1]
+        alpha_before = self._newton_alpha_for_adjoint()
+        self.snes.computeJacobian(gvec, J, P)
+        self._restore_newton_alpha(alpha_before)
+
+        b = gvec.duplicate()
+        if isinstance(rhs, PETSc.Vec):
+            rhs.copy(b)
+        elif isinstance(rhs, (tuple, list)) and len(rhs) == 2 \
+                and hasattr(rhs[0], "vec"):
+            # (u_dual, p_dual) held as fields: restrict each to its block.
+            b.setArray(0.0)
+            for name, var in zip(("velocity", "pressure"), rhs):
+                if var is None or name not in self._subdict:
+                    continue
+                gis, subdm = self._subdict[name]
+                sub = b.getSubVector(gis)
+                subdm.localToGlobal(var.vec, sub)
+                b.restoreSubVector(gis, sub)
+        else:
+            values = np.asarray(rhs, dtype=float).ravel()
+            bad = uw.mpi.comm.allreduce(int(values.size != b.getLocalSize()), op=uw.MPI.MAX)
+            if bad:
+                raise ValueError(
+                    f"adjoint_solve: rhs has {values.size} entries; this solver's "
+                    f"composite global vector has {b.getLocalSize()} on rank "
+                    f"{uw.mpi.rank}")
+            b.array[:] = values
+        x = gvec.duplicate()
+        x.set(0.0)
+
+        if by_kernels:
+            # J IS K^T: assembled from the transposed kernels. Solve forwards.
+            ksp = self.snes.getKSP()
+            ksp.setOperators(J, P)
+            ksp.solve(b, x)
+            reason = int(ksp.getConvergedReason())
+            self._uninstall_adjoint_kernels(tangent)
+        else:
+            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+            self._restore_tangent(tangent)
+
+        if target is not None:
+            u_adj, p_adj = target
+            lvec = self.dm.getLocalVec()
+            lvec.set(0.0)
+            self.dm.globalToLocal(x, lvec)
+            self._ensure_local_field_index_sets(lvec, self.dm.getLocalSection())
+            sub = lvec.getSubVector(self._velocity_is)
+            u_adj.vec.array[:] = sub.array[:]
+            lvec.restoreSubVector(self._velocity_is, sub)
+            sub = lvec.getSubVector(self._pressure_is)
+            p_adj.vec.array[:] = sub.array[:]
+            lvec.restoreSubVector(self._pressure_is, sub)
+            self.dm.restoreLocalVec(lvec)
+            self.mesh._stale_lvec = True
+            for var in (u_adj, p_adj):
+                try:
+                    var._sync_lvec_to_gvec()
+                except AttributeError:
+                    pass
+
+        out = np.array(x.array, copy=True)
+        self.dm.restoreGlobalVec(gvec)
+        b.destroy(); x.destroy()
+
+        try:
+            model = uw.get_default_model()
+            part, label = self._transcript_identity()
+            model._record_step_event(
+                "adjoint_solve", label, part=part,
+                converged=reason > 0, ksp_reason=reason)
+        except Exception:
+            pass
+        return out, reason
+
+    def dual_of(self, expression):
+        r"""The dual of a VELOCITY-space expression on the composite vector.
+
+        :math:`\\int \\mathbf e \\cdot \\boldsymbol\\phi_j` on the velocity
+        degrees of freedom, zero on the pressure ones — the form
+        :meth:`adjoint_solve` wants for a misfit in the velocity.
+        """
+        import numpy as np
+
+        proj = self._dual_projection()
+        proj.uw_function = expression
+        proj._build(False, False, None)
+        pg = proj.dm.getGlobalVec()
+        pg.set(0.0)
+        proj.mesh.update_lvec()
+        cdef DM pdm = proj.dm
+        cdef Vec pmesh_lvec = proj.mesh.lvec
+        ierr = DMSetAuxiliaryVec_UW(pdm.dm, NULL, 0, 0, pmesh_lvec.vec); CHKERRQ(ierr)
+        F = pg.duplicate()
+        proj.snes.computeFunction(pg, F)
+        velocity_dual = -np.array(F.array, copy=True)
+        F.destroy()
+        proj.dm.restoreGlobalVec(pg)
+
+        gvec = self.dm.getGlobalVec()
+        gvec.setArray(0.0)
+        gis, _subdm = self._subdict["velocity"]
+        sub = gvec.getSubVector(gis)
+        n = sub.getLocalSize()
+        bad = uw.mpi.comm.allreduce(int(n != velocity_dual.size), op=uw.MPI.MAX)
+        if bad:
+            gvec.restoreSubVector(gis, sub)
+            self.dm.restoreGlobalVec(gvec)
+            raise RuntimeError(
+                f"dual_of: the velocity dual has {velocity_dual.size} entries and "
+                f"the composite velocity block {n}; the two spaces constrain "
+                f"different nodes.")
+        sub.array[:] = velocity_dual
+        gvec.restoreSubVector(gis, sub)
+        out = np.array(gvec.array, copy=True)
+        self.dm.restoreGlobalVec(gvec)
+        return out
+
     def _ensure_local_field_index_sets(self, clvec, local_section):
         """Build (once) and cache the LOCAL index sets that decompose a parent-DM
         local vector into the per-field MeshVariable storage: velocity, pressure
@@ -10072,7 +12093,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
               _force_setup: bool =False,
               time=None,
               divergence_retries: int = 0,
-              homotopy: bool = False,
+              homotopy=False,
               homotopy_options: dict = None, ):
         """
         Solve the Stokes system for velocity and pressure.
@@ -10093,9 +12114,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             off stale data because a remesh or a diverged solve clears
             ``has_solution``.
         picard : int, default=0
-            Number of Picard iterations before switching to Newton.
-            Picard iterations use a simplified Jacobian and can help
-            convergence for strongly nonlinear problems.
+            Picard warm-up: iterations with the FROZEN (Picard) tangent — linear
+            Stokes solves with the viscosity held at the current state — before
+            the consistent tangent takes over. Meaning by
+            :attr:`consistent_jacobian`:
+
+            * ``True``: exactly ``picard`` Picard steps, then Newton. A cold start
+              takes ONE Picard step automatically; pass ``picard=-1`` to switch
+              that off. (The Jacobian is compiled in a blended Picard/Newton form
+              the first time this is used; switching between the two needs no
+              recompile.)
+            * ``"continuation"``: alpha is held at 0 (Picard) for the first
+              ``picard`` iterations; after that the residual-keyed ramp sets it
+              (see :attr:`consistent_jacobian`).
+            * ``False``: every iteration already is a Picard step, so this is
+              satisfied by the solve itself.
+
+            Negative values mean "no warm-up".
         verbose : bool, default=False
             Print solver progress and timing information.
         debug : bool, default=False
@@ -10113,21 +12148,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
             yield-surface kink divergences. 0 preserves legacy behaviour.
-        homotopy : bool, default=False
-            Solve a yielding (viscoplastic) model by a **yield homotopy** instead of
-            a single solve: the constitutive model is put in its smooth,
-            δ-parameterised yield mode and δ is marched down to the sharp yield
-            surface as a sequence of warm-started solves. This is the robust route
-            for a hard Drucker-Prager problem, which does not converge from a cold
-            start on the sharp surface. Requires a model with
-            ``supports_yield_homotopy`` (raises otherwise). Returns the march
-            summary rather than ``None``.
+        homotopy : bool or "rate_strengthening", default=False
+            Solve a yielding (viscoplastic) model as a sequence of warm-started
+            solves instead of one. ``True``: the **yield homotopy** — the model is
+            put in its smooth, δ-parameterised yield mode and δ is marched down
+            toward the sharp yield surface; requires ``supports_yield_homotopy``.
+            ``"rate_strengthening"``: the ladder on the model's declared
+            ``Parameters.plastic_rate_strengthening`` (η_reg) — its multiplier
+            ``m`` runs from the viscous limit, found from the fields, down to
+            exactly 1, the problem as stated
+            (:func:`~underworld3.systems.yield_continuation.rate_strengthening_continuation`).
+            Any other value raises. Returns the march summary rather than ``None``.
         homotopy_options : dict, optional
             March settings passed to
-            :func:`~underworld3.systems.yield_continuation.yield_continuation` —
-            ``smoother``, ``anchor``, ``delta0``, ``down``, ``dmin``,
-            ``entry_maxit``, ``step_maxit``, ``retries``. All are defaulted; tuning
-            them is optional.
+            :func:`~underworld3.systems.yield_continuation.yield_continuation`
+            (``smoother``, ``anchor``, ``delta0``, ``down``, ``dmin``,
+            ``entry_maxit``, ``step_maxit``, ``retries``) or, for
+            ``"rate_strengthening"``, to ``rate_strengthening_continuation``
+            (``scale0``, ``down``, ``rung_tangent``, ...). All are defaulted.
 
             ``smoother`` picks the soft-min family — ``"powermean"`` (default) or
             ``"sqrt"``. Which gives the better cold entry is problem-dependent, so
@@ -10155,7 +12193,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         >>> velocity = stokes.u.array[:, 0, :]
         >>> pressure = stokes.p.array[:, 0, 0]
 
-        >>> # Nonlinear solve with Picard warmup
+        >>> # Nonlinear solve: 3 Picard steps, then Newton
+        >>> stokes.consistent_jacobian = True
         >>> stokes.solve(picard=3)
 
         >>> # Time-stepping with previous solution
@@ -10171,9 +12210,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         -----
         This is a **collective operation** - all MPI ranks must call it.
 
-        For nonlinear viscosity (e.g., power-law, viscoplastic), the solver
-        uses Newton iteration by default. The ``picard`` parameter can help
-        with initial convergence by using simpler Jacobian approximations.
+        For nonlinear viscosity (e.g., power-law, viscoplastic) the tangent is
+        chosen by :attr:`consistent_jacobian` (frozen/Picard, consistent Newton,
+        or staged Picard->Newton), and ``picard`` sets a minimum number of
+        frozen-tangent iterations where that is meaningful (see above).
 
         See Also
         --------
@@ -10191,9 +12231,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # nothing before it is refused.
         self._reject_mixed_constraint_mechanisms("solve")
 
+        _check_homotopy_value(homotopy)
         if homotopy:
-            # The march runs a SEQUENCE of ordinary solves at successively sharper
-            # yield surfaces; each one re-enters this method with homotopy=False.
+            # The march runs a SEQUENCE of ordinary solves; each one re-enters this
+            # method with homotopy=False. True = the delta soft-min march;
+            # "rate_strengthening" = the ladder on the declared plastic rate
+            # strengthening (m from the viscous limit down to 1).
+            if homotopy == "rate_strengthening":
+                from underworld3.systems.yield_continuation import rate_strengthening_continuation
+                options = dict(homotopy_options or {})
+                options.setdefault("verbose", verbose)
+                return rate_strengthening_continuation(self, **options)
             return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
 
         if _force_setup:
@@ -10208,7 +12256,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # and resolving earlier would warm-start off the flag it just cleared.
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
+        # ---- Picard warm-up policy (#791) — decided BEFORE _build, because under the
+        # consistent tangent a Picard step needs the frozen operator compiled in.
+        # Rotated free-slip and fault contact run their own loop (utilities/rotated_bc.py)
+        # with their own picard semantics: no automatic step there.
+        self._plan_picard_warmup(
+            picard, zero_init_guess,
+            own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                          or getattr(self, "_fault_contact_faults", None)),
+            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+        picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
+
         self._build(verbose, debug, debug_name)
+        if self._picard_blend and self.consistent_jacobian is True:
+            self._set_newton_alpha(1.0)            # Newton unless a warm-up says otherwise
 
         # Set time on the DM so petsc_t is available in pointwise functions.
         # Non-dimensionalise if the scaling system is active.
@@ -10264,46 +12325,40 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         else:
             self.atol = 0.0
 
-        # Automatic cold-start warm-up (Layer 1): a single Picard (frozen-
-        # coefficient) step moves a cold guess into the Newton basin — it is
-        # defect-correction iteration 1, contractive and cheap. The default
-        # (frozen) tangent path is left bit-identical, and an explicit Picard count
-        # is honoured as given.
+        # ⚠️ #791. A Picard step is a Newton iteration with the FROZEN (Picard)
+        # tangent — a linear Stokes solve, velocity block and Schur complement, with
+        # the viscosity held at the current state (successive substitution
+        # A(u_k) u_{k+1} = f). From a cold start it IS the viscous solve. This used to
+        # run SNES `nrichardson` with no nonlinear preconditioner — x <- x - lambda F(x),
+        # a residual step with no linear solve, nearly inert, NOT a Picard step.
+        # Semantics now, by tangent (policy decided before _build, above):
         #
-        # This warm-up is a CONVERGENCE aid (move a cold guess toward the Newton
-        # basin), NOT the correctness mechanism for the zero-strain-rate state.
-        # Two measured facts (issue #507) retired the old "make the NaN state
-        # unreachable" framing: (1) one nrichardson sweep only propagates
-        # boundary data a single element layer, so on a BOUNDARY-DRIVEN problem
-        # the deep interior stays exactly zero after the warm-up (body-force
-        # problems fill F(0) everywhere, which is why the yield campaigns never
-        # saw it); (2) a rigidly-translating stuck region has edot = 0 at the
-        # CONVERGED solution — the state is physics, not a start-up artifact.
-        # Finiteness of the consistent tangent at edot = 0 is owned by the
-        # half-integer-power guard in _jacobian_unwrap (the derivative's
-        # removable-singularity limit, implemented). NOTE the "continuation"
-        # tangent is NOT protected by its alpha = 0 phase (the blended kernel
-        # still evaluates the Newton branch pointwise, and IEEE 0*NaN = NaN);
-        # with the guard in place both tangents are finite everywhere. See
-        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
-        if (picard == 0 and self.consistent_jacobian is True
-                and (zero_init_guess or self._solution_is_trivially_zero())):
-            picard = 1
+        #   False — every iteration already is a Picard step, so `picard`
+        #       is satisfied by the solve itself.
+        #   "continuation" — alpha is held at 0 for the first `picard` iterations of
+        #       the residual-keyed ramp in _continuation_solve.
+        #   True — `picard` Picard steps, THEN Newton (_picard_warmup): the Jacobian is
+        #       compiled in the blended form J_p + alpha (J_n - J_p) (alpha = 0 frozen,
+        #       alpha = 1 Newton; a constants[] atom, no recompile to switch). A cold
+        #       start takes ONE such step automatically (the Layer 1 design);
+        #       picard = -1 switches it off. This matters most for boundary-driven
+        #       problems, where Newton's first step from rest is NOT a Picard step
+        #       (the Dirichlet values yield the driven layer at once).
+        #
+        # Still true from the retired warm-up (#507): a zero strain rate is not only
+        # a start-up state — a rigidly translating stuck region has edot = 0 at the
+        # CONVERGED solution — so finiteness of the consistent tangent at edot = 0 is
+        # owned by the fractional-power guard in _jacobian_unwrap, not by any
+        # warm-up.
+        #
+        # The policy (and the per-solve resets of _continuation_min_picard,
+        # _continuation_stages, _picard_stages) was applied by _plan_picard_warmup
+        # above. consistent_jacobian False: every iteration is already a Picard step.
+        # True: `_snes_solve_with_retries` takes the planned frozen-tangent steps first.
 
-        if verbose and uw.mpi.rank == 0:
-            print(f"SNES solve - picard = {picard}", flush=True)
-
-        # Picard solves if requested
-
-        if picard != 0:
-            self._push_snes_max_it(abs(picard))
-            self._reassert_outer_tolerances()
-            self.snes.atol = self.atol
-            self.snes.setType("nrichardson")
-            self.snes.setFromOptions()
-            self._attach_stokes_nullspace()
-            self.snes.solve(None, gvec)
-            self._warn_on_divergence(phase="picard")
+        if verbose:
+            uw.pprint(f"SNES solve - picard = {picard} "
+                      f"(tangent: {self.consistent_jacobian!r})")
 
         # The standard Newton solve, run whether or not the optional Picard
         # warmup above was taken: restore the configured SNES type and

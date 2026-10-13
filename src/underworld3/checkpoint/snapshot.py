@@ -128,6 +128,9 @@ class Snapshot:
     swarm_mesh_names: dict[str, str] = field(default_factory=dict)
     swarm_generations: dict[str, int] = field(default_factory=dict)
     swarmvar_names: dict[str, list[str]] = field(default_factory=dict)
+    # Step state of the characteristic trace a swarm owns for its mid-time
+    # advection (swarm name -> CharacteristicTrace._step_state(), or None).
+    swarm_characteristics: dict[str, Any] = field(default_factory=dict)
     # State-bearer captures: list of (stable_key, state_dataclass).
     # stable_key is f"{type(obj).__name__}_{obj.instance_number}", matched
     # at restore against the same key derived from currently-registered
@@ -139,6 +142,13 @@ class Snapshot:
     # at all and a restore returned the fields of one step with the parameters of
     # another, silently. See _capture_expressions.
     expressions: list = field(default_factory=list)
+    # Per-solver step state (solver name -> SolverStepState): what a solve
+    # leaves on its solver that steers the next one. Held here rather than
+    # through the state-bearer registry because solvers come and go (some are
+    # built on first use): a restore puts back the state of every solver that
+    # existed at capture, and returns any solver built since to the state of
+    # one that has never solved.
+    solver_states: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -200,7 +210,15 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
     for obj in list(model._state_bearers):
         _capture_state_bearer(snap, obj)
     _capture_expressions(snap)
+    for solver in _solvers_of(model):
+        snap.solver_states[solver.name] = copy.deepcopy(solver.state)
     return snap
+
+
+def _solvers_of(model):
+    """Every solver built on the model's meshes."""
+    return [solver for mesh in list(model._meshes.values())
+            for solver in mesh._equation_systems_register]
 
 
 def _capture_mesh(snap: Snapshot, mesh) -> None:
@@ -330,6 +348,7 @@ def _capture_swarm(snap: Snapshot, swarm) -> None:
         snap.backend.save_vector(_swarmvar_key(name, var_clean_name), data)
         var_names.append(var_clean_name)
     snap.swarmvar_names[name] = var_names
+    snap.swarm_characteristics[name] = payload["characteristics"]
 
 
 # ----- Restore (orchestration) -----
@@ -423,6 +442,16 @@ def restore(model, snap: Snapshot) -> None:
 
     _restore_expressions(snap)
 
+    # What the next solves start from must be what it was at capture, not what
+    # the solves since left behind: each solver's step state comes back, and
+    # with it the preconditioner is rebuilt on the next solve. A solver built
+    # since the capture (some are built on first use) had not solved at the
+    # captured point, so it goes back to the state of one that never has.
+    for solver in _solvers_of(model):
+        captured = snap.solver_states.get(solver.name)
+        solver.state = (copy.deepcopy(captured) if captured is not None
+                        else type(solver.state)())
+
 
 def _build_mesh_payload(snap: Snapshot, mesh_name: str) -> dict:
     return {
@@ -454,4 +483,5 @@ def _build_swarm_payload(snap: Snapshot, swarm_name: str) -> dict:
             )
             for var_clean_name in snap.swarmvar_names[swarm_name]
         },
+        "characteristics": snap.swarm_characteristics.get(swarm_name),
     }
