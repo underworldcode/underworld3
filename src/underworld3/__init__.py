@@ -209,6 +209,7 @@ import underworld3.model
 import underworld3.parameters
 import underworld3.materials
 import underworld3.checkpoint
+import underworld3.level_set
 
 # After underworld3.function: the analytic suite still sources SolCx from it.
 import underworld3.analytic
