@@ -1044,7 +1044,7 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
     return new, point_map, clone_map
 
 
-def add_fault(mesh, faults, verbose=False):
+def add_fault(mesh, faults, verbose=False, **place_kwargs):
     """Cut AND split one or more faults into a mesh; return the split Mesh.
 
     The one-call form of the split-node pipeline: for each fault, the tips
@@ -1069,6 +1069,11 @@ def add_fault(mesh, faults, verbose=False):
         sizes), the J0 pattern of the deployment design.
     verbose : bool, optional
         Report each cut and split.
+    **place_kwargs
+        3-D only: options of :func:`place_surface.place_sheet` (``clearance``,
+        ``size``, ``setback``). A bisection-refined mesh needs ``clearance``
+        of about 0.9 (the default 0.6 leaves a cavity the fill cannot close
+        on it; the placement's volume guard refuses).
 
     Returns
     -------
@@ -1084,8 +1089,14 @@ def add_fault(mesh, faults, verbose=False):
                                                 pull_vertex_onto)
 
     if isinstance(faults, (Surface, tuple)) or (
-            hasattr(faults, "name") and hasattr(faults, "control_points")):
+            hasattr(faults, "name") and hasattr(faults, "control_points")) or (
+            hasattr(faults, "name") and hasattr(faults, "triangles")):
         faults = [faults]
+
+    if mesh.dim == 3:
+        return _add_fault_sheets(mesh, faults, verbose=verbose, **place_kwargs)
+    if place_kwargs:
+        raise TypeError(f"add_fault: {sorted(place_kwargs)} apply to 3-D sheets only")
 
     segments = []
     for entry in faults:
@@ -1167,11 +1178,65 @@ def add_fault(mesh, faults, verbose=False):
     # same thing in 2-D as it does for a 3-D FaultSurface
     out._fault_traces = {name: np.array(poly, dtype=float)
                          for name, poly in segments}
+    # the recipe, for replaying the same faults on the add-on multigrid
+    # levels (utilities.fault_mg.split_tail_levels)
+    out._fault_specs = [("line", name, np.array(poly, dtype=float))
+                        for name, poly in segments]
     surfaces = {entry.name: entry for entry in faults
                 if hasattr(entry, "control_points")
                 and hasattr(entry, "name")}
     if surfaces:
         out._fault_surfaces = surfaces
+    return out
+
+
+def _add_fault_sheets(mesh, faults, verbose=False, **place_kwargs):
+    """The 3-D form of :func:`add_fault`: each fault is a triangulated sheet
+    (a ``FaultSurface`` or a ``(name, points, triangles)`` triple), placed into
+    the mesh with :func:`place_surface.place_sheet` so its triangles become
+    interior faces, then every sheet is split (:func:`split_faults`, which
+    redistributes the network's cell stars rank-interior first). Like the 2-D
+    cut, the placed mesh carries NO multigrid tail of its own: the caller
+    (``Mesh.add_fault``) hands the parent's tail down, with its add-on levels
+    split the same way."""
+    from underworld3.discretisation import Mesh
+    from underworld3.utilities.place_surface import place_sheet
+
+    sheets = []
+    for entry in faults:
+        if isinstance(entry, tuple) and len(entry) == 3 \
+                and isinstance(entry[0], str):
+            name, points, triangles = entry
+        else:
+            name = entry.name
+            if not getattr(entry, "is_triangulated", True):
+                entry.triangulate()
+            points, triangles = entry.points, entry.triangles
+        sheets.append((name, np.asarray(points, dtype=float),
+                       np.asarray(triangles, dtype=np.int64)))
+
+    cut = mesh
+    for name, points, triangles in sheets:
+        boundaries = cut._boundaries_with(name)
+        cut_dm, info = place_sheet(cut.dm, points, triangles, label=name,
+                                   label_value=boundaries[name].value,
+                                   verbose=verbose, **place_kwargs)
+        child = Mesh(cut_dm, simplex=cut.dm.isSimplex(),
+                     coordinate_system_type=cut.CoordinateSystem.coordinate_type,
+                     qdegree=cut.qdegree, boundaries=boundaries, verbose=False)
+        child.parent = cut
+        child._relationship_kind = "refinement"
+        child._refine_dofs_coincide = False
+        child.regions = cut.regions
+        child._parent_mesh_version = cut._mesh_version
+        child._surface_info = info
+        cut._registered_children.add(child)
+        cut = child
+    out = split_faults(cut, [name for name, _p, _t in sheets], verbose=verbose)
+    out._fault_specs = [("sheet", name, points, triangles, dict(place_kwargs))
+                        for name, points, triangles in sheets]
+    out._fault_surfaces = {entry.name: entry for entry in faults
+                           if hasattr(entry, "name") and hasattr(entry, "triangles")}
     return out
 
 
@@ -1238,7 +1303,7 @@ def _fault_labels_touch_seam(dm, labels):
     return bool(uw.mpi.comm.allreduce(touch, op=MPI.LOR))
 
 
-def _redistribute_fault_interior(dm, labels, verbose=False):
+def _redistribute_fault_interior(dm, labels, verbose=False, pairs=None):
     """Redistribute a cut mesh so each fault's cell star is rank-interior.
 
     The default partition's balance cuts are ATTRACTED to the locally
@@ -1256,18 +1321,20 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     ``(name, value)`` pairs — a NETWORK is redistributed in one move,
     keyed on the union of its faults, which is what lets every split
     that follows run without migrating any prior pairing. Returns a
-    NEW dm; the input is untouched.
+    NEW dm; the input is untouched. With ``pairs`` (a mesh's
+    ``_fault_point_pairs``) the pairing is carried through the move and
+    ``(dm, pairs, n_dropped)`` comes back — see
+    :func:`redistribute_by_assignment`.
     """
     comm = dm.getComm().tompi4py()
     if comm.size == 1:
-        return dm
+        return (dm, pairs, 0) if pairs is not None else dm
 
-    work = dm.clone()
-    cS, cE = work.getHeightStratum(0)
-    fS, fE = work.getHeightStratum(1)
-    vS, vE = work.getDepthStratum(0)
-    _pS, pEnd = work.getChart()
-    sf = work.getPointSF()
+    cS, cE = dm.getHeightStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    vS, vE = dm.getDepthStratum(0)
+    _pS, pEnd = dm.getChart()
+    sf = dm.getPointSF()
 
     def propagate(mark):
         # global OR of a chart-length mark across the point SF: remote
@@ -1288,7 +1355,7 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
         cells = set()
         for v in range(vS, vE):
             if mark[v]:
-                for q in work.getTransitiveClosure(v, useCone=False)[0]:
+                for q in dm.getTransitiveClosure(v, useCone=False)[0]:
                     if cS <= int(q) < cE:
                         cells.add(int(q))
         return cells
@@ -1296,12 +1363,12 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     # fault vertices (of every fault in the batch), marked globally
     mark = np.zeros(pEnd, dtype=np.int32)
     for name, value in labels:
-        if work.hasLabel(name) and \
-                work.getLabel(name).getStratumSize(int(value)) > 0:
-            for f in work.getLabel(name).getStratumIS(
+        if dm.hasLabel(name) and \
+                dm.getLabel(name).getStratumSize(int(value)) > 0:
+            for f in dm.getLabel(name).getStratumIS(
                     int(value)).getIndices():
                 if fS <= int(f) < fE:
-                    for q in work.getTransitiveClosure(int(f))[0]:
+                    for q in dm.getTransitiveClosure(int(f))[0]:
                         if vS <= int(q) < vE:
                             mark[int(q)] = 1
     mark = propagate(mark)
@@ -1315,7 +1382,7 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     # incident cells all touch a marked-closure vertex).
     mark2 = np.zeros(pEnd, dtype=np.int32)
     for c in star:
-        for q in work.getTransitiveClosure(c)[0]:
+        for q in dm.getTransitiveClosure(c)[0]:
             if vS <= int(q) < vE:
                 mark2[int(q)] = 1
     mark2 = propagate(mark2)
@@ -1332,20 +1399,112 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     assign = np.full(n_local, comm.rank, dtype=np.int32)
     for c in star:
         assign[c - cS] = target
-    order = np.argsort(assign, kind="stable").astype(np.int32)
-    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
-
-    part = work.getPartitioner()
-    part.setType(PETSc.Partitioner.Type.SHELL)
-    part.setShellPartition(comm.size, sizes=sizes, points=order)
-    work.distribute()
+    work, new_pairs, dropped = redistribute_by_assignment(dm, assign, pairs=pairs)
     if verbose:
         names = sorted(name for name, _value in labels)
         uw.pprint(f"[fault_split] {names}: star of "
                   f"{int(counts.sum())} cells gathered onto rank "
                   f"{target}; local cells now "
                   f"{work.getHeightStratum(0)[1]}")
-    return work
+    return (work, new_pairs, dropped) if pairs is not None else work
+
+
+def _pair_label_names(name):
+    return f"_pair_minus_{name}", f"_pair_plus_{name}"
+
+
+def stamp_point_pairs(dm, pairs_by_fault):
+    """Write a coincident-point pairing into two labels per fault (one value
+    per pair, on its Minus point and on its Plus point) so a redistribution
+    carries it: labels ride every point migration, where the migration star
+    forest PETSc returns for an INITIAL distribution does not index the
+    stratified numbering (measured: three quarters of the points mapped to the
+    wrong depth). The ids are globally unique (each rank's pairs offset by the
+    ranks before it). Returns the fault names, for :func:`collect_point_pairs`.
+    Collective."""
+    comm = dm.getComm().tompi4py()
+    names = sorted(set().union(*comm.allgather(set(pairs_by_fault))))
+    for name in names:
+        pairs = pairs_by_fault.get(name, {})
+        counts = comm.allgather(len(pairs))
+        offset = int(sum(counts[:comm.rank]))
+        minus, plus = _pair_label_names(name)
+        for lab in (minus, plus):
+            if dm.hasLabel(lab):
+                dm.removeLabel(lab)
+            dm.createLabel(lab)
+        for k, (qm, qp) in enumerate(pairs.items()):
+            dm.setLabelValue(minus, int(qm), offset + k + 1)
+            dm.setLabelValue(plus, int(qp), offset + k + 1)
+    return names
+
+
+def collect_point_pairs(dm, names, remove=True):
+    """Read back a pairing :func:`stamp_point_pairs` wrote, after a
+    redistribution: ``(pairs_by_fault, n_dropped)``. A rank keeps every pair
+    whose two points it holds; ``n_dropped`` counts, over all ranks, the pairs
+    no single rank holds both sides of — zero once the fault stars are
+    rank-interior (the split's rule). The labels are removed unless asked
+    otherwise. Collective."""
+    comm = dm.getComm().tompi4py()
+    out = {}
+    n_dropped = 0
+    for name in names:
+        minus, plus = _pair_label_names(name)
+
+        def points_by_value(lab_name):
+            table = {}
+            if not dm.hasLabel(lab_name):
+                return table
+            lab = dm.getLabel(lab_name)
+            vis = lab.getValueIS()
+            values = vis.getIndices() if vis is not None else []
+            for v in values:
+                v = int(v)
+                if lab.getStratumSize(v) > 0:
+                    table[v] = int(lab.getStratumIS(v).getIndices()[0])
+            return table
+
+        tm, tp = points_by_value(minus), points_by_value(plus)
+        common = set(tm) & set(tp)
+        out[name] = {tm[v]: tp[v] for v in common}
+        seen = set(tm) | set(tp)
+        all_seen = set().union(*comm.allgather(seen))
+        all_common = set().union(*comm.allgather(common))
+        n_dropped += len(all_seen - all_common)
+        if remove:
+            for lab in (minus, plus):
+                if dm.hasLabel(lab):
+                    dm.removeLabel(lab)
+    return out, n_dropped
+
+
+def redistribute_by_assignment(dm, assign, pairs=None):
+    """Redistribute ``dm`` so local cell ``k`` goes to rank ``assign[k]``.
+    Returns ``(new_dm, new_pairs, n_dropped)``: the pairing ``pairs`` (a
+    mesh's ``_fault_point_pairs``, or None) carried through the move with
+    :func:`stamp_point_pairs` / :func:`collect_point_pairs`. Nothing moves when
+    every cell is already where it is asked to be (the input comes back). The
+    shell-partitioner idiom the fault-interior move and the level co-location
+    both use."""
+    comm = dm.getComm().tompi4py()
+    assign = np.asarray(assign, dtype=np.int32)
+    if comm.size == 1 or not comm.allreduce(int((assign != comm.rank).sum())):
+        return dm, pairs, 0
+    work = dm.clone()
+    names = stamp_point_pairs(work, pairs) if pairs else []
+    part = work.getPartitioner()
+    part.setType(PETSc.Partitioner.Type.SHELL)
+    order = np.argsort(assign, kind="stable").astype(np.int32)
+    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
+    part.setShellPartition(comm.size, sizes=sizes, points=order)
+    work.distribute()
+    new_pairs, dropped = (collect_point_pairs(work, names) if pairs
+                          else (None, 0))
+    for lab in [l for n in names for l in _pair_label_names(n)]:
+        if dm.hasLabel(lab):
+            dm.removeLabel(lab)
+    return work, new_pairs, dropped
 
 
 def split_faults(mesh, names, verbose=False):
@@ -1495,6 +1654,8 @@ def split_fault(mesh, name, orientation=None, verbose=False):
         child._fault_traces = dict(mesh._fault_traces)
     if getattr(mesh, "_fault_surfaces", None):
         child._fault_surfaces = dict(mesh._fault_surfaces)
+    if getattr(mesh, "_fault_specs", None):
+        child._fault_specs = list(mesh._fault_specs)
     child.regions = mesh.regions
     child._parent_mesh_version = mesh._mesh_version
     # The Minus->Plus point pairing in the SPLIT mesh's numbering, for every

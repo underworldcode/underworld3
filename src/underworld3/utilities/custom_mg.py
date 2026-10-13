@@ -1290,6 +1290,11 @@ class CustomMGHierarchy:
         self.cross_partition = cross_partition
         self.fac_zone = self._validated_fac_zone(fac_zone)
         self.transfers = None
+        # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
+        # split-node fault takes the side-aware cell-located transfer, and its
+        # unreached unknowns are dropped at install rather than repaired.
+        from underworld3.utilities.fault_mg import is_split_level
+        self.has_split_levels = any(is_split_level(m) for m in self.level_meshes)
 
     def _validated_fac_zone(self, fac_zone):
         """Normalise ``fac_zone`` to None or a list of boolean cell masks.
@@ -1433,7 +1438,34 @@ class CustomMGHierarchy:
         # None, which _configure_pcmg reads as whole-level smoothing.
         self.level_patch_rows = [None] * nlev
         comm = solver.dm.comm
+        from underworld3.utilities import fault_mg
         for l in range(1, nlev):
+            # Split-level multigrid: every pair touching a split level takes
+            # the cell-located transfer. A split COARSE level defeats the
+            # node-cloud builders (they triangulate the coarse nodes, and
+            # coincident slit nodes make that degenerate); the transfer reads
+            # the coarse CELLS instead and keeps each side's nodes on their
+            # own side. Its unreached coarse unknowns (a few near the tips)
+            # are dropped at install time — never repaired by injection, which
+            # duplicated columns and made the Galerkin operators singular in
+            # parallel (the welded tail under a split finest: 426 orphans at
+            # np = 2, then NaN from the inode SOR).
+            if (fault_mg.is_split_level(self.level_meshes[l - 1])
+                    or fault_mg.is_split_level(self.level_meshes[l])):
+                if parallel:
+                    P = fault_mg.cell_located_transfer_parallel(
+                        self.level_meshes[l - 1], self.level_meshes[l], degree,
+                        continuous, coords[l - 1], coords[l], maps[l - 1],
+                        maps[l], nc, comm)
+                else:
+                    Pn = fault_mg.cell_located_prolongation(
+                        self.level_meshes[l - 1], self.level_meshes[l], degree,
+                        continuous, coarse_coords=coords[l - 1],
+                        fine_coords=coords[l])
+                    P = _to_petsc_aij(
+                        _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc))
+                Ps.append(P)
+                continue
             if parallel:
                 args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
@@ -1603,8 +1635,15 @@ class CustomMGHierarchy:
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
-        _install_transfers(solver, self.transfers, verbose=verbose,
-                           patch_rows=getattr(self, "level_patch_rows", None))
+        Ps = self.transfers
+        patch_rows = getattr(self, "level_patch_rows", None)
+        if self.has_split_levels:
+            # the restriction renumbers the coarse levels, so the recorded
+            # FAC patch rows no longer apply (a split fault needs no patch)
+            from underworld3.utilities.fault_mg import restrict_unreached
+            Ps = restrict_unreached(Ps, solver.dm.comm)
+            patch_rows = None
+        _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
         solver._custom_mg_live = {"h": id(self),
@@ -2085,10 +2124,12 @@ def _colocate_level(coarse_mesh, fine_mesh):
     sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
     part.setShellPartition(comm.size, sizes=sizes, points=order)
     work.distribute()
-    return uw.discretisation.Mesh(
+    moved = uw.discretisation.Mesh(
         work, simplex=coarse_mesh.dm.isSimplex(), qdegree=coarse_mesh.qdegree,
         coordinate_system_type=coarse_mesh.CoordinateSystem.coordinate_type,
         boundaries=coarse_mesh.boundaries, verbose=False)
+    moved._mg_static = getattr(coarse_mesh, "_mg_static", False)
+    return moved
 
 
 def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):

@@ -28,20 +28,28 @@ which makes the cut of every shared quadrilateral face the same from both
 sides. The two copies of a fault vertex take the SAME place in that order (their
 original's), so the two sides of a fault are triangulated identically and their
 faces coincide pair by pair.
+
+In parallel the sheet is gathered onto one rank, extruded there, and the layer
+distributed; the fault pairing rides each redistribution as a pair of labels
+(:func:`fault_split.stamp_point_pairs`) and the layer is finally redistributed
+so every fault's cell star is rank-interior, the rule the split contact solve
+relies on. The one-rank build bounds the layer size by one rank's
+memory; a rank-local extrusion is the follow-up.
 """
 
 from enum import Enum
 
 import numpy as np
+from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
 
 
-def _sheet_topology(mesh):
+def _sheet_topology(dm):
     """Vertex coordinates, triangles (as vertex indices) and the point-to-index
-    map of a 2-D (or surface) simplex mesh."""
-    dm = mesh.dm
+    map of a 2-D (or surface) simplex DM; empty arrays on a rank holding no
+    cells."""
     v_start, v_end = dm.getDepthStratum(0)
     c_start, c_end = dm.getHeightStratum(0)
     cdim = dm.getCoordinateDim()
@@ -61,56 +69,28 @@ def _edge_vertices(dm, edge, v_start):
     return int(cone[0]) - v_start, int(cone[1]) - v_start
 
 
-def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
-                  qdegree=None, verbose=False, with_tail=True):
-    r"""Extrude a sheet mesh through ``thickness`` into a layer of tetrahedra.
+def _gather_sheet(dm, pairs):
+    """Everything onto rank 0: ``(dm, pairs)`` in the gathered numbering."""
+    from underworld3.utilities.fault_split import redistribute_by_assignment
+    cS, cE = dm.getHeightStratum(0)
+    gathered, pairs, _dropped = redistribute_by_assignment(
+        dm, np.zeros(cE - cS, dtype=np.int32), pairs=pairs)
+    return gathered, pairs or {}
 
-    Parameters
-    ----------
-    mesh : Mesh
-        A 2-D triangle mesh, or a triangulated spherical manifold, possibly
-        carrying split-node faults (``mesh.add_fault``).
-    thickness : float
-        Layer thickness :math:`L`, centred on the sheet.
-    layers : int, default 2
-        Elements through the thickness.
-    base, surface : str
-        Names of the two faces of the layer.
-    qdegree : int, optional
-        Quadrature degree of the new mesh; the sheet's by default.
-    with_tail : bool, default True
-        Give the layer a geometric-multigrid tail: the sheet with the layer
-        count halved down to one, then the sheet's own coarse levels at one
-        layer (coarsened through the thickness first, see the note in the code).
 
-    Returns
-    -------
-    Mesh
-        The layer, with the sheet's boundaries as walls, ``base`` and
-        ``surface``, and the sheet's faults as vertical faults with their pairing.
-    """
-    from underworld3.coordinates import CoordinateSystemType
-
-    if uw.mpi.size > 1:
-        # TODO(DESIGN): build from the gathered sheet on one rank and distribute;
-        # the fault pairing then has to migrate with the distribution, as
-        # fault_split's redistribution does for a split.
-        raise NotImplementedError("extrude_sheet runs in serial for now")
-    if layers < 1:
-        raise ValueError("layers must be at least 1")
-
-    dm2 = mesh.dm
-    coords, triangles, v_start = _sheet_topology(mesh)
+def _extrude_dm(dm2, boundaries, pairs2, thickness, layers, base, surface,
+                spherical, comm):
+    """Extrude the sheet DM ``dm2`` (all of it on this rank; empty on the other
+    ranks in parallel) into a layer DM on ``comm``: ``(dm, members, pairs3)``.
+    The boundary name/value table ``members`` is decided collectively, so the
+    layer's boundaries are the same on every rank."""
+    m4 = comm.tompi4py()
+    coords, triangles, v_start = _sheet_topology(dm2)
     nv = len(coords)
-    spherical = mesh.dim < mesh.cdim
-    if spherical and (mesh.CoordinateSystem.coordinate_type
-                      is not CoordinateSystemType.SPHERICAL):
-        raise NotImplementedError("extrude_sheet: only flat sheets and spherical manifolds")
 
     # The order that cuts each prism: a fault's minus copy of a vertex takes its
     # plus copy's place, so both sides cut their prisms alike.
     key = np.arange(nv)
-    pairs2 = getattr(mesh, "_fault_point_pairs", {})
     for pairs in pairs2.values():
         for q_minus, q_plus in pairs.items():
             if v_start <= q_minus < v_start + nv:
@@ -120,7 +100,7 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
     offsets = -0.5 * thickness + thickness * np.arange(layers + 1) / layers
     if spherical:
         radius = np.linalg.norm(coords, axis=1)
-        rhat = coords / radius[:, None]
+        rhat = coords / radius[:, None] if nv else coords
         xyz = np.concatenate([rhat * (radius + s)[:, None] for s in offsets])
     else:
         xyz = np.concatenate([np.column_stack([coords, np.full(nv, s)]) for s in offsets])
@@ -134,18 +114,21 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
             A, B, C = lo + a, lo + b, lo + c
             A1, B1, C1 = hi + a, hi + b, hi + c
             cells += [[A, B, C, A1], [B, C, A1, B1], [C, A1, B1, C1]]
-    cells = np.array(cells, dtype=np.int32)
+    cells = np.array(cells, dtype=np.int32).reshape(-1, 4)
     # PETSc's orientation: the first three vertices see the fourth on the side
     # their right-hand normal points AWAY from (a negative triple product). With
     # the other sign every volume integral changes sign against the facet ones —
     # measured: the domain volume came out -0.1 and a basal drag pushed.
-    p = xyz[cells]
-    vol = np.einsum("ij,ij->i", np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), p[:, 3] - p[:, 0])
-    flip = vol > 0
-    cells[flip, 2], cells[flip, 3] = cells[flip, 3].copy(), cells[flip, 2].copy()
+    if len(cells):
+        p = xyz[cells]
+        vol = np.einsum("ij,ij->i", np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]),
+                        p[:, 3] - p[:, 0])
+        flip = vol > 0
+        cells[flip, 2], cells[flip, 3] = cells[flip, 3].copy(), cells[flip, 2].copy()
 
-    dm = PETSc.DMPlex().createFromCellList(3, cells, xyz, interpolate=True,
-                                           comm=PETSc.COMM_SELF)
+    # the cell list on rank 0 only (the other ranks hand in nothing)
+    dm = PETSc.DMPlex().createFromCellList(3, cells, xyz.reshape(-1, 3),
+                                           interpolate=True, comm=comm)
     v3_start, _ = dm.getDepthStratum(0)
 
     def vertex(k, i):
@@ -184,16 +167,18 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
     for name in pairs2:
         fault_side_names |= {name, f"{name}Plus", f"{name}Minus"}
     e_start, e_end = dm2.getDepthStratum(1)
-    for b in mesh.boundaries:
+    for b in boundaries:
         if b.name == "All_Boundaries":
             continue
         lab = dm2.getLabel(b.name)
-        if not lab or lab.getStratumSize(b.value) == 0:
-            continue
-        edges = [int(q) for q in lab.getStratumIS(b.value).getIndices() if e_start <= q < e_end]
-        if not edges:
-            # not a boundary of the sheet's area (a manifold labels the whole
-            # surface, for one): nothing to stand up as a wall
+        edges = []
+        if lab and lab.getStratumSize(b.value) > 0:
+            edges = [int(q) for q in lab.getStratumIS(b.value).getIndices()
+                     if e_start <= q < e_end]
+        # a boundary of the sheet's AREA has edges (somewhere); a manifold
+        # labels the whole surface, for one, and has nothing to stand up as a
+        # wall. Decided collectively: the table must agree on every rank.
+        if not m4.allreduce(bool(edges), op=MPI.LOR):
             continue
         if b.name in (base, surface):
             raise ValueError(
@@ -227,9 +212,10 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
             if v_start <= q_minus < v_start + nv:
                 for k in range(layers + 1):
                     vmap[vertex(k, q_minus - v_start)] = vertex(k, q_plus - v_start)
-        value = mesh.boundaries[f"{name}Minus"].value
+        value = boundaries[f"{name}Minus"].value
         lab = dm.getLabel(f"{name}Minus")
-        minus_faces = lab.getStratumIS(value).getIndices()
+        minus_faces = (lab.getStratumIS(value).getIndices()
+                       if lab and lab.getStratumSize(value) > 0 else [])
         found = {}
         for f in minus_faces:
             for q in dm.getTransitiveClosure(int(f))[0]:
@@ -253,10 +239,82 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
     all_label = dm.getLabel("All_Boundaries")
     for name in pairs2:
         lab = dm.getLabel(name)
-        value = mesh.boundaries[name].value
+        value = boundaries[name].value
         if lab and lab.getStratumSize(value):
             for q in lab.getStratumIS(value).getIndices():
                 all_label.clearValue(int(q), 1001)
+    return dm, members, pairs3
+
+
+def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
+                  qdegree=None, verbose=False, with_tail=True):
+    r"""Extrude a sheet mesh through ``thickness`` into a layer of tetrahedra.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2-D triangle mesh, or a triangulated spherical manifold, possibly
+        carrying split-node faults (``mesh.add_fault``).
+    thickness : float
+        Layer thickness :math:`L`, centred on the sheet.
+    layers : int, default 2
+        Elements through the thickness.
+    base, surface : str
+        Names of the two faces of the layer.
+    qdegree : int, optional
+        Quadrature degree of the new mesh; the sheet's by default.
+    with_tail : bool, default True
+        Give the layer a geometric-multigrid tail: the sheet with the layer
+        count halved down to one, then the sheet's own coarse levels at one
+        layer (coarsened through the thickness first, see the note in the code).
+
+    Returns
+    -------
+    Mesh
+        The layer, with the sheet's boundaries as walls, ``base`` and
+        ``surface``, and the sheet's faults as vertical faults with their pairing.
+    """
+    from underworld3.coordinates import CoordinateSystemType
+    from underworld3.utilities.fault_split import (
+        _fault_labels_touch_seam, _redistribute_fault_interior,
+        collect_point_pairs, stamp_point_pairs)
+
+    if layers < 1:
+        raise ValueError("layers must be at least 1")
+    spherical = mesh.dim < mesh.cdim
+    if spherical and (mesh.CoordinateSystem.coordinate_type
+                      is not CoordinateSystemType.SPHERICAL):
+        raise NotImplementedError("extrude_sheet: only flat sheets and spherical manifolds")
+
+    comm = mesh.dm.comm
+    parallel = comm.getSize() > 1
+    pairs2 = dict(getattr(mesh, "_fault_point_pairs", {}) or {})
+    dm2 = mesh.dm
+    if parallel:
+        dm2, pairs2 = _gather_sheet(dm2, pairs2)
+
+    dm, members, pairs3 = _extrude_dm(dm2, mesh.boundaries, pairs2, thickness, layers,
+                                      base, surface, spherical, comm)
+    if parallel:
+        # the layer lives on rank 0: distribute it, carry the pairing through,
+        # and make every fault's cell star rank-interior (the split's rule)
+        # The slit disconnects the two sides, so the balanced partition
+        # readily puts the whole Minus side on one rank and the whole Plus
+        # side on another (measured at np = 2: 261 of 261 pairs apart). The
+        # pair labels stay on through BOTH moves and are read once the stars
+        # are rank-interior.
+        names = stamp_point_pairs(dm, pairs3)
+        dm.distribute()
+        if names:
+            labels = [(f"{name}{side}", members[f"{name}{side}"])
+                      for name in names for side in ("Plus", "Minus")]
+            if _fault_labels_touch_seam(dm, labels):
+                dm = _redistribute_fault_interior(dm, labels, verbose=verbose)
+        pairs3, dropped = collect_point_pairs(dm, names)
+        if dropped:
+            raise RuntimeError(
+                f"extrude_sheet: {dropped} fault pair(s) have no rank holding "
+                "both sides after the fault-interior redistribution")
 
     boundaries = Enum("boundaries", members)
     thick = uw.discretisation.Mesh(
@@ -280,8 +338,8 @@ def extrude_sheet(mesh, thickness, layers=2, base="Base", surface="Surface",
     # FIRST — the fine sheet with the layer count halved down to one — and only
     # then laterally, through the sheet's own coarse levels at one layer. The
     # coarse end of the hierarchy is then essentially the thin sheet. Without a
-    # tail the solve falls back to algebraic multigrid. The coarse levels do not
-    # carry the faults (the fine level alone is cut).
+    # tail the solve falls back to algebraic multigrid. The faults go with the
+    # levels (see _extruded_tail).
     if with_tail:
         tail = _extruded_tail(mesh, thickness, layers, base, surface, qdegree)
         if tail:
@@ -296,39 +354,40 @@ def _extruded_tail(mesh, thickness, layers, base, surface, qdegree):
     :func:`extrude_sheet`): the sheet with the layer count halved down to one,
     then the sheet's own coarse levels at one layer.
 
-    Every coarse level must be free of the faults. The transfer builders locate
-    fine nodes among the coarse ones, and a split level has coincident nodes along
-    its slit: the transfers degenerate and the multigrid returns NaN on its first
-    application (measured; this was first misread as a failure of geometric
-    multigrid on the rotated 3-D pair operator — on fault-free levels the faulted
-    layer's velocity block takes 14 iterations where algebraic multigrid takes
-    about 180). So the levels come from the split sheet's ancestors: the conforming
-    cut it was split from (same nodes, no slit) for the through-thickness levels,
-    and the first ancestor with a refinement hierarchy for the lateral ones.
+    The faults go with the levels. The through-thickness levels are extrusions
+    of the sheet itself, slit and pairing included, and a split level of the
+    sheet's own tail (the add-on levels ``add_fault`` splits) is extruded split
+    too, so the layer's hierarchy is the split-level multigrid of the sheet one
+    dimension up (``utilities.fault_mg``: the cell-located transfer reads the
+    cells of a split level, where the node-cloud builders degenerated on its
+    coincident nodes and returned NaN — the earlier reason for keeping every
+    level fault-free). The background levels stay as they are. Each extruded
+    level keeps its sheet level's static flag.
     """
     def ancestors(m):
         while m is not None:
             yield m
             m = getattr(m, "parent", None)
 
-    unsplit = next((m for m in ancestors(mesh)
-                    if not getattr(m, "_fault_point_pairs", None)), None)
-    if unsplit is None:
-        return []
     own = getattr(mesh, "_custom_mg_coarse_meshes", None)
     if own is not None:
-        sheet_levels = [m for m in own if not getattr(m, "_fault_point_pairs", None)]
+        sheet_levels = list(own)
     else:
-        refined = next((m for m in ancestors(unsplit)
+        refined = next((m for m in ancestors(mesh)
                         if len(getattr(m, "dm_hierarchy", []) or []) > 1), None)
-        sheet_levels = list(refined._coarse_level_meshes())[:-1] if refined is not None else []
+        if refined is None:
+            return []
+        sheet_levels = list(refined._coarse_level_meshes())[:-1]
     vertical = []
     n = layers // 2
     while n >= 1:
-        vertical.append(extrude_sheet(unsplit, thickness, layers=n, base=base,
+        vertical.append(extrude_sheet(mesh, thickness, layers=n, base=base,
                                       surface=surface, qdegree=qdegree, with_tail=False))
         n //= 2
-    lateral = [extrude_sheet(level, thickness, layers=1, base=base, surface=surface,
-                             qdegree=qdegree, with_tail=False)
-               for level in sheet_levels]
+    lateral = []
+    for level in sheet_levels:
+        thick_level = extrude_sheet(level, thickness, layers=1, base=base, surface=surface,
+                                    qdegree=qdegree, with_tail=False)
+        thick_level._mg_static = getattr(level, "_mg_static", False)
+        lateral.append(thick_level)
     return lateral + list(reversed(vertical))

@@ -38,6 +38,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
 | Thin sheet (plane stress, sphere, faults) | [subsystems/thin-sheet.md](subsystems/thin-sheet.md) |
+| Fault multigrid (split-level hierarchy, parallel pairing) | [subsystems/fault-split-multigrid.md](subsystems/fault-split-multigrid.md) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
@@ -232,6 +233,7 @@ subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing
 subsystems/rotated-freeslip
 subsystems/thin-sheet
+subsystems/fault-split-multigrid
 subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory

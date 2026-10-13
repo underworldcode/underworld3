@@ -1700,6 +1700,16 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     h, Ps = resolved if resolved is not None else (None, None)
     if h is None or Ps is None:
         return None
+    if getattr(h, "has_split_levels", False):
+        # Split-level multigrid: the coarse levels carry the fault too, so each
+        # takes its own pair rotation and loses its opening rows, and the
+        # unknowns no fine unknown reaches are dropped (utilities.fault_mg).
+        from underworld3.utilities.fault_mg import rotated_split_transfers
+        Pl = rotated_split_transfers(solver, h, Ps, Q, normal_rows)
+        if getattr(solver, "_custom_mg", None) is None:
+            solver._custom_mg = {"mode": "hierarchy", "hierarchy": h,
+                                 "verbose": False}
+        return Pl
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
     Qv = Q.createSubMatrix(vel_is, vel_is)

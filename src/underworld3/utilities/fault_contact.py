@@ -535,27 +535,50 @@ def _manifold_edge_conormal(dm, f):
     return float(np.linalg.norm(Q - P)), nu
 
 
-def _pair_frame(solver, q, nrm):
+def _radial_fn(mesh):
+    """A numpy callable of the mesh coordinates giving the surface normal of a
+    manifold mesh — its radial unit vector ``unit_e_0``, unwrapped to mesh
+    coordinates exactly as ``rotated_bc._normal_source`` does for an analytic
+    normal. Build it once per mesh, not per pair."""
+    from underworld3.function.expressions import unwrap
+    normal = mesh.CoordinateSystem.unit_e_0
+    comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
+                                  return_self=False))
+             for k in range(mesh.cdim)]
+    return sympy.lambdify(list(mesh.X), comps, "numpy")
+
+
+def _pair_frame(solver, q, nrm, radial=None):
+    """The rotation frame of a coincident pair at point ``q`` of the SOLVER's
+    mesh — see :func:`_pair_frame_on`, the mesh-level form a coarse level of
+    the split-level multigrid uses too."""
+    mesh = solver.mesh
+    if mesh.dim < mesh.cdim and radial is None:
+        radial = _radial_fn(mesh)
+    return _pair_frame_on(mesh, solver.dm, q, nrm, radial)
+
+
+def _pair_frame_on(mesh, dm, q, nrm, radial=None):
     """The rotation frame of a coincident pair at point ``q``: the fault
     normal first, then the slip direction(s). On a volume mesh that is
     ``[n] + _tangent_frame(n)``; on a surface mesh the fault normal is the
     in-surface conormal, the slip direction is the trace tangent and the
     third vector is the surface normal, whose jump AND mean rows the
     tangency constraint pins (see ``rotated_bc.build_rotation``). The SINGLE
-    authority for the pair frame: the rotated pair blocks and the interface
-    assembler's slip rows must agree row for row."""
-    mesh = solver.mesh
+    authority for the pair frame: the rotated pair blocks, the interface
+    assembler's slip rows and the coarse levels' pair blocks must agree row
+    for row. ``radial`` is :func:`_radial_fn` of the mesh (surface meshes)."""
     if mesh.dim == mesh.cdim:
         return [np.asarray(nrm, dtype=float)] + _tangent_frame(nrm)
-    from underworld3.utilities.rotated_bc import _normal_source, _point_coord
-    dm = solver.dm
+    from underworld3.utilities.rotated_bc import _point_coord
     cdim = mesh.cdim
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
     v0, v1 = dm.getDepthStratum(0)
-    sym_fn, const = _normal_source(solver, mesh.CoordinateSystem.unit_e_0, "fault")
+    if radial is None:
+        radial = _radial_fn(mesh)
     X = _point_coord(dm, cdim, cvec, csec, v0, v1, int(q))
-    r = np.asarray(sym_fn(*X), dtype=float).ravel() if sym_fn is not None else const
+    r = np.asarray(radial(*X), dtype=float).ravel()
     r = r / (np.linalg.norm(r) + 1e-30)
     # The conormal is perpendicular to the FACET normal, the surface normal is
     # the analytic one at the node: they differ by O(h), and a frame that is
@@ -572,6 +595,17 @@ def _pair_frame(solver, q, nrm):
 
 
 def _fault_pair_nodes(solver, boundary):
+    """The velocity-carrying coincident pairs of a split fault of the
+    SOLVER's mesh, with normals — :func:`_fault_pair_nodes_on` with the
+    solver's analytic-normal override for this fault, if one is registered."""
+    return _fault_pair_nodes_on(solver.mesh, solver.dm,
+                                solver.dm.getLocalSection(), boundary,
+                                field=_VELOCITY_FIELD,
+                                override=_compiled_normal_override(solver, boundary))
+
+
+def _fault_pair_nodes_on(mesh, dm, lsec, boundary, field=_VELOCITY_FIELD,
+                         override=None):
     """The velocity-carrying coincident pairs of a split fault, with normals.
 
     Returns ``[(q_plus, q_minus, n_hat), ...]`` over this rank's pairs, where
@@ -591,11 +625,13 @@ def _fault_pair_nodes(solver, boundary):
     rotated pair blocks, the interface-law rows, and every diagnostic
     (slip, leak, normal traction) all read the frame from here, so the
     override is consistent everywhere by construction.
+
+    ``mesh`` is any mesh carrying the pairing (the solver's, or a coarse
+    level of the split-level multigrid), ``dm`` a DM over it that carries the
+    velocity field ``field`` in its local section ``lsec``, and ``override``
+    the compiled analytic normal (``None`` for the facet-derived one).
     """
-    mesh = solver.mesh
-    dm = solver.dm
     dim = mesh.cdim
-    lsec = dm.getLocalSection()
     fS, fE = dm.getHeightStratum(1)
 
     pairs = mesh._fault_point_pairs[boundary]
@@ -638,10 +674,9 @@ def _fault_pair_nodes(solver, boundary):
         else:
             vol, ne, _exterior = facet_measure_and_normal(dm, f, orient="support0")
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-            if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
+            if lsec.getFieldDof(q, field) > 0:
                 nacc[q] = nacc.get(q, np.zeros(dim)) + float(vol) * ne
 
-    override = _compiled_normal_override(solver, boundary)
     if override is not None:
         from underworld3.utilities.rotated_bc import _point_coord
         csec = dm.getCoordinateSection()
@@ -650,7 +685,7 @@ def _fault_pair_nodes(solver, boundary):
 
     out = []
     for q_minus, q_plus in pairs.items():
-        if lsec.getFieldDof(int(q_plus), _VELOCITY_FIELD) <= 0:
+        if lsec.getFieldDof(int(q_plus), field) <= 0:
             continue
         acc = nacc.get(int(q_plus))
         if acc is None:

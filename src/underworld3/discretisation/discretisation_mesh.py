@@ -7343,6 +7343,8 @@ class Mesh(Stateful, uw_object):
             token = object()
             for k, w in enumerate(cached):
                 w._refine_slot = (token, k)
+                # the static background: never cut by a fault (add-on principle)
+                w._mg_static = True
             self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
         return cached
@@ -8286,7 +8288,7 @@ class Mesh(Stateful, uw_object):
         return extrude_sheet(self, thickness, layers=layers, base=base,
                              surface=surface, qdegree=qdegree, verbose=verbose)
 
-    def add_fault(self, faults, verbose=False):
+    def add_fault(self, faults, verbose=False, split_levels=True, **place_kwargs):
         """Cut AND split one or more faults; return the split mesh.
 
         The split-node fault pipeline in one call: each fault becomes a
@@ -8310,23 +8312,50 @@ class Mesh(Stateful, uw_object):
         :meth:`add_conforming_surface`); solvers take their
         algebraic-multigrid defaults.
 
-        Implementation and design: ``underworld3.utilities.fault_split``
-        and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
+        In 3-D a fault is a triangulated sheet: a ``FaultSurface`` or a
+        ``(name, points, triangles)`` triple, placed as
+        :meth:`add_conforming_sheet` places it and split; ``place_kwargs``
+        are the placement's options (``clearance`` about 0.9 on a
+        bisection-refined mesh, where the default cavity cannot be closed).
+
+        ``split_levels`` (default True) carries the fault through the ADD-ON
+        levels of the inherited multigrid tail — every level refined from the
+        static background toward the fault is cut and split the same way, so
+        the coarse spaces contain the discontinuity and the velocity solve
+        stays mesh-independent as the fault is refined (the split-level
+        multigrid of ``utilities.fault_mg``; measured 10 -> 5 velocity
+        iterations over four halvings against 9 -> 32 with welded levels).
+        The background levels are never cut. ``False`` keeps the welded tail.
+
+        Implementation and design: ``underworld3.utilities.fault_split``,
+        ``utilities.fault_mg`` and
+        ``docs/developer/design/FAULT_MULTIGRID_HIERARCHIES.md``.
         """
         from underworld3.utilities.fault_split import add_fault
-        child = add_fault(self, faults, verbose=verbose)
+        child = add_fault(self, faults, verbose=verbose, **place_kwargs)
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve
-        # unchanged with the cut mesh as the finest level — the coarse
-        # levels do not need the fault (#620/#629). Without this every
-        # solver on a split mesh fell to GAMG unless it called
-        # set_custom_fmg by hand. The FAC zone is NOT inherited: a split
-        # fault needs no patch (the keying ruling).
+        # with the cut mesh as the finest level. The static background
+        # levels serve unchanged; the add-on levels are split too (above).
+        # Without this every solver on a split mesh fell to GAMG unless it
+        # called set_custom_fmg by hand. The FAC zone is NOT inherited: a
+        # split fault needs no patch (the keying ruling).
         own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
         if (own_tail is not None
                 and getattr(child, "_custom_mg_coarse_meshes", None) is None):
-            child._custom_mg_coarse_meshes = list(own_tail)
+            tail = list(own_tail)
+            if split_levels:
+                from underworld3.utilities.fault_mg import (
+                    addon_level_indices, split_tail_levels)
+                idx = addon_level_indices(tail)
+                if idx:
+                    split = split_tail_levels([tail[k] for k in idx],
+                                              child._fault_specs,
+                                              verbose=verbose)
+                    for k, m in zip(idx, split):
+                        tail[k] = m
+            child._custom_mg_coarse_meshes = tail
             child._custom_mg_builder = getattr(self, "_custom_mg_builder",
                                                "barycentric")
             child._custom_mg_fac_zone = None
@@ -9316,7 +9345,9 @@ class Mesh(Stateful, uw_object):
             # the finest base level of the MG tail must carry the SAME moved
             # geometry the child was refined from; coarser levels keep their
             # original coordinates (custom-P transfers accept non-nested pairs)
-            coarse_tail = coarse_tail[:-1] + [self._wrap_coarse_level(base_finest)]
+            _moved_wrap = self._wrap_coarse_level(base_finest)
+            _moved_wrap._mg_static = True
+            coarse_tail = coarse_tail[:-1] + [_moved_wrap]
         child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 

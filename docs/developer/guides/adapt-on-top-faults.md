@@ -247,6 +247,15 @@ near-optimal for TI — do **not** hand-roll a "TI-aware Schur"; measured, the d
 `1/η₀` beats every alternative (the weak TI mode is fault-parallel shear, which is
 volume-preserving, so pressure sees η₀).
 
+**Split-node faults on an add-on mesh.** `child.add_fault(...)` carries the fault
+through every add-on level of the tail (the background is never cut), so the coarse
+spaces contain the discontinuity and the velocity iterations FALL with refinement
+(6, 5, 4 at k = 2, 3, 4 against 13, 18, 23 with the welded levels; slip identical).
+This works in serial and in parallel (the pairing rides every redistribution as
+labels) and for the extruded thick twin. `split_levels=False` keeps the welded
+tail. Governing doc:
+[`subsystems/fault-split-multigrid.md`](../subsystems/fault-split-multigrid.md).
+
 ---
 
 ## Moving fault + re-adaptation + field transfer

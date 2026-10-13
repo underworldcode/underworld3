@@ -1,7 +1,10 @@
 # Multigrid hierarchies for split-node faults
 
-Technical note, 2026-10-13. Exploration, not yet in the library. Drivers:
-`scripts/sessions/fault_mg/`.
+Technical note, 2026-10-13. The exploration that chose the hierarchy; the library
+implementation (C, below) is governed by
+[subsystems/fault-split-multigrid.md](../subsystems/fault-split-multigrid.md).
+Exploration drivers: `scripts/sessions/fault_mg/` (`stage*.py` monkey-patch the
+solver; `library_c*.py` and `thick_parallel.py` go through the library).
 
 ## The question
 
@@ -139,18 +142,21 @@ A, the existing path, had three defects at np > 1:
 
 1. **Fixed** (`test_1086`). The rotated solve zeroed the opening rows of its fine
    transfer by local position instead of global row.
-2. **Open.** `mesh.adapt` keeps a different intermediate level for the multigrid tail in
-   parallel than in serial (1358 against 1520 cells; the finest mesh is the same).
-3. **Open.** `add_fault` gathers the fault's cell star onto one rank, so the split finest
-   level is not co-partitioned with its tail. The cross-partition transfer to it then
-   left 618 coarse unknowns with no fine image. Their nearest-node injection duplicated
-   512 columns, the Galerkin coarse operators became singular, and PETSc's inode SOR
-   returned NaN. With inodes off it converges (34 iterations at np = 2 against 18
-   serial), but the coarse operators are still singular.
+2. **Open, now harmless.** `mesh.adapt` keeps a different intermediate level for the
+   multigrid tail in parallel than in serial (1358 against 1520 cells; the finest mesh
+   is the same). The levels need not match: the transfer locates nodes.
+3. **Fixed** (`test_1089`). `add_fault` gathers the fault's cell star onto one rank, so
+   the split finest level is not co-partitioned with its tail. The node-cloud transfer
+   left 618 coarse unknowns with no fine image, their nearest-node injection
+   duplicated 512 columns, the Galerkin coarse operators became singular, and PETSc's
+   inode SOR returned NaN. Every pair touching a split level now takes the
+   cell-located transfer, which asks the other ranks for the nodes it cannot locate
+   locally, and unreached unknowns are dropped rather than repaired: A converges at
+   np = 2 (15 iterations against 13 serial), C in 6 at np = 2 and 7 at np = 4 (k = 2).
 
-For C, the plan is to co-locate each add-on level with the finest *before* splitting it,
-so that every split level holds its fault star on the same rank, and to build the
-side-aware transfer rank-locally on those co-located levels.
+The pairing rides every redistribution as a pair of DM labels. The migration star
+forest PETSc returns for an initial distribution does not index the stratified point
+numbering (three quarters of the points mapped to the wrong depth), so it is not used.
 
 ## What works best
 
@@ -166,12 +172,12 @@ every problem, for no gain. B2 is worse than A, and badly so for the
 viscous fault. A smeared band on a coarse level is a continuous shear that the split
 fine operator rejects, so the coarse space has to contain the discontinuity itself.
 
-## Not yet done
+## State (library, 2026-10-13)
 
-- Building the add-on levels from one `adapt` call (its NVB generations, each split)
-  instead of $k$ independent ones.
-- The 3-D layer with the lateral levels split too.
-- Fault networks, and faults near a boundary.
-- Parallel: see above.
-- Moving the transfer and the per-level frames into `custom_mg` as a mesh-owned tail
-  built by `add_fault`.
+In the library: the add-on levels of one `adapt` call, each split by `add_fault`; the
+cell-located transfer (serial and parallel) and the per-level frames in
+`utilities/fault_mg.py`, installed through `custom_mg` and the rotated solve; the 3-D
+layer with every level split, extruded in parallel; 3-D sheet faults on add-on meshes.
+Not yet: fault networks through the levels (one `add_fault` call with several faults
+replays them all, untested), faults near a boundary, co-locating the levels with the
+finest as an optimisation.
