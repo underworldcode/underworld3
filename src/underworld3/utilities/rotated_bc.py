@@ -1718,6 +1718,7 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
         # unknown reaches are then dropped (utilities.fault_mg).
         from underworld3.utilities.fault_mg import rotated_split_transfers
         Pl = rotated_split_transfers(solver, h, Ps, Q, normal_rows)
+        solver._custom_mg_rotated_levels = True
         if getattr(solver, "_custom_mg", None) is None:
             solver._custom_mg = {"mode": "hierarchy", "hierarchy": h,
                                  "verbose": False}
@@ -2003,6 +2004,19 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     smoother=solver._mg_smoother_variant,
                     patch_rows=getattr(_hier, "level_patch_rows", None))
                 vel_pc.setUp()
+                if getattr(solver, "_custom_mg_rotated_levels", False):
+                    # Rotated coarse levels: a wall node keeps one tangential
+                    # row beside the two-row nodes, and the inode SOR's 2x2
+                    # block inversion met a zero pivot on the Galerkin
+                    # operators of a developed temperature field (four
+                    # ranks on the Zhong & Gurnis annulus, 2026-10-14) with
+                    # every scalar diagonal healthy; without the inode
+                    # grouping the same solve converged in 9 iterations to
+                    # the two-rank answer. The finest operator is untouched.
+                    for _l in range(vel_pc.getMGLevels() - 1):
+                        _A = vel_pc.getMGSmoother(_l).getOperators()[0]
+                        _A.setOption(PETSc.Mat.Option.USE_INODES, False)
+                        _A.assemble()
                 # Force the FAC levels' smoother setup NOW: PCASM creates its
                 # sub-KSP (which reads mg_levels_<l>_sub_* from the DB) lazily
                 # at first application, which on this path is AFTER the key

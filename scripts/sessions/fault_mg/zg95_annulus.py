@@ -71,6 +71,9 @@ ap.add_argument("--theta0", type=float, default=0.0, help="initial trench positi
 ap.add_argument("--migrate", type=int, default=1, help="advect the trench with the overriding plate")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
+if os.environ.get("ZG95_NOINODE"):
+    from petsc4py import PETSc
+    PETSc.Options()["mat_no_inode"] = True
 RI, RO = 0.55, 1.0
 S, W = args.S, 2.0 * args.S
 DIP = np.deg2rad(args.dip)
@@ -187,10 +190,29 @@ class AddOn:
     def solve(self):
         self.T.array[:, 0, 0] = np.asarray(uw.function.global_evaluate(
             T_b.sym[0], clamp_radii(np.asarray(self.T.coords)))).ravel()
+        n_nan = int(comm.allreduce(int(np.isnan(self.T.array).sum()), op=MPI.SUM))
+        tmin, tmax = gmin(np.nanmin(self.T.array) if self.T.array.shape[0] else 1.0), gmax(np.nanmax(self.T.array) if self.T.array.shape[0] else 0.0)
+        log(f"  T on the add-on: nan {n_nan}, range {tmin:.3f} {tmax:.3f}")
         t0 = time.perf_counter()
         self.stokes.solve()
         info = self.stokes._rotated_freeslip_info
         self.t_solve = time.perf_counter() - t0
+        if os.environ.get("ZG95_INSPECT"):
+            try:
+                ctx = (getattr(self.stokes, "_rotated_linear_cache", None) or {})["ctx"]
+                velpc = ctx["ksp"].getPC().getFieldSplitSubKSP()[0].getPC()
+                for l in range(velpc.getMGLevels()):
+                    sm = velpc.getMGSmoother(l)
+                    A = sm.getOperators()[0]
+                    d = A.getDiagonal().array
+                    dmin = gmin(np.abs(d).min() if d.size else np.inf)
+                    dmax = gmax(np.abs(d).max() if d.size else 0.0)
+                    b, x = A.createVecs(); b.setRandom(); x.set(0.0)
+                    sm.solve(b, x)
+                    log(f"    level {l}: n {A.getSize()[0]} diag min {dmin:.3e} max {dmax:.3e} "
+                        f"smoother |x| {x.norm():.3e} reason {sm.getConvergedReason()}")
+            except Exception as e:
+                log("    inspection failed:", e)
         self.stokes.dynamic_topography("Upper", self.h, buoyancy_scale=args.ra)
         rec = {"vel_its": info.get("vel_its_last"), "pres_its": info.get("pres_its_last"),
                "converged": bool(info.get("converged")), "t_solve": round(self.t_solve, 1)}

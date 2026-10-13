@@ -84,6 +84,15 @@ zero). Two further rules came out of the same case:
 - the reach test of the orphan rule is relative (`UNREACHED_REL`, 1e-8 of the
   level's largest column, squared norms) and runs after the finest's constrained
   rows are zeroed, not before;
+- the Galerkin operators of the rotated coarse levels do not use PETSc's inode
+  block grouping (`MAT_USE_INODES` off, set after the velocity PC's set-up; the
+  finest operator is untouched). A rotated wall node keeps one tangential row
+  beside the two-row nodes, and on the developed temperature field of the
+  annulus run at four ranks the inode SOR's 2x2 block inversion met a zero pivot
+  on the base's two finest levels with every scalar diagonal healthy (minimum
+  2.6 against a maximum of 3e4); without the grouping the same solve converged
+  in 9 iterations to the two-rank answer. Which rows the grouping pairs there is
+  not yet identified (a row-level inspection is in the driver's history);
 - the free-slip gauge mode must verify for the SVD coarse solve to be selected,
   which on a faceted circle needs the exact radial normal
   (`normal=mesh.CoordinateSystem.unit_e_0`); and that SVD needs a small coarsest
