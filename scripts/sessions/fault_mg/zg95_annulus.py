@@ -74,6 +74,8 @@ ap.add_argument("--yield0", type=float, default=0.0, help="yield stress at the s
 ap.add_argument("--yield_depth", type=float, default=0.0, help="yield stress gradient with depth")
 ap.add_argument("--eta_min", type=float, default=1.0, help="viscosity floor under yielding")
 ap.add_argument("--T_int", type=float, default=0.6, help="initial interior temperature")
+ap.add_argument("--advect", choices=["supg", "slcn"], default="supg",
+                help="temperature transport: Eulerian SUPG (its own step estimate) or semi-Lagrangian (dt_mult x Courant)")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 if os.environ.get("ZG95_NOINODE"):
@@ -110,7 +112,10 @@ if args.restart >= 0:
     log(f"restarted T from checkpoint {args.restart}")
 log(f"base: {base.dm.getHeightStratum(0)[1]} cells, {len(tail)} levels; finest cell {args.H / 2**args.ref}")
 
-adv = uw.systems.AdvDiffusionSLCN(base, u_Field=T_b, V_fn=V_b.sym, order=1, monotone_mode="clamp")
+if args.advect == "supg":
+    adv = uw.systems.AdvDiffusion(base, T_b, V_b.sym, order=1)
+else:
+    adv = uw.systems.AdvDiffusionSLCN(base, u_Field=T_b, V_fn=V_b.sym, order=1, monotone_mode="clamp")
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0
 adv.f = args.heating
@@ -154,6 +159,13 @@ def set_rheology(solver, mesh, Tsym, zone_sym=None):
     P.shear_viscosity_0 = eta0
     P.shear_viscosity_1 = eta0 * weak
     return P                                   # the caller sets the director
+
+
+def next_dt():
+    """SUPG: the solver's own estimate, capped; semi-Lagrangian: dt_mult times the
+    Courant estimate, capped (it is not Courant-limited)."""
+    est = float(adv.estimate_dt())
+    return min(est if args.advect == "supg" else args.dt_mult * est, args.dt_max)
 
 
 def clamp_radii(x):
@@ -421,7 +433,7 @@ if args.spinup > 0 and args.restart < 0:
         s_b.solve()
         info = s_b._rotated_freeslip_info
         V_b.array[...] = v_b.array
-        dt = min(args.dt_mult * float(adv.estimate_dt()), args.dt_max)
+        dt = next_dt()
         adv.solve(timestep=dt)
         t += dt
         vmax = gmax(np.linalg.norm(V_b.array[:, 0, :], axis=1).max() if V_b.array.shape[0] else 0.0)
@@ -466,7 +478,7 @@ for k in range(args.steps):
     # velocity back onto the base for the advection step
     Vb = np.asarray(uw.function.global_evaluate(addon.v.sym, clamp_radii(np.asarray(V_b.coords)))).reshape(-1, 2)
     V_b.array[:, 0, :] = Vb
-    dt = min(args.dt_mult * float(adv.estimate_dt()), args.dt_max)
+    dt = next_dt()
     adv.solve(timestep=dt)
     t += dt
     if args.migrate:
