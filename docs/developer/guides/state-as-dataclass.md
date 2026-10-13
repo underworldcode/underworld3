@@ -131,6 +131,18 @@ The five `DDt` flavors in `src/underworld3/systems/ddt.py` (`Symbolic`,
 option (B) for this reason: they predate the contract, and rewriting
 every mutation site would be churn without behavior change.
 
+Solvers follow the same pattern for what one solve leaves for the next
+(`SolverStepState`: the warm-start flag, and on the Eulerian
+Navier-Stokes and advection-diffusion solvers the last timestep and the
+rate `estimate_dt` reads). They are not registered state-bearers — some
+are built on first use — so the snapshot carries their states itself: a
+restore puts back the state of every solver that existed at capture and
+returns any solver built since to the state of one that has never solved.
+A disk snapshot carries them too. A
+solver's `state` setter also discards its preconditioner setup, so the
+solves after a restore are those of a run started from the restored
+fields.
+
 ## What goes in the State dataclass
 
 **Yes:**

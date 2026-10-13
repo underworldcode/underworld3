@@ -320,6 +320,39 @@ def _jacobian_unwrap(expr, route=None):
 
 include "petsc_extras.pxi"
 
+
+def _discard_preconditioner_setup(pc):
+    """Make ``pc`` build itself afresh on its next setup, as it would in a new run.
+
+    A field split passes the request to each block. An algebraic multigrid
+    keeps state through ``PCReset`` (it reuses its hierarchy and the
+    eigenvalue estimates that go with it), so it is replaced by a new instance
+    of the same type, configured from the same options. Every other
+    preconditioner in use rebuilds what it needs from the operator on its next
+    setup and is left alone: a geometric multigrid in particular holds
+    transfers set in code, which a reset would drop.
+    """
+    kind = pc.getType()
+    if kind == "fieldsplit":
+        # A split that was never set up has no blocks, and asking for them
+        # is a PETSc error; it is printed even when caught, so silence it.
+        PETSc.Sys.pushErrorHandler("return")
+        try:
+            blocks = pc.getFieldSplitSubKSP()
+        except PETSc.Error:
+            # never set up: there is no setup to discard
+            blocks = []
+        finally:
+            PETSc.Sys.popErrorHandler()
+        for ksp in blocks:
+            _discard_preconditioner_setup(ksp.getPC())
+        return
+    if kind == "gamg":
+        pc.setType("none")
+        pc.setType(kind)
+        pc.setFromOptions()
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -1505,6 +1538,39 @@ class SolverBaseClass(uw_object):
             # _update_constants / a direct _needs_function_rewire and keep
             # has_solution, so continuation and time-stepping warm-start correctly.
             self._has_solution = False
+
+    @property
+    def state(self):
+        """What the last solve left on this solver that steers the next one,
+        as a :class:`~underworld3.checkpoint.state.SolverStepState`."""
+        from underworld3.checkpoint.state import SolverStepState
+        return SolverStepState(has_solution=bool(self._has_solution))
+
+    @state.setter
+    def state(self, s):
+        """Put the solver back as a snapshot captured it. The preconditioner's
+        setup (and the rotated free-slip workspace) is discarded too, so the
+        next solve runs as it would in a run started cold from the restored
+        fields."""
+        self._has_solution = bool(s.has_solution)
+        self._reset_preconditioner()
+        # the rotated free-slip path solves with its own cached operator and
+        # preconditioner, and a hint that licenses a shortcut on the next solve
+        self._reset_rotated_solver_cache()
+
+    def _reset_preconditioner(self):
+        """Discard the preconditioner's setup so the next solve builds it afresh.
+
+        A preconditioner can carry history of its own between solves: an
+        algebraic multigrid keeps the hierarchy and smoother eigenvalue
+        estimates it built on earlier operators. None of it is model state,
+        so a snapshot cannot hold it; discarding it on restore makes the
+        solves that follow a restore the same as those of a run started cold
+        from the same state, whatever was solved in between.
+        """
+        if self.snes is None:
+            return
+        _discard_preconditioner_setup(self.snes.getKSP().getPC())
 
     @property
     def has_solution(self):

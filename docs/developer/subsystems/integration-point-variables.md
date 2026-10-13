@@ -235,9 +235,10 @@ Tests: `tests/test_0066_integration_point_slcn.py`.
 The RK2 trace, `x_mid = x - dt/2 v(x)`, `x_dep = x - dt v(x_mid)`, is second
 order only if `v(x_mid)` is the velocity at `t^{n+1/2}`. Both schemes now
 take it there: on the current interval by extrapolation from the two most
-recent velocity fields, `1.5 v^n - 0.5 v^{n-1}` (the velocity at `n+1` is
-not known when the history is built), and on the older segments of a
-multi-step history by the average of the two known ends. With `v^n` alone
+recent velocity fields, `v^n + (r/2)(v^n - v^{n-1})` with `r` the ratio of
+this step to the last (`1.5 v^n - 0.5 v^{n-1}` for equal steps; the velocity
+at `n+1` is not known when the history is built), and on the older segments
+of a multi-step history by the average of the two known ends. With `v^n` alone
 the foot is off by `b dt²/2` in a flow accelerating at rate `b`, first
 order in an unsteady flow; the rotating Gaussian did not show it because
 that velocity is steady. `tests/test_0066_integration_point_slcn.py`
@@ -521,7 +522,8 @@ M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2
 ### The swarm step at the mid time
 
 `swarm.advection(V_fn, dt, order=2, midtime_velocity=True)` evaluates the
-RK2 mid-point velocity at the mid time, $\tfrac32 v^n - \tfrac12 v^{n-1}$,
+RK2 mid-point velocity at the mid time, $v^n + \tfrac{r}{2}(v^n - v^{n-1})$
+($\tfrac32 v^n - \tfrac12 v^{n-1}$ for equal steps, $r$ the step ratio),
 from a `CharacteristicTrace` the swarm owns (the previous velocity is cached
 by evaluation at the nodes at the end of each call), or from a solver's
 shared trace passed as `characteristics=`. On a rotation whose rate ramps

@@ -202,6 +202,7 @@ class FaultNetwork:
                              f"{sorted(unknown)}")
         self.h_near = None
         self.ligament = None
+        self.seams = None
         self.prepared = None
         self.junctions = None
         self.report = None
@@ -253,7 +254,8 @@ class FaultNetwork:
     def build(self, base=None, h_far=None, band=0.03, ramp=0.08,
               max_levels=2, qdegree=2, mesher=None,
               width=None, realisation="split",
-              margin_rings=2, carve_clearance=0.3):
+              margin_rings=2, carve_clearance=0.3,
+              seams="gather", seam_ligament=None, fill_grading=0.35):
         """Mesh the network: graded refinement along every RAW trace,
         then the chosen REALISATION of the faults on that mesh.
 
@@ -295,9 +297,35 @@ class FaultNetwork:
         :func:`~underworld3.utilities.place_surface.place_fault_ribbon_2d`).
         In 3-D: ``"embed"`` (default) and ``"place"``, described in
         :meth:`_build_3d`.
+
+        ``seams`` (2-D band, ``mesher="network"``) says how a band
+        crossing a partition seam is placed (#670): ``"gather"`` moves
+        its region onto one rank; ``"ligament"`` carves on every rank
+        and leaves the base cells at each seam as a LIGAMENT the fault
+        is not cut through — the split is then rank-local and the
+        weak-plane rheology bridges the seam (:meth:`apply` paints it on
+        the ligament cells, so the split realisation needs ``eta_1``
+        too). ``seam_ligament`` widens it (a physical width; unrelated to
+        ``prepare(ligament=)``, the junction gap). In serial both give
+        the same mesh.
+
+        ``fill_grading`` is the power of the relative distance by which
+        the fill's cell size grows from the band's spacing at its skin to
+        the base's at the cavity ring: 1 linear, below 1 coarser sooner
+        (default 0.35, measured on the fine S-fault rig: 29% fewer cells
+        for the same answer).
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
+        if seams not in ("gather", "ligament", "conform"):
+            raise ValueError(
+                f"seams must be 'gather', 'ligament' or 'conform', not "
+                f"{seams!r}")
+        if seams != "gather" and (self.dim == 3 or width is None):
+            raise NotImplementedError(
+                f"seams={seams!r} is the 2-D band's (width=) placement; the "
+                "3-D band and the no-band cut still gather.")
+        self.seams = seams
         if self.dim == 3 and width is not None:
             if mesher not in (None, "network"):
                 raise ValueError(
@@ -382,7 +410,8 @@ class FaultNetwork:
                 self.width, margin_rings=margin_rings,
                 clearance=carve_clearance,
                 split=(realisation == "split"), mesher=mesher,
-                spines=[(n, S) for n, S, _idx in self.spines])
+                spines=[(n, S) for n, S, _idx in self.spines],
+                seams=seams, ligament=seam_ligament, grading=fill_grading)
         self._make_surfaces()
         return self.mesh
 
@@ -559,7 +588,17 @@ class FaultNetwork:
             boundaries=Enum("boundaries", members), verbose=False)
         band = mesh.cells_labelled("Band", 71)
         if realisation == "split":
-            mesh = split_faults(mesh, [n for n, _P in self.prepared])
+            # the pieces the placement kept apart stay apart in the split's
+            # own redistribution: one group per placed region (#670)
+            groups = None
+            regions = info.get("embedded_regions")
+            if regions is not None:
+                by_region = {}
+                for (name, _P), r in zip(self.prepared, regions):
+                    by_region.setdefault(r, []).append(name)
+                groups = list(by_region.values())
+            mesh = split_faults(mesh, [n for n, _P in self.prepared],
+                                groups=groups)
             # reduce first, then branch: the defect must raise on every
             # rank together or not at all. A healthy pairing is a
             # bijection between disjoint sides: a node paired with
@@ -616,7 +655,12 @@ class FaultNetwork:
                      "spacing": [h] * len(self.prepared),
                      "width": float(self.width), "mesher": "network",
                      "margin_rings": [(margin_rings, margin_rings)]
-                     * len(self.prepared)}
+                     * len(self.prepared),
+                     # the placement's parallel record (#670): regions
+                     # gathered, their size, and the cells that moved
+                     "n_regions": int(info.get("n_regions", 1)),
+                     "n_gathered": int(info.get("n_gathered", 0)),
+                     "n_moved": int(info.get("n_moved", 0))}
         self.mesh = mesh
         self._make_surfaces()
         return self.mesh
@@ -893,7 +937,30 @@ class FaultNetwork:
         """
         if self.mesh is None:
             raise RuntimeError("call build() first")
+        import underworld3 as uw
+
         if self.realisation == "split":
+            lig = self.bridge_cells()
+            if lig is not None:
+                # The seam bridges: the cut stops blind short of each seam
+                # and the band's weak plane, painted on the ligament and on
+                # the band around each blind tip, carries the slip across
+                # (#670) — the daylighting rule, applied at the seams.
+                if eta_1 is None:
+                    raise ValueError(
+                        "this network was built with seams='ligament': "
+                        "apply() needs eta_1=, the weak-plane viscosity "
+                        "the ligament cells carry across each seam.")
+                eta1, ndir, _foot = self.ti_fields(eta_1, eta_0=eta_0,
+                                                   tag=tag, mask=lig)
+                solver.constitutive_model = \
+                    uw.constitutive_models.TransverseIsotropicFlowModel
+                params = solver.constitutive_model.Parameters
+                params.shear_viscosity_0 = (
+                    float(eta_0) if np.ndim(eta_0) == 0
+                    else self._eta0_var.sym[0])
+                params.shear_viscosity_1 = eta1.sym[0]
+                params.director = ndir.sym
             for name, _p in self.prepared:
                 solver.add_fault_bc(conds, boundary=name, normal=normal)
             return self
@@ -901,8 +968,6 @@ class FaultNetwork:
             raise ValueError(
                 "realisation='ti' needs eta_1=: the weak-plane viscosity "
                 "is the other half of the constitutive pair (with width).")
-        import underworld3 as uw
-
         eta1, ndir, foot = self.ti_fields(eta_1, eta_0=eta_0, tag=tag)
         solver.constitutive_model = \
             uw.constitutive_models.TransverseIsotropicFlowModel
@@ -930,18 +995,102 @@ class FaultNetwork:
         return self
 
     # ------------------------------------------------------------------
-    def ti_fields(self, eta_1, eta_0=1.0, tag=""):
+    def ligament_cells(self):
+        """The seam-ligament cell mask (plex cell order), or ``None``.
+
+        ``None`` unless the network was built with ``seams="ligament"``
+        AND some rank's band was clipped at a seam (in serial there is
+        no seam, so the mask is empty and ``None`` is returned). The
+        verdict is COLLECTIVE — every rank returns a mask or every rank
+        returns ``None``.
+        """
+        if self.info is None or self.info.get("ligament") is None:
+            return None
+        import underworld3 as uw
+        from mpi4py import MPI
+
+        mask = np.asarray(self.info["ligament"], dtype=bool)
+        n = int(uw.mpi.comm.allreduce(int(mask.sum()), op=MPI.SUM))
+        return mask if n else None
+
+    def bridge_cells(self, reach=None):
+        """The cells that bridge the seams of a split network, or ``None``.
+
+        The ligament cells (what is left of the band at each seam) plus
+        the band cells within ``reach`` (default one band width) of every
+        BLIND tip — a sub-chain end that is not an end of its trace. The
+        weak plane painted on this mask encloses each blind tip, as the
+        junction glue encloses the arms' tips. COLLECTIVE verdict, as
+        :meth:`ligament_cells`.
+        """
+        if self.realisation != "split":
+            return self.ligament_cells()
+        lig = self.ligament_cells()
+        if lig is None:
+            if self.info is None or self.info.get("band") is None:
+                return None
+            lig = np.zeros_like(np.asarray(self.info["band"], dtype=bool))
+        import underworld3 as uw
+        from underworld3.utilities.place_surface import _cell_centroids_of
+
+        mesh = self.mesh
+        dm = mesh.dm
+        reach = float(self.width) if reach is None else float(reach)
+        X = np.asarray(mesh.X.coords)
+        vS, vE = dm.getDepthStratum(0)
+        eS, eE = dm.getDepthStratum(1)
+        pStart = dm.getChart()[0]
+        from underworld3.utilities.place_surface import _shared_point_flags
+        shared = _shared_point_flags(dm).astype(bool)      # COLLECTIVE
+        tips = []
+        for name, P in self.prepared:
+            lbl = f"{name}Plus"
+            if not dm.hasLabel(lbl):
+                continue
+            value = int(mesh.boundaries[lbl].value)
+            if dm.getLabel(lbl).getStratumSize(value) == 0:
+                continue
+            degree = {}
+            for e in dm.getLabel(lbl).getStratumIS(value).getIndices():
+                if eS <= int(e) < eE:
+                    for q in dm.getCone(int(e)):
+                        degree[int(q) - vS] = degree.get(int(q) - vS, 0) + 1
+            ends = np.asarray(P, dtype=float)[[0, -1]]
+            for v, n in degree.items():
+                if n == 1 and np.linalg.norm(
+                        ends - X[v], axis=1).min() > 0.5 * self.h_near \
+                        and not shared[v + vS - pStart]:
+                    # a chain end ON the seam is a crossing the split
+                    # carried through (seams="conform"), not a blind tip
+                    tips.append(X[v])
+        band = np.asarray(self.info["band"], dtype=bool)
+        mask = lig.copy()
+        if tips:
+            ids, cen = _cell_centroids_of(dm, band)
+            T = np.asarray(tips)
+            d = np.linalg.norm(cen[:, None, :] - T[None, :, :], axis=2)
+            mask[ids[d.min(axis=1) < reach]] = True
+        from mpi4py import MPI
+        n = int(uw.mpi.comm.allreduce(int(mask.sum()), op=MPI.SUM))
+        return mask if n else None
+
+    def ti_fields(self, eta_1, eta_0=1.0, tag="", mask=None):
         """The weak-plane (TI) realisation's painted P0 fields.
 
         ``eta_1`` inside each fault's HONOURED footprint — the band cells
-        whose nearest spine sample is a USER point, never the whole band,
-        whose margin is extrapolated surround — and the background
+        within the band's reach of the fault's USER polyline and not past
+        its ends, never the whole band, whose margin is extrapolated
+        surround — and the background
         elsewhere; the director is the unit normal of the nearest segment
         of the strand that owns the cell, so a curved trace carries its
         own orientation cell by cell.
 
         Returns ``(eta_1_var, director_var, footprint_mask)``. The mask is
         also the right ``fac_zone`` key for a multigrid patch (#629).
+
+        ``mask`` restricts the painting to a cell subset of the footprints
+        — the seam ligaments of a split network, where the weak plane
+        bridges what the cut leaves whole (#670).
         """
         if self.info is None:
             raise RuntimeError(
@@ -950,6 +1099,9 @@ class FaultNetwork:
         import underworld3 as uw
 
         foots = self.info["footprints"]
+        if mask is not None:
+            foots = {k: (m_ & np.asarray(mask, dtype=bool))
+                     for k, m_ in foots.items()}
         foot = np.zeros_like(next(iter(foots.values())))
         for m_ in foots.values():
             foot = foot | m_
