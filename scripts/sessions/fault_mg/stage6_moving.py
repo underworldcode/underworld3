@@ -102,7 +102,7 @@ def my_Pl(solver, Q, normal_rows):
         # non-nested split levels) gives a near-zero Galerkin diagonal: drop it with the
         # unreached ones (column 2-norm below 5% of the median column)
         cn = np.sqrt(np.asarray(P.multiply(P).sum(axis=0)).ravel())
-        reached = cn > 0.05 * np.median(cn[cn > 0])
+        reached = cn > 0
         if not reached.all():
             keep[l] = keep[l][reached]; P = P[:, np.flatnonzero(reached)]
         Pl[l] = to_petsc(P)
@@ -200,6 +200,6 @@ for step, cx in enumerate(centres):
            "inside_solve": {kk: round(v, 3) for kk, v in NT.items()}}
     records.append(rec)
     print("STEP", json.dumps(rec), flush=True)
-out = os.path.expanduser(f"~/+Simulations/fault_mg_exploration/moving_{strategy}_k{k}.json")
+out = os.path.expanduser(f"~/+Simulations/fault_mg_exploration/moving_{strategy}_k{k}{os.environ.get('TAG', '')}.json")
 json.dump({"strategy": strategy, "k": k, "background_build": t_bg, "records": records}, open(out, "w"), indent=1)
 print("DONE", out, flush=True)

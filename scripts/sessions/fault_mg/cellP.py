@@ -10,6 +10,8 @@ import itertools
 import numpy as np
 import scipy.sparse as sp
 from scipy.spatial import cKDTree
+import os
+CLAMP = os.environ.get("CELLP_CLAMP", "1") == "1"
 
 
 def _cell_vertices(mesh):
@@ -74,6 +76,14 @@ def cell_located_prolongation(coarse, fine, degree=2, continuous=True):
         Ainv = np.linalg.inv((verts[1:] - verts[0]).T)
         Lc = (Xc[cn[c]] - verts[0]) @ Ainv.T
         Lf = (Xf[grp] - verts[0]) @ Ainv.T
+        if CLAMP:
+            # evaluate at the nearest point of the located cell: a fine node a little
+            # outside it (non-nested levels near a pulled tip) is not extrapolated, so
+            # the weights stay bounded (the Lagrange basis inside the simplex)
+            b = np.column_stack([1 - Lf.sum(axis=1), Lf])
+            if (b < 0).any():
+                b = np.clip(b, 0, None); b /= b.sum(axis=1, keepdims=True)
+                Lf = b[:, 1:]
         W = np.linalg.solve(vander(Lc).T, vander(Lf).T).T
         for ti, t in enumerate(grp):
             keep = np.flatnonzero(np.abs(W[ti]) > 1e-13)

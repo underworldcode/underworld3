@@ -35,16 +35,19 @@ the coarse cell is on the node's own side. The coarse cell's Lagrange interpolan
 then evaluated at the node (dual-basis identity $W = BM^{-1}$, as in
 `custom_mg.nested_refine_pair_prolongation`), so a node on the slit interpolates from
 its own side. The node-cloud builders cannot do this: they triangulate the coarse
-nodes, and coincident slit nodes make the transfer degenerate.
+nodes, and coincident slit nodes make the transfer degenerate. The levels are not
+nested near the trace, because each cut pulls vertices onto it, so a fine node can lie
+slightly outside its located coarse cell. The evaluation point is therefore clamped
+into the cell (its barycentric coordinates clipped and renormalised). Without the
+clamp, extrapolated weights reached 5.4 near a tip, two coarse unknowns were reached
+only through them, and the Galerkin operator had a near-zero diagonal that made SOR
+return NaN. With it, every weight is at most 1.
 
 **A per-level pair frame.** Each split level carries its own pair rotation (mean and
 jump), and its opening (normal-jump) unknowns are removed:
 $\hat P_l = Q_{l+1} P_l Q_l^{T}$, restricted to admissible unknowns. Coarse unknowns
-that no fine unknown reaches, or reaches only weakly (column norm below 5% of the
-median), are dropped too. Near the tips of non-nested levels there are a few, reached
-only through tiny or extrapolated weights; left in, they are null or near-null modes of
-the Galerkin coarse operator. The threshold stands in for nesting: with the split levels
-built from one `adapt` call's generations it should not be needed.
+that no fine unknown reaches at all (a few near the tips) are dropped too; they are null
+modes of the Galerkin coarse operator.
 
 ## Test problem
 
@@ -122,11 +125,32 @@ $k = 5$ (seven levels, near-fault $h = 0.0016$):
 | GAMG | 3.8 | 2.4 | – | – | – | 127 | 134 | 200 (cap) |
 
 At $k = 3$ the totals are 27 (A), 15 (C), 17 (D) and 28 (GAMG) seconds per step. The
-solve includes building the transfers: 2 s for A, 3.4 s for C.
+solve includes building the transfers: 2 s for A, 3.4 s for C. With the clamped
+transfer, C takes 5 to 6 velocity iterations at every position at $k = 3$ and 4 to 8 at
+$k = 5$.
 
 The peak slip is identical across A, C and D at every position. Level frames come from
 throwaway solvers in the drivers (`build_rotation`); they could be computed from the
 pair geometry directly.
+
+## Parallel
+
+A, the existing path, had three defects at np > 1:
+
+1. **Fixed** (`test_1086`). The rotated solve zeroed the opening rows of its fine
+   transfer by local position instead of global row.
+2. **Open.** `mesh.adapt` keeps a different intermediate level for the multigrid tail in
+   parallel than in serial (1358 against 1520 cells; the finest mesh is the same).
+3. **Open.** `add_fault` gathers the fault's cell star onto one rank, so the split finest
+   level is not co-partitioned with its tail. The cross-partition transfer to it then
+   left 618 coarse unknowns with no fine image. Their nearest-node injection duplicated
+   512 columns, the Galerkin coarse operators became singular, and PETSc's inode SOR
+   returned NaN. With inodes off it converges (34 iterations at np = 2 against 18
+   serial), but the coarse operators are still singular.
+
+For C, the plan is to co-locate each add-on level with the finest *before* splitting it,
+so that every split level holds its fault star on the same rank, and to build the
+side-aware transfer rank-locally on those co-located levels.
 
 ## What works best
 
@@ -148,6 +172,6 @@ fine operator rejects, so the coarse space has to contain the discontinuity itse
   instead of $k$ independent ones.
 - The 3-D layer with the lateral levels split too.
 - Fault networks, and faults near a boundary.
-- Parallel.
+- Parallel: see above.
 - Moving the transfer and the per-level frames into `custom_mg` as a mesh-owned tail
   built by `add_fault`.
