@@ -65,6 +65,7 @@ pages, never copies. A change to a family is reviewed against its guides.
 | [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
 | [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
 | [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
+| [Line diagrams](guides/uw-line-diagrams.md) | drawn figures |
 
 ## Documentation Structure
 
@@ -172,6 +173,7 @@ guides/adapt-on-top-faults
 guides/free-surface-convection
 guides/uw-visualisation
 guides/cetz-figures
+guides/uw-line-diagrams
 ```
 
 ```{toctree}
