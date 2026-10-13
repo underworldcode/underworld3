@@ -1,7 +1,9 @@
 ---
 name: transport-schemes
 description: Which transport scheme and which time history to use in Underworld3, and why — nodal, integration-point or grid histories; semi-Lagrangian, Eulerian SUPG or Lagrangian swarm transport; the Courant number to run at; what each choice does to a settled state and to a peak. The evidence is the tests and notes named beside each ruling.
-families: [AdvDiffusion, NavierStokes, Eulerian, EulerianSUPG, SemiLagrangian, Lagrangian, Lagrangian_Swarm, IntegrationPointSemiLagrangian]
+families: [AdvDiffusion, NavierStokes, Eulerian, EulerianSUPG, Lagrangian, Lagrangian_Swarm,
+  BackwardNodesSemiLagrangian, BackwardIntegrationPointsSemiLagrangian,
+  ForwardIntegrationPointsSemiLagrangian, ForwardNodesSemiLagrangian]
 kind: guide
 status: draft, rulings to be confirmed
 ---

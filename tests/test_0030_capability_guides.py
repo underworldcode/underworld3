@@ -52,7 +52,9 @@ def test_every_guide_names_real_families():
 
 def test_families_list_their_guides():
     assert "boundary-condition-rulings" in guides_for("Stokes")
-    assert "transport-schemes" in guides_for("SemiLagrangian")
+    # The scheme names itself by trace and launch; `SemiLagrangian` is the
+    # factory over those two axes and carries no family name of its own.
+    assert "transport-schemes" in guides_for("BackwardNodesSemiLagrangian")
     stokes = uw.systems.Stokes.describe_class()
     assert "nonlinear-solver" in stokes["facts"]["guides"]
     cat = uw.capabilities("solvers")

@@ -53,7 +53,7 @@ def _advect_blob(use_units, vy=20.0, nsteps=5, dt=2.0, scheme="slcn"):
         T.data[:, 0] = np.exp(-(((c[:, 0] - 500) / 120) ** 2 + ((c[:, 1] - 300) / 120) ** 2))
 
     if scheme == "slcn_ip":
-        DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V.sym, degree=2, order=1)
+        DuDt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V.sym, degree=2, order=1)
         adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym, DuDt=DuDt, order=1)
     else:
         adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym)

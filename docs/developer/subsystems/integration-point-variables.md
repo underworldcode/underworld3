@@ -145,7 +145,7 @@ reading it, `evaluate`, the guards).
 
 ## Semi-Lagrangian history on the integration points
 
-`uw.systems.ddt.IntegrationPointSemiLagrangian` is the SLCN history built on
+`uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian` is the SLCN history built on
 this variable. Its slots `psi_star[k]` are integration-point variables, so
 the value the weak form sees at each integration point is the solution from
 `k+1` steps ago evaluated exactly at the departure point of that
@@ -158,7 +158,7 @@ evaluating the snapshot from time `n-k` at the foot. Every slot carries one
 evaluation error rather than one per generation.
 
 ```python
-DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
+DuDt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
 adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V_fn, DuDt=DuDt, order=1)
 ```
 
@@ -182,11 +182,11 @@ component per integration point:
 
 ```python
 # a momentum history for Navier-Stokes
-DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+DuDt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
     mesh, v, v.sym, vtype=uw.VarType.VECTOR, degree=2, order=2)
 
 # a viscoelastic stress history
-DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+DFDt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
     mesh, stress, v.sym, vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
 
 DFDt.psi_star[0].sym          # a 2x2 symbolic matrix

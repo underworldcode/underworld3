@@ -361,6 +361,7 @@ def _global_evaluate_impl(
     rbf=None,
     force_l2=None,
     local_fallback=True,
+    limit=None,
 ):
     """
     Global evaluate with automatic unit-aware results.
@@ -542,6 +543,7 @@ def _global_evaluate_impl(
         force_l2=force_l2_flag,
         smoothing=smoothing,
         local_fallback=local_fallback,
+        limit=limit,
     )
 
     # Step 2: Re-dimensionalize and wrap with units (GATEWAY PRINCIPLE)
@@ -692,12 +694,11 @@ def _apply_monotone_limit(
         psi_coords_nd = np.asarray(psi_coords_nd.magnitude)
 
     # --- kNN neighbour stats from the source nodal data ------------------
-    # TODO(parallel): the KDTree is built from rank-local `var.coords_nd`,
-    # so near a partition seam the neighbour stats bound against a
-    # truncated neighbourhood. This matches the validated SL behaviour. For
-    # full parallel correctness the bound should include halo / global DOF
-    # neighbours -- see the nav-only overlap-clone machinery
-    # (project_parallel_point_eval_decision) as the hook if hardened.
+    # The KDTree is built from rank-local `var.coords_nd`. global_evaluate
+    # calls this on the rank that evaluated each point, so the point's own
+    # cell and its nodes are local; a point's nearest nodes can still lie in a
+    # cell the rank does not hold only when it sits against a partition seam.
+    # TODO(parallel): a halo of the neighbouring cells' nodes would close that.
     # TODO(units): nbr bounds come from `var.data` (always non-dimensional)
     # while `value` is dimensional in a units-active run -- a pre-existing
     # latent mismatch (scaling is inactive in the validated baseline so it
@@ -1009,6 +1010,17 @@ def global_evaluate(
             "check_extrapolated in global_evaluate."
         )
 
+    # The clamp bounds a value by the nodal data around the point, so it is
+    # applied where the point is evaluated -- on the rank whose cells hold it,
+    # among that point's own nodes -- not on the rank that asked, whose nodes
+    # near a departure point on another rank are the wrong neighbourhood
+    # (#682: 1.4% of a level set's volume at np 8). The values there are
+    # non-dimensional, as the nodal data are.
+    limit = None
+    if monotone_mode == "clamp":
+        def limit(local_coords, values):
+            return _apply_monotone_limit(expr, local_coords, values, "clamp")
+
     result = _global_evaluate_impl(
         expr,
         coords=coords,
@@ -1024,9 +1036,10 @@ def global_evaluate(
         rbf=rbf,
         force_l2=force_l2,
         local_fallback=local_fallback,
+        limit=limit,
     )
 
-    if monotone_mode is None:
+    if monotone_mode is None or limit is not None:
         return result
 
     return _apply_monotone_limit(

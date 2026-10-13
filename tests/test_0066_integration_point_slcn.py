@@ -35,7 +35,7 @@ def test_slots_are_exact_departure_point_values():
     V = sympy.Matrix([[v[0], v[1]]])
     dt = 0.1
 
-    ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2, order=2)
+    ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V, degree=2, order=2)
     assert all(ps.is_integration_point for ps in ddt.psi_star)
 
     ddt.update_pre_solve(dt)
@@ -74,7 +74,7 @@ def _rotating_gaussian(mesh, kind, dt, nsteps):
     T = uw.discretisation.MeshVariable(f"T_{kind}", mesh, 1, degree=2)
     T.data[:, 0] = gauss(np.asarray(T.coords), x0, 0.0)
     if kind == "ip":
-        DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2, order=1)
+        DuDt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V, degree=2, order=1)
         adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, DuDt=DuDt, order=1)
     else:
         adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, order=1)
@@ -102,10 +102,10 @@ def test_undersampled_rule_is_refused():
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
     V = sympy.Matrix([[1.0, 0.0]])
     with pytest.raises(RuntimeError, match="oversampled"):
-        uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2)
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V, degree=2)
     # P1 on the same rule is 2x oversampled and accepted.
     T1 = uw.discretisation.MeshVariable("T1", mesh, 1, degree=1)
-    uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T1, V, degree=1)
+    uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T1, V, degree=1)
 @pytest.mark.tier_a
 
 
@@ -142,7 +142,7 @@ def _unsteady_uniform_flow_check(kind, vform="var"):
                     "ramp": (c * v_var.sym, 1.0)}[vform]
 
     if kind == "ip":
-        ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
+        ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
     else:
         ddt = uw.systems.ddt.SemiLagrangian(mesh, T, V_fn, uw.VarType.SCALAR, degree=2, continuous=True, order=1)
 
@@ -194,9 +194,10 @@ def test_composed_advdiffusion_reachability(config):
     """The composed uw.systems.AdvDiffusion (#688) takes the history as its
     transport manager. With no spatial term on the old level (BDF2, or
     theta = 1) the integration-point history runs there and matches the SLCN
-    solver; with the Crank-Nicolson flux (theta = 0.5) the old level is
-    differentiated, which a delta field cannot supply, and the JIT guard
-    refuses with a clear message."""
+    solver; with the Crank-Nicolson flux (theta = 0.5) the old level's gradient
+    is read through the history's continuous snapshot (a delta field has no
+    derivative), where the SLCN solver traces a flux history, so the two agree
+    to the order of that difference."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.1, qdegree=3
     )
@@ -208,7 +209,7 @@ def test_composed_advdiffusion_reachability(config):
     def run(solver_cls, kwargs):
         T = uw.discretisation.MeshVariable(f"T_{config}_{solver_cls.__name__}", mesh, 1, degree=2)
         T.data[:, 0] = gauss(np.asarray(T.coords))
-        D = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2, order=order, theta=theta)
+        D = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(mesh, T, V, degree=2, order=order, theta=theta)
         adv = solver_cls(mesh, u_Field=T, V_fn=V, DuDt=D, order=order, **kwargs)
         adv.constitutive_model = uw.constitutive_models.DiffusionModel
         adv.constitutive_model.Parameters.diffusivity = 1e-9
@@ -218,10 +219,6 @@ def test_composed_advdiffusion_reachability(config):
             adv.solve(timestep=0.1)
         return np.asarray(T.data[:, 0]).copy()
 
-    if config == "cn":
-        with pytest.raises(RuntimeError, match="integration-point"):
-            run(uw.systems.AdvDiffusion, {})
-        return
     kw = {"theta": theta} if order == 1 else {}
     T_composed = run(uw.systems.AdvDiffusion, kw)
     T_slcn = run(uw.systems.AdvDiffusionSLCN, {})
@@ -369,7 +366,7 @@ def test_a_vector_history_holds_the_departure_point_values():
     with uw.synchronised_array_update():
         U.data[...] = _vector_field(np.asarray(U.coords))
 
-    ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
         mesh, U, _velocity(), vtype=uw.VarType.VECTOR, degree=2, order=2)
     assert ddt.num_components == 2
     assert all(ps.is_integration_point for ps in ddt.psi_star)
@@ -403,7 +400,7 @@ def test_a_symmetric_tensor_history_transports_every_component():
     with uw.synchronised_array_update():
         S.data[...] = _pack(_tensor_entries(np.asarray(S.coords)), columns)
 
-    ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
         mesh, S, _velocity(), vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
     assert ddt.num_components == 3
     assert ddt._components == columns
@@ -439,7 +436,7 @@ def test_a_scalar_history_is_unchanged():
     with uw.synchronised_array_update():
         T.data[:, 0] = _scalar_field(np.asarray(T.coords))
 
-    ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
         mesh, T, _velocity(), degree=2, order=1)
     assert ddt.num_components == 1
     assert ddt.bdf().shape == (1, 1)
@@ -464,7 +461,7 @@ def test_the_history_symbol_participates_in_expressions(vtype):
     columns = _storage_components(vtype, tuple(var.sym.shape))
     with uw.synchronised_array_update():
         var.data[...] = 2.0
-    ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
         mesh, var, _velocity(), vtype=vtype, degree=2, order=1)
     ddt.update_pre_solve(DT)
 
@@ -486,7 +483,7 @@ def test_the_refusal_is_gone_but_the_rule_check_is_not():
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=2)
     U = uw.discretisation.MeshVariable("Ur", mesh, vtype=uw.VarType.VECTOR, degree=2)
     with pytest.raises(RuntimeError, match="qdegree|rule|oversample"):
-        uw.systems.ddt.IntegrationPointSemiLagrangian(
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, U, _velocity(), vtype=uw.VarType.VECTOR, degree=2, order=1)
 @pytest.mark.tier_a
 
@@ -510,12 +507,12 @@ def test_a_vtype_that_does_not_match_psi_fn_is_refused():
     before = len(mesh.vars)
 
     with pytest.raises(ValueError, match="psi_fn has shape"):
-        uw.systems.ddt.IntegrationPointSemiLagrangian(
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, sympy.Matrix([[1.0]]), _velocity(),
             vtype=uw.VarType.VECTOR, degree=2, order=1)
 
     with pytest.raises(ValueError, match="psi_fn has shape"):
-        uw.systems.ddt.IntegrationPointSemiLagrangian(
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, sympy.Matrix([[1.0, 2.0]]), _velocity(),
             vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
 
@@ -532,7 +529,7 @@ def test_the_shape_guard_is_on_the_setter_not_only_the_constructor():
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25, qdegree=3)
     S = uw.discretisation.MeshVariable("Sg", mesh, vtype=uw.VarType.SYM_TENSOR,
                                        degree=2)
-    ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    ddt = uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
         mesh, S, _velocity(), vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
 
     with pytest.raises(ValueError, match="psi_fn has shape"):
@@ -554,7 +551,7 @@ def test_a_full_tensor_is_not_accepted_as_a_symmetric_one():
     full = uw.discretisation.MeshVariable("Tg", mesh, vtype=uw.VarType.TENSOR,
                                           degree=2)
     with pytest.raises(ValueError, match="stores 4 components"):
-        uw.systems.ddt.IntegrationPointSemiLagrangian(
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, full, _velocity(), vtype=uw.VarType.SYM_TENSOR,
             degree=2, order=1)
 @pytest.mark.tier_a
@@ -571,7 +568,7 @@ def test_an_asymmetric_psi_fn_under_sym_tensor_says_so():
     asymmetric = sympy.Matrix([[1 + x, 2 + y], [100.0, 3 + x * y]])
 
     with pytest.warns(UserWarning, match="not symmetric"):
-        uw.systems.ddt.IntegrationPointSemiLagrangian(
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, asymmetric, _velocity(), vtype=uw.VarType.SYM_TENSOR,
             degree=2, order=1)
 
@@ -579,6 +576,6 @@ def test_an_asymmetric_psi_fn_under_sym_tensor_says_so():
     symmetric = sympy.Matrix([[1 + x, 2 + y], [2 + y, 3 + x * y]])
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        uw.systems.ddt.IntegrationPointSemiLagrangian(
+        uw.systems.ddt.BackwardIntegrationPointsSemiLagrangian(
             mesh, symmetric, _velocity(), vtype=uw.VarType.SYM_TENSOR,
             degree=2, order=1)

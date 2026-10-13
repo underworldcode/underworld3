@@ -124,8 +124,10 @@ default `EulerianSUPG` manager it is the implicit Eulerian SUPG scheme.
 
 ### SNES_NavierStokes_Composed (`uw.systems.NavierStokes`)
 
-Navier-Stokes composed from a DDt transport manager (Eulerian SUPG momentum
-transport by default); the semi-Lagrangian class above is `uw.systems.NavierStokesSLCN`.
+Navier-Stokes composed from a DDt transport manager: `velocity_transport="eulerian"`
+(SUPG on the mesh, the default) or one of the semi-Lagrangian schemes, and for a
+viscoelastic model `stress_transport` chooses the stress history the same way. The
+former `uw.systems.NavierStokesSLCN` is deprecated and still returns the class above.
 
 ```{eval-rst}
 .. autoclass:: underworld3.systems.navier_stokes_eulerian.SNES_NavierStokes_Composed

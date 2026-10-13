@@ -349,8 +349,10 @@ def test_a_field_history_and_its_flux_history_are_named_apart():
         solver.solve(timestep=0.01)
 
     shifts = [e for e in model.transcript[0].events if e["kind"] == "history_shift"]
+    # The scheme names itself by trace and launch: `SemiLagrangian` is the
+    # factory, `BackwardNodesSemiLagrangian` the scheme it builds by default.
     assert [e["name"] for e in shifts] == [
-        "SemiLagrangian(T_two)", "SemiLagrangian(F[T_two])"
+        "BackwardNodesSemiLagrangian(T_two)", "BackwardNodesSemiLagrangian(F[T_two])"
     ], [e["name"] for e in shifts]
     assert shifts[0]["part"] != shifts[1]["part"]
     # what each holds is in the record, exactly

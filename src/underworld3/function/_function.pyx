@@ -474,6 +474,7 @@ def global_evaluate_nd(   expr,
                 force_l2=False,
                 smoothing=1e-6,
                 local_fallback=True,
+                limit=None,
             ):
 
     """
@@ -622,6 +623,10 @@ def global_evaluate_nd(   expr,
     # sympy.simplify on every call for any expression holding a mesh variable
     # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
     values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
+    # ``limit(coords, values)`` (a monotone bound) runs on the rank that
+    # evaluated the points, where their neighbourhood is local
+    if limit is not None and local_coords.shape[0] > 0:
+        values = limit(local_coords, values)
 
     if local_coords.shape[0] > 0:
         data_container.array[...] = values[...]
@@ -676,19 +681,21 @@ def global_evaluate_nd(   expr,
     #      rank whose nearest cell is globally closest, and Allreduce(SUM of
     #      the winner-only value/flag) scatters that rank's extrapolation back.
     #
-    # A point some rank actually contains (distance ~ 0) naturally wins, so
-    # only genuinely-stranded points are corrected. Cost is O(boundary points)
-    # — no dense global tree, no exhaustive search.
+    # A point some rank's cell contains is then evaluated by that rank with the
+    # FE interpolant, not the rbf extrapolation (see the containment round
+    # below). Cost is O(stranded points) — no dense global tree, no
+    # exhaustive search.
     #
     # DEADLOCK SAFETY — read before editing. Every collective here (allgather,
     # Allreduce) runs unconditionally on the IDENTICAL global set on every
     # rank, so all ranks stay in lockstep (n_ext_total is itself a reduced
-    # value, so the `> 0` guard is taken identically everywhere). The per-rank
-    # value MUST come from the LOCAL rbf path (rbf=True): the FE interpolation
-    # path (petsc_interpolate / DMInterpolation) is itself collective and would
-    # desync here, because each rank classifies the same global set against its
-    # own domain (different interior-point counts) → hang. Never route the
-    # fallback value through FE interpolation.
+    # value, so the `> 0` guard is taken identically everywhere). The
+    # best-claim value comes from the LOCAL rbf path (rbf=True), evaluated on
+    # the whole global set. The FE path is used only in the containment round,
+    # only on meshes whose cell hint is authoritative (no DMLocatePoints, so no
+    # collective inside it), and every rank calls it on the points it contains
+    # -- possibly none. Never call the FE path on the global set, and never on
+    # a mesh that needs DMLocatePoints.
     #
     # Serial is left untouched (the serial path above already extrapolates from
     # the true nearest cell). Escape hatch: GE_LOCAL_FALLBACK=0 restores the
@@ -753,6 +760,45 @@ def global_evaluate_nd(   expr,
             contrib_flag = np.where(i_win, ext_flag, 0).astype(np.int32)
             best_flag = np.empty(n_ext_total, dtype=np.int32)
             comm.Allreduce([contrib_flag, MPI.INT], [best_flag, MPI.INT], op=MPI.SUM)
+
+            # A stranded point that a rank's cell CONTAINS is not out of the
+            # domain: the migration's claim (points_in_domain) is looser than
+            # cell containment, so a point a hair from a partition seam can be
+            # claimed by the neighbour, found in none of its cells and stranded.
+            # The rank that contains it evaluates it with the FE interpolant,
+            # exactly as serial evaluate() would (the rbf value above is only
+            # for points no rank contains). Every rank calls evaluate_nd, on
+            # the points it contains -- possibly none -- as the first pass does
+            # on the points it received, so the collectives stay in lockstep.
+            #
+            # Only where the cell hint is authoritative: there the FE path
+            # locates without DMLocatePoints, so a rank holding none of the
+            # points takes no collective. Elsewhere (warped quads/hexes) the
+            # rbf value stands, as before.
+            all_continuous = all(
+                getattr(varfn.meshvar(), "continuous", True) for varfn in varfns)
+            if mesh._hint_is_authoritative(all_continuous):
+                contains = np.asarray(mesh._robust_owning_cells(all_ext)) >= 0
+                my_owner = np.where(contains, comm.rank, comm.size).astype(np.int32)
+                owner = np.empty(n_ext_total, dtype=np.int32)
+                comm.Allreduce([my_owner, MPI.INT], [owner, MPI.INT], op=MPI.MIN)
+                mine = owner == comm.rank
+                fe_vals, _fe_flag = evaluate_nd(
+                    expr, np.ascontiguousarray(all_ext[mine]), rbf=rbf, evalf=evalf,
+                    verbose=False, simplify=simplify, check_extrapolated=True,)
+                if limit is not None and mine.any():
+                    fe_vals = limit(np.ascontiguousarray(all_ext[mine]), fe_vals)
+                contrib_fe = np.zeros((n_ext_total,) + expr_shape, dtype=np.float64)
+                if mine.any():
+                    contrib_fe[mine] = np.asarray(fe_vals, dtype=np.float64).reshape((-1,) + expr_shape)
+                fe_val = np.empty_like(contrib_fe)
+                comm.Allreduce([contrib_fe, MPI.DOUBLE], [fe_val, MPI.DOUBLE], op=MPI.SUM)
+                # a located point whose FE value is NaN is why the fallback
+                # exists (see above): its finite rbf value stands
+                use = (owner < comm.size) & np.isfinite(
+                    fe_val.reshape(n_ext_total, -1)).all(axis=1)
+                best_val[use] = fe_val[use]
+                best_flag[use] = 0
 
             # Scatter this rank's segment of the global set back to its points.
             offset = int(counts[:comm.rank].sum())

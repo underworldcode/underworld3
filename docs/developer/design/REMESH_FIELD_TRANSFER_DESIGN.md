@@ -204,7 +204,7 @@ REMAP.
 
 ## 7. The band-aid (already landed) and its relationship to the true fix
 
-`ddt.py` `SemiLagrangian._record_psi_star_from_field_data()` + a guarded call:
+`ddt.py` `BackwardNodesSemiLagrangian._copy_tracked_field()` (formerly the parallel-only `_record_psi_star_from_field_data`; since 2026-09-27 used in serial too) + a guarded call:
 under MPI, when `psi_fn` is a single mesh-variable component on this mesh, the
 per-step "record current field into `psi_star[0]`" copies the field's nodal
 data **directly** instead of evaluating it at its own (on-vertex) coords.
@@ -255,6 +255,6 @@ Relationship to the true fix:
 |---|---|---|
 | `discretisation/discretisation_mesh.py` | `_deform_mesh` @2001, `nuke_coords_and_rebuild` @1757 (per-var refill @1890), `vars` registry @3082 | coords/cache rebuild; scoped-refill change (§5) |
 | `meshing/smoothing.py` | movers @1570/1861/2639 (per-outer `_deform_mesh`); `smooth_mesh_interior` @2683; `OT_adapt`, `follow_metric` | adapt op owns transfer; mover sweep refill scope |
-| `systems/ddt.py` | `SemiLagrangian` (history @119, shift @2035, re-record @2085, band-aid `_record_psi_star_from_field_data`); flavors @98/108/119/146 | history policy = REMAP/ALE; `on_remesh` hook |
+| `systems/ddt.py` | `SemiLagrangian` (history @119, shift @2035, re-record @2085, nodal copy `_copy_tracked_field`, formerly `_record_psi_star_from_field_data`); flavors @98/108/119/146 | history policy = REMAP/ALE; `on_remesh` hook |
 | `systems/solvers.py` | `AdvDiffusionSLCN`, NS, VE (`DuDt`/`DFDt` @997/1354) | use DDt; nothing solver-specific for ALE |
 | `swarm.py` | `_proxy_stale` @309, `_update` @1019/2129 | proxy REINIT + adapt-triggered staleness (§8) |

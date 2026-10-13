@@ -37,7 +37,37 @@ bypasses the order ramp, so the first solve runs at full BDF order.
 ### SemiLagrangian
 
 ```{eval-rst}
-.. autoclass:: underworld3.systems.ddt.SemiLagrangian
+.. autofunction:: underworld3.systems.ddt.SemiLagrangian
+```
+
+### BackwardNodesSemiLagrangian
+
+```{eval-rst}
+.. autoclass:: underworld3.systems.ddt.BackwardNodesSemiLagrangian
+   :members:
+   :show-inheritance:
+```
+
+### BackwardIntegrationPointsSemiLagrangian
+
+```{eval-rst}
+.. autoclass:: underworld3.systems.ddt.BackwardIntegrationPointsSemiLagrangian
+   :members:
+   :show-inheritance:
+```
+
+### ForwardIntegrationPointsSemiLagrangian
+
+```{eval-rst}
+.. autoclass:: underworld3.systems.ddt.ForwardIntegrationPointsSemiLagrangian
+   :members:
+   :show-inheritance:
+```
+
+### ForwardNodesSemiLagrangian
+
+```{eval-rst}
+.. autoclass:: underworld3.systems.ddt.ForwardNodesSemiLagrangian
    :members:
    :show-inheritance:
 ```
@@ -63,6 +93,6 @@ bypasses the order ramp, so the first solve runs at full BDF order.
 The following aliases are available via ``underworld3.systems``:
 
 - ``Lagrangian_DDt`` → {class}`~underworld3.systems.ddt.Lagrangian`
-- ``SemiLagragian_DDt`` → {class}`~underworld3.systems.ddt.SemiLagrangian`
+- ``SemiLagragian_DDt`` → {class}`~underworld3.systems.ddt.BackwardNodesSemiLagrangian`
 - ``Lagrangian_Swarm_DDt`` → {class}`~underworld3.systems.ddt.Lagrangian_Swarm`
 - ``Eulerian_DDt`` → {class}`~underworld3.systems.ddt.Eulerian`

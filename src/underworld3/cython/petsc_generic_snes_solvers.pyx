@@ -5470,8 +5470,8 @@ class SNES_Scalar(SolverBaseClass):
                  u_Field  : uw.discretisation.MeshVariable = None,
                  degree: int = 2,
                  verbose    = False,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DuDt          : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
 
         super().__init__(mesh)
@@ -6392,8 +6392,8 @@ class SNES_Vector(SolverBaseClass):
                  u_Field  : uw.discretisation.MeshVariable = None,
                  degree     = 2,
                  verbose    = False,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DuDt          : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
 
 
@@ -7397,8 +7397,8 @@ class SNES_MultiComponent(SolverBaseClass):
                  n_components : int = None,
                  degree       = 2,
                  verbose      = False,
-                 DuDt         : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt         : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DuDt         : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt         : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                  ):
 
         super().__init__(mesh)
@@ -8162,8 +8162,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                  degree        : Optional[int] = 2,
                  p_continuous  : Optional[bool] = True,
                  verbose       : Optional[bool]                           =False,
-                 DuDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
-                 DFDt          : Union[uw.systems.ddt.SemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DuDt          : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
+                 DFDt          : Union[uw.systems.ddt.BackwardNodesSemiLagrangian, uw.systems.ddt.Lagrangian] = None,
                 ):
 
 
