@@ -54,8 +54,13 @@ surface mesh, the jump and mean along the surface normal).
 **Unreached unknowns dropped** (`rotated_split_transfers`, `restrict_unreached`). A
 coarse unknown no fine unknown reaches (a few near the tips) is a null mode of the
 Galerkin coarse operator. It is removed from the level, fine to coarse, never repaired
-by injection: the injection duplicated columns and made the coarse operators singular
-in parallel.
+by injection. This is now the rule on every custom-P hierarchy, split or not
+(`CustomMGHierarchy.drop_orphans`): the nearest-node injection put a weight-1 entry
+on a fine row that already carried one, which is two identical columns and a singular
+coarse operator. Measured: NaN on a two-mid placed-ladder chain in serial (four
+orphans, with and without a split finest) and 512 duplicated columns at np = 2. The
+coarse levels' FAC patch rows do not survive the renumbering and are cleared; the
+finest's are unchanged.
 
 ## Parallel
 

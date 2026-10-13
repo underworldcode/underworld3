@@ -1716,6 +1716,14 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
             solver._custom_mg = {"mode": "hierarchy", "hierarchy": h,
                                  "verbose": False}
         return Pl
+    if getattr(h, "drop_orphans", False):
+        # unreached coarse unknowns are dropped, never injected; the
+        # finest's layout (and its FAC patch rows) is untouched
+        from underworld3.utilities.fault_mg import restrict_unreached
+        Ps = restrict_unreached(Ps, solver.dm.comm)
+        rows = getattr(h, "level_patch_rows", None)
+        if rows is not None:
+            h.level_patch_rows = [None] * (len(rows) - 1) + [rows[-1]]
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
