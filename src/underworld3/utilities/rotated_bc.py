@@ -1706,24 +1706,22 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     h, Ps = resolved if resolved is not None else (None, None)
     if h is None or Ps is None:
         return None
-    if getattr(h, "has_split_levels", False):
-        # Split-level multigrid: the coarse levels carry the fault too, so each
-        # takes its own pair rotation and loses its opening rows, and the
-        # unknowns no fine unknown reaches are dropped (utilities.fault_mg).
+    walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
+    if getattr(h, "has_split_levels", False) or \
+            (walls and getattr(h, "drop_orphans", False)):
+        # Per-level rotation: a split coarse level takes its own pair
+        # rotation and loses its opening rows; under rotated free-slip walls
+        # every coarse level takes the wall rotation and loses its normal
+        # rows (a Cartesian coarse level under a rotated finest keeps wall
+        # unknowns the fine operator barely reaches, and the smoother's
+        # nodal block inversion meets a zero pivot); the unknowns no fine
+        # unknown reaches are then dropped (utilities.fault_mg).
         from underworld3.utilities.fault_mg import rotated_split_transfers
         Pl = rotated_split_transfers(solver, h, Ps, Q, normal_rows)
         if getattr(solver, "_custom_mg", None) is None:
             solver._custom_mg = {"mode": "hierarchy", "hierarchy": h,
                                  "verbose": False}
         return Pl
-    if getattr(h, "drop_orphans", False):
-        # unreached coarse unknowns are dropped, never injected; the
-        # finest's layout (and its FAC patch rows) is untouched
-        from underworld3.utilities.fault_mg import restrict_unreached
-        Ps = restrict_unreached(Ps, solver.dm.comm)
-        rows = getattr(h, "level_patch_rows", None)
-        if rows is not None:
-            h.level_patch_rows = [None] * (len(rows) - 1) + [rows[-1]]
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
@@ -1744,11 +1742,24 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     nrows_blk = sorted({rstart + g2blk[g] for g in normal_rows
                         if g in g2blk})
     Pfine.zeroRows(nrows_blk, diag=0.0)
+    Pl = list(Ps[:-1]) + [Pfine]
+    if getattr(h, "drop_orphans", False):
+        # Unreached coarse unknowns are dropped, never injected, AFTER the
+        # finest's constrained rows are zeroed: a coarse wall node's normal
+        # component is reached only through those rows (or, on an axis,
+        # through tangential rows weighted by a vanishing sine), and kept it
+        # is a zero Galerkin diagonal. The finest's layout (and its FAC
+        # patch rows) is untouched.
+        from underworld3.utilities.fault_mg import restrict_unreached
+        Pl = restrict_unreached(Pl, solver.dm.comm)
+        rows = getattr(h, "level_patch_rows", None)
+        if rows is not None:
+            h.level_patch_rows = [None] * (len(rows) - 1) + [rows[-1]]
     # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
     # (rotated or not) reuses the hierarchy instead of re-resolving it.
     if getattr(solver, "_custom_mg", None) is None:
         solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
-    return list(Ps[:-1]) + [Pfine]
+    return Pl
 
 
 def _pressure_mass_schur_pmat(solver):

@@ -62,6 +62,34 @@ orphans, with and without a split finest) and 512 duplicated columns at np = 2. 
 coarse levels' FAC patch rows do not survive the renumbering and are cleared; the
 finest's are unchanged.
 
+## Rotated walls on every level
+
+A hierarchy under rotated free-slip walls (an annulus, a spherical shell) rotates
+its coarse levels too (`level_wall_rotation`, composed with the pair rotation of a
+split level by `level_rotation`; `_build_rotated_custom_Pl` routes any hierarchy
+with rotated walls through `rotated_split_transfers`). Each coarse level takes the
+same per-node frame as the finest, built on the level's own wall nodes from the
+solver's boundary specifications (the analytic normal evaluated at the level's
+nodes, or the level's own measure-weighted facet normals), and its normal rows are
+removed. Before this the coarse levels were Cartesian and only the finest's normal
+rows were zeroed in the transfer. A coarse wall node's normal Cartesian component
+was then reached only through the fine tangential rows, weighted by the sine of the
+angle between the two nodes' normals: a Galerkin nodal block of 1e-3 against 2.5 at
+a node near an axis, 1e-20 on the axis. The inode SOR smoother inverts those 2x2
+blocks and reported a zero pivot, and the velocity solve failed before its first
+iteration (measured on the annulus of the Zhong & Gurnis analogue; a box with
+Dirichlet walls never showed it because an axis-aligned wall's sines are exactly
+zero). Two further rules came out of the same case:
+
+- the reach test of the orphan rule is relative (`UNREACHED_REL`, 1e-8 of the
+  level's largest column, squared norms) and runs after the finest's constrained
+  rows are zeroed, not before;
+- the free-slip gauge mode must verify for the SVD coarse solve to be selected,
+  which on a faceted circle needs the exact radial normal
+  (`normal=mesh.CoordinateSystem.unit_e_0`); and that SVD needs a small coarsest
+  level (14k unknowns took over 30 minutes, 900 is instant), so a base with three
+  halvings rather than one.
+
 ## Parallel
 
 Every split level is redistributed so its fault star is rank-interior (the split's own
@@ -118,6 +146,9 @@ split 3-D level.
 
 ## Tests
 
+`tests/test_1091_place_outcrop_curved_wall.py` (the placer on an annulus: loop
+orientation, the dipping band through the curved wall, the outcropping ladder on
+both placement routes) and
 `tests/test_1087_fault_split_multigrid.py` (tail structure, iterations falling with
 refinement against the welded tail, viscous fault, a moving fault, the transfer's side
 awareness and quadratic exactness) and
@@ -126,6 +157,9 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
 
 ## Not yet done
 
+- A regression test for the coarse-level wall rotation itself (a rotated free-slip
+  annulus with a placed band and the custom tail), beyond the example scripts
+  (`scripts/sessions/fault_mg/zg95_probe.py`, `zg95_annulus.py`).
 - The 3-D sheet placement on an NVB-refined child needs `clearance` of about 0.9 at
   one add-on level (its volume guard fires at the default 0.6) and refuses the
   two-level child at every clearance and sheet size tried (volume change 4e-6 to

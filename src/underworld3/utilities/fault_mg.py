@@ -38,6 +38,8 @@ answered by the rank that holds the cell, with global column indices.
 import itertools
 
 import numpy as np
+from types import SimpleNamespace
+from mpi4py import MPI
 import scipy.sparse as sp
 from petsc4py import PETSc
 from scipy.spatial import cKDTree
@@ -528,7 +530,7 @@ def colocate_split_level(level, target):
 # --------------------------------------------------------------------------- #
 #  Per-level pair rotation
 # --------------------------------------------------------------------------- #
-def level_pair_rotation(level, solver, field_id):
+def level_pair_rotation(level, solver, field_id, cdm=None, layout=None):
     """The pair rotation of a split coarse level in the level's reduced
     velocity layout: ``(Q, Qt, normal_rows, layout)`` with ``Q`` an AIJ matrix
     (identity except one orthogonal ``2 dim`` block per coincident pair, mean rows
@@ -541,8 +543,10 @@ def level_pair_rotation(level, solver, field_id):
     solve already keeps the composed prolongations across its Newton steps."""
     from underworld3.utilities import custom_mg, fault_contact
 
-    cdm = custom_mg._clone_dm_with_solver_discretisation(solver, level)
-    layout = custom_mg._level_dof_layout(cdm, field_id)
+    if cdm is None:
+        cdm = custom_mg._clone_dm_with_solver_discretisation(solver, level)
+    if layout is None:
+        layout = custom_mg._level_dof_layout(cdm, field_id)
     sub = custom_mg._field_subdm(cdm, field_id)
     lsec_sub = sub.getLocalSection()
     lsec = cdm.getLocalSection()
@@ -617,6 +621,152 @@ def level_pair_rotation(level, solver, field_id):
     return Q, Qt, np.array(sorted(set(normal_rows)), dtype=np.int64), layout
 
 
+class _LevelMeshProxy:
+    """The level mesh wearing the solver mesh's coordinate symbols, so the
+    solver's analytic wall normals (expressions in ``solver.mesh.X``) evaluate
+    on the level's nodes through the finest-level helpers unchanged."""
+
+    def __init__(self, level, X):
+        self._level = level
+        self.X = X
+
+    def __getattr__(self, name):
+        return getattr(self._level, name)
+
+
+def level_wall_rotation(level, solver, field_id, cdm=None, layout=None):
+    """The rotated free-slip wall rotation of a coarse level in the level's
+    reduced velocity layout: ``(Q, Qt, normal_rows, layout)`` with one
+    orthonormal ``dim x dim`` block per velocity node on each of the solver's
+    rotated boundaries (the same frame rule as ``rotated_bc.build_rotation``,
+    on the level's own nodes and normals) and ``normal_rows`` the rows of the
+    rotated normal components, which the level constrains out. ``None`` when
+    the solver has no rotated walls.
+
+    Why the coarse levels need it: with Cartesian coarse levels under a
+    rotated finest whose normal rows take no coarse correction, a coarse wall
+    node's normal Cartesian component is reached only through the fine
+    tangential rows, weighted by the sine of the angle between the two
+    nodes' normals. Its Galerkin block is then nearly singular (measured
+    1e-3 against 2.5 on an annulus at a node near an axis), the inode SOR
+    smoother's 2x2 block inversion reports a zero pivot, and the velocity
+    solve fails before its first iteration. Rotating the level and removing
+    the normal rows gives the coarse space exactly the constrained motion.
+    """
+    from underworld3.utilities import custom_mg, rotated_bc
+
+    specs = list(getattr(solver, "_rotated_freeslip_bcs", None) or [])
+    if not specs:
+        return None
+    if cdm is None:
+        cdm = custom_mg._clone_dm_with_solver_discretisation(solver, level)
+    if layout is None:
+        layout = custom_mg._level_dof_layout(cdm, field_id)
+    sub = custom_mg._field_subdm(cdm, field_id)
+    lsec_sub = sub.getLocalSection()
+    dim = level.cdim
+    manifold = level.dim < level.cdim
+    proxy = SimpleNamespace(dm=cdm, mesh=_LevelMeshProxy(level, solver.mesh.X),
+                            snes=None)
+
+    node_normals = {}
+    for spec in specs:
+        name, normal = rotated_bc._boundary_spec(spec)
+        if name == rotated_bc.SHEET_TANGENCY:
+            nodes = rotated_bc._manifold_velocity_nodes(proxy, normal)
+        else:
+            nodes = rotated_bc._boundary_velocity_nodes(proxy, name, normal=normal)
+        for q, nrm in nodes:
+            node_normals.setdefault(q, []).append(nrm)
+    if manifold and is_split_level(level):
+        # a paired node takes the sheet tangency through its pair block
+        for pairs in level._fault_point_pairs.values():
+            for q_plus, q_minus in (pairs.items() if isinstance(pairs, dict)
+                                    else pairs):
+                node_normals.pop(int(q_plus), None)
+                node_normals.pop(int(q_minus), None)
+
+    l2g = np.asarray(layout.l2g, dtype=np.int64)
+    rstart, rend = layout.rstart, layout.rend
+    nloc = rend - rstart
+    comm = cdm.getComm()
+    N = int(comm.tompi4py().allreduce(nloc))
+    rows = [np.arange(rstart, rend)]
+    cols = [np.arange(rstart, rend)]
+    vals = [np.ones(nloc)]
+    is_block_row = np.zeros(nloc, dtype=bool)
+    normal_rows = []
+    for q, nrms in node_normals.items():
+        off = lsec_sub.getOffset(q)
+        g = [int(l2g[off + c]) for c in range(dim)]
+        if any(gi < 0 for gi in g):
+            # a component pinned by an essential condition on the level: the
+            # wall meets an essential wall there; left Cartesian, as the
+            # finest's partially constrained nodes are handled separately
+            continue
+        if not (rstart <= g[0] < rend):
+            continue
+        M = np.array(nrms, dtype=float)
+        _u, sv, Vt = np.linalg.svd(M)
+        r = int((sv > 1e-8 * (sv[0] if sv.size else 1.0)).sum())
+        is_block_row[np.array(g) - rstart] = True
+        for i in range(dim):
+            rows.append(np.full(dim, g[i]))
+            cols.append(np.array(g))
+            vals.append(np.asarray(Vt[i], dtype=float))
+        normal_rows.extend(g[:r])
+    rows = np.concatenate(rows)
+    cols = np.concatenate(cols)
+    vals = np.concatenate(vals)
+    keep = np.ones(len(rows), dtype=bool)
+    keep[:nloc] = ~is_block_row
+    loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
+                        shape=(nloc, N))
+    loc.sum_duplicates()
+    loc.sort_indices()
+    Q = PETSc.Mat().createAIJ(
+        size=((nloc, None), (nloc, None)),
+        csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
+             loc.data), comm=comm)
+    Q.assemble()
+    Qt = Q.transpose(PETSc.Mat())
+    return Q, Qt, np.array(sorted(set(normal_rows)), dtype=np.int64), layout
+
+
+def level_rotation(level, solver, field_id):
+    """The full rotation of a coarse level: its fault pairs (a split level)
+    and its rotated walls, composed. The two act on disjoint node blocks (a
+    paired node is never a wall node on a volume mesh; on a surface mesh the
+    paired nodes are removed from the wall set), so the product is a single
+    orthogonal matrix. Returns ``(Q, Qt, normal_rows)`` or ``None`` when the
+    level has neither."""
+    from underworld3.utilities import custom_mg
+
+    split = is_split_level(level)
+    walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
+    if not split and not walls:
+        return None
+    cdm = custom_mg._clone_dm_with_solver_discretisation(solver, level)
+    layout = custom_mg._level_dof_layout(cdm, field_id)
+    parts = []
+    if split:
+        parts.append(level_pair_rotation(level, solver, field_id, cdm=cdm, layout=layout))
+    if walls:
+        w = level_wall_rotation(level, solver, field_id, cdm=cdm, layout=layout)
+        if w is not None:
+            parts.append(w)
+    if not parts:
+        return None
+    if len(parts) == 1:
+        Q, Qt, nr, _lay = parts[0]
+        return Q, Qt, nr
+    Q = parts[0][0].matMult(parts[1][0])
+    Qt = Q.transpose(PETSc.Mat())
+    nr = np.array(sorted(set(parts[0][2].tolist()) | set(parts[1][2].tolist())),
+                  dtype=np.int64)
+    return Q, Qt, nr
+
+
 # --------------------------------------------------------------------------- #
 #  Static / add-on levels
 # --------------------------------------------------------------------------- #
@@ -627,11 +777,30 @@ def addon_level_indices(tail):
     return [k for k, m in enumerate(tail) if not getattr(m, "_mg_static", False)]
 
 
+# A coarse unknown whose transfer column carries less than this fraction of
+# the level's largest column (squared 2-norms) is UNREACHED: its Galerkin
+# diagonal is that fraction of the fine operator's, and SOR divides by it.
+# Exactly-zero columns are the orphans of a split tip; the near-zero ones
+# arise under rotation, where a coarse wall node on an axis has its normal
+# Cartesian component reached only through fine tangential rows weighted by
+# the sine of a vanishing angle (measured 1e-10 on an annulus, NaN at the
+# first sweep).
+UNREACHED_REL = 1e-8
+
+
+def _reached_columns(T, rel=None):
+    rel = UNREACHED_REL if rel is None else rel
+    n2 = np.asarray(_column_norms_sq(T).array)
+    big = T.comm.tompi4py().allreduce(float(n2.max()) if n2.size else 0.0, op=MPI.MAX)
+    return n2 > rel * big
+
+
 def restrict_unreached(Ps, comm):
     """The prolongation list with every coarse unknown no fine unknown reaches
     dropped, fine to coarse, each level's rows restricted to the set the level
     above kept. The unrotated twin of :func:`rotated_split_transfers`, for the
-    standard (non-rotated) install of a hierarchy with split levels."""
+    standard (non-rotated) install of a hierarchy with split levels. "Reaches"
+    is relative (``UNREACHED_REL``), so a vanishing column counts as none."""
     nlev = len(Ps) + 1
     kept = [None] * nlev
     out = [None] * (nlev - 1)
@@ -641,8 +810,7 @@ def restrict_unreached(Ps, comm):
             T = T.createSubMatrix(
                 _owned_is(kept[l + 1], comm),
                 _owned_is(np.arange(*T.getOwnershipRangeColumn()), comm))
-        n2 = _column_norms_sq(T)
-        reached = np.asarray(n2.array) > 0.0
+        reached = _reached_columns(T)
         cols = np.arange(*T.getOwnershipRangeColumn())
         if comm.tompi4py().allreduce(int((~reached).sum())):
             T = T.createSubMatrix(
@@ -698,8 +866,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
 
     rot = [None] * nlev
     for l in range(nlev - 1):
-        if is_split_level(levels[l]):
-            rot[l] = level_pair_rotation(levels[l], solver, hierarchy.field_id)
+        rot[l] = level_rotation(levels[l], solver, hierarchy.field_id)
 
     kept = [None] * nlev              # owned kept global indices per coarse level
     out = [None] * (nlev - 1)
@@ -726,8 +893,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
             else T.createSubMatrix(_owned_is(np.arange(*T.getOwnershipRange()), comm),
                                    col_is)
         # drop the coarse unknowns no fine unknown reaches
-        n2 = _column_norms_sq(T)
-        reached = np.asarray(n2.array) > 0.0
+        reached = _reached_columns(T)
         n_drop = int(comm.tompi4py().allreduce(int((~reached).sum())))
         if n_drop:
             adm = adm[reached]
@@ -738,7 +904,9 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
         out[l] = T
     hierarchy.level_kept = kept
     # The restriction renumbers every coarse level, so any FAC patch rows the
-    # builder recorded (keyed to the unrestricted layouts) no longer apply; a
-    # split fault needs no patch in any case (the keying ruling).
-    hierarchy.level_patch_rows = [None] * nlev
+    # builder recorded for them (keyed to the unrestricted layouts) no longer
+    # apply; the finest's layout is untouched and its patch rows stay.
+    rows = getattr(hierarchy, "level_patch_rows", None)
+    hierarchy.level_patch_rows = ([None] * (nlev - 1) + [rows[-1]]
+                                  if rows is not None else [None] * nlev)
     return out

@@ -3596,7 +3596,16 @@ def _occ_domain_2d(occ, loops):
     order = sorted(range(len(loops)), key=lambda k: -abs(area(loops[k])))
     rings = []
     for k in order:
-        P = loops[k]
+        P = np.asarray(loops[k], dtype=float)
+        # Every loop counter-clockwise. The walk returns each loop in
+        # whichever direction it started, and OCC reads a hole loop wound
+        # against the exterior as ADDED area: on an annulus whose inner loop
+        # came out clockwise the tool had the area of the full disc plus the
+        # hole, and a boolean against it met nothing (measured: tool area
+        # 3.93 against 2.36 for cell sizes 0.04 and 0.08, correct for 0.05
+        # and 0.06, which happened to wind both loops the same way).
+        if area(P) < 0.0:
+            P = P[::-1]
         pts = [occ.addPoint(x, y, 0.0) for x, y in P]
         lines = [occ.addLine(pts[i], pts[(i + 1) % len(pts)])
                  for i in range(len(pts))]
@@ -4372,6 +4381,13 @@ def _refuse_multiple_bands(band_facets):
             "multiply-outcropping zone is not built.")
 
 
+# Adjacent boundary facets whose normals differ by less than this are the
+# same SMOOTH WALL: the faceting of a curved boundary (angle -> 0 under
+# refinement) groups into one wall, while a box-like corner (90 degrees)
+# separates two. The outcrop bowl may open anywhere on a band-touched wall.
+_WALL_DIHEDRAL_COS = np.cos(np.deg2rad(45.0))
+
+
 def _outcrop_frame_2d(comp_loops, asm_pts, band_pairs, X, on_wall):
     """Which mesh boundary vertices an outcrop may DELETE, and which ring
     vertices count as boundary contact AWAY from the outcrop.
@@ -4389,18 +4405,48 @@ def _outcrop_frame_2d(comp_loops, asm_pts, band_pairs, X, on_wall):
     """
     band_nodes = sorted({int(v) for pair in band_pairs for v in pair})
     B = asm_pts[band_nodes]
+    # A compressed loop's segments group into SMOOTH WALLS across
+    # low-angle turns (the 2-D reading of ``_boundary_walls``): the
+    # faceting of a curved boundary is one wall, a box corner separates
+    # two. A band-touched segment opens its whole wall, and only a sharp
+    # corner is the domain's shape. Before this, every chord of an annulus
+    # was its own wall, so the clearance cavity of a dipping band, which
+    # spans a few chords beside the one the band crosses, was refused as
+    # contact away from the outcrop.
     seg_pts, seg_edges, corners = [], [], []
     for L in comp_loops:
-        corners.append(L)
+        L = np.asarray(L, dtype=float)
         n = len(L)
+        e_in = L - np.roll(L, 1, axis=0)
+        e_out = np.roll(L, -1, axis=0) - L
+        e_in = e_in / np.linalg.norm(e_in, axis=1)[:, None]
+        e_out = e_out / np.linalg.norm(e_out, axis=1)[:, None]
+        sharp = np.einsum("ij,ij->i", e_in, e_out) < _WALL_DIHEDRAL_COS
+        corners.append(L)
+        # walls: runs of segments between sharp corners (segment i runs
+        # from vertex i to i+1; a wall break sits at a sharp vertex)
+        wall_of = np.zeros(n, dtype=np.int64)
+        w = 0
+        for i in range(n):
+            if i > 0 and sharp[i]:
+                w += 1
+            wall_of[i] = w
+        if not sharp.any():
+            wall_of[:] = 0
+        elif not sharp[0]:
+            wall_of[wall_of == w] = 0        # the run wraps around vertex 0
+        touched = set()
         for i in range(n):
             A, C = L[i], L[(i + 1) % n]
             e = C - A
             u = np.clip(((B - A) @ e) / float(e @ e), 0.0, 1.0)
             d = np.linalg.norm(B - (A + u[:, None] * e), axis=1)
             if (d < 1e-9).any():
+                touched.add(int(wall_of[i]))
+        for i in range(n):
+            if int(wall_of[i]) in touched:
                 seg_edges.append((len(seg_pts), len(seg_pts) + 1))
-                seg_pts += [A, C]
+                seg_pts += [L[i], L[(i + 1) % n]]
     if not seg_edges:
         raise RuntimeError(
             "the outcrop band lies on no boundary segment; the clip and "
@@ -4412,15 +4458,11 @@ def _outcrop_frame_2d(comp_loops, asm_pts, band_pairs, X, on_wall):
     for c in np.vstack(corners):
         is_corner |= np.linalg.norm(X - c, axis=1) < 1e-9
     near_touched = d_seg < 1e-9
+    # A compressed vertex off the band is never deleted: on a straight wall
+    # none exist, on a curved wall every vertex is one, and keeping them is
+    # what keeps the domain's area (the splice below carries them).
     deletable = on_wall & near_touched & (~is_corner | (d_band < 1e-9))
     return deletable, near_touched
-
-
-# Adjacent boundary facets whose normals differ by less than this are the
-# same SMOOTH WALL: the faceting of a curved boundary (angle -> 0 under
-# refinement) groups into one wall, while a box-like corner (90 degrees)
-# separates two. The outcrop bowl may open anywhere on a band-touched wall.
-_WALL_DIHEDRAL_COS = np.cos(np.deg2rad(45.0))
 
 
 def _boundary_walls(dom_verts, dom_tris, region):
@@ -5386,19 +5428,159 @@ def _ladder_curved_assembly_2d(P, width, size, reach=None):
     return pts, tris, float(np.abs(twice).sum() / 2.0)
 
 
+def _inside_domain_2d(pts, domain):
+    """Which of ``pts`` lie inside the domain: in its largest-area loop and
+    in none of the others (the holes)."""
+    from matplotlib.path import Path
+
+    def area(P):
+        return 0.5 * float(P[:, 0] @ np.roll(P[:, 1], -1)
+                           - P[:, 1] @ np.roll(P[:, 0], -1))
+
+    loops = [np.asarray(L, dtype=float) for L in domain]
+    order = sorted(range(len(loops)), key=lambda k: -abs(area(loops[k])))
+    inside = Path(loops[order[0]]).contains_points(pts)
+    for k in order[1:]:
+        inside &= ~Path(loops[k]).contains_points(pts)
+    return inside
+
+
 def _ladder_domain_gate_2d(pts, domain):
-    """Refuse a structured band that protrudes past the domain bbox."""
+    """Refuse a structured band that protrudes past the domain."""
     if domain is None:
         return
-    lo = np.min([np.min(np.asarray(Lp, dtype=float), axis=0)
-                 for Lp in domain], axis=0)
-    hi = np.max([np.max(np.asarray(Lp, dtype=float), axis=0)
-                 for Lp in domain], axis=0)
-    if (pts < lo - 1e-12).any() or (pts > hi + 1e-12).any():
+    if not _inside_domain_2d(np.asarray(pts, dtype=float), domain).all():
         raise ValueError(
             "the ladder band protrudes past the domain; it is structured "
             "and cannot be clipped. Shorten the trace or use the default "
             "band (which clips).")
+
+
+def _ladder_outcrop_assembly_2d(S, R, width, size, domain):
+    """The ladder that OUTCROPS: the structured band on the samples inside
+    the domain, stopping one rung short of the wall, closed by a small
+    unstructured CAP between its last rung and the wall, clipped against
+    the domain polygon exactly as the default band is.
+
+    The spine keeps its rung vertices (a split walks them, nothing snaps)
+    up to the last rung; the cap carries the band to the wall and its
+    clipped edge is the outcrop band. The cap's cells are where a weak
+    layer bridges a split that must stop blind of the surface (the trench
+    of a convection model), so their being unstructured costs nothing the
+    split needs. Either end may protrude; a sample row counts as inside
+    only when its spine and both rail points are. Returns
+    ``(points, triangles, area)`` with the cap's nodes merged onto the
+    ladder's rung vertices.
+    """
+    import gmsh
+
+    S = np.asarray(S, dtype=float)
+    R = np.asarray(R, dtype=float)
+    rows = np.stack([S + 0.5 * width * R, S, S - 0.5 * width * R], axis=1)
+    inside = _inside_domain_2d(rows.reshape(-1, 2), domain).reshape(-1, 3).all(axis=1)
+    if inside.all():
+        return _ladder_curved_assembly_2d(S, width, size, reach=R)
+    idx = np.flatnonzero(inside)
+    if idx.size < 2:
+        raise ValueError(
+            "the ladder band has fewer than two rungs inside the domain")
+    # the inside run must be contiguous (a band leaving and re-entering
+    # the domain is two bands)
+    if idx[-1] - idx[0] + 1 != idx.size:
+        raise ValueError(
+            "the ladder band leaves the domain and re-enters it; place it "
+            "as two bands")
+    k0, k1 = int(idx[0]), int(idx[-1])
+    caps = []                                      # (row index, outward dir)
+    if k1 < len(S) - 1:
+        caps.append((k1, S[k1] - S[k1 - 1]))
+    if k0 > 0:
+        caps.append((k0, S[k0] - S[k0 + 1]))
+    pts_l, tris_l, area_l = _ladder_curved_assembly_2d(
+        S[k0:k1 + 1], width, size, reach=R[k0:k1 + 1])
+
+    comp = [_compress_collinear_loop(np.asarray(L, dtype=float)) for L in domain]
+    pts_all = [pts_l]
+    tris_all = [tris_l]
+    area = float(area_l)
+    n_off = len(pts_l)
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        for k, t in caps:
+            t = t / np.linalg.norm(t)
+            rung = rows[k]                          # rail+, spine, rail-
+            # reach past the wall by the band's own scale; the clip trims it
+            ext = 3.0 * size + width
+            gmsh.model.add(f"uw_ladder_cap_{k}")
+            occ = gmsh.model.occ
+            corners = [rung[0], rung[1], rung[2], rung[2] + ext * t,
+                       rung[0] + ext * t]
+            ptags = [occ.addPoint(q[0], q[1], 0.0) for q in corners]
+            ltags = [occ.addLine(ptags[i], ptags[(i + 1) % 5]) for i in range(5)]
+            face = occ.addPlaneSurface([occ.addCurveLoop(ltags)])
+            occ.synchronize()
+            tool = _occ_domain_2d(occ, comp)
+            occ.intersect([(2, face)], [(2, tool)])
+            occ.synchronize()
+            faces = gmsh.model.getEntities(2)
+            if not faces:
+                raise ValueError(
+                    "the ladder's outcrop cap meets no part of the domain")
+            area += sum(occ.getMass(2, f) for _d, f in faces)
+            # the two rung segments stay single edges: their nodes are the
+            # ladder's rung vertices and nothing may be inserted on them
+            for _d, c in gmsh.model.getEntities(1):
+                ends = gmsh.model.getBoundary([(1, c)], oriented=False)
+                xy = [np.asarray(gmsh.model.getValue(0, e[1], []))[:2] for e in ends]
+                if len(xy) == 2 and all(
+                        min(np.linalg.norm(q - r) for r in rung) < 1e-9 for q in xy):
+                    gmsh.model.mesh.setTransfiniteCurve(c, 2)
+            gmsh.option.setNumber("Mesh.MeshSizeMin", 0.7 * size)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", 1.3 * size)
+            gmsh.model.mesh.generate(2)
+            tags, xyz, _ = gmsh.model.mesh.getNodes()
+            xy = np.asarray(xyz).reshape(-1, 3)[:, :2]
+            xy = _snap_to_boundary_2d(xy, comp)
+            renum = {int(tg): i for i, tg in enumerate(tags)}
+            tris = []
+            for _d, f in faces:
+                et, _ei, en = gmsh.model.mesh.getElements(2, f)
+                for ty, nodes in zip(et, en):
+                    if ty == 2:
+                        tris.append(np.array([renum[int(x)] for x in nodes],
+                                             dtype=np.int64).reshape(-1, 3))
+            if not tris:
+                raise RuntimeError("the ladder's outcrop cap meshed to no triangles")
+            tris = np.vstack(tris)
+            # merge the cap's rung nodes onto the ladder's
+            ladder_rung = [k - k0, (k - k0) + (k1 - k0 + 1), (k - k0) + 2 * (k1 - k0 + 1)]
+            remap = np.arange(len(xy)) + n_off
+            keep = np.ones(len(xy), dtype=bool)
+            for r_xy, r_id in zip(rung, ladder_rung):
+                hit = np.flatnonzero(np.linalg.norm(xy - r_xy, axis=1) < 1e-9)
+                if hit.size != 1:
+                    raise RuntimeError(
+                        "the ladder's outcrop cap does not carry its rung "
+                        "vertices as nodes")
+                remap[hit[0]] = r_id
+                keep[hit[0]] = False
+            new_ids = np.cumsum(keep) - 1 + n_off
+            remap[keep] = new_ids[keep]
+            pts_all.append(xy[keep])
+            tris_all.append(remap[tris])
+            n_off += int(keep.sum())
+            gmsh.model.remove()
+    finally:
+        gmsh.finalize()
+    pts = np.vstack(pts_all)
+    tris = np.vstack(tris_all)
+    Q = pts[tris]
+    twice = ((Q[:, 1, 0] - Q[:, 0, 0]) * (Q[:, 2, 1] - Q[:, 0, 1])
+             - (Q[:, 1, 1] - Q[:, 0, 1]) * (Q[:, 2, 0] - Q[:, 0, 0]))
+    flip = twice < 0.0
+    tris[flip] = tris[flip][:, [0, 2, 1]]
+    return pts, tris, float(area)
 
 
 def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
@@ -5441,10 +5623,9 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
         # rung positions and mitred reach vectors from ONE parametrisation
         # (a coarser level passes S[::2], reach[::2]). Used verbatim.
         S, R = (np.asarray(q, dtype=float) for q in p0)
-        pts_c, tris_c, area_c = _ladder_curved_assembly_2d(
-            S, width, size, reach=R)
-        _ladder_domain_gate_2d(pts_c, domain)
-        return pts_c, tris_c, area_c
+        if domain is not None:
+            return _ladder_outcrop_assembly_2d(S, R, width, size, domain)
+        return _ladder_curved_assembly_2d(S, width, size, reach=R)
     P = np.asarray(p0, dtype=float)[:, :2]
     a, b = P[0], P[-1]
     t = b - a
@@ -5459,21 +5640,26 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
         # same three-rail structure, mitred. The straight path below
         # stays on gmsh transfinite so the recorded composed benchmark
         # remains bit-identical.
-        pts_c, tris_c, area_c = _ladder_curved_assembly_2d(P, width, size)
-        _ladder_domain_gate_2d(pts_c, domain)
-        return pts_c, tris_c, area_c
+        if domain is not None:
+            seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+            arc = np.concatenate([[0.0], np.cumsum(seg)])
+            n_s = max(2, int(round(float(arc[-1]) / size)))
+            s_ = np.linspace(0.0, float(arc[-1]), n_s + 1)
+            S = np.column_stack([np.interp(s_, arc, P[:, 0]),
+                                 np.interp(s_, arc, P[:, 1])])
+            return _ladder_outcrop_assembly_2d(S, _mitred_reach_2d(S), width,
+                                               size, domain)
+        return _ladder_curved_assembly_2d(P, width, size)
     corners = np.array([a + 0.5 * width * n, b + 0.5 * width * n,
                         b - 0.5 * width * n, a - 0.5 * width * n])
-    if domain is not None:
-        lo = np.min([np.min(np.asarray(Lp, dtype=float), axis=0)
-                     for Lp in domain], axis=0)
-        hi = np.max([np.max(np.asarray(Lp, dtype=float), axis=0)
-                     for Lp in domain], axis=0)
-        if (corners < lo - 1e-12).any() or (corners > hi + 1e-12).any():
-            raise ValueError(
-                "the ladder band protrudes past the domain; it is meshed "
-                "transfinite and cannot be clipped. Shorten the trace or "
-                "use the default band (which clips).")
+    if domain is not None and not _inside_domain_2d(corners, domain).all():
+        # a straight band reaching the wall: the numpy ladder with the
+        # outcrop cap (the gmsh transfinite path below stays for the
+        # interior band, bit-identical to the recorded benchmark)
+        n_s = max(2, int(round(L / size)))
+        S = a[None, :] + np.linspace(0.0, L, n_s + 1)[:, None] * t[None, :]
+        return _ladder_outcrop_assembly_2d(S, np.tile(n, (len(S), 1)), width,
+                                           size, domain)
     n_along = max(2, int(round(L / size)))
 
     gmsh.initialize()
@@ -5766,7 +5952,8 @@ def _arc_project(polyline, p):
     return best_d, best_s
 
 
-def _outcrop_ring_splice(ring, X, boundary_pairs, chain_ids, chain_ends):
+def _outcrop_ring_splice(ring, X, boundary_pairs, chain_ids, chain_ends,
+                         keep=None):
     """Replace the cavity ring's boundary span with the ribbon's interior
     chain.
 
@@ -5787,6 +5974,13 @@ def _outcrop_ring_splice(ring, X, boundary_pairs, chain_ids, chain_ends):
     ``(spliced_ring, removed_wall_pairs)``, the removed pairs as old
     vertex rows for the wall-label discovery. A second boundary run
     refuses — the carve spilled onto the boundary away from the outcrop.
+
+    ``keep`` (a vertex mask) names span vertices that SURVIVE: on a curved
+    wall the boundary's own vertices beside the band are protected (each
+    is a corner of the compressed boundary), and the cap must run through
+    them rather than chord across — the chord loses the sagitta, and the
+    area guard refuses. Only the span between the last kept vertex before
+    the band and the first after it is removed.
     """
     n = len(ring)
     wall_edge = [frozenset((ring[i], ring[(i + 1) % n])) in boundary_pairs
@@ -5820,7 +6014,25 @@ def _outcrop_ring_splice(ring, X, boundary_pairs, chain_ids, chain_ends):
     # its corner_l-side end first — the loop's orientation is preserved.
     tail = [ring[(i0 + k + j) % n] for j in range(n - k + 1)]
     seq = chain_ids if ends[0][1] <= ends[1][1] else chain_ids[::-1]
-    return tail + list(seq), removed
+    s_lo, s_hi = sorted(e[1] for e in ends)
+    if keep is None:
+        return tail + list(seq), removed
+    # arc parameter of every span vertex, in the span's own polyline
+    span_ids = [ring[(i0 + j) % n] for j in range(k + 1)]
+    s_v = [_arc_project(span, X[v])[1] for v in span_ids]
+    before = [(v, sv) for v, sv in zip(span_ids[1:-1], s_v[1:-1])
+              if sv < s_lo - 1e-12 and keep[v]]
+    after = [(v, sv) for v, sv in zip(span_ids[1:-1], s_v[1:-1])
+             if sv > s_hi + 1e-12 and keep[v]]
+    before.sort(key=lambda t: t[1])
+    after.sort(key=lambda t: t[1])
+    # the removed wall pairs: a span edge that loses a vertex, or whose arc
+    # overlaps the band's clipped edge between the corners
+    removed = [(span_ids[j], span_ids[j + 1]) for j in range(k)
+               if not (keep[span_ids[j]] and keep[span_ids[j + 1]])
+               or (s_v[j] < s_hi + 1e-12 and s_v[j + 1] > s_lo - 1e-12)]
+    return (tail + [v for v, _sv in before] + list(seq)
+            + [v for v, _sv in after]), removed
 
 
 def _ring_growing(cells, drop, held_mask):
@@ -7297,7 +7509,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     chain_ids = [len(X) + int(v) for v in chain_k]
                     chain_ends = (asm_pts[chain_k[0]], asm_pts[chain_k[-1]])
                     ring, removed_wall = _outcrop_ring_splice(
-                        ring, X, boundary_pairs, chain_ids, chain_ends)
+                        ring, X, boundary_pairs, chain_ids, chain_ends,
+                        keep=~victim)
                     off_band = [v for v in ring if v < len(X)
                                 and on_wall[v] and not near_touched[v]]
                     if off_band:
@@ -7356,14 +7569,18 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     span_labels.append(pairs_p)
                     span_segments.append((X[int(a)].copy(),
                                           X[int(b)].copy()))
-                # The splice ends: the surviving corner vertices and the
-                # chain ends they meet — the chain is the ring's tail, in
-                # the orientation the splice chose.
+                # The splice ends: the surviving corner vertices (the ends
+                # of the removed span) and the chain ends they meet, in
+                # the orientation the splice chose. The chain is the ring's
+                # one run of assembly rows; on a curved wall the splice
+                # keeps the wall's own vertices after it, so the run is
+                # located, not assumed to be the tail.
+                chain_pos = [i for i, v in enumerate(ring) if v >= len(X)]
                 outcrop = (span_labels, span_segments,
                            int(removed_wall[0][0]),
                            int(removed_wall[-1][1]),
-                           int(ring[-len(chain_k)]) - len(X),
-                           int(ring[-1]) - len(X))
+                           int(ring[chain_pos[0]]) - len(X),
+                           int(ring[chain_pos[-1]]) - len(X))
 
             kept_all = np.zeros(len(asm_tris), dtype=bool)
             ring_band = []
