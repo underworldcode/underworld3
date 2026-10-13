@@ -5224,12 +5224,16 @@ class Swarm(Stateful, uw_object):
                 continue
             var_arrays[var.clean_name] = np.asarray(var.data).copy()
 
+        trace = getattr(self, "_characteristics", None)
         return {
             "name": self._snapshot_stable_name(),
             "mesh_name": self.mesh.name,
             "population_generation": int(self._population_generation),
             "coords": coords,
             "vars": var_arrays,
+            # the mid-time advection's trace: which velocity level is valid
+            # and the length of the step it belongs to
+            "characteristics": trace._step_state() if trace is not None else None,
         }
 
     def apply_snapshot_payload(self, payload: dict) -> None:
@@ -5348,6 +5352,12 @@ class Swarm(Stateful, uw_object):
             # of advection) silently replaced the restored values with
             # that garbage (exposed by the SWARM-01 invalidation fix).
             var.data[...] = saved
+
+        # The mid-time advection's trace: a trace built since the capture (or a
+        # payload without one) goes back to its state before any step.
+        trace = getattr(self, "_characteristics", None)
+        if trace is not None:
+            trace._restore_step_state(payload.get("characteristics"))
 
     def access(self, *writeable_vars: SwarmVariable):
         """
@@ -5709,7 +5719,9 @@ class Swarm(Stateful, uw_object):
             ``uw.function.global_evaluate``. Default ``False``.
         midtime_velocity : bool, optional
             Take the mid-point velocity of the RK2 step at the mid TIME,
-            :math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, from a
+            :math:`v^n + \tfrac{r}{2}(v^n - v^{n-1})` with :math:`r` the ratio
+            of this step to the last (:math:`\tfrac32 v^n - \tfrac12 v^{n-1}`
+            for equal steps), from a
             :class:`~underworld3.systems.ddt.CharacteristicTrace` the swarm
             owns (the previous velocity is cached by evaluation at the nodes
             at the end of each call). Second order in an unsteady flow; a
@@ -5825,7 +5837,7 @@ class Swarm(Stateful, uw_object):
             owns_trace = True
         v_mid_matrix = V_fn_matrix
         if trace is not None and substeps == 1:
-            v_mid_matrix = trace.midtime_expr()
+            v_mid_matrix = trace.midtime_expr(delta_t_model)
 
         self._deferred_migration_suspended = True
 
@@ -5906,7 +5918,7 @@ class Swarm(Stateful, uw_object):
         ## End of substepping loop
         self._deferred_migration_suspended = False
         if owns_trace:
-            trace.finish_step()          # the velocity used this step becomes v^{n-1}
+            trace.finish_step(delta_t_model)   # the velocity used this step becomes v^{n-1}
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that
@@ -5935,21 +5947,43 @@ class Swarm(Stateful, uw_object):
             self._characteristics = tr
         return tr
 
+    def _adjoint_support(self, n_before, n_after):
+        """Whether this advection admits a discrete adjoint.
+
+        The Runge-Kutta step in position is an explicit ODE step and is
+        differentiable; migration is a permutation. What is not is a change
+        in the NUMBER of particles — a particle removed on leaving the domain
+        changes the dimension of the state, and there is no linear map to
+        transpose. So the rule is one line: the step is adjointable exactly
+        when the particle set is fixed across it. That is checkable, and this
+        checks it.
+        """
+        if n_after != n_before:
+            return (False,
+                    f"the particle set changed: {n_before} -> {n_after} "
+                    f"({n_before - n_after:+d} removed on leaving the domain, "
+                    f"or repopulated); the state changed dimension")
+        return (True,
+                "explicit Runge-Kutta step in position on a fixed particle set; "
+                "migration is a permutation")
+
     def _note_advection(self, dt, substeps, order, n_before):
         """Tell the model's open step that this swarm moved.
 
-        Recorded with the particle count before and after: a swarm that
-        quietly lost forty particles to the boundary is the kind of thing a
-        run should say.
+        Recorded with the particle count before and after, because that count
+        is the adjoint verdict — and because a swarm that quietly lost forty
+        particles to the boundary is the kind of thing a run should say.
         A no-op outside a ``model.step`` block.
         """
         try:
             n_after = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+            supported, why = self._adjoint_support(n_before, n_after)
             uw.get_default_model()._record_step_event(
                 "swarm_advect", f"{type(self).__name__}#{self.instance_number}",
                 part=f"{type(self).__name__}#{self.instance_number}",
                 dt=float(dt), substeps=int(substeps), order=int(order),
                 n_before=int(n_before), n_after=int(n_after),
+                adjoint={"supported": bool(supported), "reason": why},
             )
         except Exception:
             # Charter S4 — sanctioned: the same rule as the history shift in

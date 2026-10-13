@@ -18,7 +18,10 @@ including registered meshes, variables, swarms, and Python-side state bearers.
 
 `Mesh.write_timestep()` is the standard mesh and mesh-variable output method.
 It writes one mesh HDF5 file and one HDF5 file per requested mesh variable.
-Each variable file always contains `/fields` coordinate/value datasets used by
+With `create_xdmf=True`, each variable file contains dimensional
+`/fields/<name>` values and their coordinates (stored once in the mesh file
+for simplex DG1). These arrays are the
+authoritative analysis output and are also used by
 `MeshVariable.read_timestep()`.
 
 Optional payloads are controlled by explicit flags:
@@ -26,28 +29,36 @@ Optional payloads are controlled by explicit flags:
 | Flag | Payload | Reader / use |
 | --- | --- | --- |
 | `create_xdmf=True` | XDMF-compatible visualisation datasets and a companion `.xdmf` file | ParaView and other XDMF tools |
-| `petsc_reload=True` | PETSc DMPlex section/vector metadata | `MeshVariable.read_checkpoint()` |
+| `petsc_reload=True` | PETSc DMPlex section/global-vector metadata | `MeshVariable.read_checkpoint()` |
+
+When nondimensional scaling is active, `/fields` is converted during the write
+to the mesh and variable units declared in the model. HDF5 attributes and XDMF
+`Information` elements record those units. Analysis scripts can therefore read
+physical values directly, without maintaining their own conversion table.
+
+Set `petsc_reload=True` only when an exact restart is needed. It adds the native
+nondimensional PETSc payload under `/restart/petsc`; the visualization and
+analysis arrays remain dimensional.
 
 ### Visualisation and Coordinate Remap
 
-Continuous fields use the standard mesh vertices, and DG0 fields use cell data.
-DG1 fields on full-dimensional triangular and tetrahedral meshes use a second
-grid named `DG1` in the same XDMF file. Each simplex has its own three or four
-physical vertices: the saved linear polynomial is evaluated within that cell,
-without averaging traces across shared edges or faces. Interior DG interpolation
-nodes are not mistaken for the physical mesh vertices.
+XDMF reads P1 and DG0 values directly from `/fields`. Continuous P2 fields on
+triangles and tetrahedra use XDMF `Triangle_6` and `Tetrahedron_10`
+connectivity, including their edge nodes, so no P1 projection is stored. DG1
+stores exact element-corner values under `/fields` and shares disconnected
+cell geometry under `/viz/dg1` in the mesh file. `read_timestep()` reconstructs
+the same affine polynomial at the solver's interpolation nodes, preserving
+jumps without averaging traces across shared edges or faces.
 
-The DG1 visualization arrays (`vertices`, `cells`, `values`) live under `/dg1`
-in each variable HDF5 file. Tensor visualization uses a nine-component 3-by-3
-layout (zero-padded in 2D); `/fields` and PETSc reload data retain their native
-layout and precision. Open the one `.xdmf` file in ParaView and select the
-`domain` or `DG1` block for the corresponding fields. Do not merge coincident
-points or apply point-averaging filters if discontinuities must be preserved.
+XDMF cannot represent every UW3 finite-element layout directly. Continuous P3+
+fields and unsupported P2 layouts receive one compact P1 dataset under
+`/visualization`. DG2+ fields and unsupported DG1 layouts receive one compact
+DG0 dataset. Their exact dimensional values remain under `/fields`. Integration
+point fields are not supported by this writer.
 
-Higher-degree discontinuous fields, tensor-product DG cells, embedded manifolds,
-and integration-point fields are not supported by this DG1 exporter. They raise
-an explicit error when visualization is requested; `create_xdmf=False` still
-allows native checkpoint output. Parallel export uses owned cells only.
+DG1 uses the same field values for analysis, coordinate reload, and XDMF.
+Add `/restart/petsc` only when PETSc-native restart is also required. In ParaView,
+select the `DG1` block; avoid point-averaging filters that erase discontinuities.
 
 ```python
 mesh.write_timestep(
@@ -114,10 +125,14 @@ output/restart.mesh.velocity.00100.h5
 output/restart.mesh.pressure.00100.h5
 ```
 
-The variable files contain `/fields` datasets and PETSc reload metadata under
-`/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()` uses PETSc DMPlex
-topology, section, vector, and `PetscSF` metadata. It does not use KDTree
-remapping.
+The variable files contain PETSc reload metadata and one native global vector
+under `/restart/petsc/topologies/uw_mesh/dms/<variable>/`. `read_checkpoint()`
+uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata. It does not
+use dimensional `/fields` values or KDTree remapping. Restart-only output does
+not write `/fields`, so the native values are stored only once.
+
+The reader also accepts the former `/uw_checkpoint` group for compatibility
+with existing restart files.
 
 ### Unified Visualisation and PETSc Reload
 

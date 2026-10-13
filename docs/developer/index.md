@@ -37,6 +37,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
 | Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
+| Fault networks in parallel (placement, split, tail) | [design/fault-parallel-placement-2026-09.md](design/fault-parallel-placement-2026-09.md) (subsystem reference: [conforming-surfaces-and-fault-zones.md](subsystems/conforming-surfaces-and-fault-zones.md)) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
@@ -64,6 +65,7 @@ pages, never copies. A change to a family is reviewed against its guides.
 | [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
 | [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
 | [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
+| [Line diagrams](guides/uw-line-diagrams.md) | drawn figures |
 
 ## Documentation Structure
 
@@ -171,6 +173,7 @@ guides/adapt-on-top-faults
 guides/free-surface-convection
 guides/uw-visualisation
 guides/cetz-figures
+guides/uw-line-diagrams
 ```
 
 ```{toctree}
@@ -202,6 +205,7 @@ design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
 design/eulerian-supg-transport
 design/jit-shared-graph-codegen
+design/fault-parallel-placement-2026-09
 ```
 
 ```{toctree}
