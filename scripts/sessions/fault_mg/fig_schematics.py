@@ -185,3 +185,54 @@ strategies()
 transfer_rule()
 parallel_pipeline()
 print("figures in", out)
+
+
+def embedding_routes():
+    """The two embeddings of a fault and what each does for multigrid: the
+    cut (where C lives) and the placed ladder band (welded tail + FAC patch),
+    and the proposed meeting point: a 2:1 sub-sampled ladder split on every
+    level."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.2))
+    names = ["finest", "add-on 2", "add-on 1", "background 1", "background 0"]
+    kinds = ["fine", "add", "add", "bg", "bg"]
+
+    def column(ax, title, faults, bands, notes):
+        for i, (nm, kd, f, b) in enumerate(zip(names, kinds, faults, bands)):
+            y = 4.0 - i * 0.95
+            level_box(ax, y, kd, nm, f)
+            if b:
+                xc = 0.2 + 3.6 * 0.62
+                ax.add_patch(Polygon([[xc - 1.05, y + 0.12], [xc + 1.05, y + 0.12],
+                                      [xc + 1.05, y + 0.60], [xc - 1.05, y + 0.60]],
+                                     closed=True, fc="none", ec="#2e7d32", lw=1.3, ls="-"))
+        ax.set_xlim(0, 4.0)
+        ax.set_ylim(-1.3, 5.0)
+        ax.set_title(title, fontsize=10.5, loc="left")
+        ax.text(0.2, -0.25, notes, fontsize=8.5, va="top")
+        ax.axis("off")
+
+    column(axes[0], "the cut  (C, in the library)",
+           ["split", "split", "split", "weld", "weld"], [False] * 5,
+           "adapt refines toward the trace; the trace is\ncut into the existing edges "
+           "(vertices pulled onto it)\nand split, on the finest AND on every add-on\nlevel. "
+           "Whole-level smoothing. Welded background.")
+    column(axes[1], "the ladder band  (#629 / #672, in the library)",
+           ["split", "weld", "weld", "weld", "weld"], [True, False, False, False, False],
+           "a structured band (rails + exact spine, green)\nis placed into the finest by "
+           "carve-and-fill;\nthe spine is split without cutting (cut=False).\nWelded tail; "
+           "the finest smoother gains an ASM\npatch (LU blocks) over the band's cells.")
+    column(axes[2], "proposed: C on the ladder",
+           ["split", "split", "split", "weld", "weld"], [True, True, True, False, False],
+           "the ladder sub-sampled 2:1 shares every spine\nvertex between levels: placed "
+           "and split on each\nadd-on level, the slits NEST (no clamp needed).\nThe FAC patch "
+           "can stay on the finest. Not built;\nthe no-mid measurements had welded mids only.")
+    axes[0].plot([], [], color=SPLIT, lw=2.2, label="split slit")
+    axes[0].plot([], [], color="#2e7d32", lw=1.3, label="placed ladder band (cell label)")
+    axes[0].plot([], [], color=WELD, lw=1.0, ls=":", label="welded")
+    fig.legend(loc="lower center", ncol=3, fontsize=9, frameon=False, bbox_to_anchor=(0.5, -0.01))
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    fig.savefig(os.path.join(out, "embedding_routes.png"), dpi=160)
+    plt.close(fig)
+
+
+embedding_routes()

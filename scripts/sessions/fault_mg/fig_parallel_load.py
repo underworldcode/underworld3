@@ -1,6 +1,6 @@
 """Parallel behaviour plots from parallel_load.py's records.
 
-python fig_parallel_load.py <k> <outdir>   (reads ~/+Simulations/fault_split_mg/load_k<k>_np*.json)
+python fig_parallel_load.py <k> <outdir> [tag]   (reads ~/+Simulations/fault_split_mg/load_k<k><tag>_np*.json)
 """
 import glob
 import json
@@ -14,9 +14,10 @@ import numpy as np
 
 k = int(sys.argv[1])
 out = sys.argv[2]
+tag = sys.argv[3] if len(sys.argv) > 3 else ""
 os.makedirs(out, exist_ok=True)
 runs = {}
-for f in glob.glob(os.path.expanduser(f"~/+Simulations/fault_split_mg/load_k{k}_np*.json")):
+for f in glob.glob(os.path.expanduser(f"~/+Simulations/fault_split_mg/load_k{k}{tag}_np*.json")):
     rec = json.load(open(f))[0]
     runs[rec["np"]] = rec
 nps = sorted(runs)
@@ -44,10 +45,10 @@ for ax, n in zip(axes[0], big):
     ax.set_xticks(np.arange(nlev))
     ax.set_xticklabels(labels, fontsize=8)
     ax.set_ylabel("owned cells")
-    ax.set_title(f"{n} ranks, k = {k}: cells per rank on each level", loc="left", fontsize=10)
+    ax.set_title(f"{n} ranks, k = {k}{tag}: cells per rank on each level", loc="left", fontsize=10)
     ax.legend(fontsize=7.5, ncol=2)
 fig.tight_layout()
-fig.savefig(os.path.join(out, f"parallel_load_k{k}.png"), dpi=160)
+fig.savefig(os.path.join(out, f"parallel_load_k{k}{tag}.png"), dpi=160)
 plt.close(fig)
 
 # 2. imbalance (max / mean owned cells) per level vs ranks; misses; iterations; times
@@ -99,6 +100,6 @@ ax.set_title("stage times; velocity its " + ", ".join(f"{n}:{i}" for n, i in zip
 ax.legend(fontsize=8)
 ax.grid(alpha=0.3)
 fig.tight_layout()
-fig.savefig(os.path.join(out, f"parallel_behaviour_k{k}.png"), dpi=160)
+fig.savefig(os.path.join(out, f"parallel_behaviour_k{k}{tag}.png"), dpi=160)
 plt.close(fig)
 print("ok")
