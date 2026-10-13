@@ -1702,10 +1702,16 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
         return None
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
-    g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
-    nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
     Pfine = Qv.matMult(Ps[-1])
+    # zeroRows takes GLOBAL rows of the velocity block. getIndices() holds this
+    # rank's entries only, so a position in it is a LOCAL row: offset it by the
+    # rank's first owned row. (Without the offset the wrong rows were zeroed at
+    # np > 1 — 232 coarse unknowns lost every fine image and the Galerkin product
+    # failed on empty rows; serial, where local and global coincide, was fine.)
+    rstart = Pfine.getOwnershipRange()[0]
+    g2blk = {int(g): rstart + k for k, g in enumerate(vis)}
+    nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
     Pfine.zeroRows(nrows_blk, diag=0.0)
     # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
     # (rotated or not) reuses the hierarchy instead of re-resolving it.
