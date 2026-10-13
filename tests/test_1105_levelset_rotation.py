@@ -110,3 +110,50 @@ def test_material_property_field_blends():
     assert field.subs(psi.sym[0], 1) == 100.0 and field.subs(psi.sym[0], 0) == 1.0
     with pytest.raises(ValueError, match="interface must be one of"):
         level_set.material_property_field(psi.sym[0], [1.0, 100.0], "cubic")
+
+
+def test_sync_velocity_from_reaches_the_solve_time_vector():
+    """``sync_velocity_from`` must update what PETSc reads, not just numpy.
+
+    The method's whole purpose is to change the advecting velocity's VALUES
+    in place so that already-built solvers -- which hold the variable's
+    symbol, not its data -- pick the new values up at the next solve. That
+    only works if the write lands in the variable's global vector, which is
+    what FreeSurface relies on every step (free_surface.py calls this with
+    its own consistent surface velocity). Comparing the global norms is the
+    assertion with teeth: a write that stopped at a detached numpy copy
+    would leave them apart while the array view still looked right.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
+    v_adv = uw.discretisation.MeshVariable("v_adv_sync", mesh, 2, degree=2)
+    v_src = uw.discretisation.MeshVariable("v_src_sync", mesh, 2, degree=2)
+
+    x, y = mesh.X
+    materials = uw.level_set.MaterialCLS(mesh, velocity=v_adv)
+    materials.add("blob", 0.2 - sympy.sqrt((x - 0.5) ** 2 + (y - 0.5) ** 2))
+    materials.build()
+
+    coords = np.asarray(v_src.coords)
+    v_src.array[:, 0, 0] = 3.0 * coords[:, 0] + 1.0
+    v_src.array[:, 0, 1] = -2.0 * coords[:, 1] - 0.5
+
+    before = np.array(v_adv.array[...])
+    materials.sync_velocity_from(v_src)
+
+    after = np.array(v_adv.array[...])
+    assert not np.allclose(before, after)
+    assert np.allclose(after, np.array(v_src.array[...]))
+    assert v_adv._gvec.norm() == pytest.approx(v_src._gvec.norm(), rel=1e-12)
+
+
+def test_sync_velocity_from_refuses_a_bare_expression():
+    """No fixed-identity field to write into, so it says so rather than
+    silently doing nothing -- the failure mode documented on
+    ``FreeSurface``'s ``composition`` parameter."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
+    v = uw.discretisation.MeshVariable("v_sync_sym", mesh, 2, degree=2)
+    materials = uw.level_set.MaterialCLS(mesh, velocity=v.sym)
+    with pytest.raises(RuntimeError, match="genuine MeshVariable"):
+        materials.sync_velocity_from(v)

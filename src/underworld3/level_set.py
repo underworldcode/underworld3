@@ -1155,8 +1155,9 @@ class MaterialCLS(MaterialDistribution):
                 "a MeshVariable instead, e.g. `velocity=v_adv` (not "
                 "`velocity=v_adv.sym`)."
             )
-        with self.mesh.access(self._velocity_variable):
-            self._velocity_variable.array[...] = other.array
+        # .array is the sanctioned write path and manages its own vector
+        # state, so no access context is needed (Charter S7).
+        self._velocity_variable.array[...] = other.array
 
     def level_set(self, name):
         """The underlying level-set MeshVariable for an explicit material —

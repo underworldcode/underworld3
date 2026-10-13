@@ -1015,9 +1015,10 @@ class FreeSurface:
             "mesh_vel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
         self._mesh_vel_proj = uw.systems.Vector_Projection(self.mesh, self._mesh_velocity)
         self._mesh_vel_proj.uw_function = self._mesh_disp_p1.sym
-        with self.mesh.access(self._mesh_disp_p1, self._mesh_velocity):
-            self._mesh_disp_p1.data[...] = 0.0
-            self._mesh_velocity.data[...] = 0.0
+        # Zero on the very first step, since the mesh has not moved yet.
+        # .data writes directly (Charter S7); no access context needed.
+        self._mesh_disp_p1.data[...] = 0.0
+        self._mesh_velocity.data[...] = 0.0
         # Scratch space for consistent.u - mesh_velocity, at the velocity
         # space's own degree. Only the MaterialCLS sync path needs actual
         # DATA written here; the single-MeshVariable SUPG path instead
