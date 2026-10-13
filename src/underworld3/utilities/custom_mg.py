@@ -1586,6 +1586,8 @@ class CustomMGHierarchy:
         # patch is read off its own transfer ``Ps[l-1]``, in the level
         # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
+        # per level, the parallel cell-located transfer's hit-rate record
+        self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
         from underworld3.utilities import fault_mg
         for l in range(1, nlev):
@@ -1609,6 +1611,7 @@ class CustomMGHierarchy:
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
                         continuous, coords[l - 1], coords[l], maps[l - 1],
                         maps[l], nc, comm)
+                    self.level_transfer_stats[l] = fault_mg.last_transfer_stats
                 else:
                     Pn = fault_mg.cell_located_prolongation(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,

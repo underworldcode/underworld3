@@ -8390,6 +8390,15 @@ class Mesh(Stateful, uw_object):
                     split = split_tail_levels([tail[k] for k in idx],
                                               child._fault_specs,
                                               verbose=verbose)
+                    if self.dm.getComm().getSize() > 1:
+                        # each level's star onto the rank holding the finest's,
+                        # so the transfers locate the band rank-locally
+                        from underworld3.utilities.fault_mg import (
+                            colocate_split_level, fault_star_owner)
+                        target = fault_star_owner(child)
+                        split = [colocate_split_level(m, target)
+                                 if getattr(m, "_fault_point_pairs", None) else m
+                                 for m in split]
                     for k, m in zip(idx, split):
                         tail[k] = m
             child._custom_mg_coarse_meshes = tail

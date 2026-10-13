@@ -49,6 +49,9 @@ import underworld3 as uw
 _INSIDE_TOL = 1e-8
 # Chunk size for the batched weight evaluation (bounds the (n, nb, nb) temporaries).
 _CHUNK = 1 << 16
+# The last parallel transfer's hit-rate record (see cell_located_transfer_parallel);
+# CustomMGHierarchy.build copies it per level into ``level_transfer_stats``.
+last_transfer_stats = None
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +277,14 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
 
     # --- misses: ask the other ranks -------------------------------------- #
     miss = mine[~inside]
+    # a record of the rank-local hit rate, for the hierarchy's report
+    global last_transfer_stats
+    last_transfer_stats = {
+        "owned_nodes": int(m4.allreduce(int(mine.size))),
+        "misses": int(m4.allreduce(int(miss.size))),
+        "local_coarse_cells": m4.allgather(int(cv_c.shape[0])),
+        "local_fine_cells": m4.allgather(int(cv_f.shape[0])),
+    }
     q_cent = fcent[owner[miss]]
     q_node = Xf[miss]
     all_cent = m4.allgather(q_cent)
@@ -429,6 +440,89 @@ def split_tail_levels(levels, fault_specs, verbose=False):
         split._custom_mg_coarse_meshes = None
         out[k] = split
     return out
+
+
+def _fault_star_cells(mesh):
+    """The local cells of every split fault's star on ``mesh``: cells incident to a
+    vertex of a Plus or Minus facet, plus one growth layer (the same two-layer
+    rule as the split's own redistribution, so a moved star stays
+    rank-interior). Returns local cell indices (``cS``-based)."""
+    dm = mesh.dm
+    cS, cE = dm.getHeightStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    vS, vE = dm.getDepthStratum(0)
+    names = [b.name for b in mesh.boundaries]
+    verts = set()
+    for name in getattr(mesh, "_fault_point_pairs", {}):
+        for side in ("Plus", "Minus"):
+            lab_name = f"{name}{side}"
+            if lab_name not in names:
+                continue
+            lab = dm.getLabel(lab_name)
+            value = mesh.boundaries[lab_name].value
+            if lab and lab.getStratumSize(value) > 0:
+                for f in lab.getStratumIS(value).getIndices():
+                    if fS <= int(f) < fE:
+                        verts.update(int(q) for q in dm.getTransitiveClosure(int(f))[0]
+                                     if vS <= int(q) < vE)
+
+    def star(vs):
+        cells = set()
+        for v in vs:
+            cells.update(int(q) for q in dm.getTransitiveClosure(v, useCone=False)[0]
+                         if cS <= int(q) < cE)
+        return cells
+
+    cells = star(verts)
+    ring = set()
+    for c in cells:
+        ring.update(int(q) for q in dm.getTransitiveClosure(c)[0] if vS <= int(q) < vE)
+    cells |= star(ring)
+    return np.array(sorted(c - cS for c in cells), dtype=np.int64)
+
+
+def fault_star_owner(mesh):
+    """The rank holding most of the split faults' star on ``mesh`` (collective)."""
+    comm = mesh.dm.getComm().tompi4py()
+    counts = np.asarray(comm.allgather(int(_fault_star_cells(mesh).size)))
+    return int(np.argmax(counts))
+
+
+def colocate_split_level(level, target):
+    """Move a split level's fault star (two layers, as the split gathers it) onto
+    rank ``target`` — the rank holding the FINEST level's star — carrying the
+    pairing through as labels. The split gathers each level's star onto the
+    rank already holding most of it, which differs from level to level, and a
+    transfer between stars on different ranks locates most of the fault-band
+    nodes remotely (measured: 48 % of the finest nodes at np = 2, 58 % at
+    np = 8). With the stars on one rank the misses are the band's rim only.
+    Returns ``level`` itself when nothing moves. Collective."""
+    from underworld3.utilities.fault_split import redistribute_by_assignment
+
+    comm = level.dm.getComm().tompi4py()
+    if comm.size == 1:
+        return level
+    cS, cE = level.dm.getHeightStratum(0)
+    assign = np.full(cE - cS, comm.rank, dtype=np.int32)
+    assign[_fault_star_cells(level)] = target
+    dm, pairs, dropped = redistribute_by_assignment(
+        level.dm, assign, pairs=dict(level._fault_point_pairs))
+    if dm is level.dm:
+        return level
+    if dropped:
+        raise RuntimeError(
+            f"fault_mg: {dropped} pair(s) lost co-locating a level's fault star")
+    moved = uw.discretisation.Mesh(
+        dm, simplex=level.dm.isSimplex(), qdegree=level.qdegree,
+        coordinate_system_type=level.CoordinateSystem.coordinate_type,
+        boundaries=level.boundaries, verbose=False)
+    moved._fault_point_pairs = pairs
+    for attr in ("_fault_traces", "_fault_specs", "_fault_surfaces", "_fault_seam_normals"):
+        if getattr(level, attr, None) is not None:
+            setattr(moved, attr, getattr(level, attr))
+    moved._custom_mg_coarse_meshes = None
+    moved._mg_static = False
+    return moved
 
 
 # --------------------------------------------------------------------------- #
