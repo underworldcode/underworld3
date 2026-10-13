@@ -53,7 +53,8 @@ class UWQuantity:
     def __init__(
         self,
         value: Union[float, int, np.ndarray],
-        units: Optional[str] = None
+        units: Optional[str] = None,
+        _normalise_offset: bool = True,
     ):
         """
         Initialize a UWQuantity.
@@ -64,6 +65,14 @@ class UWQuantity:
             The dimensional value
         units : str or Pint Unit, optional
             Units specification
+        _normalise_offset : bool, default True
+            Internal. When True (the user-input boundary), an offset
+            temperature unit (``degC`` / ``degF``) is converted to absolute
+            kelvin on construction so that the stored quantity is always
+            multiplicative — no internal code (arithmetic, non-dimensional-
+            isation) ever meets a non-multiplicative unit. Set False only on
+            the output boundary (:meth:`to`) so a ``.to("degC")`` display
+            result is allowed to keep its offset unit.
         """
         from ..scaling import units as ureg
 
@@ -86,8 +95,22 @@ class UWQuantity:
                 # String - parse it
                 self._pint_unit = ureg.parse_expression(units).units
 
-            # Create Pint Quantity for arithmetic
-            self._pint_qty = self._value * self._pint_unit
+            # Create Pint Quantity for arithmetic. Use the registry Quantity
+            # constructor (value, unit) rather than ``value * unit``: the
+            # latter raises OffsetUnitCalculusError for offset temperature
+            # units (degC/degF), since ``scalar * degC`` is ambiguous in Pint.
+            self._pint_qty = ureg.Quantity(self._value, self._pint_unit)
+
+            # Input boundary: normalise an offset temperature unit (degC/degF)
+            # to absolute kelvin, so the stored quantity is multiplicative and
+            # no internal code meets a non-multiplicative unit. The user still
+            # reads it back in degC via .to("degC"). Multiplicative temperature
+            # units (kelvin, delta_degC) and all non-temperature units are left
+            # untouched.
+            if _normalise_offset and self._is_offset_temperature(self._pint_qty):
+                self._pint_qty = self._pint_qty.to(ureg.kelvin)
+                self._value = self._pint_qty.magnitude
+                self._pint_unit = self._pint_qty.units
         else:
             self._pint_unit = None
             self._pint_qty = None
@@ -95,6 +118,26 @@ class UWQuantity:
         # Cache for non-dimensional value (computed lazily)
         self._nd_value_cache = None
         self._nd_value_valid = False
+
+    @staticmethod
+    def _is_offset_temperature(pint_qty) -> bool:
+        """True if ``pint_qty`` carries a non-multiplicative (offset)
+        temperature unit such as ``degC`` / ``degF``.
+
+        These are the units for which scalar multiplication (``value * unit``,
+        ``qty * 2``) is ambiguous in Pint and raises ``OffsetUnitCalculusError``
+        — so they must not persist on a stored quantity. Detected via Pint's own
+        ``_is_multiplicative`` flag, which is False for offset units and True for
+        absolute kelvin/rankine *and* for a temperature difference
+        (``delta_degC``, correctly left alone). The ``[temperature]`` guard keeps
+        the kelvin conversion at the call site well-defined.
+        """
+        try:
+            if not pint_qty.check("[temperature]"):
+                return False
+            return not pint_qty._is_multiplicative
+        except Exception:
+            return False
 
     @classmethod
     def _from_pint(cls, pint_qty, model_registry=None):
@@ -247,7 +290,13 @@ class UWQuantity:
             raise ValueError("Cannot convert dimensionless quantity")
 
         converted = self._pint_qty.to(target_units)
-        return UWQuantity(converted.magnitude, converted.units)
+        # Output boundary: a .to("degC")/.to("degF") display result is allowed
+        # to keep its offset unit — do NOT re-normalise it back to kelvin
+        # (normalisation is an input-only concern). For all other targets this
+        # is a no-op (the unit is already multiplicative).
+        return UWQuantity(
+            converted.magnitude, converted.units, _normalise_offset=False
+        )
 
     def to_base_units(self) -> 'UWQuantity':
         """Convert to SI base units."""

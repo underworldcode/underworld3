@@ -144,7 +144,7 @@ def test_boundary_slip_facet_fallback_when_no_surface_registered():
     # mesh.boundary_slip builds a transient `facet` surface from the reference
     # facets, so the vertices slip along the boundary polygon (the same path a
     # mesh loaded from file takes). See boundary-slip-strategy.md.
-    from underworld3.meshing._ot_adapt import (
+    from underworld3.meshing.smoothing import (
         _boundary_facets, _nearest_on_facets_2d)
     m = _annulus()
     m.bounding_surfaces.clear()      # remove the analytic surfaces

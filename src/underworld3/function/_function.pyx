@@ -32,7 +32,7 @@ cdef extern from "petsc.h" nogil:
         pass
 
 cdef extern from "petsc_tools.h" nogil:
-    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
+    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell, int petscbool)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
 
 cdef extern from "petsc.h" nogil:
@@ -347,11 +347,21 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
     return results.reshape(-1, *shape)
 
 
+def _global_fallback_indices(return_value, return_mask):
+    """Indices requiring the parallel best-claim fallback.
+
+    A point needs recovery when migration/location marks it extrapolated or
+    when interpolation returned a non-finite value despite a located flag.
+    """
+    nonfinite = ~np.isfinite(return_value).all(axis=(1, 2))
+    return np.where(return_mask[:, 0, 0] | nonfinite)[0]
+
+
 def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 evalf=False,
                 rbf=False,
@@ -415,7 +425,7 @@ def global_evaluate_nd(   expr,
     # Python wrapper in functions_unit_system.py handles dimensional conversions
     # CRITICAL: Use np.array() to force copy and strip subclass (e.g. UnitAwareArray)
     # np.asarray() preserves subclass if dtype matches, causing downstream issues
-    coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
+    coords_array = np.array(coords, dtype=np.float64, copy=False).view(np.ndarray)
 
     mesh, varfns, derivfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
@@ -504,7 +514,10 @@ def global_evaluate_nd(   expr,
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
     local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.cdim)
-    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
+    # Forward `simplify`: without it the local evaluator's default (True) ran
+    # sympy.simplify on every call for any expression holding a mesh variable
+    # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
+    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
 
     if local_coords.shape[0] > 0:
         data_container.array[...] = values[...]
@@ -527,7 +540,7 @@ def global_evaluate_nd(   expr,
     # Pre-allocate with NaN so the shape is always correct. If any points
     # are lost during the migration round-trip, they remain NaN rather than
     # causing a shape mismatch or returning uninitialised data.
-    return_value = np.full((n_input_points,) + expr_shape, np.nan, dtype=np.double)
+    return_value = np.full((n_input_points,) + expr_shape, np.nan, dtype=np.float64)
     return_mask = np.full((n_input_points, 1, 1), True, dtype=bool)
 
     n_returned = original_index.array.shape[0]
@@ -589,8 +602,13 @@ def global_evaluate_nd(   expr,
         from mpi4py import MPI
 
         comm = uw.mpi.comm
-        ext_idx = np.where(return_mask[:, 0, 0])[0]
-        ext_coords = np.ascontiguousarray(coords_array[ext_idx], dtype=np.double)
+        # A failed interpolation can occasionally return NaN while reporting
+        # the point as located. Treat that exactly like an extrapolated/lost
+        # point so a finite value from the globally nearest rank replaces it.
+        # This is required by SLCN midpoint tracing: one silent NaN here makes
+        # the departure point and then the transported history non-finite.
+        ext_idx = _global_fallback_indices(return_value, return_mask)
+        ext_coords = np.ascontiguousarray(coords_array[ext_idx], dtype=np.float64)
 
         counts = np.array(comm.allgather(ext_coords.shape[0]), dtype=int)
         n_ext_total = int(counts.sum())
@@ -603,19 +621,19 @@ def global_evaluate_nd(   expr,
             # This rank's local rbf extrapolation of the global set. NON-collective
             # value path — see DEADLOCK SAFETY above (must be rbf=True, never FE).
             ext_vals, ext_flag = evaluate_nd(
-                expr, all_ext, rbf=True, evalf=False, verbose=False,
+                expr, all_ext, rbf=True, evalf=False, verbose=False, simplify=simplify,
                 check_extrapolated=True,)
             ext_vals = np.ascontiguousarray(
-                np.asarray(ext_vals, dtype=np.double).reshape((n_ext_total,) + expr_shape))
+                np.asarray(ext_vals, dtype=np.float64).reshape((n_ext_total,) + expr_shape))
             ext_flag = np.asarray(ext_flag).reshape(n_ext_total).astype(np.int32)
 
             # Nearest-local-cell distance for every point (local kd-tree query).
             mesh._build_kd_tree_index()
             dist2, _ = mesh._centroid_index.query(all_ext, k=1, sqr_dists=True)
-            dist2 = np.ascontiguousarray(np.asarray(dist2, dtype=np.double).ravel())
+            dist2 = np.ascontiguousarray(np.asarray(dist2, dtype=np.float64).ravel())
 
             # Globally-nearest cell per point, lowest rank as the tie-break.
-            min_dist2 = np.empty(n_ext_total, dtype=np.double)
+            min_dist2 = np.empty(n_ext_total, dtype=np.float64)
             comm.Allreduce([dist2, MPI.DOUBLE], [min_dist2, MPI.DOUBLE], op=MPI.MIN)
             my_claim = np.where(dist2 <= min_dist2 * (1.0 + 1e-12) + 1e-300,
                                 comm.rank, comm.size).astype(np.int32)
@@ -729,6 +747,12 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
         )
         projector.uw_function = flat_source
         projector.smoothing = smoothing
+        # NB: a plain solve (not _force_setup=True) — the cached projector
+        # refreshes correctly against changed field data on the current cache
+        # machinery. Forcing a full DM+SNES rebuild every evaluate() re-introduced
+        # the O(100 MiB) leak guarded by tests/test_0006_memory_leak.py. If a
+        # genuine cache-staleness recurs, invalidate the cached projector
+        # targetedly rather than rebuilding on every call (issue #215, Bug 2).
         projector.solve(zero_init_guess=False)
 
         # Fan flat result back to the tensor work variable
@@ -756,9 +780,93 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
 
     projector.uw_function = scalar_expr
     projector.smoothing = smoothing
-    projector.solve(zero_init_guess=False)
+    # _force_setup=True: rebuild solver state to avoid stale cached
+    # projector after Stokes/DM modifications (issue #215, Bug 2).
+    projector.solve(zero_init_guess=False, _force_setup=True)
 
     return work_var
+
+
+def _integration_point_sources_to_cell_fit(expr, mesh, derivfns):
+    """Replace integration-point variables that appear under a derivative by a
+    per-cell least-squares fit of their own values, which does have a gradient.
+
+    An integration-point variable holds a value at each integration point and
+    nothing between them: its tabulated gradient is identically zero, so both
+    the residual and an L2 projection of the derivative would return a silent
+    zero. The values themselves are good data, though, and fitting them cell by
+    cell (the reconstruction of
+    :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`,
+    the same one behind ``SwarmVariable(proxy_location="cells")``) gives a
+    polynomial per cell that differentiates directly, with no projection solve.
+
+    **Two paths, deliberately different.** ``uw.function.evaluate`` is a query:
+    it answers, by way of this recovery, and the answer converges (measured on
+    a quadratic particle field: 2.4e-3, 6.1e-4, 2.6e-4 as the cell size halves
+    from 1/5 to 1/20). Assembly of a weak form still REFUSES, because there a
+    hidden reconstruction would be a per-assembly cost and would quietly decide
+    a discretisation the user should choose. If a solve needs the gradient,
+    build the variable with ``proxy_location="cells"``, whose level sets are
+    already polynomials: that is both cheaper and sharper (2.4e-7 on the same
+    field, exact for a quadratic, because no further projection follows).
+
+    Returns ``(expr, derivfns)`` with the substitutions applied.
+    """
+    from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+    ip_sources = [v for v in derivfns
+                  if getattr(v, "is_integration_point", False)]
+    if not ip_sources:
+        return expr, derivfns
+
+    subs = {}
+    for source_var in ip_sources:
+        # Degree: enough to carry a gradient, and no more than the rule can
+        # support (the fit falls back per cell when a cell is short of points).
+        degree = max(1, min(2, mesh.qdegree))
+        # Cached on the mesh, like the other evaluate work variables: adding a
+        # field rebuilds the mesh DM, so one per (source, degree) and no more.
+        cache_key = f"_eval_ipgrad_{source_var.clean_name}_{degree}"
+        work = getattr(mesh, cache_key, None)
+        if work is None:
+            work = uw.discretisation.MeshVariable(
+                cache_key, mesh, source_var.shape, source_var.vtype,
+                degree=degree, continuous=False,
+                varsymbol=rf"{{ \widehat{{{source_var.symbol}}} }}",
+            )
+            setattr(mesh, cache_key, work)
+            setattr(mesh, cache_key + "_projector", CellPolynomialProjector(work))
+        projector = getattr(mesh, cache_key + "_projector")
+        if projector.mesh_version != mesh._mesh_version:
+            projector = CellPolynomialProjector(work)
+            setattr(mesh, cache_key + "_projector", projector)
+        # The rule has exactly as many points per cell as a fit of this degree
+        # has coefficients (that is what "the rule is unisolvent for P_k"
+        # means), so allow an exactly-determined fit: nmin = Nb rather than the
+        # default Nb + 2, which would send every cell to the linear patch and
+        # leave the gradient first order. The projector's own conditioning
+        # guard still catches a degenerate cell.
+        fitted = projector.fit(
+            np.asarray(source_var.coords_nd),
+            np.asarray(source_var.data).reshape(-1, source_var.num_components),
+            nmin=projector.Nb,
+        )
+        work.data[...] = fitted.reshape(work.data.shape)
+
+        src_flat, work_flat = source_var.sym_1d, work.sym_1d
+        for k in range(source_var.num_components):
+            subs[src_flat[k]] = work_flat[k]
+        for deriv_expr, diffindex in derivfns[source_var]:
+            subs[deriv_expr] = work_flat[deriv_expr.component].diff(mesh.X[diffindex])
+
+    expr = expr.subs(subs) if hasattr(expr, "subs") else expr
+    derivfns = {v: d for v, d in derivfns.items() if v not in ip_sources}
+    # the substituted derivatives are now derivatives of ordinary mesh
+    # variables; let the caller re-extract them
+    _, _, new_derivs = uw.function.fn_mesh_vars_in_expression(expr)
+    for v, d in new_derivs.items():
+        derivfns.setdefault(v, d)
+    return expr, derivfns
 
 
 def _clement_to_work_variable(expr, mesh, derivfns):
@@ -814,10 +922,13 @@ def _clement_to_work_variable(expr, mesh, derivfns):
             # P1 - data is at nodes
             nodal_values[varfn] = var.data[:, comp].flatten()
         else:
-            # Higher degree - need to evaluate at node coords
-            nodal_values[varfn] = uw.function.evaluate(
-                var.sym[comp, 0], node_coords, rbf=True
-            ).flatten()
+            # Higher degree - need to evaluate at node coords. Evaluate the
+            # component's own applied function directly: var.sym is a row
+            # matrix (1, cdim) for vectors (and (rows, cols) for tensors), so
+            # indexing it by the flat data-column index is wrong / can raise.
+            nodal_values[varfn] = np.asarray(uw.function.evaluate(
+                varfn, node_coords, rbf=True
+            )).flatten()
 
     # Compute Clement gradients for derivative source variables
     gradient_at_nodes = {}
@@ -832,11 +943,14 @@ def _clement_to_work_variable(expr, mesh, derivfns):
                 grad = compute_clement_gradient_at_nodes(source_var, component=c)
                 gradient_at_nodes[(source_var, c)] = grad
 
-    # Add derivative values to nodal_values dictionary
+    # Add derivative values to nodal_values dictionary. Each derivative
+    # expression carries its own flat data-column index (diffcls.component,
+    # set at UnderworldFunction registration) — use it to retrieve the
+    # matching per-component gradient, so e.g. v[1].diff(x) reads the
+    # component-1 gradient rather than component 0.
     for source_var, deriv_list in derivfns.items():
-        comp = 0 if source_var.num_components == 1 else 0  # TODO: handle multi-component
-        grad = gradient_at_nodes[(source_var, comp)]  # shape (n_nodes, dim)
         for deriv_expr, diffindex in deriv_list:
+            grad = gradient_at_nodes[(source_var, deriv_expr.component)]  # (n_nodes, dim)
             # grad[:, diffindex] gives ∂f/∂x_i at all nodes
             nodal_values[deriv_expr] = grad[:, diffindex]
 
@@ -878,8 +992,7 @@ def _clement_to_work_variable(expr, mesh, derivfns):
         result = np.full(n_nodes, result[0])
 
     # Store in work variable
-    with mesh.access(work_var):
-        work_var.data[:, 0] = result.flatten()
+    work_var.data[:, 0] = result.flatten()
 
     return work_var
 
@@ -888,7 +1001,7 @@ def evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 evalf=False,
                 rbf=False,
@@ -933,7 +1046,7 @@ def evaluate_nd(   expr,
     # Python wrapper in functions_unit_system.py handles dimensional conversions
     # CRITICAL: Use np.array() to force copy and strip subclass (e.g. UnitAwareArray)
     # np.asarray() preserves subclass if dtype matches, causing downstream issues
-    coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
+    coords_array = np.array(coords, dtype=np.float64, copy=False).view(np.ndarray)
 
     dim = coords_array.shape[1]
     mesh, varfns, derivfns = uw.function.fn_mesh_vars_in_expression(expr)
@@ -948,6 +1061,12 @@ def evaluate_nd(   expr,
     # Two modes:
     # - Quick (rbf=True, force_l2=False): Clement gradient at nodes, no solve
     # - Accurate (force_l2=True or rbf=False): L2 projection, requires solve
+    if derivfns and mesh is not None:
+        # An integration-point source has no gradient of its own: fit its
+        # values per cell first, then the ordinary derivative machinery below
+        # differentiates a polynomial (see the helper).
+        expr, derivfns = _integration_point_sources_to_cell_fit(expr, mesh, derivfns)
+
     if derivfns and mesh is not None:
         if evalf:
             raise RuntimeError(
@@ -1010,13 +1129,19 @@ def evaluate_nd(   expr,
         # same fix that lets swarm migration claim them. Serial / non-simplex
         # keep the cell-wall test (bit-identical). See
         # parallel-repeated-solve-corruption.md.
-        in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
+        #
+        # The classification also hands back the cells it located on the way,
+        # so petsc_interpolate does not look those points up again (#551
+        # item 2).
+        in_or_not, cell_hints = mesh._classify_points_in_domain(
+            coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
                                     coord_sys,
                                     mesh,
                                     simplify=simplify,
-                                    verbose=verbose, )
+                                    verbose=verbose,
+                                    cell_hints=cell_hints[in_or_not], )
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
@@ -1079,8 +1204,9 @@ def petsc_interpolate(   expr,
                 coord_sys=None,
                 mesh=None,
                 other_arguments=None,
-                simplify=True,
-                verbose=False, ):
+                simplify=False,
+                verbose=False,
+                cell_hints=None, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -1099,6 +1225,14 @@ def petsc_interpolate(   expr,
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented.
+    cell_hints: numpy.ndarray, optional
+        One owning cell index per coordinate, as returned by
+        ``Mesh._classify_points_in_domain``: a cell the classification
+        already located, or ``-1`` for "not looked up", which this function
+        then locates itself. Supplying it means those points are not located
+        twice. Hints must have been located against ``mesh``; hints for any
+        other mesh in the expression are ignored and that mesh locates its
+        own.
 
     Notes
     -----
@@ -1145,7 +1279,7 @@ def petsc_interpolate(   expr,
                          "Note also that it is inefficient to call this function for a single evaluation,\n"
                          "and you should instead stack up all necessary evaluations into your `coords` array\n"
                          "and call this function once.")
-    if coords.dtype != np.double:
+    if coords.dtype != np.float64:
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
@@ -1205,6 +1339,10 @@ def petsc_interpolate(   expr,
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
 
+    # Any cell hints the caller supplied were located against THIS mesh; an
+    # expression spanning two meshes must locate the second one itself.
+    hinted_mesh = mesh
+
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
         This function performs the interpolation for the given variables
@@ -1237,8 +1375,16 @@ def petsc_interpolate(   expr,
                 mesh._evaluation_interpolated_results = None
 
 
-        # For now, eval over all vars
-        vars = mesh.vars.values()
+        # For now, eval over all vars.
+        #
+        # MATERIALISE THE LIST. ``mesh.vars`` is a weakref.WeakValueDictionary
+        # and its ``.values()`` is a GENERATOR, not a view: the dofcount loop
+        # below consumes it, and every later reader (the continuity gate, the
+        # RBF fallback rung) then iterates an empty sequence. That silently
+        # disabled the fallback — points the locator returns -1 for kept the
+        # NaN written by DMInterpolationEvaluate_UW and handed it back to the
+        # caller — and it silently pinned the continuity gate at True.
+        vars = list(mesh.vars.values())
 
         cdef DM dm = mesh.dm
 
@@ -1263,42 +1409,104 @@ def petsc_interpolate(   expr,
         # Try to get cached structure first
         from underworld3.function._dminterp_wrapper import CachedDMInterpolationInfo
 
+        # Location policy: is the cell-wall hint authoritative for THIS
+        # evaluation? Decided by the mesh's measured capability (face
+        # planarity + convexity, mesh._location_capability) combined with the
+        # continuity of the variables being interpolated — "continuous"
+        # capability (small-sagitta warped hexes, e.g. the cubed sphere) is
+        # authoritative only when every field is continuous, because a
+        # face-aligned jump inside the misclassification slab would see
+        # O(jump) wrong-side errors. The policy participates in the cache key
+        # so the same coords evaluated with a different field mix cannot
+        # reuse a structure built under the other policy.
+        #
+        # The continuity test runs over the variables THIS CALL ASKED FOR,
+        # not every variable on the mesh. The structure carries all of them
+        # (dofcount above), but only the requested slices are read, and the
+        # gate exists to protect a field whose jump sits on a cell face. Over
+        # the whole mesh instead, one discontinuous variable anywhere would
+        # take every evaluation off the authoritative path: measured on a
+        # warped hex box (capability "continuous") carrying a P1 and a P0,
+        # that costs the CONTINUOUS field a factor 15 in accuracy (linear
+        # field, max error 8.0e-3 -> 1.2e-1 at 62 of 1500 interior points)
+        # for no correctness gain. Scoped to the request, the continuous
+        # field is bit-identical and only the P0 moves.
+        #
+        # NOTE this gate has never bound before: `vars` was an exhausted
+        # generator (see above) so `all()` was vacuously True.
+        all_continuous = all(
+            getattr(varfn.meshvar(), "continuous", True) for varfn in varfns)
+        authoritative = mesh._hint_is_authoritative(all_continuous)
+        location_policy = "auth" if authoritative else "locate"
+
         # coords is already np.ndarray type in petsc_interpolate function signature
-        cached_info = mesh._dminterpolation_cache.get_structure(coords, dofcount)
+        cached_info = mesh._dminterpolation_cache.get_structure(
+            coords, dofcount, policy=location_policy)
 
         # Create output array
-        cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
+        cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.float64)
 
         if cached_info is not None:
             # CACHE HIT - Fast path. Evaluate using cached structure
-            mesh.update_lvec()  # Ensure fresh values
+            # swarm_sync=False: petsc_interpolate is reached by only the
+            # ranks that hold interior points — the swarm-dependency hook
+            # does collective reductions and must not run on a subset.
+            # Freshness comes from the all-ranks update_lvec() in evaluate().
+            mesh.update_lvec(swarm_sync=False)  # Ensure fresh values
             cached_info.evaluate(mesh, outarray)
 
         else:
             # CACHE MISS - Create structure and cache it
             cached_info = CachedDMInterpolationInfo()
 
-            # Get cell hints.
-            # In PARALLEL use the bulletproof barycentric locator (the swarm-
-            # migration locator): get_closest_cells (first-pass kd-tree-nearest)
-            # can hand back a non-containing cell for on-face/seam node points,
-            # and that wrong cell is what the DMInterpolation recovery uses when
-            # DMLocatePoints drops the point -> a value from the wrong region.
-            # _robust_owning_cells returns the true containing cell (or a valid
-            # adjacent cell for on-face points). When the bypass is active
-            # (mesh._eval_use_robust_location()) this hint is trusted directly;
-            # otherwise it is the first-pass guess as before. Same single policy
-            # switch as the classifier and the DMInterpolation wrapper.
-            if mesh._eval_use_robust_location():
-                cells = mesh._robust_owning_cells(coords)
+            # Cell hints, by policy:
+            # AUTHORITATIVE — the hint bypasses DMLocatePoints, so it has to
+            # be a cell that CONTAINS the point. _robust_owning_cells is the
+            # containment-checked locator: it returns a cell whose walls the
+            # point is inside (any one of them, for a point on a shared face)
+            # and -1 when no local cell contains it. Every authoritative mesh
+            # takes the same route. Serial simplex meshes used to take the
+            # nearest-CONTROL-POINT lookup (get_closest_cells) with no
+            # containment test at all; on a tetrahedron the reference-coord
+            # clamp downstream is a box clamp and cannot rescue that, so a
+            # query on a shared edge was evaluated by extrapolating the basis
+            # of a cell that does not contain it (#432, a recurrence of #390).
+            # NOT AUTHORITATIVE — no hint at all: DMLocatePoints decides,
+            # dropped points surface in unlocated_mask and are filled by the
+            # RBF fallback below.
+            #
+            # Cells the caller's classification already located are reused;
+            # only the ones it left at -1 are searched for, and only here, on
+            # the cache miss that actually needs them. That is what makes it
+            # one location per point per call rather than two.
+            if authoritative:
+                if cell_hints is not None and mesh is hinted_mesh:
+                    # COPY: the unhinted entries are filled in below, and
+                    # ascontiguousarray hands back the caller's own array when
+                    # it is already int64 and contiguous. petsc_interpolate
+                    # takes cell_hints as a documented keyword, so writing
+                    # through it would mutate somebody else's array.
+                    cells = np.array(cell_hints, dtype=np.int64, copy=True,
+                                     order="C")
+                    if cells.shape[0] != coords.shape[0]:
+                        raise RuntimeError(
+                            "cell_hints must carry one cell index per coordinate "
+                            f"({cells.shape[0]} hints for {coords.shape[0]} points)."
+                        )
+                    unhinted = np.where(cells < 0)[0]
+                    if unhinted.shape[0] > 0:
+                        cells[unhinted] = mesh._robust_owning_cells(coords[unhinted])
+                else:
+                    cells = mesh._robust_owning_cells(coords)
             else:
-                cells = mesh.get_closest_cells(coords)
+                cells = None
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
             # This calls DMLocatePoints which is COLLECTIVE — all ranks must enter.
             try:
                 # coords is already np.ndarray type (function signature ensures this)
-                cached_info.create_structure(mesh, coords, cells, dofcount)
+                cached_info.create_structure(mesh, coords, cells, dofcount,
+                                             hint_authoritative=authoritative)
             except RuntimeError as e:
                 # Handle DMInterpolationSetUp failures gracefully
                 if "outside the domain" in str(e):
@@ -1309,11 +1517,46 @@ def petsc_interpolate(   expr,
 
             # Store in cache for reuse
             # coords is already np.ndarray type (function signature ensures this)
-            mesh._dminterpolation_cache.store_structure(coords, dofcount, cached_info)
+            mesh._dminterpolation_cache.store_structure(
+                coords, dofcount, cached_info, policy=location_policy)
 
             # Evaluate
-            mesh.update_lvec()
+            # swarm_sync=False: see the cache-hit branch above — only a
+            # subset of ranks reaches petsc_interpolate.
+            mesh.update_lvec(swarm_sync=False)
             cached_info.evaluate(mesh, outarray)
+
+        # RBF fallback rung: points no cell owns (dropped by DMLocatePoints
+        # on a non-authoritative mesh, or hinted -1) hold NaN in outarray.
+        # Fill them per-variable with the bounded, topology-free RBF
+        # interpolant — the same machinery exterior points already use. NaN
+        # survives only if this plumbing is bypassed, which is exactly when
+        # it should be visible.
+        unlocated = getattr(cached_info, "unlocated_mask", None)
+        if unlocated is not None and unlocated.any():
+            fallback_coords = coords[unlocated]
+            for var in vars:
+                var_start = var_start_index[var]
+                rbf_vals = np.asarray(var.rbf_interpolate(fallback_coords))
+                rbf_vals = rbf_vals.reshape(len(fallback_coords), var.num_components)
+                outarray[unlocated, var_start:var_start + var.num_components] = rbf_vals
+
+        # Integration-point variables: the FE interpolation above tabulates
+        # their delta basis at the query points, which is zero anywhere but
+        # on the rule. Their defined extension is the nearest integration
+        # point of the owning cell; overwrite their columns with it.
+        ip_vars = [v for v in vars if getattr(v, "is_integration_point", False)]
+        if ip_vars:
+            ip_cells = getattr(cached_info, "cells", None)
+            if ip_cells is None:
+                ip_cells = mesh._robust_owning_cells(coords)
+            ip_cells = np.asarray(ip_cells).reshape(-1).copy()
+            if unlocated is not None:
+                ip_cells[np.asarray(unlocated, dtype=bool)] = -1
+            for var in ip_vars:
+                var_start = var_start_index[var]
+                outarray[:, var_start:var_start + var.num_components] = \
+                    var._nearest_point_values(coords, ip_cells)
         # === END CACHING ===
 
         # Create map between array slices and variable functions
@@ -1364,7 +1607,7 @@ def rbf_evaluate(  expr,
             mesh=None,
             other_arguments=None,
             verbose=False,
-            simplify=True,):
+            simplify=False,):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -1431,7 +1674,7 @@ def rbf_evaluate(  expr,
                          "Note also that it is inefficient to call this function for a single evaluation,\n"
                          "and you should instead stack up all necessary evaluations into your `coords` array\n"
                          "and call this function once.")
-    if coords.dtype != np.double:
+    if coords.dtype != np.float64:
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")

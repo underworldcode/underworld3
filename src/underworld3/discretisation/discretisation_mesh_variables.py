@@ -38,6 +38,10 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities.nd_array_callback import (
+    fire_canonical_callbacks,
+    register_collective_flush,
+)
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
 
@@ -430,6 +434,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
 
+        # Creation-order id for the synchronised-update collective flush.
+        # Variable construction is collective (see the coordinate-cache note
+        # below), so this counter advances in lockstep on every rank and the
+        # id is a valid cross-rank key. Variable NAMES are not: temporary
+        # variables embed rank-local id() values in their names.
+        self._collective_flush_id = register_collective_flush(self)
+
         # BUGFIX(#130): pre-populate the mesh's coordinate cache for this
         # variable's basis. mesh._get_coords_for_basis contains MPI
         # collectives (DMClone, createInterpolation, globalToLocal) that
@@ -441,6 +452,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         # ranks populate it together and subsequent rank-local lookups are
         # cache hits.
         self.mesh._get_coords_for_var(self)
+
+        # Eager canonical-array creation, for the same reason: the first
+        # .data access performs collective vec setup (_set_vec), so a lazy
+        # first touch from rank-conditional code — e.g. a masked write on
+        # one rank inside uw.synchronised_array_update — deadlocks. Create
+        # it here, while every rank is constructing together.
+        _ = self.data
 
         # Setup public view of data - using NDArray_With_Callback
         self._array_cache = None  # Will be created lazily when first accessed
@@ -527,143 +545,6 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._remesh_policy = RemeshPolicy(value)
 
-    def _create_variable_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for variable data.
-        Follows the same pattern as mesh.points implementation.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            initial_data = self.unpack_uw_data_from_petsc(squeeze=False, sync=True)
-
-        # Create NDArray_With_Callback (following mesh._points pattern)
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Single callback function (following mesh_update_callback pattern)
-        def variable_update_callback(array, change_context):
-            """Callback to sync variable changes back to PETSc (like mesh.points)"""
-            var = array.owner
-            if var is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or mesh rebuilds),
-                # where the owning Python variable has already been garbage
-                # collected but the NDArray proxy still exists.
-                return
-
-            # Only act on data-changing operations (following mesh.points pattern)
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # Prevent recursion by checking if we're already in a callback
-            if hasattr(var, "_in_callback") and var._in_callback:
-                return
-
-            # Set recursion guard
-            var._in_callback = True
-
-            try:
-                # Skip updates during mesh coordinate changes to prevent corruption
-                # Check if mesh is currently being updated
-                if hasattr(var.mesh, "_mesh_update_lock"):
-                    # Try to acquire lock without blocking - if we can't, skip update
-                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
-                        return
-                    try:
-                        # Persist changes to PETSc (like mesh callback updates coordinates)
-                        var.pack_uw_data_to_petsc(array, sync=True)
-                    finally:
-                        var.mesh._mesh_update_lock.release()
-                else:
-                    # Fallback if no lock exists
-                    var.pack_uw_data_to_petsc(array, sync=True)
-            finally:
-                # Clear recursion guard
-                var._in_callback = False
-
-        # Register the callback (following mesh.points pattern)
-        array_obj.add_callback(variable_update_callback)
-        return array_obj
-
-    def _create_flat_data_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for backward-compatible flat data.
-        Returns data in shape (-1, num_components) using pack_raw/unpack_raw methods.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            # Use unpack_raw to get flat format (-1, num_components)
-            initial_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=True)
-
-        # Create NDArray_With_Callback for flat data
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Callback for flat data format
-        def flat_data_update_callback(array, change_context):
-            """Callback to sync flat data changes back to PETSc"""
-            var = array.owner
-            if var is None:
-                return
-
-            # Only act on data-changing operations
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # Prevent recursion by checking if we're already in a callback
-            if hasattr(var, "_in_flat_callback") and var._in_flat_callback:
-                return
-
-            # Set recursion guard
-            var._in_flat_callback = True
-
-            try:
-                # Skip updates during mesh coordinate changes to prevent corruption
-                if hasattr(var.mesh, "_mesh_update_lock"):
-                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
-                        return
-                    try:
-                        # Use pack_raw for flat data format
-                        var.pack_raw_data_to_petsc(array, sync=True)
-                    finally:
-                        var.mesh._mesh_update_lock.release()
-                else:
-                    # Fallback if no lock exists
-                    var.pack_raw_data_to_petsc(array, sync=True)
-            finally:
-                # Clear recursion guard
-                var._in_flat_callback = False
-
-        # Register the callback
-        array_obj.add_callback(flat_data_update_callback)
-        return array_obj
-
     def _object_viewer(self):
         """This will substitute specific information about this object"""
         from IPython.display import Latex, Markdown, display
@@ -712,7 +593,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         MeshVariable
             New mesh variable with copied structure but independent data.
         """
-        newMeshVariable = MeshVariable(
+        # Built through the public factory rather than a bare `MeshVariable`,
+        # which is not a name in this module — the clone therefore came back as
+        # a NameError for every caller. See issue #498. Going through the
+        # factory also returns the same enhanced type the caller started with,
+        # so a clone behaves like its original.
+        return uw.discretisation.MeshVariable(
             varname=name,
             mesh=self.mesh,
             num_components=self.shape,
@@ -721,8 +607,6 @@ class _BaseMeshVariable(Stateful, uw_object):
             continuous=self.continuous,
             varsymbol=varsymbol,
         )
-
-        return newMeshVariable
 
     def pack_raw_data_to_petsc(self, data_array, sync=True):
         """
@@ -1005,24 +889,36 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         return self._kdtree
 
-    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
+    def rbf_interpolate(self, new_coords, nnn=None, p=1, verbose=False,
+                        order=0, monotone=False):
         """Interpolate variable data to new coordinates using RBF.
 
         Uses inverse distance weighting with k-nearest neighbors to
         interpolate values from mesh nodes to arbitrary coordinates.
 
+        The default ``order=0`` is deliberate and differs from the swarm proxy
+        path: this method is the RBF rung of the point-location fallback ladder
+        in :func:`underworld3.function.evaluate`, whose documented contract is
+        that it is *bounded*. Inverse-distance weights are a convex combination
+        and so cannot overshoot; ``order=1`` weights can. Pass ``order=1``
+        explicitly where linear exactness matters more than boundedness.
+
         Parameters
         ----------
         new_coords : numpy.ndarray
             Target coordinates of shape ``(n_points, dim)``.
-        meth : int, optional
-            Interpolation method (reserved, currently unused).
+        nnn : int, optional
+            Number of nearest neighbours (default: 4 for 3D, 3 for 2D).
         p : float, optional
-            Power parameter for inverse distance weighting (default: 2).
+            Power parameter for inverse distance weighting on the actual
+            distance (default: 1, i.e. inverse distance).
         verbose : bool, optional
             Print progress information.
-        nnn : int, optional
-            Number of nearest neighbors (default: 4 for 3D, 3 for 2D).
+        order : int, optional
+            Polynomial reproduction order, 0 (default, bounded) or 1
+            (constants and linears exact; requires ``nnn >= dim + 2``).
+        monotone : bool or str, optional
+            Bound each value to the min/max of its own stencil.
 
         Returns
         -------
@@ -1042,12 +938,23 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         D = self.data.copy()
 
+        # A rank owning no cells owns no DOFs either, so there is nothing to
+        # interpolate FROM: the kd-tree below would be built over an empty
+        # point cloud and the stencil gather would index an empty array
+        # (issue #405). Return the correctly-shaped zeros — this is a purely
+        # rank-local path, so returning early takes no collective with it.
+        # (The equivalent SwarmVariable path guards the same way.)
+        if D.shape[0] == 0:
+            return np.zeros((np.asarray(new_coords).shape[0], D.shape[1]))
+
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
 
         # Use cached KDTree for interpolation
         kdt = self._get_kdtree()
-        values = kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
+        values = kdt.rbf_interpolator_local(
+            new_coords, D, nnn, p=p, verbose=verbose, order=order, monotone=monotone
+        )
 
         return values
 
@@ -1105,28 +1012,33 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Use preferred selective_ranks pattern for unit metadata
         with uw.selective_ranks(0) as should_execute:
             if should_execute:
-                f = h5py.File(filename, "a")
+                # Context manager: an exception mid-block must not leak the
+                # handle (a live handle keeps the HDF5 lock held).
+                with h5py.File(filename, "a") as f:
+                    # Create or get metadata group
+                    if "metadata" not in f:
+                        g = f.create_group("metadata")
+                    else:
+                        g = f["metadata"]
 
-                # Create or get metadata group
-                if "metadata" not in f:
-                    g = f.create_group("metadata")
-                else:
-                    g = f["metadata"]
+                    # Add variable unit metadata
+                    var_metadata = {
+                        "units": str(self.units) if hasattr(self, "units") and self.units else None,
+                        "dimensionality": (
+                            str(self.dimensionality) if hasattr(self, "dimensionality") else None
+                        ),
+                        "units_backend": "pint" if self.has_units else None,
+                        "num_components": self.num_components,
+                        "variable_type": str(self.vtype),
+                        "variable_name": self.name,
+                    }
 
-                # Add variable unit metadata
-                var_metadata = {
-                    "units": str(self.units) if hasattr(self, "units") and self.units else None,
-                    "dimensionality": (
-                        str(self.dimensionality) if hasattr(self, "dimensionality") else None
-                    ),
-                    "units_backend": "pint" if self.has_units else None,
-                    "num_components": self.num_components,
-                    "variable_type": str(self.vtype),
-                    "variable_name": self.name,
-                }
+                    g.attrs[f"variable_{self.clean_name}_units"] = json.dumps(var_metadata)
 
-                g.attrs[f"variable_{self.clean_name}_units"] = json.dumps(var_metadata)
-                f.close()
+        # Same quiescence contract as Swarm.save (issue #330): every rank
+        # waits for rank 0's metadata append, so an immediate reopen
+        # (read_timestep after write_timestep) cannot hit HDF5 file locking.
+        uw.mpi.barrier()
 
         lvec = self.mesh.dm.getCoordinates()
 
@@ -1185,7 +1097,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         lvec = dmnew.getLocalVec()
         gvec = dmnew.getGlobalVec()
 
-        lvec.array[...] = self.coords.reshape(-1)[...]
+        # Frame contract (#269): the remap dataset stores MODEL-frame
+        # (non-dimensional) coordinates — the same frame as the mesh-file
+        # geometry and as a reading session's ``coords_nd``, independent of
+        # the units state of either session. ``.coords`` is frame-dependent
+        # (dimensional under an active units model) and baked a
+        # session-dependent frame into the file, which made
+        # ``read_timestep`` silently mis-match in any other session.
+        lvec.array[...] = numpy.asarray(self.coords_nd).reshape(-1)[...]
         dmnew.localToGlobal(lvec, gvec, addv=False)
         gvec.setName("coordinates")
 
@@ -1343,8 +1262,8 @@ class _BaseMeshVariable(Stateful, uw_object):
                         -1, n_components
                     )
         else:
-            X_src = np.empty((0, dim), dtype=np.double)
-            D_src = np.empty((0, n_components), dtype=np.double)
+            X_src = np.empty((0, dim), dtype=np.float64)
+            D_src = np.empty((0, n_components), dtype=np.float64)
 
         src_size_before = max(source_swarm.dm.getLocalSize(), 0)
         source_swarm.add_particles_with_global_coordinates(X_src, migrate=False)
@@ -1363,10 +1282,53 @@ class _BaseMeshVariable(Stateful, uw_object):
         landed_D = saved.array[:, 0, :]
 
         # ---- Phase 2: query swarm round-trips live DOFs to source rank ----
-        query_coords = self.coords
-        if hasattr(query_coords, "magnitude"):
-            query_coords = query_coords.magnitude
+        # Model-frame query to match the file's model-frame coordinates —
+        # the frame contract stated on ``write`` (#269). ``.coords`` is
+        # frame-dependent (dimensional under an active units model) and
+        # silently mis-matched whenever the writing and reading sessions
+        # differed in units state.
+        query_coords = np.asarray(self.coords_nd)
         n_query_local = query_coords.shape[0]
+
+        # Frame guard (#269): a checkpoint from the older writer under an
+        # active units model stores DIMENSIONAL coordinates instead of the
+        # model frame; nearest-neighbour matching across that scale
+        # mismatch returns a silently wrong, near-constant field. Compare
+        # the two clouds' extents and refuse loudly instead. (Collective:
+        # extents are reduced on every rank, so all ranks raise together.)
+        from mpi4py import MPI
+
+        file_diag = 0.0
+        if uw.mpi.rank == 0 and X_src.shape[0] > 0:
+            file_diag = float(np.linalg.norm(X_src.max(axis=0) - X_src.min(axis=0)))
+        file_diag = uw.mpi.comm.bcast(file_diag, root=0)
+
+        if n_query_local > 0:
+            local_min = np.ascontiguousarray(query_coords.min(axis=0), dtype=np.float64)
+            local_max = np.ascontiguousarray(query_coords.max(axis=0), dtype=np.float64)
+        else:
+            local_min = np.full(dim, np.inf)
+            local_max = np.full(dim, -np.inf)
+        q_min = np.empty(dim, dtype=np.float64)
+        q_max = np.empty(dim, dtype=np.float64)
+        uw.mpi.comm.Allreduce(local_min, q_min, op=MPI.MIN)
+        uw.mpi.comm.Allreduce(local_max, q_max, op=MPI.MAX)
+        query_diag = float(np.linalg.norm(q_max - q_min))
+
+        if file_diag > 0.0 and query_diag > 0.0:
+            scale_ratio = file_diag / query_diag
+            if scale_ratio > 10.0 or scale_ratio < 0.1:
+                raise RuntimeError(
+                    f"read_timestep: the saved coordinate cloud extent "
+                    f"({file_diag:.4g}) and the live DOF extent ({query_diag:.4g}) "
+                    f"differ by x{scale_ratio:.3g} — the coordinate frames do not "
+                    "match, and a nearest-neighbour remap would return silently "
+                    "wrong values. This usually means the checkpoint was written "
+                    "by an older writer with an active units model (dimensional "
+                    "coordinates in 'fields/coordinates'; issue #269). Re-write "
+                    "the checkpoint with current code, or read the raw dataset "
+                    "directly from the HDF5 file ('fields/<name>')."
+                )
         original_index = np.arange(n_query_local).reshape(-1, 1, 1)
 
         query_swarm = uw.swarm.Swarm(self.mesh)
@@ -1403,7 +1365,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             # ``nnn=1`` — exact match for round-trip reads, sensible
             # nearest-neighbour fallback for cross-mesh reads.
             result.array[:, 0, :] = kdt.rbf_interpolator_local(
-                local_query, landed_D, 1, 2, verbose
+                local_query, landed_D, nnn=1, verbose=verbose
             )
         elif local_query.shape[0] > 0:
             # No saved data landed on this rank — leave query payload zero
@@ -1424,7 +1386,7 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Reorder by original_index and write into self.data
         idx = origin_index_var.array[:, 0, 0]
-        out = np.zeros((n_query_local, n_components), dtype=np.double)
+        out = np.zeros((n_query_local, n_components), dtype=np.float64)
         out[idx, :] = result.array[:, 0, :]
         self.data[...] = out
 
@@ -1487,14 +1449,21 @@ class _BaseMeshVariable(Stateful, uw_object):
         self,
         filename: str,
         data_name: Optional[str] = None,
+        same_layout: bool = False,
     ):
         """Load this mesh variable from PETSc reload output.
 
-        This is an exact PETSc DMPlex section/vector reload path. It does not
-        use the coordinate/KDTree remapping used by ``read_timestep()``. New
-        output should be written with ``Mesh.write_timestep(...,
-        petsc_reload=True)``; legacy ``Mesh.write_checkpoint()`` files are also
-        supported.
+        The default path restores DMPlex section/local-vector data through the
+        topology migration SF, so a mesh reconstructed from its checkpoint may
+        have a different parallel DOF ordering. Set ``same_layout=True`` only
+        for an in-place restore onto the exact mesh object that wrote the file;
+        that path reloads the saved global vector directly.
+
+        This method does not use the coordinate/KDTree remapping provided by
+        ``read_timestep()``. New output should be written with
+        ``Mesh.write_timestep(..., petsc_reload=True)``; legacy
+        ``Mesh.write_checkpoint()`` files are also supported by the default
+        DMPlex path.
         """
 
         if data_name is None:
@@ -1502,6 +1471,27 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         if self._lvec is None:
             self._set_vec(available=True)
+
+        if same_layout:
+            import h5py
+
+            if uw.mpi.rank == 0:
+                with h5py.File(filename, "r") as checkpoint_h5:
+                    has_direct_vector = (
+                        "uw_checkpoint" in checkpoint_h5
+                        and data_name in checkpoint_h5["uw_checkpoint"]
+                    )
+            else:
+                has_direct_vector = None
+            has_direct_vector = uw.mpi.comm.bcast(
+                has_direct_vector,
+                root=0,
+            )
+            if not has_direct_vector:
+                raise RuntimeError(
+                    f"{filename} has no in-place checkpoint vector for "
+                    f"{data_name!r}. Reload it with same_layout=False."
+                )
 
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         sectiondm = self.mesh.dm.clone()
@@ -1519,40 +1509,53 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._lvec.setName(data_name)
             self._gvec.setName(data_name)
 
-            from underworld3.cython.petsc_discretisation import (
-                petsc_dmplex_load_local_vector,
-            )
-
-            loaded_lvec = petsc_dmplex_load_local_vector(
-                self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
-            )
-
-            source_section = sectiondm.getSection()
-            target_section = subdm.getSection()
-            source_array = loaded_lvec.array_r
-            target_array = self._lvec.array
-            p_start, p_end = target_section.getChart()
-
-            for point in range(p_start, p_end):
-                target_dof = target_section.getDof(point)
-                if target_dof == 0:
-                    continue
-
-                source_dof = source_section.getDof(point)
-                if source_dof < target_dof:
-                    raise RuntimeError(
-                        f"Checkpoint section has {source_dof} dofs for point {point}, "
-                        f"but target variable requires {target_dof}."
-                    )
-
-                source_offset = source_section.getOffset(point)
-                target_offset = target_section.getOffset(point)
-                target_array[target_offset : target_offset + target_dof] = (
-                    source_array[source_offset : source_offset + target_dof]
+            if same_layout:
+                checkpoint_vec = PETSc.Vec().createMPI(
+                    (self._gvec.getLocalSize(), self._gvec.getSize()),
+                    comm=PETSc.COMM_WORLD,
+                )
+                checkpoint_vec.setName(data_name)
+                viewer.pushGroup("/uw_checkpoint")
+                checkpoint_vec.load(viewer)
+                viewer.popGroup()
+                self._gvec.array[...] = checkpoint_vec.array_r
+                checkpoint_vec.destroy()
+                subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+            else:
+                from underworld3.cython.petsc_discretisation import (
+                    petsc_dmplex_load_local_vector,
                 )
 
-            loaded_lvec.destroy()
-            self._sync_lvec_to_gvec()
+                loaded_lvec = petsc_dmplex_load_local_vector(
+                    self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
+                )
+
+                source_section = sectiondm.getSection()
+                target_section = subdm.getSection()
+                source_array = loaded_lvec.array_r
+                target_array = self._lvec.array
+                p_start, p_end = target_section.getChart()
+
+                for point in range(p_start, p_end):
+                    target_dof = target_section.getDof(point)
+                    if target_dof == 0:
+                        continue
+
+                    source_dof = source_section.getDof(point)
+                    if source_dof < target_dof:
+                        raise RuntimeError(
+                            f"Checkpoint section has {source_dof} dofs for point "
+                            f"{point}, but target variable requires {target_dof}."
+                        )
+
+                    source_offset = source_section.getOffset(point)
+                    target_offset = target_section.getOffset(point)
+                    target_array[target_offset : target_offset + target_dof] = (
+                        source_array[source_offset : source_offset + target_dof]
+                    )
+
+                loaded_lvec.destroy()
+                self._sync_lvec_to_gvec()
         finally:
             self._lvec.setName(old_lvec_name)
             self._gvec.setName(old_vec_name)
@@ -1563,6 +1566,11 @@ class _BaseMeshVariable(Stateful, uw_object):
             sectiondm.destroy()
             indexset.destroy()
             subdm.destroy()
+
+        # The mesh-wide auxiliary vector packs every registered field and may
+        # still contain values from before this reload. Force the next residual
+        # assembly to rebuild it from the restored per-variable vectors.
+        self.mesh._stale_lvec = True
 
         return
 
@@ -1696,6 +1704,27 @@ class _BaseMeshVariable(Stateful, uw_object):
             else:
                 return i + j * self.shape[0]
 
+    # Discretisation hooks. Subclasses with a different element (the
+    # integration-point variable) override these three; everything else in
+    # the class works from the PETSc field they produce.
+    is_integration_point = False
+
+    @property
+    def _basis_key(self):
+        """Key for the mesh's per-basis coordinate cache."""
+        return (self.mesh.isSimplex, self.degree, self.continuous)
+
+    def _create_petsc_fe(self, dim, prefix):
+        """The PetscFE this variable's field is built on (Lagrange by default)."""
+        return PETSc.FE().createDefault(
+            dim,
+            self.num_components,
+            self.mesh.isSimplex,
+            self.mesh.qdegree,
+            prefix,
+            PETSc.COMM_SELF,
+        )
+
     def _setup_ds(self):
         options = PETSc.Options()
         name0 = "VAR"  # self.clean_name ## Filling up the options database
@@ -1706,14 +1735,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         )  # only active if discontinuous
 
         dim = self.mesh.dm.getDimension()
-        petsc_fe = PETSc.FE().createDefault(
-            dim,
-            self.num_components,
-            self.mesh.isSimplex,
-            self.mesh.qdegree,
-            name0 + "_",
-            PETSc.COMM_SELF,
-        )
+        petsc_fe = self._create_petsc_fe(dim, name0 + "_")
 
         # Check if this is the first field or if we need to rebuild the DM
         # (needed to ensure Section is properly synchronized with field list)
@@ -1741,27 +1763,38 @@ class _BaseMeshVariable(Stateful, uw_object):
             # When we rebuild the DM, existing variables' vectors must be recreated
             # from the new DM, but we need to preserve their data
 
-            # Save old variable data before destroying vectors
+            # Save old variable data, then RELEASE (not destroy) the old
+            # vectors. petsc4py's ``destroy()`` zeroes the handle of the very
+            # wrapper object a user may still hold (``var.vec`` returns the
+            # same wrapper), turning a later call on it into a NULL-handle
+            # dereference — a hard SIGSEGV on an optimized PETSc (issue #492).
+            # Dropping our reference instead lets PETSc refcounting free the
+            # Vec with its last holder: same memory behaviour when nobody
+            # else holds it, a stale-but-valid handle when someone does.
             var_data_backup = {}
             for var in self.mesh.vars.values():
                 if var._lvec is not None:
-                    # Save the data
                     var_data_backup[var.clean_name] = var._lvec.array.copy()
-                    # Destroy old vectors
-                    var._lvec.destroy()
                     var._lvec = None
                 if var._gvec is not None:
-                    var._gvec.destroy()
                     var._gvec = None
 
-            # Also invalidate mesh's local vector if it exists
+            # Release the mesh's combined local vector the same way; it is
+            # rebuilt from the new DM on the next update_lvec().
             if self.mesh._lvec is not None:
-                self.mesh._lvec.destroy()
                 self.mesh._lvec = None
                 self.mesh._stale_lvec = True
 
-            # Replace old DM with new one
-            dm_old.destroy()
+            # Swap in the rebuilt DM. The old DM is deliberately NOT
+            # destroyed (issue #492): ``mesh.dm`` is a plain attribute, so a
+            # user-captured handle is the SAME wrapper object — an eager
+            # destroy blinds it (handle -> 0, SIGSEGV on next use) and frees
+            # the C object while numpy views of the old vectors still alias
+            # its pages (the delayed heap-corruption crash on Linux CI).
+            # Dropping the reference is leak-free: solver-side holders are
+            # clones, so the old DM's last reference is normally this one and
+            # it is collected immediately; measured RSS over repeated
+            # rebuild+solve cycles is identical with and without the destroy.
             self.mesh.dm = dm_new
             self.mesh.dm_hierarchy[-1] = dm_new
 
@@ -1774,11 +1807,14 @@ class _BaseMeshVariable(Stateful, uw_object):
                 if var.clean_name in var_data_backup:
                     # _set_vec will create new vectors from the new DM
                     var._set_vec(available=True)
-                    # Eagerly invalidate cached data array. The .data property also
-                    # self-validates via _lvec identity check, but clearing here avoids
-                    # unnecessary recreation on next access.
+                    # Eagerly invalidate cached data/array views. The .data
+                    # property also self-validates via _lvec identity check,
+                    # but clearing here guarantees UW3 never hands back a view
+                    # of the released vectors (matches _on_mesh_adapted).
                     if hasattr(var, '_canonical_data'):
                         var._canonical_data = None
+                    var._data_cache = None
+                    var._array_cache = None
                     # Restore the data
                     var._lvec.array[...] = var_data_backup[var.clean_name]
 
@@ -1809,7 +1845,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
         Replace internal storage after mesh adaptation.
 
-        Called by mesh.adapt() to update this variable's internal PETSc
+        Called by mesh.remesh() to update this variable's internal PETSc
         structures after the mesh's discretization has changed. The data
         has already been interpolated to temp_var; this method copies that
         data into this variable's updated storage.
@@ -1824,7 +1860,7 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         Notes
         -----
-        This is an internal method called by mesh.adapt(). Users should
+        This is an internal method called by mesh.remesh(). Users should
         not need to call this directly.
 
         After this method returns, all user references to this variable
@@ -2214,11 +2250,14 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
-                # Pack the entire NON-DIMENSIONAL array to PETSc
-                # Don't use pack_uw_data_to_petsc - it expects dimensional input
-                # Use pack_raw_data_to_petsc instead - it handles plain arrays
+                # Route the write through the canonical array. A direct pack
+                # here is a per-write collective (localToGlobal ghost sync),
+                # which desynchronises ranks that write unevenly inside
+                # uw.synchronised_array_update. The canonical callback packs
+                # immediately outside a delay context and defers to the
+                # single rank-agreed flush inside one.
                 flat_data = modified_data.reshape(-1, self.parent.num_components)
-                self.parent.pack_raw_data_to_petsc(flat_data, sync=True)
+                self.parent.data[...] = flat_data
 
             @property
             def shape(self):
@@ -2267,9 +2306,17 @@ class _BaseMeshVariable(Stateful, uw_object):
                 units_str = f", units='{self.units}'" if self.units else ""
                 return f"SimpleMeshArrayView(shape={self.shape}, dtype={self.dtype}{units_str})"
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -2498,6 +2545,10 @@ class _BaseMeshVariable(Stateful, uw_object):
                             else:
                                 pint_qty = np.asarray(value) * target_units
 
+                            # TODO(BUG): the branches above reference np.*
+                            # but this method has no numpy import in scope
+                            # (module imports `numpy`, not `np`) — a latent
+                            # NameError on the unit-aware tensor write path.
                             # Convert to target units using Pint
                             converted_qty = pint_qty.to(target_units)
                             dimensional_value = converted_qty.magnitude
@@ -2526,8 +2577,62 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
-                # Pack the entire NON-DIMENSIONAL array to PETSc using complex tensor layout
-                self.parent.pack_uw_data_to_petsc(modified_data, sync=True)
+                # A symmetric tensor is (dim, dim) here and stores only its
+                # independent components, so both entries of an off-diagonal
+                # pair map to ONE column. The pack loop below writes every
+                # (i, j), which means the pair's second visit overwrites the
+                # first: setting array[:, 0, 1] alone was silently discarded
+                # (the stale [1, 0] won), while array[:, 1, 0] alone worked.
+                # Mirror whichever half the caller actually changed.
+                self._mirror_symmetric_pairs(unpacked, modified_data)
+
+                # Route the write through the canonical array (see
+                # SimpleMeshArrayView.__setitem__: a direct pack is a
+                # per-write collective). _data_layout maps the structured
+                # components onto the packed PETSc ordering, as
+                # pack_uw_data_to_petsc does internally.
+                flat_data = numpy.empty(
+                    (modified_data.shape[0], self.parent.num_components),
+                    dtype=modified_data.dtype,
+                )
+                var_shape = self.parent.shape
+                for i in range(var_shape[0]):
+                    for j in range(var_shape[1]):
+                        flat_data[:, self.parent._data_layout(i, j)] = modified_data[:, i, j]
+                self.parent.data[...] = flat_data
+
+            def _mirror_symmetric_pairs(self, before, after):
+                """Carry an off-diagonal write across to its mirror entry.
+
+                Only for a symmetric variable, whose (i, j) and (j, i) share a
+                stored column. Writing one half and leaving the other stale is
+                how the write got lost, so the half that changed is copied onto
+                the half that did not. Changing BOTH halves to different values
+                asks for something the storage cannot hold, and is refused
+                rather than resolved by the loop order.
+                """
+                import underworld3 as uw
+
+                if self.parent.vtype != uw.VarType.SYM_TENSOR:
+                    return
+                rows, cols = self.parent.shape
+                for i in range(rows):
+                    for j in range(i + 1, cols):
+                        upper_moved = not numpy.array_equal(after[:, i, j], before[:, i, j])
+                        lower_moved = not numpy.array_equal(after[:, j, i], before[:, j, i])
+                        if upper_moved and not lower_moved:
+                            after[:, j, i] = after[:, i, j]
+                        elif lower_moved and not upper_moved:
+                            after[:, i, j] = after[:, j, i]
+                        elif upper_moved and lower_moved and not numpy.array_equal(
+                            after[:, i, j], after[:, j, i]
+                        ):
+                            raise ValueError(
+                                f"'{self.parent.name}' is a symmetric tensor: "
+                                f"components [{i}, {j}] and [{j}, {i}] share one "
+                                "stored value and cannot be set to different "
+                                "values in a single assignment."
+                            )
 
             @property
             def shape(self):
@@ -2576,9 +2681,17 @@ class _BaseMeshVariable(Stateful, uw_object):
                 units_str = f", units='{self.units}'" if self.units else ""
                 return f"TensorMeshArrayView(shape={self.shape}, dtype={self.dtype}{units_str})"
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -2751,60 +2864,76 @@ class _BaseMeshVariable(Stateful, uw_object):
         from underworld3.utilities import NDArray_With_Callback
         array_obj = NDArray_With_Callback(flat_petsc_data, owner=self)
 
-        # Single canonical callback for PETSc synchronization
-
+        # Single canonical callback for PETSc synchronization. The
+        # add_canonical_callback dispatch guarantees `array` IS the canonical
+        # storage (views resolved to it, fancy-index copies skipped), so the
+        # pack below always covers the full local vector — never a
+        # partition-dependent subset whose collectives would run on some
+        # ranks only (#376).
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
             var = array.owner
             if var is None:
+                # Array outlived its variable (teardown / mesh rebuild)
                 return
 
-            # Only act on data-changing operations
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
+            if not change_context.get("data_has_changed", True):
                 return
 
-            # Check for None array to prevent copy errors
-            if array is None:
-                return
+            var._flush_canonical_to_petsc(array)
 
-            # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
-            import numpy as np
-
-            canonical_array = np.atleast_2d(array)
-
-            if canonical_array.shape != (canonical_array.shape[0], var.num_components):
-                # Only reshape if we actually need to
-                canonical_array = canonical_array.reshape(-1, var.num_components)
-
-            # Skip updates during mesh coordinate changes to prevent corruption
-            if hasattr(var.mesh, "_mesh_update_lock"):
-                if not var.mesh._mesh_update_lock.acquire(blocking=False):
-                    return
-                try:
-                    # STEP 1: Sync to PETSc using established method with correct shape
-                    var.pack_raw_data_to_petsc(canonical_array, sync=True)
-                finally:
-                    var.mesh._mesh_update_lock.release()
-            else:
-                # Fallback if no lock exists
-                var.pack_raw_data_to_petsc(canonical_array, sync=True)
-
-            # STEP 2: Handle variable-specific updates (extensible like SwarmVariable)
-            if hasattr(var, "_on_data_changed"):
-                var._on_data_changed()
-
-        array_obj.add_callback(canonical_data_callback)
+        array_obj.add_canonical_callback(canonical_data_callback)
         return array_obj
+
+    def _flush_canonical_to_petsc(self, array):
+        """Pack canonical-storage values into PETSc, with ghost synchronisation.
+
+        The single write-back path behind the canonical data callback. The
+        pack with ``sync=True`` performs a local-to-global / global-to-local
+        round trip, which is collective: every rank must call this for the
+        same variable.
+        """
+        canonical_array = numpy.atleast_2d(array)
+        if canonical_array.shape != (canonical_array.shape[0], self.num_components):
+            canonical_array = canonical_array.reshape(-1, self.num_components)
+
+        # A mesh-coordinate update owns the lock; packing mid-update would
+        # corrupt the coordinate change, so this write-back is skipped (the
+        # deform path re-syncs variables when it completes).
+        if hasattr(self.mesh, "_mesh_update_lock"):
+            if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                return
+            try:
+                self.pack_raw_data_to_petsc(canonical_array, sync=True)
+            finally:
+                self.mesh._mesh_update_lock.release()
+        else:
+            self.pack_raw_data_to_petsc(canonical_array, sync=True)
+
+        if hasattr(self, "_on_data_changed"):
+            self._on_data_changed()
+
+    def _deferred_canonical_flush(self):
+        """Collective flush target for ``uw.synchronised_array_update``.
+
+        Called on EVERY rank for each variable in the agreed flush set —
+        ranks that made no local writes pack unchanged values, which keeps
+        the per-variable ghost-sync collective matched. Touching
+        ``self.data`` first creates the canonical array lazily on ranks
+        that never accessed it.
+        """
+        fire_canonical_callbacks(self.data)
 
     @array.setter
     def array(self, array_value):
         """
-        Set variable data using pack method to handle shape transformation.
+        Set variable data through the standard write path.
         """
-        # Use pack method to handle proper data transformation and shape conversion
-        self.pack_uw_data_to_petsc(array_value, sync=True)
+        # Attribute assignment follows the same route as view writes: the
+        # full conversion pipeline, then the canonical array. A direct pack
+        # here is a per-write collective, which desynchronises rank-uneven
+        # writes inside uw.synchronised_array_update (round-1 review).
+        self.array[...] = array_value
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 
@@ -3144,8 +3273,20 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Statistics for vector variables using magnitude."""
         import numpy as np
 
-        # Create temporary scalar variable for magnitude
-        magnitude_var = _BaseMeshVariable(f"_temp_mag_{id(self)}", self.mesh, 1, degree=self.degree)
+        # Temporary scalar variable for the magnitude. The name suffix must
+        # be rank-symmetric: variable creation/destruction performs
+        # collective DM operations keyed by field name, and id(self) is a
+        # rank-local address that differs across ranks (issue #384).
+        temp_name = f"_temp_mag_{self.clean_name}"
+        # A name collision would silently ALIAS an existing variable
+        # (creation returns the registered object), and the stats pass
+        # would then overwrite its data and deregister it — refuse instead.
+        if temp_name in self.mesh.vars:
+            raise RuntimeError(
+                f"Cannot compute vector stats: a variable named '{temp_name}' "
+                "already exists on this mesh (reserved as a stats temporary)."
+            )
+        magnitude_var = _BaseMeshVariable(temp_name, self.mesh, 1, degree=self.degree)
 
         try:
             # Compute magnitude: |v| = sqrt(v·v)
@@ -3182,18 +3323,38 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Statistics for tensor variables using Frobenius norm."""
         import numpy as np
 
-        # Create temporary scalar variable for Frobenius norm
-        frobenius_var = uw.discretisation.MeshVariable(
-            f"_temp_frob_{id(self)}", self.mesh, 1, degree=self.degree
+        # Temporary scalar variable for the Frobenius norm — rank-symmetric
+        # name suffix and collision refusal for the same reasons as
+        # _vector_stats (issue #384).
+        temp_name = f"_temp_frob_{self.clean_name}"
+        if temp_name in self.mesh.vars:
+            raise RuntimeError(
+                f"Cannot compute tensor stats: a variable named '{temp_name}' "
+                "already exists on this mesh (reserved as a stats temporary)."
+            )
+        # _BaseMeshVariable, matching _vector_stats: the enhanced wrapper's
+        # __getattr__ refuses underscore-name delegation, so the
+        # _scalar_stats call below would raise AttributeError through it
+        # (second latent defect under issue #400).
+        frobenius_var = _BaseMeshVariable(
+            temp_name, self.mesh, 1, degree=self.degree
         )
 
         try:
-            # Compute Frobenius norm: ||A||_F = sqrt(sum(A_ij^2))
+            # Compute Frobenius norm: ||A||_F = sqrt(sum_ij(A_ij^2))
+            # Structured (N, d, d) reads (issue #400): correct for full
+            # tensors AND for symmetric storage — the .array view mirrors
+            # the Voigt components, so off-diagonals are counted twice as
+            # the Frobenius sum requires. (Flat component reads counted
+            # each Voigt entry once and under-measured SYM_TENSOR norms;
+            # the original structured read with the FLAT component count
+            # walked off the axis.)
             with uw.synchronised_array_update():
+                arr = np.asarray(self.array)
                 sum_squares = 0.0
-                for i in range(self.num_components):
-                    component = self.array[:, 0, i].flatten()
-                    sum_squares += component**2
+                for i in range(self.shape[0]):
+                    for j in range(self.shape[1]):
+                        sum_squares = sum_squares + arr[:, i, j] ** 2
                 frobenius_var.array[:, 0, 0] = np.sqrt(sum_squares)
 
             # Get scalar stats on Frobenius norm
@@ -3383,3 +3544,117 @@ class _BaseMeshVariable(Stateful, uw_object):
 
 
 # Note: EnhancedMeshVariable is imported as MeshVariable in __init__.py to avoid circular imports
+
+
+class _BaseIntegrationPointVariable(_BaseMeshVariable):
+    r"""A field stored at the mesh integration points (quadrature rule).
+
+    One degree of freedom per quadrature point per cell, on the element built by
+    :func:`underworld3.cython.petsc_quadrature_fe.create_delta_fe`: the basis is
+    the identity on the mesh rule, so the pointwise functions read the stored
+    value at each integration point with no interpolation. Values are
+    *injected* here (a semi-Lagrangian history, a material property
+    reconstructed from a swarm); the field is a peer of mesh and swarm
+    variables, not a degree-0 mesh variable.
+
+    Between its points the field is defined as piecewise constant on the
+    nearest-integration-point partition of each cell. That is what
+    ``evaluate()`` returns, and it is the only extension under which a query
+    agrees with what the assembler used at that point.
+
+    Layout: ``data`` is ``(ncells * Nq, num_components)`` in local cell order,
+    point-minor; ``cell_data`` views it as ``(ncells, Nq, num_components)`` and
+    ``coords`` are the physical integration points in the same order.
+
+    Derivatives of the symbol are meaningless (the tabulated gradient is zero)
+    and the JIT refuses them. Any number of components: the element is the
+    scalar delta element wrapped as a vector element, dofs point-major and
+    component-minor within a cell.
+    """
+
+    is_integration_point = True
+
+    def __init__(self, varname=None, mesh=None, num_components=None, vtype=None,
+                 varsymbol=None, _register=True, units=None, units_backend=None,
+                 remesh_policy=None, **kwargs):
+        # degree/continuous are not meaningful here; 0/False keeps the base
+        # class's bookkeeping consistent with a cell-interior field.
+        kwargs.pop("degree", None)
+        kwargs.pop("continuous", None)
+        self._ip_coords_cache = None
+        super().__init__(varname=varname, mesh=mesh, num_components=num_components,
+                         vtype=vtype, degree=0, continuous=False, varsymbol=varsymbol,
+                         _register=_register, units=units, units_backend=units_backend,
+                         remesh_policy=remesh_policy, **kwargs)
+
+    # -- discretisation hooks -------------------------------------------------
+
+    @property
+    def _basis_key(self):
+        return ("integration", self.mesh.isSimplex, self.mesh.qdegree)
+
+    def _create_petsc_fe(self, dim, prefix):
+        from underworld3.cython.petsc_quadrature_fe import create_delta_fe
+        cStart, _ = self.mesh.dm.getHeightStratum(0)
+        return create_delta_fe(
+            self.mesh.integration_rule, self.mesh.dm.getCellType(cStart),
+            name=f"{prefix}integration_point_fe", num_components=self.num_components,
+        )
+
+    # -- geometry ---------------------------------------------------------------
+
+    @property
+    def integration_points(self):
+        """Physical integration points, ``(ncells, Nq, cdim)``, local cell order."""
+        if self._ip_coords_cache is None or self._ip_coords_cache[0] != self.mesh._topology_version:
+            from underworld3.cython.petsc_quadrature_fe import cell_quadrature_points
+            pts = cell_quadrature_points(self.mesh.dm, self.mesh.integration_rule)
+            self._ip_coords_cache = (self.mesh._topology_version, pts)
+        return self._ip_coords_cache[1]
+
+    @property
+    def num_points_per_cell(self):
+        return self.integration_points.shape[1]
+
+    @property
+    def cell_data(self):
+        """``data`` viewed as ``(ncells, Nq, num_components)``."""
+        Nq = self.num_points_per_cell
+        return self.data.reshape(-1, Nq, self.num_components)
+
+    # -- evaluation ---------------------------------------------------------------
+
+    def _nearest_point_values(self, coords_nd, cells):
+        """Values at ``coords_nd`` by the nearest integration point of the
+        owning cell ``cells`` (local index; -1 or None means unowned -> the
+        nearest point anywhere on this rank)."""
+        coords_nd = numpy.asarray(coords_nd, dtype=float).reshape(-1, self.mesh.cdim)
+        n = coords_nd.shape[0]
+        vals = numpy.empty((n, self.num_components), dtype=float)
+        if n == 0:
+            return vals
+        ipc = self.integration_points
+        cdat = numpy.asarray(self.data).reshape(ipc.shape[0], ipc.shape[1], self.num_components)
+        cells = None if cells is None else numpy.asarray(cells).reshape(-1)
+        owned = numpy.ones(n, dtype=bool) if cells is None else (cells >= 0)
+        if cells is None:
+            owned[:] = False
+        if owned.any():
+            cc = cells[owned]
+            d2 = ((ipc[cc] - coords_nd[owned][:, None, :]) ** 2).sum(axis=-1)
+            j = d2.argmin(axis=1)
+            vals[owned] = cdat[cc, j]
+        if (~owned).any():
+            vals[~owned] = self.rbf_interpolate(coords_nd[~owned])
+        return vals
+
+    def rbf_interpolate(self, new_coords, nnn=None, p=1, verbose=False, **kwargs):
+        """Nearest integration point on this rank (the exterior / unowned-point rule)."""
+        new_coords = numpy.asarray(new_coords, dtype=float).reshape(-1, self.mesh.cdim)
+        ipc = self.integration_points.reshape(-1, self.mesh.cdim)
+        if ipc.shape[0] == 0:
+            return numpy.full((new_coords.shape[0], self.num_components), numpy.nan)
+        import underworld3 as uw
+        tree = uw.kdtree.KDTree(ipc)
+        _, idx = tree.query(new_coords, k=1)
+        return numpy.asarray(self.data).reshape(-1, self.num_components)[numpy.asarray(idx).reshape(-1)]

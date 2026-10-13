@@ -770,7 +770,8 @@ class GeographicCoordinateAccessor:
         Examples
         --------
         >>> # Convert mesh points to geographic for comparison with data
-        >>> x, y, z = mesh.data[:, 0], mesh.data[:, 1], mesh.data[:, 2]
+        >>> coords = mesh.X.coords
+        >>> x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         >>> lon, lat, depth = mesh.geo.from_cartesian(x, y, z)
         """
         # Nondimensionalise ellipsoid for numeric coordinate conversion
@@ -834,7 +835,7 @@ class GeographicCoordinateAccessor:
         Examples
         --------
         >>> # Export mesh coordinates to geographic
-        >>> mesh_xyz = mesh.data  # or mesh.CoordinateSystem.coords
+        >>> mesh_xyz = mesh.X.coords
         >>> mesh_llz = mesh.geo.points_from_cartesian(mesh_xyz)
         """
         import numpy as np

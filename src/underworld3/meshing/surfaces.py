@@ -267,7 +267,7 @@ def _profile_to_edge_lengths(
     width : float
         Transition distance from h_near to h_far.
     profile : str
-        One of "linear", "smoothstep", or "gaussian".
+        One of "linear", "smoothstep", "gaussian", or "hyperbolic".
 
     Returns
     -------
@@ -285,9 +285,21 @@ def _profile_to_edge_lengths(
         sigma = width / 3.0
         gaussian = np.exp(-(dist_values**2) / (2 * sigma**2))
         return h_far - (h_far - h_near) * gaussian
+    elif profile == "hyperbolic":
+        # h(d) = sqrt(h_near² + (s·d)²), capped at h_far: cell size grows
+        # in proportion to distance once clear of the surface, so each
+        # bisection generation fills a band about as wide as its own cell
+        # size. Of the profiles this one buys the most transition fidelity
+        # per cell (2026-07 3D adaptivity evaluation); prefer "gaussian"
+        # when a corridor of UNIFORM h around the surface is wanted (e.g.
+        # resolving a weak zone), "linear" for the minimum cell count.
+        slope = np.sqrt(np.maximum(h_far**2 - h_near**2, 0.0)) / width
+        return np.minimum(
+            np.sqrt(h_near**2 + (slope * dist_values) ** 2), h_far)
     else:
         raise ValueError(
-            f"Unknown profile: {profile}. Use 'linear', 'smoothstep', or 'gaussian'"
+            f"Unknown profile: {profile}. "
+            "Use 'linear', 'smoothstep', 'gaussian', or 'hyperbolic'"
         )
 
 
@@ -1169,6 +1181,124 @@ class Surface:
 
         return self._abs_distance_var
 
+    def _signed_distance_at(self, coords: np.ndarray) -> np.ndarray:
+        """Exact signed distance from arbitrary query points to this surface.
+
+        This is the geometric primitive underneath the ``distance`` /
+        ``abs_distance`` fields, but evaluated at *any* points rather than only
+        the mesh nodes. It does **not** touch or interpolate the P1 distance
+        field — it re-runs the exact point-to-polyline (2D) / implicit-distance
+        (3D) computation directly. That makes it safe to call on the centroids
+        of a *refined* mesh during adaptation: the distance resolves itself at
+        the new resolution instead of aliasing a coarse P1 field.
+
+        Parameters
+        ----------
+        coords : ndarray, shape (N, 2) or (N, 3)
+            Query points in model (internal) coordinate space — the same space
+            the surface control points live in (cf. ``mesh._coords``).
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Signed distance at each query point (edge-clamped: beyond a finite
+            edge it is the radial distance to the nearest endpoint).
+        """
+        self._ensure_discretized()
+        coords = np.asarray(coords, dtype=float)
+
+        if self.is_2d:
+            from underworld3.utilities.geometry_tools import (
+                signed_distance_pointcloud_polyline_2d
+            )
+
+            coords_2d = coords[:, :2]
+            if hasattr(self, "_vertices_2d") and self._vertices_2d is not None:
+                vertices_2d = self._vertices_2d
+            else:
+                vertices_2d = self._pv_mesh.points[:, :2]
+            return signed_distance_pointcloud_polyline_2d(coords_2d, vertices_2d)
+
+        # 3D: pyvista implicit distance to the surface polydata
+        pv = _require_pyvista()
+        pv_pts = pv.PolyData(np.ascontiguousarray(coords[:, :3]))
+        dist_result = pv_pts.compute_implicit_distance(self._pv_mesh)
+        return np.asarray(dist_result.point_data["implicit_distance"])
+
+    def signed_distance(self, coords: np.ndarray) -> np.ndarray:
+        """Exact **signed** distance from arbitrary points to the surface.
+
+        Unlike ``distance`` (a P1 :class:`MeshVariable` sampled at the mesh
+        nodes), this evaluates the exact geometry at *whatever* points you pass
+        — so it stays accurate on a refined mesh. Positive on one side of the
+        surface, negative on the other.
+
+        Parameters
+        ----------
+        coords : ndarray, shape (N, 2) or (N, 3)
+            Query points in model coordinate space.
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Signed distance at each point.
+        """
+        return self._signed_distance_at(coords)
+
+    def unsigned_distance(self, coords: np.ndarray) -> np.ndarray:
+        """Exact **unsigned**, edge-clamped distance from arbitrary points.
+
+        ``abs()`` of :meth:`signed_distance`. Because the underlying distance is
+        edge-clamped (it falls back to the nearest endpoint beyond a finite
+        edge), this is the true distance to the *finite* surface — the right
+        quantity for a distance-driven refinement metric.
+
+        Parameters
+        ----------
+        coords : ndarray, shape (N, 2) or (N, 3)
+            Query points in model coordinate space.
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Unsigned distance at each point (``>= 0``).
+        """
+        return np.abs(self._signed_distance_at(coords))
+
+    @property
+    def director(self) -> sympy.Matrix:
+        r"""Unit surface-normal as a symbolic column vector — the TI director n̂.
+
+        The gradient of a signed-distance field is its unit normal, so this is
+        ``∇d / |∇d|`` built from the :attr:`distance` field. It is the natural
+        **director** for :class:`~underworld3.constitutive_models.TransverseIsotropicFlowModel`
+        (the weak-plane orientation): the same fault object that drives the
+        refinement metric and the weak-zone viscosity also supplies the normal::
+
+            ti = uw.constitutive_models.TransverseIsotropicFlowModel
+            stokes.constitutive_model = ti
+            stokes.constitutive_model.Parameters.director = fault.director
+
+        For a **planar** surface the signed distance is linear, so ``∇d`` is the
+        exact constant unit normal everywhere. Near a curved surface or a finite
+        edge it is the local unit normal wherever the field is smooth. The
+        normalisation makes it robust where ``|∇d|`` drifts from 1 (interpolated
+        distance, edge clamping).
+
+        Returns
+        -------
+        sympy.Matrix
+            ``(dim, 1)`` unit normal expression, evaluatable on this surface's
+            mesh (call :meth:`remap_to` first if the surface was built on a
+            different mesh, e.g. an ``adapt`` parent).
+        """
+        d = self.distance.sym[0]
+        X = self.mesh.X
+        dim = self.mesh.dim
+        grad = [sympy.diff(d, X[i]) for i in range(dim)]
+        norm = sympy.sqrt(sum(g ** 2 for g in grad)) + sympy.sympify(1e-30)
+        return sympy.Matrix([g / norm for g in grad])
+
     def _compute_distance_field(self) -> None:
         """Compute signed distance field from mesh nodes to surface.
 
@@ -1197,31 +1327,9 @@ class Surface:
         # coordinate space used to create them — typically model coordinates.
         coords = np.asarray(self.mesh._coords)
 
-        if self.is_2d:
-            # 2D: Use geometry_tools for signed distance to polyline
-            from underworld3.utilities.geometry_tools import (
-                signed_distance_pointcloud_polyline_2d
-            )
-
-            # Get 2D coordinates
-            coords_2d = coords[:, :2]
-
-            # Use stored 2D vertices for distance computation
-            if hasattr(self, '_vertices_2d') and self._vertices_2d is not None:
-                vertices_2d = self._vertices_2d
-            else:
-                # Fall back to pyvista mesh points
-                vertices_2d = self._pv_mesh.points[:, :2]
-
-            distances = signed_distance_pointcloud_polyline_2d(coords_2d, vertices_2d)
-
-        else:
-            # 3D: Use pyvista's compute_implicit_distance
-            pv = _require_pyvista()
-            pv_mesh = pv.PolyData(coords)
-            dist_result = pv_mesh.compute_implicit_distance(self._pv_mesh)
-            # Keep signed distance - helpers use sympy.Abs() when needed
-            distances = dist_result.point_data["implicit_distance"]
+        # Exact signed distance at the mesh nodes (same primitive that
+        # signed_distance()/unsigned_distance() expose for arbitrary points).
+        distances = self._signed_distance_at(coords)
 
         # Companion UNSIGNED distance field. The per-node distance is already
         # edge-clamped (the segment/surface distance falls back to the nearest
@@ -1428,13 +1536,13 @@ class Surface:
     # --- Mesh Adaptation Support ---
 
     def _on_mesh_adapted(self, adapted_mesh: "Mesh") -> None:
-        """Called by mesh.adapt() to update after mesh adaptation.
+        """Called by mesh.remesh() to update after mesh adaptation.
 
         Marks the distance field as stale so it will be recomputed on next access.
         The surface geometry (control points, pyvista mesh) is unchanged -
         only the cached distance values need updating.
 
-        The distance MeshVariable itself is reinitialized by mesh.adapt() along
+        The distance MeshVariable itself is reinitialized by mesh.remesh() along
         with all other MeshVariables - we just need to mark the data as stale.
 
         Args:
@@ -1448,6 +1556,62 @@ class Surface:
         # Mark all variable proxies as stale (they project to mesh nodes)
         self._mark_all_proxies_stale()
 
+    def remap_to(self, new_mesh: "Mesh") -> "Surface":
+        """Re-home this surface onto a different mesh and return ``self``.
+
+        The surface **geometry** (control points, polyline/polydata vertices) is
+        unchanged — only the mesh its *fields* are computed against changes.
+        Cached distance fields (which were bound to the old mesh) are dropped so
+        they recompute, at **exact** distance, on the new mesh's nodes on next
+        access.
+
+        This is the companion to :meth:`Mesh.adapt` for the nested (child-
+        returning) engines (``engine="sbr"``/``"nvb"``): ``adapt`` leaves the
+        base mesh untouched and returns a refined *child*, so — unlike the
+        in-place :meth:`Mesh.remesh` — registered surfaces are not auto-notified.
+        Re-homing lets **one** fault object drive both the geometry-only
+        refinement metric (:meth:`refinement_metric_function`, evaluated before
+        the child exists) and the child-side constitutive model (its
+        ``distance`` / normal live on the child)::
+
+            fault  = uw.meshing.Surface("fault", base, trace)
+            metric = fault.refinement_metric_function(h_near, h_far, width)
+            child  = base.adapt(metric, engine="nvb")
+            fault.remap_to(child)                 # distance now on the child
+            eta = fault.influence_function(width, value_near=1e-3, value_far=1.0)
+
+        Parameters
+        ----------
+        new_mesh : Mesh
+            The mesh to re-home onto (e.g. an ``adapt`` child).
+
+        Returns
+        -------
+        Surface
+            ``self`` (for chaining).
+        """
+        if new_mesh is self.mesh:
+            return self
+
+        old_mesh = self.mesh
+        if old_mesh is not None and hasattr(old_mesh, "unregister_surface"):
+            old_mesh.unregister_surface(self)
+
+        self.mesh = new_mesh
+        self._dim = None  # re-detect from the new mesh
+        if new_mesh is not None and hasattr(new_mesh, "register_surface"):
+            new_mesh.register_surface(self)
+
+        # Drop cached fields bound to the OLD mesh; the geometry (pyvista mesh /
+        # 2D vertices) is mesh-independent and stays as-is. .distance / .abs_distance
+        # rebuild lazily on the new mesh's nodes (exact) on next access.
+        self._distance_var = None
+        self._abs_distance_var = None
+        self._distance_stale = True
+        self._mark_all_proxies_stale()
+
+        return self
+
     def refinement_metric(
         self,
         h_near,
@@ -1459,7 +1623,7 @@ class Surface:
         r"""Create a metric field for mesh adaptation based on distance from this surface.
 
         Returns a MeshVariable containing refinement metric values that can
-        be passed directly to mesh.adapt(). Higher metric values produce finer
+        be passed directly to mesh.remesh(). Higher metric values produce finer
         mesh (smaller elements).
 
         Parameters
@@ -1476,8 +1640,11 @@ class Surface:
             Distance over which to transition from h_near to h_far.
             If None, defaults to 2 * h_far.  Same unit handling as *h_near*.
         profile : str, optional
-            Transition profile: "linear", "smoothstep", or "gaussian".
-            Default is "linear".
+            Transition profile: "linear", "smoothstep", "gaussian", or
+            "hyperbolic". Default is "linear". In short: "hyperbolic"
+            gives the best transition fidelity per cell (size grows with
+            distance), "gaussian" holds a corridor of uniform size around
+            the surface, "linear" needs the fewest cells.
         name : str, optional
             Name for the metric MeshVariable. Defaults to "{surface_name}_metric".
 
@@ -1529,7 +1696,7 @@ class Surface:
         >>>
         >>> # With plain floats (nondimensional coordinates)
         >>> metric = fault.refinement_metric(h_near=0.005, h_far=0.05)
-        >>> mesh.adapt(metric)
+        >>> mesh.remesh(metric)
         >>>
         >>> # With quantities (automatic nondimensionalisation)
         >>> metric = fault.refinement_metric(
@@ -1537,7 +1704,7 @@ class Surface:
         ...     h_far=uw.quantity(30, "km"),
         ...     width=uw.quantity(10, "km"),
         ... )
-        >>> mesh.adapt(metric)
+        >>> mesh.remesh(metric)
         """
         if self.mesh is None:
             raise RuntimeError(
@@ -1571,6 +1738,74 @@ class Surface:
         # The metric defines edge lengths, not areas/volumes
         # Higher metric values → finer mesh (smaller elements)
         metric.data[:, 0] = 1.0 / (h_values ** 2)
+
+        return metric
+
+    def refinement_metric_function(
+        self,
+        h_near,
+        h_far,
+        width=None,
+        profile: str = "linear",
+    ):
+        r"""Return a **callable** refinement metric based on exact distance.
+
+        This is the self-resolving companion to :meth:`refinement_metric`. Where
+        ``refinement_metric`` bakes ``M = 1/h²`` into a P1 :class:`MeshVariable`
+        sampled at the *base* mesh nodes, this returns a plain function
+        ``metric(coords) -> M`` that computes the **exact** distance
+        (:meth:`unsigned_distance`) at whatever points it is handed and maps it
+        through the same profile.
+
+        Pass it straight to :meth:`Mesh.adapt`, which re-evaluates the callable
+        at the cell centroids of **each refined level**. The metric therefore
+        resolves itself at the new resolution as mesh levels appear — it never
+        interpolates a coarse P1 field, so a thin feature refines to a clean,
+        uniform-width band instead of the *patchy* levels a P1-interpolated
+        ``1/h²`` produces (that peaked quantity aliases across a base cell).
+
+        Parameters
+        ----------
+        h_near, h_far : float or quantity
+            Target edge length near / far from the surface (same unit handling
+            as :meth:`refinement_metric`).
+        width : float or quantity, optional
+            Transition distance; defaults to ``2 * h_far``.
+        profile : {"linear", "smoothstep", "gaussian", "hyperbolic"}
+            Distance-to-size profile. Default ``"linear"``. "hyperbolic"
+            (h ∝ distance once clear of the surface) gives the best
+            transition fidelity per cell and pairs well with adapt();
+            "gaussian" holds a uniform-size corridor around the surface;
+            "linear" needs the fewest cells.
+
+        Returns
+        -------
+        callable
+            ``metric(coords: ndarray[N, dim]) -> ndarray[N]`` giving ``M = 1/h²``
+            at each query point.
+
+        Examples
+        --------
+        >>> fault = uw.meshing.Surface("fault", mesh, fault_points)
+        >>> fault.discretize()
+        >>> metric = fault.refinement_metric_function(h_near=0.005, h_far=0.05,
+        ...                                           width=0.02)
+        >>> child = mesh.adapt(metric, max_levels=3, engine="nvb")
+        """
+        if self.mesh is None:
+            raise RuntimeError(
+                f"Surface '{self.name}' must be attached to a mesh to create "
+                "a refinement metric"
+            )
+
+        h_near = _to_nd_length(h_near)
+        h_far = _to_nd_length(h_far)
+        width = _to_nd_length(width) if width is not None else 2.0 * h_far
+
+        def metric(coords: np.ndarray) -> np.ndarray:
+            d = self.unsigned_distance(coords)
+            h = _profile_to_edge_lengths(d, h_near, h_far, width, profile)
+            return 1.0 / (h ** 2)
 
         return metric
 
@@ -2122,7 +2357,8 @@ class SurfaceCollection:
 
         Args:
             mesh: The mesh to transfer normals to
-            coords: Optional coordinates to query. If None, uses mesh.data
+            coords: Optional coordinates to query. If None, uses the mesh's
+                own vertex coordinates (model space)
             normal_var: Optional existing MeshVariable
             variable_name: Name for new variable
 
@@ -2239,14 +2475,15 @@ class SurfaceCollection:
         width : float or quantity, optional
             Transition distance.  Defaults to ``2 * h_far``.
         profile : str
-            ``"linear"``, ``"smoothstep"``, or ``"gaussian"``.
+            ``"linear"``, ``"smoothstep"``, ``"gaussian"``, or
+            ``"hyperbolic"``.
         variable_name : str
             Name for the metric MeshVariable.
 
         Returns
         -------
         MeshVariable
-            Scalar metric field suitable for ``mesh.adapt()``.
+            Scalar metric field suitable for ``mesh.remesh()``.
         """
         h_near = _to_nd_length(h_near)
         h_far = _to_nd_length(h_far)
@@ -2481,6 +2718,338 @@ def _fault_collect_segments(faults):
     return [seg for poly in _fault_collect_polylines(faults) for seg in poly]
 
 
+def _polyline_arclengths(pts):
+    return np.concatenate(
+        [[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+
+
+def _point_at_arc(pts, s_arc):
+    s_ctrl = _polyline_arclengths(pts)
+    s_arc = float(np.clip(s_arc, 0.0, s_ctrl[-1]))
+    k = int(np.searchsorted(s_ctrl, s_arc, side="right") - 1)
+    k = min(k, len(pts) - 2)
+    f = (s_arc - s_ctrl[k]) / max(s_ctrl[k + 1] - s_ctrl[k], 1e-30)
+    return pts[k] + f * (pts[k + 1] - pts[k])
+
+
+def _sub_polyline(pts, s0, s1):
+    """The part of the polyline between arc lengths s0 < s1, with exact
+    endpoints (interior control points kept)."""
+    s_ctrl = _polyline_arclengths(pts)
+    keep = (s_ctrl > s0 + 1e-12) & (s_ctrl < s1 - 1e-12)
+    return np.vstack([_point_at_arc(pts, s0), pts[keep],
+                      _point_at_arc(pts, s1)])
+
+
+def damage_zone_yield(mesh, junctions, tau_damage, radius,
+                      tau_far=1.0e3):
+    """A composite yield-stress expression: damage plugs at junctions.
+
+    The gap-and-let-it-link policy: declared master faults keep
+    geometric continuity, every other junction is left as an offset gap
+    (:func:`prepare_fault_network`), and the gaps carry DAMAGE-ZONE
+    material — a yield cap ``tau_damage`` inside a disc of ``radius``
+    about each junction point, ``tau_far`` (effectively unyielding)
+    elsewhere — so the stress lobes of the abutting tips decide how the
+    faults link up. Assign the result to a ViscoPlastic model::
+
+        prepared, report, junctions = prepare_fault_network(
+            faults, spacing=h, through=["Main"], return_junctions=True)
+        child = mesh.add_fault(prepared)
+        stokes.constitutive_model = ViscoPlasticFlowModel
+        stokes.constitutive_model.Parameters.yield_stress = \\
+            uw.meshing.damage_zone_yield(child, junctions,
+                                         tau_damage=0.5, radius=3 * h)
+
+    Regions are SHARP (Piecewise), deliberately: blending a huge far
+    yield through any smooth mask tail contaminates the plug
+    (measured — the plug shrinks to a fraction of a cell).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Supplies the coordinate symbols.
+    junctions : sequence
+        Junction records from ``prepare_fault_network`` (anything with
+        a ``point`` key or a 2-vector as its second element), or bare
+        2-vectors.
+    tau_damage : float or sequence of float
+        The damage yield stress (one value, or one per junction).
+    radius : float or sequence of float
+        Plug radius (one value, or one per junction) — a couple of
+        ligaments is the measured sweet spot.
+    tau_far : float, optional
+        The unyielding far-field cap. Keep it finite and sane (1e3):
+        it only needs to exceed any stress the model can produce.
+    """
+    x, y = mesh.X[0], mesh.X[1]
+    pts = []
+    for j in junctions:
+        if isinstance(j, dict):
+            pts.append(np.asarray(j["point"], dtype=float))
+        else:
+            pts.append(np.asarray(j, dtype=float))
+    n = len(pts)
+    taus = (list(tau_damage) if np.ndim(tau_damage) else [tau_damage] * n)
+    radii = (list(radius) if np.ndim(radius) else [radius] * n)
+    expr = sympy.sympify(tau_far)
+    for P, tau, R in zip(pts, taus, radii):
+        r2 = (x - float(P[0])) ** 2 + (y - float(P[1])) ** 2
+        expr = sympy.Min(expr, sympy.Piecewise(
+            (float(tau), r2 < float(R) ** 2), (tau_far, True)))
+    return expr
+
+
+def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
+                          hierarchy=None, verbose=True,
+                          return_junctions=False):
+    """Make an imported set of 2-D fault traces splittable.
+
+    The split-node pipeline refuses faults that cross or share vertices
+    — a junction vertex needs a non-binary DOF pairing, which is a
+    design of its own. The SUPPORTED representation of a junction is
+    the offset form: the traces stop short of the intersection, leaving
+    a ligament of intact material about a cell across. Stress transfers
+    across the ligament (the measured mechanism of the interaction
+    examples); slip does not transfer through the junction point.
+
+    This function detects the junctions in an imported set and applies
+    that conversion, loudly:
+
+    - X crossing (interiors intersect): BOTH traces are cut at the
+      intersection, every cut end pulled back ``ligament * spacing``
+      along its own trace; a trace cut into k pieces is renamed
+      ``<name>_1 .. <name>_k``. If exactly one of the two is listed in
+      ``through``, it stays CONTINUOUS and only the other is cut (the
+      through-going fault offsets the crossing one); two ``through``
+      faults crossing is a hard error.
+    - T abutment (an endpoint of one trace on or near another's
+      interior): the abutting END is pulled back; the through-going
+      trace is untouched.
+    - Y contact (endpoints of two traces closer than the ligament):
+      both endpoints pulled back.
+
+    Pieces left shorter than ``2 * ligament * spacing`` are dropped and
+    reported. Returns ``(prepared, report)`` where ``prepared`` is a
+    list of ``(name, points)`` ready for :meth:`Mesh.add_fault` and
+    ``report`` is the list of actions taken (printed when ``verbose``).
+
+    Parameters
+    ----------
+    faults : sequence of (name, points) and/or Surface
+        The imported traces (each an open polyline).
+    spacing : float
+        The local mesh size the network will be meshed at — sets the
+        ligament in mesh units.
+    ligament : float, optional
+        Ligament size in multiples of ``spacing`` (default 1.5; the
+        add_fault contract wants segments at least a cell or two apart).
+    through : iterable of str, optional
+        Names of MASTER faults: never cut at X crossings (the other
+        trace yields on both sides). T abutments never cut the
+        through-going trace regardless.
+    hierarchy : sequence of str, optional
+        Fault names in SENIORITY order (most major first). At an X
+        crossing between two ranked faults, the senior one runs
+        through and only the junior is cut — a pairwise version of
+        ``through`` (which remains absolute and wins over rank).
+        Unranked names always yield to ranked ones.
+    """
+    lig = float(ligament) * float(spacing)
+    through = set(through or ())
+    ranks = {n: k for k, n in enumerate(hierarchy)} if hierarchy else {}
+    junctions = []
+    traces = []
+    for entry in faults:
+        if isinstance(entry, tuple) and len(entry) == 2 \
+                and isinstance(entry[0], str):
+            name, pts = entry
+            pts = np.asarray(pts, dtype=float)[:, :2]
+        else:
+            name = entry.name
+            cp = np.asarray(entry._control_points, dtype=float)[:, :2]
+            pts = cp
+        traces.append([name, pts, []])          # [name, points, cut arcs]
+
+    report = []
+
+    def seg_intersect(p0, p1, q0, q1):
+        d1, d2 = p1 - p0, q1 - q0
+        den = d1[0] * d2[1] - d1[1] * d2[0]
+        if abs(den) < 1e-30:
+            return None
+        w = q0 - p0
+        t = (w[0] * d2[1] - w[1] * d2[0]) / den
+        u = (w[0] * d1[1] - w[1] * d1[0]) / den
+        if -1e-12 <= t <= 1 + 1e-12 and -1e-12 <= u <= 1 + 1e-12:
+            return t, u
+        return None
+
+    # pass 1: X crossings and T abutments -> cut/trim events per trace.
+    # The pull-back must give EUCLIDEAN clearance >= the ligament, and
+    # it is measured along each trace, so an oblique junction (crossing
+    # angle theta) needs pullback = lig / sin(theta) — a perpendicular
+    # crossing pulls back by exactly lig, a grazing one by more (capped,
+    # and reported, at 5 lig).
+    for i in range(len(traces)):
+        for j in range(i + 1, len(traces)):
+            ni, pi, ci = traces[i]
+            nj, pj, cj = traces[j]
+            si, sj = _polyline_arclengths(pi), _polyline_arclengths(pj)
+            for a in range(len(pi) - 1):
+                for b in range(len(pj) - 1):
+                    hit = seg_intersect(pi[a], pi[a + 1], pj[b], pj[b + 1])
+                    if hit is None:
+                        continue
+                    t, u = hit
+                    d1 = pi[a + 1] - pi[a]
+                    d2 = pj[b + 1] - pj[b]
+                    sin_th = abs(d1[0] * d2[1] - d1[1] * d2[0]) / (
+                        np.linalg.norm(d1) * np.linalg.norm(d2) + 1e-30)
+                    pull = lig / max(sin_th, 0.2)
+                    if sin_th < 0.2:
+                        report.append(
+                            f"grazing junction between {ni!r} and "
+                            f"{nj!r} (angle {np.degrees(np.arcsin(max(sin_th, 0.0))):.1f} deg): "
+                            f"pull-back capped at {pull:.4g}.")
+                    arc_i = si[a] + t * (si[a + 1] - si[a])
+                    arc_j = sj[b] + u * (sj[b + 1] - sj[b])
+                    end_i = min(arc_i, si[-1] - arc_i) < pull
+                    end_j = min(arc_j, sj[-1] - arc_j) < pull
+                    P = pi[a] + t * (pi[a + 1] - pi[a])
+                    # who yields: an abutting END always yields; a
+                    # through-going trace is only CUT at a genuine X
+                    # crossing, and never if it is a declared master
+                    if end_i and end_j:
+                        kind = "Y contact"
+                        cut_i = cut_j = True
+                    elif end_i:
+                        kind = f"T abutment ({ni!r} onto {nj!r})"
+                        cut_i, cut_j = True, False
+                    elif end_j:
+                        kind = f"T abutment ({nj!r} onto {ni!r})"
+                        cut_i, cut_j = False, True
+                    else:
+                        kind = "X crossing"
+                        if ni in through and nj in through:
+                            raise ValueError(
+                                f"two through-going faults ({ni!r}, "
+                                f"{nj!r}) cross at ({P[0]:.4g}, "
+                                f"{P[1]:.4g}) — one of them must be "
+                                "allowed to yield.")
+                        cut_i = ni not in through
+                        cut_j = nj not in through
+                        if cut_i and cut_j and ranks:
+                            # pairwise seniority: the senior trace runs
+                            # through this crossing; unranked yields to
+                            # ranked. Equal/absent ranks: both cut.
+                            ri = ranks.get(ni, len(ranks))
+                            rj = ranks.get(nj, len(ranks))
+                            if ri < rj:
+                                cut_i = False
+                            elif rj < ri:
+                                cut_j = False
+                    if cut_i:
+                        ci.append((arc_i, pull))
+                    if cut_j:
+                        cj.append((arc_j, pull))
+                    kept_name = ni if not cut_i else (
+                        nj if not cut_j else None)
+                    kept = ("" if kept_name is None
+                            else f" {kept_name!r} kept continuous;")
+                    junctions.append(dict(kind=kind, point=P.copy(),
+                                          pull=pull, faults=(ni, nj)))
+                    report.append(
+                        f"{kind} between {ni!r} and {nj!r} at "
+                        f"({P[0]:.4g}, {P[1]:.4g}):{kept} offset "
+                        f"junction (ligament {lig:.4g}, pull-back "
+                        f"{pull:.4g}).")
+
+    # pass 1b: NEAR-MISS abutments — an endpoint stopping just short of
+    # another trace never intersects, so pass 1 cannot see it, but the
+    # meshed ligament would be thinner than requested. Pull such an
+    # endpoint back until its Euclidean clearance reaches the ligament.
+    def dist_to(P, Q):
+        best = np.inf
+        for a, b in zip(Q[:-1], Q[1:]):
+            ab = b - a
+            t = float(np.clip(((P - a) @ ab) / max(ab @ ab, 1e-30),
+                              0.0, 1.0))
+            best = min(best, float(np.linalg.norm(P - (a + t * ab))))
+        return best
+
+    for i, (ni, pi, ci) in enumerate(traces):
+        s_i = _polyline_arclengths(pi)
+        for arc_end, P in ((0.0, pi[0]), (float(s_i[-1]), pi[-1])):
+            for j, (nj, pj, _cj) in enumerate(traces):
+                if j == i:
+                    continue
+                d0 = dist_to(P, pj)
+                if d0 >= lig:
+                    continue
+                if any(abs(arc - arc_end) < 4.0 * lig for arc, _ in ci):
+                    continue                    # already handled above
+                # Pull back by the clearance DEFICIT, not a whole ligament:
+                # the join should be as small as the mesh allows. When the
+                # other trace's END is the near part (two ends facing each
+                # other), each side yields half — the other end is pulled
+                # by its own pass below.
+                facing = (dist_to(pj[0], pi) < lig
+                          or dist_to(pj[-1], pi) < lig)
+                share = 0.5 if facing else 1.0
+                target = d0 + share * (lig - d0)
+                pull = share * (lig - d0)
+                for _ in range(6):
+                    s_q = arc_end + pull if arc_end < 1e-12 \
+                        else arc_end - pull
+                    if dist_to(_point_at_arc(pi, s_q), pj) >= target:
+                        break
+                    pull *= 1.6
+                ci.append((arc_end, pull))
+                junctions.append(dict(kind="near-miss", point=P.copy(),
+                                      pull=pull, faults=(ni, nj)))
+                report.append(
+                    f"near-miss abutment: the end of {ni!r} sits within "
+                    f"the ligament of {nj!r} — pulled back {pull:.4g}.")
+
+    # pass 2: apply the events trace by trace
+    prepared = []
+    for name, pts, cuts in traces:
+        total = _polyline_arclengths(pts)[-1]
+        if not cuts:
+            prepared.append((name, pts))
+            continue
+        pull_at = {}
+        for arc, pull in cuts:
+            pull_at[float(arc)] = max(pull_at.get(float(arc), 0.0), pull)
+        edges = sorted(set([0.0] + list(pull_at) + [total]))
+        pieces = []
+        for s0, s1 in zip(edges[:-1], edges[1:]):
+            a = s0 + pull_at.get(s0, 0.0)
+            b = s1 - pull_at.get(s1, 0.0)
+            if b - a < 2.0 * lig:
+                report.append(
+                    f"piece of {name!r} between arc {s0:.4g} and "
+                    f"{s1:.4g} is shorter than two ligaments — dropped.")
+                continue
+            pieces.append(_sub_polyline(pts, a, b))
+        if len(pieces) == 1:
+            prepared.append((name, pieces[0]))
+        else:
+            for k, piece in enumerate(pieces):
+                prepared.append((f"{name}_{k + 1}", piece))
+        if len(pieces) != 1:
+            report.append(
+                f"{name!r} became {len(pieces)} sub-fault(s).")
+
+    if verbose:
+        for line in report:
+            print(f"[prepare_fault_network] {line}")
+    if return_junctions:
+        return prepared, report, junctions
+    return prepared, report
+
+
 def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     r"""Build the analytic, Eulerian **normal-aligned anisotropic metric
     tensor** ``M(x)`` for refining a thin band of cells **across** one or more
@@ -2490,8 +3059,7 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
 
         M = uw.meshing.fault_metric_tensor(mesh, faults, refinement=3.0)
         uw.meshing.smooth_mesh_interior(
-            mesh, metric=M, method="anisotropic", boundary_slip=False,
-            method_kwargs=dict(n_outer=12, relax=0.4))
+            mesh, metric=M, method="mmpde", boundary_slip=False)
 
     Construction — summed over every fault segment ``i`` (normal ``n_i``,
     point-to-segment distance ``d_i(x)``):
@@ -2511,7 +3079,10 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     Parameters
     ----------
     mesh : Mesh
-        2D mesh (the anisotropic mover is 2D-only).
+        2D mesh. (The metric CONSTRUCTION here is 2D — polyline
+        normals and in-plane bumps; the MMPDE mover itself now
+        handles 3D, so a 3D generalisation of this builder is a
+        geometry exercise, not a mover limitation.)
     faults : Surface | array | list
         The fault geometry, in **mesh coordinate space**: a :class:`Surface`
         (uses its control-point polyline), an ``(N>=2, 2|3)`` polyline array,
@@ -2537,12 +3108,15 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     sympy.Matrix
         The ``2×2`` analytic metric tensor ``M(x)`` (a function of
         ``mesh.CoordinateSystem.X``), to pass as ``metric=`` with
-        ``method="anisotropic"``.
+        ``method="mmpde"``.
     """
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_metric_tensor is 2D only (matches the anisotropic mover)")
+            "fault_metric_tensor is 2D only: the polyline-normal band\n"
+            "construction is planar. The MMPDE mover itself handles 3D —\n"
+            "build a 3D metric directly (e.g. from a plane/surface\n"
+            "distance) and pass it to redistribute_nodes.")
     R = float(refinement)
     if isinstance(width, str):
         if width.strip().lower() != "auto":
@@ -2597,20 +3171,16 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
                       tooth_width=None, combine="sum"):
     r"""Build a scalar **comb** metric ``ρ(x)`` that refines a band of a
     controlled number of roughly-**uniform** cells *across* one or more faults,
-    for the isotropic equidistribution mover (``method="ma"``).
+    for the scalar-metric equidistribution mover (``method="mmpde"``).
 
     Pass the result straight to the mover::
 
         rho = uw.meshing.fault_comb_metric(mesh, faults, cell_size=0.006,
                                            n_across=4)
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="ma",
-            method_kwargs=dict(n_outer=1, n_picard=25))   # single-shot
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="mmpde")
 
-    Use the **single-shot** map (``n_outer=1``): one Caffarelli-clean
-    Monge–Ampère solve, untangled by construction (no folding), with no
-    outer-iteration compounding and nothing to tune — the most robust
-    configuration, and the comb's teeth give the single map all the row
+    The MMPDE map is non-folding by construction, and the comb's teeth
+    give it all the row
     structure it needs (~``n_across``−1 even layers, centred). ``n_outer=2``
     realises a touch more of the requested ``n_across`` (the single map is
     mildly node-budget-capped) at ~1.6× the cost; rarely needed.
@@ -2638,9 +3208,10 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     Parameters
     ----------
     mesh : Mesh
-        2D mesh. (The isotropic equidistribution movers — ``ma``/``ot`` — are
-        2D-only; 3D would need a 3D equidistribution mover, which does not yet
-        exist, so this builder is 2D-only.)
+        2D mesh. (The comb construction — teeth along a polyline,
+        rows across it — is planar geometry; the MMPDE mover itself
+        now handles 3D, so a 3D comb would be a geometry exercise,
+        not a mover limitation.)
     faults : Surface | array | list
         Fault geometry in mesh coordinate space — a :class:`Surface`, an
         ``(N>=2, 2|3)`` polyline array, or a list mixing those. Each fault's
@@ -2668,13 +3239,14 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     -------
     sympy.Expr
         The scalar comb metric ``ρ(x)``, to pass as ``metric=`` with
-        ``method="ma"``.
+        ``method="mmpde"``.
     """
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_comb_metric is 2D only (the isotropic equidistribution "
-            "movers are 2D; 3D needs a 3D equidistribution mover)")
+            "fault_comb_metric is 2D only: the comb construction is\n"
+            "planar. The MMPDE mover itself handles 3D — build a 3D\n"
+            "metric directly and pass it to redistribute_nodes.")
     dx = float(cell_size)
     if not (dx > 0.0):
         raise ValueError(f"cell_size must be positive; got {cell_size}")
@@ -2710,7 +3282,7 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
 
 def compose_metrics(metrics, compose="max"):
     r"""Combine several scalar density metrics into one, for the
-    equidistribution mover (``method="ma"``).
+    scalar-metric equidistribution mover (``method="mmpde"``).
 
     Each item may be either a metric (a scalar sympy expression or
     MeshVariable) or a ``(metric, weight)`` tuple. The default ``"max"``
@@ -2735,8 +3307,7 @@ def compose_metrics(metrics, compose="max"):
                                                        metric_choice="arc-length")
         rho_F = uw.meshing.fault_comb_metric(mesh, faults, cell_size=0.008)
         rho   = uw.meshing.compose_metrics([(rho_T, 1.0), (rho_F, 3.0)])  # fault heavier
-        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="ma",
-                                        method_kwargs=dict(n_outer=1, n_picard=25))
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="mmpde")
 
     Parameters
     ----------
@@ -2840,18 +3411,21 @@ def fault_metric(mesh, faults, method="ma", *, cell_size,
     ``n_across`` elements of size ``cell_size`` across a band around the
     fault(s)*.
 
-    The three movers consume **different metric objects with different
+    The consumers take **different metric objects with different
     semantics**, so this facade unifies the *intent* and emits the right
-    representation — it does not pretend they are interchangeable:
+    representation — it does not pretend they are interchangeable (the
+    ``method`` values name the metric KIND; the historical mover names
+    are kept as spellings even though the movers themselves were
+    superseded by MMPDE in 2026-07):
 
     ===================  ============================  ===========================
     ``method``           returns                       pass to
     ===================  ============================  ===========================
     ``"ma"`` (default)   scalar comb density (sympy)   ``smooth_mesh_interior(
-                                                       method="ma")``
+                                                       method="mmpde")``
     ``"anisotropic"``    2×2 tensor (sympy Matrix)     ``smooth_mesh_interior(
-                                                       method="anisotropic")``
-    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.adapt(...)``
+                                                       method="mmpde")``
+    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.remesh(...)``
     ===================  ============================  ===========================
 
     **``cell_size`` is honoured differently by each** — this is the key
@@ -2899,8 +3473,7 @@ def fault_metric(mesh, faults, method="ma", *, cell_size,
         # uniform-ish band, fixed topology (the slip-rheology recipe)
         rho = uw.meshing.fault_metric(mesh, faults, method="ma",
                                       cell_size=0.006, n_across=4)
-        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="ma",
-                                        method_kwargs=dict(n_outer=1, n_picard=25))
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="mmpde")
     """
     if cell_size is None or not (float(cell_size) > 0.0):
         raise ValueError("cell_size must be a positive number")

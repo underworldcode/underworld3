@@ -305,6 +305,12 @@ class Constitutive_Model(uw_object):
         self._class_instance_number = Constitutive_Model._class_instance_counts[class_name]
         Constitutive_Model._class_instance_counts[class_name] += 1
 
+        # Backing attribute for settable flux_jacobian (set to a custom
+        # SymPy expression to override the Jacobian tangent independently
+        # of the residual flux).  None by default, meaning the solver
+        # differentiates the exact flux.
+        self._flux_jacobian = None
+
         self.Unknowns = unknowns
 
         u = self.Unknowns.u
@@ -573,6 +579,45 @@ class Constitutive_Model(uw_object):
 
         return uw.maths.tensor.rank2_to_voigt(flux, dim=self.dim)
 
+    @property
+    def flux_jacobian(self):
+        """Optional smooth surrogate flux for Jacobian assembly.
+
+        Returns ``None`` by default, meaning the solver differentiates the
+        exact :attr:`flux` (the Newton fix unwraps it first; a generic Min/Max
+        kink-smoothing fallback then rounds any remaining yield kink).
+
+        Set this to a custom SymPy expression to override the Jacobian tangent
+        independently of the residual flux.  The residual still uses the exact
+        :attr:`flux`, so the converged solution satisfies the true constitutive
+        law — only the Newton search direction is smoothed, giving a robust,
+        line-search-friendly tangent without changing the answer.
+
+        Use cases:
+
+        * A model whose flux has a non-smooth yield kink (e.g. hard-``Min``
+          viscoplasticity) supplies a physically-motivated *smooth law for the
+          tangent only*.
+
+        * A model whose flux contains composition-dependent coefficients
+          (e.g. multicomponent diffusion) may supply a *constant-coefficient*
+          version to give the solver a clean SPD Jacobian while keeping the
+          exact physics in the residual.
+
+        Shape must match :attr:`flux` (the solver substitutes it for ``F1`` when
+        forming the velocity-gradient Jacobian blocks).
+        """
+        return self._flux_jacobian
+
+    @flux_jacobian.setter
+    def flux_jacobian(self, value):
+        """Set a custom Jacobian flux expression (or None to revert)."""
+        self._flux_jacobian = value
+        # Signal the solver to rebuild its pointwise Jacobian function.
+        # Without this, the change is silently ignored until something
+        # else triggers a re-setup.
+        self._solver_is_setup = False
+
     def _reset(self):
         """Flags that the expressions in the consitutive tensor need to be refreshed and also that the
         solver will need to rebuild the stiffness matrix and jacobians"""
@@ -597,6 +642,18 @@ class Constitutive_Model(uw_object):
         Models that return True require a solver with stress history
         management (e.g. VE_Stokes). Assigning such a model to a plain
         Stokes solver will raise an error.
+        """
+        return False
+
+    @property
+    def supports_yield_homotopy(self):
+        """Whether this model can be solved by a single-parameter yield homotopy.
+
+        ``True`` on the yielding models, which carry a δ-parameterised soft-min
+        yield law that sharpens to the exact ``Min`` as δ→0 — see
+        :meth:`_yield_homotopy_control`. ``solver.solve(homotopy=True)`` refuses a
+        model that returns ``False`` (a purely viscous model has no yield surface to
+        sharpen, so there is nothing to march).
         """
         return False
 
@@ -879,6 +936,408 @@ class ViscousFlowModel(Constitutive_Model):
             )
         )
 
+    # --- Yield soft-min smoother (shared by the visco-plastic subclasses) -----------
+    # The δ soft-min regularisation and the smooth-min FAMILY selection live on the
+    # base class so every yielding model inherits one implementation. δ is held as a
+    # constants[] UWexpression atom (not a baked float) so a homotopy can ramp it at
+    # runtime via PetscDSSetConstants with no JIT recompile.
+
+    def _get_yield_softness(self):
+        r"""The soft-min regularisation δ as a ``constants[]`` UWexpression atom.
+
+        Created lazily and kept in sync with ``self._yield_softness`` (the
+        configured numeric value).  Storing δ as a UWexpression — rather than
+        baking the float into the compiled flux — lets a yield homotopy ramp
+        δ at runtime via ``PetscDSSetConstants`` with no JIT recompile.
+        ``δ = 0`` makes the sqrt law identically ``Min``.
+        """
+        delta_value = getattr(self, "_yield_softness", 0.0)
+        if getattr(self, "_yield_softness_expr", None) is None:
+            self._yield_softness_expr = expression(
+                R"{\updelta_{y}}",
+                sympy.Float(delta_value),
+                "Yield soft-min regularisation δ (rampable constant; δ=0 ⇒ exact Min)",
+            )
+            # The offset fixes WHERE the smoothed curve is pinned to the exact law.
+            # Held as its OWN constant atom — a single symbol in the stress tensor —
+            # so it does not blow the tensor up, while still tracking δ symbolically
+            # (one δ update repacks both constants). See `yield_anchor`.
+            self._yield_offset_expr = expression(
+                R"{\updelta_{y,0}}",
+                self._yield_offset_for_anchor(),
+                "Yield soft-min offset; tracks δ so the chosen anchor is exact",
+            )
+        else:
+            self._yield_softness_expr.sym = sympy.Float(delta_value)
+        return self._yield_softness_expr
+
+    def _yield_offset_for_anchor(self):
+        r"""The sqrt soft-min offset that pins the chosen anchor, symbolic in δ."""
+        delta = self._yield_softness_expr
+        if getattr(self, "_yield_anchor", "onset") == "yield":
+            return delta / 2
+        return (-1 + sympy.sqrt(1 + delta**2)) / 2
+
+    def _get_yield_offset(self):
+        """The offset constant atom (lazily created alongside δ)."""
+        if getattr(self, "_yield_offset_expr", None) is None:
+            self._get_yield_softness()
+        return self._yield_offset_expr
+
+    @property
+    def yield_anchor(self):
+        r"""Which point of the ``"softmin"`` yield law is pinned to the exact ``Min``.
+
+        A soft-min rounds the yield corner by δ, and rounding a corner moves the whole
+        curve — so the family has one free constant, fixed by choosing WHICH point the
+        smoothed law must reproduce exactly. Both choices apply to both smoother
+        families, and both recover ``Min`` as :math:`\delta \to 0`; they differ only in
+        which SIDE of the exact law the curve sits on in between. Writing
+        :math:`f = \eta_{ve} / \eta_{pl}` for the overstress ratio (so :math:`f = 1` is
+        the yield point and :math:`f < 1` is unyielded):
+
+        ``"onset"`` (default, historical)
+            Pins the unyielded limit :math:`f \to 0`, where :math:`\eta = \eta_{ve}`
+            exactly. The curve then sits BELOW the exact law at and above the yield
+            point — the sqrt family undershoots for :math:`f < 2` (at
+            :math:`\delta = 64`, :math:`\eta/\eta_{ve} = 0.80` at :math:`f = 0.5` where
+            the exact law gives 1.0, and the yield point itself is a third
+            under-stressed, :math:`\tau/\tau_y = 0.67`), and the power mean degenerates
+            to the p-norm :math:`(\eta_{ve}^{-s} + \eta_{pl}^{-s})^{-1/s}`, which falls
+            away to :math:`\eta \to 0` as δ grows. So neither family approaches the
+            yield surface from above under this anchor. That matters whenever the
+            problem's overstress ratio is O(1), because then the smoothed problem is
+            WEAKER than the sharp one it is supposed to be an easy version of.
+
+        ``"yield"``
+            Pins :math:`f = 1`, so :math:`\tau/\tau_y = 1` exactly at the yield point
+            for every δ and the curve is :math:`\ge` the exact law everywhere — a
+            genuine approach from above, which is the safe direction for a homotopy
+            entry. The sqrt family gets there with the offset :math:`\delta/2`; the
+            power mean needs no offset at all, since averaging the two terms,
+            :math:`\eta = ((\eta_{ve}^{-s} + \eta_{pl}^{-s})/2)^{-1/s}`, makes it a
+            generalised mean, and a generalised mean returns the common value when its
+            arguments are equal. The cost is stiffened unyielded material, bounded by a
+            factor 2 for the sqrt family and by :math:`2^{\delta}` for the power mean,
+            both decaying to 1 as :math:`\delta \to 0`. The power-mean bound is why its
+            entry δ is O(1) and not O(10).
+        """
+        return getattr(self, "_yield_anchor", "onset")
+
+    @yield_anchor.setter
+    def yield_anchor(self, value):
+        if value not in ("onset", "yield"):
+            raise ValueError(
+                f"yield_anchor must be 'onset' or 'yield', got {value!r}")
+        self._yield_anchor = value
+        # The sqrt family's offset atom holds the anchor's FORMULA, so it must be
+        # rebuilt, not merely revalued — and _get_yield_softness only builds it
+        # alongside δ. (The power mean carries the anchor in _combine_yield itself, so
+        # for that family the _reset is the whole of the update.)
+        #
+        # Discarding the softness atom ORPHANS the δ held by any
+        # YieldHomotopyControl built before this call: the control still ramps
+        # the atom it captured, and the model now reads a fresh one. That cannot
+        # bite a march, because `yield_continuation` refuses `anchor=` together
+        # with a ready-made control — so the only way to reach it is to build a
+        # control by hand, set the anchor afterwards, and read δ back off the
+        # control for diagnostics. Set the anchor BEFORE building the control
+        # (#490).
+        self._yield_offset_expr = None
+        self._yield_softness_expr = None
+        self._reset()
+
+    def _combine_yield(self, eta_ve, eta_pl):
+        r"""Combine the visco-elastic/viscous viscosity ``eta_ve`` with the plastic
+        (yield) viscosity ``eta_pl`` according to ``self._yield_mode``:
+
+        - ``"min"``: exact hard ``Min(η_ve, η_pl)`` (sharp yield surface).
+        - ``"harmonic"``: ``1/(1/η_ve + 1/η_pl)`` (a distinct smooth blend).
+        - ``"softmin"``: the δ-parameterised soft-min, in the family chosen by
+          ``self.yield_smoother`` (``"sqrt"`` or ``"powermean"``) and on the side of
+          exact ``Min`` chosen by ``self.yield_anchor``. Which side is the property
+          that matters for a homotopy, and it belongs to the ANCHOR, not the family:
+          ``"onset"`` puts both families below ``Min`` near the yield point,
+          ``"yield"`` puts both on or above it.
+          The ``sqrt`` family is exactly ``Min`` at ``δ = 0``; the ``powermean``
+          family is not — its sharpness ``s = 1/(δ + 0.001)`` saturates at 1000, so it
+          lands within a factor :math:`2^{\pm(\delta + 0.001)}` of ``Min``, i.e. 0.07 %
+          at ``δ = 0``. Measured on a 45 %-yielded box, that leaves the converged
+          solution satisfying the exact yield law to 6e-10 of the initial residual — an
+          order of magnitude INSIDE a 1e-8 solver tolerance, so the difference is not
+          observable in practice (2026-07-27).
+
+        Behaviour at the stock settings (``yield_mode`` per model default,
+        ``yield_smoother="sqrt"``) is identical to the previous inline law — δ merely
+        moves from a baked float to a ``constants[]`` atom (same value).
+        """
+        mode = getattr(self, "_yield_mode", "softmin")
+        if mode == "harmonic":
+            return 1 / (1 / eta_ve + 1 / eta_pl)
+        if mode == "min":
+            return sympy.Min(eta_ve, eta_pl)
+
+        # "softmin": δ-parameterised smooth-min family.
+        smoother = getattr(self, "_yield_smoother", "sqrt")
+        delta = self._get_yield_softness()
+        f = eta_ve / eta_pl
+        if smoother == "powermean":
+            # Soft-min of order -s in an overflow-safe harmonic-normalised form. δ is
+            # floored SMOOTHLY (+ε, not Max()) so 1/δ stays finite as δ→0 (a Max on
+            # the δ atom triggers an unsupported symbolic numeric comparison).
+            s = 1 / (delta + sympy.Float(0.001))
+            a = 1 + f
+            b = 1 + 1 / f
+            # Harmonic mean written as eta_ve/(1+f), NOT eta_ve*eta_pl/(eta_ve+eta_pl).
+            # The two are algebraically identical, but the product-over-sum form
+            # evaluates to inf/inf = NaN when eta_pl is infinite — which is exactly
+            # what a rigid (unyielded) point gives, since eta_pl = tau_y/(2 edot_II)
+            # and edot_II = 0 there. That includes every point of a cold v=0 start.
+            # In this form f -> 0 and N -> eta_ve, the correct viscous limit.
+            N = eta_ve / a
+            softmin = a ** (-s) + b ** (-s)
+            if self.yield_anchor == "yield":
+                # Averaging the two terms is what makes this a power MEAN rather than
+                # a p-NORM, and it is the whole of the "yield" anchor for this family:
+                # a generalised mean returns the common value when its arguments are
+                # equal, so η = η_ve = η_pl exactly at f = 1 — no offset atom needed.
+                softmin = softmin / 2
+            return N * softmin ** (-1 / s)
+
+        # default "sqrt" soft-min: η_ve / g(f), g(0)=1, g ≈ max(1, f), exact Min at δ=0.
+        offset = self._get_yield_offset()
+        g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta**2)) / 2 - offset
+        return eta_ve / g
+
+    @property
+    def yield_smoother(self):
+        r"""Which smooth-min FAMILY regularises the ``"softmin"`` yield mode.
+
+        Both families use the same softness parameter ``δ`` (``yield_softness``)
+        and approach exact ``Min`` as ``δ → 0``, but differ in how they round
+        the kink:
+
+        - ``"sqrt"`` (default): ``η_ve / g(f, δ)`` with
+          ``g = 1 + ½(f−1+√((f−1)²+δ²)) − offset``, ``f = η_ve/η_pl``.  Exact
+          ``Min`` at ``δ=0``.  Its smoothing authority saturates: as ``δ → ∞``,
+          ``η → 2 η_ve/(f+2)``, so the most it can move a point is a factor
+          ``2f/(f+2)`` — which tends to 1 as ``f → 1``.  On a problem whose
+          overstress ratio is O(1) this family therefore has very little room to
+          build an easier problem, however large δ is.
+        - ``"powermean"``: the soft-min of order ``−s``,
+          ``η_eff = (η_ve^(−s) + η_pl^(−s))^(−1/s)`` with ``s = 1/(δ + 0.001)``
+          (``s→∞`` ⇒ ``Min``).  Unlike the sqrt family it does not saturate — it
+          keeps moving with δ — which is what makes it usable where the sqrt family
+          has no range.
+
+        ``δ`` is NOT the same parameter in the two families and their schedules do
+        not transfer: for the power mean ``s = 1/(δ + 0.001)``, so ``δ = 1`` is
+        already the harmonic mean and useful entries are ``δ ≤ 1``; for the sqrt
+        family δ is a percentage stress deviation and a generous entry is O(10).
+        Take the entry from ``_yield_homotopy_control``, which asks the family.
+
+        Which SIDE of ``Min`` a family sits on is set by ``yield_anchor``, not by the
+        family — see that property.
+
+        Selecting ``"powermean"`` bumps a zero ``yield_softness`` to ``1.0``
+        (``s≈1``, the parameter-free harmonic mean) since ``δ=0`` is the sharp
+        hard-``Min`` limit it only *approaches*.
+        """
+        return getattr(self, "_yield_smoother", "sqrt")
+
+    @yield_smoother.setter
+    def yield_smoother(self, value):
+        if value not in ("sqrt", "powermean"):
+            raise ValueError(
+                f"yield_smoother must be 'sqrt' or 'powermean', got '{value}'"
+            )
+        self._yield_smoother = value
+        if value == "powermean" and getattr(self, "_yield_softness", 0.0) == 0.0:
+            # δ=0 ⇒ s=1/δ=∞ is the singular Min limit; default to the
+            # parameter-free harmonic mean (s=1) instead.
+            self.yield_softness = 1.0
+        self._reset()
+
+    # --- Smooth lower bounds (viscosity / yield floors) -----------------------------
+    # A hard sympy.Max cutoff is non-differentiable at the corner. When the flux is
+    # differentiated for the consistent-Newton tangent that kink breaks the tangent —
+    # and, because one operand is a UWexpression over the fields, sympy's fuzzy `>=`
+    # comparison cannot resolve it and recurses. In the smooth yield modes we therefore
+    # round the floor with the same δ that regularises the yield transition, so the
+    # whole effective viscosity stays differentiable and δ→0 recovers the sharp bound.
+
+    @property
+    def viscosity_min_rounding(self):
+        r"""Rounding scale :math:`\epsilon` for the VISCOSITY floor, in viscosity units.
+
+        A floor is a corner, and at :math:`\epsilon = 0` the smooth-max expression is
+        algebraically exactly ``Max`` — non-differentiable, which the consistent-Newton
+        tangent cannot cope with (it dies at ``nl=0, DIVERGED_LINEAR_SOLVE``). Without
+        this property the only rounding available came from ``yield_mode``: zero under
+        ``"min"``, and :math:`\delta\,|floor|` under the smooth modes, so the smoothing
+        **vanished as δ → 0** — exactly where a yield homotopy lands.
+
+        The floor is a different corner from the yield surface and needs a scale of its
+        own. Set this to a small fraction of the floor (a few per cent is usually ample)
+        and the cutoff becomes usable with ``consistent_jacobian=True`` at any δ,
+        including δ = 0.
+
+        ``None`` (the default) keeps the historical ``yield_mode``-derived behaviour, so
+        nothing changes for existing models.
+
+        Notes
+        -----
+        This matters for more than differentiability. A viscosity floor bounds how weak
+        yielded material can become, and therefore bounds the viscosity CONTRAST the
+        solution can develop — which is to say it bounds how localised the solution can
+        be. A floor that is relaxed toward zero is a continuation from a diffuse,
+        uniquely-solvable viscous problem toward the localised (near rigid-plastic)
+        limit, tracking one branch as it sharpens. That is a solution-SELECTION
+        homotopy, not a smoothness fix, and it is why the floor needs to be usable
+        independently of δ.
+        """
+        return getattr(self, "_viscosity_min_rounding", None)
+
+    @viscosity_min_rounding.setter
+    def viscosity_min_rounding(self, value):
+        # A rounding scale is a width, so it is non-negative by construction:
+        # zero is the exact hard Max, positive rounds the corner. A negative
+        # value has no reading — it would sharpen the corner past Max — and
+        # since it reaches the tangent only through the compiled expression,
+        # the symptom of setting one is a solver that will not converge rather
+        # than anything naming this property (#490).
+        if value is not None and not isinstance(value, sympy.Basic):
+            if float(value) < 0.0:
+                raise ValueError(
+                    f"viscosity_min_rounding is a rounding WIDTH and cannot be "
+                    f"negative; got {value}. Use 0 for the exact Max.")
+
+        self._viscosity_min_rounding = value
+        self._reset()
+
+    def _apply_floor(self, value, floor, rounding=None):
+        r"""Impose the lower bound :math:`value \ge floor`.
+
+        In ``yield_mode="min"`` this is the exact hard ``sympy.Max(value, floor)`` —
+        the sharp cutoff the model has always used. In the smooth yield modes
+        (``"softmin"``/``"harmonic"``) it is the differentiable ``uw.maths.smooth_max``
+        rounded by the yield softness δ *relative to the floor* (:math:`\epsilon =
+        \delta\,|floor|`), so the whole effective viscosity — not only the yield
+        transition — is differentiable for the consistent-Newton tangent. The relative
+        rounding needs a non-zero ``floor`` for a length scale, which the numerical
+        viscosity/yield floors provide; a cutoff *at zero* (a tension cutoff) has no
+        such scale and is rounded by its own physical parameter via
+        ``uw.maths.smooth_max`` at the call site instead.
+        """
+        # smooth_max is 1/2 (a + b + sqrt((a-b)^2 + eps^2)) — pure arithmetic on the
+        # operands, so `floor` stays the symbolic Parameter that the JIT routes
+        # through constants[], and sympy is never asked for the ordering test that
+        # recurses on an opaque UWexpression. At eps = 0 this is exactly
+        # Max(value, floor), but written without a comparison.
+        #
+        # TODO(DESIGN): the rounding scale is RELATIVE (delta * floor), so it
+        # collapses for a tension cutoff at floor = 0 — now the default for
+        # yield_stress_min. That leaves a hard corner: the floored yield stress is
+        # exactly 0 in tension, hence eta_pl = tau_y/(2 edot_II) is exactly 0 and the
+        # tangent through the soft-min is undefined there. A properly rounded cap
+        # (Griffith / parabolic) needs an ABSOLUTE stress scale, which this signature
+        # cannot supply. Maintainer decision pending (2026-07-26).
+        if rounding is None:
+            rounding = 0 if getattr(self, "_yield_mode", "min") == "min" \
+                else self._get_yield_softness() * floor
+        return uw.maths.smooth_max(value, floor, rounding)
+
+    # Tangent this model wants while the yield homotopy marches. Newton is right for
+    # a purely viscous-plastic yield; the elastic (VEP) subclasses override to the
+    # frozen/Picard tangent, because the consistent yield tangent taken across the
+    # elastic stress-history block makes the Jacobian indefinite and the linear
+    # solve fails outright (DIVERGED_LINEAR_SOLVE).
+    _yield_homotopy_tangent = True
+
+    #: Entry δ per soft-min family. These are NOT interchangeable numbers: for the
+    #: power mean the sharpness is s = 1/(δ + 0.001), so δ ≤ 1 and δ = 1 IS the harmonic
+    #: mean; for the sqrt family δ is a percentage stress deviation and a generous entry
+    #: is O(10). A sqrt-family δ handed to the power mean asks for a law a factor 2^δ
+    #: away from Min — 65000 at δ=16 — which is why the entry has to come from the
+    #: family, not the caller.
+    _YIELD_HOMOTOPY_DELTA0 = {"powermean": 1.0, "sqrt": 16.0}
+
+    def _yield_homotopy_control(self, smoother=None, anchor=None):
+        """Put this model in its smooth (δ-parameterised) yield mode and describe
+        how to march it.
+
+        The model owns what the homotopy *means* for it: which knob is the
+        continuation parameter, how to set it, and which tangent to pair it with.
+        The solver only marches the number. Called by
+        ``solver.solve(homotopy=True)``; see
+        :doc:`nonlinear-solver-homotopy-warmstart` (Layer 2).
+
+        Defaults to the power-mean family, whose large-δ limit is the harmonic mean —
+        bounded by the background viscosity even as :math:`\\dot\\varepsilon \\to 0`, so
+        the first (cold) solve of the march is well posed and no separate viscous
+        pre-solve is needed.
+
+        **Which family suits a given problem is not settled by theory** — it is set by
+        the problem's overstress ratio :math:`f = \\eta_{ve}/\\eta_{pl}`, which is cheap
+        to measure on the viscous seed before choosing. The sqrt family's smoothing
+        saturates at a factor :math:`2f/(f+2)`, so on a problem where f is O(1) it can
+        barely build an easier problem at all, however large δ is; the power mean does
+        not saturate and has range there. Where f is large the position reverses.
+
+        The side the regularised law sits on is set by ``anchor=``, not by the family.
+        An entry problem should be no WEAKER than the sharp problem it precedes, so
+        ``anchor="yield"`` is the safe direction for both families — see
+        :attr:`yield_anchor`.
+
+        Parameters
+        ----------
+        smoother : {"powermean", "sqrt"}, optional
+            Soft-min family to march. ``None`` keeps the default (power mean).
+        anchor : {"onset", "yield"}, optional
+            Which point the smoothed law reproduces exactly. ``None`` leaves the
+            model's current :attr:`yield_anchor` alone.
+
+        Returns
+        -------
+        YieldHomotopyControl
+            ``set_delta`` (model-owned setter for δ), ``tangent`` (the
+            ``consistent_jacobian`` value to use), ``delta`` (the ``constants[]``
+            atom itself, for diagnostics) and ``delta0`` (the family's entry δ).
+        """
+        from underworld3.systems.yield_continuation import YieldHomotopyControl
+
+        if smoother is None:
+            smoother = "powermean"
+        if smoother not in self._YIELD_HOMOTOPY_DELTA0:
+            raise ValueError(
+                f"smoother must be one of {sorted(self._YIELD_HOMOTOPY_DELTA0)}, "
+                f"got {smoother!r}"
+            )
+
+        self.yield_mode = "softmin"
+        self.yield_smoother = smoother
+        if anchor is not None:
+            self.yield_anchor = anchor
+
+        # No strain-rate floor is needed for the cold (v = 0) start the march begins
+        # from: eta_pl = tau_y/(2 edot_II) is +inf there, which the soft-min carries
+        # correctly to the viscous branch. See the harmonic-mean note in
+        # _combine_yield for the one form that must be written carefully to keep it
+        # so.
+
+        def set_delta(value):
+            # Go through the property, not the atom: `yield_softness` updates BOTH
+            # the stored value and the constants[] atom, so a later
+            # _get_yield_softness() cannot silently reset δ to a stale number.
+            self.yield_softness = value
+
+        return YieldHomotopyControl(
+            set_delta=set_delta,
+            tangent=self._yield_homotopy_tangent,
+            delta=self._get_yield_softness(),
+            delta0=self._YIELD_HOMOTOPY_DELTA0[smoother],
+        )
+
 
 ## NOTE - retrofit VEP into here
 
@@ -943,6 +1402,16 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Effective viscosity (plastic)",
         )
 
+        # Yield-combination mode (see _combine_yield on the base class). Default
+        # "min" = the exact hard Min(η_0, η_yield) this model has always used, so the
+        # default behaviour is unchanged. Opt into "softmin" (+ yield_smoother /
+        # yield_softness) for the δ-parameterised smooth-min homotopy.
+        self._yield_mode = "min"
+        self._yield_softness = 0.0        # δ; 0 ⇒ exact Min
+        self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
+        self._yield_softness_expr = None  # constants[] δ atom (created lazily)
+        self._yield_offset_expr = None    # onset-offset atom (created lazily)
+
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
@@ -981,7 +1450,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
-            lambda inner_self: -sympy.oo,
+            lambda inner_self: 0,
             "Yield stress (DP) minimum cutoff",
             units="Pa",
         )
@@ -1017,29 +1486,50 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # Don't put conditional behaviour in the constitutive law
         # when it is not needed
 
-        if inner_self.yield_stress_min.sym != 0:
-            yield_stress = sympy.Max(inner_self.yield_stress_min, inner_self.yield_stress)
+        # Lower bound on the yield stress, defaulting to ZERO and therefore normally
+        # active. tau_y is compared against the second invariant of the stress, so a
+        # negative tau_y is meaningless — a pressure-dependent Drucker-Prager yield
+        # C + sin(phi)*p goes negative in tension and must be cut off there rather
+        # than propagated into tau_y/(2 edot_II). (The ±oo defaults elsewhere in
+        # Parameters exist so sympy can cancel an unused term away; that trick is
+        # wrong here, so this one defaults to 0 — maintainer ruling 2026-07-26.)
+        # An explicit -oo still disables the floor.
+        if inner_self.yield_stress_min.sym != -sympy.oo:
+            yield_stress = self._apply_floor(
+                inner_self.yield_stress, inner_self.yield_stress_min
+            )
         else:
             yield_stress = inner_self.yield_stress
 
-        viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
+        # Rate regularisation. eta_pl = tau_y / (2 edot_II) is unbounded as edot -> 0;
+        # adding a floor to the strain rate caps it at tau_y/(2 edot_min) and so bounds
+        # the viscosity CONTRAST, which is what conditions the velocity block (the same
+        # role the Perzyna/rate-strengthening xi plays in the Spiegelman studies). The
+        # parameter was declared on this model but never applied — the elastic models
+        # (ViscoElasticPlastic, TransverseIsotropicVEP) have always used it. Default 0
+        # = off, so the unregularised law is unchanged.
+        if inner_self.strainrate_inv_II_min.sym != 0:
+            viscosity_yield = yield_stress / (
+                2 * (self._strainrate_inv_II + inner_self.strainrate_inv_II_min)
+            )
+        else:
+            viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
 
-        ## Question is, will sympy reliably differentiate something
-        ## with so many Max / Min statements. The smooth version would
-        ## be a reasonable alternative:
-
-        # effective_viscosity = sympy.sympify(
-        #     1 / (1 / inner_self.shear_viscosity_0 + 1 / viscosity_yield),
-        # )
-
-        effective_viscosity = sympy.Min(inner_self.shear_viscosity_0, viscosity_yield)
+        # Combine the viscous and plastic (yield) viscosities. The default
+        # yield_mode="min" gives the exact hard Min(η_0, η_yield); yield_mode="softmin"
+        # opts into the δ-parameterised smooth-min (sqrt or powermean family) for a
+        # scalable homotopy toward the sharp yield surface.
+        effective_viscosity = self._combine_yield(
+            inner_self.shear_viscosity_0, viscosity_yield
+        )
 
         # If we want to apply limits to the viscosity but see caveat above
         # Keep this as an sub-expression for clarity
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
-            self._plastic_eff_viscosity._sym = sympy.Max(
-                effective_viscosity, inner_self.shear_viscosity_min
+            self._plastic_eff_viscosity._sym = self._apply_floor(
+                effective_viscosity, inner_self.shear_viscosity_min,
+                rounding=self.viscosity_min_rounding,
             )
 
         else:
@@ -1047,6 +1537,50 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         # Returns an expression that has a different description
         return self._plastic_eff_viscosity
+
+    @property
+    def supports_yield_homotopy(self):
+        """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
+        can march it. See :meth:`_yield_homotopy_control`."""
+        return True
+
+    @property
+    def yield_mode(self):
+        r"""How the viscous and plastic (yield) viscosities are combined.
+
+        - ``"min"`` (default): exact hard ``Min(η_0, η_yield)`` — the sharp yield
+          surface this model has always used.
+        - ``"harmonic"``: ``1/(1/η_0 + 1/η_yield)`` — a smooth blend.
+        - ``"softmin"``: the δ-parameterised smooth-min (family set by
+          ``yield_smoother``), for a scalable homotopy toward the sharp surface.
+        """
+        return self._yield_mode
+
+    @yield_mode.setter
+    def yield_mode(self, value):
+        if value not in ("min", "harmonic", "softmin"):
+            raise ValueError(
+                f"yield_mode must be 'min', 'harmonic', or 'softmin', got '{value}'"
+            )
+        self._yield_mode = value
+        self._reset()
+
+    @property
+    def yield_softness(self):
+        r"""Soft-min regularisation δ for ``yield_mode="softmin"`` (0 ⇒ exact Min).
+
+        δ is held as a ``constants[]`` atom, so ramping it at runtime (this setter,
+        or ``cm._get_yield_softness().sym = ...`` + ``solver._update_constants()``)
+        does not trigger a JIT recompile — the basis of a scalable yield homotopy.
+        """
+        return self._yield_softness
+
+    @yield_softness.setter
+    def yield_softness(self, value):
+        self._yield_softness = float(value)
+        if getattr(self, "_yield_softness_expr", None) is not None:
+            self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
+        self._reset()
 
     def plastic_correction(self) -> float:
         r"""Scaling factor to reduce stress to yield surface.
@@ -1197,6 +1731,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._order = order
         self._yield_mode = "softmin"  # "min", "harmonic", "smooth", or "softmin"
         self._yield_softness = 0.1  # δ parameter for "softmin" mode
+        self._yield_smoother = "sqrt"     # smooth-min family: "sqrt" | "powermean"
+        self._yield_softness_expr = None  # constants[] δ atom (created lazily)
+        self._yield_offset_expr = None    # onset-offset atom (created lazily)
 
         # Timestep — set by the solver before each solve(). Not a user parameter.
         # Initialised to oo (viscous limit). The solver overwrites this with the
@@ -1210,6 +1747,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._bdf_c1 = expression(r"{c_1^{\mathrm{BDF}}}", sympy.Integer(-1), "BDF history coefficient 1")
         self._bdf_c2 = expression(r"{c_2^{\mathrm{BDF}}}", sympy.Integer(0), "BDF history coefficient 2")
         self._bdf_c3 = expression(r"{c_3^{\mathrm{BDF}}}", sympy.Integer(0), "BDF history coefficient 3")
+
+        # Persistent container for the yield-limited VEP effective viscosity
+        # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
+        # combined coefficient is stored INSIDE this atom so the c-tensor
+        # bakes a wrapped atom and the default (Picard) tangent stays frozen;
+        # only _jacobian_unwrap (Newton) sees the strain-rate dependence of
+        # the yield law. Same freezing contract as the TI classes (#457/#493).
+        self._vep_eff_viscosity = expression(
+            R"{\eta_{\textrm{eff}}}",
+            1,
+            "Yield-limited visco-elastic effective viscosity",
+        )
 
         self._reset()
 
@@ -1278,7 +1827,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
-            lambda inner_self: -sympy.oo,
+            lambda inner_self: 0,
             "Yield stress (DP) minimum cutoff",
             units="Pa",
         )
@@ -1656,39 +2205,55 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.is_viscoplastic:
             vp_effective_viscosity = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                effective_viscosity = 1 / (1 / effective_viscosity + 1 / vp_effective_viscosity)
-            elif self._yield_mode == "softmin":
-                # Smooth approximation to Min(η_ve, η_pl):
-                #   η_eff = η_ve / g(f)
-                #   g(f) = 1 + softplus(f-1) - softplus(-1)  ≈ max(1, f)
-                # where softplus(x) = (x + √(x² + δ²))/2 and f = η_ve/η_pl.
-                # Corrected so g(0) = 1 exactly (no spurious yield below onset).
-                # Approaches exact Min as δ→0. No Min/Max in expression.
-                delta = self._yield_softness
-                f = effective_viscosity / vp_effective_viscosity
-                import math  # float offset avoids sympy expression blowup in tensor
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                effective_viscosity = effective_viscosity / g
-            else:
-                effective_viscosity = sympy.Min(effective_viscosity, vp_effective_viscosity)
+            # Combine η_ve with the plastic viscosity per yield_mode (harmonic / exact
+            # Min / δ-soft-min). The soft-min softness δ now lives in a constants[] atom
+            # (see _combine_yield / _get_yield_softness) — value-identical to the former
+            # inline float law at the same δ, but runtime-rampable with no recompile.
+            effective_viscosity = self._combine_yield(
+                effective_viscosity, vp_effective_viscosity
+            )
 
         # Apply viscosity floor — but skip for smooth-blend yield modes
         # where the outer Max creates a nested Min/Max that breaks the
         # BDF-2 Jacobian. Those modes are already smooth and bounded.
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
-                return effective_viscosity
+            rounding = self.viscosity_min_rounding
+            if rounding is not None:
+                # An explicit rounding scale makes the cutoff differentiable, which is
+                # what the skip below existed to avoid needing: there is no outer Max to
+                # nest, so the floor can be honoured in the smooth yield modes too.
+                effective_viscosity = self._apply_floor(
+                    effective_viscosity, inner_self.shear_viscosity_min,
+                    rounding=rounding,
+                )
+            elif self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
+                # Already smooth and bounded; a hard outer Max would nest
+                # Min/Max and break the BDF-2 Jacobian — skip the floor.
+                pass
             else:
-                return sympy.Max(
+                effective_viscosity = sympy.Max(
                     effective_viscosity,
                     inner_self.shear_viscosity_min,
                 )
 
-        else:
-            return effective_viscosity
+        # Store the combined coefficient INSIDE the persistent container (the
+        # ViscoPlasticFlowModel._plastic_eff_viscosity pattern) so the
+        # c-tensor bakes ONE wrapped atom: sympy.diff treats it as a constant
+        # and the default (Picard) tangent stays frozen; only the Newton path
+        # (_jacobian_unwrap) sees the yield law's strain-rate dependence.
+        # (Same freezing contract as the TI classes — issue #457 / PR #493.)
+        self._vep_eff_viscosity._sym = effective_viscosity
+        return self._vep_eff_viscosity
+
+    # NOTE: a hard-Min smooth-tangent override (flux_jacobian = harmonic) was
+    # prototyped here but deferred to the yield-law / δ-homotopy follow-up. The
+    # smooth-Jacobian-with-Min-residual tangent is inconsistent (it is the
+    # consistent tangent of the *harmonic* problem) and converges WORSE than
+    # Picard on hard-yield VEP; the robust route is problem-space homotopy
+    # (ramp the softmin softness δ→0), not a smooth tangent. See the design doc
+    # docs/developer/design/jacobian-unwrap-constants-bug.md. The generic
+    # Constitutive_Model.flux_jacobian hook (default None) remains available.
 
     @property
     def _plastic_effective_viscosity(self):
@@ -1708,10 +2273,19 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Strain rate 2nd Invariant including elastic strain rate term",
         )
 
-        if parameters.yield_stress_min.sym != 0:
-            yield_stress = sympy.Max(
-                parameters.yield_stress_min, parameters.yield_stress
-            )  # .rewrite(sympy.Piecewise)
+        # Guard on the DISABLING sentinel, not on zero: zero is the default and a
+        # physically meaningful floor (the yield stress is compared against the second
+        # invariant of the stress, so a negative tau_y is meaningless). Only an
+        # explicit -oo turns the floor off.
+        if parameters.yield_stress_min.sym != -sympy.oo:
+            # Literal 0 for the default floor, not the parameter atom: sympy cannot
+            # fuzzy-compare an opaque UWexpression and Max canonicalisation recurses.
+            # smooth_max keeps both operands symbolic (the JIT routes the floor
+            # through constants[]) and needs no ordering test, which sympy cannot
+            # resolve against an opaque UWexpression. eps = 0 makes it exactly Max.
+            yield_stress = uw.maths.smooth_max(
+                parameters.yield_stress, parameters.yield_stress_min, 0
+            )
         else:
             yield_stress = parameters.yield_stress
 
@@ -1740,42 +2314,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return correction
         # return sympy.Min(1, correction)
 
-    ## Is this really different from the original ?
-
-    def _build_c_tensor(self):
-        """For this constitutive law, we expect just a viscosity function"""
-
-        if self._is_setup:
-            print("Using cached value of c matrix", flush=True)
-            return
-
-        print("Building c matrix", flush=True)
-
-        d = self.dim
-        # inner_self = self.Parameters
-        viscosity = self.viscosity
-
-        try:
-            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
-            # See ViscousFlowModel._build_c_tensor() for detailed explanation
-            viscosity_sym = viscosity.sym if hasattr(viscosity, "sym") else viscosity
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError(
-                    "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
-                )
-
-        self._is_setup = True
-        self._solver_is_setup = False
-
-        return
+    # NOTE: no _build_c_tensor override — the base ViscousFlowModel build is
+    # used, which bakes the WRAPPED self.viscosity atom (the persistent
+    # _vep_eff_viscosity container) element-wise into the rank-4 tensor.
+    # The previous override here baked the UNWRAPPED `.sym` contents (the
+    # tidy deferred on PR #493); values are identical, but the wrapped atom
+    # is the freezing contract every other yielding model follows.
 
     # Modify flux to use the stress history term
     # This may be preferable to using strain rate which can be discontinuous
@@ -1955,13 +2499,29 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @yield_softness.setter
     def yield_softness(self, value):
-        self._yield_softness = value
+        self._yield_softness = float(value)
+        # Keep the constants[] δ atom in sync (created lazily on first use) so a
+        # numeric δ assignment is reflected without a JIT recompile.
+        if getattr(self, "_yield_softness_expr", None) is not None:
+            self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
         self._reset()
 
     @property
     def requires_stress_history(self):
         """VEP models always require stress history tracking."""
         return True
+
+    @property
+    def supports_yield_homotopy(self):
+        """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
+        can march it. See :meth:`_yield_homotopy_control`."""
+        return True
+
+    # Picard, not Newton: the consistent yield tangent taken across the elastic
+    # stress-history block makes the Jacobian indefinite, and the linear solve fails
+    # outright (DIVERGED_LINEAR_SOLVE at 0 iterations). The frozen tangent is
+    # contractive, and with the δ-march it still converges to the exact yield surface.
+    _yield_homotopy_tangent = False
 
     @property
     def plastic_fraction(self):
@@ -2214,17 +2774,11 @@ class GenericFluxModel(Constitutive_Model):
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
 
-            default_flux = sympy.zeros(_owning_model.dim, 1)
-            elements = [default_flux[i] for i in range(_owning_model.dim)]
-            validated = []
-            for i, v in enumerate(elements):
-                flux_component = validate_parameters(
-                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
-                )
-                if flux_component is not None:
-                    validated.append(flux_component)
-
-            inner_self._flux = sympy.Matrix(validated)
+            # Raw sympy zero vector — NOT wrapped in UWexpressions. The default
+            # (Picard) tangent differentiates the flux WITHOUT unwrapping, so a
+            # wrapped whole-flux component has zero derivative w.r.t. the unknown
+            # and its gradient. See the flux setter for the full rationale.
+            inner_self._flux = sympy.zeros(_owning_model.dim, 1)
 
         @property
         def flux(inner_self):
@@ -2233,26 +2787,35 @@ class GenericFluxModel(Constitutive_Model):
 
         @flux.setter
         def flux(inner_self, value: sympy.Matrix):
-            """Set the flux expression (must be a vector of length dim)."""
+            """Set the flux expression (must be a vector of length dim).
+
+            Stores the raw sympy expression directly. Previously each component
+            was wrapped in a UWexpression via ``validate_parameters`` — and the
+            default (Picard) tangent differentiates the flux WITHOUT unwrapping
+            (frozen-coefficient semantics; unwrap-before-differentiate runs only
+            on the consistent-Newton path). An opaque wrapper holding the ENTIRE
+            flux therefore has zero derivative w.r.t. the unknown and its
+            gradient: G0–G3 vanish and the operator is structurally singular.
+            The residual was never affected (the JIT's constants machinery
+            reveals non-constant wrappers correctly); the same pre-fix model
+            solved under ``consistent_jacobian=True``. Coefficient-level
+            wrapping in other models is safe — d(k*grad u)/d(grad u) = k — the
+            hazard is specific to wrapping a whole flux term.
+
+            Side effect of raw storage: with nothing left to freeze, this
+            model's default tangent is effectively full Newton (the
+            Picard/Newton switch is a no-op for GenericFluxModel).
+            """
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
             if value.shape not in [(dim, 1), (1, dim)]:
                 raise ValueError(
-                    f"Flux must be a symbolic vector of length {dim}. " f"Got shape {value.shape}."
+                    f"Flux must be a symbolic vector of length {dim}. "
+                    f"Got shape {value.shape}."
                 )
 
-            # Flatten and validate
-            elements = [value[i] for i in range(dim)]
-            validated = []
-            for i, v in enumerate(elements):
-                flux_component = validate_parameters(
-                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
-                )
-                if flux_component is not None:
-                    validated.append(flux_component)
-
-            inner_self._flux = sympy.Matrix(validated).reshape(dim, 1)
+            inner_self._flux = sympy.Matrix(value).reshape(dim, 1)
             inner_self._reset()
 
     @property
@@ -2420,6 +2983,15 @@ class DarcyFlowModel(Constitutive_Model):
 
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
+    # TODO(BUG): the CONSISTENT (Newton) tangent of this model is inconsistent
+    # with its residual when the anisotropy is active (eta_1 != eta_0): PETSc
+    # -snes_test_jacobian at bounded curvature reads ||J-Jfd||/||J|| ~ 2e-3-5e-3
+    # in developed flow where the isotropic control is FD-limited (~4e-6) — the
+    # dC/d(eps_II) director-coupled terms are missing or wrong, so TI "Newton"
+    # runs at Picard pace. Native-path evidence (no rotated machinery); the
+    # isotropic limit through this class is clean at rest but shares the defect
+    # once eta_1 differs. See issue #457 (incl. the checker-regularisation
+    # methodology: at 1e-12 the FD reference itself is invalid for power-law).
     r"""
     Transversely isotropic (anisotropic) viscous flow model.
 
@@ -2548,9 +3120,16 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         d = self.dim
         dv = uw.maths.tensor.idxmap[d][0]
 
-        # Use .sym to get sympy expressions from Parameters
-        eta_0 = self.Parameters.shear_viscosity_0.sym
-        eta_1 = self.Parameters.shear_viscosity_1.sym
+        # Bake the WRAPPED Parameter atoms into the tensor, exactly like the
+        # isotropic ViscousFlowModel path. sympy.diff treats a UWexpression
+        # atom as a constant, so the default (Picard) tangent stays genuinely
+        # frozen even when eta_0/eta_1 depend on strain rate; only the Newton
+        # path (_jacobian_unwrap) exposes that dependence. Baking `.sym`
+        # (unwrapped contents) here silently un-froze the TI Picard tangent —
+        # issue #457. The director is `.sym` only for component indexing;
+        # it carries no velocity dependence.
+        eta_0 = self.Parameters.shear_viscosity_0
+        eta_1 = self.Parameters.shear_viscosity_1
         n = self.Parameters.director.sym
 
         Delta = eta_0 - eta_1
@@ -2745,6 +3324,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             "Equivalent value of strain rate 2nd invariant (accounting for stress history)",
         )
 
+        # Persistent container for the yield-limited weak-plane viscosity
+        # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
+        # combined eta_1_eff is stored INSIDE this atom so the Picard tangent
+        # freezes it, and only _jacobian_unwrap (Newton) sees the strain-rate
+        # dependence of the yield law. See issue #457.
+        self._eta1_yield_eff = expression(
+            R"{\eta_{1,\textrm{eff,p}}}",
+            1,
+            "Yield-limited weak-plane viscosity (effective)",
+        )
+
         self._order = order
         self._yield_mode = "softmin"
         self._yield_softness = 0.1
@@ -2833,7 +3423,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         )
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
-            lambda inner_self: -sympy.oo,
+            lambda inner_self: 0,
             "Yield stress minimum cutoff", units="Pa",
         )
         strainrate_inv_II_min = api_tools.Parameter(
@@ -3134,32 +3724,25 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         r"""Effective viscosity for the fault-plane shear component.
 
         Applies the yield mode (softmin/min/harmonic) to η₁, leaving
-        η₀ (bulk) unchanged. The anisotropic tensor handles the
-        directional dependence.
+        η₀ (bulk) unchanged — the anisotropic tensor handles the
+        directional dependence, and the bulk/stiffness scale stays
+        ``Parameters.shear_viscosity_0`` (reported by :attr:`K`).
+
+        Delegates to :meth:`_eta_for_tensor` with the ACTIVE integrator
+        mode, so this reports exactly the coefficient the stress tensor
+        is built from — under yield that is the persistent
+        ``_eta1_yield_eff`` container (a wrapped atom, so the Picard
+        freezing contract holds for anything that bakes this property).
+        For the hybrid integrator this reports the BDF (yield-clipped)
+        branch, matching the default ``self._c``.
+
+        Issue #463: this property previously computed the yield-limited
+        η₁_eff and then returned the un-yielded bulk η₀, so diagnostics,
+        renders and projections saw no yielding at all.
         """
-        inner_self = self.Parameters
-
-        if inner_self.yield_stress.sym == sympy.oo:
-            return inner_self.shear_viscosity_0
-
-        # η₁ is the fault-plane viscosity that gets yield-limited
-        eta_1_eff = inner_self.ve_effective_viscosity
-
-        if self.is_viscoplastic:
-            vp_eff = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
-            elif self._yield_mode == "softmin":
-                delta = self._yield_softness
-                f = eta_1_eff / vp_eff
-                import math  # float offset avoids sympy expression blowup in tensor
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                eta_1_eff = eta_1_eff / g
-            else:
-                eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
-
-        return inner_self.shear_viscosity_0
+        mode = "etd" if self._integrator == "etd" else "bdf"
+        _, eta_1_eff = self._eta_for_tensor(mode, apply_yield=True)
+        return eta_1_eff
 
     @property
     def K(self):
@@ -3196,8 +3779,13 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         gamma_dot_abs = sympy.sqrt(sympy.Max(gamma_dot_sq, 0))
 
         tau_y = parameters.yield_stress
-        if parameters.yield_stress_min.sym != 0:
-            tau_y = sympy.Max(parameters.yield_stress_min, tau_y)
+        # Guard on the DISABLING sentinel, not on zero — zero is the default and a
+        # real floor (a negative yield stress is meaningless against an invariant).
+        if parameters.yield_stress_min.sym != -sympy.oo:
+            # Literal 0 for the default floor (sympy fuzzy-compare recursion on atoms).
+            # smooth_max: keeps the floor symbolic, no ordering test (see the note
+            # in Constitutive_Model._apply_floor). eps = 0 is exactly Max.
+            tau_y = uw.maths.smooth_max(tau_y, parameters.yield_stress_min, 0)
 
         if parameters.strainrate_inv_II_min.sym != 0:
             viscosity_yield = tau_y / (
@@ -3223,8 +3811,12 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
           branch of the hybrid integrator, where the bulk is
           structurally non-yieldable so clipping is a no-op anyway).
         """
+        # NOTE: bake the WRAPPED Parameter atoms (never `.sym`) — the Picard
+        # tangent freezes coefficients only while they stay inside UWexpression
+        # atoms; unwrapped contents expose grad-v to sympy.diff and silently
+        # un-freeze the default tangent (issue #457).
         if integrator_mode == "etd":
-            eta_0 = self.Parameters.shear_viscosity_0.sym
+            eta_0 = self.Parameters.shear_viscosity_0
             eta_1_eff = self.Parameters.shear_viscosity_1
         else:  # bdf
             eta_0_raw = self.Parameters.shear_viscosity_0
@@ -3233,24 +3825,23 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             c0 = self._bdf_c0
             mu_val = mu.sym if hasattr(mu, 'sym') else mu
             if mu_val is sympy.oo:
-                eta_0 = eta_0_raw.sym if hasattr(eta_0_raw, 'sym') else eta_0_raw
+                eta_0 = eta_0_raw
             else:
                 eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
             eta_1_eff = self.Parameters.ve_effective_viscosity
 
         if apply_yield and self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
-            elif self._yield_mode == "softmin":
-                delta = self._yield_softness
-                f = eta_1_eff / vp_eff
-                import math
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                eta_1_eff = eta_1_eff / g
-            else:
-                eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
+            # Same yield envelope as the isotropic models: _combine_yield owns the
+            # harmonic / soft-min / hard-Min choice, reads delta from the
+            # constants[] atom (so a homotopy can ramp it without a recompile) and
+            # honours yield_smoother. Previously inlined here, which pinned this
+            # model to the sqrt family and to a baked float delta.
+            # The combined coefficient is stored INSIDE the persistent container
+            # so the Picard tangent freezes the yield law (the raw composite
+            # carries grad-v through the resolved fault-plane shear rate).
+            self._eta1_yield_eff._sym = self._combine_yield(eta_1_eff, vp_eff)
+            eta_1_eff = self._eta1_yield_eff
         return eta_0, eta_1_eff
 
     def _assemble_c_tensor(self, eta_0, eta_1_eff):
@@ -3340,7 +3931,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def _build_c_tensor_ve(self):
         """Build anisotropic tensor with VE η₁ only (no yield)."""
         d = self.dim
-        eta_0 = self.Parameters.shear_viscosity_0.sym
+        # Wrapped atom, not `.sym` — same freezing contract as _eta_for_tensor.
+        eta_0 = self.Parameters.shear_viscosity_0
         eta_1_ve = self.Parameters.ve_effective_viscosity
         n = self.Parameters.director.sym
         Delta = eta_0 - eta_1_ve
@@ -3454,7 +4046,11 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
     @yield_softness.setter
     def yield_softness(self, value):
-        self._yield_softness = value
+        self._yield_softness = float(value)
+        # Keep the constants[] atom in step: this model now shares the isotropic
+        # _combine_yield, which reads δ from that atom rather than from the float.
+        if getattr(self, "_yield_softness_expr", None) is not None:
+            self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
         self._reset()
 
     @property
@@ -3463,13 +4059,32 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         return True
 
     @property
+    def supports_yield_homotopy(self):
+        """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
+        can march it. It shares the isotropic yield envelope (:meth:`_combine_yield`),
+        so ``yield_smoother`` applies here too; its ``yield_softness`` setter still
+        triggers a rebuild, so a δ step costs a recompile the isotropic models avoid.
+        See :meth:`_yield_homotopy_control`."""
+        return True
+
+    # Picard, not Newton — as for the isotropic VEP model, the consistent yield
+    # tangent over the elastic stress-history block is indefinite.
+    _yield_homotopy_tangent = False
+
+    @property
     def plastic_fraction(self):
-        """Fraction of strain rate that is plastic."""
-        eta_1_ve = self.Parameters.ve_effective_viscosity
-        eta_1_eff = self.viscosity
-        # viscosity property returns η₀, need to compare η₁ effective vs η₁ ve
-        # This is approximate for the anisotropic case
-        return sympy.Max(0, 1 - eta_1_eff / eta_1_ve.sym if hasattr(eta_1_ve, 'sym') else 0)
+        r"""Fraction of the fault-plane response that is plastic:
+        ``1 - η₁_eff / η₁_ve`` (zero when the yield limit is inactive).
+
+        Only the weak-plane channel is compared — the bulk η₀ is
+        structurally non-yieldable. Pre-#463 this was identically zero
+        for a yielding fault because ``.viscosity`` returned the bulk
+        η₀ (and a misplaced ternary made the ratio unconditional)."""
+        if not self.is_viscoplastic:
+            return sympy.sympify(0)
+        mode = "etd" if self._integrator == "etd" else "bdf"
+        _, eta_1_ve = self._eta_for_tensor(mode, apply_yield=False)
+        return sympy.Max(0, 1 - self.viscosity / eta_1_ve)
 
 
 class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowModel):
@@ -3636,17 +4251,12 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             return eta_par
 
         vp_eff = self._plastic_effective_viscosity
-        if self._yield_mode == "harmonic":
-            return 1 / (1 / eta_par + 1 / vp_eff)
-        elif self._yield_mode == "softmin":
-            delta = self._yield_softness
-            f = eta_par / vp_eff
-            import math
-            offset = (-1 + math.sqrt(1 + delta**2)) / 2
-            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
-            return eta_par / g
-        else:
-            return sympy.Min(eta_par, vp_eff)
+        # Same yield envelope as the isotropic models: _combine_yield owns the
+        # harmonic / soft-min / hard-Min choice, reads delta from the
+        # constants[] atom (so a homotopy can ramp it without a recompile) and
+        # honours yield_smoother. Previously inlined here, which pinned this
+        # model to the sqrt family and to a baked float delta.
+        return self._combine_yield(eta_par, vp_eff)
 
     def _eta_par_eff_lagged(self):
         """Yield-clipped ``η_∥_eff`` using the **lagged** strain rate
@@ -3699,17 +4309,12 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))
         )
 
-        if self._yield_mode == "harmonic":
-            return 1 / (1 / eta_par + 1 / vp_eff_lag)
-        elif self._yield_mode == "softmin":
-            delta = self._yield_softness
-            f = eta_par / vp_eff_lag
-            import math
-            offset = (-1 + math.sqrt(1 + delta ** 2)) / 2
-            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
-            return eta_par / g
-        else:
-            return sympy.Min(eta_par, vp_eff_lag)
+        # Same yield envelope as the isotropic models: _combine_yield owns the
+        # harmonic / soft-min / hard-Min choice, reads delta from the
+        # constants[] atom (so a homotopy can ramp it without a recompile) and
+        # honours yield_smoother. Previously inlined here, which pinned this
+        # model to the sqrt family and to a baked float delta.
+        return self._combine_yield(eta_par, vp_eff_lag)
 
     def _build_split_c_tensors(self, eta_perp, eta_par):
         r"""Build ``C_⊥ = 2·η_⊥·P_⊥`` and ``C_∥ = 2·η_∥·P_∥``.
@@ -3913,6 +4518,10 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             Set to True if IndexSwarmVariable does not maintain partition of unity.
             Default: False (assumes IndexSwarmVariable maintains partition of unity)
         """
+        # Constituents that share a parameter name (every ViscousFlowModel
+        # calls its viscosity \eta) rely on _JITConstant keeping its
+        # constants[] slots distinct; see utilities/_jitextension.py and the
+        # regression in tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
 

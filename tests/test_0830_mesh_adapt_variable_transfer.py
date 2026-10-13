@@ -41,7 +41,7 @@ def _has_petsc_adaptation_backend():
         H.array[:, 0, 0] = 100.0
         # Use the real adapt() entry point but with a coarse metric;
         # if PETSc raises, we capture and skip.
-        m.adapt(H)
+        m.remesh(H)
         return True
     except Exception:
         return False
@@ -87,7 +87,7 @@ def test_adapt_preserves_degree_1_continuous(mesh):
     T.array[:, 0, 0] = _smooth_field(T.coords)
 
     metric = _refinement_metric(mesh)
-    mesh.adapt(metric)
+    mesh.remesh(metric)
 
     T2 = mesh.vars["T"]
     expected = _smooth_field(T2.coords)
@@ -113,7 +113,7 @@ def test_adapt_preserves_degree_2_continuous(mesh):
     T.array[:, 0, 0] = _smooth_field(T.coords)
 
     metric = _refinement_metric(mesh)
-    mesh.adapt(metric)
+    mesh.remesh(metric)
 
     T2 = mesh.vars["T"]
     expected = _smooth_field(T2.coords)
@@ -135,7 +135,7 @@ def test_adapt_preserves_vector_field(mesh):
     V.array[:, 0, 1] = -_smooth_field(V.coords)
 
     metric = _refinement_metric(mesh)
-    mesh.adapt(metric)
+    mesh.remesh(metric)
 
     V2 = mesh.vars["V"]
     expected_x = _smooth_field(V2.coords)
@@ -155,7 +155,7 @@ def test_adapt_preserves_constant_field(mesh):
     T.array[:, 0, 0] = 3.14
 
     metric = _refinement_metric(mesh)
-    mesh.adapt(metric)
+    mesh.remesh(metric)
 
     T2 = mesh.vars["T"]
     actual = np.asarray(T2.array[:, 0, 0])
@@ -177,7 +177,7 @@ def test_adapt_preserves_discontinuous_field(mesh):
     T.array[:, 0, 0] = _smooth_field(T.coords)
 
     metric = _refinement_metric(mesh)
-    mesh.adapt(metric)
+    mesh.remesh(metric)
 
     T2 = mesh.vars["T_dg"]
     expected = _smooth_field(T2.coords)

@@ -10,9 +10,34 @@ import numpy as np
 import sympy
 import underworld3 as uw
 import underworld3.visualisation as vis
-import pyvista as pv
 
-pv.OFF_SCREEN = True
+
+def required_files(src_dir, stem):
+    return [
+        os.path.join(src_dir, f"{stem}.mesh.00000.h5"),
+        os.path.join(src_dir, f"{stem}.mesh.T_v2p1.00000.h5"),
+    ]
+
+
+def check_required_inputs(cases):
+    missing = []
+
+    for label, src_dir, stem in cases:
+        for filename in required_files(src_dir, stem):
+            if not os.path.exists(filename):
+                missing.append((label, filename))
+
+    if missing:
+        print("Missing stagnant-lid checkpoint input files:")
+        for label, filename in missing:
+            print(f"  [{label}] {filename}")
+
+        print(
+            "\nThis script only plots existing stagnant-lid snapshots. "
+            "Run or copy the required checkpoint outputs first, or update "
+            "U_DIR/A_DIR and U_STEM/A_STEM to point to existing files."
+        )
+        raise SystemExit(1)
 
 
 def load(src_dir, stem):
@@ -31,6 +56,15 @@ U_STEM = "sl_uniform_res16_Ra1e7_dEta1e4_step00125"
 A_DIR = os.path.expanduser(
     '~/+Simulations/StagnantLid/adapted_R15_Ra1e7_dEta1e4')
 A_STEM = "adapted"
+
+check_required_inputs([
+    ("uniform", U_DIR, U_STEM),
+    ("adapted", A_DIR, A_STEM),
+])
+
+import pyvista as pv
+
+pv.OFF_SCREEN = True
 
 mu, Tu = load(U_DIR, U_STEM)
 ma, Ta = load(A_DIR, A_STEM)

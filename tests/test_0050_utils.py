@@ -1,126 +1,103 @@
+"""The installation auditor, and a second Stokes solver over fields the first already owns.
+
+Both subjects used to sit at module level, so importing this file built a mesh,
+two solvers and solved both — during pytest COLLECTION, before any test ran.
+A `--collect-only` run was measured 20+ minutes inside `SNESSolve`, which to the
+caller is indistinguishable from pytest dying silently (#505). The auditor
+assertion was disabled at the same time by the name `dont_test_auditor`, so the
+file did all of that work and checked nothing.
+
+The auditor check is now written as a delta rather than the absolute
+`uw_object_count == 7` it used to assert. The counter is process-wide and
+monotonic, so an absolute count is only true in a fresh process running this
+file alone — which is why the assertion could not survive being enabled.
+"""
+
 import pytest
-
-# All tests in this module are quick core tests
-pytestmark = pytest.mark.level_1
-# ---
-# jupyter:
-#   jupytext:
-#     formats: ipynb,py:percent
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.16.2
-#   kernelspec:
-#     display_name: Python 3 (ipykernel)
-#     language: python
-#     name: python3
-# ---
-
-## %%
+import sympy
+import numpy as np
 
 import underworld3 as uw
-import sympy
 
-mesh = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
-x, y = mesh.X
-
-# %%
-v = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2)
-p = uw.discretisation.MeshVariable(r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
+pytestmark = pytest.mark.level_1
 
 
-def bc_1(solver):
-    s1 = solver
-    s1.add_dirichlet_bc((0.0, 0.0), "Bottom")
-    s1.add_dirichlet_bc((y, 0.0), "Top")
-
-    s1.add_dirichlet_bc((sympy.oo, 0.0), "Left")
-    s1.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+@pytest.fixture(scope="module")
+def mesh():
+    return uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
 
 
-def bc_2(solver):
-    s1 = solver
-    s1.add_dirichlet_bc((0.0, sympy.oo), "Bottom")
-    s1.add_dirichlet_bc((0.0, sympy.oo), "Top")
+def test_auditor_reads_the_whole_installation(mesh):
+    """Every installation field the auditor advertises is populated.
 
-    s1.add_dirichlet_bc((0.0, 0.0), "Left")
-    s1.add_dirichlet_bc((0.0, x), "Right")
+    The auditor sets a field to None and warns when it cannot import the
+    package behind it, so a None here is a real gap in what we can report.
+    """
+
+    unreadable = [k for k, v in uw.auditor.get_installation_data.items() if v is None]
+
+    assert not unreadable, f"auditor could not read: {unreadable}"
 
 
-# %%
-def vis_model(mesh):
-    import pyvista as pv
-    import underworld3.visualisation as vis
+def test_auditor_counts_objects_as_they_are_created(mesh):
+    """The runtime count advances when objects are built, and only then."""
 
-    v = mesh.vars["mathbfu"]
-    pl = pv.Plotter(window_size=(1000, 750))
+    before = uw.auditor.get_runtime_data["uw_object_count"]
 
-    pvmesh = vis.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.sqrt(v.sym.dot(v.sym)))
-    pvmesh.point_data["V1"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym[1])
+    scratch = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    uw.discretisation.MeshVariable("audited", scratch, 1, degree=1)
 
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="Vmag",
-        use_transparency=False,
-        opacity=1.0,
+    after = uw.auditor.get_runtime_data["uw_object_count"]
+
+    # At least the two objects named above; the constructors may build more.
+    assert after - before >= 2
+
+    # The control: reading the auditor is not itself what moves the count.
+    assert uw.auditor.get_runtime_data["uw_object_count"] == after
+
+
+def test_second_solver_over_the_same_fields(mesh):
+    """Two Stokes solvers share one velocity/pressure pair and give different flows.
+
+    `sympy.oo` in a component slot leaves that component unconstrained, so the
+    two boundary condition sets below constrain different components on
+    different walls. The assertion is that the second solve reaches its own
+    answer rather than returning the first solver's field: the two are set up
+    over the same `MeshVariable`s, which is the situation where a stale
+    setup would go unnoticed.
+    """
+
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable(
+        r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2
+    )
+    p = uw.discretisation.MeshVariable(
+        r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1
     )
 
-    velocity_points = vis.meshVariable_to_pv_cloud(v)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v.sym)
-    arrows = pl.add_arrows(
-        velocity_points.points,
-        velocity_points.point_data["V"],
-        mag=3e-1,
-        opacity=0.5,
-        show_scalar_bar=False,
-        cmap="coolwarm",
-    )
+    first = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    first.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    first.constitutive_model.Parameters.shear_viscosity_0 = 1
+    first.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    first.add_dirichlet_bc((y, 0.0), "Top")
+    first.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    first.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    first.solve()
 
-    pl.show(cpos="xy")
+    driven_from_the_top = v.data.copy()
 
+    second = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    second.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    second.constitutive_model.Parameters.shear_viscosity_0 = 1
+    second.add_dirichlet_bc((0.0, sympy.oo), "Bottom")
+    second.add_dirichlet_bc((0.0, sympy.oo), "Top")
+    second.add_dirichlet_bc((0.0, 0.0), "Left")
+    second.add_dirichlet_bc((0.0, x), "Right")
+    second.solve()
 
-# %%
-stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+    driven_from_the_side = v.data.copy()
 
-# %%
-bc_1(stokes)
-
-# %%
-stokes.solve()
-
-# %%
-# vis_model(mesh)
-
-# %%
-s1 = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-s1.constitutive_model = uw.constitutive_models.ViscousFlowModel
-s1.constitutive_model.Parameters.shear_viscosity_0 = 1
-# stokes._rebuild_after_mesh_update()
-bc_2(s1)
-
-# %%
-# stokes.solve()
-s1.solve()
-
-# %%
-# vis_model(mesh)
-
-
-def dont_test_auditor():
-    # assert not values are in install data are None
-    for v in uw.auditor.get_installation_data.values():
-        assert v is not None
-
-    # assert 7 uw_objects are created
-    assert uw.auditor.get_runtime_data.get("uw_object_count") == 7
-
-
-# %%
+    assert np.isfinite(driven_from_the_top).all()
+    assert np.isfinite(driven_from_the_side).all()
+    assert abs(driven_from_the_top).max() > 0.0
+    assert not np.allclose(driven_from_the_top, driven_from_the_side)

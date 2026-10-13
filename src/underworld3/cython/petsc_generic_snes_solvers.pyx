@@ -1,10 +1,9 @@
-from xmlrpc.client import Boolean
+import collections
 
 import numpy as np
 import sympy
-from sympy import sympify
 
-from typing import Optional, Union, TypeAlias
+from typing import Optional, Union
 from petsc4py import PETSc
 
 import underworld3
@@ -13,10 +12,100 @@ from   underworld3.utilities._jitextension import getext, JITCallbackSet
 import underworld3.timing as timing
 
 from underworld3.utilities._api_tools import uw_object
-from underworld3.utilities._api_tools import class_or_instance_method
+from underworld3.utilities import multigrid_options
+
+
+class _StrategyName(str):
+    """A strategy name that also reports what it resolved to.
+
+    Subclasses ``str`` deliberately: ``solver.strategy == "fast"``, string
+    formatting and serialisation all behave exactly as before, but displaying it —
+    in a REPL, a notebook, or a log line — shows the preconditioner it actually
+    configured. Asking "what am I running?" should not require knowing which nine
+    PETSc option keys to look up.
+
+    Use :attr:`SolverBaseClass.preconditioner_settings` for the machine-readable
+    form.
+    """
+
+    def __new__(cls, name, summary=""):
+        obj = super().__new__(cls, name)
+        obj._summary = summary
+        return obj
+
+    def __reduce__(self):
+        # `str.__reduce_ex__` reconstructs via `cls(value)` with ONE argument, which
+        # a two-argument `__new__` cannot accept — so without this, pickling, copy
+        # and deepcopy of a strategy value all raise TypeError. The summary is
+        # derived state and is carried along rather than recomputed, because the
+        # solver it came from is not part of the pickle.
+        return (self.__class__, (str(self), self._summary))
+
+    def __repr__(self):
+        return f"{str.__repr__(self)} — {self._summary}"
+
+    def _repr_markdown_(self):
+        return f"**`{str(self)}`** — {self._summary}"
 
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
+from underworld3.function.expressions import unwrap_expression as _unwrap_expression
+
+
+def _jacobian_unwrap(expr):
+    """Expand UWexpressions down to (but NOT including) constant atoms, for use
+    as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
+
+    Applied element-wise over a sympy ``Matrix``/``Array`` so atoms embedded in
+    the residual flux are reached. Non-constant UWexpressions (e.g. the
+    effective viscosity ``Min(eta0, tau_y/2/eps_II)``) are expanded so the
+    derivative sees their field / grad-v dependence and forms the full Newton
+    tangent. Truly-constant atoms (``eta0``, ``tau_y``, ...) are kept as the
+    *same* symbol object so the JIT ``constants[]`` runtime-update mechanism is
+    preserved — the keep-constants predicate is shared with
+    ``getext()._extract_constants`` so the two cannot drift apart.
+
+    This is a no-op for constant-viscosity problems (eta has no grad-v
+    dependence), so those Jacobians stay bit-identical.
+
+    The unwrapped result is additionally made DIFFERENTIATION-SAFE: any
+    ``sqrt(g)`` whose argument carries non-constant symbols becomes
+    ``sqrt(g + 1e-36)``. Differentiating a bare invariant
+    :math:`\dot\varepsilon_{II} = \sqrt{g}` produces
+    :math:`\partial\sqrt{g}/\partial L = \dot\varepsilon/(2\dot\varepsilon_{II})`
+    — the DIRECTION of the strain rate, which is 0/0 at a state of rest —
+    so every consistent-tangent assembly at a cold (v = 0) start filled
+    the operator with NaN (measured: J(0) norm = nan for a ViscoPlastic
+    model at ANY yield stress, surfacing as GAMG's "Computed maximum
+    singular value as zero", error 77; the alpha-blended continuation
+    kernel inherits it even at alpha = 0 because IEEE 0*NaN = NaN). The
+    guard makes the derivative exactly zero at the singular point and
+    perturbs it by under one part in 1e24 at any resolvable strain rate.
+    The RESIDUAL is never routed through here, and the default (Picard)
+    tangent never calls this function, so both remain bit-identical.
+
+    See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+    """
+    eps2 = sympy.Float(1.0e-36)
+
+    def _guard_sqrts(e):
+        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
+        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
+        # derivatives), ... — all singular in value or derivative at a
+        # zero-argument state
+        return e.replace(
+            lambda n: (n.is_Pow and n.exp.is_Rational
+                       and n.exp.q == 2 and n.args[0].free_symbols),
+            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+
+    f = lambda e: _guard_sqrts(
+        _unwrap_expression(e, mode="symbolic_keep_constants"))
+    if isinstance(expr, sympy.MatrixBase):
+        return expr.applyfunc(f)
+    if isinstance(expr, sympy.NDimArray):
+        return sympy.Array([f(e) for e in expr], expr.shape)
+    return f(expr)  # scalar expression
 
 
 include "petsc_extras.pxi"
@@ -40,16 +129,38 @@ class SolverBaseClass(uw_object):
         self.compiled_extensions = None
         self.constants_manifest = []
 
+        # Jacobian tangent selection — validated property, see the
+        # consistent_jacobian docstring below for the mode semantics.
+        self.consistent_jacobian = False
+        # Picard->Newton continuation parameter (constants[]-routed so it can be
+        # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
+        # Created LAZILY (see _get_newton_alpha) only when continuation is used,
+        # so the default path constructs no extra UWexpression and therefore
+        # cannot perturb global symbol-naming / JIT-cache state.
+        self._newton_alpha = None
+        # Switch threshold: ramp alpha toward 1 once the relative residual falls
+        # below this (the basin-of-attraction heuristic for Newton).
+        self.newton_switch_rtol = 1.0e-2
+
         # Fine-grained rebuild flags backing the is_setup property. See the
         # is_setup docstring and _build() for how these are consumed.
         self._needs_dm_rebuild = True
         self._needs_bc_reregister = True
         self._needs_function_rewire = True
 
+        # Warm-start status, public (read-only) via `has_solution`. Set True only
+        # after a converged solve; reset on a structural rebuild (is_setup=False)
+        # so a remesh / adapt / mesh-mover never warm-starts off stale field
+        # data. Kept through coefficient changes (viscosity, yield softness δ, BC
+        # values, time step). See has_solution / _record_convergence_status and
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        self._has_solution = False
+
         self.Unknowns = self._Unknowns(self)
 
         self._order = 0
         self._constitutive_model = None
+        self._materials = None
         self._rebuild_after_mesh_update = self._build
 
         self.name = "Solver_{}_".format(self.instance_number)
@@ -72,6 +183,27 @@ class SolverBaseClass(uw_object):
         # add_update_callback().
         self._snes_update_callbacks = []
 
+        # Solver difficulty / convergence reporting (default-on; see the
+        # solve_report / solve_history properties and _capture_solve_report).
+        # A SolveReport is recorded after every solve; solve_history keeps a
+        # short bounded trail so continuation / time-stepping loops can read
+        # trends without logging each step themselves.
+        self._solve_report = None
+        self._solve_history = collections.deque(maxlen=32)
+        # Bounded/resumable difficulty probe state (see estimate_difficulty).
+        # _difficulty_probe gates probe-only behaviour (iteration-cap solves,
+        # suppressed divergence warnings, restart anchoring); _difficulty_max_it
+        # is the active cap; _resume_abs_target anchors a chunked start/stop/restart
+        # chain to the ORIGINAL ||F0|| so it terminates at the same point an
+        # uninterrupted solve would. None = not in a resumable chain.
+        self._difficulty_probe = False
+        self._difficulty_max_it = None
+        self._resume_abs_target = None
+        # PETSc-level instrumentation: the sub-solve work gauge, and the
+        # wall-clock deadline once guard() arms it. Created on the first solve
+        # (systems/solver_health.py) because it needs a live SNES to attach to.
+        self._instrumentation = None
+
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
         # FMG/GAMG switch ("" for scalar/vector, "fieldsplit_velocity_" for
@@ -79,11 +211,27 @@ class SolverBaseClass(uw_object):
         # helper below is a no-op.
         self._preconditioner = "auto"
         self._pc_option_prefix = None
+        # An explicit `preconditioner="fmg"` on a single-field solver cannot
+        # take the native route (#276), so it is honoured via custom-P
+        # transfers over the mesh's own dm_hierarchy instead (#478). This flag
+        # carries the request from _apply_preconditioner_options (build time)
+        # to custom_mg.build_transfers (first solve); it is re-derived on
+        # every resolution, same staleness rule as _pc_resolved.
+        self._pc_single_field_geo_requested = False
         # The pc_type value this helper last managed. Subclasses that opt in set
         # their __init__ default ("gamg"); used in "auto" mode to tell an
         # untouched framework default (eligible for FMG upgrade) apart from an
         # explicit user override of pc_type, which must be respected.
         self._pc_managed_value = "gamg"
+        # Components per node in the field the managed block solves. Subclasses
+        # whose unknown is a vector set mesh.dim; 1 is right for a scalar. The
+        # GAMG bundle turns this into `mat_block_size` so that algebraic
+        # coarsening aggregates nodes rather than scalars — worth a factor of
+        # two to nine (#579). It has to live here rather than only at the
+        # __init__ call sites because _apply_preconditioner_options re-applies
+        # the bundle on EVERY build, and a bundle built without it would list
+        # `mat_block_size` as a stale key and delete what __init__ had set.
+        self._pc_block_size = 1
         # Latches once the user (or harness) is seen to have set the PC options
         # themselves. _apply_preconditioner_options() runs on EVERY _build (so
         # "auto" can re-resolve after a remesh), and without this latch the
@@ -92,6 +240,394 @@ class SolverBaseClass(uw_object):
         # tell "user set mg" from "we set mg" and would clobber their tuned
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
+        # Every multigrid option value UW3 itself has written on the managed block,
+        # keyed by full option name. This is what lets the bundle honour a
+        # user-set smoother while still managing the keys the user left alone: a
+        # present key whose value is not the one we recorded writing is theirs.
+        # Ownership is RECORDED, never inferred from the value — inference fails
+        # the moment a second internal writer touches the same key, which is how
+        # the `tolerance` and `strategy` setters defeated an earlier attempt (#477).
+        # Internal writers therefore go through _push_managed_option().
+        self._managed_pc_options = {}
+        # Has _apply_preconditioner_options actually made the resolution decision
+        # yet? Until it has, the options database holds only this solver's __init__
+        # defaults, which is NOT what the next solve will run — reporting them as
+        # resolved would be exactly the stale-but-authoritative-looking summary this
+        # reporting exists to prevent.
+        self._pc_resolved = False
+        # Readable record of every preconditioner fallback / degrade / guard-skip
+        # decision taken for this solver, keyed by site name — see the public
+        # `pc_fallbacks` property. Written ONLY through _record_pc_fallback (the
+        # record is WRITTEN, never inferred — same doctrine as
+        # _push_managed_option). Reset rule: cleared each time
+        # _apply_preconditioner_options re-resolves (the same staleness rule as
+        # _pc_resolved); solve-time sites (custom_mg, rotated_bc) record after
+        # that, so the record always describes the CURRENT resolution.
+        # Reason vocabulary (fixed; tests assert on it):
+        #   "unavailable"   — the requested configuration could not be built here
+        #   "declined"      — available in principle, but a policy chose otherwise
+        #   "build_failed"  — an attempted build raised and a fallback was used
+        #   "check_skipped" — a correctness guard did not run (its failure mode
+        #                     is sanctioned, but the skip is now on the record)
+        #   "forced"        — a required key overrode a user/unset value
+        self._pc_fallbacks = {}
+
+        # Custom multigrid prolongation hierarchy (see set_custom_mg /
+        # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
+        self._custom_mg = None
+
+    @property
+    def preconditioner_settings(self):
+        """The option values the managed preconditioner block is configured with.
+
+        A read-only dict of the multigrid keys UW3 currently has in the options
+        database for this solver's managed block, so what actually got applied can
+        be asserted on instead of inferred from timings. Empty for a solver with no
+        managed block (``_pc_option_prefix is None``), or before the first build
+        resolves one.
+
+        The values are what the strategy resolved to, *including* any key you set
+        yourself — those are respected (see :attr:`petsc_options`). Use
+        :attr:`strategy` for a readable summary of the same thing.
+        """
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return {}
+        keys = set(multigrid_options.gamg_bundle().settings)
+        for coarse in multigrid_options.GEOMETRIC_MG_COARSE_SOLVERS:
+            keys |= set(multigrid_options.geometric_mg_bundle(coarse=coarse).settings)
+        out = {}
+        for key in sorted(keys):
+            name = prefix + key
+            if self.petsc_options.hasName(name):
+                out[key] = self.petsc_options.getString(name)
+        return out
+
+    def _record_pc_fallback(self, site, *, requested, installed, reason, detail=""):
+        """Record one preconditioner fallback / degrade / guard-skip decision.
+
+        The single write path into ``pc_fallbacks`` (records are WRITTEN, never
+        inferred). ``reason`` must come from the fixed vocabulary documented at
+        ``_pc_fallbacks`` in ``__init__``. Runs on every rank — the record is
+        state, not output, so it must not be rank-gated the way warnings are.
+        """
+        self._pc_fallbacks[site] = dict(requested=requested, installed=installed,
+                                        reason=reason, detail=detail)
+
+    @property
+    def pc_fallbacks(self):
+        """Every preconditioner fallback the current resolution took, by site.
+
+        A dict keyed by site name (e.g. ``"single_field_gate"``,
+        ``"no_hierarchy"``, ``"custom_mg.build"``); each value is a dict with
+        ``requested`` (what was asked for), ``installed`` (what actually runs),
+        ``reason`` (one of ``"unavailable"``, ``"declined"``, ``"build_failed"``,
+        ``"check_skipped"``, ``"forced"``) and ``detail``. Empty means the
+        resolved preconditioner is exactly what was requested and every guard
+        ran — the clean-solve state a test can assert on.
+
+        The record is reset whenever the preconditioner options re-resolve (a
+        rebuild/remesh), and solve-time sites (``utilities.custom_mg``,
+        ``utilities.rotated_bc``) re-record each solve, so it always describes
+        the current resolution. Solvers that manage their own PC options
+        (``_pc_option_prefix is None``) never clear at rebuild; their sites are
+        custom_mg-only, which re-record per solve.
+
+        Returns
+        -------
+        dict
+            A copy — mutating it does not affect the solver.
+
+        See Also
+        --------
+        preconditioner_settings : the option values the managed block resolved to.
+        strategy : a readable summary of the same resolution.
+        """
+        return {site: dict(rec) for site, rec in self._pc_fallbacks.items()}
+
+    @property
+    def _user_overridden_pc_options(self):
+        """The managed-block keys the USER set, as (key, value) pairs.
+
+        A key present in the options database whose value is not the one UW3
+        recorded writing is theirs — the same test the bundle writer uses to decide
+        what to leave alone."""
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return ()
+        qualified = self.petsc_options_prefix
+        return tuple(
+            (key, value) for key, value in self.preconditioner_settings.items()
+            if self._managed_pc_options.get(qualified + prefix + key) != value)
+
+    @property
+    def _mg_smoother_variant(self):
+        """Which measured smoother regime this solver's strategy asks for.
+
+        ``solver.strategy`` is the named intent ("I want speed" / "I want this to
+        converge"); the values live in ``utilities.multigrid_options``. Solvers with
+        no strategy axis get the robust default. See
+        :func:`multigrid_options.geometric_mg_bundle` for the measurements."""
+        return "fast" if getattr(self, "_strategy", "default") == "fast" else "robust"
+
+    def _push_managed_option(self, key, value):
+        """Write a PETSc option UW3 owns, recording that we wrote it.
+
+        Use this for any option a solver sets on its own behalf that the multigrid
+        bundles also write (``utilities.multigrid_options``). A plain
+        ``self.petsc_options[key] = value`` is indistinguishable from a user's own
+        write, and the bundle would then back off from a key nobody asked for.
+        """
+        self.petsc_options[key] = value
+        # Key the record by the GLOBAL option name. `self.petsc_options` is a
+        # prefixed view (`Solver_N_`), but custom_mg._configure_pcmg reads the
+        # global database using the live PC's own full prefix — so an unqualified
+        # record makes every key look user-owned over there and the bundle
+        # silently stops applying.
+        self._managed_pc_options[self.petsc_options_prefix + key] = \
+            multigrid_options.option_string(value)
+
+    @property
+    def consistent_jacobian(self):
+        r"""Jacobian tangent selection: ``False`` | ``True`` | ``"continuation"``.
+
+        Selects the tangent used by :meth:`_jacobian_source` and the solve
+        dispatch; the residual is never affected, so the converged solution
+        always satisfies the exact constitutive law.
+
+        ``False`` (default)
+            Differentiate the residual flux *as wrapped* — the effective
+            viscosity is frozen, giving a Picard / defect-correction tangent.
+            Bit-identical to the long-standing behaviour. Globally robust;
+            load-bearing for the tuned hard-yield viscoplastic paths.
+        ``True``
+            Unwrap the flux before differentiation so the tangent captures
+            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
+            the solution; its yield kink can stall the line search far from it.
+        ``"continuation"``
+            Picard :math:`\rightarrow` Newton. Blend
+            :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
+            - J_{\mathrm{picard}})` with :math:`\alpha` a ``constants[]``
+            parameter ramped :math:`0 \rightarrow 1` by a SNES monitor as the
+            residual drops. Picard locates the basin, Newton gives quadratic
+            convergence inside it (cf. Spiegelman et al. 2016; ASPECT
+            defect-correction-then-Newton). :math:`\alpha = 0` is bit-identical
+            to Picard, so no recompile is needed to switch.
+
+        The Newton flux for a model whose flux has a non-smooth yield kink is
+        the model's own smooth law (``constitutive_model.flux_jacobian``) when
+        it provides one; otherwise the exact unwrapped flux. See
+        ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+
+        Raises
+        ------
+        ValueError
+            On assignment of anything other than ``False``, ``True`` or
+            ``"continuation"``. Falsy values (``None``, ``0``, ``""``)
+            normalize to ``False`` (they already selected the Picard tangent).
+            Before validation, any other truthy value (``1``, ``"picard"``,
+            ``"Continuation"``) silently selected the full-Newton tangent.
+        """
+        return self._consistent_jacobian
+
+    @consistent_jacobian.setter
+    def consistent_jacobian(self, mode):
+        if not mode:
+            self._consistent_jacobian = False
+        elif mode is True or mode == "continuation":
+            self._consistent_jacobian = mode
+        else:
+            raise ValueError(
+                f"consistent_jacobian must be False, True or 'continuation'; "
+                f"got {mode!r}")
+
+    def _jacobian_source(self, expr, newton_expr=None):
+        """Prepare a residual flux for Jacobian differentiation.
+
+        ``expr`` is the exact (Picard) flux; ``newton_expr`` is the consistent
+        (Newton) flux to use — when None it is the unwrapped ``expr`` (the
+        derivative then captures d(eta)/d(grad v)). The residual itself is never
+        passed through here, so the converged solution always satisfies the
+        exact constitutive law.
+
+        Returns, by ``consistent_jacobian`` mode:
+          * False  -> ``expr``  (frozen viscosity; bit-identical Picard tangent)
+          * True   -> ``newton_expr``  (full consistent Newton tangent)
+          * "continuation" -> ``expr + alpha*(newton_expr - expr)`` with alpha a
+            constants[] parameter ramped 0->1 at solve time. Differentiating
+            this gives ``G_picard + alpha*(G_newton - G_picard)`` because alpha
+            is constant w.r.t. the unknowns. alpha=0 is bit-identical to Picard.
+
+        No-op for constant viscosity (``newton_expr`` == ``expr``).
+        """
+        mode = self.consistent_jacobian
+        if not mode:
+            return expr
+        if newton_expr is None:
+            newton_expr = _jacobian_unwrap(expr)
+        if mode == "continuation":
+            a = self._get_newton_alpha()
+            if isinstance(expr, sympy.MatrixBase):
+                ne = newton_expr if isinstance(newton_expr, sympy.MatrixBase) \
+                    else sympy.Matrix(newton_expr)
+                return expr + a * (ne - expr)
+            if isinstance(expr, sympy.NDimArray):
+                # flatten to scalars first — iterating an N-d Array yields
+                # sub-arrays, not elements
+                ex = expr.reshape(expr._loop_size)
+                ne = sympy.Array(newton_expr).reshape(expr._loop_size)
+                return sympy.Array(
+                    [e + a * (n - e) for e, n in zip(ex, ne)], expr.shape
+                )
+            return expr + a * (newton_expr - expr)  # scalar
+        return newton_expr
+
+    def _newton_flux(self, exact_F1):
+        """Newton (consistent) flux for the bulk ``F1`` Jacobian source.
+
+        Returns the constitutive model's own smooth tangent law
+        (``constitutive_model.flux_jacobian``) when it supplies one — matched to
+        the container/shape of ``exact_F1`` — otherwise ``None`` so that
+        :meth:`_jacobian_source` falls back to the exact flux unwrapped. Lets a
+        model whose flux has a non-smooth yield kink provide a physically
+        motivated smooth tangent without changing the residual.
+        """
+        # Default (Picard) path never needs the Newton flux — short-circuit so
+        # the (potentially expensive) model.flux_jacobian is not even evaluated,
+        # keeping the default assembly allocation-free and bit-identical.
+        if not self.consistent_jacobian:
+            return None
+        cm = getattr(self, "constitutive_model", None)
+        smooth = getattr(cm, "flux_jacobian", None) if cm is not None else None
+        if smooth is None:
+            return None
+        try:
+            sm = sympy.Array(smooth)
+            ex = sympy.Array(exact_F1)
+            if sm.shape != ex.shape:
+                sm = sm.reshape(*ex.shape)
+            if isinstance(exact_F1, sympy.MatrixBase):
+                return sympy.Matrix(exact_F1.shape[0], exact_F1.shape[1], list(sm))
+            return sm
+        except Exception:
+            return None
+
+    def _get_newton_alpha(self):
+        """Lazily construct the Picard->Newton continuation parameter.
+
+        Built on first use (continuation mode only) so the default Picard path
+        creates no extra UWexpression and leaves global symbol-naming / JIT-cache
+        state byte-identical to historical behaviour.
+        """
+        if self._newton_alpha is None:
+            self._newton_alpha = uw.function.expression(
+                r"\alpha_{N}", sympy.Float(0.0),
+                "Picard->Newton continuation fraction (0=Picard, 1=Newton)",
+            )
+        return self._newton_alpha
+
+    def _set_newton_alpha(self, value):
+        """Set the Picard->Newton continuation fraction and push it to the DS.
+
+        alpha is routed through ``constants[]`` (it appears as a constant atom
+        in the blended Jacobian), so this updates the live tangent WITHOUT a JIT
+        recompile. No-op outside ``consistent_jacobian == "continuation"`` (alpha
+        is then absent from the constants manifest).
+        """
+        self._get_newton_alpha().sym = sympy.Float(value)
+        try:
+            self._update_constants()
+        except Exception:
+            pass
+
+    def set_custom_mg(self, coarse_meshes, kind="barycentric", verbose=False):
+        r"""Drive geometric multigrid with a prolongation we build ourselves.
+
+        Supplies a sequence of (possibly **non-nested**) coarse meshes from which
+        a barycentric or RBF prolongation ``P`` is assembled and installed into
+        the PCMG via ``PC.setMGInterpolation``; coarse operators are formed by
+        Galerkin RAP. This decouples geometric multigrid from a nested
+        ``refine()`` hierarchy — it works even when the solver mesh has no
+        refinement hierarchy at all.
+
+        Parameters
+        ----------
+        coarse_meshes : list of Mesh
+            Coarsest-first list of coarse meshes (the finest level is the
+            solver's own mesh). Need not be nested with the solver mesh.
+        kind : {"barycentric", "rbf"}
+            Prolongation builder. ``barycentric`` is FE-exact; ``rbf`` is a
+            polyharmonic RBF (Shepard-normalised). Default ``barycentric``.
+        verbose : bool
+            Print the per-level DOF counts at injection.
+
+        Notes
+        -----
+        Supported both on single-field (scalar / vector) solvers — where the
+        prolongation is installed directly on the solver's ``PCMG`` — and on the
+        **Stokes velocity block** (the ``fieldsplit_velocity_`` sub-PC), where the
+        velocity sub-PC is only reachable once the monolithic Jacobian has been
+        assembled; the install there assembles the Jacobian, descends the
+        fieldsplit to the velocity sub-PC, and rebuilds it as a fresh ``PCMG``
+        driven by our ``P``. Injection happens at solve time (after
+        ``setFromOptions`` / nullspace attach) via
+        :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
+        :mod:`underworld3.utilities.custom_mg`.
+
+        .. deprecated:: 2026-07
+            This is the legacy **serial-only, finest-only-reduction,
+            single-field** path; the Stokes velocity-block support described
+            above is delivered by :meth:`set_custom_fmg`, which is the
+            canonical entry point (parallel-capable, BC-per-level reduction).
+        """
+        import warnings
+        warnings.warn(
+            "set_custom_mg is deprecated (legacy serial-only, single-field "
+            "custom-MG path); use set_custom_fmg(coarse_meshes, "
+            "builder=..., field_id=...) instead",
+            DeprecationWarning, stacklevel=2)
+        if kind not in ("barycentric", "rbf"):
+            raise ValueError("kind must be 'barycentric' or 'rbf'")
+        if not coarse_meshes:
+            raise ValueError("coarse_meshes must be a non-empty coarsest-first list")
+        self._custom_mg = {"coarse_meshes": list(coarse_meshes),
+                           "kind": kind, "verbose": verbose}
+        self.is_setup = False
+
+    def set_custom_fmg(self, coarse_meshes, *, builder="barycentric",
+                       field_id=None, verbose=False):
+        r"""Drive geometric multigrid with a prolongation built from
+        ``coarse_meshes`` — the canonical custom-MG entry point.
+
+        Registers a BC-per-level reduced hierarchy on the solver so the next
+        :meth:`solve` builds and installs it (build-time injection). Works in
+        parallel and on the **Stokes velocity block** (pass ``field_id=0`` on a
+        saddle-point solver). This supersedes the legacy
+        :meth:`set_custom_mg` path (serial-only, finest-only reduction,
+        single-field).
+
+        Parameters
+        ----------
+        coarse_meshes : list of Mesh
+            Coarsest-first list of coarse meshes (the finest level is the
+            solver's own mesh). They need only carry the same boundary labels
+            as the solver's mesh.
+        builder : {"barycentric", "rbf"}, default "barycentric"
+            Prolongation builder. ``barycentric`` is FE-exact; ``rbf`` is a
+            polyharmonic RBF (Shepard-normalised).
+        field_id : int, optional
+            Target field for a multi-field (saddle-point) solver; ``0`` is the
+            Stokes velocity block. ``None`` (default) for single-field solvers.
+        verbose : bool, default False
+            Print the per-level DOF counts at injection.
+
+        See Also
+        --------
+        underworld3.utilities.custom_mg.set_custom_fmg : the implementation.
+        """
+        from underworld3.utilities.custom_mg import set_custom_fmg as _set_custom_fmg
+        _set_custom_fmg(self, coarse_meshes, builder=builder,
+                        field_id=field_id, verbose=verbose)
 
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
@@ -117,10 +653,20 @@ class SolverBaseClass(uw_object):
         self._needs_function_rewire = True
         return callback
 
-    def _maybe_install_snes_update(self):
+    def _attach_snes_update_hook(self):
         """Attach the SNESSetUpdate dispatcher iff callbacks are registered."""
         if self.snes is not None and self._snes_update_callbacks:
             self.snes.setUpdate(self._dispatch_snes_update)
+
+    def _nondimensional_time(self, time):
+        """Return ``time`` as a plain float in solver (non-dimensional) units.
+
+        Pint quantities and UWQuantity values are non-dimensionalised through
+        the scaling system; bare numbers pass through unchanged.
+        """
+        if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+            return float(uw.non_dimensionalise(time))
+        return float(time)
 
     def _scatter_global_to_fields(self, gvec):
         """Scatter the global iterate into the solver's field MeshVariable,
@@ -164,6 +710,7 @@ class SolverBaseClass(uw_object):
         current field values (callbacks may have changed v, p, or auxiliary fields)."""
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
 
     def _dispatch_snes_update(self, snes, iteration):
         """PETSc SNESSetUpdate hook: sync iterate->fields, run callbacks, sync back.
@@ -189,9 +736,19 @@ class SolverBaseClass(uw_object):
         - ``"auto"`` (default) — use geometric Full Multigrid (FMG) when the
           mesh carries a genuine refinement hierarchy
           (``len(mesh.dm_hierarchy) > 1``, i.e. built with ``refinement >= 1``),
-          otherwise fall back to algebraic multigrid (GAMG).
-        - ``"fmg"`` (alias ``"mg"``) — force geometric multigrid. Requires a
+          otherwise fall back to algebraic multigrid (GAMG). On a single-field
+          (scalar/vector) solver ``"auto"`` keeps GAMG even with a hierarchy —
+          the decline is recorded in :attr:`pc_fallbacks`.
+        - ``"fmg"`` (alias ``"mg"``) — geometric multigrid. Requires a
           refinement hierarchy; warns and falls back to GAMG if none exists.
+          On a single-field solver the native FMG path is unreliable (#276),
+          so the request is honoured via custom-P transfers built over the
+          same hierarchy (``utilities.custom_mg``) — installed on the live PC
+          at the first solve. If that build fails (e.g. a deformed mesh whose
+          coarse levels kept reference coordinates), the solve degrades to
+          GAMG with a readable :attr:`pc_fallbacks` record. This is a
+          *preference*; ``custom_mg.set_custom_fmg`` is the *demand* form and
+          raises on failure instead.
         - ``"gamg"`` — force algebraic multigrid (the historical default).
 
         Geometric multigrid is inherently robust to mesh anisotropy (it is built
@@ -216,8 +773,76 @@ class SolverBaseClass(uw_object):
                 f"preconditioner must be 'auto', 'fmg', or 'gamg' (got {value!r})"
             )
         self._preconditioner = choice
+        # A hierarchy cached by an earlier RESOLUTION (the auto/"fmg" install)
+        # must not outlive a new explicit choice: auto_inject_custom_mg
+        # re-installs solver._custom_mg unconditionally, which would leave a
+        # later preconditioner="gamg" unreachable with a clean pc_fallbacks
+        # record. A user registration (set_custom_fmg) is a demand and is kept.
+        if isinstance(self._custom_mg, dict) and self._custom_mg.get("auto_cached"):
+            self._custom_mg = None
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
+
+    def _withdraw_block_size_if_not_node_blocked(self, field_name=None, prefix=""):
+        """Remove ``mat_block_size`` when the block it describes is not node-blocked.
+
+        The GAMG bundle declares ``mat_block_size`` so that coarsening aggregates
+        nodes rather than scalars (#579). ``MatSetFromOptions`` hands that to
+        ``PetscLayoutSetBlockSize``, which is a HARD ERROR when a rank's local row
+        count is not divisible by it — PETSc does not treat it as a hint it may
+        decline:
+
+            Arguments are incompatible
+            Local size 67 not compatible with block size 2
+
+        Whether it divides is a property of the particular COMBINATION of
+        boundary conditions, not of their kind. Constrained degrees of freedom
+        are absent from the field's global section, so on a 3x3 P2 velocity
+        field: no velocity BCs gives 98, full vector Dirichlet on every wall
+        gives 50, and component-wise free slip gives 70 — all even, all fine —
+        while ``(0, 0)`` on one wall with ``(0, None)`` on the other three gives
+        67. There is then no node blocking to declare, and asking for one is not
+        a lost optimisation but an error.
+
+        The decision is COLLECTIVE. PETSc requires divisibility on every rank,
+        and a rank-local decision would leave ranks disagreeing about the
+        contents of the options DB.
+
+        Called immediately before ``setFromOptions`` because that is the first
+        point at which the field decomposition exists;
+        ``_apply_preconditioner_options`` re-pushes the bundle on every build, so
+        this has to run on every build too.
+        """
+
+        block_size = getattr(self, "_pc_block_size", 1)
+        if block_size <= 1:
+            return
+
+        names, isets, _ = self.dm.createFieldDecomposition()
+        names = list(names)
+        if field_name is None:
+            if len(names) != 1:
+                return
+            field_name = names[0]
+        elif field_name not in names:
+            return
+
+        local = isets[names.index(field_name)].getLocalSize()
+
+        from mpi4py import MPI
+
+        divides = self.dm.comm.tompi4py().allreduce(
+            local % block_size == 0, op=MPI.LAND
+        )
+        if divides:
+            return
+
+        key = f"{self.petsc_options_prefix}{prefix}mat_block_size"
+        options = PETSc.Options()
+        if key in options:
+            options.delValue(key)
+
+        self._pc_block_size_withdrawn = (field_name, block_size, local)
 
     def _apply_preconditioner_options(self):
         """Push the PETSc option bundle implied by ``self.preconditioner``.
@@ -230,6 +855,15 @@ class SolverBaseClass(uw_object):
         prefix = self._pc_option_prefix
         if prefix is None:
             return
+        # Every path from here is a resolution decision, including "the user owns
+        # these options, leave them alone".
+        self._pc_resolved = True
+        # Fresh resolution => fresh fallback record (same staleness rule as
+        # _pc_resolved). Solve-time sites re-record after this. The custom-P
+        # reroute request is re-derived below for the same reason (a remesh
+        # can collapse the hierarchy it depends on).
+        self._pc_fallbacks.clear()
+        self._pc_single_field_geo_requested = False
 
         opts = self.petsc_options
 
@@ -268,53 +902,95 @@ class SolverBaseClass(uw_object):
         else:  # "gamg" — explicit, always applied
             want_fmg = False
 
+        # Native geometric FMG relies on DMCreateInjection between the refined
+        # DMPlex levels. For a **single-field** (scalar / vector) discretisation
+        # this is fragile: whether PETSc can build the injection depends on the
+        # geometry×element-degree×refinement combination, and it fails at solve
+        # time with err62 "Could not locate matching functional for injection"
+        # on the common curved-shell cases (issue #276) as well as some flat
+        # high-degree ones. The Stokes velocity sub-block (prefix
+        # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
+        # unaffected. So a single-field solver never routes to NATIVE FMG. Two
+        # routes instead (#478):
+        #  * explicit `preconditioner="fmg"` is honoured via custom-P transfers
+        #    over the mesh's own dm_hierarchy (no DMCreateInjection anywhere, so
+        #    the err62 failure mode cannot arise). The options DB deliberately
+        #    keeps GAMG as the safe base configuration — the custom-P PCMG is
+        #    installed on the LIVE PC at the first solve (auto_inject_custom_mg
+        #    -> custom_mg.build_transfers, requested-native source), the same
+        #    shape the adapt-child pickup uses. If the transfer build fails, the
+        #    solve degrades to that GAMG base, recorded in `pc_fallbacks`.
+        #  * "auto" keeps GAMG (a default change needs its own validation
+        #    campaign, per #478) — the decline is recorded, never warned.
+        # `set_custom_fmg` remains the DEMAND form (raises on failure);
+        # `preconditioner="fmg"` is a PREFERENCE (degrades, loudly and readably).
+        if want_fmg and prefix == "":
+            if self._preconditioner == "fmg":
+                self._pc_single_field_geo_requested = True
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="native geometric FMG (preconditioner='fmg')",
+                    installed="custom-P geometric MG (resolved at first solve)",
+                    reason="declined",
+                    detail="native single-field FMG needs DMCreateInjection, "
+                           "which PETSc cannot reliably build on a refined "
+                           "DMPlex (#276); the request is honoured via custom-P "
+                           "transfers over the mesh hierarchy instead, degrading "
+                           "to GAMG (recorded) if the transfer build fails")
+            else:
+                # "auto" declines silently by design (never a new warning) —
+                # but the decline is the direction that matters (#484), so it
+                # is on the record.
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="geometric FMG (preconditioner='auto', hierarchy present)",
+                    installed="gamg",
+                    reason="declined",
+                    detail="single-field native FMG is fragile (#276); "
+                           "auto never routes there")
+            want_fmg = False
+
+        # The option VALUES live in utilities.multigrid_options, which is the
+        # single owner shared with the custom-P routes (custom_mg, rotated_bc) —
+        # the routes are the same preconditioner reached three ways and must not
+        # be configured from three places (#468). Coarse solve: the native
+        # hierarchy is not rotated, so its coarse operator carries no inherited
+        # null space and redundant+LU is right here.
+        # `_managed_pc_options` makes the bundle respect a key the USER set while
+        # still managing the ones they left alone. Before this, the bundle was
+        # applied wholesale on every rebuild and the only escape was the
+        # `_pc_user_override` latch above — which keys on `pc_type` ALONE, so a user
+        # who set (say) `mg_levels_ksp_max_it` had it silently discarded unless they
+        # also set `pc_type` to the value it already had. Explicit
+        # `preconditioner="fmg"` was worse: it skips the latch entirely, so the
+        # clearer the request the less control it carried.
         if want_fmg:
-            # Geometric Full Multigrid on the refinement hierarchy. Galerkin
-            # (RAP) coarse operators are required because UW3 does not install
-            # residual/Jacobian callbacks on the coarse DMs.
-            opts[f"{prefix}pc_type"] = "mg"
-            opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
-            opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
-            # richardson+sor (not chebyshev): chebyshev needs eigenvalue
-            # estimates of the smoothed operator, which are fragile on the
-            # indefinite / variable-viscosity Stokes velocity block and diverge;
-            # richardson+sor is the benchmark-validated, mesh-independent choice.
-            opts[f"{prefix}mg_levels_ksp_type"] = "richardson"
-            opts[f"{prefix}mg_levels_pc_type"] = "sor"
-            opts[f"{prefix}mg_levels_ksp_max_it"] = 4
-            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            # redundant+lu, not bare lu: a bare serial LU cannot factor a
-            # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
-            # after 0 iterations). redundant gathers the (small) coarse system to
-            # one rank and is identical to lu in serial — so it is np-safe by
-            # default without surprising small-np users.
-            opts[f"{prefix}mg_coarse_pc_type"] = "redundant"
-            opts[f"{prefix}mg_coarse_redundant_pc_type"] = "lu"
-            # Clear stale GAMG-only keys so toggling back and forth is clean.
-            for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
-                opts.delValue(f"{prefix}{key}")
+            multigrid_options.geometric_mg_bundle(
+                smoother=self._mg_smoother_variant).apply(
+                    PETSc.Options(), self.petsc_options_prefix + prefix,
+                    owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
-            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' requested but the mesh "
-                    f"has no refinement hierarchy; falling back to GAMG. Build the "
-                    f"mesh with refinement >= 1 to enable geometric multigrid.",
-                    stacklevel=2,
-                )
-            opts[f"{prefix}pc_type"] = "gamg"
-            opts[f"{prefix}pc_gamg_type"] = "agg"
-            opts[f"{prefix}pc_gamg_repartition"] = True
-            opts[f"{prefix}pc_mg_type"] = "additive"
-            opts[f"{prefix}pc_gamg_agg_nsmooths"] = 2
-            opts[f"{prefix}mg_levels_ksp_max_it"] = 3
-            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            # Clear stale geometric-MG-only keys.
-            for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_coarse_pc_type",
-                        "mg_coarse_redundant_pc_type"):
-                opts.delValue(f"{prefix}{key}")
+            if self._preconditioner == "fmg" and n_levels <= 1:
+                self._record_pc_fallback(
+                    "no_hierarchy",
+                    requested="geometric FMG (preconditioner='fmg')",
+                    installed="gamg",
+                    reason="unavailable",
+                    detail="the mesh has no refinement hierarchy; build it with "
+                           "refinement >= 1 to enable geometric multigrid")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] preconditioner='fmg' requested but the mesh "
+                        f"has no refinement hierarchy; falling back to GAMG. Build the "
+                        f"mesh with refinement >= 1 to enable geometric multigrid.",
+                        stacklevel=2,
+                    )
+            multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).apply(
+                    PETSc.Options(), self.petsc_options_prefix + prefix,
+                    owned=self._managed_pc_options)
             self._pc_managed_value = "gamg"
 
     def _enforce_galerkin_for_geometric_mg(self):
@@ -344,6 +1020,13 @@ class SolverBaseClass(uw_object):
             return
         gkey = f"{prefix}pc_mg_galerkin"
         if (not opts.hasName(gkey)) or opts.getString(gkey) == "none":
+            self._record_pc_fallback(
+                "galerkin_forced",
+                requested=f"{gkey} unset (or 'none')",
+                installed="both",
+                reason="forced",
+                detail="UW3 installs no coarse-DM operator callbacks, so "
+                       "geometric MG requires Galerkin RAP coarse operators")
             if uw.mpi.rank == 0:
                 import warnings
                 warnings.warn(
@@ -452,6 +1135,110 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
             self._needs_function_rewire = True
+            # A structural invalidation (mesh change / adaptivity / mesh-mover /
+            # explicit _force_setup) means any stored solution no longer matches
+            # the operators — drop the warm-start claim so the next solve()
+            # cold-starts rather than warming off a stale iterate. Coefficient-only
+            # updates (new viscosity, δ, BC values, time step) route through
+            # _update_constants / a direct _needs_function_rewire and keep
+            # has_solution, so continuation and time-stepping warm-start correctly.
+            self._has_solution = False
+
+    @property
+    def has_solution(self):
+        """``True`` when the solver holds a converged solution usable as a warm start.
+
+        Set ``True`` only after a solve whose SNES reported a converged reason
+        (``> 0``); ``False`` initially, after a diverged solve, and after any
+        structural rebuild (mesh change / adaptivity / mesh-mover / explicit
+        ``_force_setup`` — the ``is_setup = False`` invalidation hook). It
+        survives coefficient changes (viscosity, yield softness :math:`\\delta`,
+        boundary-condition *values*, time step) so parameter continuation and
+        time-stepping warm-start correctly.
+
+        Read-only status flag. Because a diverged solve leaves
+        ``has_solution == False``, the next :meth:`solve` automatically
+        cold-starts (Picard warm-up) rather than warming off a corrupted iterate.
+
+        See :doc:`nonlinear-solver-homotopy-warmstart` (Layer 1).
+        """
+        return self._has_solution
+
+    def _solution_is_trivially_zero(self):
+        """True when the solution field is still identically zero.
+
+        The design's *secondary* cold signal: a solver may be told to warm-start
+        (``zero_init_guess=False``) while its solution variable has never been
+        written, which is a cold start in everything but name. It matters because a
+        viscoplastic tangent is undefined there — the plastic viscosity is
+        :math:`\\tau_y / (2\\dot\\varepsilon_{II})`, so at :math:`v = 0` the
+        *residual* is finite (the soft-min carries the infinite plastic branch to
+        the viscous one) but its derivative is not, and assembling the consistent
+        tangent produces NaN.
+
+        Uses the PETSc vector norm, which is collective and therefore rank-uniform,
+        so every rank reaches the same decision.
+        """
+        u = getattr(self, "u", None)
+        if u is None:
+            return False
+        return float(u.vec.norm()) == 0.0
+
+    def _resolve_zero_init_guess(self, zero_init_guess):
+        """Resolve the tri-state ``zero_init_guess`` argument of ``solve()``.
+
+        ``None`` (the default) auto-detects: cold when the solver holds no converged
+        solution, warm when it does. Detection is safe by construction — guessing
+        *cold* when a solution was in fact available costs one extra iteration from a
+        good starting point, while the harmful direction (warming off stale field data
+        after a remesh or a diverged solve) cannot happen, because
+        :attr:`has_solution` is cleared by both.
+
+        ``True`` forces a fresh start (discard any solution); ``False`` insists on
+        warming from the current field values.
+        """
+        if zero_init_guess is None:
+            return not self.has_solution
+        return bool(zero_init_guess)
+
+    def _solve_yield_homotopy(self, homotopy_options=None, verbose=False,
+                              solve_kwargs=None):
+        """Run ``solve(homotopy=True)``: a multi-solve δ-continuation on the yield law.
+
+        The constitutive model advertises the homotopy (``supports_yield_homotopy``)
+        and describes it (``_yield_homotopy_control()``: how to set δ, and which
+        tangent to pair with it); the continuation driver marches δ from a large,
+        benign value down to the sharp yield surface, warm-starting each step from the
+        previous converged solution. See
+        :func:`~underworld3.systems.yield_continuation.yield_continuation` and
+        :doc:`nonlinear-solver-homotopy-warmstart` (Layer 2).
+        """
+        cm = self.constitutive_model
+        if cm is None or not getattr(cm, "supports_yield_homotopy", False):
+            raise TypeError(
+                f"solve(homotopy=True) needs a constitutive model with a yield law to "
+                f"sharpen, but {type(cm).__name__ if cm is not None else None} does not "
+                f"advertise supports_yield_homotopy. Use a viscoplastic (or VEP) model, "
+                f"or solve without homotopy."
+            )
+        from underworld3.systems.yield_continuation import yield_continuation
+        # The march's own options win: an explicit homotopy_options["verbose"] is a
+        # deliberate choice about the march, distinct from the solve's verbosity.
+        options = dict(homotopy_options or {})
+        options.setdefault("verbose", verbose)
+        return yield_continuation(self, solve_kwargs=solve_kwargs, **options)
+
+    def _record_convergence_status(self, converged=None):
+        """Refresh :attr:`has_solution` from the just-completed solve.
+
+        Called at the end of every ``solve()``. With ``converged`` unset the
+        status is read from the SNES converged reason (``> 0`` ⇒ converged);
+        the rotated free-slip path, which runs its own KSP loop rather than
+        driving ``self.snes``, passes the flag from its result dict.
+        """
+        if converged is None:
+            converged = self.snes is not None and self.snes.getConvergedReason() > 0
+        self._has_solution = bool(converged)
 
     class _Unknowns:
         """
@@ -577,12 +1364,38 @@ class SolverBaseClass(uw_object):
 
         return
 
+    def _reset_rotated_solver_cache(self):
+        """Release the rotated-free-slip cross-solve workspace (rotated_bc
+        cache: Q/Qt, the PtAP'd operator, the fieldsplit KSP/PC) before any
+        solver/DM teardown — those PETSc objects reference the current DM row
+        layout and must not survive it. No-op for solvers without the cache
+        (getattr guard: only SNES_Stokes_SaddlePt ever populates it). The
+        last solve's result dict (``_rotated_freeslip_info``) is NOT dropped:
+        its reaction vector is independent of the cache and the σ_nn /
+        dynamic-topography recoveries may still need it."""
+        cache = getattr(self, "_rotated_linear_cache", None)
+        # Null BEFORE destroying: an exception mid-destroy must leave objects
+        # unreachable (leaked-but-safe), never a half-destroyed cache a later
+        # reset would double-destroy (#543 review, m4).
+        self._rotated_linear_cache = None
+        if cache is not None:
+            from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
+            _destroy_rotated_linear_cache(cache)
+
     def _reset(self):
 
+        self._reset_rotated_solver_cache()
         self.natural_bcs = []
         self.essential_bcs = []
+        # A teardown means the next solve is a different discrete problem: a resume
+        # anchor from the old problem's ||F0|| must not survive into it.
+        self._resume_abs_target = None
 
         if self.snes is not None:
+            # Drop the instrumentation's references to this SNES's KSP hierarchy first,
+            # or destroy() only decrements and the old hierarchy stays resident.
+            if getattr(self, "_instrumentation", None) is not None:
+                self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
 
@@ -596,6 +1409,308 @@ class SolverBaseClass(uw_object):
         self.is_setup = False
 
         return
+
+    @property
+    def solve_report(self):
+        """Difficulty / convergence record of the most recent solve (read-only).
+
+        A :class:`~underworld3.systems.solve_report.SolveReport` populated by default after
+        every ``solve()`` — no opt-in. ``None`` before the first solve. Exposes the converged
+        reason, nonlinear/linear iteration counts, final and initial ‖F‖, the residual
+        reduction and contraction ρ, and the residual ladder. See also ``solve_history`` and
+        ``estimate_difficulty``.
+        """
+        return self._solve_report
+
+    @solve_report.setter
+    def solve_report(self, value):
+        raise AttributeError("solve_report is read-only (set by solve()).")
+
+    @property
+    def solve_history(self):
+        """Bounded trail of recent :class:`SolveReport`s (read-only, most recent last).
+
+        A ``collections.deque`` (``maxlen=32``) so continuation / time-stepping loops can read
+        difficulty trends without logging each solve themselves.
+        """
+        return self._solve_history
+
+    @solve_history.setter
+    def solve_history(self, value):
+        raise AttributeError("solve_history is read-only (set by solve()).")
+
+    def _capture_solve_report(self, *, bounded=False):
+        """Record a SolveReport for the just-completed solve into ``self._solve_report`` and
+        append it to ``self._solve_history``. Reads SNES state only (side-effect free).
+
+        INVARIANT: every physical ``self.snes.solve(...)`` site must be followed by a call to
+        this method, so that reporting covers every solve path — including any that returns
+        early and bypasses ``_snes_solve_with_retries`` / ``_warn_on_divergence`` (e.g. the
+        rotated-free-slip handoff in ``utilities/rotated_bc.py``). Do NOT anchor capture on
+        ``_warn_on_divergence`` (some paths skip it).
+        """
+        from underworld3.systems.solve_report import (
+            SolveReport, reason_string, contraction,
+        )
+
+        if getattr(self, "snes", None) is None:
+            self._solve_report = None
+            return None
+
+        reason = int(self.snes.getConvergedReason())
+        nl_its = int(self.snes.getIterationNumber())
+        ksp_its = int(self.snes.getLinearSolveIterations())
+        # Sanctioned swallows (each optional-field read below): PETSc raises from these
+        # getters on SNES types/states that never computed the quantity (e.g. ksponly
+        # before a function evaluation, builds without the counter). The report field
+        # degrades to its honest "unavailable" value; nothing else is masked.
+        try:
+            fnorm = float(self.snes.getFunctionNorm())
+        except Exception:
+            fnorm = float("nan")
+        try:
+            fev = int(self.snes.getFunctionEvaluations())
+        except Exception:
+            fev = None
+        try:
+            hist = tuple(float(h) for h in self.snes.getConvergenceHistory()[0])
+        except Exception:
+            hist = ()
+        fnorm0 = hist[0] if hist else None
+        reduction = (fnorm / fnorm0) if (fnorm0 not in (None, 0.0)) else None
+        rho = contraction(hist)
+
+        # Sub-solve work, and whether a wall-clock guard cut this solve short. Absent
+        # for a solver whose instrumentation has never attached (no solve yet).
+        instrumentation = self._instrumentation
+        sub = instrumentation.sub_reports() if instrumentation is not None else {}
+        deadline_expired = (instrumentation is not None
+                            and instrumentation.deadline_expired)
+
+        report = SolveReport(
+            reason=reason,
+            reason_str=reason_string(reason),
+            converged=reason > 0,
+            nl_its=nl_its,
+            ksp_its=ksp_its,
+            fnorm=fnorm,
+            fnorm0=fnorm0,
+            reduction=reduction,
+            rho=rho,
+            fev=fev,
+            history=hist,
+            bounded=bool(bounded),
+            sub=sub,
+            deadline_expired=deadline_expired,
+        )
+        self._solve_report = report
+        self._solve_history.append(report)
+        return report
+
+    def _capture_rotated_report(self, info):
+        """Record a SolveReport for a rotated-free-slip solve, which runs its own
+        ``ksp.solve()`` on the rotated operator (``utilities/rotated_bc.py``) and never
+        touches ``self.snes`` — so the generic reader would see stale SNES state.
+
+        The rotated result dict is the manual Newton loop's (``nonlinear_iterations``,
+        ``ksp_its`` a per-increment LIST, an outer ``converged`` flag from the
+        residual/step-norm tests, and ``ksp_reason`` the LAST increment's KSP code) —
+        rendered with the KSP reason table, since the SNES table shares the integers
+        but names different outcomes. A malformed dict raises: this reader and the
+        dict in ``rotated_bc.py`` are a contract, and a silent fallback here
+        previously masked a broken one."""
+        from underworld3.systems.solve_report import SolveReport, ksp_reason_string
+
+        info = info or {}
+        reason = int(info.get("ksp_reason", 0))
+        raw_its = info.get("ksp_its", 0)
+        if isinstance(raw_its, (list, tuple)):
+            ksp_its = int(sum(raw_its))                 # nonlinear: one count per Newton step
+        else:
+            ksp_its = int(raw_its)
+        nl_its = int(info.get("nonlinear_iterations", 1))   # linear path = one outer solve
+        if "converged" in info:
+            # The nonlinear loop's own verdict. The last KSP reason alone would mislabel
+            # a stalled Newton chain whose final linear solve happened to converge.
+            converged = bool(info["converged"])
+        else:
+            converged = reason > 0
+        rnorm = info.get("rnorm")
+        fnorm = float(rnorm) if rnorm is not None else float("nan")
+        rnorm0 = info.get("rnorm0")
+        fnorm0 = float(rnorm0) if rnorm0 else None
+        reduction = (fnorm / fnorm0) if (fnorm0 and fnorm == fnorm) else None
+        report = SolveReport(
+            reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
+            nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
+            fnorm0=fnorm0, reduction=reduction, rho=None, fev=None, history=(),
+            bounded=False,
+        )
+        self._solve_report = report
+        self._solve_history.append(report)
+        return report
+
+    def guard(self, *, wall_per_step):
+        r"""Bound the wall-clock time of each Newton step. Opt-in; changes termination.
+
+        A hard nonlinear solve can grind for hours *inside a single Newton step*, and no
+        iteration cap can stop it: the grind happens within one outer Krylov iteration,
+        so the counter the cap watches never advances. Nor can a Python timer stop it —
+        Python runs signal handlers only between bytecodes, and control is inside PETSc
+        the whole time. The deadline therefore lives in PETSc's own convergence tests,
+        where it is checked between the *inner* iterations of the fieldsplit blocks.
+
+        When the budget runs out the solve stops with ``DIVERGED_LINEAR_SOLVE`` and
+        ``solve_report.deadline_expired`` set, leaving the current iterate in the fields.
+        It is a report, not an error: a continuation driver reads it and steps back.
+
+        Parameters
+        ----------
+        wall_per_step : float
+            Seconds of wall clock allowed per Newton step. The clock restarts at the
+            beginning of every step, so a solve taking ``n`` steps may run for up to
+            roughly ``n * wall_per_step`` seconds. Once the deadline fires it stays
+            fired for the rest of that ``solve()`` call, so a Picard-to-Newton
+            continuation or a warm-start retry cannot quietly buy itself a fresh
+            budget.
+
+        Notes
+        -----
+        The budget is enforced at inner-iteration granularity, so the overrun beyond it
+        is at most the cost of one multigrid cycle. In parallel the expiry decision is
+        reduced over the solver's communicator, because PETSc deadlocks if convergence
+        tests return different verdicts on different ranks.
+
+        Not available with rotated free-slip BCs: that path runs its own Krylov loop
+        outside ``self.snes`` (``utilities/rotated_bc.py``), which the deadline cannot
+        reach — so arming a guard there would look like protection and provide none.
+
+        On a solver's FIRST solve the fieldsplit blocks do not exist until PETSc has set
+        up the preconditioner, part-way through that solve, so the first preconditioner
+        application runs unguarded. Every solve after that is fully covered. A driver
+        that needs the first one covered should do one cheap solve before arming.
+
+        Examples
+        --------
+        >>> stokes.guard(wall_per_step=150.0)
+        >>> stokes.solve()
+        >>> if stokes.solve_report.deadline_expired:
+        ...     ...                      # too hard at these parameters; back off
+        >>> stokes.unguard()
+
+        See Also
+        --------
+        unguard : remove the deadline.
+        estimate_difficulty : bound the *work* (an iteration count) instead.
+        """
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
+            raise NotImplementedError(
+                "guard() is not available with rotated free-slip / fault-contact "
+                "BCs: that path runs "
+                "its own Krylov loop outside self.snes (utilities/rotated_bc.py), so "
+                "the deadline cannot reach it and the guard would be silently inert."
+            )
+        self._solver_instrumentation().arm(wall_per_step)
+
+    def unguard(self):
+        """Remove the wall-clock deadline set by :meth:`guard`, restoring PETSc defaults."""
+        if self._instrumentation is not None:
+            self._instrumentation.disarm()
+
+    def _solver_instrumentation(self):
+        """The solver's PETSc instrumentation, created on first use."""
+        if self._instrumentation is None:
+            from underworld3.systems.solver_health import SolverInstrumentation
+            self._instrumentation = SolverInstrumentation()
+        return self._instrumentation
+
+    def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
+        """Run a bounded, resumable solve to *estimate solver difficulty* and return its report.
+
+        Caps the solve at ``max_nl_its`` nonlinear iterations (for THIS call only), runs the
+        normal ``solve()`` — which leaves the partial iterate in the fields — and returns the
+        :class:`SolveReport` (``bounded=True``). The reported effort (iterations, residual
+        reduction, contraction ρ) IS the difficulty estimate. Continue losslessly with another
+        ``estimate_difficulty(warm=True)`` (a large cap runs it to completion); a chunked
+        start/stop/restart chain terminates at the same point an uninterrupted solve would,
+        because the chain anchors convergence to the original ‖F0‖.
+
+        This bounds *solver work predictably* (an iteration count) — it is NOT a wall-time limit.
+
+        Parameters
+        ----------
+        max_nl_its : int
+            Cap on nonlinear (SNES) iterations for this call.
+        warm : bool, default True
+            ``True`` continues from the current fields (a restart within a chain);
+            ``False`` starts a fresh chain from a zero initial guess.
+        **solve_kwargs
+            Forwarded to ``solve()`` (e.g. ``timestep``, ``picard`` for Stokes/VE).
+            ``zero_init_guess`` is owned by ``warm`` and ``divergence_retries`` by the
+            probe (always 0) — passing either raises.
+
+        Returns
+        -------
+        SolveReport
+            The (``bounded=True``) report for this capped solve; also available as
+            ``self.solve_report``.
+
+        Notes
+        -----
+        Not available with rotated free-slip BCs: that path solves outside
+        ``self.snes``, so the cap and anchor cannot reach it. Under
+        ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
+        then Newton), so one probe may run up to twice ``max_nl_its``.
+        """
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
+            raise NotImplementedError(
+                "estimate_difficulty() is not available with rotated free-slip / "
+                "fault-contact BCs: "
+                "that path solves outside self.snes (utilities/rotated_bc.py), so the "
+                "iteration cap and resume anchor cannot be applied to it."
+            )
+        if "zero_init_guess" in solve_kwargs:
+            raise TypeError(
+                "estimate_difficulty() sets the initial guess from warm= "
+                "(warm=False starts a fresh chain from zero); do not pass zero_init_guess."
+            )
+        if solve_kwargs.get("divergence_retries"):
+            raise TypeError(
+                "estimate_difficulty() does not accept divergence_retries: a capped probe "
+                "ends DIVERGED_MAX_IT by design, and retrying on it would run multiples of "
+                "the advertised cap."
+            )
+        if not warm:
+            self._resume_abs_target = None      # fresh chain: forget any prior anchor
+        self._difficulty_probe = True
+        self._difficulty_max_it = int(max_nl_its)
+        try:
+            self.solve(zero_init_guess=(not warm), **solve_kwargs)
+        finally:
+            self._difficulty_probe = False
+            self._difficulty_max_it = None
+
+        # Anchor lifecycle. A CONVERGED probe ends the chain: clear the anchor so it
+        # cannot leak into a later chain on different physics. This also covers the
+        # warm first call on an already-converged state — its ||F0|| is the *converged*
+        # residual, and anchoring to tolerance*||F_converged|| would set an unreachable
+        # target that silently degrades the chain to restart-relative semantics.
+        # An UNCONVERGED (capped) probe with no anchor yet establishes the chain,
+        # anchored to the original ||F0||: subsequent warm restarts — including a
+        # large-cap call to run to completion — terminate at tolerance*||F0||, the same
+        # point an uninterrupted solve would, regardless of where the caps fell. The
+        # anchor is consulted ONLY under _difficulty_probe (see
+        # _snes_solve_with_retries), so plain solves are unaffected.
+        report = self._solve_report
+        if report is not None and report.converged:
+            self._resume_abs_target = None
+        elif self._resume_abs_target is None and report is not None:
+            f0 = report.fnorm0
+            if f0:
+                self._resume_abs_target = self.tolerance * float(f0)
+        return report
 
     def get_snes_diagnostics(self):
         """
@@ -631,35 +1746,13 @@ class SolverBaseClass(uw_object):
         converged = converged_reason > 0
         diverged = converged_reason < 0
 
-        # Map convergence reasons to descriptive strings (PETSc documentation)
-        convergence_reason_map = {
-            # Positive reasons = converged
-            1: "CONVERGED_FNORM_ABS - ||F|| < atol",
-            2: "CONVERGED_FNORM_RELATIVE - ||F|| < rtol*||F_initial||",
-            3: "CONVERGED_SNORM_RELATIVE - ||x|| < stol",
-            4: "CONVERGED_ITS - Maximum iterations reached",
-
-            # Zero = still iterating (shouldn't see after solve)
-            0: "ITERATING - Still iterating (unexpected after solve)",
-
-            # Negative reasons = diverged
-            -1: "DIVERGED_FUNCTION_DOMAIN - Function domain error",
-            -2: "DIVERGED_FUNCTION_COUNT - Too many function evaluations",
-            -3: "DIVERGED_LINEAR_SOLVE - Linear solver failed",
-            -4: "DIVERGED_FNORM_NAN - ||F|| is Not-a-Number",
-            -5: "DIVERGED_MAX_IT - Maximum iterations exceeded",
-            -6: "DIVERGED_LINE_SEARCH - Line search failed",
-            -7: "DIVERGED_INNER - Inner solve failed",
-            -8: "DIVERGED_LOCAL_MIN - Local minimum reached",
-            -9: "DIVERGED_DTOL - ||F|| increased by divtol",
-            -10: "DIVERGED_JACOBIAN_DOMAIN - Jacobian calculation failed",
-            -11: "DIVERGED_TR_DELTA - Trust region delta too small",
-        }
-
-        convergence_reason_string = convergence_reason_map.get(
-            converged_reason,
-            f"UNKNOWN_CONVERGENCE_REASON_{converged_reason}"
-        )
+        # Format "NAME - explanation" from the class-level table shared with
+        # _warn_on_divergence.
+        if converged_reason in self._convergence_reasons:
+            _name, _explanation = self._convergence_reasons[converged_reason]
+            convergence_reason_string = f"{_name} - {_explanation}"
+        else:
+            convergence_reason_string = f"UNKNOWN_CONVERGENCE_REASON_{converged_reason}"
 
         return {
             'snes_available': True,
@@ -787,20 +1880,34 @@ class SolverBaseClass(uw_object):
 
         return None
 
-    # Compact reason map for _warn_on_divergence
+    # SNES convergence reasons: code -> (NAME, explanation). The NAMES are the same
+    # table as solve_report.REASON_STRINGS, kept here with an explanation string for
+    # get_convergence_diagnostics (formats "NAME - explanation") and _warn_on_divergence
+    # (uses NAME only). Both copies are pinned to petsc4py's enum by test_1055 — the
+    # positive codes here were shifted by one until 2026-07 (there is no code 1, and a
+    # step-norm stop was reported as CONVERGED_ITS).
     _convergence_reasons = {
-        1: "CONVERGED_FNORM_ABS",
-        2: "CONVERGED_FNORM_RELATIVE",
-        3: "CONVERGED_SNORM_RELATIVE",
-        4: "CONVERGED_ITS",
-        -1: "DIVERGED_FUNCTION_DOMAIN",
-        -2: "DIVERGED_FUNCTION_COUNT",
-        -3: "DIVERGED_LINEAR_SOLVE",
-        -4: "DIVERGED_FNORM_NAN",
-        -5: "DIVERGED_MAX_IT",
-        -6: "DIVERGED_LINE_SEARCH",
-        -7: "DIVERGED_INNER",
-        -8: "DIVERGED_LOCAL_MIN",
+        # Positive reasons = converged
+        2: ("CONVERGED_FNORM_ABS", "||F|| < atol"),
+        3: ("CONVERGED_FNORM_RELATIVE", "||F|| < rtol*||F_initial||"),
+        4: ("CONVERGED_SNORM_RELATIVE", "||x|| < stol"),
+        5: ("CONVERGED_ITS", "Maximum iterations reached"),
+        # Zero = still iterating (shouldn't see after solve)
+        0: ("CONVERGED_ITERATING", "Still iterating (unexpected after solve)"),
+        # Negative reasons = diverged
+        -1: ("DIVERGED_FUNCTION_DOMAIN", "Function domain error"),
+        -2: ("DIVERGED_FUNCTION_COUNT", "Too many function evaluations"),
+        -3: ("DIVERGED_LINEAR_SOLVE", "Linear solver failed"),
+        -4: ("DIVERGED_FUNCTION_NANORINF", "||F|| is Not-a-Number or infinite"),
+        -5: ("DIVERGED_MAX_IT", "Maximum iterations exceeded"),
+        -6: ("DIVERGED_LINE_SEARCH", "Line search failed"),
+        -7: ("DIVERGED_INNER", "Inner solve failed"),
+        -8: ("DIVERGED_LOCAL_MIN", "Local minimum reached"),
+        -9: ("DIVERGED_DTOL", "||F|| increased by divtol"),
+        -10: ("DIVERGED_JACOBIAN_DOMAIN", "Jacobian calculation failed"),
+        -11: ("DIVERGED_TR_DELTA", "Trust region delta too small"),
+        -13: ("DIVERGED_OBJECTIVE_DOMAIN", "Objective function domain error"),
+        -14: ("DIVERGED_OBJECTIVE_NANORINF", "Objective is Not-a-Number or infinite"),
     }
 
     def _warn_on_divergence(self, phase="solve"):
@@ -823,8 +1930,14 @@ class SolverBaseClass(uw_object):
         if phase == "picard" and reason == -5:
             return
 
+        # Bounded difficulty probe: hitting the iteration cap (DIVERGED_MAX_IT) is
+        # the intended stop, not a failure — the effort is reported, not warned.
+        if self._difficulty_probe and reason == -5:
+            return
+
         its = self.snes.getIterationNumber()
-        reason_str = self._convergence_reasons.get(reason, f"UNKNOWN({reason})")
+        _entry = self._convergence_reasons.get(reason)
+        reason_str = _entry[0] if _entry is not None else f"UNKNOWN({reason})"
 
         uw.pprint(
             f"\nSNES {phase} diverged after {its} iterations: {reason_str}\n"
@@ -861,21 +1974,100 @@ class SolverBaseClass(uw_object):
         """
         # Attach the per-iteration callback dispatcher here (after all
         # setFromOptions in the solve path). No-op when no callbacks registered.
-        self._maybe_install_snes_update()
+        self._attach_snes_update_hook()
+        # Arm the residual-history buffer for THIS solve (reset clears stale data so the
+        # reported contraction is computed on the current ladder only). Done here — every
+        # solve funnels through this method and reads self.snes freshly — so a recreated
+        # SNES (new object after a setup-dirtying _build) is armed automatically. Guarded:
+        # not all PETSc builds expose it identically.
+        try:
+            self.snes.setConvergenceHistory(reset=True)
+        except Exception:
+            pass
+
+        # Attach the sub-solve gauge (and the wall-clock deadline, if guard() armed
+        # one) to the CURRENT SNES and clear its per-solve counters. Here rather than
+        # in _build because a rebuilt solver gets a new SNES and everything attached to
+        # the old one is dropped; every solve funnels through this method.
+        self._solver_instrumentation().begin_solve(self.snes)
+
+        # Single control point for the bounded/resumable difficulty solve. Runs AFTER
+        # every per-solve setFromOptions (base and Stokes), so overrides here win. Gated
+        # on _difficulty_probe so it is active ONLY inside estimate_difficulty — a plain
+        # solve() is byte-for-byte unchanged and can never pick up a stale chain anchor.
+        #   - iteration cap: cap nonlinear iterations for this probe;
+        #   - resume anchor: once a chain is established (_resume_abs_target set from the
+        #     first solve's ||F0||), terminate at the ORIGINAL ||F0|| via an absolute tol
+        #     = tolerance*||F0||. This abs tol is LOOSER than the restart-relative
+        #     rtol*||F_restart||, so it fires first — no need to zero rtol. So a chunked
+        #     start/stop/restart terminates at the same point an uninterrupted solve would.
+        # Tolerances are saved and restored so nothing leaks into later solves.
+        _probe = bool(self._difficulty_probe)
+        _saved_tol = None
+        if _probe:
+            _saved_tol = self.snes.getTolerances()
+            if self._difficulty_max_it is not None:
+                self.snes.setTolerances(max_it=int(self._difficulty_max_it))
+            if self._resume_abs_target is not None:
+                self.snes.setTolerances(atol=float(self._resume_abs_target))
+
+        try:
+            if self.consistent_jacobian == "continuation":
+                self._continuation_solve(gvec, verbose=verbose)
+            else:
+                self.snes.solve(None, gvec)
+            if divergence_retries > 0:
+                for _r in range(divergence_retries):
+                    reason = self.snes.getConvergedReason()
+                    if reason >= 0:
+                        break
+                    if verbose and uw.mpi.rank == 0:
+                        print(
+                            f"SNES DIVERGED (reason={reason}); "
+                            f"warm-start retry {_r + 1}/{divergence_retries}",
+                            flush=True,
+                        )
+                    self.snes.solve(None, gvec)
+        finally:
+            if _saved_tol is not None:
+                self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
+                                        stol=_saved_tol[2], max_it=_saved_tol[3])
+            # Default-on difficulty report — single tail so every path is covered,
+            # INCLUDING a solve that raises: the report then reflects the failed
+            # attempt's SNES state rather than leaving the previous solve's converged
+            # report behind for recovery logic to misread. bounded=True marks a report
+            # produced under an estimate_difficulty cap.
+            self._capture_solve_report(bounded=_probe)
+
+    def _continuation_solve(self, gvec, verbose=False):
+        """Picard -> Newton continuation via the constants[]-routed alpha.
+
+        Stage 1 solves with the frozen (Picard) tangent (alpha=0) to a loose
+        tolerance to enter Newton's basin of attraction; stage 2 ramps to the
+        consistent (Newton) tangent (alpha=1) and warm-starts to the requested
+        tolerance. alpha is toggled through ``constants[]`` so neither stage
+        triggers a JIT recompile (cf. Spiegelman et al. 2016; ASPECT).
+        """
+        rtol, atol, stol, max_it = self.snes.getTolerances()
+
+        # Stage 1 — Picard (alpha=0), loose tolerance.
+        self._set_newton_alpha(0.0)
+        self.snes.setTolerances(rtol=max(self.newton_switch_rtol, rtol))
         self.snes.solve(None, gvec)
-        if divergence_retries <= 0:
-            return
-        for _r in range(divergence_retries):
-            reason = self.snes.getConvergedReason()
-            if reason >= 0:
-                return
-            if verbose and uw.mpi.rank == 0:
-                print(
-                    f"SNES DIVERGED (reason={reason}); "
-                    f"warm-start retry {_r + 1}/{divergence_retries}",
-                    flush=True,
-                )
-            self.snes.solve(None, gvec)
+        if verbose and uw.mpi.rank == 0:
+            print(f"continuation Picard: reason={self.snes.getConvergedReason()} "
+                  f"it={self.snes.getIterationNumber()}", flush=True)
+
+        # Stage 2 — Newton (alpha=1), requested tolerance, warm-started.
+        self._set_newton_alpha(1.0)
+        self.snes.setTolerances(rtol=rtol, atol=atol, stol=stol, max_it=max_it)  # restore
+        self.snes.solve(None, gvec)
+        if verbose and uw.mpi.rank == 0:
+            print(f"continuation Newton: reason={self.snes.getConvergedReason()} "
+                  f"it={self.snes.getIterationNumber()}", flush=True)
+
+        # Restore a clean Picard tangent for any subsequent solve (next step).
+        self._set_newton_alpha(0.0)
 
     @timing.routine_timer_decorator
     def _build(self,
@@ -885,6 +2077,8 @@ class SolverBaseClass(uw_object):
                     ):
 
         self._check_expression_meshes()
+        if self._materials is not None:
+            self._materials.check()
 
         if self.is_setup:
             return
@@ -965,9 +2159,24 @@ class SolverBaseClass(uw_object):
         # sequence; this brings _build() into line with it.
         # NB self.snes / self.dm_hierarchy may not exist yet on the first
         # build, so use getattr/hasattr-style guards rather than `is not None`.
+
+        # The rotated free-slip cross-solve workspace (rotation Q, PtAP'd
+        # operator, fieldsplit KSP/PC) was built against the SNES/DM we are
+        # about to destroy — release it first. Fast paths 1 and 2 above keep
+        # the DM/SNES, so the workspace legitimately survives them (a rewire's
+        # new kernels are caught by the workspace's own JIT-key/constants
+        # invalidation signature).
+        self._reset_rotated_solver_cache()
+
         if getattr(self, "snes", None) is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver SNES", flush=True)
+            # Instrumentation holds petsc4py references to this SNES's KSP and its
+            # fieldsplit blocks, which reference-count the PC and the whole multigrid
+            # hierarchy. Drop them BEFORE the destroy or the old hierarchy survives
+            # alongside the new one -- the leak BUGFIX(#157) above exists to prevent.
+            if getattr(self, "_instrumentation", None) is not None:
+                self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
 
@@ -1012,17 +2221,6 @@ class SolverBaseClass(uw_object):
                 self._velocity_rotation_nullspace = None
             if hasattr(self, "_constant_nullspace_obj"):
                 self._constant_nullspace_obj = None
-
-        # This is a workaround for some problem in the PETSc machinery
-        # where we need a surface integral term somewhere on every process
-        # if we have a contribution from anywhere. We add a fake one here
-        # which just integrates nothing over a bunch of points. It's enough
-        # to let the rest of the machinery work.
-
-        if len(self.natural_bcs) > 0:
-            if not any(bc.boundary == "Null_Boundary" for bc in self.natural_bcs):
-                bc = (0,)*self.Unknowns.u.shape[1]
-                self.add_natural_bc(bc, "Null_Boundary")
 
         if verbose:
             uw.pprint("Build pointwise functions")
@@ -1116,10 +2314,10 @@ class SolverBaseClass(uw_object):
             eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.
         """
         if not isinstance(f_id, int):
-            raise("Error: f_id argument must be of type 'int' representing the solver's fields")
+            raise TypeError("Error: f_id argument must be of type 'int' representing the solver's fields")
 
         if c_type not in ['dirichlet', 'neumann']:
-            raise("'c_type' unknown. Value must be either 'dirichlet' or 'neumann'")
+            raise ValueError("'c_type' unknown. Value must be either 'dirichlet' or 'neumann'")
 
         self.is_setup = False
         import numpy as np
@@ -1183,12 +2381,12 @@ class SolverBaseClass(uw_object):
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])\n")
 
         if isinstance(components, (tuple, list, int)):
-            # TODO: DECPRECATE
             import warnings
-            warnings.warn(category=DeprecationWarning,
-                          message="Using the 'components' argument is being DEPRECATED in the next release\n" +
-                                  "The same functionality can be setup with the 'conds' argument and using\n" +
-                                  "'sympy.oo' or 'None', see docstring")
+            warnings.warn(
+                "The 'components' argument is deprecated; select components "
+                "with None / sympy.oo entries in 'conds' instead, e.g. "
+                "conds=(None, 5, 1.2)",
+                DeprecationWarning, stacklevel=3)
             components = np.array(components, dtype=np.int32, ndmin=1)
 
         elif components is None:
@@ -1199,7 +2397,7 @@ class SolverBaseClass(uw_object):
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
         else:
-            raise("Unsupported BC 'components' argument")
+            raise TypeError("Unsupported BC 'components' argument")
 
         # ======================================================================
         # Apply non-dimensional scaling to BC values if ND is enabled
@@ -1254,12 +2452,71 @@ class SolverBaseClass(uw_object):
 
         from collections import namedtuple
         if c_type == 'neumann':
+            # mesh.Gamma in a natural-BC expression resolves per boundary:
+            # external boundaries keep the exact per-quadrature petsc_n[];
+            # internal boundaries substitute the declared analytic normal
+            # (petsc_n is orientation-ambiguous there — issue #327).
+            sympy_fn = sympy.Matrix(
+                self.mesh._resolve_boundary_normals(sympy_fn, label)
+            ).as_immutable()
             BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'fn_F', 'fn_p', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
             self.natural_bcs.append(BC(f_id, components, sympy_fn, None, None, label, -1, "natural", -1, {}))
         elif c_type == 'dirichlet':
             BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
             self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
+
+    def _value_first_bc_args(self, method, conds, boundary, alias=None,
+                             alias_name="g"):
+        """Normalize BC arguments to the canonical value-first order.
+
+        The canonical BC signature is ``method(conds, boundary, ...)`` with the
+        prescribed datum named ``conds`` (Style Charter, API conventions;
+        maintainer decisions D2/D3, 2026-07). Two legacy spellings are shimmed
+        here, each with exactly one DeprecationWarning:
+
+        * **boundary-first order** — detected conservatively: the first
+          positional argument is a string (a boundary label; a BC datum is
+          never a string — see :meth:`add_condition`) while the second is not.
+          The two arguments are swapped.
+        * **the** ``g=`` **keyword alias** for the datum — forwarded to
+          ``conds``. Supplying both ``conds`` and ``g`` is an error.
+
+        Returns the normalized ``(conds, boundary)`` pair; ``boundary`` is
+        required to be a string on exit.
+        """
+        legacy_order = False
+        legacy_alias = False
+        if isinstance(conds, str) and not isinstance(boundary, str):
+            conds, boundary = boundary, conds
+            legacy_order = True
+        if alias is not None:
+            if conds is not None:
+                raise TypeError(
+                    f"{method}() received the boundary datum twice "
+                    f"(as 'conds' and as '{alias_name}='); pass it once, "
+                    f"as 'conds'")
+            conds = alias
+            legacy_alias = True
+        if legacy_order or legacy_alias:
+            # Name the legacy form the caller actually used (Copilot review
+            # of #334: a one-size message misdescribed keyword-only calls).
+            if legacy_order and legacy_alias:
+                legacy_form = f"{method}(boundary, {alias_name}=...)"
+            elif legacy_order:
+                legacy_form = f"{method}(boundary, conds, ...) positional order"
+            else:
+                legacy_form = f"the '{alias_name}=' keyword of {method}()"
+            import warnings
+            warnings.warn(
+                f"{legacy_form} is deprecated; "
+                f"use {method}(conds, boundary, ...)",
+                DeprecationWarning, stacklevel=3)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"{method}() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        return conds, boundary
 
     # Use FE terminology note f_id is 0.
     @timing.routine_timer_decorator
@@ -1424,7 +2681,7 @@ class SolverBaseClass(uw_object):
 
     @property
     def F1(self):
-        raise RuntimeError("Contact Developers - SolverBaseClass F0 is being used")
+        raise RuntimeError("Contact Developers - SolverBaseClass F1 is being used")
 
     @property
     def u(self):
@@ -1474,6 +2731,50 @@ class SolverBaseClass(uw_object):
 
 
     @property
+    def materials(self):
+        """The materials this solver's coefficients come from.
+
+        Assigning a :class:`~underworld3.swarm.MaterialSwarm` sets every
+        constitutive-model parameter the materials declare *and* the model
+        recognises, by name — so a model script names its materials and their
+        properties, and never writes a level set or a mask::
+
+            materials = uw.swarm.MaterialSwarm(mesh, fill_param=3)
+            materials.add("mantle", shear_viscosity_0=1.0)
+            materials.add("slab",   shear_viscosity_0=1.0e3, density=3400)
+            materials["slab"] = mesh.X[1] > 0.53
+
+            stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+            stokes.materials = materials          # sets shear_viscosity_0
+
+        A declared property the model does not recognise (``density`` here) is
+        not pushed anywhere; it is available as a blended symbol,
+        ``materials.density``, for the model script to use where it belongs.
+        One that is neither recognised nor read is reported at solve time,
+        because a misspelled viscosity is silently the default one.
+
+        Properties may be changed, and materials repainted, after assignment:
+        the blend is symbolic and the push repeats on every change.
+        """
+        return self._materials
+
+    @materials.setter
+    def materials(self, material_swarm):
+        if material_swarm is None:
+            previous = self._materials
+            self._materials = None
+            if previous is not None:
+                previous._detach(self)     # or it keeps pushing to this solver
+            return
+        if not hasattr(material_swarm, "_attach"):
+            raise TypeError(
+                "solver.materials expects a MaterialSwarm (uw.swarm.MaterialSwarm), "
+                f"not {type(material_swarm).__name__}"
+            )
+        self._materials = material_swarm
+        material_swarm._attach(self)
+
+    @property
     def constitutive_model(self):
         """
         Constitutive model defining the material behavior.
@@ -1490,6 +2791,11 @@ class SolverBaseClass(uw_object):
 
     @constitutive_model.setter
     def constitutive_model(self, model_or_class):
+
+        # A stress history supplied by the user fixes the viscoelastic order
+        # (the solver's own _order is set only when it builds the history).
+        if self.Unknowns.DFDt is not None and self._order == 0:
+            self._order = getattr(self.Unknowns.DFDt, "order", 0) or 0
 
         ### checking if it's an instance - it will need to be reset
         if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
@@ -1525,6 +2831,11 @@ class SolverBaseClass(uw_object):
         # Stokes and VE_Stokes — the solver adapts to the constitutive model.
         if self._constitutive_model.requires_stress_history and self.Unknowns.DFDt is None:
             self._create_stress_history_ddt(order=self._constitutive_model.order)
+
+        # Materials assigned before the constitutive model still have to
+        # reach it: the push is a no-op while there is no model to push to.
+        if getattr(self, "_materials", None) is not None:
+            self._materials._push_to(self)
 
         # May not work due to flux being incomplete
         if self.Unknowns.DFDt is not None:
@@ -1755,7 +3066,7 @@ class SolverBaseClass(uw_object):
 
         # check if section type is valid
         if section_type not in ['local', 'global']:
-            raise("'section_type' unknown. Value must be either 'local' or 'global'")
+            raise ValueError("'section_type' unknown. Value must be either 'local' or 'global'")
 
         # check if path exists
         if os.path.exists(os.path.abspath(outputPath)):  # easier to debug abs
@@ -1818,6 +3129,153 @@ class SolverBaseClass(uw_object):
                     f.create_dataset("dof", data = gath_dof_data[:, 2])
 
         return
+
+    def _assemble_volume_reaction(self, time=None, verbose=False):
+        """RAW per-rank FEM VOLUME residual (no boundary terms) in the DM-local layout,
+        as a numpy array.
+
+        At an essential-BC (Dirichlet) node this residual IS the consistent boundary
+        reaction — the integrated nodal flux :math:`\\int_\\Gamma (F\\cdot\\hat n)\\phi_i`
+        (heat flux for a scalar diffusion solve, traction for Stokes). Interior nodes are
+        ~0. General across scalar / vector / Stokes solvers: the current solution is
+        gathered from ``self.fields`` when present (Stokes) else the single
+        ``Unknowns.u`` field.
+
+        NOTE: the returned array is NOT globally assembled. The DM has overlap=0, so each
+        rank computes only its OWNED cells' contribution; a boundary node shared across a
+        partition cut therefore holds only this rank's PARTIAL reaction. The complete
+        reaction is assembled by the caller (``utilities.boundary_flux._desmear``) by
+        SUMMING each rank's partial by coordinate — not by a hand-rolled localToGlobal.
+        """
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef DM _time_dm_reaction
+        cdef PetscFormKey key
+        cdef IS ccell_is
+        cdef PetscReal residual_time = 0.0
+        cdef PetscReal implicit_form_time = <PetscReal>-1.7976931348623157e308
+
+        self._build(verbose, False, None)
+
+        if time is not None:
+            t_nd = self._nondimensional_time(time)
+            _time_dm_reaction = self.dm
+            UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
+            residual_time = <PetscReal>t_nd
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            # gather the current solution into the global vector (field-structure agnostic)
+            if getattr(self, "fields", None):
+                for name, var in self.fields.items():
+                    sgvec = gvec.getSubVector(self._subdict[name][0])
+                    self._subdict[name][1].localToGlobal(var.vec, sgvec)
+                    gvec.restoreSubVector(self._subdict[name][0], sgvec)
+            else:
+                _names, _iss, _subdms = self.dm.createFieldDecomposition()
+                try:
+                    sgvec = gvec.getSubVector(_iss[0])
+                    try:
+                        _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                    finally:
+                        gvec.restoreSubVector(_iss[0], sgvec)
+                finally:
+                    for _is in _iss:
+                        _is.destroy()
+                    for _subdm in _subdms:
+                        _subdm.destroy()
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            # Constrained (Dirichlet) DOFs are ABSENT from the global vector,
+            # so the localToGlobal/globalToLocal round trip above leaves them
+            # ZERO in xlocal. Insert the essential boundary values before
+            # integrating: without this the residual is evaluated against a
+            # state whose boundary values are wrong wherever g != 0, and the
+            # 'reaction' on inhomogeneous Dirichlet boundaries is garbage
+            # (issue #407 — g=0 boundaries were accidentally correct).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
+            CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
+
+            # Return the RAW local residual: each rank has computed its OWNED cells'
+            # contribution to its local nodes (the DM has overlap=0, so a boundary node
+            # shared across a partition cut holds only this rank's PARTIAL contribution).
+            # The caller assembles the complete reaction by summing these partials across
+            # ranks by coordinate (boundary_flux._desmear), consistent with the boundary-
+            # mass gather — this reproduces the rock-solid volume integral at cut nodes.
+            return np.array(flocal.array, copy=True)
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
+
+    def boundary_flux(self, boundary, mass="auto", remove_mean=False, normal=None):
+        r"""Consistent boundary flux on ``boundary``, recovered from the essential-BC
+        reaction of the last solve (the Consistent Boundary Flux method).
+
+        Returns ``(xs, flux)`` with one entry per boundary node on this rank: for a
+        **scalar** solver the outward normal flux :math:`F\cdot\hat n` (e.g. surface heat
+        flux :math:`-k\,\partial T/\partial n`, whose boundary mean is the Nusselt
+        number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
+        ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
+
+        ``mass`` de-smears the nodal reaction with ``"lumped"``, ``"consistent"``,
+        ``"p1"`` or ``"midpoint"`` boundary mass. ``"auto"`` (default) selects lumped
+        recovery for 2D P1/P2 traces and 3D P1 triangles, MIDPOINT-RECONSTRUCTED
+        recovery for 3D P2 triangles (row-sum lumping is invalid there and the
+        consistent solve amplifies at vertices — #633), and the consistent solve for 2D
+        traces of degree >= 3 (where lumping is only O(h) pointwise).
+        ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
+        flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
+
+        Three-dimensional recovery supports triangular P1/P2 traces; quadrilateral
+        traces raise explicitly. Reaction and mass assembly are partition-independent.
+        For vector fluxes, supply an analytic ``normal`` when strict partition
+        independence of the normal projection is required; geometric facet-normal
+        averaging at partition seams has a small pre-existing partition sensitivity.
+
+        .. warning::
+           On CURVED boundaries, P2 **vertex** values converge only slowly: the P2
+           vertex basis has zero surface mean, so vertex reactions carry only the
+           O(h) facet-geometry error, which the recovery faithfully reconstructs
+           (measured: 93%→55% error under one refinement, while midpoints go
+           2.8%→0.7%). Pointwise consumers on curved boundaries should use
+           **edge-midpoint values** or integral/fitted quantities, never vertex
+           values (issue #414). Flat boundaries are exact up to solver tolerance."""
+        from underworld3.utilities.boundary_flux import boundary_flux as _bf
+        return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
+
+    def boundary_flux_field(self, boundary, field, mass="auto",
+                            remove_mean=False, scale=1.0, normal=None):
+        r"""Write the consistent boundary flux (see :meth:`boundary_flux`) onto a scalar
+        MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
+        ``scale``. This is the field hand-off for downstream machinery (surface heat
+        flux for coupling, or — with ``remove_mean=True`` and ``scale=-1/(\Delta\rho g)``
+        — dynamic topography). Returns ``field``.
+
+        Note that ``scale`` is a generic multiplier, NOT the ``buoyancy_scale``
+        taken by :meth:`dynamic_topography` / ``topography``: for topography the
+        relationship is ``scale = -1 / buoyancy_scale`` (there the division by
+        :math:`\Delta\rho\,g` and the minus sign are internal)."""
+        from underworld3.utilities.boundary_flux import boundary_flux_field as _bff
+        return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
+                    scale=scale, normal=normal)
 
 ## Specific to dimensionality
 
@@ -1904,11 +3362,15 @@ class SNES_Scalar(SolverBaseClass):
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if u_Field is None:
-            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim,
+            # A scalar unknown has one component. (MeshVariable already forced
+            # this: vtype=SCALAR overrides num_components, so the old
+            # num_components=mesh.dim here was ignored, never over-allocated —
+            # issue #367.)
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,
                                                       varname="Us{}".format(SNES_Scalar._obj_count),
                                                       vtype=uw.VarType.SCALAR, degree=degree, )
-
-        self.Unknowns.u = u_Field
+        else:
+            self.Unknowns.u = u_Field
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
@@ -1930,17 +3392,11 @@ class SNES_Scalar(SolverBaseClass):
         self._pc_option_prefix = ""
 
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("ksp_type", "gmres")
+        for key, value in multigrid_options.gamg_bundle().settings.items():
+            self._push_managed_option(key, value)
 
         self.petsc_options["snes_rtol"] = 1.0e-4
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -1959,7 +3415,6 @@ class SNES_Scalar(SolverBaseClass):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        # self._constitutive_model = None
 
         self.verbose = verbose
 
@@ -2223,8 +3678,6 @@ class SNES_Scalar(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
@@ -2309,14 +3762,8 @@ class SNES_Scalar(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
-        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
-
-        # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
-        # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
-
-        # Don't unwrap here — let getext()'s two-phase unwrap handle it.
-        # This preserves constant UWexpressions as symbols for the constants[] mechanism.
+        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
+        # it (preserves constant UWexpressions as symbols for constants[]).
         f0  = sympy.Array(self.F0.sym).reshape(1).as_immutable()
         # F1 is the flux vector, which lives in the embedded coordinate
         # space (cdim components). For volume meshes dim==cdim so this
@@ -2332,10 +3779,17 @@ class SNES_Scalar(SolverBaseClass):
 
         fns_residual = [self._u_f0, self._u_F1]
 
-        G0 = sympy.derive_by_array(f0, U)
-        G1 = sympy.derive_by_array(f0, L)
-        G2 = sympy.derive_by_array(F1, U)
-        G3 = sympy.derive_by_array(F1, L)
+        # JACOBIAN: unwrap (keep constants) + smooth Min/Max kinks so the
+        # derivative sees the field-dependence of any nonlinear coefficient
+        # (full Newton) while the residual keeps the exact form. No-op for
+        # constant coefficients -> bit-identical. See _jacobian_source.
+        f0_jac = self._jacobian_source(f0)
+        F1_jac = self._jacobian_source(F1, self._newton_flux(F1))
+
+        G0 = sympy.derive_by_array(f0_jac, U)
+        G1 = sympy.derive_by_array(f0_jac, L)
+        G2 = sympy.derive_by_array(F1_jac, U)
+        G3 = sympy.derive_by_array(F1_jac, L)
 
         # Re-organise if needed / make hashable
 
@@ -2362,12 +3816,6 @@ class SNES_Scalar(SolverBaseClass):
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
 
-            bc_label = mesh.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
-            # if bc_is is None:
-            #     print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
-            #     continue
-
             if bc.fn_f is not None:
                 
                 bd_F0  = sympy.Array(bc.fn_f)
@@ -2383,20 +3831,6 @@ class SNES_Scalar(SolverBaseClass):
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
             # Similar to SNES_Vector, will leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
-
-            # if bc.fn_F is not None:
-
-            #     bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
-            #     self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
-
-            #     G2 = sympy.derive_by_array(self._bd_f1, U)
-            #     G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
-
-            #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-            #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-
-            #     fns_bd_residual += [self._bd_f1]
-            #     fns_bd_jacobian += [self._bd_G2, self._bd_G3]
 
 
         self._fns_bd_residual = fns_bd_residual
@@ -2529,6 +3963,8 @@ class SNES_Scalar(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -2542,7 +3978,7 @@ class SNES_Scalar(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose:         bool=False,
               debug:           bool=False,
@@ -2558,10 +3994,15 @@ class SNES_Scalar(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in the solution variable(s) as the initial guess, which can
-            improve convergence for time-stepping or continuation methods.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up. Useful after
             changing boundary conditions or constitutive parameters.
@@ -2609,6 +4050,7 @@ class SNES_Scalar(SolverBaseClass):
         snes : Access to underlying PETSc SNES object for advanced control.
         """
 
+
         import petsc4py
 
 
@@ -2619,28 +4061,26 @@ class SNES_Scalar(SolverBaseClass):
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
 
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
+
         self._build(verbose, debug, debug_name)
 
         # Set time on the DM so petsc_t is available in pointwise functions
         cdef DM _time_dm
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm = self.dm
             UW_DMSetTime(_time_dm.dm, t_nd)
 
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            # with self.mesh.access():
             self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.0
-
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures()
 
         ## ----
 
@@ -2662,13 +4102,19 @@ class SNES_Scalar(SolverBaseClass):
         # ``constant_nullspace`` was set.
         self._attach_constant_nullspace()
 
+        # Custom multigrid prolongation: inject our P hierarchy before the
+        # first PCSetUp (so the Galerkin coarse operators are built from it).
+        # Picks up a solver-set (set_custom_mg) OR a mesh-owned (adapt child)
+        # hierarchy. No-op unless one is present.
+        from underworld3.utilities.custom_mg import auto_inject_custom_mg
+        auto_inject_custom_mg(self, field_id=None)
+
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        # with self.mesh.access(self.u,):
         self.dm.globalToLocal(gvec, lvec)
         # add back boundaries.
         ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
@@ -2687,6 +4133,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -2741,8 +4189,9 @@ class SNES_Scalar(SolverBaseClass):
 
 ### =================================
 
-# LM: this is probably not something we need ... The petsc interface is
-# general enough to have one class to handle Vector and Scalar
+# TODO(DESIGN): the PETSc interface may be general enough for one class to
+# handle both Vector and Scalar — the multi-solver unification question is
+# tracked as worklist rows D-23..D-28 (deferred, maintainer session).
 
 class SNES_Vector(SolverBaseClass):
     r"""
@@ -2827,10 +4276,6 @@ class SNES_Vector(SolverBaseClass):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
-        # self.u = u_Field
-        # self.DuDt = DuDt
-        # self.DFDt = DFDt
-
         ## Keep track
 
         self.verbose = verbose
@@ -2851,15 +4296,14 @@ class SNES_Vector(SolverBaseClass):
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self._push_managed_option("ksp_type", "gmres")
+        # A vector unknown: mesh.dim components per node, which GAMG has to be
+        # told. See multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.dim
+        for key, value in multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).settings.items():
+            self._push_managed_option(key, value)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -2873,7 +4317,9 @@ class SNES_Vector(SolverBaseClass):
 
 
         ## Todo: some validity checking on the size / type of u_Field supplied
-        if not u_Field:
+        # (the supplied u_Field, if any, was assigned to self.Unknowns.u above;
+        # here we only auto-create the default unknown when none was supplied)
+        if u_Field is None:
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh,
                         num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._obj_count),
                         vtype=uw.VarType.VECTOR, degree=degree )
@@ -2891,7 +4337,6 @@ class SNES_Vector(SolverBaseClass):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        # self._constitutive_model = None
 
         self.is_setup = False
         self.verbose = verbose
@@ -2928,35 +4373,56 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1, local_h=True):
+    def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
+                       normal=None, gamma=10.0, theta=1, mask=None,
+                       local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         For vector solvers (no pressure field), this constrains
-        :math:`\mathbf{u} \cdot \mathbf{d} = g` on the boundary using
-        Nitsche's method with penalty, consistency, and symmetry terms.
+        :math:`\mathbf{u} \cdot \mathbf{d} = \mathrm{conds}` on the boundary
+        using Nitsche's method with penalty, consistency, and symmetry terms.
 
         Parameters
         ----------
+        conds : sympy expression or float, optional
+            Prescribed velocity along the constraint direction. Default zero
+            (free-slip when the direction is the surface normal).
         boundary : str
             Boundary label.
-        g : sympy expression or float, optional
-            Prescribed velocity along constraint direction. Default zero.
         direction : sympy.Matrix or list, optional
             Constraint direction. Default ``None`` uses surface normal.
+        normal : sympy.Matrix or list, optional
+            Boundary unit normal used in the Nitsche consistency and symmetry
+            terms — the same geometric-normal override as on the Stokes
+            variant. Default ``None`` uses the per-boundary,
+            deformation-tracking ``mesh.boundary_normal(boundary)``.
         gamma : float, default=10.0
             Dimensionless stabilisation parameter.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
+        mask : sympy expression, optional
+            Accepted for signature parity with the Stokes variant, but
+            one-sided masking is **not implemented** on vector solvers:
+            passing a mask raises ``NotImplementedError``.
         local_h : bool, default=True
             Scale the penalty by a local per-cell mesh size
             (:meth:`Mesh.cell_size`) rather than the global minimum
             (:meth:`Mesh.get_min_radius`). See
             ``SNES_Stokes_SaddlePt.add_nitsche_bc`` for details.
+        g : sympy expression or float, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Warnings
         --------
         Exterior boundaries only. See ``SNES_Stokes_SaddlePt.add_nitsche_bc``
         for details on why internal boundaries are not supported.
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_nitsche_bc(boundary, g=...)`` is
+        detected conservatively (first positional argument a string while the
+        second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see :meth:`_value_first_bc_args`.
 
         See Also
         --------
@@ -2965,6 +4431,16 @@ class SNES_Vector(SolverBaseClass):
         import sympy
         from collections import namedtuple
 
+        conds, boundary = self._value_first_bc_args(
+            "add_nitsche_bc", conds, boundary, alias=g)
+        g = conds
+
+        if mask is not None:
+            raise NotImplementedError(
+                "mask= (one-sided internal-boundary application) is not "
+                "implemented on SNES_Vector.add_nitsche_bc; it is supported "
+                "on SNES_Stokes_SaddlePt.add_nitsche_bc only")
+
         self.is_setup = False
 
         mesh = self.mesh
@@ -2972,18 +4448,25 @@ class SNES_Vector(SolverBaseClass):
         # components as the embedding space (cdim). On volume meshes
         # cdim == dim. On manifold meshes (dim < cdim) the vector lives
         # in the embedding space with an implicit tangency constraint.
-        dim = mesh.cdim
+        cdim = mesh.cdim
 
         # Surface normal components — use this boundary's own deformation-
-        # tracking facet normal (see Mesh.boundary_normal); the legacy global
+        # tracking facet normal (see Mesh.boundary_normal) unless the caller
+        # overrides the geometric-normal source; the legacy global
         # mesh.Gamma_P1 stays radial on a deformed surface.
-        bnorm = mesh.boundary_normal(boundary)
-        n = [bnorm[i] for i in range(dim)]
+        if normal is not None:
+            if isinstance(normal, sympy.MatrixBase):
+                n = [normal[i] for i in range(cdim)]
+            else:
+                n = list(normal)
+        else:
+            bnorm = mesh.boundary_normal(boundary)
+            n = [bnorm[i] for i in range(cdim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
             if isinstance(direction, sympy.MatrixBase):
-                d = [direction[i] for i in range(dim)]
+                d = [direction[i] for i in range(cdim)]
             else:
                 d = list(direction)
         else:
@@ -2993,7 +4476,7 @@ class SNES_Vector(SolverBaseClass):
         u = self.u.sym
 
         # Constraint residual: c = u.d - g
-        u_dot_d = sum(u[i] * d[i] for i in range(dim))
+        u_dot_d = sum(u[i] * d[i] for i in range(cdim))
         if g is None:
             g = sympy.Integer(0)
         constraint = u_dot_d - g
@@ -3011,8 +4494,12 @@ class SNES_Vector(SolverBaseClass):
                 "Nitsche mesh size parameter (global)",
             ).sym
 
-        # Viscosity from constitutive model
-        mu = self.constitutive_model.viscosity
+        # Penalty scale from the constitutive model: use K (the stiffness /
+        # preconditioner scale) rather than .viscosity — for the transverse-
+        # isotropic models .viscosity now reports the yield-limited WEAK-PLANE
+        # eta_1 (issue #463), which would under-scale the penalty; K is the
+        # bulk eta_0 there and identical to .viscosity for isotropic models.
+        mu = self.constitutive_model.K
 
         # Constitutive flux
         flux = self._constitutive_model.flux
@@ -3020,12 +4507,12 @@ class SNES_Vector(SolverBaseClass):
         # Traction projected onto constraint direction: (σ·n)·d
         t_d = sum(
             flux[i, j] * n[j] * d[i]
-            for i in range(dim) for j in range(dim)
+            for i in range(cdim) for j in range(cdim)
         )
 
         # f0_bd: velocity boundary residual (value term)
         f0_components = []
-        for c in range(dim):
+        for c in range(cdim):
             f0_c = (gamma * mu / h_sym) * constraint * d[c]    # penalty
             f0_c -= t_d * d[c]                                   # consistency
             f0_components.append(f0_c)
@@ -3035,9 +4522,9 @@ class SNES_Vector(SolverBaseClass):
         # f1_bd: symmetry term
         fn_F = None
         if theta != 0:
-            f1_components = sympy.zeros(dim, dim)
-            for c in range(dim):
-                for dd in range(dim):
+            f1_components = sympy.zeros(cdim, cdim)
+            for c in range(cdim):
+                for dd in range(cdim):
                     f1_components[c, dd] = -theta * mu * (
                         n[dd] * constraint * d[c] + d[c] * constraint * n[dd]
                     )
@@ -3050,7 +4537,7 @@ class SNES_Vector(SolverBaseClass):
         ])
 
         import numpy as np
-        components = np.arange(dim, dtype=np.int32)
+        components = np.arange(cdim, dtype=np.int32)
 
         self.natural_bcs.append(BC(
             0, components, fn_f, fn_F, None,
@@ -3132,8 +4619,6 @@ class SNES_Vector(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
@@ -3222,97 +4707,92 @@ class SNES_Vector(SolverBaseClass):
                 print(f"SNES_Vector ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
-        # For SNES_Vector, the vector has cdim components in the
-        # embedding space — see the boundary-condition setup above.
-        # Volume meshes have cdim == dim so this is unchanged for them.
-        dim = self.mesh.cdim
+        # For SNES_Vector, the vector has cdim components in the embedding
+        # space — see the boundary-condition setup above. On volume meshes
+        # cdim == mesh.dim.
         cdim = self.mesh.cdim
 
         sympy.core.cache.clear_cache()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
-        ## Convert to arrays for the moment to allow 1D arrays (size dim, not 1xdim)
-        ## otherwise we have many size-1 indices that we have to collapse
-
-        # f0 = sympy.Array(self.mesh.vector.to_matrix(self._f0)).reshape(dim)
-        # F1 = sympy.Array(self._f1).reshape(dim,dim)
-
-        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
-        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
-
-        # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
-        # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
-
-        # Residual piece shapes: f0 is (dim,) per-component, F1 is (dim, dim).
-        # Don't unwrap here — let getext()'s two-phase unwrap handle it.
-        # This preserves constant UWexpressions as symbols for the constants[] mechanism.
+        # Residual piece shapes: f0 is (cdim,) per-component, F1 is (cdim, cdim).
+        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
+        # it (preserves constant UWexpressions as symbols for constants[]). The
+        # Jacobian sources (f0_jac_list / F1_user_jac) are derived below.
         F0_user = sympy.Matrix(self.F0.sym)
         F1_user = sympy.Matrix(self.F1.sym)
 
         # Normalise F0 into a list of scalar per-component entries so the
         # explicit-index Jacobian construction below can sympy.diff each one.
-        if F0_user.shape == (dim, 1):
-            f0_list = [F0_user[c, 0] for c in range(dim)]
-        elif F0_user.shape == (1, dim):
-            f0_list = [F0_user[0, c] for c in range(dim)]
-        elif F0_user.shape == (dim,):
-            f0_list = [F0_user[c] for c in range(dim)]
+        if F0_user.shape == (cdim, 1):
+            f0_list = [F0_user[c, 0] for c in range(cdim)]
+        elif F0_user.shape == (1, cdim):
+            f0_list = [F0_user[0, c] for c in range(cdim)]
+        elif F0_user.shape == (cdim,):
+            f0_list = [F0_user[c] for c in range(cdim)]
         else:
             raise ValueError(
-                f"SNES_Vector F0 shape {F0_user.shape} is not compatible with dim={dim}."
+                f"SNES_Vector F0 shape {F0_user.shape} is not compatible with cdim={cdim}."
             )
-        if F1_user.shape != (dim, dim):
+        if F1_user.shape != (cdim, cdim):
             raise ValueError(
-                f"SNES_Vector F1 shape {F1_user.shape} does not match (dim, dim)=({dim}, {dim})."
+                f"SNES_Vector F1 shape {F1_user.shape} does not match (cdim, cdim)=({cdim}, {cdim})."
             )
 
         # Residual arrays kept as matrices for the JIT codegen path.
-        # f0 stored as (dim, 1) column; F1 stored as (dim, dim).
+        # f0 stored as (cdim, 1) column; F1 stored as (cdim, cdim).
         self._u_f0 = sympy.ImmutableDenseMatrix([[e] for e in f0_list])
         self._u_F1 = sympy.ImmutableDenseMatrix(F1_user)
         fns_residual = [self._u_f0, self._u_F1]
 
         # Unknowns in the form we need for the explicit Jacobian loops.
-        #   U_list[c] = u-component c            (u.sym is a (1, dim) row for VECTOR vtype)
-        #   L[c, d]   = ∂u_c / ∂x_d              (shape (dim, dim))
-        U_list = [self.u.sym[0, c] for c in range(dim)]
+        #   U_list[c] = u-component c            (u.sym is a (1, cdim) row for VECTOR vtype)
+        #   L[c, d]   = ∂u_c / ∂x_d              (shape (cdim, cdim))
+        U_list = [self.u.sym[0, c] for c in range(cdim)]
         L = self.Unknowns.L
+
+        # JACOBIAN sources: unwrap (keep constants) + smooth Min/Max kinks so
+        # each sympy.diff below sees the field-dependence of any nonlinear
+        # coefficient (full Newton) while the residual above stays exact. No-op
+        # for constant coefficients -> bit-identical. See _jacobian_source.
+        f0_jac_list = [self._jacobian_source(e) for e in f0_list]
+        F1_jac = self._jacobian_source(F1_user, self._newton_flux(F1_user))
 
         # Explicit-index Jacobian construction — writes each entry directly
         # into PETSc's flat [fc, gc, df, dg] layout via row-major 2D matrices.
         # See docs/developer/subsystems/petsc-jacobian-layout.md for the
         # convention and why the older derive_by_array + permutedims form
-        # was incorrect for non-symmetric F1. Nc == dim for SNES_Vector.
-        Nc = dim
+        # was incorrect for non-symmetric F1. Nc == cdim for SNES_Vector.
+        Nc = cdim
 
         # G0[fc*Nc + gc, 0]              = ∂f0[fc] / ∂U[gc]
         G0 = sympy.zeros(Nc, Nc)
         for fc in range(Nc):
             for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_list[fc], U_list[gc])
+                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
         # G1[fc*Nc + gc, df]             = ∂f0[fc] / ∂L[gc, df]
-        G1 = sympy.zeros(Nc * Nc, dim)
+        G1 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_list[fc], L[gc, df])
+                for df in range(cdim):
+                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
 
         # G2[fc*Nc + gc, df]             = ∂F1[fc, df] / ∂U[gc]
-        G2 = sympy.zeros(Nc * Nc, dim)
+        G2 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_user[fc, df], U_list[gc])
+                for df in range(cdim):
+                    G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
 
-        # G3[fc*Nc + gc, df*dim + dg]    = ∂F1[fc, df] / ∂L[gc, dg]
-        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        # G3[fc*Nc + gc, df*cdim + dg]    = ∂F1[fc, df] / ∂L[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, cdim * cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_user[fc, df], L[gc, dg])
+                for df in range(cdim):
+                    for dg in range(cdim):
+                        G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -3335,15 +4815,15 @@ class SNES_Vector(SolverBaseClass):
             if bc.fn_f is not None:
 
                 bd_F0_mat = sympy.Matrix(bc.fn_f)
-                if bd_F0_mat.shape == (dim, 1):
-                    bd_f0_list = [bd_F0_mat[c, 0] for c in range(dim)]
-                elif bd_F0_mat.shape == (1, dim):
-                    bd_f0_list = [bd_F0_mat[0, c] for c in range(dim)]
-                elif bd_F0_mat.shape == (dim,):
-                    bd_f0_list = [bd_F0_mat[c] for c in range(dim)]
+                if bd_F0_mat.shape == (cdim, 1):
+                    bd_f0_list = [bd_F0_mat[c, 0] for c in range(cdim)]
+                elif bd_F0_mat.shape == (1, cdim):
+                    bd_f0_list = [bd_F0_mat[0, c] for c in range(cdim)]
+                elif bd_F0_mat.shape == (cdim,):
+                    bd_f0_list = [bd_F0_mat[c] for c in range(cdim)]
                 else:
                     raise ValueError(
-                        f"Natural BC fn_f shape {bd_F0_mat.shape} is not compatible with dim={dim}."
+                        f"Natural BC fn_f shape {bd_F0_mat.shape} is not compatible with cdim={cdim}."
                     )
 
                 bd_f0 = sympy.ImmutableDenseMatrix([[e] for e in bd_f0_list])
@@ -3352,11 +4832,11 @@ class SNES_Vector(SolverBaseClass):
                 # BC G0[fc*Nc + gc]           = ∂bd_f0[fc]/∂U[gc]
                 # BC G1[fc*Nc + gc, df]       = ∂bd_f0[fc]/∂L[gc, df]
                 bd_G0 = sympy.zeros(Nc, Nc)
-                bd_G1 = sympy.zeros(Nc * Nc, dim)
+                bd_G1 = sympy.zeros(Nc * Nc, cdim)
                 for fc in range(Nc):
                     for gc in range(Nc):
                         bd_G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
-                        for df in range(dim):
+                        for df in range(cdim):
                             bd_G1[fc * Nc + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
@@ -3369,23 +4849,27 @@ class SNES_Vector(SolverBaseClass):
                 # Used by Nitsche-type BCs; None for standard natural BCs.
                 if hasattr(bc, 'fn_F') and bc.fn_F is not None:
                     bd_F1 = sympy.Matrix(bc.fn_F)
-                    if bd_F1.shape != (dim, dim):
+                    if bd_F1.shape != (cdim, cdim):
                         raise ValueError(
-                            f"Natural BC fn_F shape {bd_F1.shape} is not (dim, dim)=({dim}, {dim})."
+                            f"Natural BC fn_F shape {bd_F1.shape} is not (cdim, cdim)=({cdim}, {cdim})."
                         )
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
 
+                    # Nitsche gradient-traction Jacobian source (unwrap + smooth
+                    # kinks); residual u_F1 above stays exact. See _jacobian_source.
+                    bd_F1_jac = self._jacobian_source(bd_F1)
+
                     # BC G2[fc*Nc + gc, df]          = ∂bd_F1[fc, df]/∂U[gc]
-                    # BC G3[fc*Nc + gc, df*dim + dg] = ∂bd_F1[fc, df]/∂L[gc, dg]
-                    bd_G2 = sympy.zeros(Nc * Nc, dim)
-                    bd_G3 = sympy.zeros(Nc * Nc, dim * dim)
+                    # BC G3[fc*Nc + gc, df*cdim + dg] = ∂bd_F1[fc, df]/∂L[gc, dg]
+                    bd_G2 = sympy.zeros(Nc * Nc, cdim)
+                    bd_G3 = sympy.zeros(Nc * Nc, cdim * cdim)
                     for fc in range(Nc):
                         for gc in range(Nc):
-                            for df in range(dim):
-                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1[fc, df], U_list[gc])
-                                for dg in range(dim):
-                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1[fc, df], L[gc, dg])
+                            for df in range(cdim):
+                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
+                                for dg in range(cdim):
+                                    bd_G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -3474,7 +4958,6 @@ class SNES_Vector(SolverBaseClass):
 
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
-            #bc_label = self.dm.getLabel(boundary)
 
             label_val = value
 
@@ -3483,54 +4966,53 @@ class SNES_Vector(SolverBaseClass):
 
             c_label = bc_label
 
-            if True: #  c_label and label_val != -1:
-                if bc.fn_f is not None:
-                    _has_f1 = "u_F1" in bc.fns
+            if bc.fn_f is not None:
+                _has_f1 = "u_F1" in bc.fns
 
-                    if _has_f1:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        NULL,
-                                        )
+                if _has_f1:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    NULL,
+                                    )
 
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
+                if _has_f1:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
 
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
+                if _has_f1:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
 
 
         if verbose:
@@ -3558,6 +5040,8 @@ class SNES_Vector(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -3572,7 +5056,7 @@ class SNES_Vector(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose=False,
               debug=False,
@@ -3587,9 +5071,15 @@ class SNES_Vector(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in ``self.u`` as the initial guess.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         verbose : bool, default=False
@@ -3616,6 +5106,7 @@ class SNES_Vector(SolverBaseClass):
         u : The solution vector field variable.
         """
 
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
@@ -3623,49 +5114,25 @@ class SNES_Vector(SolverBaseClass):
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
 
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
+
         self._build(verbose, debug, debug_name)
-
-        # if (not self.is_setup):
-        #     if self.dm is not None:
-        #         self.dm.destroy()
-        #         self.dm = None  # Should be able to avoid nuking this if we
-        #                     # can insert new functions in template (surface integrals problematic in
-        #                     # the current implementation )
-
-        #     self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
-        #     self._setup_discretisation(verbose)
-        #     self._setup_solver(verbose)
-        # else:
-        #     # If only the mesh has changed, this will rebuild (and do nothing if unchanged)
-        #     self._setup_discretisation(verbose)
 
 
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            # with self.mesh.access():
             self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.
 
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures()
-
-        # COMMENTED OUT: These calls are NOT in SNES_Scalar (Poisson) or Stokes
-        # They appear to destroy field registrations, causing "Invalid field number" errors
-        # when variables are created after other solvers have run.
-        # Removing to match working Poisson pattern.
-        #
-        # # Call `createDS()` on aux dm. This is necessary after the
-        # # quadratures are set above, as it generates the tablatures
-        # # from the quadratures (among other things no doubt).
-        # # TODO: What are the implications of calling this every solve.
-        #
-        # self.mesh.dm.clearDS()
-        # self.mesh.dm.createDS()
-        #
-        # for cdm in self.mesh.dm_hierarchy:
-        #     self.mesh.dm.copyDisc(cdm)
+        # NOTE: do NOT clearDS()/createDS() the aux (mesh) dm here. Those calls
+        # are not made by SNES_Scalar (Poisson) or Stokes, and they destroy field
+        # registrations — "Invalid field number" errors when variables are created
+        # after other solvers have run.
 
         self.mesh.update_lvec()
         cdef DM dm = self.dm
@@ -3678,13 +5145,18 @@ class SNES_Vector(SolverBaseClass):
         # Update constants (e.g. changed material params) before solve
         self._update_constants()
 
+        # Custom geometric-MG prolongation on the (top-level vector) PC, if
+        # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
+        # SNES_Scalar hook.
+        from underworld3.utilities.custom_mg import auto_inject_custom_mg
+        auto_inject_custom_mg(self, field_id=None)
+
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        # with self.mesh.access(self.u):
 
         self.dm.globalToLocal(gvec, lvec)
         if verbose:
@@ -3711,6 +5183,8 @@ class SNES_Vector(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -3837,15 +5311,14 @@ class SNES_MultiComponent(SolverBaseClass):
         # PETSc options — mirror SNES_Vector defaults
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self._push_managed_option("ksp_type", "gmres")
+        # Block size left at 1. The unknown here is a general multi-component
+        # field whose components-per-node is not mesh.dim in general, and
+        # claiming the wrong node size would cost rather than save. Worth
+        # revisiting per instantiation — see #579.
+        for key, value in multigrid_options.gamg_bundle().settings.items():
+            self._push_managed_option(key, value)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -3952,8 +5425,6 @@ class SNES_MultiComponent(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             bc_type = 6
@@ -4029,10 +5500,10 @@ class SNES_MultiComponent(SolverBaseClass):
         N = self.mesh.N
         # Spatial-derivative iteration uses cdim (the embedded gradient
         # has cdim partial derivatives, one per coordinate of the
-        # embedding space). On volume meshes cdim == dim so the
-        # behaviour is unchanged. Distinct from mesh.dim, which is the
-        # topological dim used for FE element construction at line ~173.
-        dim = self.mesh.cdim
+        # embedding space). On volume meshes cdim == mesh.dim so the
+        # behaviour is unchanged. Distinct from mesh.dim, the topological
+        # dimension used for FE element construction in _setup_discretisation.
+        cdim = self.mesh.cdim
         Nc = self._n_components
 
         sympy.core.cache.clear_cache()
@@ -4056,12 +5527,12 @@ class SNES_MultiComponent(SolverBaseClass):
                 "expected (1, Nc), (Nc, 1) or (Nc,)."
             )
 
-        if F1_user.shape != (Nc, dim):
+        if F1_user.shape != (Nc, cdim):
             raise ValueError(
-                f"F1 shape {F1_user.shape} does not match (n_components, dim)=({Nc}, {dim})."
+                f"F1 shape {F1_user.shape} does not match (n_components, cdim)=({Nc}, {cdim})."
             )
 
-        # Residuals: f0 as (Nc, 1) column, F1 as (Nc, dim).
+        # Residuals: f0 as (Nc, 1) column, F1 as (Nc, cdim).
         # The JIT generator reads matrix shape to size the output buffer.
         self._u_f0 = sympy.ImmutableDenseMatrix([[e] for e in f0_list])
         self._u_F1 = sympy.ImmutableDenseMatrix(F1_user)
@@ -4069,50 +5540,57 @@ class SNES_MultiComponent(SolverBaseClass):
 
         # Unknowns in PETSc-friendly flat form.
         #   U_list[c] = u-component c
-        #   L[c, d]   = ∂u_c / ∂x_d      (already shape (Nc, dim) from Unknowns.u setter)
+        #   L[c, d]   = ∂u_c / ∂x_d      (already shape (Nc, cdim) from Unknowns.u setter)
         U_list = [self.u.sym[0, c] for c in range(Nc)]
         L = self.Unknowns.L
+
+        # JACOBIAN sources: unwrap (keep constants) + smooth Min/Max kinks so
+        # each sympy.diff below sees the field-dependence of any nonlinear
+        # coefficient (full Newton) while the residual above stays exact. No-op
+        # for constant coefficients -> bit-identical. See _jacobian_source.
+        f0_jac_list = [self._jacobian_source(e) for e in f0_list]
+        F1_jac = self._jacobian_source(F1_user, self._newton_flux(F1_user))
 
         # ----- Explicit-differentiation Jacobian construction -----
         # PETSc's element-matrix assembly walks the Jacobian arrays in the
         # order [test_component, trial_component, test_deriv, trial_deriv].
         # From `PetscFEUpdateElementMat_Internal` in fe.c:
         #   g0[fc * Nc + gc]
-        #   g1[(fc * Nc + gc) * dim + df]
-        #   g2[(fc * Nc + gc) * dim + df]
-        #   g3[((fc * Nc + gc) * dim + df) * dim + dg]
+        #   g1[(fc * Nc + gc) * cdim + df]
+        #   g2[(fc * Nc + gc) * cdim + df]
+        #   g3[((fc * Nc + gc) * cdim + df) * cdim + dg]
         # i.e. fc and gc are the two outer indices; df/dg are the derivative
         # indices inside. Construct each Jacobian as a 2D sympy matrix with
-        # row = fc*Nc + gc and col = (df) or (df*dim + dg), then row-major
+        # row = fc*Nc + gc and col = (df) or (df*cdim + dg), then row-major
         # flatten naturally matches PETSc's layout.
 
         #  G0[fc*Nc + gc, 0]           = ∂f0[fc] / ∂U[gc]
         G0 = sympy.zeros(Nc, Nc)
         for fc in range(Nc):
             for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_list[fc], U_list[gc])
+                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
         #  G1[fc*Nc + gc, df]          = ∂f0[fc] / ∂L[gc, df]
-        G1 = sympy.zeros(Nc * Nc, dim)
+        G1 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_list[fc], L[gc, df])
+                for df in range(cdim):
+                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
 
         #  G2[fc*Nc + gc, df]          = ∂F1[fc, df] / ∂U[gc]
-        G2 = sympy.zeros(Nc * Nc, dim)
+        G2 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_user[fc, df], U_list[gc])
+                for df in range(cdim):
+                    G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
 
-        #  G3[fc*Nc + gc, df*dim + dg] = ∂F1[fc, df] / ∂L[gc, dg]
-        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        #  G3[fc*Nc + gc, df*cdim + dg] = ∂F1[fc, df] / ∂L[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, cdim * cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_user[fc, df], L[gc, dg])
+                for df in range(cdim):
+                    for dg in range(cdim):
+                        G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -4125,7 +5603,7 @@ class SNES_MultiComponent(SolverBaseClass):
         fns_bd_jacobian = []
 
         # Natural BCs. Expected shapes: fn_f is (Nc, 1) or (1, Nc) or (Nc,);
-        # fn_F (gradient term) is (Nc, dim) if provided.
+        # fn_F (gradient term) is (Nc, cdim) if provided.
         for index, bc in enumerate(self.natural_bcs):
 
             if bc.fn_f is not None:
@@ -4145,11 +5623,11 @@ class SNES_MultiComponent(SolverBaseClass):
                 bc.fns["u_f0"] = bd_f0
 
                 bd_G0 = sympy.zeros(Nc, Nc)
-                bd_G1 = sympy.zeros(Nc * Nc, dim)
+                bd_G1 = sympy.zeros(Nc * Nc, cdim)
                 for fc in range(Nc):
                     for gc in range(Nc):
                         bd_G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
-                        for df in range(dim):
+                        for df in range(cdim):
                             bd_G1[fc * Nc + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
@@ -4160,21 +5638,25 @@ class SNES_MultiComponent(SolverBaseClass):
 
                 if hasattr(bc, 'fn_F') and bc.fn_F is not None:
                     bd_F1 = sympy.Matrix(bc.fn_F)
-                    if bd_F1.shape != (Nc, dim):
+                    if bd_F1.shape != (Nc, cdim):
                         raise ValueError(
-                            f"Natural BC fn_F shape {bd_F1.shape} != (n_components, dim)=({Nc}, {dim})."
+                            f"Natural BC fn_F shape {bd_F1.shape} != (n_components, cdim)=({Nc}, {cdim})."
                         )
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
 
-                    bd_G2 = sympy.zeros(Nc * Nc, dim)
-                    bd_G3 = sympy.zeros(Nc * Nc, dim * dim)
+                    # Nitsche gradient-traction Jacobian source (unwrap + smooth
+                    # kinks); residual u_F1 above stays exact. See _jacobian_source.
+                    bd_F1_jac = self._jacobian_source(bd_F1)
+
+                    bd_G2 = sympy.zeros(Nc * Nc, cdim)
+                    bd_G3 = sympy.zeros(Nc * Nc, cdim * cdim)
                     for fc in range(Nc):
                         for gc in range(Nc):
-                            for df in range(dim):
-                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1[fc, df], U_list[gc])
-                                for dg in range(dim):
-                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1[fc, df], L[gc, dg])
+                            for df in range(cdim):
+                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
+                                for dg in range(cdim):
+                                    bd_G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -4316,6 +5798,8 @@ class SNES_MultiComponent(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -4328,7 +5812,7 @@ class SNES_MultiComponent(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               _force_setup:    bool = False,
               verbose=False,
               debug=False,
@@ -4347,12 +5831,18 @@ class SNES_MultiComponent(SolverBaseClass):
             start up to this many times. 0 preserves legacy behaviour.
         """
 
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -4392,6 +5882,8 @@ class SNES_MultiComponent(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -4561,6 +6053,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
+        # + reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        # _rotated_freeslip_datum maps boundary → prescribed wall-normal datum
+        # (the non-zero `conds` of add_rotated_freeslip_bc; absent ⇒ u.n = 0).
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_datum = {}
+        self._rotated_freeslip_info = None
+        # Cross-solve rotated workspace (rotated_bc cache, issue #417):
+        # populated/keyed/invalidated entirely inside solve_rotated_freeslip;
+        # torn down here by _reset_rotated_solver_cache on any DM rebuild.
+        self._rotated_linear_cache = None
+        # Split-fault interface conditions (add_fault_bc): fault names whose
+        # coincident DOF pairs carry a contact (the laws themselves live in
+        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
+        # Non-empty => solve() takes the rotated path, where fault_contact
+        # supplies the pair blocks and the interface operator.
+        self._fault_contact_faults = []
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -4624,6 +6135,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._tolerance = 1.0e-4
         self._strategy = "default"
 
+        # Owned-option latch state (see _resolve_owned_option): the value THIS
+        # solver last pushed per key, and any user value latched per key.
+        # Ownership is RECORDED, never inferred — the same doctrine as
+        # _managed_pc_options.
+        self._owned_option_pushes = {}
+        self._owned_option_user = {}
+
         # Participate in the auto FMG/GAMG switch on the velocity fieldsplit
         # block (see the `preconditioner` property). The velocity pc/mg keys
         # set below are the GAMG default; _apply_preconditioner_options()
@@ -4634,6 +6152,22 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
+
+        # The OUTER Krylov must be FLEXIBLE: both sub-blocks below are
+        # themselves Krylov solves run to a tolerance, so the operator the
+        # outer method applies differs from one outer iteration to the next
+        # and plain GMRES's residual recurrence does not hold — the
+        # velocity-block FGMRES reasoning (#147), one level up. PETSc's
+        # default is `gmres`; invisible on easy problems (isoviscous SolKz
+        # converges in two outer iterations), ruinous on hard ones: 14,400
+        # inner iterations / ~540 s on an 85k-cell contrast problem for both
+        # velocity preconditioners (#624), and on the Spiegelman notch at
+        # refinement 3, 983 velocity iterations per step and
+        # DIVERGED_LINEAR_SOLVE against 58 for fgmres — raising the velocity
+        # cap changes nothing (byte-identical residuals), so the failure is
+        # inconsistency, not iteration count (#576). Managed, so an explicit
+        # user ksp_type still wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -4677,13 +6211,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_{v_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options[f"fieldsplit_{v_name}_pc_type"]  = "gamg"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_type"]  = "agg"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_repartition"]  = True
-        self.petsc_options[f"fieldsplit_{v_name}_pc_mg_type"]  = "additive"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits"] = None
+        # The velocity field carries mesh.dim components per node; say so, or
+        # GAMG aggregates scalars. See multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.dim
+        for key, value in multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).settings.items():
+            self._push_managed_option(f"fieldsplit_{v_name}_{key}", value)
 
         # Create this dict
         self.fields = {}
@@ -4693,19 +6226,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Some other setup
 
         self.mesh._equation_systems_register.append(self)
-        self._rebuild_after_mesh_update = self._build # probably just needs to boot the DM and then it should work
-
-        # self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        # self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        # self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
-        # self.PF0 = sympy.Matrix.zeros(1, 1)
+        self._rebuild_after_mesh_update = self._build
 
         self.essential_bcs = []
 
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        # self._constitutive_model = None
         self._saddle_preconditioner = None
         self._petsc_use_pressure_nullspace = False
         self._petsc_velocity_nullspace_basis = ()
@@ -4724,29 +6251,347 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
-    # @timing.routine_timer_decorator
-    # def add_essential_p_bc(self, fn, boundary):
-    #     # switch to numpy arrays
-    #     # ndmin arg forces an array to be generated even
-    #     # where comps/indices is a single value.
+    def _reject_mixed_constraint_mechanisms(self, adding):
+        """Refuse a rotated constraint and a block constraint on one solver (#464).
 
-    #     self.is_setup = False
-    #     import numpy as np
+        The rotated driver builds its own index-set fieldsplit over exactly two
+        fields (``rotated_bc._solve_rotated_iterative``), and ``build_rotation``
+        addresses velocity and pressure by field number. A block constraint
+        registers a multiplier field of its own, and those DOFs are in neither
+        index set — the preconditioner would then be built over a strict subset
+        of the operator's rows, with nothing said about it.
 
-    #     try:
-    #         iter(fn)
-    #     except:
-    #         fn = (fn,)
+        The two are alternative ways to impose the same wall-normal condition,
+        so asking for both is a configuration error rather than a case to
+        support. Supporting it would need a third split for the multipliers and
+        a ``build_rotation`` that knows about them.
 
-    #     components = np.array([0], dtype=np.int32, ndmin=1)
+        Parameters
+        ----------
+        adding : str
+            Name of the method being called, so the message can say which
+            mechanism is already in place and which one was refused.
+        """
 
-    #     sympy_fn = sympy.Matrix(fn).as_immutable()
+        rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or []) + list(
+            getattr(self, "_fault_contact_faults", None) or []
+        )
+        multipliers = list(getattr(self, "_multipliers", None) or [])
 
-    #     from collections import namedtuple
-    #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-    #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
+        if adding == "solve":
+            # The dispatch reads both lists, so it can only report the pair.
+            if not (rotated and multipliers):
+                return
+            raise RuntimeError(
+                f"solve(): this solver carries {len(rotated)} rotated "
+                f"(free-slip or fault contact) and {len(multipliers)} "
+                f"block-constraint boundary condition(s). The rotated solve "
+                f"splits velocity and pressure by field number and the "
+                f"multiplier fields lie outside that split, so the "
+                f"preconditioner would cover only part of the operator. Both "
+                f"impose the same wall-normal condition — use one of them "
+                f"(issue #464)."
+            )
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
+        if adding == "add_constraint_bc":
+            if not rotated:
+                return
+            present, refused = len(rotated), "a block constraint"
+            present_kind = "rotated (free-slip or fault contact)"
+        else:
+            if not multipliers:
+                return
+            present, refused = len(multipliers), "a rotated constraint"
+            present_kind = "block-constraint multiplier"
+
+        raise RuntimeError(
+            f"{adding}(): this solver already carries {present} "
+            f"{present_kind} boundary condition(s), so it cannot also take "
+            f"{refused}. The rotated solve splits velocity and pressure by "
+            f"field number and a block constraint adds a multiplier field "
+            f"outside that split, so the preconditioner would cover only part "
+            f"of the operator. Both impose the same wall-normal condition — "
+            f"use one of them (issue #464)."
+        )
+
+    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        conds : float, scalar sympy expression, or None, optional
+            Prescribed wall-normal velocity datum :math:`\tilde u_n` (the SCALAR
+            component along the outward normal), in the canonical value-first BC
+            order (Style Charter, API conventions). Zero (or ``None``) is pure
+            free-slip :math:`\mathbf{u}\cdot\hat{\mathbf n}=0`. A non-zero value
+            — a number, a sympy expression of ``mesh.X``, or a scalar field read
+            such as ``h_dot.sym[0]`` — is imposed strongly (machine precision) as
+            :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n`, evaluated at the
+            boundary nodes at each ``solve()``. On an enclosed boundary the
+            datum must be discretely flux-free (:math:`\oint \tilde u_n = 0`)
+            for incompressibility. A corner/edge node shared between rotated
+            boundaries has no single normal and stays at the free-slip pinning
+            (datum ignored there). Vector/matrix values are rejected.
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` (the default, and normally
+            the right choice) uses the geometric facet normal, measure-weighted
+            so that it is consistent with the straight-facet boundary integral
+            the assembler evaluates. A sympy ``1×dim`` matrix supplies an
+            analytic normal (``X/|X|`` on a spherical cap, a constant on a
+            planar face): exact for the TRUE surface, but the assembler still
+            integrates over the facets, so it keeps a consistency error that
+            grows with facet non-uniformity. Use it when the constraint must
+            follow the geometry rather than the mesh. A constant array is also
+            accepted. See ``docs/developer/subsystems/rotated-freeslip.md``.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+
+        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
+        normal)`` is detected conservatively (the first positional argument is
+        a string — the datum is never a string) and shimmed with one
+        DeprecationWarning: the string becomes ``boundary`` and a second
+        positional argument, if present, becomes ``normal``.
+        """
+        self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
+
+        if isinstance(conds, str):
+            # legacy boundary-first call: (boundary[, normal])
+            if boundary is not None:
+                if normal is not None:
+                    raise TypeError(
+                        "add_rotated_freeslip_bc() received 'normal' twice "
+                        "(positionally, legacy order, and as a keyword)")
+                normal = boundary
+            boundary = conds
+            conds = None
+            import warnings
+            warnings.warn(
+                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
+                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
+                "with conds=0 (or boundary=... by keyword)",
+                DeprecationWarning, stacklevel=2)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_rotated_freeslip_bc() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        if conds is not None:
+            if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
+                raise TypeError(
+                    "add_rotated_freeslip_bc(conds=...) takes the SCALAR "
+                    "wall-normal datum u.n; got a vector/matrix value")
+            # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
+            # structurally, but both are zero data (the free-slip member of the
+            # family). is_zero is True only when sympy can PROVE zero, so a
+            # symbolic datum (field read, expression) is correctly kept.
+            if sympy.sympify(conds).is_zero is not True:
+                self._rotated_freeslip_datum[boundary] = conds
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def add_fault_bc(self, conds=0, boundary=None, normal=None):
+        r"""Interface condition on a split-node fault (value-first).
+
+        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
+        ``fault_split.split_fault``); the mesh carries its coincident DOF
+        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
+        is always imposed strongly; ``conds`` sets the tangential law:
+
+        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
+          traction, the slip emerges (the stress-driven crack).
+        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
+          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
+          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
+          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
+          not the background's — and :math:`w` its width). ``conds`` large
+          removes the fault (only the JUMP is penalised — nothing becomes
+          rigid).
+
+        ``normal`` optionally supplies the fault's smooth unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
+        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
+        smoothed normal is built from the fault's own stored polyline —
+        the right choice for digitized traces with no analytic formula),
+        or a constant ``(dim,)`` array. Use it whenever the fault trace is
+        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
+        adjacent facet normals, which zig-zags at the sampling kinks, and
+        the no-opening constraint then forbids smooth slip past each kink —
+        slip notches and normal-traction sawteeth that GROW under mesh
+        refinement. The smooth normal restores the smooth curve's
+        mechanics on the same polyline mesh. On a straight fault the
+        default is already exact, and a deliberately KINKED fault should
+        NOT be smoothed — there the kink response is the physics.
+
+        The solve then takes the rotated strong-constraint path
+        (``utilities/rotated_bc.py`` with the pair blocks of
+        ``utilities/fault_contact.py``); ``guard()`` /
+        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
+        Slip and leak per coincident pair afterwards:
+        ``fault_contact.fault_slip(solver, boundary,
+        solver._rotated_freeslip_info)``.
+        """
+        from underworld3.utilities import fault_contact
+
+        self._reject_mixed_constraint_mechanisms("add_fault_bc")
+
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_fault_bc() requires the fault's boundary name string; "
+                f"got {type(boundary).__name__}")
+        eta_f = float(conds)
+        if eta_f == 0.0:
+            fault_contact.add_frictionless_fault_bc(self, boundary,
+                                                    normal=normal)
+        else:
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
+                                               normal=normal)
+        self.is_setup = False
+        return
+
+    def _residual_is_nonlinear(self, tol=1e-8):
+        r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
+        — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
+        iteration is required.
+
+        Detected by a NUMERICAL probe: assemble the Jacobian at two distinct
+        velocity states and compare. A symbolic test on ``F1.sym`` cannot see the
+        nonlinearity — the effective viscosity's strain-rate (velocity-gradient)
+        dependence is carried as a JIT-substituted *placeholder* symbol
+        (``\dot\varepsilon_{II}``) in the flux, decoupled from the gradient
+        ``L`` in the symbolic form, so it only becomes visible once the operator
+        is assembled at a concrete iterate. Constant- or temperature-dependent
+        viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
+        bit-identical ⇒ linear.
+
+        Used as a LAZY guard in the rotated-free-slip loop's picard + pure-Newton
+        corner (a Picard warmup is meaningless for a linear residual and impossible
+        for pure Newton) — the loop itself needs no up-front probe, it
+        self-terminates. The caller must have run the pre-solve preamble
+        (auxiliary vector + constants) so the assembly sees the correct
+        coefficients.
+        """
+        snes = self.snes
+        dm = self.dm
+        snes.setUp()
+        J = snes.getJacobian()[0]
+        U1 = dm.getGlobalVec(); U2 = dm.getGlobalVec()
+        # two distinct smooth, bounded states with non-zero velocity gradients
+        # (a linear operator gives the SAME J for both; only a solution-dependent
+        # viscosity makes them differ). Ownership-relative index keeps it
+        # partition-independent enough for the norm comparison.
+        rs, re = U1.getOwnershipRange()
+        idx = np.arange(rs, re, dtype=float)
+        # write IN PLACE into each vec's PETSc-owned array (getArray returns a writable
+        # view). setArray with a fresh numpy temporary on a POOLED getGlobalVec is risky:
+        # its storage lifetime/pool reuse is not guaranteed for the later computeJacobian.
+        a1 = U1.getArray(); a1[:] = 0.1 * np.sin(0.7 * idx + 0.3)
+        a2 = U2.getArray(); a2[:] = 0.1 * np.sin(1.3 * idx + 1.1)
+        J1 = J.copy(); J2 = J.copy()
+        try:
+            snes.computeJacobian(U1, J1)
+            snes.computeJacobian(U2, J2)
+            J2.axpy(-1.0, J1)                       # J2 <- J(U2) - J(U1)
+            rel = J2.norm() / (J1.norm() + 1e-300)
+        finally:
+            dm.restoreGlobalVec(U1); dm.restoreGlobalVec(U2)
+            J1.destroy(); J2.destroy()
+        return rel > tol
+
+    def boundary_normal_traction(self, boundary, mass="auto"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`.
+
+        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
+        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
+        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
+        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
+        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
+        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
+        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
+        independently of h (#404, measured in #633). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only (#637).
+
+        .. warning::
+           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
+           only slowly (the vertex basis has zero surface mean, so vertex reactions
+           carry only the O(h) facet-geometry error); edge-midpoint values are
+           superconvergent. Pointwise consumers on curved boundaries should use
+           midpoint or integral/fitted quantities (issue #414)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
+
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
+        ``mass="auto"`` selects lumped recovery where valid and
+        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
+
+        .. warning::
+           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
+           values written into ``field`` converge only slowly; edge-midpoint values
+           are superconvergent. Downstream pointwise use of curved-boundary
+           topography should rely on midpoint/fitted quantities (issue #414)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
+
+    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
+        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
+        rotated-free-slip constraint reaction.
+
+        With ``remove_mean=True`` (default), the constant normal-traction gauge
+        is removed before projection. Unlike pointwise
+        :meth:`boundary_normal_traction`, this weak projection does not recover
+        nodal traction values or gather a global boundary mesh. It is therefore
+        suitable for harmonic and integral diagnostics on curved P2 boundaries,
+        whose recovered vertex values converge slowly (issue #414).
+        """
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction_integral requires a completed "
+                "rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
+        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
+                     remove_mean=remove_mean)
+
+    def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
+                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -4754,9 +6599,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         and gives optimal convergence rates.
 
         By default, constrains the normal velocity component
-        :math:`\mathbf{u} \cdot \mathbf{n} = g` (free-slip when *g* = 0).
-        When *direction* is provided, constrains
-        :math:`\mathbf{u} \cdot \mathbf{d} = g` along that direction instead.
+        :math:`\mathbf{u} \cdot \mathbf{n} = \mathrm{conds}` (free-slip when
+        ``conds`` is zero). When *direction* is provided, constrains
+        :math:`\mathbf{u} \cdot \mathbf{d} = \mathrm{conds}` along that
+        direction instead.
 
         The method constructs boundary residuals and Jacobians for:
 
@@ -4769,11 +6615,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        boundary : str
-            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
-        g : sympy expression or float, optional
+        conds : sympy expression or float, optional
             Prescribed velocity along the constraint direction. Default
             ``None`` means zero (:math:`\mathbf{u} \cdot \mathbf{d} = 0`).
+        boundary : str
+            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
         direction : sympy.Matrix or list, optional
             Constraint direction vector. Default ``None`` uses the boundary
             surface normal (free-slip). Can be spatially varying (e.g.,
@@ -4801,20 +6647,37 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             adaptation-tracking) rather than the single **global** minimum
             cell size (:meth:`Mesh.get_min_radius`). On a non-uniform or
             adaptive mesh the local size scales the stabilisation correctly
-            on every facet; on a uniform mesh the two coincide. Set ``False``
-            to restore the legacy global-h behaviour exactly.
+            on every facet. Set ``False`` to restore the legacy global-h
+            behaviour exactly.
+
+            The two coincide on **tensor** cells only. On a uniform **simplex**
+            mesh they differ by exactly :math:`\sqrt{2}` — for congruent
+            right-isosceles cells of legs :math:`h`, :meth:`Mesh.cell_size` is
+            :math:`2h/3` while :meth:`Mesh.get_min_radius` is
+            :math:`\sqrt{2}h/3` — so the penalty :math:`\gamma\mu/h` differs
+            between the two settings on the simplex meshes the free-slip and
+            fault models use. See ``tests/test_0010_cell_size_geometry.py``.
+        g : sympy expression or float, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Examples
         --------
         >>> # Free-slip (u.n = 0)
-        >>> stokes.add_nitsche_bc("Upper", gamma=10)
+        >>> stokes.add_nitsche_bc(0.0, "Upper", gamma=10)
 
         >>> # Prescribed normal inflow
-        >>> stokes.add_nitsche_bc("Left", g=1.0, gamma=10)
+        >>> stokes.add_nitsche_bc(1.0, "Left", gamma=10)
 
         >>> # Constrain along a specific direction (e.g. fault normal)
         >>> fault_normal = sympy.Matrix([0.6, 0.8])
-        >>> stokes.add_nitsche_bc("Fault", direction=fault_normal, gamma=10)
+        >>> stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_nitsche_bc(boundary, g=...)`` is
+        detected conservatively (first positional argument a string while the
+        second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see :meth:`_value_first_bc_args`.
 
         Warnings
         --------
@@ -4831,6 +6694,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         import sympy
         from collections import namedtuple
+
+        conds, boundary = self._value_first_bc_args(
+            "add_nitsche_bc", conds, boundary, alias=g)
+        g = conds
 
         self.is_setup = False
 
@@ -4886,7 +6753,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # or adaptively-refined mesh — the boundary kernel sees the adjacent
         # cell's size. The field tracks mesh deformation/adaptation. Set
         # local_h=False to restore the legacy single global-minimum scalar
-        # (mesh.get_min_radius()); on a uniform mesh the two coincide.
+        # (mesh.get_min_radius()).
+        #
+        # The two coincide on TENSOR cells only. On a uniform SIMPLEX mesh --
+        # which is what the free-slip and fault models are built on -- they
+        # differ by exactly sqrt(2): on congruent right-isosceles cells of legs
+        # h, cell_size is 2h/3 and get_min_radius is sqrt(2)h/3. The penalty
+        # gamma*mu/h moves with that, so the two settings are NOT interchangeable
+        # there (see #734 and tests/test_0010_cell_size_geometry.py).
         if local_h:
             h_sym = mesh.cell_size()
         else:
@@ -4896,8 +6770,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 "Nitsche mesh size parameter (global)",
             ).sym
 
-        # Viscosity from constitutive model
-        mu = self.constitutive_model.viscosity
+        # Penalty scale from the constitutive model: use K (the stiffness /
+        # preconditioner scale) rather than .viscosity — for the transverse-
+        # isotropic models .viscosity now reports the yield-limited WEAK-PLANE
+        # eta_1 (issue #463), which would under-scale the penalty; K is the
+        # bulk eta_0 there and identical to .viscosity for isotropic models.
+        mu = self.constitutive_model.K
 
         # Constitutive flux (stress tensor) — includes VE history if active
         flux = self._constitutive_model.flux  # dim x dim Matrix
@@ -4961,8 +6839,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundary, -1, "nitsche", -1, {},
         ))
 
-    ## Why is this here - this is not "generic" at all ??
-
+    # TODO(DESIGN): _setup_history_terms is solver-specific (vector unknowns,
+    # SemiLagrangian machinery), not generic — revisit its placement when the
+    # solver-class unification (worklist D-23..D-28) is taken up.
     def _setup_history_terms(self):
         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                     self.mesh,
@@ -5001,14 +6880,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         Solver convergence tolerance for the Stokes saddle-point system.
 
-        Setting this value automatically configures PETSc tolerances for the
-        coupled velocity-pressure solve using Schur complement fieldsplit:
-        - ``snes_rtol``: Set to ``tolerance``
-        - ``ksp_atol``: Set to ``tolerance * 1e-6``
-        - ``fieldsplit_pressure_ksp_rtol``: Set to ``tolerance * 0.1``
-        - ``fieldsplit_velocity_ksp_rtol``: Set to ``tolerance * 0.033``
+        Setting it configures the PETSc tolerances of the coupled
+        velocity-pressure Schur-fieldsplit solve. The keys fall into two
+        ownership classes (#483):
 
-        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``).
+        **OWNED** — re-asserted before every solve, *unless you set the key
+        explicitly, after which your value is honoured* (the same latch that
+        makes ``snes_max_it`` reachable):
+
+        - ``snes_rtol`` = ``tolerance``
+        - ``ksp_atol``  = ``tolerance * 1e-6``
+
+        **DERIVED at set time** — written once when you assign ``tolerance``
+        (the class table ``_TOLERANCE_DERIVED_KEYS``), then yours to override:
+
+        - ``fieldsplit_pressure_ksp_rtol`` = ``tolerance * 0.1``
+        - ``fieldsplit_velocity_ksp_rtol`` = ``tolerance * 0.033``
+
+        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``),
+        which re-picks the outer ``ksp_rtol`` every Newton step — so to steer
+        the linear solve via ``ksp_rtol`` you must first switch
+        ``snes_ksp_ew`` off.
 
         Returns
         -------
@@ -5022,6 +6914,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         return self._tolerance
 
+    #: Inner-solve tolerance margins, as a fraction of the outer tolerance. The inner
+    #: solves are deliberately inexact (Citcom; Moresi & Solomatov 1995) — which is why
+    #: the sub-blocks are flexible Krylov methods — but the inexactness must stay well
+    #: BELOW the tolerance demanded of the outer solve. These factors are that margin.
+    #: Their existence is principled; their size is inherited convention, so they are
+    #: DEFAULTS a user may override rather than values this property owns outright.
+    #: Subclasses declare their own table (Stokes_Constrained derives the outer
+    #: ksp_rtol and the Eisenstat-Walker pins instead — a real design difference:
+    #: EW pinning owns its outer accuracy). `_INNER_RTOL_MARGIN` is the
+    #: historical name for this class's table, kept as an alias.
+    _TOLERANCE_DERIVED_KEYS = {"fieldsplit_pressure_ksp_rtol": 0.1,
+                               "fieldsplit_velocity_ksp_rtol": 0.033}
+    _INNER_RTOL_MARGIN = _TOLERANCE_DERIVED_KEYS
+
     @tolerance.setter
     def tolerance(self, value):
         self._tolerance = value
@@ -5030,38 +6936,196 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew_version"] = 3
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1  # rule of thumb
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.033
+
+        # Setting the tolerance re-derives the margins from it — that is this
+        # property's job, and a user who changes the tolerance expects it. What must NOT
+        # happen is `solve()` re-deriving them on every call: it did (pyx `solve()`
+        # round-trips `self.tolerance` immediately before `setFromOptions()`), which
+        # overwrote any user value between it being set and PETSc reading it and made
+        # both documented options silently unreachable (#477). `solve()` now re-asserts
+        # only the outer keys, via `_reassert_outer_tolerances`.
+        self._derive_tolerance_margins()
+
+    def _derive_tolerance_margins(self):
+        """Write this class's DERIVED tolerance keys from the current tolerance.
+
+        One mechanism, two tables: each saddle-point class declares
+        ``_TOLERANCE_DERIVED_KEYS`` ({option key: margin factor}) and this
+        method applies it. Derivation happens at SET time only — a user who
+        overrides a derived key afterwards keeps it (#477/#483); `solve()`
+        never re-derives these.
+        """
+        for key, margin in self._TOLERANCE_DERIVED_KEYS.items():
+            self.petsc_options[key] = self._tolerance * margin
+
+    def _resolve_owned_option(self, key, default):
+        """The value this solve should push for an option the solver OWNS,
+        honouring a user-set value.
+
+        ``solve()`` re-pushes the owned keys before every solve, so the
+        resolver has to tell its OWN previous push from a value the user set —
+        otherwise the first solve makes the option permanently unreachable
+        (the #477 failure shape; ruling D18, generalised for #483). Call once
+        per key, before this solve pushes anything.
+        """
+        pushed = self._owned_option_pushes.get(key)
+        user = self._owned_option_user.get(key)
+        if not self.petsc_options.hasName(key):
+            # The key is gone from the options DB, so any value latched from a
+            # previous solve is gone with it. Without this the latch outlives
+            # the option: set snes_max_it=200, delete it, and the next solve
+            # correctly uses the default — but the one after that reads back
+            # OUR push of the default, finds `current == pushed`, falls through
+            # to the latched 200 and resurrects it (#490).
+            self._owned_option_user.pop(key, None)
+            return default
+
+        try:
+            current = type(default)(self.petsc_options.getString(key))
+        except Exception:
+            # The stored value will not convert to the option's type: a user who
+            # wrote `snes_max_it = "lots"`, or a key set as a bare flag and so
+            # holding None. Neither is a number this solve can use, so it takes
+            # its own default and leaves the value in the DB for PETSc to object
+            # to in its own terms (Charter: say what is swallowed and why).
+            return default
+
+        if pushed is None or current != pushed:
+            # Never pushed by us, or the user has moved it since. Latch: from here on
+            # the option is theirs, because the next solve will read back OUR push of
+            # THEIR value and would otherwise mistake it for our own default.
+            self._owned_option_user[key] = current
+            return current
+
+        if user is not None:
+            return user
+
+        return default
+
+    def _push_owned_option(self, key, value):
+        """Push an owned option and remember what was pushed, so a later solve
+        can tell this solver's own value apart from a user override."""
+        self.petsc_options.setValue(key, value)
+        self._owned_option_pushes[key] = value
+
+    def _resolve_snes_max_it(self, default):
+        """The nonlinear iteration cap for this solve, honouring a user-set
+        ``snes_max_it`` (see ``_resolve_owned_option`` for the mechanism)."""
+        return self._resolve_owned_option("snes_max_it", int(default))
+
+    def _push_snes_max_it(self, value):
+        self._push_owned_option("snes_max_it", int(value))
+
+    def _reassert_outer_tolerances(self):
+        """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
+
+        `solve()` may have changed `snes_max_it` and the SNES type for a Picard warm-up,
+        so the outer settings are re-asserted before the real solve. The keys are OWNED
+        (re-pushed each solve) but ownership is polite: a user who explicitly sets
+        `snes_rtol` or `ksp_atol` is honoured from then on — before #483 both were
+        silently discarded here every solve, the worst of the reachability middle
+        grounds (documented as settable, actually owned). The sub-block rtols are
+        deliberately excluded: they belong to whoever set them last, which may be the
+        user (#477). Overwriting them here is what made them unsettable."""
+        for key, derived in (("snes_rtol", float(self._tolerance)),
+                             ("ksp_atol", float(self._tolerance) * 1.0e-6)):
+            self._push_owned_option(key, self._resolve_owned_option(key, derived))
+        # The Eisenstat-Walker flags are NOT re-asserted here. solve() never changes
+        # them, so they stay in the options DB from the `tolerance` setter and
+        # setFromOptions picks them up regardless — while re-asserting would make
+        # `snes_ksp_ew` impossible to switch OFF, which is the same defect as #477 on a
+        # knob that matters: EW re-picks the outer KSP rtol every Newton step and
+        # OVERRIDES ksp_rtol, so "how hard is the linear solve actually being asked to
+        # work" is not answerable without being able to disable it.
 
 
     @property
     def strategy(self):
         """
-        Solver strategy controlling preconditioner configuration.
+        What this solve should optimise for — the named intent over the
+        multigrid smoother's two measured regimes.
 
-        Currently supports:
-        - ``"default"``: Standard Schur complement fieldsplit with GAMG
-        - ``"robust"``: (Reserved) More robust but slower configuration
-        - ``"fast"``: (Reserved) Faster but less robust configuration
+        - ``"default"``, ``"robust"``: ``gmres``/4 smoothing. Survives an operator a
+          stationary smoother stalls on: Spiegelman notch (:math:`\eta` contrast
+          1e26, 4 levels) per-V-cycle contraction 0.56 against richardson's 0.75, the
+          margin growing with depth; transversely isotropic rotated annulus 11
+          velocity iterations down to 5.
+        - ``"fast"``: ``richardson``/3 smoothing. Cheaper per cycle and quicker where
+          the operator is benign — on a linear, symmetric annulus at
+          :math:`\eta` contrast 1e6 it beats ``"robust"`` on wall clock at every
+          hierarchy depth tested (x1.16, x1.30, x1.82 at 2, 3, 4 levels) while taking
+          more iterations. It gives up the regime ``"robust"`` exists for, so it is
+          an opt-in.
 
-        Setting this property reconfigures the entire preconditioner stack.
+        ``"default"`` is ``"robust"``: the failure it avoids is worse than the cost it
+        carries, and it carries that cost exactly where the problem is easy.
+
+        Setting this property also resets the fieldsplit / Schur / pressure sub-solve
+        configuration to the framework defaults. It does **not** write the velocity
+        block's preconditioner directly — that is applied later, from
+        :mod:`underworld3.utilities.multigrid_options`, which is the single writer of
+        those options; this property selects which variant it applies. Values written
+        by hand into :attr:`petsc_options` are respected and not overwritten.
 
         Returns
         -------
         str
             Current strategy name.
+
+        The value returned is the strategy name (it compares and formats as the
+        plain string) and additionally reports the preconditioner it resolved to
+        when displayed::
+
+            >>> stokes.strategy
+            'default' — geometric multigrid (3 levels), full cycle,
+                        smoother gmresx4 + sor, coarse redundant/lu
+
+        See Also
+        --------
+        preconditioner : which multigrid FAMILY to use (geometric, algebraic, auto).
+        preconditioner_settings : the same information as a dict, for assertions.
         """
-        return self._strategy
+        settings = self.preconditioner_settings
+        if not settings or not self._pc_resolved:
+            summary = "not resolved yet — configured at the first solve"
+            if settings:
+                summary += (f" (framework defaults in place: "
+                            f"{multigrid_options.describe(settings)})")
+        else:
+            levels = len(getattr(self.mesh, "dm_hierarchy", []) or []) or None
+            summary = multigrid_options.describe(
+                settings, levels=levels,
+                overridden=self._user_overridden_pc_options)
+        return _StrategyName(self._strategy, summary)
 
     @strategy.setter
     def strategy(self, value):
+        if value not in ("default", "robust", "fast"):
+            raise ValueError(
+                f"Unknown solver strategy {value!r}: "
+                "expected 'default', 'robust', or 'fast'."
+            )
+        # 'fast' and 'robust' now select a real smoother variant, via
+        # `_mg_smoother_variant` -> `multigrid_options.geometric_mg_bundle`. They were
+        # accepted-and-inert placeholders for a long time: validated on input, then
+        # configured identically to 'default'. A property that checks your value and
+        # then ignores it is the same defect class as #477 and #478 — the failure is
+        # invisible, because the solve still converges.
+
         # self.is_setup = False
         self._strategy = value
 
-        # All strategies: reset to preferred
+        # Common to every strategy: reset the fieldsplit / Schur / pressure
+        # sub-solve to the framework defaults. The strategy's effect on the VELOCITY
+        # BLOCK is carried by `_mg_smoother_variant`, not by writes from here.
 
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
+
+        # Flexible for the same reason as in __init__ (#576/#624): the
+        # sub-blocks are inexact Krylov solves, so the outer operator varies
+        # between iterations. Managed, so an explicit user ksp_type wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -5071,21 +7135,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["pc_fieldsplit_diag_use_amat"] = None
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None
         # self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
-
-
-        if value == "robust":
-
-            pass
-
-
-        elif value == "fast":
-
-            pass
-
-
-        else: # "default"
-
-            pass
 
         p_name = "pressure" # pressureField.clean_name
         v_name = "velocity" # velocityField.clean_name
@@ -5110,13 +7159,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # preconditioning and weakly-indefinite coarse operators; issue #147).
         self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_velocity_ksp_max_it"] = 200
-        self.petsc_options[f"fieldsplit_velocity_pc_type"]  = "gamg"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_type"]  = "agg"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_repartition"]  = True
-        self.petsc_options[f"fieldsplit_velocity_pc_mg_type"]  = "kaskade"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-        self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+        # The velocity BLOCK's preconditioner is not set here. `strategy` used to
+        # write the whole GAMG bundle plus `pc_mg_type=kaskade`, and every one of
+        # those writes was DEAD: `_apply_preconditioner_options` runs later (at
+        # `_build`) and overwrites them with the geometric bundle on a refined mesh,
+        # or the GAMG bundle (`additive`) without one. Measured both orders — the
+        # live PC was `mg`/FULL every time, so `kaskade` never once took effect
+        # despite the comment warning against changing it. The strategy's effect on
+        # the velocity block now runs through `_mg_smoother_variant`, which selects
+        # a bundle variant instead of racing the bundle writer.
 
 
 
@@ -5289,10 +7340,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         the block solver's default ``newtonls`` defect-corrects a linear system in
         many steps when the Schur approximation is stiff.
 
-        Default ``False`` (opt-in). On the fieldsplit/iterative path it is
-        bit-identical on uniform ``mu`` and cracks the moderate-contrast wall;
-        but a monolithic ``lu`` solve factorizes the Pmat (``pc_use_amat`` is a
-        no-op there), so this term is not inert for direct solves — hence opt-in.
+        Default ``False`` (opt-in). **Reachability** (#486, from the PETSc
+        fieldsplit source): the flag swaps only the *Pmat* (h,h) block, so it
+        is live in exactly two regimes —
+
+        - ``pc_fieldsplit_schur_precondition = "a11"``: the Schur
+          preconditioner is the grouped ``[p,h]`` Pmat block, which carries
+          the swap;
+        - a monolithic direct factorisation (``pc_type = lu``/``cholesky``)
+          of the Pmat.
+
+        Under ``Stokes_Constrained``'s own defaults (``selfp`` +
+        ``diag_use_amat``) the Pmat (h,h) block is never read by the Schur
+        preconditioner and the flag is INERT — setting it there records a
+        ``multiplier_schur_pc`` entry in :attr:`pc_fallbacks` and warns.
         """
         return self._multiplier_schur_pc
 
@@ -5673,8 +7734,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             rot_ns.remove(gvec)
 
 
-    ## F0, F1 should be f0 and F1, (pf0 for Saddles can be added here)
-    ## don't add new ones uf0, uF1 are redundant
+    # TODO(DESIGN): residual-term naming is inconsistent (F0/F1 vs f0, plus the
+    # redundant uf0/uF1 aliases used below); settle one scheme rather than
+    # adding new spellings.
 
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
@@ -5808,20 +7870,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        # r = self.mesh.CoordinateSystem.N[0]
-
-        # Array form to work well with what is below
-        # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        # F0  = sympy.Array(self._u_f0)  #.reshape(dim)
-        # F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
-        # PF0 = sympy.Array(self._p_f0)# .reshape(1)
-
-        ## We don't need to use these arrays, we can specify the ordering of the indices
-        ## and do these one by one as required by PETSc. However, at the moment, this
-        ## is working .. so be careful !!
-
-        # Don't unwrap here — let getext()'s two-phase unwrap handle it.
-        # This preserves constant UWexpressions as symbols for the constants[] mechanism.
+        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
+        # it (preserves constant UWexpressions as symbols for constants[]). The
+        # JACOBIAN sources are unwrapped separately below (see _jac_source) so
+        # the derivative sees through the viscosity — that is the Newton fix.
         F0  = sympy.Array(self.F0.sym)
         F1  = sympy.Array(self.F1.sym)
         PF0  = sympy.Array(self.PF0.sym)
@@ -5848,64 +7900,155 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         U = sympy.Array(self.u.sym).reshape(dim)
         P = sympy.Array(self.p.sym).reshape(1)
 
+        # Expand UWexpressions down to (but NOT including) constant atoms,
+        # element-wise, for the Jacobian derivative ONLY. This exposes the
+        # field / grad-v dependence of the (effective) viscosity so that
+        # derive_by_array forms the full Newton tangent (e.g. Min -> Heaviside
+        # yield switch), instead of freezing eta_eff as an opaque atom and
+        # silently running a Picard / defect-correction tangent. Truly-constant
+        # atoms (eta0, tau_y, ...) survive as symbols so the constants[]
+        # runtime-update mechanism is preserved (the keep-constants predicate
+        # is shared with getext()'s _extract_constants, so they cannot drift).
+        # The residual fns above (self._u_F0/_u_F1/_p_F0) are left untouched —
+        # getext() unwraps those itself. For constant-viscosity problems this
+        # is a no-op (eta has no grad-v dependence) so the Jacobian is
+        # bit-identical. See docs/developer/design/jacobian-unwrap-constants-bug.md
+        #
+        # (see consistent_jacobian / _jacobian_source: default Picard, bit-
+        # identical; True -> Newton; "continuation" -> alpha-blended.)
+        F0_jac  = self._jacobian_source(F0)
+        PF0_jac = self._jacobian_source(PF0)
+
         # Optional override: differentiate an alternative F1 to build the
         # uu and up Jacobian blocks while leaving the residual F1
         # unchanged. Used for inexact Newton (e.g. softmin Jacobian with
-        # Min residual at a yield kink). When None, autodiff F1 itself.
+        # Min residual at a yield kink). When None, autodiff F1 itself —
+        # the Newton flux being the model's smooth law (flux_jacobian) if it
+        # provides one, else the exact flux unwrapped.
         F1_jac_src = getattr(self, "_F1_jacobian_source", None)
-        F1_for_jac = sympy.Array(F1_jac_src) if F1_jac_src is not None else F1
+        if F1_jac_src is not None:
+            F1_for_jac = self._jacobian_source(sympy.Array(F1_jac_src))
+        else:
+            F1_for_jac = self._jacobian_source(F1, self._newton_flux(F1))
+        # Normalise to strict (dim, dim) Array indexing for the explicit
+        # Jacobian loops below.
+        F1_for_jac = sympy.Array(F1_for_jac).reshape(dim, dim)
 
-        G0 = sympy.derive_by_array(F0, self.u.sym)
-        G1 = sympy.derive_by_array(F0, self.Unknowns.L)
-        G2 = sympy.derive_by_array(F1_for_jac, self.u.sym)
-        G3 = sympy.derive_by_array(F1_for_jac, self.Unknowns.L)
+        # Explicit-index Jacobian construction — writes each entry directly
+        # into PETSc's flat [fc, gc, df, dg] layout via row-major matrices.
+        # sympy.derive_by_array is dx-FIRST (derivative indices lead), so the
+        # previous derive_by_array + permutedims((0,2,1,3)) form assembled the
+        # MAJOR TRANSPOSE of uu_G3: it placed dF1[gc,dg]/dL[fc,df] in the
+        # [fc,gc,df,dg] slot. Invisible whenever the tangent has major symmetry
+        # (frozen C, isotropic eta(edot) Newton, linear transverse isotropy),
+        # wrong exactly when it does not (transverse-isotropic Newton — issue
+        # #457). Same explicit-loop construction as SNES_Vector above; the
+        # layout contract is docs/developer/subsystems/petsc-jacobian-layout.md.
+        U_list = [self.u.sym[0, c] for c in range(dim)]
+        L = self.Unknowns.L
+        Nc = dim
 
-        # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
-        # ijkl -> LJKI (hence 3120)
-        # ij k -> KJ I (hence 210)
-        # i jk -> J KI (hence 201)
+        # Normalise the F0 Jacobian source to a flat (dim,) Array — F0 arrives
+        # as (1, dim) or (dim, 1) depending on how the template/bodyforce was
+        # written (Array indexing is strict).
+        _f0_flat = sympy.Array(F0_jac).reshape(dim)
 
-        # The indices need to be interleaved, but for symmetric problems
-        # there are lots of symmetries. This means we can find it hard to debug
-        # the required permutation for a non-symmetric problem
-        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
+        # Jacobian blocks are built with MATRIX-LEVEL diffs: one
+        # ``sympy.diff(<whole block matrix>, var)`` call per derivative
+        # variable instead of per-entry ``diff`` loops. Measured ~1.7x faster
+        # on large (monster-viscosity) fluxes — the batched elementwise diff
+        # reuses the derivative work across the block's shared subexpressions —
+        # and produces bit-identical entries (verified against the loop form).
+        # The flat PETSc [fc, gc, df, dg] layout is preserved by assigning each
+        # variable's matrix derivative into its slots below.
 
-        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
+        # uu_G0[fc, gc]                  = dF0[fc] / dU[gc]
+        G0 = sympy.zeros(Nc, Nc)
+        for gc in range(Nc):
+            dF0_dU = sympy.diff(_f0_flat, U_list[gc])
+            for fc in range(Nc):
+                G0[fc, gc] = dF0_dU[fc]
+
+        # uu_G1[fc*Nc + gc, dg]          = dF0[fc] / dL[gc, dg]
+        G1 = sympy.zeros(Nc * Nc, dim)
+        for gc in range(Nc):
+            for dg in range(dim):
+                dF0_dL = sympy.diff(_f0_flat, L[gc, dg])
+                for fc in range(Nc):
+                    G1[fc * Nc + gc, dg] = dF0_dL[fc]
+
+        # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
+        G2 = sympy.zeros(Nc * Nc, dim)
+        for gc in range(Nc):
+            dF1_dU = sympy.diff(F1_for_jac, U_list[gc])
+            for fc in range(Nc):
+                for df in range(dim):
+                    G2[fc * Nc + gc, df] = dF1_dU[fc, df]
+
+        # uu_G3[fc*Nc + gc, df*dim + dg] = dF1[fc, df] / dL[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        for gc in range(Nc):
+            for dg in range(dim):
+                dF1_dL = sympy.diff(F1_for_jac, L[gc, dg])
+                for fc in range(Nc):
+                    for df in range(dim):
+                        G3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
+
+        self._uu_G0 = sympy.ImmutableMatrix(G0)
+        self._uu_G1 = sympy.ImmutableMatrix(G1)
+        self._uu_G2 = sympy.ImmutableMatrix(G2)
+        self._uu_G3 = sympy.ImmutableMatrix(G3)
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
-        # U/P block (check permutations - hard to validate without a full collection of examples)
+        # U/P block. The constraint field is scalar (Nc_p == 1), so the g-index
+        # is size 1 and only the derivative indices need explicit placement.
+        p_scalar = self.p.sym[0]
+        Gp = self._G  # (1, dim) row of dp/dx_dg symbols
 
-        G0 = sympy.derive_by_array(F0, self.p.sym)
-        G1 = sympy.derive_by_array(F0, self._G)
-        G2 = sympy.derive_by_array(F1_for_jac, self.p.sym)
-        G3 = sympy.derive_by_array(F1_for_jac, self._G)
+        # up_G0[fc, 0]                   = dF0[fc] / dp
+        G0 = sympy.zeros(dim, 1)
+        dF0_dp = sympy.diff(_f0_flat, p_scalar)
+        for fc in range(dim):
+            G0[fc, 0] = dF0_dp[fc]
 
-        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
-        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
-        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim,dim))  # ?
-        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim))  # zeros
+        # up_G1[fc, dg]                  = dF0[fc] / d(dp/dx_dg)
+        G1 = sympy.zeros(dim, dim)
+        for dg in range(dim):
+            dF0_dGp = sympy.diff(_f0_flat, Gp[0, dg])
+            for fc in range(dim):
+                G1[fc, dg] = dF0_dGp[fc]
+
+        # up_G2[fc, df]                  = dF1[fc, df] / dp
+        G2 = sympy.zeros(dim, dim)
+        dF1_dp = sympy.diff(F1_for_jac, p_scalar)
+        for fc in range(dim):
+            for df in range(dim):
+                G2[fc, df] = dF1_dp[fc, df]
+
+        # up_G3[fc*dim + df, dg]         = dF1[fc, df] / d(dp/dx_dg)
+        G3 = sympy.zeros(dim * dim, dim)
+        for dg in range(dim):
+            dF1_dGp = sympy.diff(F1_for_jac, Gp[0, dg])
+            for fc in range(dim):
+                for df in range(dim):
+                    G3[fc * dim + df, dg] = dF1_dGp[fc, df]
+
+        self._up_G0 = sympy.ImmutableMatrix(G0)  # zero in stokes tests
+        self._up_G1 = sympy.ImmutableMatrix(G1)  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(G2)  # pressure coupling
+        self._up_G3 = sympy.ImmutableMatrix(G3)  # zero in stokes tests
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(PF0, self.u.sym)
-        G1 = sympy.derive_by_array(PF0, self.Unknowns.L)
-        # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
-        # G3 = sympy.derive_by_array(FP1, self.Unknowns.L)
+        G0 = sympy.derive_by_array(PF0_jac, self.u.sym)
+        G1 = sympy.derive_by_array(PF0_jac, self.Unknowns.L)
+        # (there is no FP1 flux term, so the pu_G2 / pu_G3 blocks are empty)
 
         self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
         self._pu_G1 = sympy.ImmutableMatrix(G1.reshape(dim*dim))  # non-zero
-        # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self.p.sym).reshape(dim,dim))
-        # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
-
-        # fns_jacobian += [self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
         fns_jacobian += [self._pu_G0, self._pu_G1]
 
         ## PP block is a preconditioner term, not auto-constructed
@@ -5946,24 +8089,48 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             if bc.fn_f is not None:
 
-                permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
-
                 bd_F0  = sympy.Array(bc.fn_f)
 
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
                 fns_bd_residual += [bc.fns["u_f0"]]
 
-                G0 = sympy.derive_by_array(bd_F0, self.Unknowns.u.sym)
-                G1 = sympy.derive_by_array(bd_F0, self.Unknowns.L)
-                bc.fns["uu_G0"] = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-                bc.fns["uu_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                # Boundary Jacobians follow the same PETSc [fc, gc, df, dg]
+                # layout as the bulk blocks — build them with the same
+                # explicit-index loops (the old permutedims form transposed
+                # fc/gc here too; harmless only while every natural-BC
+                # tangent happened to be symmetric).
+                bd_f0_list = list(sympy.Array(bc.fn_f).reshape(dim))
+
+                # uu_G0[fc, gc]         = d bd_F0[fc] / dU[gc]
+                G0 = sympy.zeros(dim, dim)
+                for fc in range(dim):
+                    for gc in range(dim):
+                        G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
+
+                # uu_G1[fc*dim + gc, dg] = d bd_F0[fc] / dL[gc, dg]
+                G1 = sympy.zeros(dim * dim, dim)
+                for fc in range(dim):
+                    for gc in range(dim):
+                        for dg in range(dim):
+                            G1[fc * dim + gc, dg] = sympy.diff(bd_f0_list[fc], L[gc, dg])
+
+                bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
+                bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1)
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
-                G0 = sympy.derive_by_array(bc.fns["u_f0"], P)
-                G1 = sympy.derive_by_array(bc.fns["u_f0"], self._G)
+                # up_G0[fc, 0]          = d bd_F0[fc] / dp
+                G0 = sympy.zeros(dim, 1)
+                for fc in range(dim):
+                    G0[fc, 0] = sympy.diff(bd_f0_list[fc], p_scalar)
 
-                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
-                bc.fns["up_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))
+                # up_G1[fc, dg]         = d bd_F0[fc] / d(dp/dx_dg)
+                G1 = sympy.zeros(dim, dim)
+                for fc in range(dim):
+                    for dg in range(dim):
+                        G1[fc, dg] = sympy.diff(bd_f0_list[fc], Gp[0, dg])
+
+                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0)
+                bc.fns["up_G1"] = sympy.ImmutableMatrix(G1)
                 fns_bd_jacobian += [bc.fns["up_G0"], bc.fns["up_G1"]]
 
                 # Gradient boundary residual (f1_bd) and its Jacobians (g2, g3)
@@ -5973,16 +8140,51 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
 
-                    G2 = sympy.derive_by_array(bd_F1, self.Unknowns.u.sym)
-                    G3 = sympy.derive_by_array(bd_F1, self.Unknowns.L)
-                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim, dim))
-                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim, dim*dim))
+                    # Nitsche gradient-traction depends on eta(grad v); unwrap +
+                    # smooth-kink the Jacobian source so its tangent is Newton-
+                    # consistent (same fix as the bulk). Residual u_F1 stays exact.
+                    bd_F1_jac = self._jacobian_source(bd_F1)
+
+                    # uu_G2[fc*dim + gc, df]          = d bd_F1[fc, df] / dU[gc]
+                    G2 = sympy.zeros(dim * dim, dim)
+                    for fc in range(dim):
+                        for gc in range(dim):
+                            for df in range(dim):
+                                G2[fc * dim + gc, df] = sympy.diff(
+                                    bd_F1_jac[fc, df], U_list[gc]
+                                )
+
+                    # uu_G3[fc*dim + gc, df*dim + dg] = d bd_F1[fc, df] / dL[gc, dg]
+                    G3 = sympy.zeros(dim * dim, dim * dim)
+                    for fc in range(dim):
+                        for gc in range(dim):
+                            for df in range(dim):
+                                for dg in range(dim):
+                                    G3[fc * dim + gc, df * dim + dg] = sympy.diff(
+                                        bd_F1_jac[fc, df], L[gc, dg]
+                                    )
+
+                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(G2)
+                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(G3)
                     fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
 
-                    G2 = sympy.derive_by_array(bc.fns["u_F1"], P)
-                    G3 = sympy.derive_by_array(bc.fns["u_F1"], self._G)
-                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2.reshape(dim, dim))
-                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3.reshape(dim, dim*dim))
+                    # up_G2[fc, df]          = d bd_F1[fc, df] / dp
+                    G2 = sympy.zeros(dim, dim)
+                    for fc in range(dim):
+                        for df in range(dim):
+                            G2[fc, df] = sympy.diff(bd_F1[fc, df], p_scalar)
+
+                    # up_G3[fc*dim + df, dg] = d bd_F1[fc, df] / d(dp/dx_dg)
+                    G3 = sympy.zeros(dim * dim, dim)
+                    for fc in range(dim):
+                        for df in range(dim):
+                            for dg in range(dim):
+                                G3[fc * dim + df, dg] = sympy.diff(
+                                    bd_F1[fc, df], Gp[0, dg]
+                                )
+
+                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2)
+                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3)
                     fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"]]
 
                 # Pressure boundary residual and Jacobians (pu, pp blocks)
@@ -6016,7 +8218,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## stiffness uu = ∂fn_f/∂u = r·(n⊗n)  (0, 0) which conditions the [p,h]
         ## Schur complement (r=0 ⇒ bare KKT, uu=0). Guarded: no-op for ordinary
         ## Stokes.
-        cbc_permutation = (0, 2, 1, 3)
         for cbc in self._block_constraint_bcs:
             n_row = cbc.normal           # sympy 1×dim Matrix
             g_sym = cbc.g
@@ -6029,8 +8230,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # u-row residual:  fn_f = h·n  +  r(n·u − g)·n
             # The r-term is the augmented-Lagrangian penalty: it adds a uu
             # boundary stiffness r·(n⊗n) that conditions the Schur complement
-            # but does NOT bias the multiplier (the h-row stays the exact
-            # constraint, so h still converges to the true normal traction).
+            # but does not change what the constraint ENFORCES (the h-row stays
+            # the exact constraint). It does change what h IS: the traction is
+            # h + r(n.u - g), and only the sum is r-independent. Stokes_Constrained
+            # .traction() / .topography() return that sum; .multiplier() returns h.
             fn_f = sympy.Matrix(
                 [(hsym + r_sym * (u_dot_n - g_sym)) * n_row[i] for i in range(dim)]
             ).as_immutable()
@@ -6042,11 +8245,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             cbc.fns["h_f0"] = sympy.ImmutableDenseMatrix(fn_h)
             fns_bd_residual += [cbc.fns["h_f0"]]
 
-            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape)
-            G0 = sympy.derive_by_array(sympy.Array(fn_f), self.Unknowns.u.sym)
-            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(
-                sympy.permutedims(G0, cbc_permutation).reshape(dim, dim)
-            )
+            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape).
+            # Explicit [fc, gc] placement like every other Jacobian block (the
+            # content is symmetric, but no permutedims survives on principle —
+            # see petsc-jacobian-layout.md).
+            G0 = sympy.zeros(dim, dim)
+            for fc in range(dim):
+                for gc in range(dim):
+                    G0[fc, gc] = sympy.diff(fn_f[fc], U_list[gc])
+            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
             fns_bd_jacobian += [cbc.fns["uu_G0"]]
 
             # uh (0, h):  ∂fn_f/∂h = n  — mirror the up_G0 (velocity,scalar) shape
@@ -6100,7 +8307,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             verbose=verbose,
             debug=debug,
             debug_name=debug_name,
-            cache=False,
+            # Disk cache + rank-0-only compile: under MPI only rank 0 invokes
+            # cc and publishes to the shared cache dir; the other ranks load
+            # the compiled module. Without this, every rank compiles its own
+            # copy of the (potentially enormous) pointwise module.
+            cache=True,
         )
         self.compiled_extensions = _getext_result.ptrobj
         self.ext_dict = _getext_result.fn_dicts
@@ -6220,10 +8431,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
             ind = value
-
-            # bc_label = self.dm.getLabel(boundary)
-            # bc_is = bc_label.getStratumIS(value)
-            # self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
@@ -6423,8 +8630,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             fid_h = cbc.lam._solver_field_id
             bvalue = self.mesh.boundaries[cbc.boundary].value
             bd_is = dm.getLabel("UW_Boundaries").getStratumIS(bvalue)
+            # Guard for parallel: a rank owning no points with this label value
+            # gets back a valid non-None PETSc.IS with size 0 (bool(bd_is) = True,
+            # bd_is.handle != 0). Calling .getIndices() on that IS segfaults.
+            # `if bd_is` catches the null-handle case; `.getSize() > 0` catches
+            # the valid-but-empty case that None / handle checks miss (issue #291).
             keep = set()
-            if bd_is is not None:
+            if bd_is and bd_is.getSize() > 0:
                 for bp in bd_is.getIndices().tolist():
                     keep.update(dm.getTransitiveClosure(bp)[0].tolist())
             iset = interior_pts.setdefault(fid_h, set())
@@ -6532,6 +8744,55 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
         # for ordinary Stokes. Register the interior screening residual and the
         # diagonal mass Jacobian/preconditioner on each multiplier's field.
+        #
+        # multiplier_schur_pc reachability (#486, resolved by tracing PETSc
+        # fieldsplit.c): the flag swaps only the Pmat (h,h) block below. With
+        # schur_precondition=selfp the Schur preconditioner Sp is assembled by
+        # MatSchurComplementGetPmat from sub-matrices split out of the AMAT
+        # whenever pc_fieldsplit_diag_use_amat is set (jac->mat[1], not
+        # jac->pmat[1]) — so under this class's defaults (selfp +
+        # diag_use_amat) the swapped block is provably never read. It IS read
+        # under schur_precondition=a11 (Sp = the grouped [p,h] Pmat block) and
+        # under a monolithic direct factorisation of the Pmat. An explicit
+        # opt-in silently doing nothing is exactly the #477 class -> record
+        # AND warn (unlike the auto declines, this one earns the warning).
+        if self._multipliers and self._multiplier_schur_pc:
+            _opts = self.petsc_options
+            _schur_pre = (_opts.getString("pc_fieldsplit_schur_precondition")
+                          if _opts.hasName("pc_fieldsplit_schur_precondition")
+                          else "")
+            _pc_type = (_opts.getString("pc_type")
+                        if _opts.hasName("pc_type") else "")
+            # Read the VALUE, not the key's presence: diag_use_amat set to
+            # "false" means the Pmat block IS read and the opt-in is live
+            # (measured: Schur pre differs by rel-Frobenius 0.30 flag-on/off).
+            _diag_amat = _opts.getBool("pc_fieldsplit_diag_use_amat", False)
+            if (_schur_pre != "a11" and _diag_amat
+                    and _pc_type not in ("lu", "cholesky")):
+                self._record_pc_fallback(
+                    "multiplier_schur_pc",
+                    requested="1/mu multiplier Schur mass (Pmat h,h block)",
+                    installed="unread — selfp builds Sp from the Amat A11 block",
+                    reason="declined",
+                    detail=f"pc_fieldsplit_schur_precondition="
+                           f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                           f"Pmat (h,h) block never reaches the Schur "
+                           f"preconditioner; set schur_precondition='a11' (or "
+                           f"factorise the Pmat directly) to make the opt-in "
+                           f"live")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] multiplier_schur_pc=True has no effect "
+                        f"under pc_fieldsplit_schur_precondition="
+                        f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                        f"1/mu multiplier Schur mass is written into the Pmat "
+                        f"(h,h) block, which selfp never reads (Sp is built "
+                        f"from the Amat). Use "
+                        f"petsc_options['pc_fieldsplit_schur_precondition'] = "
+                        f"'a11' to make it live. See solver.pc_fallbacks.",
+                        stacklevel=2,
+                    )
         for k, mvar in enumerate(self._multipliers):
             fid = mvar._solver_field_id
             # Operator (Amat) (lambda,lambda) block is ALWAYS the true screening eps so
@@ -6554,7 +8815,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
-            # bc_label = self.dm.getLabel(boundary)
 
             label_val = value
 
@@ -6563,123 +8823,122 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             c_label = bc_label
 
-            if True: #  c_label and label_val != -1:
 
-                if bc.fn_f is not None:
+            if bc.fn_f is not None:
 
-                    _has_f1 = "u_F1" in bc.fns
+                _has_f1 = "u_F1" in bc.fns
 
-                    # Velocity boundary residual: f0 (value) + f1 (gradient, if present)
-                    if _has_f1:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        NULL,
-                                        )
+                # Velocity boundary residual: f0 (value) + f1 (gradient, if present)
+                if _has_f1:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    NULL,
+                                    )
 
-                    # Pressure boundary residual (Nitsche: f0_p = u.n - g)
-                    if "p_f0" in bc.fns:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        1, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
-                                        NULL)
-                    else:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
+                # Pressure boundary residual (Nitsche: f0_p = u.n - g)
+                if "p_f0" in bc.fns:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    1, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
+                                    NULL)
+                else:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
 
-                    # Velocity-velocity boundary Jacobian: g0, g1 always; g2, g3 if f1_bd present
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
-
-                    # Velocity-pressure boundary Jacobian
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        NULL, NULL)
-
-                    # Pressure-velocity boundary Jacobian (pu block)
+                # Velocity-velocity boundary Jacobian: g0, g1 always; g2, g3 if f1_bd present
+                if _has_f1:
                     UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
+
+                # Velocity-pressure boundary Jacobian
+                if _has_f1:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                    # Pressure-pressure boundary Jacobian (pp block)
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 1, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                                    NULL, NULL, NULL)
+                # Pressure-velocity boundary Jacobian (pu block)
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                NULL, NULL)
 
-                    # Preconditioner: mirror the Jacobian structure
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
+                # Pressure-pressure boundary Jacobian (pp block)
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 1, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                                NULL, NULL, NULL)
 
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        NULL, NULL)
-
+                # Preconditioner: mirror the Jacobian structure
+                if _has_f1:
                     UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
+
+                if _has_f1:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 1, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                                    NULL, NULL, NULL)
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                NULL, NULL)
+
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 1, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                                NULL, NULL, NULL)
 
         # Lagrange-multiplier boundary coupling DS registration (block-constrained
         # Stokes). Attaches the field-0 traction, field-h constraint, and the
@@ -6758,7 +9017,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if not _rewire_only:
                 self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
-            # coarse_dm.createDS()
 
         if not _rewire_only:
             for coarse_dm in self.dm_hierarchy:
@@ -6775,6 +9033,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # hierarchy for geometric MG/FMG. Must precede setFromOptions.
             if self._block_constraint_bcs:
                 self._setup_block_fieldsplit_options()
+
+            self._withdraw_block_size_if_not_node_blocked(
+                "velocity", prefix="fieldsplit_velocity_")
 
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
@@ -6895,16 +9156,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._build(verbose, False, None)
 
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_residual = self.dm
             UW_DMSetTime(_time_dm_residual.dm, t_nd)
             residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
         self._update_constants()
 
         gvec = self.dm.getGlobalVec()
@@ -6926,6 +9185,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Constrained (Dirichlet) DOFs are ABSENT from the global vector, so the
+            # round trip above leaves them ZERO in xlocal: insert the essential
+            # values before integrating, exactly as _assemble_volume_reaction does,
+            # or the residual is garbage wherever g != 0 (issues #407/#411 — this
+            # duplicated variant missed the #407 fix).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             if cell_indices is None:
                 CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
             else:
@@ -7019,6 +9285,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         cdef PetscDS ds
         cdef PetscWeakForm wf
         cdef DMLabel c_label
+        cdef PetscReal residual_time = 0.0
 
         self._build(verbose, False, None)
 
@@ -7034,15 +9301,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             )
 
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_boundary_residual = self.dm
             UW_DMSetTime(_time_dm_boundary_residual.dm, t_nd)
+            residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
         self._update_constants()
 
         gvec = self.dm.getGlobalVec()
@@ -7064,6 +9330,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Same insert as _assemble_volume_reaction: constrained DOFs are absent
+            # from the global vector, so without this the boundary residual is
+            # evaluated against zeroed essential values wherever g != 0
+            # (issues #407/#411 — this duplicated variant missed the #407 fix).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             CHKERRQ(DMGetDS(dm.dm, &ds))
             CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
                 ds, <PetscInt>boundary_bc.PETScID, &wf,
@@ -7251,14 +9523,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               picard: int = 0,
               verbose=False,
               debug=False,
               debug_name=None,
               _force_setup: bool =False,
               time=None,
-              divergence_retries: int = 0, ):
+              divergence_retries: int = 0,
+              homotopy: bool = False,
+              homotopy_options: dict = None, ):
         """
         Solve the Stokes system for velocity and pressure.
 
@@ -7268,11 +9542,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use current
-            values in ``self.u`` (velocity) and ``self.p`` (pressure) as
-            initial guess. Using False can improve convergence for
-            time-stepping or parameter continuation.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         picard : int, default=0
             Number of Picard iterations before switching to Newton.
             Picard iterations use a simplified Jacobian and can help
@@ -7294,11 +9572,40 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
             yield-surface kink divergences. 0 preserves legacy behaviour.
+        homotopy : bool, default=False
+            Solve a yielding (viscoplastic) model by a **yield homotopy** instead of
+            a single solve: the constitutive model is put in its smooth,
+            δ-parameterised yield mode and δ is marched down to the sharp yield
+            surface as a sequence of warm-started solves. This is the robust route
+            for a hard Drucker-Prager problem, which does not converge from a cold
+            start on the sharp surface. Requires a model with
+            ``supports_yield_homotopy`` (raises otherwise). Returns the march
+            summary rather than ``None``.
+        homotopy_options : dict, optional
+            March settings passed to
+            :func:`~underworld3.systems.yield_continuation.yield_continuation` —
+            ``smoother``, ``anchor``, ``delta0``, ``down``, ``dmin``,
+            ``entry_maxit``, ``step_maxit``, ``retries``. All are defaulted; tuning
+            them is optional.
+
+            ``smoother`` picks the soft-min family — ``"powermean"`` (default) or
+            ``"sqrt"``. Which gives the better cold entry is problem-dependent, so
+            it is worth trying both when a march will not start.
+
+            Which SIDE of the exact ``Min`` the softened yield sits on belongs to
+            ``anchor``, not to the family: under the default onset anchor both
+            families sit below ``Min`` near yield. See ``yield_anchor`` on the
+            constitutive model. Leave ``delta0`` unset unless you have a reason:
+            each family supplies its own entry, and the two δ are not the same
+            parameter.
 
         Returns
         -------
-        None
-            Solution stored in ``self.u`` (velocity) and ``self.p`` (pressure).
+        None or dict
+            ``None`` normally — the solution is stored in ``self.u`` (velocity) and
+            ``self.p`` (pressure). With ``homotopy=True``, the march summary
+            (``settled_delta``, ``reason``, ``steps``, ``reached_dmin``,
+            ``converged``).
 
         Examples
         --------
@@ -7315,6 +9622,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ...     # Update boundary conditions, material properties...
         ...     stokes.solve(zero_init_guess=False)
 
+        >>> # Hard viscoplastic (Drucker-Prager) yield: march the yield homotopy
+        >>> report = stokes.solve(homotopy=True)
+        >>> report["settled_delta"]        # smallest yield softness reached
+
         Notes
         -----
         This is a **collective operation** - all MPI ranks must call it.
@@ -7330,6 +9641,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         constitutive_model : Viscosity and stress definitions.
         """
 
+
+        # Checked here as well as at registration (#464). The registration check
+        # gives the better message — it knows which call was refused — but it
+        # only covers what goes through the solver's own methods, and
+        # `fault_contact` writes `_fault_contact_faults` directly. This runs
+        # before any setup reads either list, so an unsupported pair costs
+        # nothing before it is refused.
+        self._reject_mixed_constraint_mechanisms("solve")
+
+        if homotopy:
+            # The march runs a SEQUENCE of ordinary solves at successively sharper
+            # yield surfaces; each one re-enters this method with homotopy=False.
+            return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
@@ -7337,23 +9662,80 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
 
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
+
         self._build(verbose, debug, debug_name)
 
         # Set time on the DM so petsc_t is available in pointwise functions.
         # Non-dimensionalise if the scaling system is active.
         cdef DM _time_dm_stokes
+
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        if self._rotated_freeslip_bcs or self._fault_contact_faults:
+            # Run the same pre-solve preamble as the standard path so the pointwise
+            # functions see the DM time, the auxiliary vector, and updated constants
+            # (needed for problems whose coefficients live in auxiliary fields). This
+            # must precede the nonlinearity probe below so the trial assemblies see
+            # the correct coefficients.
+            if time is not None:
+                t_nd = self._nondimensional_time(time)
+                _time_dm_stokes = self.dm
+                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
+            self.mesh.update_lvec()
+            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+            self._update_constants()
+
+            # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
+            # Re-check here: this path never reaches the instrumentation, so an armed
+            # guard would be silently inert -- the exact state guard() exists to refuse.
+            if (getattr(self, "_instrumentation", None) is not None
+                    and self._instrumentation.armed):
+                raise NotImplementedError(
+                    "a wall-clock guard is armed but this solve takes the rotated "
+                    "free-slip path, which runs its own Krylov loop outside self.snes "
+                    "and cannot be bounded by it. Call unguard() first."
+                )
+            # ONE path for linear and nonlinear models: the manual outer
+            # Newton/Picard loop that rotates F(u), J(u) and the strong
+            # v_n = u_n constraint every iteration. It honours zero_init_guess
+            # (warm start), the Picard warmup count, and the consistent_jacobian
+            # tangent (Picard / Newton / continuation); a linear model converges
+            # after its first increment, so no up-front nonlinearity probe is
+            # paid (the loop self-terminates; _residual_is_nonlinear survives as
+            # a lazy guard inside the picard+pure-Newton corner).
+            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+            self._rotated_freeslip_info = solve_rotated_freeslip(
+                self, self._rotated_freeslip_bcs, verbose=verbose,
+                zero_init_guess=zero_init_guess, picard=picard,
+                # An explicit `time=` reaches the kernels through petsc_t on
+                # the DM — invisible to every state counter and constant
+                # value, so it must veto the cached-operator fast path.
+                force_operator_refresh=time is not None)
+            # This path solves via ksp.solve on the rotated operator (not self.snes),
+            # so give it a report from the rotated result rather than leaving a stale one.
+            _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
+            # The warm-start flag must follow the rotated solve's own verdict — the SNES
+            # was never run, so the generic reader would latch a stale reason.
+            self._record_convergence_status(converged=_rotated_report.converged)
+            return
+
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_stokes = self.dm
             UW_DMSetTime(_time_dm_stokes.dm, t_nd)
 
         # Keep a record of these set-up parameters
-        tolerance = self.tolerance
         snes_type = self.snes.getType()
-        snes_max_it = 50
+        # Resolved ONCE, before any of this solve's own pushes, so the resolver compares
+        # against the previous solve's push rather than this one's. (Was a hardcoded 50
+        # pushed unconditionally, which made `snes_max_it` unreachable — worklist rows
+        # D-22/D2, ruling D18; same failure shape as the sub-block rtols in #477.)
+        snes_max_it = self._resolve_snes_max_it(50)
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -7370,7 +9752,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 print(f"SNES pre-solve - non-zero initial guess", flush=True)
 
 
-            self.petsc_options.setValue("snes_max_it", 0)
+            self._push_snes_max_it(0)
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
             # PETSc may rebuild operator state after setFromOptions(), so reattach
@@ -7378,7 +9760,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._attach_stokes_nullspace()
             self.snes.solve(None, gvec)
 
-            # with self.mesh.access():
             for name,var in self.fields.items():
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
@@ -7390,14 +9771,40 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         else:
             self.atol = 0.0
 
+        # Automatic cold-start warm-up (Layer 1): a single Picard (frozen-
+        # coefficient) step moves a cold guess into the Newton basin — it is
+        # defect-correction iteration 1, contractive and cheap. The default
+        # (frozen) tangent path is left bit-identical, and an explicit Picard count
+        # is honoured as given.
+        #
+        # This warm-up is a CONVERGENCE aid (move a cold guess toward the Newton
+        # basin), NOT the correctness mechanism for the zero-strain-rate state.
+        # Two measured facts (issue #507) retired the old "make the NaN state
+        # unreachable" framing: (1) one nrichardson sweep only propagates
+        # boundary data a single element layer, so on a BOUNDARY-DRIVEN problem
+        # the deep interior stays exactly zero after the warm-up (body-force
+        # problems fill F(0) everywhere, which is why the yield campaigns never
+        # saw it); (2) a rigidly-translating stuck region has edot = 0 at the
+        # CONVERGED solution — the state is physics, not a start-up artifact.
+        # Finiteness of the consistent tangent at edot = 0 is owned by the
+        # half-integer-power guard in _jacobian_unwrap (the derivative's
+        # removable-singularity limit, implemented). NOTE the "continuation"
+        # tangent is NOT protected by its alpha = 0 phase (the blended kernel
+        # still evaluates the Newton branch pointwise, and IEEE 0*NaN = NaN);
+        # with the guard in place both tangents are finite everywhere. See
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        if (picard == 0 and self.consistent_jacobian is True
+                and (zero_init_guess or self._solution_is_trivially_zero())):
+            picard = 1
+
         if verbose and uw.mpi.rank == 0:
             print(f"SNES solve - picard = {picard}", flush=True)
 
         # Picard solves if requested
 
         if picard != 0:
-            self.petsc_options.setValue("snes_max_it", abs(picard))
-            self.tolerance = tolerance
+            self._push_snes_max_it(abs(picard))
+            self._reassert_outer_tolerances()
             self.snes.atol = self.atol
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
@@ -7405,24 +9812,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.solve(None, gvec)
             self._warn_on_divergence(phase="picard")
 
-        # Now go back to the original plan
-            self.snes.setType(snes_type)
-            self.tolerance = tolerance
-            self.snes.atol = self.atol
-            self.petsc_options.setValue("snes_max_it", snes_max_it)
-            self.snes.setFromOptions()
-            self._attach_stokes_nullspace()
-            self._snes_solve_with_retries(gvec, divergence_retries, verbose)
-
-        else:
-        # Standard Newton solve
-            self.snes.setType(snes_type)
-            self.tolerance = tolerance
-            self.snes.atol = self.atol
-            self.petsc_options.setValue("snes_max_it", snes_max_it)
-            self.snes.setFromOptions()
-            self._attach_stokes_nullspace()
-            self._snes_solve_with_retries(gvec, divergence_retries, verbose)
+        # The standard Newton solve, run whether or not the optional Picard
+        # warmup above was taken: restore the configured SNES type and
+        # tolerances, then solve.
+        self.snes.setType(snes_type)
+        self._reassert_outer_tolerances()
+        self.snes.atol = self.atol
+        self._push_snes_max_it(snes_max_it)
+        self.snes.setFromOptions()
+        self._attach_stokes_nullspace()
+        # Custom geometric-MG prolongation on the velocity block (if registered
+        # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+        # before the real solve — because the velocity sub-PC is only reachable
+        # once the monolithic Jacobian is assembled (see custom_mg). Picks up
+        # a solver-set (set_custom_fmg field_id=0) or mesh-owned (adapt child)
+        # hierarchy on the velocity block.
+        from underworld3.utilities.custom_mg import auto_inject_custom_mg
+        auto_inject_custom_mg(self, field_id=0)
+        self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         # Project the rigid-body rotation gauge out of the converged solution.
         # The fieldsplit/Schur inner velocity solve leaves an unconstrained (and
@@ -7454,7 +9861,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._ensure_local_field_index_sets(clvec, local_section)
 
         # Copy solution back into pressure and velocity variables
-        # with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
         for name, var in self.fields.items():
             if name=='velocity':
                 subvec = clvec.getSubVector(self._velocity_is)
@@ -7484,6 +9890,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._warn_on_divergence()
 
+        self._record_convergence_status()
+
         return
 
     @timing.routine_timer_decorator
@@ -7498,13 +9906,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # first let's extract a max global velocity magnitude
         import math
 
-        # with self.mesh.access():
         vel = self.u.data
         magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
         if self.mesh.dim == 3:
             magvel_squared += vel[:, 2] ** 2
 
-        max_magvel = math.sqrt(magvel_squared.max())
+        # A rank owning no cells owns no velocity DOFs; it contributes the
+        # identity element of the MAX rather than raising on the empty array
+        # while its peers wait in the allreduce (issue #405).
+        max_magvel = math.sqrt(magvel_squared.max()) if magvel_squared.size else 0.0
 
         from mpi4py import MPI
 

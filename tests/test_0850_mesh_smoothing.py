@@ -186,3 +186,217 @@ class TestPinningAPI:
                              n_iters=1, alpha=0.5)
         after = np.asarray(mesh.X.coords)
         assert np.allclose(before[is_bnd], after[is_bnd])
+
+
+class TestMMPDEDimensionGuard:
+    """The MMPDE mover supports 2D (triangle) and 3D (tetrahedral)
+    simplex meshes (the 3D discretization landed with the adaptivity
+    capstone, round 2 — the mover core was dimension-general all along).
+    The guard now rejects only dimensions with no discretization, before
+    any metric parsing or DM work. The 3D capability itself is locked in
+    test_0764 (moves, no fold, boundary held)."""
+
+    def test_mmpde_unsupported_dim_guard_fires_before_any_mesh_work(self):
+        """The guard reads only mesh.cdim, before metric parsing or DM
+        access, so a minimal cdim stand-in locks the contract
+        deterministically (same pattern as test_0762's non2d tests)."""
+        from underworld3.meshing.smoothing import _mmpde_mover
+
+        class _Mesh1D:
+            cdim = 1
+
+        with pytest.raises(NotImplementedError,
+                           match="2D .triangle. and 3D"):
+            _mmpde_mover(_Mesh1D(), metric=1, pinned_labels=(),
+                           verbose=False)
+
+    def test_mmpde_2d_smoke_still_works(self):
+        """A small 2D mmpde invocation still runs and leaves a valid mesh."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        before = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(
+            mesh, metric=rho, method="mmpde",
+            method_kwargs=dict(n_outer=3, metric_eval="rbf"))
+        after = np.asarray(mesh.X.coords)
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)   # the mover actually moved
+
+
+class TestSPDSanitise:
+    """Regression (#352): the SPD projection must return a finite SPD
+    fallback even when a rank's ENTIRE metric evaluation is degenerate —
+    previously an all-NaN eigenvalue set made the relative floor itself
+    NaN and the "sanitised" output was NaN."""
+
+    def _assert_finite_spd(self, out):
+        assert np.all(np.isfinite(out))
+        w = np.linalg.eigvalsh(out)
+        assert np.all(w > 0)
+
+    def test_all_nan_batch_returns_finite_spd(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((5, 2, 2), np.nan))
+        self._assert_finite_spd(out)
+
+    def test_all_inf_batch_returns_finite_spd(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((3, 2, 2), np.inf))
+        self._assert_finite_spd(out)
+
+    def test_valid_spd_input_is_returned_unchanged(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(7)
+        A = rng.standard_normal((10, 2, 2))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(2)  # SPD by construction
+        out = _spd_sanitise(M)
+        # Symmetrisation of an exactly-symmetric tensor is a no-op, so a
+        # genuine SPD metric must pass through bit-identical.
+        assert np.array_equal(out, M)
+
+    def test_one_degenerate_tensor_does_not_perturb_the_rest(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(11)
+        A = rng.standard_normal((6, 2, 2))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(2)
+        M[2] = np.nan
+        out = _spd_sanitise(M)
+        self._assert_finite_spd(out)
+        good = np.ones(6, dtype=bool)
+        good[2] = False
+        assert np.array_equal(out[good], M[good])
+
+    def test_3x3_degenerate_batch_returns_finite_spd(self):
+        # Degenerate-input eigh is LAPACK-path dependent: the 2x2 kernel
+        # returns quiet NaNs, the general (3x3) kernel raises LinAlgError.
+        # The fallback must hold for both — this is the path the 3D MMPDE
+        # capstone will stand on.
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((4, 3, 3), np.nan))
+        self._assert_finite_spd(out)
+
+    def test_3x3_mixed_batch_survives_batched_eigh_failure(self):
+        # A single non-converging tensor makes the BATCHED eigh raise for
+        # the whole batch; the per-tensor retry must preserve the valid
+        # neighbours bit-identical and rebuild only the degenerate one.
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(3)
+        A = rng.standard_normal((5, 3, 3))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(3)
+        M[1] = np.inf
+        out = _spd_sanitise(M)
+        self._assert_finite_spd(out)
+        good = np.ones(5, dtype=bool)
+        good[1] = False
+        assert np.array_equal(out[good], M[good])
+
+
+class TestRetiredMovers:
+    """2026-07 retirement ruling: the spring / Monge-Ampere / OT-step /
+    anisotropic-Winslow interior movers were superseded by the MMPDE
+    mover and deleted. The retired ``method=`` spellings raise a clear
+    ValueError; ``mesh.OT_adapt`` (built on the OT step) raises a clear
+    RuntimeError; the default ``method=`` is now ``"mmpde"`` and
+    ``strategy=`` routes to it (regression for #353, where strategy=
+    with the old default method='spring' raised TypeError)."""
+
+    @pytest.mark.parametrize("method", ["spring", "ma", "monge-ampere",
+                                        "ot", "equidistribute",
+                                        "anisotropic", "aniso", "tensor"])
+    def test_retired_method_values_raise(self, method):
+        import sympy
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        with pytest.raises(ValueError, match="retired"):
+            smooth_mesh_interior(mesh, metric=sympy.sympify(1),
+                                 method=method)
+
+    def test_unknown_method_raises(self):
+        import sympy
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        with pytest.raises(ValueError, match="unknown method"):
+            smooth_mesh_interior(mesh, metric=sympy.sympify(1),
+                                 method="not-a-mover")
+
+    def test_ot_adapt_tombstone_raises(self):
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        with pytest.raises(RuntimeError, match="retired"):
+            mesh.OT_adapt(None)
+
+    def test_retired_private_names_raise(self):
+        from underworld3.meshing import smoothing as sm
+        for name in ("_spring_equilibrium_mover", "_monge_ampere_mover",
+                     "_ot_improvement_step", "_winslow_anisotropic",
+                     "_winslow_spring", "_winslow_elliptic",
+                     "_winslow_equidistribute"):
+            with pytest.raises(ValueError, match="retired"):
+                getattr(sm, name)()
+
+    def test_default_method_is_mmpde(self):
+        """smooth_mesh_interior with a metric and NO method= runs the
+        MMPDE mover (the sanctioned default switch from 'spring')."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        before = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(mesh, metric=rho,
+                             method_kwargs=dict(n_outer=3))
+        after = np.asarray(mesh.X.coords)
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)
+
+    def test_strategy_routes_to_mmpde_without_typeerror(self):
+        """#353 regression: strategy= injects resolution_ratio, which the
+        old default mover ('spring') could not bind (TypeError). It now
+        routes to the mmpde default, which accepts it."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        smooth_mesh_interior(mesh, metric=rho, strategy="med",
+                             skip_threshold=None,
+                             method_kwargs=dict(n_outer=2))
+        assert np.all(np.isfinite(np.asarray(mesh.X.coords)))
+
+
+class TestWinslowMMPDEAliasShim:
+    """Wave C shim contract for the surviving READ-06 alias: the old
+    ``_winslow_mmpde`` spelling gives the identical result plus exactly
+    one DeprecationWarning; the new ``_mmpde_mover`` spelling is
+    warning-free."""
+
+    def _fresh_mesh_and_metric(self):
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        return mesh, rho
+
+    def test_old_name_identical_result_one_warning(self):
+        import warnings as _w
+        from underworld3.meshing.smoothing import (_mmpde_mover,
+                                                   _winslow_mmpde)
+        pinned = ("Top", "Bottom", "Left", "Right")
+
+        mesh_new, rho_new = self._fresh_mesh_and_metric()
+        with _w.catch_warnings():
+            _w.simplefilter("error", DeprecationWarning)
+            _mmpde_mover(mesh_new, rho_new, pinned, False, n_outer=3)
+
+        mesh_old, rho_old = self._fresh_mesh_and_metric()
+        with pytest.warns(DeprecationWarning, match="_mmpde_mover") as rec:
+            _winslow_mmpde(mesh_old, rho_old, pinned, False, n_outer=3)
+        n_dep = sum(1 for w in rec
+                    if issubclass(w.category, DeprecationWarning))
+        assert n_dep == 1
+        assert np.array_equal(np.asarray(mesh_new.X.coords),
+                              np.asarray(mesh_old.X.coords))

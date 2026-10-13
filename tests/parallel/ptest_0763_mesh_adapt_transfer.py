@@ -45,7 +45,7 @@ def test_adapt_preserves_degree_2_field_in_parallel():
         H.coords[:, 0] > 0.5, 1.0 / 0.05 ** 2, 1.0 / 0.1 ** 2
     )
 
-    mesh.adapt(H)
+    mesh.remesh(H)
 
     T2 = mesh.vars["T"]
     expected = _smooth_field(T2.coords)

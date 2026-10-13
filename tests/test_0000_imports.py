@@ -59,3 +59,19 @@ def test_underworld_kdtree_import():
 
 def test_underworld_mpi_import():
     import underworld3.mpi
+
+
+def test_kdtree_module_identity():
+    """#316: `underworld3.kdtree` must be ONE module however it is reached.
+
+    A shim submodule used to shadow the package attribute on first
+    `import underworld3.kdtree`, stripping the memprobe counters for every
+    test that ran afterwards (order-dependent level-1 failures).
+    """
+    import underworld3
+    import underworld3.kdtree
+    import underworld3.ckdtree
+
+    assert underworld3.kdtree is underworld3.ckdtree
+    assert hasattr(underworld3.kdtree, "live_count")
+    assert hasattr(underworld3.kdtree, "total_constructed")

@@ -25,8 +25,34 @@ This clean separation ensures:
 - Single source of truth for unit handling logic
 """
 
+import warnings
+
 import numpy as np
 import underworld3 as uw
+
+
+def _validate_coords_not_sequence(coords):
+    """Reject Python list/tuple coordinate input with a clear error.
+
+    Coordinate lists — in particular quantity-valued lists such as
+    ``[(x_qty, y_qty)]`` — are NOT a supported coordinate form
+    (maintainer ruling D7, 2026-07-06: the coordinate-units family is
+    unsupported). Supported forms are documented on :func:`evaluate`.
+    Without this guard a list falls through to
+    ``uw.non_dimensionalise(list)`` whose error message does not tell
+    the user what to pass instead.
+    """
+    if isinstance(coords, (list, tuple)):
+        raise TypeError(
+            "evaluate()/global_evaluate() coordinates must be a numpy array "
+            "of model-unit values with shape (n_points, dim), or a "
+            "unit-aware array (UnitAwareArray, or an array-valued "
+            "UWQuantity). Python lists/tuples of coordinates — including "
+            "quantity-valued lists such as [(x_qty, y_qty)] — are not "
+            "supported. Convert first, e.g. "
+            "np.asarray(coords, dtype=float) for plain model-unit numbers, "
+            "or uw.non_dimensionalise(quantity) per dimensional coordinate."
+        )
 
 
 def _evaluate_impl(
@@ -53,72 +79,15 @@ def _evaluate_impl(
     bounded-interpolation post-process. This body is unchanged from the
     historical ``evaluate`` so that ``monotone=False`` is bit-identical.
 
-    This function wraps the Cython evaluate_nd implementation to automatically
-    handle unit conversions and return unit-aware results.
+    This function wraps the Cython evaluate_nd implementation to
+    automatically handle unit conversions and return unit-aware results.
 
-    Parameters
-    ----------
-    expr : sympy expression or UWexpression
-        Expression to evaluate
-    coords : array-like
-        Coordinates at which to evaluate. Can be:
-        - numpy array of doubles (shape: n_points x n_dims) in non-dimensional form
-        - UnitAwareArray with dimensional coordinates (e.g., from mesh.X.coords)
-        - Both work transparently - dimensional coords are auto-converted
-    coord_sys : mesh.N vector coordinate system, optional
-        Coordinate system to use (default: None)
-    other_arguments : dict, optional
-        Additional arguments for evaluation (default: None)
-    simplify : bool, optional
-        Whether to simplify expression (default: True)
-    verbose : bool, optional
-        Verbose output (default: False)
-    evalf : bool, optional
-        Force numerical evaluation via sympy evalf (default: False)
-    mode : str, optional
-        Evaluation mode controlling accuracy vs speed tradeoff.
-        Options: ``"default"`` (accurate, projection for derivatives),
-        ``"fast"`` (Clement gradient, RBF everywhere),
-        ``"projection"`` (always L2 projection).
-        Default: ``"default"``
-    data_layout : callable, optional
-        Data layout specification (default: None)
-    check_extrapolated : bool, optional
-        Check for extrapolated values (default: False)
-    smoothing : float, optional
-        Smoothing parameter for L2 projection (dimensionless).
-        Only used when projection is active. Default: 1e-6
-    rbf : bool, optional
-        Expert override: Force RBF interpolation everywhere. Overrides mode.
-    force_l2 : bool, optional
-        Expert override: Force L2 projection path. Overrides mode.
-
-    Returns
-    -------
-    UWQuantity, UnitAwareArray, or ndarray
-        If non-dimensional scaling is active, returns plain ndarray.
-        If expression has units, returns UWQuantity (scalar) or UnitAwareArray.
-        Otherwise returns plain ndarray.
-
-    Notes
-    -----
-    **Evaluation Modes:**
-
-    - ``"fast"``: Clement gradient (no solve), direct calculation, RBF everywhere
-    - ``"default"``: Projection for derivatives (solve), direct otherwise, DMInterp + RBF
-    - ``"projection"``: Always use L2 projection (solve), DMInterp + RBF
-
-    The `rbf` and `force_l2` parameters are expert overrides that take
-    precedence over the mode setting when explicitly provided.
-
-    Examples
-    --------
-    >>> # Works with both dimensional and non-dimensional coords
-    >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
-    >>> result = uw.function.evaluate(T.sym, mesh.data[:, :2])  # non-dimensional
-    >>> if hasattr(result, 'to'):
-    ...     result_K = result.to('K')  # Unit conversion
+    Parameters, return values, and the evaluation-mode notes are
+    documented on the public wrapper, :func:`evaluate` — every parameter
+    here has the same meaning (the wrapper adds only ``monotone``).
     """
+    _validate_coords_not_sequence(coords)
+
     from ._function import evaluate_nd as _evaluate_nd
     from .unit_conversion import has_units
     from underworld3.units import get_units
@@ -197,18 +166,18 @@ def _evaluate_impl(
         # Convert coordinates
         if isinstance(coords, UnitAwareArray):
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, UWQuantity):
             coords_nondim = uw.non_dimensionalise(coords)
             if hasattr(coords_nondim, 'value'):
-                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.float64)
             else:
-                coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, np.ndarray):
-            coords_for_eval = np.asarray(coords, dtype=np.double)
+            coords_for_eval = np.asarray(coords, dtype=np.float64)
         else:
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
 
         # Evaluate using optimized lambdification
         raw_values = evaluate_pure_sympy(expr_unwrapped, coords_for_eval)
@@ -292,21 +261,21 @@ def _evaluate_impl(
     if isinstance(coords, UnitAwareArray):
         # Unit-aware array - need to non-dimensionalise
         coords_nondim = uw.non_dimensionalise(coords)
-        coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+        coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
     elif isinstance(coords, UWQuantity):
         # UWQuantity from arithmetic operations (e.g., coords - dt * velocity)
         coords_nondim = uw.non_dimensionalise(coords)
         if hasattr(coords_nondim, 'value'):
-            coords_for_eval = np.asarray(coords_nondim.value, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim.value, dtype=np.float64)
         else:
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
     elif isinstance(coords, np.ndarray):
         # Plain numpy array - assume it's already [0-1] non-dimensional
-        coords_for_eval = np.asarray(coords, dtype=np.double)
+        coords_for_eval = np.asarray(coords, dtype=np.float64)
     else:
         # Other type - try to non-dimensionalise
         coords_nondim = uw.non_dimensionalise(coords)
-        coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+        coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
 
     # Ensure coordinates are 2D: shape (N, ndim) not (ndim,)
     # This handles single coordinate evaluation: coords[60] -> shape (2,) -> (1, 2)
@@ -326,17 +295,20 @@ def _evaluate_impl(
         evalf=evalf,
         rbf=rbf_flag,
         data_layout=data_layout,
-        check_extrapolated=check_extrapolated,
+        check_extrapolated=True,      # always: free, and needed for the guard below
         force_l2=force_l2_flag,
         smoothing=smoothing,
     )
 
-    # Step 4: Unpack extrapolation flag if needed
-    if check_extrapolated:
-        raw_values, extrapolated = raw_result_nondim
-    else:
-        raw_values = raw_result_nondim
-        extrapolated = None
+    # Step 4: Unpack the extrapolation flag.
+    #
+    # It is requested UNCONDITIONALLY. Measured cost of asking for it: none —
+    # 0.0073 s/call against 0.0075 s/call without, on 1969 points, i.e. inside the
+    # noise. The locator has to decide whether it located a point in order to fall
+    # back, so the mask is already known and returning it is free.
+    raw_values, extrapolated = raw_result_nondim
+
+    _warn_if_points_are_not_owned(extrapolated)
 
     # Step 5: Re-dimensionalize and wrap with units
     # GATEWAY PRINCIPLE: evaluate() ALWAYS returns dimensional values when units are known
@@ -452,6 +424,8 @@ def _global_evaluate_impl(
     -----
     See :func:`evaluate` for details on evaluation modes.
     """
+    _validate_coords_not_sequence(coords)
+
     from ._function import global_evaluate_nd as _global_evaluate_nd
     from ..units import get_units
     from .quantities import quantity, UWQuantity
@@ -489,18 +463,18 @@ def _global_evaluate_impl(
         # Convert coordinates
         if isinstance(coords, UnitAwareArray):
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, UWQuantity):
             coords_nondim = uw.non_dimensionalise(coords)
             if hasattr(coords_nondim, 'value'):
-                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.float64)
             else:
-                coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, np.ndarray):
-            coords_for_eval = np.asarray(coords, dtype=np.double)
+            coords_for_eval = np.asarray(coords, dtype=np.float64)
         else:
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
 
         # Evaluate using optimized lambdification
         raw_result = evaluate_pure_sympy(expr, coords_for_eval)
@@ -524,18 +498,18 @@ def _global_evaluate_impl(
         if isinstance(coords, UnitAwareArray):
             # Extract base array and non-dimensionalize if needed
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_cython = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_cython = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, UWQuantity):
             # UWQuantity from arithmetic operations (e.g., coords - dt * velocity)
             # Extract the underlying value and non-dimensionalize
             coords_nondim = uw.non_dimensionalise(coords)
             # coords_nondim might be a scalar or array - ensure it's an array
             if hasattr(coords_nondim, 'value'):
-                coords_for_cython = np.asarray(coords_nondim.value, dtype=np.double)
+                coords_for_cython = np.asarray(coords_nondim.value, dtype=np.float64)
             else:
-                coords_for_cython = np.asarray(coords_nondim, dtype=np.double)
+                coords_for_cython = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, np.ndarray):
-            coords_for_cython = np.asarray(coords, dtype=np.double)
+            coords_for_cython = np.asarray(coords, dtype=np.float64)
         else:
             coords_for_cython = coords
     else:
@@ -729,6 +703,14 @@ def _apply_monotone_limit(
     # latent mismatch (scaling is inactive in the validated baseline so it
     # never bites). Do not "fix" without re-validating the trajectory.
     nnn = mesh.dim + 1
+    # A rank owning no cells owns no source DOFs: there is no neighbourhood
+    # to bound against, and the stencil gather would index an empty array
+    # (issue #405). Such a rank also has no interior evaluation points, so
+    # `value` is empty and returning it unchanged is exact, not a fallback.
+    # Purely rank-local: "pick" (the only collective mode) is refused above
+    # under MPI, so this early return cannot skip a collective.
+    if psi_coords_nd.shape[0] == 0 or np.asarray(coords_nd).shape[0] == 0:
+        return value
     kdt = uw.kdtree.KDTree(np.ascontiguousarray(psi_coords_nd))
     _, idxs = kdt.query(
         np.ascontiguousarray(coords_nd), k=nnn, sqr_dists=False)
@@ -786,6 +768,50 @@ def _apply_monotone_limit(
 
 
 @uw.timing.routine_timer_decorator
+def _warn_if_points_are_not_owned(extrapolated):
+    """Warn when a parallel `evaluate` silently answered for points this rank does
+    not own.
+
+    `evaluate` is RANK-LOCAL: it answers from this rank's portion of the mesh. In
+    serial that is the whole mesh and everything is exact. In parallel, a query
+    point owned by another rank is not located here, so the locator falls back to
+    extrapolation and returns a plausible number that is simply wrong — and two
+    ranks asked the identical question return different answers.
+
+    Measured (#606), P2 field holding x^2+2y^2 on a unit box, querying every rank's
+    own DOF coordinates allgathered — so every point is a mesh node:
+
+        np=1  all coords   max error 8.9e-16
+        np=2  own coords   max error 6.7e-16      <- rank-local use is exact
+        np=2  all coords   max error 1.48         <- on a field whose range is 3
+        np=4  all coords   max error 2.59, two thirds of points wrong
+
+    The extrapolation mask is an EXACT detector of those points: at np=2, 69 of 166
+    flagged and 69 wrong, with no wrong-but-unflagged and no flagged-but-fine; at
+    np=4, 120 and 120. Maximum error among unflagged points was 8.9e-16. So this
+    warning has neither false negatives nor false positives on the case that
+    motivated it.
+
+    Serial is deliberately NOT warned about: there, an extrapolated point is one
+    genuinely outside the domain, which is a legitimate thing to ask for.
+    """
+    if uw.mpi.size == 1 or extrapolated is None:
+        return
+    flagged = int(np.count_nonzero(extrapolated))
+    if not flagged:
+        return
+    total = int(np.asarray(extrapolated).size)
+    warnings.warn(
+        f"evaluate() is rank-local: {flagged} of {total} query points are not "
+        f"located on this rank (rank {uw.mpi.rank} of {uw.mpi.size}), so their "
+        "values were EXTRAPOLATED and are wrong — different ranks will disagree "
+        "for the same query. Use global_evaluate() for points that may be owned "
+        "elsewhere, or restrict the query to this rank's own coordinates (#606).",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def evaluate(
     expr,
     coords,
@@ -805,13 +831,75 @@ def evaluate(
 ):
     """Evaluate ``expr`` at ``coords`` with automatic unit handling.
 
-    Thin wrapper over :func:`_evaluate_impl`. See that function for the
-    full parameter documentation and evaluation-mode notes. With the
-    default ``monotone=False`` this is bit-identical to the historical
-    ``evaluate``.
+    Wraps the compiled ``evaluate_nd`` machinery so unit conversion
+    (dimensional coordinates in, unit-aware results out) happens
+    automatically. With the default ``monotone=False`` the result is
+    bit-identical to the historical ``evaluate``.
+
+    .. warning::
+       **This is RANK-LOCAL.** It answers from this rank's portion of the
+       mesh. In serial that is the whole mesh. In parallel, a point owned by
+       another rank cannot be located here, so it is EXTRAPOLATED and the
+       value returned is wrong — and two ranks asked the same question return
+       different answers. Measured on a P2 field exact in P2 (#606): querying
+       every rank's own DOF coordinates allgathered gave a maximum error of
+       1.48 at ``np=2`` and 2.59 at ``np=4``, on a field whose whole range is
+       3, with two thirds of the points wrong at ``np=4`` — while the same
+       query restricted to each rank's own coordinates was exact to 1e-16.
+
+       Use :func:`global_evaluate` for points that may be owned elsewhere. A
+       parallel call that extrapolates any point now emits a
+       ``RuntimeWarning`` naming the count.
 
     Parameters
     ----------
+    expr : sympy expression or UWexpression
+        Expression to evaluate. All MeshVariable symbols in the
+        expression must belong to the same mesh (``ValueError``
+        otherwise — use ``var.copy_into()`` to transfer data between
+        meshes first).
+    coords : numpy.ndarray or UnitAwareArray
+        Coordinates at which to evaluate, shape ``(n_points, dim)``.
+        A plain array is taken to be in model (non-dimensional) units;
+        a ``UnitAwareArray`` / ``UWQuantity`` array (e.g. from
+        ``mesh.X.coords``) is non-dimensionalised automatically.
+        Python lists/tuples of individual quantity objects
+        (``[(x_qty, y_qty)]``) are NOT supported and raise
+        ``TypeError`` — convert physical locations with
+        :func:`underworld3.scaling.non_dimensionalise` and pass a
+        numpy array (units-family ruling, 2026-07).
+    coord_sys : mesh.N vector coordinate system, optional
+        Coordinate system to evaluate in (default: the mesh's own).
+    other_arguments : dict, optional
+        Additional arguments passed through to the compiled evaluator.
+    simplify : bool, optional
+        Sympy-simplify the expression before evaluation
+        (default: False).
+    verbose : bool, optional
+        Verbose output (default: False).
+    evalf : bool, optional
+        Force numerical evaluation via sympy ``evalf``
+        (default: False).
+    mode : {"default", "fast", "projection"}, optional
+        Accuracy / speed tradeoff. ``"default"`` — L2 projection for
+        derivative terms, direct evaluation otherwise (DMInterp + RBF).
+        ``"fast"`` — Clement gradient (no solve), RBF everywhere.
+        ``"projection"`` — always L2 projection (a solve).
+    data_layout : callable, optional
+        Data layout specification (default: None).
+    check_extrapolated : bool, optional
+        If True, also return a boolean mask flagging points whose
+        value was extrapolated from outside the domain
+        (default: False).
+    smoothing : float, optional
+        Smoothing parameter for the L2 projection (dimensionless);
+        only used when a projection path is active. Default: 1e-6.
+    rbf : bool, optional
+        Expert override: force RBF interpolation everywhere.
+        Takes precedence over ``mode``.
+    force_l2 : bool, optional
+        Expert override: force the L2 projection path.
+        Takes precedence over ``mode``.
     monotone : bool or str, optional
         Opt-in bounded (monotone) interpolation, applied as a
         post-process to the computed result. ``False`` (default) → no
@@ -821,6 +909,25 @@ def evaluate(
         out-of-bounds subset via (bounded) RBF interpolation. Only
         single-MeshVariable expressions are supported; composites raise
         ``ValueError``. See :func:`_apply_monotone_limit`.
+
+    Returns
+    -------
+    UWQuantity, UnitAwareArray, or numpy.ndarray
+        Unit-aware whenever the expression carries units, regardless of
+        whether non-dimensional scaling is active (gateway principle:
+        the user always sees dimensional values when units are known):
+        a ``UWQuantity`` for scalar results, a ``UnitAwareArray``
+        otherwise, re-dimensionalised via the active scaling when one
+        applies. A plain ndarray when the expression carries no units.
+        With ``check_extrapolated=True``, a
+        ``(values, extrapolated_mask)`` pair.
+
+    Examples
+    --------
+    >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
+    >>> result = uw.function.evaluate(T.sym, mesh.X.coords[:, :2])
+    >>> if hasattr(result, 'to'):
+    ...     result_K = result.to('K')  # unit conversion
     """
     # Validate up front so an unknown option fails fast (no wasted eval).
     monotone_mode = _normalize_monotone(monotone)

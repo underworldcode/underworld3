@@ -12,8 +12,8 @@ This is the step-1 (additive, self-contained) implementation: ``radial`` and
 ``plane`` restore are analytic; ``facet`` (nearest reference facet) and the
 ``free`` live-surface follow are follow-ups (the orchestrator pins labels with
 no analytic surface). The module depends only on the primitive
-``_ot_adapt`` helpers that exist on ``development`` (``_slip_normals``), not on
-the mover feature branch's unified projector.
+boundary helpers in ``meshing.smoothing.graph`` (``_slip_normals``,
+``_nearest_on_facets_*``).
 """
 import numpy as np
 
@@ -61,7 +61,8 @@ class BoundingSurface:
     """
 
     def __init__(self, mesh, label, kind, *, centre=None, radius=None,
-                 point=None, normal=None, reference_facets=None, is_free=False):
+                 point=None, normal=None, reference_facets=None, is_free=False,
+                 interior=False):
         if kind not in _VALID_KINDS:
             raise ValueError(
                 f"BoundingSurface kind must be one of {_VALID_KINDS}; got {kind!r}")
@@ -69,6 +70,12 @@ class BoundingSurface:
         self.label = str(label)
         self.kind = kind
         self.is_free = bool(is_free) or kind == "free"
+        # An INTERIOR surface (an embedded interface such as the Internal
+        # circle/sphere of the *InternalBoundary meshes) is snapped-to by
+        # adapt() so refinement follows its true geometry, but is NOT
+        # slip-eligible: interface motion is physics-owned (deform /
+        # free-surface machinery), so the movers keep its nodes pinned.
+        self.interior = bool(interior)
         self.centre = None if centre is None else np.asarray(centre, dtype=float).ravel()
         self.radius = None if radius is None else _as_float(radius)
         self.point = None if point is None else np.asarray(point, dtype=float).ravel()
@@ -140,7 +147,7 @@ class BoundingSurface:
         ``_gamma_p1_at_vertices`` did in git history) and re-solve only for
         free surfaces. See docs/developer/design/boundary-slip-strategy.md.
         """
-        from underworld3.meshing._ot_adapt import _slip_normals
+        from underworld3.meshing.smoothing import _slip_normals
         return _slip_normals(self._mesh, np.ascontiguousarray(coords, dtype=float))
 
     # -- tangent slide -------------------------------------------------------
@@ -182,7 +189,7 @@ class BoundingSurface:
         if self.kind == "facet":
             if coords.shape[0] == 0:
                 return coords
-            from underworld3.meshing._ot_adapt import (
+            from underworld3.meshing.smoothing import (
                 _nearest_on_facets_2d, _nearest_on_facets_3d)
             if coords.shape[1] == 2:
                 return _nearest_on_facets_2d(coords, self.reference_facets)
@@ -210,15 +217,20 @@ class BoundingSurface:
 
 
 # -- constructor-side registration helpers ---------------------------------
-def register_radial_surfaces(mesh, centre, label_radius):
+def register_radial_surfaces(mesh, centre, label_radius, interior=()):
     """Register ``radial`` surfaces: ``label_radius = {label_name: radius}``.
 
     Called by analytic radial-boundary constructors (Annulus, SphericalShell,
-    CubedSphere). ``centre`` is the common centre (e.g. the origin)."""
+    CubedSphere). ``centre`` is the common centre (e.g. the origin). Labels
+    named in ``interior`` are embedded interfaces: adapt() snaps refinement
+    onto them, but they stay pinned under the movers (interface motion is
+    physics-owned)."""
     centre = np.asarray(centre, dtype=float).ravel()
+    interior = set(interior)
     for lab, r in label_radius.items():
         mesh.register_tangent_slip_provider(
-            lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r))
+            lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r,
+                                 interior=lab in interior))
 
 
 def register_plane_surfaces(mesh, label_plane):

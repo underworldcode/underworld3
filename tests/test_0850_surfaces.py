@@ -1408,6 +1408,35 @@ class TestSurface2DGeometry:
 
 
 # =============================================================================
+# Refinement metric profiles
+# =============================================================================
+
+class TestRefinementProfiles:
+    """Distance-to-size profiles behind Surface.refinement_metric[_function]."""
+
+    def test_hyperbolic_profile_endpoints_and_monotone(self):
+        from underworld3.meshing.surfaces import _profile_to_edge_lengths
+
+        h_near, h_far, width = 0.02, 0.4, 0.25
+        d = np.linspace(0.0, 2.0 * width, 200)
+        h = _profile_to_edge_lengths(d, h_near, h_far, width, "hyperbolic")
+        assert np.isclose(h[0], h_near)              # on the surface
+        # sqrt(h_near² + (s·width)²) == h_far exactly by the slope choice
+        assert np.isclose(
+            _profile_to_edge_lengths(np.array([width]), h_near, h_far,
+                                     width, "hyperbolic")[0], h_far)
+        assert np.all(h <= h_far + 1e-15)            # capped beyond width
+        assert np.all(np.diff(h) >= -1e-15)          # monotone increasing
+
+    def test_unknown_profile_raises(self):
+        from underworld3.meshing.surfaces import _profile_to_edge_lengths
+
+        with pytest.raises(ValueError, match="hyperbolic"):
+            _profile_to_edge_lengths(np.array([0.1]), 0.02, 0.4, 0.25,
+                                     "parabolic")
+
+
+# =============================================================================
 # Feature Summary
 # =============================================================================
 

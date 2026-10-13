@@ -56,6 +56,71 @@ def delta(
     return delta_fn
 
 
+def smooth_max(a, b, epsilon):
+    r"""
+    Differentiable (regularized) maximum of two expressions.
+
+    .. math::
+
+        \operatorname{smax}_\epsilon(a, b) =
+        \tfrac{1}{2}\left(a + b + \sqrt{(a - b)^2 + \epsilon^2}\right)
+
+    Approaches the exact :math:`\max(a, b)` as :math:`\epsilon \to 0`, with the
+    corner rounded over a scale set by :math:`\epsilon`. Unlike ``sympy.Max`` it is
+    smooth everywhere, so it can appear in a residual that is differentiated for a
+    consistent (Newton) Jacobian without introducing a non-differentiable kink.
+
+    Parameters
+    ----------
+    a, b : sympy.Basic
+        Expressions to combine (fields, coordinates, or constants).
+    epsilon : float or sympy.Expr
+        Rounding scale, in the units of ``a`` and ``b``. Choose a small fraction of
+        the physical scale over which the two branches cross.
+
+    Returns
+    -------
+    sympy.Expr
+        The smooth maximum.
+
+    Notes
+    -----
+    A common use is a differentiable tension cutoff on a pressure-dependent yield
+    stress, :math:`\operatorname{smax}_\epsilon(C + \sin\phi\,p,\, 0)` — the rounded
+    tension cap several failure envelopes use (e.g. a parabolic Griffith cap) in
+    place of a sharp corner, which keeps the consistent-Newton tangent well defined.
+    """
+    return (a + b + sympy.sqrt((a - b) ** 2 + epsilon**2)) / 2
+
+
+def smooth_min(a, b, epsilon):
+    r"""
+    Differentiable (regularized) minimum of two expressions.
+
+    .. math::
+
+        \operatorname{smin}_\epsilon(a, b) =
+        \tfrac{1}{2}\left(a + b - \sqrt{(a - b)^2 + \epsilon^2}\right)
+
+    Approaches the exact :math:`\min(a, b)` as :math:`\epsilon \to 0`; it is
+    :math:`-\operatorname{smax}_\epsilon(-a, -b)`. See :func:`smooth_max` for the
+    parameters and the differentiability rationale.
+
+    Parameters
+    ----------
+    a, b : sympy.Basic
+        Expressions to combine (fields, coordinates, or constants).
+    epsilon : float or sympy.Expr
+        Rounding scale, in the units of ``a`` and ``b``.
+
+    Returns
+    -------
+    sympy.Expr
+        The smooth minimum.
+    """
+    return (a + b - sympy.sqrt((a - b) ** 2 + epsilon**2)) / 2
+
+
 def L2_norm(n_s, a_s, mesh):
     r"""
     L2 norm of the difference between numerical and analytical solutions.

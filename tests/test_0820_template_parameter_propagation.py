@@ -188,7 +188,7 @@ class TestTemplateParameterPropagation:
         with uw.synchronised_array_update():
             v_soln.array[...] = 0.0
 
-        adv_diff = uw.systems.AdvDiffusion(
+        adv_diff = uw.systems.AdvDiffusionSLCN(
             self.mesh,
             u_Field=phi,
             V_fn=v_soln,

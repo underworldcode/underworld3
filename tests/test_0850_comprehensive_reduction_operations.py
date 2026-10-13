@@ -10,13 +10,11 @@ Test coverage:
 - Global reductions on _BaseMeshVariable (using PETSc)
 - Global reductions on UnitAwareArray (using MPI)
 
-STATUS (2025-11-15):
-- SWARM TESTS PARTIALLY FIXED: Corrected variable ordering and populate() API
-- REAL CODE BUG FOUND: SwarmVariable reductions return scalars, should return tuples
-  - MeshVariable.array.max() → (1.0, 2.0) for 2D vector ✓
-  - SwarmVariable.array.max() → 2.0 for 2D vector ✗ (interface inconsistency)
-- Tests are CORRECT - implementation is WRONG
-- Marked swarm tests as skip until reduction interface bug is fixed
+STATUS (2026-07):
+- SwarmVariable array-view reductions now follow the MeshVariable contract:
+  float for single-component variables, per-component tuple for
+  multi-component variables (LE-07 / BF-11 remediation). The swarm tests
+  below are unskipped and act as the regression net for that contract.
 """
 
 import numpy as np
@@ -25,11 +23,10 @@ import underworld3 as uw
 
 
 @pytest.mark.level_2  # Intermediate - array reductions
-@pytest.mark.tier_c   # Experimental - tests reveal reduction interface bug in SwarmVariable
+@pytest.mark.tier_b   # Regression net for the LE-07/BF-11 reduction-contract fix
 class TestSwarmArrayViewReductions:
     """Test reduction operations on swarm array views."""
 
-    @pytest.mark.skip(reason="BUG: SwarmVariable reductions return scalars instead of tuples for vector variables. Fix SwarmVariable reduction interface to match MeshVariable, then remove skip.")
     def test_simple_swarm_array_view_reductions(self):
         """Test all reduction operations on SimpleSwarmArrayView."""
         swarm = uw.swarm.Swarm(uw.meshing.StructuredQuadBox(elementRes=(5, 5)))
@@ -69,14 +66,14 @@ class TestSwarmArrayViewReductions:
         assert len(sum_result) == 2
         assert len(std_result) == 2
 
-    @pytest.mark.skip(reason="BUG: SwarmVariable(4) requires explicit vtype parameter + reduction interface bug. Fix SwarmVariable API, then remove skip.")
     def test_tensor_swarm_array_view_reductions(self):
         """Test all reduction operations on TensorSwarmArrayView."""
         swarm = uw.swarm.Swarm(uw.meshing.StructuredQuadBox(elementRes=(5, 5)))
 
         # Create tensor swarm variable BEFORE populating (CRITICAL!)
-        # Note: This currently fails - need vtype parameter for 4-component variables
-        tensor_var = uw.swarm.SwarmVariable("tensor", swarm, 4)  # 2x2 tensor
+        # An explicit vtype is required for ambiguous component counts —
+        # shared, deliberate design (MeshVariable raises the same ValueError).
+        tensor_var = uw.swarm.SwarmVariable("tensor", swarm, 4, vtype=uw.VarType.TENSOR)  # 2x2 tensor
 
         # NOW populate the swarm with specific coordinates
         coords = np.random.RandomState(0).random((100, 2))
@@ -310,10 +307,10 @@ class TestReductionOperationConsistency:
             assert callable(getattr(var.array, method)), f"Method {method} not callable"
 
 
-@pytest.mark.xfail(reason="std() method not yet implemented on MeshVariable")
 class TestStdMethodNewImplementations:
     """Specific tests for the newly added std() method."""
 
+    @pytest.mark.xfail(reason="std() method not yet implemented on MeshVariable")
     def test_mesh_variable_std_new_method(self):
         """Test the newly added std() method on mesh variables."""
         mesh = uw.meshing.StructuredQuadBox(elementRes=(5, 5))
@@ -332,7 +329,6 @@ class TestStdMethodNewImplementations:
         # but std should be positive for non-constant data
         assert result >= 0
 
-    @pytest.mark.skip(reason="BUG: SwarmVariable populate() ordering issue. Create variable before populate(), then remove skip.")
     def test_swarm_std_new_method(self):
         """Test the newly added std() method on swarm variables."""
         swarm = uw.swarm.Swarm(uw.meshing.StructuredQuadBox(elementRes=(5, 5)))

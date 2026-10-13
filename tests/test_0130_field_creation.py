@@ -1,45 +1,52 @@
+"""Successive mesh variables on one mesh get distinct field ids, and `.array` is reachable.
+
+This file used to be a converted debug script: the mesh and the three variables
+were created at module level during pytest COLLECTION, and each step sat inside
+a `try/except` that printed the exception. A duplicate field id or an
+unreachable `.array` printed a cross and the run stayed green.
+"""
+
 import pytest
 
-# All tests in this module are quick core tests
-pytestmark = pytest.mark.level_1
-#!/usr/bin/env python3
-
 import underworld3 as uw
-import numpy as np
 from underworld3.meshing import UnstructuredSimplexBox
 
-# Create a simple test case to debug the field ID issue
-print("Creating mesh...")
-mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2)
+pytestmark = pytest.mark.level_1
 
-print("Creating first variable...")
-try:
+
+@pytest.fixture(scope="module")
+def mesh():
+    return UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
+    )
+
+
+def test_successive_variables_get_distinct_field_ids(mesh):
+    """Three variables of mixed rank and degree, three different field ids.
+
+    A repeated id is the failure this file was written to catch: the second
+    variable would then address the first one's DOFs.
+    """
+
     u = uw.discretisation.MeshVariable("u", mesh, 2, vtype=uw.VarType.VECTOR, degree=2)
-    print(f"✓ Variable u created successfully with field_id={u.field_id}")
-except Exception as e:
-    print(f"✗ Failed to create variable u: {e}")
-
-print("Creating second variable...")
-try:
     p = uw.discretisation.MeshVariable("p", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
-    print(f"✓ Variable p created successfully with field_id={p.field_id}")
-except Exception as e:
-    print(f"✗ Failed to create variable p: {e}")
-
-print("Creating third variable...")
-try:
     s = uw.discretisation.MeshVariable("s", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
-    print(f"✓ Variable s created successfully with field_id={s.field_id}")
-except Exception as e:
-    print(f"✗ Failed to create variable s: {e}")
 
-print("Testing array access...")
-try:
-    print("Accessing s.array...")
-    s_array = s.array
-    print("✓ s.array access successful")
-except Exception as e:
-    print(f"✗ Failed to access s.array: {e}")
-    import traceback
+    ids = [u.field_id, p.field_id, s.field_id]
 
-    traceback.print_exc()
+    assert len(set(ids)) == 3, f"field ids collide: {ids}"
+
+
+def test_array_is_reachable_and_shaped_by_the_variable(mesh):
+    """`.array` returns storage matching the variable's own component count."""
+
+    scalar = uw.discretisation.MeshVariable(
+        "s_array", mesh, 1, vtype=uw.VarType.SCALAR, degree=1
+    )
+    vector = uw.discretisation.MeshVariable(
+        "v_array", mesh, 2, vtype=uw.VarType.VECTOR, degree=2
+    )
+
+    assert scalar.array.shape[-1] == 1
+    assert vector.array.shape[-1] == mesh.dim
+    assert scalar.array.shape[0] == scalar.coords.shape[0]

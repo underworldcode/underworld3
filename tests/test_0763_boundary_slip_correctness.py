@@ -1,7 +1,7 @@
 """Correctness of the mesh-owned ``mesh.boundary_slip`` contract.
 
 Step 2 of the boundary tangent-slip refactor swapped every metric mover from the
-private ``_ot_adapt._build_slip_projector`` onto ``mesh.boundary_slip`` (see
+private slip projector onto ``mesh.boundary_slip`` (see
 ``docs/developer/design/boundary-slip-strategy.md``) and removed the old
 projector. This test locks the replacement's behaviour directly: slip vertices
 land **exactly** on their analytic bounding surface (radius / plane), junctions
@@ -82,7 +82,7 @@ def test_box_facet_fallback_stays_on_polygon():
     """Unregistered slip labels build transient ``facet`` surfaces; projected
     vertices lie on the reference-facet polygon and the transient surfaces do
     not leak into the persistent collection."""
-    from underworld3.meshing._ot_adapt import (
+    from underworld3.meshing.smoothing import (
         _boundary_facets, _nearest_on_facets_2d)
     m = _box()
     m.bounding_surfaces.clear()                 # force the facet fallback path

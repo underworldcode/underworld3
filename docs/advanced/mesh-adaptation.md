@@ -30,7 +30,7 @@ metric = uw.adaptivity.metric_from_gradient(
 )
 
 # Adapt the mesh
-mesh.adapt(metric)
+mesh.remesh(metric)
 ```
 
 ## Core Concepts
@@ -65,7 +65,7 @@ for each edge vector $\mathbf{e}$. Edges that are too long get subdivided; regio
 UW3 offers **two complementary** ways to put resolution where it is
 needed:
 
-| | `mesh.adapt(...)` (this page) | `smooth_mesh_interior(method="anisotropic")` |
+| | `mesh.remesh(...)` (this page) | `uw.meshing.node_redistribution(...)` |
 |---|---|---|
 | Mechanism | **Re-mesh** (MMG): insert/remove/retriangulate | **Redistribute** the existing nodes (move only) |
 | Node budget | *Changes* — targets an **absolute** edge length `h` | **Fixed** — relative redistribution to a target *density* |
@@ -75,7 +75,7 @@ needed:
 | Cost | Re-mesh + full variable transfer | A few cheap SPD elliptic solves (no re-mesh) |
 | Parallel | MMG re-partition | O(N), GAMG-parallelisable, no transfer |
 
-Use `mesh.adapt` when you need a genuinely finer mesh (more
+Use `mesh.remesh` when you need a genuinely finer mesh (more
 elements) and can afford to rebuild the problem. Use the
 **node-snuggling** redistribution when you want to *reshape* the
 existing mesh toward a feature every timestep cheaply, keeping the
@@ -241,10 +241,10 @@ metric = fault.refinement_metric(
 )
 
 # Adapt mesh
-mesh.adapt(metric)
+mesh.remesh(metric)
 
 # Check result
-print(f"Adapted mesh: {mesh.data.shape[0]} nodes")
+print(f"Adapted mesh: {mesh.X.coords.shape[0]} nodes")
 
 # Now set up physics on the adapted mesh...
 v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
@@ -258,7 +258,7 @@ p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
 
 ### Variables Are Reset
 
-After `mesh.adapt()`, all variables on the old mesh become invalid. Variables on the new mesh start uninitialized.
+After `mesh.remesh()`, all variables on the old mesh become invalid. Variables on the new mesh start uninitialized.
 
 **For analytical initialization:**
 ```python
@@ -347,7 +347,7 @@ pixi run -e amr python -c "import underworld3; print('AMR ready')"
 
 | Function | Purpose |
 |----------|---------|
-| `mesh.adapt(metric)` | Adapt mesh using metric field |
+| `mesh.remesh(metric)` | Re-mesh (in place) using metric field |
 | `uw.adaptivity.create_metric(mesh, h)` | Convert h-field to metric |
 | `uw.adaptivity.metric_from_gradient(field, ...)` | Metric from field gradient |
 | `uw.adaptivity.metric_from_field(indicator, ...)` | Metric from indicator field |
@@ -379,13 +379,18 @@ For the mathematically inclined, see the [Developer Design Document](../develope
 
 When you want to concentrate resolution on an evolving feature
 **every timestep** without re-meshing — keeping the topology and
-all field data intact — use `smooth_mesh_interior` (the node-moving
-mover) instead of `mesh.adapt`:
+all field data intact — use **node redistribution** instead of
+`mesh.remesh`. The purposeful spelling is
+`uw.meshing.node_redistribution(mesh, metric)` (equivalently the
+mesh-controlled method `mesh.redistribute_nodes(metric)`); it names
+the capability — the algorithm behind it (the Huang–Kamenski MMPDE
+mover) is an implementation detail documented on the machinery,
+`smooth_mesh_interior`:
 
 ```python
 import underworld3 as uw
 from underworld3.meshing import (
-    smooth_mesh_interior, metric_density_from_gradient)
+    node_redistribution, metric_density_from_gradient)
 
 # ... mesh + a temperature field T after some solve ...
 
@@ -396,18 +401,25 @@ from underworld3.meshing import (
 rho = metric_density_from_gradient(mesh, T, amp=8.0)
 
 # Move the nodes to that metric (topology / DOFs / variables
-# all preserved — no transfer needed). method="mmpde" is the
-# DEFAULT and may be omitted; shown here for clarity.
-smooth_mesh_interior(mesh, metric=rho, method="mmpde",
-                     boundary_slip=True)
+# all preserved — no transfer needed).
+node_redistribution(mesh, rho, boundary_slip=True)
 ```
+
+Node redistribution is implemented for **2D simplex (triangle)
+meshes**; other mesh types (quad/hex, 3D, manifolds) raise an
+honest `NotImplementedError` stating what exists. To *add*
+resolution locally instead of moving it, use the nested
+adapt-on-top: `child = mesh.adapt(metric, max_levels=2)` — no
+`engine=` needed (the graded newest-vertex-bisection engine is the
+default on 2D meshes; `engine=` remains as an advanced selector).
 
 ```{tip}
 **`method="mmpde"` is the default mover** (since this release): the
 variational moving-mesh adaptation of Huang & Kamenski. It is
-dimension-general (2D/3D), matrix-free (no PETSc solve — small
-per-cell dense algebra plus a parallel `Vec` assembly), provably
-non-folding, and — uniquely among the movers here — genuinely
+matrix-free (no PETSc solve — small per-cell dense algebra plus a
+parallel `Vec` assembly), provably non-folding, currently 2D
+(triangle meshes; the method itself is dimension-general but the
+3D discretization is not implemented), and genuinely
 *clusters and aligns* to an **anisotropic tensor** metric. It is
 both the most capable and the most straightforward to reason about,
 which is why it is now the default. Pass a **scalar** density (as
@@ -417,13 +429,13 @@ above; it is promoted to the isotropic tensor `ρ·I`) or a `d×d`
 long-along refinement. Full design + derivation:
 {doc}`/developer/design/anisotropic-mmpde-mover`.
 
-The earlier movers remain available via `method=`:
-`"spring"` (fast volumetric equant-cell smoother), `"ma"`
-(isotropic Monge–Ampère), `"ot"` (linear OT-improvement step),
-`"anisotropic"` (decoupled-Winslow tensor smoother — reshapes but
-does not cluster). Use them only when you specifically need their
-behaviour; `"mmpde"` supersedes `"anisotropic"` for fault / front
-refinement.
+The earlier movers — `"spring"` (volumetric equant-cell smoother),
+`"ma"` (isotropic Monge–Ampère), `"ot"` (linear OT-improvement
+step) and `"anisotropic"` (decoupled-Winslow tensor smoother) —
+were **retired in 2026-07**: `"mmpde"` with a scalar metric
+reproduces their isotropic equidistribution, and with a tensor
+metric it clusters and aligns where they could not. The retired
+spellings now raise a `ValueError` pointing here.
 
 Key `mmpde` knobs (via `method_kwargs`): `p` (functional exponent,
 1.5–2), `theta` (Huang alignment/equidistribution balance, 1/3),
@@ -439,9 +451,6 @@ T| - g_{lo})/(g_{hi}-g_{lo}),0,1\big)$ with $g_{lo},g_{hi}$ the
 lo/hi percentiles of $|\nabla T|$ — deliberately the same shape as
 {py:func}`underworld3.adaptivity.metric_from_gradient`, so the
 *intent* you express is identical whichever family you choose.
-The mover then builds a gradient-derived **anisotropic tensor**
-metric internally and solves an M-weighted Laplace (Winslow)
-coordinate map.
 
 ```{important}
 This is a **gradient** metric: it resolves where the field
@@ -455,13 +464,8 @@ on general non-separable features and on cell-alignment / quality
 (it never produces slivers).
 ```
 
-Key knobs (via `method_kwargs`): `aniso_cap` (max cell anisotropy
-— the binding stability lever; ≈2 robust, ≳6 folds), `relax`
-(damping), `n_outer` (composed damped steps), `linear_solver`
-(`"direct"` MUMPS, or `"gamg"` for the parallel-scalable path —
-validated bit-parity). The full mathematical derivation (OT /
-Monge–Ampère, the metric-tensor / Winslow mover, dynamic field
-handling, Nusselt) is in
+The full mathematical derivation (including the retired OT /
+Monge–Ampère and Winslow movers, kept as an R&D record) is in
 {doc}`/developer/design/mesh-adaptation-formulation`; operational
 detail in {doc}`/developer/subsystems/mesh-metric-redistribution`;
 the dated R&D log in

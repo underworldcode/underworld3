@@ -9,10 +9,32 @@ import time
 import numpy as np
 import sympy
 import underworld3 as uw
-from underworld3.meshing import (
-    smooth_mesh_interior, metric_density_from_gradient)
+from underworld3.meshing import metric_density_from_gradient
 
 RA, r_inner, r_o = 1.0e5, 0.5, 1.0
+DT_SAFETY = 0.1
+
+
+def scalar_dt(value):
+    """Make estimate_dt output safe for AdvDiffusionSLCN.solve()."""
+    try:
+        dt = float(value)
+    except TypeError:
+        arr = np.asarray(value, dtype=float)
+        dt = float(np.nanmin(arr))
+
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError(f"Bad timestep from estimate_dt(): {value!r}")
+
+    return DT_SAFETY * dt
+
+
+def check_snes(system, label):
+    """Stop immediately if a solve diverged, so this benchmark is honest."""
+    reason = system.snes.getConvergedReason()
+    if reason < 0:
+        raise RuntimeError(f"{label} diverged: SNES reason={reason}")
+    return reason
 
 
 def build(res):
@@ -32,8 +54,7 @@ def build(res):
     st.penalty = 0.0
     ur = m.CoordinateSystem.unit_e_0
     st.add_essential_bc((0.0, 0.0), m.boundaries.Lower.name)
-    st.add_natural_bc(1.0e6 * v.sym.dot(ur) * ur,
-                      m.boundaries.Upper.name)
+    st.add_rotated_freeslip_bc(0, "Upper")
     st.bodyforce = RA * (T.sym[0]
                          - (r_o - r) / (r_o - r_inner)) * ur
     ad = uw.systems.AdvDiffusionSLCN(m, u_Field=T, V_fn=v.sym,
@@ -52,14 +73,21 @@ def build(res):
 
 def time_steps(res, n=4):
     m, v, P, T, st, ad = build(res)
-    st.solve(zero_init_guess=True)
+    st.solve(zero_init_guess=False)
+    check_snes(st, f"res-{res} initial Stokes solve")
     for _ in range(4):                       # warm (grow plumes)
-        ad.solve(timestep=ad.estimate_dt(), zero_init_guess=False)
+        ad.solve(timestep=scalar_dt(ad.estimate_dt()), zero_init_guess=False)
+        check_snes(ad, f"res-{res} AdvDiffusion solve")
+
         st.solve(zero_init_guess=False)
+        check_snes(st, f"res-{res} Stokes solve")
     t0 = time.perf_counter()
     for _ in range(n):
-        ad.solve(timestep=ad.estimate_dt(), zero_init_guess=False)
+        ad.solve(timestep=scalar_dt(ad.estimate_dt()), zero_init_guess=False)
+        check_snes(ad, f"res-{res} AdvDiffusion solve")
+
         st.solve(zero_init_guess=False)
+        check_snes(st, f"res-{res} Stokes solve")
     ts = (time.perf_counter() - t0) / n
     return ts, m, v, P, T, st, ad
 
@@ -73,20 +101,19 @@ print(f"res-16 plain (adv+stokes) step : {t16:7.3f} s")
 # the reordered loop's single stokes is counted in t16)
 X0 = np.asarray(m.X.coords).copy()
 X0_Tx = np.asarray(T.coords).copy()
-X_prev = np.asarray(m.X.coords).copy()
 ta = time.perf_counter()
 vals0 = np.asarray(uw.function.evaluate(T.sym[0], X0_Tx)).reshape(-1)
-m._deform_mesh(X0); T.data[:, 0] = vals0
+# Note: Mesh.deform() includes remesh_with_field_transfer internally,
+# so this timing includes that transfer cost before the script overwrites fields.
+m.deform(X0); T.data[:, 0] = vals0
 rho = metric_density_from_gradient(m, T, amp=16.0, name="mb")
 X0c = np.asarray(m.X.coords).copy(); T0 = np.asarray(T.data).copy()
-smooth_mesh_interior(m, metric=rho, method="anisotropic",
-                     method_kwargs=dict(aniso_cap=4.0, relax=0.05,
-                                        n_outer=25))
+uw.meshing.node_redistribution(m, rho)
 new_X = np.asarray(m.X.coords).copy()
 new_Tx = np.asarray(T.coords).copy()
-m._deform_mesh(X0c); T.data[...] = T0
+m.deform(X0c); T.data[...] = T0
 valsN = np.asarray(uw.function.evaluate(T.sym[0], new_Tx)).reshape(-1)
-m._deform_mesh(new_X); T.data[:, 0] = valsN
+m.deform(new_X); T.data[:, 0] = valsN
 t_ov = time.perf_counter() - ta
 print(f"a16s adaptation OVERHEAD (no stokes): {t_ov:7.3f} s")
 

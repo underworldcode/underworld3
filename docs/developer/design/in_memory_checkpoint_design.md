@@ -1,5 +1,7 @@
 # In-memory checkpoint as a general UW3 capability
 
+**Status**: Design note (2026-05-11) — not implemented. Audit complete, implementation not started (see the Status section at the end of this document).
+
 Design note. Spun off from the deformable-surface architectural
 discussion (2026-05-11) as a self-contained capability that is bounded,
 useful in its own right, and not specifically tied to free-surface code.

@@ -135,7 +135,13 @@ def reset():
         pass
 
 
-def print_table(filename=None, format="auto"):
+def print_table(
+    filename=None,
+    format="auto",
+    display_fraction=None,
+    group_by=None,
+    output_file=None,
+):
     """
     Display comprehensive performance results.
 
@@ -157,6 +163,19 @@ def print_table(filename=None, format="auto"):
         - ``"auto"`` : Detect from filename (default)
         - ``"ascii"`` : Human-readable table
         - ``"csv"`` : Comma-separated values
+    display_fraction : float, optional
+        Deprecated (legacy timing module). The PETSc log table is not
+        cullable, so the value is accepted for compatibility but has no
+        effect. A ``FutureWarning`` is emitted.
+    group_by : str, optional
+        Deprecated (legacy timing module: ``'line'`` / ``'routine'`` /
+        ``'line_routine'``). PETSc logging groups by event, so the value
+        is accepted for compatibility but has no effect. A
+        ``FutureWarning`` is emitted.
+    output_file : str, optional
+        Deprecated alias for ``filename`` — the old behaviour (write the
+        table to this file) is preserved. Passing both ``filename`` and
+        ``output_file`` is an error.
 
     Example
     -------
@@ -181,6 +200,44 @@ def print_table(filename=None, format="auto"):
     The behaviour is in PETSc, not Underworld; choosing CSV at scale is
     the recommended workaround.
     """
+    import warnings
+
+    # Legacy keywords from the pre-PETSc-log timing module (issue #499).
+    # output_file is an alias for filename (behaviour preserved); the
+    # others cannot be honoured by the PETSc log backend, so they are
+    # accepted with a visible warning rather than a TypeError.
+    if output_file is not None:
+        if filename is not None:
+            raise TypeError(
+                "print_table() received both 'filename' and its deprecated "
+                "alias 'output_file'; pass only 'filename'."
+            )
+        warnings.warn(
+            "print_table(output_file=...) is deprecated; use "
+            "print_table(filename=...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        filename = output_file
+
+    if display_fraction is not None:
+        warnings.warn(
+            "print_table(display_fraction=...) is deprecated and has no "
+            "effect: the PETSc log table cannot be culled. The full table "
+            "is shown.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
+    if group_by is not None:
+        warnings.warn(
+            "print_table(group_by=...) is deprecated and has no effect: "
+            "PETSc logging groups timings by event, not by "
+            "line/routine. The event table is shown.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
     print_petsc_log(filename=filename, format=format)
 
 

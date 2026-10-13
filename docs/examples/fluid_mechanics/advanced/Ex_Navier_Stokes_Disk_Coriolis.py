@@ -189,8 +189,8 @@ navier_stokes.solve(timestep=10.0)
 v_inertial = v_soln.data.copy()
 
 # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
-v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-X_0.data[...] = swarm.data[...]
+v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm._particle_coordinates.data)
+X_0.data[...] = swarm._particle_coordinates.data[...]
 
 # -
 
@@ -254,7 +254,7 @@ for step in range(0, 250):
 
     v_soln_1.data[...] = 0.5 * v_soln_1.data[...] + 0.5 * v_soln.data[...]
 
-    v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
+    v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm._particle_coordinates.data)
 
     swarm.advection(v_soln.fn, delta_t=delta_t, corrector=False)
 
@@ -264,7 +264,7 @@ for step in range(0, 250):
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     remeshed.data[...] = 0
     remeshed.data[offset_idx::swarm_loop, :] = 1
-    swarm.data[offset_idx::swarm_loop, :] = X_0.data[offset_idx::swarm_loop, :]
+    swarm._particle_coordinates.data[offset_idx::swarm_loop, :] = X_0.data[offset_idx::swarm_loop, :]
 
     # re-calculate v history for remeshed particles
     # Note, they may have moved procs after the access manager closed
@@ -272,7 +272,7 @@ for step in range(0, 250):
 
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     idx = np.where(remeshed.data == 1)[0]
-    v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx])
+    v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm._particle_coordinates.data[idx])
 
     uw.pprint("Timestep {}, dt {}, deltaV {}".format(ts, delta_t, deltaV))
 

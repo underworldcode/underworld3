@@ -318,6 +318,11 @@ def test_swarm_migration_preserves_global_values():
     min_before = value.global_min()
     size_before = value.global_size()
 
+    # Raw PETSc coordinates before the perturbation (regression guard below)
+    petsc_x_before = (
+        swarm._particle_coordinates.unpack_raw_data_from_petsc(squeeze=False, sync=False)[:, 0]
+    ).copy()
+
     # Perturb particle positions slightly (may trigger migration)
     with swarm.migration_disabled():
         # Small perturbation that shouldn't move particles between domains
@@ -325,6 +330,16 @@ def test_swarm_migration_preserves_global_values():
         coords = swarm._particle_coordinates.data
         coords[:, 0] = coords[:, 0] + 0.001
         swarm._particle_coordinates.data[:] = coords
+
+    # REGRESSION (SWARM-04, 2026-07 audit): the perturbation must actually
+    # reach the DMSwarm. Previously writes inside migration_disabled() were
+    # silently discarded and the assertions below passed vacuously.
+    petsc_x_after = (
+        swarm._particle_coordinates.unpack_raw_data_from_petsc(squeeze=False, sync=False)[:, 0]
+    )
+    assert np.allclose(petsc_x_after, petsc_x_before + 0.001), (
+        "coordinate write inside migration_disabled() did not reach the DMSwarm"
+    )
 
     # Explicit migration
     swarm.migrate()

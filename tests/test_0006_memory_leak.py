@@ -54,7 +54,7 @@ def test_stokes_advdiff_memory_leak():
     stokes.add_dirichlet_bc([0.0, sympy.oo], "Right")
 
     # AdvDiff
-    advdiff = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=v)
+    advdiff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v)
     advdiff.constitutive_model = uw.constitutive_models.DiffusionModel
     advdiff.constitutive_model.Parameters.diffusivity = 1.0
     advdiff.add_dirichlet_bc([0.0], "Top")
@@ -72,11 +72,12 @@ def test_stokes_advdiff_memory_leak():
         dt = 0.001
         advdiff.solve(timestep=dt)
 
-        with swarm.access(swarm):
-            swarm.data[...] = swarm.data[...] + 0.01 * np.random.rand(*swarm.data.shape)
-            swarm.data[...] = np.clip(swarm.data[...], 0, 1)
-        
-        v_at_swarm = uw.function.evaluate(v.sym, swarm.data)
+        coords = swarm._particle_coordinates.data
+        with swarm.migration_control():
+            coords[...] = coords[...] + 0.01 * np.random.rand(*coords.shape)
+            coords[...] = np.clip(coords[...], 0, 1)
+
+        v_at_swarm = uw.function.evaluate(v.sym, np.asarray(swarm._particle_coordinates.data))
 
         gc.collect()
 

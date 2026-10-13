@@ -23,7 +23,7 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
-def _advect_blob(use_units, vy=20.0, nsteps=5, dt=2.0):
+def _advect_blob(use_units, vy=20.0, nsteps=5, dt=2.0, scheme="slcn"):
     uw.reset_default_model()
     model = uw.get_default_model()
     if use_units:
@@ -34,13 +34,14 @@ def _advect_blob(use_units, vy=20.0, nsteps=5, dt=2.0):
             temperature_difference=uw.quantity(1000, "K"),
         )
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(12, 12), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0), units="km"
+            elementRes=(12, 12), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0), units="km",
+            qdegree=3,
         )
         T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="K")
         V = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=2, units="m/s")
     else:
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(12, 12), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0)
+            elementRes=(12, 12), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0), qdegree=3,
         )
         T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
         V = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=2)
@@ -51,7 +52,11 @@ def _advect_blob(use_units, vy=20.0, nsteps=5, dt=2.0):
         c = T.coords_nd  # DM-space coords (identical units vs nondim)
         T.data[:, 0] = np.exp(-(((c[:, 0] - 500) / 120) ** 2 + ((c[:, 1] - 300) / 120) ** 2))
 
-    adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym)
+    if scheme == "slcn_ip":
+        DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V.sym, degree=2, order=1)
+        adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym, DuDt=DuDt, order=1)
+    else:
+        adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = 1.0e-6
     adv.add_dirichlet_bc([0.0], "Bottom")
@@ -69,13 +74,15 @@ def test_units_slcn_traceback_runs():
     assert Tu.max() < 1.05 and Tu.min() > -0.05
 
 
-def test_units_slcn_matches_nondimensional():
+@pytest.mark.parametrize("scheme", ["slcn", "slcn_ip"])
+def test_units_slcn_matches_nondimensional(scheme):
     """A units-active advection must track the equivalent non-dimensional run.
 
     They share identical ND values, so the trace-back (done in ND space) gives the
     same transport. A small residual (~1e-3) remains from the constitutive
-    diffusivity scaling under units — a separate concern from the trace-back."""
-    Tu = _advect_blob(use_units=True)
-    Tn = _advect_blob(use_units=False)
+    diffusivity scaling under units — a separate concern from the trace-back.
+    Covers the nodal scheme and the integration-point history."""
+    Tu = _advect_blob(use_units=True, scheme=scheme)
+    Tn = _advect_blob(use_units=False, scheme=scheme)
     rel = np.linalg.norm(Tu - Tn) / np.linalg.norm(Tn)
     assert rel < 5.0e-3, f"units-active SLCN diverges from nondimensional: rel L2 = {rel:.3e}"

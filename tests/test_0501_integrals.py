@@ -169,31 +169,26 @@ def test_integrate_swarmvar_deriv_00():
 
 
 # CellWiseIntegral parity tests — the sister class of Integral that returns a
-# per-cell array.  These are marked xfail because CellWiseIntegral.evaluate()
-# clones mesh.dm and attaches a fresh single-field discretisation
-# (FE.createDefault + setField + createDS), but then integrates against
-# mesh.dm.getGlobalVec() which is packed for the original multi-field layout.
-# The mismatch produces a ~2× over-count on simple cases — the same bug that
-# motivated the revert of PR #172 for Integral.
-#
-# These tests will start passing once CellWiseIntegral.evaluate() is rewritten
-# to integrate against mesh.dm + mesh.dm.getDS() directly (matching the
-# pre-PR-172 Integral pattern).
-@pytest.mark.xfail(reason="CellWiseIntegral has the same field-cloning bug "
-                          "that motivated the PR #172 revert")
+# per-cell array.  Regression tests for the field-cloning bug (LE-02 / BF-03):
+# evaluate() used to clone mesh.dm with a fresh single-P1-field DS while the
+# solution vector remained packed for mesh.dm's multi-field layout, reading
+# the wrong DOFs and over-counting (~2x for fn=1 on the unit square — the
+# same defect that motivated the revert of PR #172 for Integral).
 def test_cellwise_integrate_constants():
 
     calculator = uw.maths.CellWiseIntegral(mesh, fn=1.0)
     cell_values = calculator.evaluate()
 
+    # evaluate() returns one value per rank-local cell; reduce for the
+    # global total (no-op in serial).
+    total = uw.mpi.comm.allreduce(np.sum(cell_values))
+
     # Sum of per-cell volumes equals the total mesh volume (unit square = 1.0).
-    assert abs(np.sum(cell_values) - 1.0) < 0.001
+    assert abs(total - 1.0) < 0.001
 
     return
 
 
-@pytest.mark.xfail(reason="CellWiseIntegral has the same field-cloning bug "
-                          "that motivated the PR #172 revert")
 def test_cellwise_integrate_meshvar():
 
     s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
@@ -201,7 +196,11 @@ def test_cellwise_integrate_meshvar():
     calculator = uw.maths.CellWiseIntegral(mesh, fn=s_soln.sym[0])
     cell_values = calculator.evaluate()
 
+    # evaluate() returns one value per rank-local cell; reduce for the
+    # global total (no-op in serial).
+    total = uw.mpi.comm.allreduce(np.sum(cell_values))
+
     # Sum matches the global Integral: ∫∫ sin(πx) dx dy = 2/π over the unit square.
-    assert abs(np.sum(cell_values) - 2 / np.pi) < 0.001
+    assert abs(total - 2 / np.pi) < 0.001
 
     return

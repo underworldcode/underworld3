@@ -31,7 +31,23 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import underworld3 as uw
-from underworld3.meshing import smooth_mesh_interior
+
+
+DT_SAFETY = 0.1
+
+
+def scalar_dt(value):
+    """Convert estimate_dt() output to a plain scalar timestep."""
+    try:
+        dt = float(value)
+    except TypeError:
+        arr = np.asarray(value, dtype=float)
+        dt = float(np.nanmin(arr))
+
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError(f"Bad timestep from estimate_dt(): {value!r}")
+
+    return DT_SAFETY * dt
 from underworld3.meshing.smoothing import _tri_cells, _signed_areas
 
 RES, N_STEPS, RA = 16, 20, 1.0e5
@@ -68,8 +84,7 @@ def run_convection(mesh, r, th, v, P, t_soln, cellsize):
     stokes.penalty = 0.0
     unit_r = mesh.CoordinateSystem.unit_e_0
     stokes.add_essential_bc((0.0, 0.0), mesh.boundaries.Lower.name)
-    stokes.add_natural_bc(1.0e6 * v.sym.dot(unit_r) * unit_r,
-                          mesh.boundaries.Upper.name)
+    stokes.add_rotated_freeslip_bc(0, "Upper")
     T_cond = (r_o - r) / (r_o - r_inner)
     stokes.bodyforce = RA * (t_soln.sym[0] - T_cond) * unit_r
 
@@ -87,13 +102,13 @@ def run_convection(mesh, r, th, v, P, t_soln, cellsize):
               + (r_o - r) / (r_o - r_inner))
     t_soln.data[...] = np.asarray(uw.function.evaluate(
         init_t, t_soln.coords)).reshape(-1, 1)
-    stokes.solve(zero_init_guess=True)
+    stokes.solve()
 
     t_sim = 0.0
     for s in range(N_STEPS):
-        dt = adv_diff.estimate_dt()
+        dt = scalar_dt(adv_diff.estimate_dt())
         adv_diff.solve(timestep=dt, zero_init_guess=False)
-        stokes.solve(zero_init_guess=False)
+        stokes.solve()
         t_sim += dt
         tt = t_soln.data[:, 0]
         print(f"  step {s+1:2d}: t={t_sim:.4f} Δt={dt:.2e} "
@@ -112,6 +127,7 @@ else:
     print(f"=== Ra={RA:.0e} annulus convection, {N_STEPS} steps, "
           f"res-{RES} (FIXED mesh) ===")
     run_convection(mesh, r, th, v, P, t_soln, cellsize)
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
     np.savez(CACHE, T=np.asarray(t_soln.data),
              V=np.asarray(v.data),
              Xc=np.asarray(mesh.X.coords))
@@ -150,9 +166,8 @@ print(f"|∇T|: g_lo(p{G_LO_PCT:.0f})={g_lo:.3f} "
 
 # --- 3. refine the mesh on the T-gradient metric -------------------
 A0 = np.abs(_signed_areas(X_orig, tris))
-print(f"=== refine: method='anisotropic' on ρ∝|∇T| ===")
-smooth_mesh_interior(mesh, metric=metric, method="anisotropic",
-                     verbose=True)
+print("=== refine: node_redistribution on ρ∝|∇T| ===")
+uw.meshing.node_redistribution(mesh, metric)
 X_ref = np.asarray(mesh.X.coords).copy()
 A1 = np.abs(_signed_areas(X_ref, tris))
 print(f"minA/meanA  before={A0.min()/A0.mean():.4f}  "

@@ -389,3 +389,25 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v", "--with-mpi"]))
+
+
+@pytest.mark.mpi(min_size=2)
+def test_metric_mismatch_moments_partition_independent():
+    """#351: mesh_metric_mismatch must return the SAME delta moments on
+    every rank — the sums feeding A_target/A_mean and the moments
+    themselves are globally reduced (rank-local sums made the diagnostics
+    partition-dependent)."""
+    import sympy
+    from underworld3.meshing.smoothing.metrics import mesh_metric_mismatch
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1)
+    x, y = mesh.X
+
+    result = mesh_metric_mismatch(mesh, 1.0 + 10.0 * x)
+
+    for key in ("rms", "max", "median_abs", "alignment", "misalignment"):
+        gathered = uw.mpi.comm.allgather(result[key])
+        assert max(gathered) - min(gathered) < 1e-14, (
+            f"{key} differs across ranks: {gathered}"
+        )

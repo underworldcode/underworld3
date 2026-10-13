@@ -1,0 +1,17 @@
+# Host pixi environments — wrong arch (osx-arm64), multi-GB.
+# Without this, COPY . . sends them into the build context and they
+# clobber the freshly-installed linux runtime env in stage 1.
+.pixi/
+
+# Host-compiled Cython extensions — wrong arch for linux targets.
+build/
+
+# Git history not needed in build context.
+.git/
+
+# Large legacy content not needed in the container.
+docs_legacy/
+
+# Python cache.
+**/__pycache__/
+**/*.pyc

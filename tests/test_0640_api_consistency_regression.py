@@ -137,7 +137,7 @@ class TestFactoryFunctionPatterns:
 
         factory_functions = [
             "create_enhanced_mesh_variable",
-            "create_quantity",  # From units system
+            "create_quantity",  # deprecated alias for one cycle (D14); see uw.quantity
         ]
 
         for func_name in factory_functions:
@@ -145,6 +145,12 @@ class TestFactoryFunctionPatterns:
 
             func = getattr(uw, func_name)
             assert callable(func), f"{func_name} is not callable"
+
+    def test_quantity_is_the_factory(self):
+        """uw.quantity is THE quantity factory (maintainer decision D14)."""
+
+        q = uw.quantity(1.0, "m")
+        assert isinstance(q, uw.UWQuantity)  # type exposed at top level
 
     def test_factory_function_documentation(self):
         """Test that factory functions have proper documentation."""
@@ -249,13 +255,18 @@ class TestUnitsSystemAPIConsistency:
     def test_units_creation_patterns(self):
         """Test consistent patterns for creating unit-aware objects."""
 
-        # Pattern 1: Direct units specification
+        # Pattern 1: Direct units specification (THE factory, decision D14)
         try:
-            quantity1 = uw.create_quantity(10.0, "m/s")
+            quantity1 = uw.quantity(10.0, "m/s")
             assert quantity1 is not None
 
         except Exception as e:
             pytest.fail(f"Direct units creation failed: {e}")
+
+        # Deprecated spelling still works for one cycle, with a warning
+        with pytest.warns(DeprecationWarning, match="uw.quantity"):
+            legacy = uw.create_quantity(10.0, "m/s")
+        assert legacy is not None
 
         # Pattern 2: uw.units multiplication
         try:
@@ -271,7 +282,9 @@ class TestUnitsSystemAPIConsistency:
         # Core units functionality should be accessible
         units_api = [
             "units",  # Units registry
-            "create_quantity",  # Factory function
+            "quantity",  # THE factory function (D14)
+            "UWQuantity",  # the factory's return type
+            "create_quantity",  # deprecated alias, kept one cycle
         ]
 
         for api_item in units_api:

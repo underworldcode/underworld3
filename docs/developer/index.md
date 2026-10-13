@@ -25,6 +25,25 @@ Underworld3 is a Python library for computational geodynamics and geophysical mo
 - **Need coding standards?** → Reference [Style Guide](UW3_Style_and_Patterns_Guide.md)
 ```
 
+## Documentation Authority Map
+
+One governing document per topic (this records the [UW3 Style Charter](UW3_STYLE_CHARTER.md)
+§10 authority map — the Charter itself wins on any conflict). Other documents on the
+same topic are reference or historical material subordinate to the governing document.
+
+| Topic | Governing document |
+|-------|--------------------|
+| Coding style & API conventions | [UW3 Style Charter](UW3_STYLE_CHARTER.md) (detailed reference: [Style Guide](UW3_Style_and_Patterns_Guide.md)) |
+| Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
+| Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
+| Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
+| Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
+| Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
+| Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
+| Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
+| Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
+| Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
+
 ## Documentation Structure
 
 This documentation is organized into focused sections:
@@ -98,6 +117,7 @@ This developer documentation covers Underworld3 version 0.99+. It includes both 
 
 guides/development-setup
 guides/contributing
+UW3_STYLE_CHARTER
 UW3_Style_and_Patterns_Guide
 ```
 
@@ -110,12 +130,14 @@ guides/HOW-TO-WRITE-UW3-SCRIPTS
 guides/notebook-style-guide
 guides/GMSH_INTEGRATION_GUIDE
 guides/CODE-REVIEW-PROCESS
+guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
 guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
+guides/mpi-hang-supervision
 ```
 
 ```{toctree}
@@ -129,13 +151,22 @@ design/WHY_UNITS_NOT_DIMENSIONALITY
 design/SYMBOL_DISAMBIGUATION_2025-12
 design/ADAPTIVE_MESHING_DESIGN
 design/mesh-adaptation-formulation
+design/LAYER2_SBR_ADAPT_ON_TOP
+design/NVB_GRADED_ADAPT
+design/MULTIGRID_MINIMAL_CONTROL_2026-07
+design/solver-wall-clock-guard
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
 design/COORDINATE_MIGRATION_GUIDE
 design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN
 design/mesh-geometry-audit
+design/SWARM_MODERNIZATION_DESIGN_2026-07
 design/PROJECTED_NORMALS_API_DESIGN
 design/TURBULENCE_MODEL_DESIGN
+design/declined-coord-units-proposal
+design/nonlinear-solver-homotopy-warmstart
+design/fault-zone-hybrid-architecture
+design/eulerian-supg-transport
 ```
 
 ```{toctree}
@@ -156,15 +187,21 @@ CHANGELOG
 :caption: Subsystems
 
 subsystems/meshing
+subsystems/mesh-shape-relaxation
+subsystems/conforming-surfaces-and-fault-zones
 subsystems/discretisation
+subsystems/integration-point-variables
 subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing
+subsystems/rotated-freeslip
 subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
 subsystems/constitutive-models-anisotropy
 subsystems/swarm-system
 subsystems/data-access
+subsystems/interpolation
+subsystems/analytic-solutions
 subsystems/expressions-functions
 subsystems/containers
 subsystems/checkpointing-system

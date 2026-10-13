@@ -36,6 +36,8 @@ from scipy.spatial import cKDTree
 import underworld3 as uw
 from underworld3.meshing import smooth_mesh_interior
 
+from serial_reference import _MPI_ENV_PREFIXES
+
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(120)]
 
@@ -248,21 +250,21 @@ def test_parallel_matches_serial_bit_identical():
     comm = MPI.COMM_WORLD
     rank = comm.rank
 
-    # 1. Compute the serial reference (rank 0 only) in a clean
-    # subprocess. We strip MPI/PMIX/PRTE env vars first so the
-    # subprocess's PETSc doesn't try to attach to this mpirun's
-    # MPI world (which would deadlock both processes).
+    # 1. Compute the serial reference (rank 0 only) in a clean subprocess. The
+    # launcher's variables are stripped first, or the child's MPI_Init tries to
+    # join THIS mpirun's job and aborts on a descriptor it does not own.
+    #
+    # The prefix list is shared with serial_reference rather than restated here:
+    # a local copy that named only the Open MPI family passed on Open MPI and
+    # failed under MPICH, whose variables are PMI_* (#675). One list, so a
+    # launcher that is missing from it is missing everywhere and gets noticed.
     ref_path = None
     if rank == 0:
         tmpdir = tempfile.mkdtemp(prefix="winslow_ref_")
         ref_path = os.path.join(tmpdir, "ref.npz")
         clean_env = {
             k: v for k, v in os.environ.items()
-            if not (k.startswith("OMPI_")
-                    or k.startswith("PMIX_")
-                    or k.startswith("PRTE_")
-                    or k.startswith("PRTERUN_")
-                    or k == "OPAL_PREFIX")
+            if not k.startswith(_MPI_ENV_PREFIXES)
         }
         proc = subprocess.run(
             [sys.executable, "-c",

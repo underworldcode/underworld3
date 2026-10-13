@@ -1,5 +1,6 @@
 ---
 title: "SNESFAS (nonlinear multigrid) feasibility in Underworld3"
+status: "Investigation record (preserved via PR #245, 2026-06-18); the production geometric-MG path is custom prolongation (PR #290)"
 ---
 
 # SNESFAS feasibility spike

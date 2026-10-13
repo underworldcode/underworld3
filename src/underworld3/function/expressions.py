@@ -82,6 +82,12 @@ def _unwrap_atom(atom, mode='nondimensional'):
         mode: 'nondimensional' - use .data for ND values (JIT/evaluate)
               'dimensional' - use .value for display
               'symbolic' - use .sym for symbolic substitution
+              'symbolic_keep_constants' - like 'symbolic', but stop at truly
+                  constant UWexpressions (eta0, tau_y, ...), leaving them as the
+                  *same* symbol object so the JIT constants[] mechanism still
+                  routes them. Used to unwrap F0/F1 *before* the Jacobian
+                  derivative so field/grad-v dependence of the viscosity is
+                  differentiated (full Newton) while constants stay symbolic.
 
     Returns:
         The unwrapped value (float, sympy.Number, or sympy expression)
@@ -112,12 +118,26 @@ def _unwrap_atom(atom, mode='nondimensional'):
             if isinstance(inner, UWQuantity) and not isinstance(inner, UWexpression):
                 return _unwrap_atom(inner, mode)
             return inner
+        elif mode == 'symbolic_keep_constants':
+            # Expand non-constant UWexpressions one level (reveals the field /
+            # grad-v dependence of the viscosity); leave truly-constant atoms
+            # untouched as the SAME object so they survive to constants[].
+            # The predicate is shared with _extract_constants() so the set of
+            # atoms kept symbolic here is exactly the set routed to constants[]
+            # by getext() — they cannot drift apart.
+            from underworld3.utilities._jitextension import _is_truly_constant
+            if _is_truly_constant(atom, UWexpression):
+                return atom
+            return atom.sym
         else:  # symbolic
             return atom.sym
 
     # UWQuantity (not wrapped in UWexpression)
     if isinstance(atom, UWQuantity):
-        if mode == 'nondimensional':
+        if mode in ('nondimensional', 'symbolic_keep_constants'):
+            # A bare UWQuantity is never a constants[] entry (those are
+            # UWexpression atoms), so for keep-constants we resolve it to a
+            # value just like nondimensional rather than leaving it unresolved.
             import underworld3
             if underworld3._is_scaling_active() and atom.has_units:
                 try:
@@ -189,6 +209,9 @@ def unwrap_expression(expr, mode='nondimensional', depth=None):
         mode: 'nondimensional' - for JIT compilation and evaluation (uses .data)
               'dimensional' - for user display (uses .value)
               'symbolic' - just expand .sym structure
+              'symbolic_keep_constants' - expand .sym structure but stop at
+                  truly-constant UWexpressions (keep them as symbols for
+                  constants[]). Use before Jacobian differentiation.
         depth: Maximum expansion depth (None = complete expansion)
 
     Returns:
@@ -1125,10 +1148,13 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
     @property
     def is_comparable(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_comparable'):
-            return self._sym.is_comparable
-        return True
+        """Never comparable: a UWexpression is a symbolic placeholder until it is
+        unwrapped, even when its current contents are numeric. Advertising the
+        contents' comparability made sympy's Max/Min try an immediate numeric
+        comparison and reach for Float internals (``_prec``) that a Symbol subclass
+        does not have (issue #415). ``False`` matches plain ``sympy.Symbol``
+        semantics: Max/Min stay unevaluated and resolve after unwrap/JIT."""
+        return False
 
     @property
     def is_extended_real(self):
@@ -1139,23 +1165,29 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
     @property
     def is_positive(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_positive'):
-            return self._sym.is_positive
+        """Unknown, always: a UWexpression is a runtime constant whose value can
+        change after construction, so sympy must not fold on its current sign or
+        on it being zero (#696: ``exp(c)`` with ``c`` created at 0 became 1 at
+        construction, freezing a time ramp). The value is read when the
+        expression is unwrapped for compilation, not here."""
         return None
 
     @property
     def is_negative(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_negative'):
-            return self._sym.is_negative
+        """Unknown, always: a UWexpression is a runtime constant whose value can
+        change after construction, so sympy must not fold on its current sign or
+        on it being zero (#696: ``exp(c)`` with ``c`` created at 0 became 1 at
+        construction, freezing a time ramp). The value is read when the
+        expression is unwrapped for compilation, not here."""
         return None
 
     @property
     def is_zero(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_zero'):
-            return self._sym.is_zero
+        """Unknown, always: a UWexpression is a runtime constant whose value can
+        change after construction, so sympy must not fold on its current sign or
+        on it being zero (#696: ``exp(c)`` with ``c`` created at 0 became 1 at
+        construction, freezing a time ramp). The value is read when the
+        expression is unwrapped for compilation, not here."""
         return None
 
     @property

@@ -455,8 +455,10 @@ def _evaluate_field_at_vertices(var, component, mesh):
         data_reshaped = all_data.reshape(n_vertices, num_components)
         return data_reshaped[:, component].copy()
 
-    # For degree > 1, try to extract vertex DOFs directly from PETSc ordering
-    # PETSc typically stores vertex DOFs first, then edge/face/cell DOFs
+    # For degree > 1, extract vertex DOFs directly from the PETSc local vec.
+    # Plex stores DOFs point-major (vertex points first, then edge/face/cell
+    # points) with the components of each point interleaved:
+    # [p0_c0, p0_c1, ..., p1_c0, p1_c1, ...]
     all_data = var._lvec.getArray()
 
     if num_components == 1:
@@ -464,30 +466,28 @@ def _evaluate_field_at_vertices(var, component, mesh):
         if len(all_data) >= n_vertices:
             return all_data[:n_vertices].copy()
     else:
-        # Vector P2+ - check for blocked layout
-        # Layout: all DOFs for component 0, then all for component 1, etc.
-        dofs_per_component = len(all_data) // num_components
+        # Multi-component P2+ - de-interleave, then take the vertex block.
+        # (A component-blocked slice here previously returned garbage for
+        # every component of a P2 vector field.)
+        if len(all_data) >= n_vertices * num_components:
+            data_interleaved = all_data.reshape(-1, num_components)
+            return data_interleaved[:n_vertices, component].copy()
 
-        if dofs_per_component >= n_vertices:
-            # Extract vertex DOFs for the requested component
-            start = component * dofs_per_component
-            return all_data[start:start + n_vertices].copy()
-
-    # Fallback: evaluate using uw.function.evaluate at vertex coordinates
-    # Build sym expression for the specific component
-    if num_components == 1:
-        sym_expr = var.sym[0, 0]
-    else:
-        # Access component - handle different sym layouts
-        sym = var.sym
-        if hasattr(sym, 'shape') and len(sym.shape) == 2:
-            sym_expr = sym[component, 0]
-        else:
-            # sym is a column vector or 1D
-            sym_expr = sym[component]
+    # Fallback: evaluate using uw.function.evaluate at vertex coordinates.
+    # Select the applied function whose flat data-column index matches the
+    # requested component — var.sym is a (1, cdim) row matrix for vectors
+    # and (rows, cols) for tensors, so positional indexing by the flat
+    # component index is not reliable.
+    sym_expr = None
+    for fn in var.sym:
+        if getattr(fn, "component", None) == component:
+            sym_expr = fn
+            break
+    if sym_expr is None:
+        sym_expr = var.sym[0, 0] if num_components == 1 else var.sym[component]
 
     result = uw.function.evaluate(sym_expr, vertex_coords)
-    return result.flatten()
+    return np.asarray(result).flatten()
 
 
 def interpolate_gradients_at_coords(source_vars, coords, mesh, method="interpolant"):

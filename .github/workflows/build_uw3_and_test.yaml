@@ -19,10 +19,43 @@ on:
 
   workflow_dispatch:
 
+env:
+  # Some Azure runners carry a MANA NIC whose InfiniBand verbs device UCX
+  # advertises but cannot open: uct_iface_open(ud_verbs/mana_0) fails inside
+  # MPI_Init, so `import underworld3` dies before any UW3 code runs (issues
+  # #461/#528 — four hits in the first week of 2026-08, each costing a manual
+  # re-roll). A single-node CI runner needs only shared memory and TCP, so pin
+  # the UCX transports and retire the whole flake class.
+  UCX_TLS: tcp,sm,self
+
+  # Distribute the serial batches across worker processes. This was held back
+  # until #567 was fixed: worker counts change which files share a process, and
+  # a units test that switched the units system on at import time then reached
+  # a module-scoped fixture in the point-locator suite before anything reset it.
+  # That is fixed at source in tests/conftest.py, and the whole suite is green
+  # at 4, 8 and 16 workers.
+  #
+  # 4 is the vCPU count of the runner. Do NOT try to detect it: the first
+  # attempt derived the count inside the job, got 1, and ran xdist with a single
+  # worker — a spawn and a fresh underworld3 import per batch, parallelising
+  # nothing, for 52m37s. The MPI batches are unaffected either way; they run
+  # their own mpirun.
+  WORKERS: 4
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Raised past 60 minutes on a 2026-08-15 measurement (serial phase ~55 min).
+    # xdist has since cut that: the five successful runs before 2026-09-12 spent
+    # 34, 35, 43, 44 and 48 minutes in "Run tests", well inside this budget. The
+    # headroom is why the previously-deferred bands could simply be switched on
+    # (#721 follow-up) rather than traded against something else.
+    #
+    # Sharding the batches across parallel jobs remains the durable fix if this
+    # tightens again; it was referenced here as "the CI-runtime issue" but never
+    # actually filed, so the numbers above are recorded in the issue that this
+    # change opens.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -44,5 +77,25 @@ jobs:
         # editable installs are project policy violation, see CLAUDE.md).
         run: pixi run -e dev build
 
+      # Import smoke test: a hard crash during `import underworld3` (segfault
+      # / abort in a compiled module, e.g. from a poisoned env cache) kills
+      # pytest BEFORE its first stdout flush, so every batch below fails with
+      # zero output and the run is undiagnosable from the log (this happened
+      # on PR #394 — a runner-side flake that cost a full debug round-trip).
+      # This 5-second step makes any import-time crash loud and localised:
+      # faulthandler prints the native traceback here rather than nothing
+      # there.
+      - name: Import smoke test (faulthandler)
+        run: pixi run -e dev python -u -X faulthandler -c "import faulthandler; faulthandler.enable(); import underworld3; print('import OK', underworld3.__version__)"
+
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2
+
+      # The tier C characterisations are a REPORT, not a gate, so they run on a
+      # push to development rather than on every pull request. They include the
+      # slow level_3 cases and add ~42 min, which a PR should not pay to learn
+      # something that cannot block it. Failures here are expected to be read
+      # and answered, not reverted.
+      - name: Tier C characterisations (report only)
+        if: github.event_name == 'push'
+        run: pixi run -e dev ./scripts/test.sh --tier-c-report
