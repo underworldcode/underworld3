@@ -69,6 +69,11 @@ ap.add_argument("--ckpt_every", type=int, default=25)
 ap.add_argument("--fig_every", type=int, default=5)
 ap.add_argument("--theta0", type=float, default=0.0, help="initial trench position (rad)")
 ap.add_argument("--migrate", type=int, default=1, help="advect the trench with the overriding plate")
+ap.add_argument("--heating", type=float, default=0.0, help="internal heating rate (source term)")
+ap.add_argument("--yield0", type=float, default=0.0, help="yield stress at the surface (0: no yielding)")
+ap.add_argument("--yield_depth", type=float, default=0.0, help="yield stress gradient with depth")
+ap.add_argument("--eta_min", type=float, default=1.0, help="viscosity floor under yielding")
+ap.add_argument("--T_int", type=float, default=0.6, help="initial interior temperature")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 if os.environ.get("ZG95_NOINODE"):
@@ -91,11 +96,12 @@ base = uw.meshing.Annulus(radiusOuter=RO, radiusInner=RI, cellSize=args.H, refin
 tail = base._coarse_level_meshes()[:-1] + [base]
 T_b = uw.discretisation.MeshVariable("T_b", base, 1, degree=2)
 V_b = uw.discretisation.MeshVariable("V_b", base, 2, degree=2)
+Y_b = uw.discretisation.MeshVariable("Y_b", base, 1, degree=1)     # eta_eff / eta(T): 1 unyielded
 xb = np.asarray(T_b.coords)
 rb = np.hypot(xb[:, 0], xb[:, 1])
 thb = np.arctan2(xb[:, 1], xb[:, 0])
 z = (RO - rb) / (RO - RI)
-T_int = 0.6
+T_int = args.T_int
 T0 = (T_int * erf(z / 0.1) + (1.0 - T_int) * (1.0 - erf((1.0 - z) / 0.1))
       - 0.04 * np.cos(3 * thb) * np.sin(np.pi * z))     # downwelling under the trench at theta 0
 T_b.array[:, 0, 0] = np.clip(T0, 0.0, 1.0)
@@ -107,7 +113,7 @@ log(f"base: {base.dm.getHeightStratum(0)[1]} cells, {len(tail)} levels; finest c
 adv = uw.systems.AdvDiffusionSLCN(base, u_Field=T_b, V_fn=V_b.sym, order=1, monotone_mode="clamp")
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0
-adv.f = 0.0
+adv.f = args.heating
 adv.add_dirichlet_bc(0.0, "Upper")
 adv.add_dirichlet_bc(1.0, "Lower")
 unit_r_b = base.CoordinateSystem.unit_e_0
@@ -115,6 +121,39 @@ unit_r_b = base.CoordinateSystem.unit_e_0
 
 def eta_of(Tsym):
     return sympy.exp(sympy.log(args.deta) * (1 - Tsym))          # 1 at T = 1, deta at T = 0
+
+
+def yield_stress_on(mesh):
+    """tau_y = yield0 + yield_depth * depth, depth measured from the outer wall"""
+    x, y = mesh.X
+    depth = RO - sympy.sqrt(x ** 2 + y ** 2)
+    return args.yield0 + args.yield_depth * depth
+
+
+def set_rheology(solver, mesh, Tsym, zone_sym=None):
+    """Temperature-dependent viscosity, with yielding when ``--yield0`` is set.
+    ``zone_sym`` (0/1 per cell) marks the weak bridge: under the TI model it is the
+    weak plane's footprint; under yielding (the TI model has no yield stress
+    without elasticity) it is an isotropic weak zone, viscosity and yield stress
+    both reduced by ``--eta_w``."""
+    eta0 = eta_of(Tsym)
+    weak = 1 if zone_sym is None else (1 - (1 - args.eta_w) * zone_sym)
+    if args.yield0 > 0:
+        solver.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+        P = solver.constitutive_model.Parameters
+        P.shear_viscosity_0 = eta0 * weak
+        P.shear_viscosity_min = args.eta_min
+        P.yield_stress = yield_stress_on(mesh) * weak
+        return
+    if zone_sym is None:
+        solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        solver.constitutive_model.Parameters.shear_viscosity_0 = eta0
+        return
+    solver.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
+    P = solver.constitutive_model.Parameters
+    P.shear_viscosity_0 = eta0
+    P.shear_viscosity_1 = eta0 * weak
+    return P                                   # the caller sets the director
 
 
 def clamp_radii(x):
@@ -168,11 +207,9 @@ class AddOn:
             self.bridge = self.band.copy()
         self.zone.array[:, 0, 0] = self.bridge.astype(float)
         s = uw.systems.Stokes(mesh, velocityField=self.v, pressureField=self.p)
-        eta0 = eta_of(self.T.sym[0])
-        s.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
-        s.constitutive_model.Parameters.shear_viscosity_0 = eta0
-        s.constitutive_model.Parameters.shear_viscosity_1 = eta0 * (1 - (1 - args.eta_w) * self.zone.sym[0])
-        s.constitutive_model.Parameters.director = sympy.Matrix([[float(self.n_hat[0]), float(self.n_hat[1])]])
+        P = set_rheology(s, mesh, self.T.sym[0], self.zone.sym[0])
+        if P is not None:
+            P.director = sympy.Matrix([[float(self.n_hat[0]), float(self.n_hat[1])]])
         unit_r = mesh.CoordinateSystem.unit_e_0
         s.bodyforce = args.ra * self.T.sym[0] * unit_r
         s.add_rotated_freeslip_bc(0, "Upper", normal=unit_r)
@@ -243,8 +280,7 @@ def base_stokes(tag):
     v = uw.discretisation.MeshVariable(f"Ub_{tag}", base, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"Pb_{tag}", base, 1, degree=1, continuous=True)
     s = uw.systems.Stokes(base, velocityField=v, pressureField=p)
-    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    s.constitutive_model.Parameters.shear_viscosity_0 = eta_of(T_b.sym[0])
+    set_rheology(s, base, T_b.sym[0])
     s.bodyforce = args.ra * T_b.sym[0] * unit_r_b
     s.add_rotated_freeslip_bc(0, "Upper", normal=unit_r_b)
     s.add_rotated_freeslip_bc(0, "Lower", normal=unit_r_b)
@@ -307,8 +343,71 @@ t = 0.0
 step = 0
 
 
+_vb_coords = np.asarray(V_b.coords)
+_vb_r = np.hypot(_vb_coords[:, 0], _vb_coords[:, 1])
+_vb_surf = _vb_r > RO - 1e-6
+_tb_coords = np.asarray(T_b.coords)
+_tb_depth = RO - np.hypot(_tb_coords[:, 0], _tb_coords[:, 1])
+
+
+def yielded_fraction(solver, Tsym, coords, depth):
+    """Fraction of nodes (all, and in the lid: depth < 0.15) where the effective
+    viscosity is below 0.9 of the temperature-dependent one, i.e. the plastic
+    branch is active. Collective; NaN when the model has no yield stress."""
+    if args.yield0 <= 0 or solver is None:
+        return float("nan"), float("nan")
+    try:
+        cm = solver.constitutive_model
+        ratio = np.asarray(uw.function.evaluate(cm._plastic_eff_viscosity.sym / eta_of(Tsym),
+                                                clamp_radii(coords))).ravel()
+    except Exception as e:
+        log("  yielded fraction unavailable:", str(e)[:120])
+        return float("nan"), float("nan")
+    yielded = ratio < 0.9
+    lid = depth < 0.15
+    try:
+        if coords.shape[0] == _tb_coords.shape[0] and np.allclose(coords[:8], _tb_coords[:8]):
+            # the base: keep the indicator at the P1 nodes for the checkpoint
+            from scipy.spatial import cKDTree
+            _d, k = cKDTree(coords).query(np.asarray(Y_b.coords))
+            Y_b.array[:, 0, 0] = ratio[k]
+    except Exception:
+        pass
+    n_all = comm.allreduce(int(yielded.size), op=MPI.SUM)
+    n_lid = comm.allreduce(int(lid.sum()), op=MPI.SUM)
+    y_all = comm.allreduce(int(yielded.sum()), op=MPI.SUM)
+    y_lid = comm.allreduce(int((yielded & lid).sum()), op=MPI.SUM)
+    return y_all / max(n_all, 1), y_lid / max(n_lid, 1)
+
+
+def flow_diagnostics():
+    """vrms over the base nodes, the surface rms, their ratio (mobility), and the
+    lid depth: where the horizontally averaged T first reaches 0.8 of its mid-depth
+    value. Node averages, not integrals; collective."""
+    v2 = np.einsum("ij,ij->i", V_b.array[:, 0, :], V_b.array[:, 0, :]) if V_b.array.shape[0] else np.zeros(0)
+    n_all = comm.allreduce(int(v2.size), op=MPI.SUM)
+    n_s = comm.allreduce(int(_vb_surf.sum()), op=MPI.SUM)
+    vrms = np.sqrt(comm.allreduce(float(v2.sum()), op=MPI.SUM) / max(n_all, 1))
+    vsurf = np.sqrt(comm.allreduce(float(v2[_vb_surf].sum()), op=MPI.SUM) / max(n_s, 1))
+    nb = 45
+    edges = np.linspace(0.0, RO - RI, nb + 1)
+    Tv = T_b.array[:, 0, 0] if T_b.array.shape[0] else np.zeros(0)
+    idx = np.clip(np.digitize(_tb_depth, edges) - 1, 0, nb - 1)
+    sums = np.bincount(idx, weights=Tv, minlength=nb)
+    cnts = np.bincount(idx, minlength=nb).astype(float)
+    sums = comm.allreduce(sums, op=MPI.SUM)
+    cnts = comm.allreduce(cnts, op=MPI.SUM)
+    prof = sums / np.maximum(cnts, 1)
+    mid = prof[nb // 2]
+    hit = np.flatnonzero(prof >= 0.8 * mid)
+    lid = float(edges[hit[0]] + 0.5 * (edges[1] - edges[0])) if hit.size else float("nan")
+    return {"vrms": float(vrms), "vsurf_rms": float(vsurf),
+            "mobility": float(vsurf / max(vrms, 1e-30)), "lid_depth": lid,
+            "T_mid": float(mid)}, prof
+
+
 def checkpoint(step, t):
-    base.write_timestep("zg95", meshUpdates=False, meshVars=[T_b, V_b], index=step, outputPath=args.out)
+    base.write_timestep("zg95", meshUpdates=False, meshVars=[T_b, V_b, Y_b], index=step, outputPath=args.out)
     if rank0:
         json.dump({"step": step, "t": t, "theta_t": float(globals().get("theta_t", args.theta0))},
                   open(os.path.join(args.out, f"state_{step:04d}.json"), "w"))
@@ -326,8 +425,14 @@ if args.spinup > 0 and args.restart < 0:
         adv.solve(timestep=dt)
         t += dt
         vmax = gmax(np.linalg.norm(V_b.array[:, 0, :], axis=1).max() if V_b.array.shape[0] else 0.0)
+        diag, prof = flow_diagnostics()
+        y_all, y_lid = yielded_fraction(s_b, T_b.sym[0], _tb_coords, _tb_depth)
         rec = {"step": step, "phase": "spinup", "t": t, "dt": dt, "vel_its": info.get("vel_its_last"),
-               "vmax": vmax, "t_step": round(time.perf_counter() - t0, 1)}
+               "newton": info.get("nonlinear_iterations"), "vmax": vmax,
+               "t_step": round(time.perf_counter() - t0, 1), "yield_frac": y_all, "yield_frac_lid": y_lid,
+               **diag}
+        if rank0 and step % args.fig_every == 0:
+            np.save(os.path.join(args.out, f"Tprofile_{step:04d}.npy"), prof)
         records.append(rec)
         log("SPIN", json.dumps(rec))
         if step % args.fig_every == 0:
@@ -367,6 +472,12 @@ for k in range(args.steps):
     if args.migrate:
         theta_t += v_trench * dt / RO
     vmax = gmax(np.linalg.norm(V_b.array[:, 0, :], axis=1).max() if V_b.array.shape[0] else 0.0)
+    diag, prof = flow_diagnostics()
+    rec.update(diag)
+    xa = np.asarray(addon.T.coords)
+    y_all, y_lid = yielded_fraction(addon.stokes, addon.T.sym[0], xa, RO - np.hypot(xa[:, 0], xa[:, 1]))
+    rec.update({"newton": addon.stokes._rotated_freeslip_info.get("nonlinear_iterations"),
+                "yield_frac": y_all, "yield_frac_lid": y_lid})
     rec.update({"step": step, "phase": "fault", "t": t, "dt": dt, "vmax": vmax, "v_trench": v_trench,
                 "theta_t": float(theta_t), "theta_built": float(addon.theta_t), "n_built": n_built,
                 "topo_min": float(hh.min()), "topo_max": float(hh.max()),
