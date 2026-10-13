@@ -43,7 +43,6 @@ from typing import Callable, Optional, Union
 import underworld3 as uw
 from underworld3.checkpoint.state import SolverStepState
 import underworld3.timing as timing
-from underworld3.checkpoint.state import SnapshottableState
 from underworld3.systems import SNES_Scalar
 from underworld3.utilities._api_tools import Template
 from underworld3.function import expression as public_expression
@@ -56,16 +55,6 @@ from underworld3.systems.solvers import (
     _invalidate_solution_cache,
     _nondimensionalise_timestep,
 )
-
-
-@dataclass
-class AdvDiffusionState(SnapshottableState):
-    """Solver timestep/estimator metadata; transport history belongs to DuDt."""
-
-    last_timestep: Optional[float] = None
-    last_change_rate: Optional[float] = None
-    order: int = 1
-    theta: float = 0.5
 
 
 def _check_supplied_manager(DuDt, order, theta):
@@ -86,6 +75,22 @@ class AdvectionDiffusionStepState(SolverStepState):
 
     last_timestep: Optional[float] = None
     last_change_rate: Optional[float] = None
+
+
+@dataclass
+class AdvDiffusionState(AdvectionDiffusionStepState):
+    """The step state plus the scheme the snapshot was taken under.
+
+    It extends ``AdvectionDiffusionStepState`` rather than
+    ``SnapshottableState`` so it keeps ``has_solution``. That flag decides
+    whether the next solve starts from the current iterate or from zero, so
+    a restore that drops it leaves a replayed step starting from a different
+    initial guess -- which converges to a different iterate within
+    ``snes_rtol`` and breaks bit-exact replay.
+    """
+
+    order: int = 1
+    theta: float = 0.5
 
 
 class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
@@ -614,21 +619,6 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     # Timestep and solve
     # ------------------------------------------------------------------
 
-    @property
-    def state(self):
-        """:class:`AdvectionDiffusionStepState`: what the last solve left that
-        steers the next one (see :attr:`SolverBaseClass.state`)."""
-        return AdvectionDiffusionStepState(
-            has_solution=bool(self._has_solution),
-            last_timestep=self._last_timestep,
-            last_change_rate=self._last_change_rate)
-
-    @state.setter
-    def state(self, s):
-        SNES_Scalar.state.fset(self, s)
-        self._last_timestep = s.last_timestep
-        self._last_change_rate = s.last_change_rate
-
     @timing.routine_timer_decorator
     def estimate_dt(self, fraction: float = 0.02, basis: Optional[str] = None,
                     direction_aware: bool = False, percentile: float = 0.0):
@@ -740,6 +730,7 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     def state(self):
         """Snapshot the timestep and measured change used by estimate_dt."""
         return AdvDiffusionState(
+            has_solution=bool(self._has_solution),
             last_timestep=self._last_timestep,
             last_change_rate=self._last_change_rate,
             order=self.order, theta=self.theta,
@@ -753,6 +744,9 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             raise ValueError("AdvDiffusion state schema changed since snapshot.")
         if state.order != self.order:
             raise ValueError("AdvDiffusion order changed since snapshot.")
+        # The base restores has_solution, which is what decides whether the
+        # next solve starts from the current iterate or from zero.
+        SNES_Scalar.state.fset(self, state)
         if hasattr(self.DuDt, "theta"):
             self.theta = state.theta
         self._last_timestep = None

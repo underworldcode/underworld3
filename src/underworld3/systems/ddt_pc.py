@@ -204,6 +204,37 @@ class _EulerianSUPGPCMethods:
 
         return EulerianSUPG.stabilisation_flux(self, R)
 
+    def _adjoint_support(self):
+        """No assembled operator to transpose, for two separate reasons.
+
+        Unlike the implicit-residual histories, this scheme does not hand
+        its step to the owning solver and read the linearisation off the
+        SNES Jacobian. `_apply_pc_correction` advances the rate and the
+        temperature by hand -- a lumped-mass-preconditioned divide, a
+        scale, and two axpys on PETSc vectors -- outside the solver's
+        residual, so the step the adjoint would have to transpose is
+        never materialised as an operator, even though every individual
+        correction is differentiable.
+
+        Under ``pc_converged`` there is a second obstruction that the
+        fixed-correction mode does not have: `_converge_pc_residual`
+        chooses how many corrections to apply from a residual test, so
+        the number of compositions is piecewise constant in the data.
+
+        This verdict is a refusal, which is a verdict rather than a gap
+        (Charter: the review decides issue state). It should be revisited
+        if the corrections are ever expressed as a residual the solver
+        assembles.
+        """
+        return (
+            False,
+            "the corrections are applied as lumped-mass-preconditioned vector "
+            "updates outside the owning solver's residual, so the step is not "
+            "materialised as an operator to transpose; and under pc_converged "
+            "the number of corrections is chosen by a residual test, which is "
+            "piecewise constant in the data",
+        )
+
     def update_pre_solve(self, dt, evalf=False, verbose=False):
         raise NotImplementedError("EulerianSUPGPC needs a solver supporting the transport execution hook.")
 
