@@ -125,6 +125,15 @@ def test_one_supg_step_gradient_matches_finite_differences_where_the_jacobian_is
 
 
 def test_a_refusing_solve_raises_with_its_reason():
+    """A refused verdict must stop ``adjoint_solve`` and carry its own reason,
+    rather than let it return a number nobody can trace.
+
+    Driven by a fault contact, the mechanism that still refuses — its rotated
+    operator carries an additive interface tangent whose transpose is not routed
+    into the adjoint. (Rotated FREE-SLIP used to stand here; it is supported now,
+    and ``test_0022_rotated_adjoint.py`` checks its gradient.) The fault list is
+    populated directly rather than by splitting a mesh: what is under test is the
+    refusal dispatch, and only the length of that list reaches the verdict."""
     uw, model = _fresh()
     mesh = _mesh(uw)
     V = uw.discretisation.MeshVariable("V_ref", mesh, 2, degree=2)
@@ -132,8 +141,11 @@ def test_a_refusing_solve_raises_with_its_reason():
     stokes = uw.systems.Stokes(mesh, velocityField=V, pressureField=P)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    stokes.add_rotated_freeslip_bc(0.0, "Top")
-    with pytest.raises(RuntimeError, match="rotated"):
+    stokes._fault_contact_faults.append("a-fault")
+    supported, reason = stokes.adjoint_support()
+    assert supported is False
+    assert "fault contact" in reason
+    with pytest.raises(RuntimeError, match="fault contact"):
         stokes.adjoint_solve(np.zeros(1))
 
 
