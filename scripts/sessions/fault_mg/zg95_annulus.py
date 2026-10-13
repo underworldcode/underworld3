@@ -74,6 +74,7 @@ ap.add_argument("--yield0", type=float, default=0.0, help="yield stress at the s
 ap.add_argument("--yield_depth", type=float, default=0.0, help="yield stress gradient with depth")
 ap.add_argument("--eta_min", type=float, default=1.0, help="viscosity floor under yielding")
 ap.add_argument("--T_int", type=float, default=0.6, help="initial interior temperature")
+ap.add_argument("--eta_ref", type=float, default=1.0, help="temperature at which the viscosity is 1 (1: the base; T_int: the interior)")
 ap.add_argument("--advect", choices=["supg", "slcn"], default="supg",
                 help="temperature transport: Eulerian SUPG (its own step estimate) or semi-Lagrangian (dt_mult x Courant)")
 args = ap.parse_args()
@@ -125,7 +126,7 @@ unit_r_b = base.CoordinateSystem.unit_e_0
 
 
 def eta_of(Tsym):
-    return sympy.exp(sympy.log(args.deta) * (1 - Tsym))          # 1 at T = 1, deta at T = 0
+    return sympy.exp(sympy.log(args.deta) * (args.eta_ref - Tsym))   # 1 at T = eta_ref, deta at eta_ref - 1
 
 
 def yield_stress_on(mesh):
