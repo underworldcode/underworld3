@@ -165,7 +165,7 @@ def next_dt():
     """SUPG: the solver's own estimate, capped; semi-Lagrangian: dt_mult times the
     Courant estimate, capped (it is not Courant-limited)."""
     est = float(adv.estimate_dt())
-    return min(est if args.advect == "supg" else args.dt_mult * est, args.dt_max)
+    return min(args.dt_mult * est, args.dt_max)       # implicit SUPG tolerates large steps too
 
 
 def clamp_radii(x):
