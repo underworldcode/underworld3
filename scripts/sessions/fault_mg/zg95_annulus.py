@@ -74,6 +74,7 @@ ap.add_argument("--yield0", type=float, default=0.0, help="yield stress at the s
 ap.add_argument("--yield_depth", type=float, default=0.0, help="yield stress gradient with depth")
 ap.add_argument("--eta_min", type=float, default=1.0, help="viscosity floor under yielding")
 ap.add_argument("--T_int", type=float, default=0.6, help="initial interior temperature")
+ap.add_argument("--picard", type=int, default=3, help="Picard warm-up iterations before Newton in the rotated nonlinear loop")
 ap.add_argument("--eta_ref", type=float, default=1.0, help="temperature at which the viscosity is 1 (1: the base; T_int: the interior)")
 ap.add_argument("--advect", choices=["supg", "slcn"], default="supg",
                 help="temperature transport: Eulerian SUPG (its own step estimate) or semi-Lagrangian (dt_mult x Courant)")
@@ -244,7 +245,7 @@ class AddOn:
         tmin, tmax = gmin(np.nanmin(self.T.array) if self.T.array.shape[0] else 1.0), gmax(np.nanmax(self.T.array) if self.T.array.shape[0] else 0.0)
         log(f"  T on the add-on: nan {n_nan}, range {tmin:.3f} {tmax:.3f}")
         t0 = time.perf_counter()
-        self.stokes.solve()
+        self.stokes.solve(picard=args.picard if args.yield0 > 0 else 0)
         info = self.stokes._rotated_freeslip_info
         self.t_solve = time.perf_counter() - t0
         if os.environ.get("ZG95_INSPECT"):
@@ -431,7 +432,7 @@ if args.spinup > 0 and args.restart < 0:
     s_b, v_b = base_stokes("spin")
     for k in range(args.spinup):
         t0 = time.perf_counter()
-        s_b.solve()
+        s_b.solve(picard=args.picard if args.yield0 > 0 else 0)
         info = s_b._rotated_freeslip_info
         V_b.array[...] = v_b.array
         dt = next_dt()
