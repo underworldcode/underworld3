@@ -3,6 +3,8 @@
 1. hierarchy_strategies.png  — the four hierarchies A, B2, C, D as level stacks
 2. transfer_rule.png         — the side-aware cell-located transfer and the clamp
 3. parallel_pipeline.png     — what moves where in parallel (split, levels, extrusion)
+4. embedding_routes.png      — the cut, the placed ladder band, and the ladder as the hierarchy
+5. ladder_hierarchy.png      — one nested ladder hierarchy with a realisation switch (split or TI)
 
 python fig_schematics.py <outdir>
 """
@@ -221,11 +223,11 @@ def embedding_routes():
            "a structured band (rails + exact spine, green)\nis placed into the finest by "
            "carve-and-fill;\nthe spine is split without cutting (cut=False).\nWelded tail; "
            "the finest smoother gains an ASM\npatch (LU blocks) over the band's cells.")
-    column(axes[2], "proposed: C on the ladder",
+    column(axes[2], "the ladder as the hierarchy (measured 2026-10-13)",
            ["split", "split", "split", "weld", "weld"], [True, True, True, False, False],
            "the ladder sub-sampled 2:1 shares every spine\nvertex between levels: placed "
            "and split on each\nadd-on level, the slits NEST (no clamp needed).\nThe FAC patch "
-           "can stay on the finest. Not built;\nthe no-mid measurements had welded mids only.")
+           "stays on the finest. Assembled by\nhand (ladder_c.py); the automatic replay is next.")
     axes[0].plot([], [], color=SPLIT, lw=2.2, label="split slit")
     axes[0].plot([], [], color="#2e7d32", lw=1.3, label="placed ladder band (cell label)")
     axes[0].plot([], [], color=WELD, lw=1.0, ls=":", label="welded")
@@ -236,3 +238,68 @@ def embedding_routes():
 
 
 embedding_routes()
+
+
+def ladder_hierarchy():
+    """One nested ladder hierarchy with a realisation switch: what the library
+    builds today for a placed band, and the two realisations measured on the
+    test_1022 rig (ladder_c.py), split spine (C) or TI band on every ladder level."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.4))
+    names = ["finest ladder, spacing S", "ladder, 2S", "ladder, 4S", "background 1", "background 0"]
+    kinds = ["fine", "add", "add", "bg", "bg"]
+
+    def column(ax, title, faults, bands, present, notes):
+        for i, (nm, kd, f, b, p) in enumerate(zip(names, kinds, faults, bands, present)):
+            y = 4.0 - i * 0.95
+            if not p:
+                ax.add_patch(FancyBboxPatch((0.2, y), 3.6, 0.72, boxstyle="round,pad=0.02",
+                                            fc="none", ec="#bbb", lw=0.8, ls="--"))
+                ax.text(0.32, y + 0.36, nm + "  (not built)", va="center", ha="left",
+                        fontsize=8.5, color="#999")
+                continue
+            level_box(ax, y, kd, nm, f)
+            if b:
+                xc = 0.2 + 3.6 * 0.62
+                ax.add_patch(Polygon([[xc - 1.05, y + 0.12], [xc + 1.05, y + 0.12],
+                                      [xc + 1.05, y + 0.60], [xc - 1.05, y + 0.60]],
+                                     closed=True, fc="none", ec="#2e7d32", lw=1.3))
+        ax.set_xlim(0, 4.0)
+        ax.set_ylim(-1.5, 5.0)
+        ax.set_title(title, fontsize=10.5, loc="left")
+        ax.text(0.2, -0.25, notes, fontsize=8.5, va="top")
+        ax.axis("off")
+
+    column(axes[0], "today: FaultNetwork.build(width=w)",
+           ["split", "weld", "weld", "weld", "weld"], [True, False, False, False, False],
+           [True, False, False, True, True],
+           "the band placed on the finest only; welded tail\n[background 0, 1]; the finest "
+           "smoother carries an\nASM patch over the band. Contact: 6 its at S = 0.01,\n9 at "
+           "S = 0.005. TI: 3 and 6.")
+    column(axes[1], "split realisation (C on the ladder)",
+           ["split", "split", "split", "weld", "weld"], [True, True, True, False, False],
+           [True] * 5,
+           "the same band at 2S and 4S, each spine split on the\nvertices it shares with "
+           "the finer one (slits nest).\nContact: 7 and 9 its, slip identical. The mids are\n"
+           "not needed for convergence here; they cost a fatter\nlevel (45 nnz/row against 33).")
+    column(axes[2], "TI realisation (band at every level)",
+           ["ti", "ti", "ti", "weld", "weld"], [True, True, True, False, False],
+           [True] * 5,
+           "the same nested ladders, the band's footprint painted\nTI at each level's own "
+           "resolution, nothing split.\nTI: 2 and 3 its against 3 and 6 with no mid:\nthe mids "
+           "halve the count at depth.")
+    axes[0].plot([], [], color=SPLIT, lw=2.2, label="split spine")
+    axes[0].plot([], [], color=TI, lw=1.2, ls="--", label="TI band")
+    axes[0].plot([], [], color="#2e7d32", lw=1.3, label="placed ladder band (cell label)")
+    axes[0].plot([], [], color=WELD, lw=1.0, ls=":", label="welded")
+    fig.legend(loc="lower center", ncol=4, fontsize=9, frameon=False, bbox_to_anchor=(0.5, -0.01))
+    fig.text(0.01, 0.99, "One hierarchy, two realisations. The background (grey) is the base's own "
+             "levels: never cut, never rebalanced. The ladder levels (yellow) are the band sub-sampled\n"
+             "2:1, so every coarser spine vertex is a finer one and the levels nest. Measured on the "
+             "test_1022 rig, base h = 1/8, band width 0.06 (ladder_c.py).",
+             fontsize=8.8, va="top")
+    fig.tight_layout(rect=(0, 0.05, 1, 0.93))
+    fig.savefig(os.path.join(out, "ladder_hierarchy.png"), dpi=160)
+    plt.close(fig)
+
+
+ladder_hierarchy()
