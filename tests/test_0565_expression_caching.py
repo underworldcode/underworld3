@@ -171,57 +171,56 @@ class TestDerivativeCaching:
         ), "Derivative caching should not produce warnings"
 
 
-class TestExpressionSilentUpdate:
-    """Test that expressions silently update when recreated with same name."""
+class TestExpressionRedeclaration:
+    """Re-declaring a name must not silently change what the container holds.
 
-    def test_expression_updates_silently(self, capfd):
-        """
-        Recreating an expression with the same name should silently update it.
+    This class used to be ``TestExpressionSilentUpdate`` and asserted the
+    opposite: that recreating an expression with the same name silently updated
+    it, described as "natural Python behavior". That was a deliberate,
+    specified contract, so reversing it is a decision and not a bug fix.
 
-        This is natural Python behavior - preserving object identity while
-        updating internal state. No warnings should be produced.
-        """
-        # Create expression with initial value
-        alpha = UWexpression(r"\alpha", sym=1.0, description="First value")
+    The reason it was reversed: identity is the NAME, so the second call does
+    not make a new container — it reaches the one every existing formula is
+    already written against, and changing its contents from a line that reads
+    like a declaration is invisible at the call site that suffers. Changing
+    what a container holds is what ``.sym =`` is for, and the loop pattern the
+    old test blessed is exactly the case that reads like a fresh object and is
+    not one.
+    """
 
-        # Recreate with same name but different value
-        alpha2 = UWexpression(r"\alpha", sym=2.0, description="Second value")
+    def test_redeclaring_with_a_different_value_raises(self):
+        """The reversal. The container keeps what it had, and the error says
+        which of the two possible intentions the caller should write."""
+        alpha = UWexpression(r"\alpha_{redecl}", sym=1.0, description="First value")
 
-        # Should be the SAME object (identity preserved)
-        assert alpha is alpha2, "Recreating expression should preserve object identity"
+        with pytest.raises(ValueError, match="already exists"):
+            UWexpression(r"\alpha_{redecl}", sym=2.0, description="Second value")
 
-        # Should have updated sym value
-        assert alpha2.sym == 2.0, "Expression sym should be updated to new value"
+        assert alpha.sym == 1.0, "a refused re-declaration still wrote the value"
+        assert alpha.description == "First value", (
+            "a refused re-declaration still wrote the description")
 
-        # Should have updated description
-        assert alpha2.description == "Second value", "Expression description should be updated"
+    def test_redeclaring_with_the_same_value_is_idempotent(self):
+        """Declaring the same thing twice changes nothing and no formula can
+        tell, so it passes. A factory that rebuilds an unmutated problem in one
+        process relies on this."""
+        beta = UWexpression(r"\beta_{redecl}", sym=3.0, description="value")
+        again = UWexpression(r"\beta_{redecl}", sym=3.0, description="value")
 
-        # Should NOT produce warnings
-        captured = capfd.readouterr()
-        assert (
-            "Each expression should have a unique name" not in captured.err
-        ), "Expression update should be silent (no warnings)"
+        assert beta is again
+        assert beta.sym == 3.0
 
-    def test_expression_update_in_loop(self):
-        """
-        Updating expressions in loops should work naturally.
+    def test_updating_in_a_loop_is_written_as_assignment(self):
+        """The loop pattern the old contract blessed, written the deliberate
+        way. One declaration, then assignment — which is what was happening
+        underneath all along, just not visibly."""
+        eta = UWexpression(r"\eta_{loop}", sym=1.0)
 
-        This is a common pattern where expressions are recreated in each
-        iteration with updated values.
-        """
-        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        for val in (1.0, 2.0, 3.0, 4.0, 5.0):
+            eta.sym = val
+            assert eta.sym == val
 
-        for i, val in enumerate(values):
-            eta = UWexpression(r"\eta", sym=val)
-
-            # All iterations should return the same object
-            if i == 0:
-                first_eta = eta
-            else:
-                assert eta is first_eta, "Loop should reuse same expression object"
-
-            # Value should be updated each iteration
-            assert eta.sym == val, f"Iteration {i}: expected sym={val}, got {eta.sym}"
+        assert UWexpression(r"\eta_{loop}") is eta, "identity is still the name"
 
     def test_unique_flag_creates_new_objects(self):
         """

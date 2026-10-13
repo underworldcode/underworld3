@@ -17,6 +17,24 @@ import pytest
 import sympy
 
 import underworld3 as uw
+
+
+def _param(name, value, description):
+    """Declare a named parameter, or fetch it and assign.
+
+    An expression's identity is its NAME: the same name reaches the same
+    container, so a second declaration carrying a different value is refused
+    rather than silently rebinding every formula already written against it.
+    A factory that rebuilds the same problem in one process is asking to SET
+    the value, and assignment is how that is said.
+    """
+    import underworld3 as uw
+    try:
+        return uw.expression(name, value, description)
+    except ValueError:
+        existing = uw.expression(name)
+        existing.sym = value
+        return existing
 from underworld3.systems.ddt import _storage_components
 
 # Module carries the LEVEL only; the tier goes on each test. pytest MERGES module
@@ -137,7 +155,7 @@ def _unsteady_uniform_flow_check(kind, vform="var"):
     # "ramp": a constant that changes between the two steps; the cached
     # previous velocity must carry the OLD value (substituting snapshots of
     # the variables into the expression would read the new one).
-    c = uw.expression(r"c_{ramp}", 1.0, "ramping factor")
+    c = _param(r"c_{ramp}", 1.0, "ramping factor")
     V_fn, factor = {"var": (v_var, 1.0), "neg": (-v_var.sym, -1.0), "half": (v_var.sym / 2, 0.5),
                     "ramp": (c * v_var.sym, 1.0)}[vform]
 
