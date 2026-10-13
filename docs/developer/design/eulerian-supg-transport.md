@@ -349,7 +349,8 @@ subsection). Decisions, and what they rest on:
   a constant viscosity; use BDF2 with a strain-rate dependent one). Pressure has
   no history. A history-dependent stress is the constitutive model's business.
 - **The advecting velocity is pluggable.** `advection="extrapolated"` (default),
-  $\mathbf{a} = 2\mathbf{u}^n - \mathbf{u}^{n-1}$, makes each step one linear Oseen
+  $\mathbf{a} = \mathbf{u}^n + r(\mathbf{u}^n - \mathbf{u}^{n-1})$ ($r$ the step
+  ratio; $2\mathbf{u}^n - \mathbf{u}^{n-1}$ for equal steps), makes each step one linear Oseen
   solve through the Stokes fieldsplit, with a second-order lag and no explicit
   stability limit; `picard_iterations=n` re-solves with the latest iterate for the
   fully implicit fixed point without a tangent; `advection="implicit"` puts

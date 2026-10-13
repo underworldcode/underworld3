@@ -40,12 +40,14 @@ import datetime
 import json
 import os
 import warnings
-from contextlib import contextmanager
 from typing import Any, Optional
 
 import numpy as np
 
 import underworld3 as uw
+from underworld3.utilities._io import _short_io_path
+
+from .snapshot import _solvers_of
 
 
 DISK_SNAPSHOT_SCHEMA_VERSION = 1
@@ -58,6 +60,10 @@ _GROUP_METADATA = "metadata"
 _GROUP_MESHES = "meshes"
 _GROUP_SWARMS = "swarms"
 _GROUP_PYTHON_STATE = "python_state"
+# What each solver carries from one solve to the next (SolverStepState), keyed
+# by solver name. A group of its own: solvers are not registered state-bearers,
+# and some are built on first use.
+_GROUP_SOLVER_STATES = "solver_states"
 
 _TOP_LEVEL_GROUPS = (
     _GROUP_METADATA,
@@ -263,22 +269,6 @@ def _bulk_dir_for(wrapper_path: str) -> str:
     return base + ".bulk"
 
 
-@contextmanager
-def _short_io_path(path: str):
-    """Expose ``path`` to native I/O as a basename from its parent directory.
-
-    Some parallel PETSc/HDF5 stacks fail on valid absolute paths well below
-    ``PATH_MAX``. Snapshot artifacts retain their normal locations, while the
-    native reader or writer receives only the final path component.
-    """
-    absolute_path = os.path.abspath(path)
-    previous_directory = os.getcwd()
-    os.chdir(os.path.dirname(absolute_path))
-    try:
-        yield os.path.basename(absolute_path)
-    finally:
-        os.chdir(previous_directory)
-
 
 def _sanitise(name: str) -> str:
     """Sanitise a mesh / variable name for use as a filename component.
@@ -404,6 +394,13 @@ def write_snapshot(model, path: str) -> str:
                         continue   # idempotent if write_snapshot called twice
                     bg = ps_group.create_group(key)
                     _write_state_bearer_to_group(bg, obj)
+
+                # Phase 3c: solver step state.
+                solver_group = f.require_group(_GROUP_SOLVER_STATES)
+                for solver in _solvers_of(model):
+                    if solver.name not in solver_group:
+                        _write_state_bearer_to_group(
+                            solver_group.create_group(solver.name), solver)
 
     # Phase 3b + 6: swarms — per-rank sidecar files in the bulk dir,
     # referenced from /swarms/{swarm_safe}/ via a sidecar_pattern attr.
@@ -553,6 +550,22 @@ def read_snapshot(model, path: str) -> None:
                         f"that is not registered on this model"
                     )
                 _read_state_bearer_into(ps_group[key], obj)
+
+        # Phase 3c: solver step state. A solver the file does not describe
+        # (built since, or a file written before solver states were kept) goes
+        # back to the state of one that has never solved, as in a new run.
+        stored = f[_GROUP_SOLVER_STATES] if _GROUP_SOLVER_STATES in f else {}
+        for solver in _solvers_of(model):
+            if solver.name in stored:
+                _read_state_bearer_into(stored[solver.name], solver)
+            else:
+                solver.state = type(solver.state)()
+        # A swarm's mid-time advection trace is not in the file: back to its
+        # state before any step, as in a new run.
+        for swarm in list(model._swarms.values()):
+            trace = getattr(swarm, "_characteristics", None)
+            if trace is not None:
+                trace._restore_step_state(None)
 
         # Phase 3b + 6: restore swarms from per-rank sidecars.
         if _GROUP_SWARMS in f:
@@ -868,9 +881,21 @@ def _serialise_field(h5group, name: str, value: Any) -> None:
                 f"unserialisable list (len={len(value)}, "
                 f"first-type={type(value[0]).__name__ if value else 'empty'})"
             )
+            warnings.warn(
+                f"Snapshot skipped state field {h5group.name}/{name}: "
+                f"{h5group.attrs[name + '__skipped']}. "
+                "Disk restart may not reproduce continuation.",
+                RuntimeWarning, stacklevel=2,
+            )
             return
     h5group.attrs[name + "__skipped"] = (
         f"unserialisable type {type(value).__name__}"
+    )
+    warnings.warn(
+        f"Snapshot skipped state field {h5group.name}/{name}: "
+        f"{h5group.attrs[name + '__skipped']}. "
+        "Disk restart may not reproduce continuation.",
+        RuntimeWarning, stacklevel=2,
     )
 
 
