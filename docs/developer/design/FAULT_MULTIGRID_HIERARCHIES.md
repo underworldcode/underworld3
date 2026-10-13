@@ -40,8 +40,11 @@ nodes, and coincident slit nodes make the transfer degenerate.
 **A per-level pair frame.** Each split level carries its own pair rotation (mean and
 jump), and its opening (normal-jump) unknowns are removed:
 $\hat P_l = Q_{l+1} P_l Q_l^{T}$, restricted to admissible unknowns. Coarse unknowns
-that no fine unknown reaches are dropped too. Near the tips of non-nested levels there
-are a few, and they are null modes of the Galerkin coarse operator.
+that no fine unknown reaches, or reaches only weakly (column norm below 5% of the
+median), are dropped too. Near the tips of non-nested levels there are a few, reached
+only through tiny or extrapolated weights; left in, they are null or near-null modes of
+the Galerkin coarse operator. The threshold stands in for nesting: with the split levels
+built from one `adapt` call's generations it should not be needed.
 
 ## Test problem
 
@@ -100,14 +103,42 @@ Supporting measurements:
 - **3-D extruded layer (preliminary).** Only the through-thickness levels split, the
   lateral levels welded: 11 to 16 iterations as $h$ halves, against 14 to 25 for A.
 
+## A moving fault
+
+The same box and fault, translated in 8 steps from $x = 0.3$ to $x = 0.7$. The
+background is built once; each step re-adapts the add-on part from it with one
+`mesh.adapt` call, splits the finest level and, for C and D, splits each intermediate
+level of that same call. The table gives the mean seconds per step. The runs shared a
+busy machine, so absolute times are good to a factor of 1.5 to 2; the ratios between
+strategies and the iteration counts are not affected.
+
+$k = 5$ (seven levels, near-fault $h = 0.0016$):
+
+| | adapt | split finest | split levels | level frames | background TI | solve | total | velocity its |
+|---|---|---|---|---|---|---|---|---|
+| A | 3.1 | 1.9 | – | – | – | 137 | 143 | 30–34 |
+| C | 2.7 | 1.7 | 2.8 | 1.0 | – | 38 | 46 | 5–6 |
+| D | 4.7 | 2.9 | 5.1 | 1.8 | 2.4 | 61 | 79 | 4–5 |
+| GAMG | 3.8 | 2.4 | – | – | – | 127 | 134 | 200 (cap) |
+
+At $k = 3$ the totals are 27 (A), 15 (C), 17 (D) and 28 (GAMG) seconds per step. The
+solve includes building the transfers: 2 s for A, 3.4 s for C.
+
+The peak slip is identical across A, C and D at every position. Level frames come from
+throwaway solvers in the drivers (`build_rotation`); they could be computed from the
+pair geometry directly.
+
 ## What works best
 
 **C: split every add-on level and leave the background welded.** The iteration count
 falls slightly with refinement, for frictionless, viscous and Coulomb faults alike.
-It needs nothing rediscretised and no TI parameters.
+It needs nothing rediscretised and no TI parameters. With a moving fault its extra
+surgery and transfers cost about 5 s per step against a solve that is three times
+cheaper than A's at $k = 5$.
 
 D matches C at depth but is worse on shallow hierarchies, and it adds a rediscretised
-operator and band parameters for no gain. B2 is worse than A, and badly so for the
+background operator to re-assemble at every step and band parameters to choose for
+every problem, for no gain. B2 is worse than A, and badly so for the
 viscous fault. A smeared band on a coarse level is a continuous shear that the split
 fine operator rejects, so the coarse space has to contain the discontinuity itself.
 

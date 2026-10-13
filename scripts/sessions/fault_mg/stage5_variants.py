@@ -139,7 +139,8 @@ if variant != "stock":
                 P = P[keep[l + 1], :]
             P = P[:, keep[l]]
             P.eliminate_zeros()
-            reached = np.asarray(abs(P).sum(axis=0)).ravel() > 0
+            cn = np.sqrt(np.asarray(P.multiply(P).sum(axis=0)).ravel())
+            reached = cn > 0.05 * np.median(cn[cn > 0])
             dropped = int((~reached).sum())
             if dropped:
                 print(f"DEBUGP level {l}: dropped {dropped} unreached coarse DOFs", flush=True)
