@@ -38,6 +38,13 @@ if os.path.exists(rf):
     rec = rr[0] if rr else {}
 trace = None
 surf = os.path.join(run, f"surface_{idx:04d}.npz")
+if not os.path.exists(surf):
+    # a checkpoint without its own surface file: the nearest earlier one (the trench
+    # moves about half a degree per step, so a few steps old is still the fault's place)
+    import glob
+    cands = sorted(glob.glob(os.path.join(run, "surface_*.npz")))
+    cands = [c for c in cands if int(os.path.basename(c)[8:12]) <= idx]
+    surf = cands[-1] if cands else surf
 if os.path.exists(surf):
     trace = np.load(surf)["trace"]
 
@@ -81,8 +88,10 @@ o = np.argsort(thV[rV > RO - 1e-6])
 th_s = thV[rV > RO - 1e-6][o]
 vt_s = vt[rV > RO - 1e-6][o]
 
-fig = plt.figure(figsize=(19, 7.2))
-gs = fig.add_gridspec(2, 2, width_ratios=[1.7, 1], height_ratios=[1, 2.2], hspace=0.08, wspace=0.12)
+VEXAG = 2.0           # vertical exaggeration of the unrolled section (1 = true aspect at mid-depth)
+_deg_per_len = 360.0 / (np.pi * (RO + RI))     # degrees of arc per length unit at mid-radius
+fig = plt.figure(figsize=(19, 5.6))
+gs = fig.add_gridspec(2, 2, width_ratios=[1.7, 1], height_ratios=[1, 1.15], hspace=0.08, wspace=0.12)
 ax0 = fig.add_subplot(gs[0, 0])
 ax1 = fig.add_subplot(gs[1, 0], sharex=ax0)
 ax2 = fig.add_subplot(gs[:, 1])
@@ -107,9 +116,10 @@ if trace is not None:
              color="#c0392b", lw=2)
 ax1.set_ylim(RO - RI, 0)
 ax1.set_xlim(-180, 180)
+ax1.set_aspect(VEXAG * _deg_per_len, adjustable="box", anchor="N")
 ax1.set_xlabel("theta (deg)")
 ax1.set_ylabel("depth")
-fig.colorbar(pc, ax=ax1, orientation="horizontal", pad=0.14, shrink=0.5, label="T")
+fig.colorbar(pc, ax=ax1, orientation="horizontal", pad=0.42, shrink=0.4, aspect=40, label="T")
 v0, v1, v2, m01, m12, m20 = (C[:, k] for k in range(6))
 tris = np.vstack([np.column_stack([v0, m01, m20]), np.column_stack([m01, v1, m12]),
                   np.column_stack([m20, m12, v2]), np.column_stack([m01, m12, m20])])

@@ -68,6 +68,8 @@ ap.add_argument("--restart", type=int, default=-1, help="restart T from checkpoi
 ap.add_argument("--ckpt_every", type=int, default=25)
 ap.add_argument("--fig_every", type=int, default=5)
 ap.add_argument("--theta0", type=float, default=0.0, help="initial trench position (rad)")
+ap.add_argument("--trench_off", type=float, default=0.1, help="trench-velocity window: offset beyond the fault (rad)")
+ap.add_argument("--trench_span", type=float, default=0.2, help="trench-velocity window: width (rad)")
 ap.add_argument("--migrate", type=int, default=1, help="advect the trench with the overriding plate")
 ap.add_argument("--heating", type=float, default=0.0, help="internal heating rate (source term)")
 ap.add_argument("--yield0", type=float, default=0.0, help="yield stress at the surface (0: no yielding)")
@@ -76,6 +78,8 @@ ap.add_argument("--eta_min", type=float, default=1.0, help="viscosity floor unde
 ap.add_argument("--T_int", type=float, default=0.6, help="initial interior temperature")
 ap.add_argument("--tol", type=float, default=1e-5, help="Stokes solve tolerance (loosen for a spin-up)")
 ap.add_argument("--yield_soft", type=float, default=0.1, help="yield-corner softness delta of the smooth yield law")
+ap.add_argument("--verbose", action="store_true", help="print every nonlinear iteration of the rotated solve")
+ap.add_argument("--newton_switch", type=float, default=1e-2, help="relative residual at which the rotated loop goes from Picard to Newton")
 ap.add_argument("--picard", type=int, default=3, help="Picard warm-up iterations before Newton in the rotated nonlinear loop")
 ap.add_argument("--eta_ref", type=float, default=1.0, help="temperature at which the viscosity is 1 (1: the base; T_int: the interior)")
 ap.add_argument("--advect", choices=["supg", "slcn"], default="supg",
@@ -213,6 +217,7 @@ class AddOn:
         self.v = uw.discretisation.MeshVariable(f"U_{tag}", mesh, 2, degree=2)
         self.p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1, continuous=True)
         self.h = uw.discretisation.MeshVariable(f"h_{tag}", mesh, 1, degree=1)
+        self.yv = uw.discretisation.MeshVariable(f"Y_{tag}", mesh, 1, degree=1)   # yield indicator
         self.zone = uw.discretisation.MeshVariable(f"zone_{tag}", mesh, 1, degree=0, continuous=False)
         dm = mesh.dm
         vS, vE = dm.getDepthStratum(0)
@@ -242,11 +247,25 @@ class AddOn:
             s.add_fault_bc(0, boundary="Trench")
         s.petsc_use_pressure_nullspace = True
         s.tolerance = args.tol
+        s.newton_switch_rtol = args.newton_switch
         set_custom_fmg(s, tail, field_id=0, fac_zone=self.band if args.fac else None)
         self.stokes = s
         self.t_build = time.perf_counter() - t0
-        log(f"  add-on {tag}: {mesh.dm.getHeightStratum(0)[1]} cells, band {int(self.band.sum())}, "
-            f"bridge {int(self.bridge.sum())}, trench at {np.degrees(theta_t):.3f} deg, built in {self.t_build:.1f} s")
+        n_cells = comm.allreduce(int(mesh.dm.getHeightStratum(0)[1]), op=MPI.SUM)
+        n_band = comm.allreduce(int(self.band.sum()), op=MPI.SUM)
+        n_bridge = comm.allreduce(int(self.bridge.sum()), op=MPI.SUM)
+        log(f"  add-on {tag}: {n_cells} cells, band {n_band}, bridge {n_bridge} (global), "
+            f"trench at {np.degrees(theta_t):.3f} deg, built in {self.t_build:.1f} s")
+
+    def warm_start(self, prev):
+        """Initial guess from the previous add-on's velocity and pressure (collective:
+        every rank evaluates and writes). Each step rebuilds the add-on, so without
+        this every solve is a cold start: 20 Picard iterations before Newton."""
+        self.v.array[:, 0, :] = np.asarray(uw.function.global_evaluate(
+            prev.v.sym, clamp_radii(np.asarray(self.v.coords)))).reshape(-1, 2)
+        self.p.array[:, 0, 0] = np.asarray(uw.function.global_evaluate(
+            prev.p.sym, clamp_radii(np.asarray(self.p.coords)))).ravel()
+        self.warm = True
 
     def solve(self):
         self.T.array[:, 0, 0] = np.asarray(uw.function.global_evaluate(
@@ -255,7 +274,9 @@ class AddOn:
         tmin, tmax = gmin(np.nanmin(self.T.array) if self.T.array.shape[0] else 1.0), gmax(np.nanmax(self.T.array) if self.T.array.shape[0] else 0.0)
         log(f"  T on the add-on: nan {n_nan}, range {tmin:.3f} {tmax:.3f}")
         t0 = time.perf_counter()
-        self.stokes.solve(picard=args.picard if args.yield0 > 0 else 0)
+        self.stokes.solve(picard=args.picard if args.yield0 > 0 else 0, verbose=args.verbose,
+                          zero_init_guess=not getattr(self, "warm", False))
+        self.warm = True        # the next solve on this add-on warms from its own solution
         info = self.stokes._rotated_freeslip_info
         self.t_solve = time.perf_counter() - t0
         if os.environ.get("ZG95_INSPECT"):
@@ -310,13 +331,22 @@ def base_stokes(tag):
     s.add_rotated_freeslip_bc(0, "Lower", normal=unit_r_b)
     s.petsc_use_pressure_nullspace = True
     s.tolerance = args.tol
+    s.newton_switch_rtol = args.newton_switch
     set_custom_fmg(s, tail[:-1], field_id=0)
     return s, v
 
 
 # ----------------------------------------------------------------------------- figures
+_fig_th = np.linspace(-np.pi, np.pi, 361)
+_fig_r = np.linspace(RI, RO, 61)
+_fig_xy = np.column_stack([(np.cos(_fig_th)[:, None] * _fig_r[None, :]).ravel(),
+                           (np.sin(_fig_th)[:, None] * _fig_r[None, :]).ravel()])
+
+
 def figure(step, t, addon, rec):
     surf = addon.surface() if addon is not None else None      # collective gather
+    # T on a polar grid: collective on every rank, drawn on rank 0 (no serial-only panel)
+    Tg = np.asarray(uw.function.global_evaluate(T_b.sym[0], clamp_radii(_fig_xy))).ravel()
     if not rank0:
         return
     import matplotlib
@@ -326,21 +356,16 @@ def figure(step, t, addon, rec):
     from matplotlib.collections import LineCollection
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.6), gridspec_kw={"width_ratios": [1.2, 1, 1]})
     ax = axes[0]
-    if uw.mpi.size == 1:
-        dm = base.dm
-        vS, vE = dm.getDepthStratum(0)
-        cS, cE = dm.getHeightStratum(0)
-        X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
-        cells = np.array([[int(q) - vS for q in dm.getTransitiveClosure(c)[0] if vS <= q < vE] for c in range(cS, cE)])
-        Tv = uw.function.evaluate(T_b.sym[0], clamp_radii(X)).ravel()
-        tc = ax.tripcolor(mtri.Triangulation(X[:, 0], X[:, 1], cells), Tv, shading="gouraud", cmap="RdBu_r",
-                          vmin=0, vmax=1)
-        fig.colorbar(tc, ax=ax, shrink=0.8)
+    Xg = _fig_xy[:, 0].reshape(len(_fig_th), len(_fig_r))
+    Yg = _fig_xy[:, 1].reshape(len(_fig_th), len(_fig_r))
+    tc = ax.pcolormesh(Xg, Yg, Tg.reshape(len(_fig_th), len(_fig_r)), shading="gouraud", cmap="RdBu_r",
+                       vmin=0, vmax=1)
+    fig.colorbar(tc, ax=ax, shrink=0.8)
     if addon is not None:
         tr = addon.trace
         ax.plot(tr[:, 0], tr[:, 1], color="k", lw=1.5)
     ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(f"step {step}, t = {t:.5f}: T on the base (serial render); trench (black)", fontsize=9, loc="left")
+    ax.set_title(f"step {step}, t = {t:.5f}: T on the base; trench (black)", fontsize=9, loc="left")
     if addon is not None:
         th, vt, thh, hh = surf
         ax = axes[1]
@@ -374,29 +399,35 @@ _tb_coords = np.asarray(T_b.coords)
 _tb_depth = RO - np.hypot(_tb_coords[:, 0], _tb_coords[:, 1])
 
 
-def yielded_fraction(solver, Tsym, coords, depth):
-    """Fraction of nodes (all, and in the lid: depth < 0.15) where the effective
-    viscosity is below 0.9 of the temperature-dependent one, i.e. the plastic
-    branch is active. Collective; NaN when the model has no yield stress."""
+def yielded_fraction(solver, Tsym, yvar):
+    """Fraction of P1 nodes (all, and in the lid: depth < 0.15) where the effective
+    viscosity is below 0.9 of the temperature-dependent one, i.e. the plastic branch
+    is active. ``yvar`` is a P1 variable on the solver's mesh that receives the
+    ratio; the base's ``Y_b`` is then filled from it by a collective cross-mesh
+    evaluation of that plain variable (the ratio expression itself holds velocity
+    gradients, which the cross-mesh evaluator cannot take). Collective on every
+    rank; NaN when the model has no yield stress."""
     if args.yield0 <= 0 or solver is None:
         return float("nan"), float("nan")
+    coords = np.asarray(yvar.coords)
+    depth = RO - np.hypot(coords[:, 0], coords[:, 1])
+    ratio, err = None, ""
     try:
         cm = solver.constitutive_model
         ratio = np.asarray(uw.function.evaluate(cm._plastic_eff_viscosity.sym / eta_of(Tsym),
                                                 clamp_radii(coords))).ravel()
     except Exception as e:
-        log("  yielded fraction unavailable:", str(e)[:120])
+        err = str(e)[:120]
+    # a failure on any rank is a failure on all: every rank must take the same path
+    if comm.allreduce(int(ratio is None), op=MPI.SUM):
+        log("  yielded fraction unavailable:", err)
         return float("nan"), float("nan")
+    yvar.array[:, 0, 0] = ratio                              # collective write
+    if yvar is not Y_b:
+        Y_b.array[:, 0, 0] = np.asarray(uw.function.global_evaluate(
+            yvar.sym[0], clamp_radii(np.asarray(Y_b.coords)))).ravel()
     yielded = ratio < 0.9
     lid = depth < 0.15
-    try:
-        if coords.shape[0] == _tb_coords.shape[0] and np.allclose(coords[:8], _tb_coords[:8]):
-            # the base: keep the indicator at the P1 nodes for the checkpoint
-            from scipy.spatial import cKDTree
-            _d, k = cKDTree(coords).query(np.asarray(Y_b.coords))
-            Y_b.array[:, 0, 0] = ratio[k]
-    except Exception:
-        pass
     n_all = comm.allreduce(int(yielded.size), op=MPI.SUM)
     n_lid = comm.allreduce(int(lid.sum()), op=MPI.SUM)
     y_all = comm.allreduce(int(yielded.sum()), op=MPI.SUM)
@@ -438,7 +469,17 @@ def checkpoint(step, t):
         json.dump(records, open(os.path.join(args.out, "records.json"), "w"), indent=1)
 
 
-if args.spinup > 0 and args.restart < 0:
+if args.restart >= 0:
+    # a restart continues the record and the clock; with --spinup it carries the
+    # base-only run on (the parameters may change: the paper's step in viscosity
+    # contrast and yield stress at equilibrium), with --steps the fault phase starts
+    st = json.load(open(os.path.join(args.out, f"state_{args.restart:04d}.json")))
+    t, step = float(st["t"]), int(st["step"]) + 1
+    args.theta0 = float(st.get("theta_t", args.theta0))
+    rp = os.path.join(args.out, "records.json")
+    if os.path.exists(rp):
+        records = [r for r in json.load(open(rp)) if r.get("step", 0) <= args.restart]
+if args.spinup > 0:
     s_b, v_b = base_stokes("spin")
     for k in range(args.spinup):
         t0 = time.perf_counter()
@@ -450,7 +491,7 @@ if args.spinup > 0 and args.restart < 0:
         t += dt
         vmax = gmax(np.linalg.norm(V_b.array[:, 0, :], axis=1).max() if V_b.array.shape[0] else 0.0)
         diag, prof = flow_diagnostics()
-        y_all, y_lid = yielded_fraction(s_b, T_b.sym[0], _tb_coords, _tb_depth)
+        y_all, y_lid = yielded_fraction(s_b, T_b.sym[0], Y_b)
         rec = {"step": step, "phase": "spinup", "t": t, "dt": dt, "vel_its": info.get("vel_its_last"),
                "newton": info.get("nonlinear_iterations"), "vmax": vmax,
                "t_step": round(time.perf_counter() - t0, 1), "yield_frac": y_all, "yield_frac_lid": y_lid,
@@ -466,27 +507,26 @@ if args.spinup > 0 and args.restart < 0:
         step += 1
     del s_b, v_b
     gc.collect()
-if args.restart >= 0:
-    st = json.load(open(os.path.join(args.out, f"state_{args.restart:04d}.json")))
-    t, step = float(st["t"]), int(st["step"]) + 1
-    args.theta0 = float(st.get("theta_t", args.theta0))
-
 theta_t = args.theta0
 addon = None
 n_built = 0
 for k in range(args.steps):
     t0 = time.perf_counter()
     if addon is None or abs(theta_t - addon.theta_t) * RO > S:
-        if addon is not None:
-            del addon
-            gc.collect()
-        addon = AddOn(theta_t, f"a{n_built}")
+        prev, addon = addon, AddOn(theta_t, f"a{n_built}")
         n_built += 1
+        if prev is not None:
+            addon.warm_start(prev)
+            del prev
+            gc.collect()
     rec = addon.solve()
     th, vt, thh, hh = addon.surface()
-    # the trench moves with the overriding plate: the surface just on the +theta side
-    j = int(np.argmin(np.abs(th - (addon.theta_t + 0.03))))
-    v_trench = float(vt[j])
+    # the trench moves with the overriding plate: the median surface velocity over a
+    # window beyond the fault's hanging wall (the sliver next to the fault goes
+    # stationary once the fault takes the slip; sampling it froze the trench)
+    dth = (th - addon.theta_t + np.pi) % (2 * np.pi) - np.pi
+    win = (dth > args.trench_off) & (dth < args.trench_off + args.trench_span)
+    v_trench = float(np.median(vt[win])) if win.any() else float(vt[int(np.argmin(np.abs(dth - args.trench_off)))])
     # velocity back onto the base for the advection step
     Vb = np.asarray(uw.function.global_evaluate(addon.v.sym, clamp_radii(np.asarray(V_b.coords)))).reshape(-1, 2)
     V_b.array[:, 0, :] = Vb
@@ -498,8 +538,7 @@ for k in range(args.steps):
     vmax = gmax(np.linalg.norm(V_b.array[:, 0, :], axis=1).max() if V_b.array.shape[0] else 0.0)
     diag, prof = flow_diagnostics()
     rec.update(diag)
-    xa = np.asarray(addon.T.coords)
-    y_all, y_lid = yielded_fraction(addon.stokes, addon.T.sym[0], xa, RO - np.hypot(xa[:, 0], xa[:, 1]))
+    y_all, y_lid = yielded_fraction(addon.stokes, addon.T.sym[0], addon.yv)
     rec.update({"newton": addon.stokes._rotated_freeslip_info.get("nonlinear_iterations"),
                 "yield_frac": y_all, "yield_frac_lid": y_lid})
     rec.update({"step": step, "phase": "fault", "t": t, "dt": dt, "vmax": vmax, "v_trench": v_trench,
@@ -513,8 +552,11 @@ for k in range(args.steps):
         figure(step, t, addon, rec)
         if rank0:
             json.dump(records, open(os.path.join(args.out, "records.json"), "w"), indent=1)
-            np.savez(os.path.join(args.out, f"surface_{step:04d}.npz"), theta=th, vt=vt, theta_h=thh, h=hh,
-                     trace=addon.trace)
+    if rank0 and (step % args.fig_every == 0 or step % args.ckpt_every == 0 or k == args.steps - 1):
+        # the surface and the trench trace ride every figure AND every checkpoint, so the
+        # checkpoint renders can draw the fault
+        np.savez(os.path.join(args.out, f"surface_{step:04d}.npz"), theta=th, vt=vt, theta_h=thh, h=hh,
+                 trace=addon.trace)
     if step % args.ckpt_every == 0 or k == args.steps - 1:
         checkpoint(step, t)
     step += 1
