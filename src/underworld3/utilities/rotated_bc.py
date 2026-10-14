@@ -569,6 +569,23 @@ def build_rotation(solver, boundaries, datum_specs=None):
     if fault_names:
         from underworld3.utilities import fault_contact
         s2 = 1.0 / np.sqrt(2.0)
+        # A sheet moving along its normal (the datum of SHEET_TANGENCY): a pair
+        # node takes the tangency through its pair block, so the MEAN row along
+        # the surface normal carries the datum there, (v+ + v-)/sqrt2 . e = sqrt2 w
+        # with e the frame's surface-normal vector (sign against the analytic
+        # normal); the jump row stays at 0. Without this the fault nodes stood
+        # still while the sheet breathed (measured: a datum error of 0.018 against
+        # an amplitude of 0.1, and spurious stress along the trace).
+        sheet_dspec = None if datum_specs is None else datum_specs.get(SHEET_TANGENCY)
+        sheet_normal_fn = None
+        if manifold and sheet_dspec is not None:
+            for spec in boundaries:
+                name_s, normal_s = _boundary_spec(spec)
+                if name_s == SHEET_TANGENCY:
+                    sheet_normal_fn, sheet_normal_const = _normal_source(solver, normal_s, SHEET_TANGENCY)
+            pcsec = dm.getCoordinateSection()
+            pcvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+            pv0, pv1 = dm.getDepthStratum(0)
         # Rank-local failures in this block (a pairing/label mismatch or a
         # vanishing analytic normal inside _fault_pair_nodes, a fault node
         # shared with a wall boundary, a pair straddling ranks) must not
@@ -627,6 +644,16 @@ def build_rotation(solver, boundaries, datum_specs=None):
                         # vector) are pinned; the slip row stays free
                         normal_rows.append(gm[2])
                         normal_rows.append(gp[2])
+                        if sheet_dspec is not None:
+                            xq = _point_coord(dm, dim, pcvec, pcsec, pv0, pv1, q_plus)
+                            if sheet_normal_fn is not None:
+                                ne = np.asarray(sheet_normal_fn(*xq), dtype=float).ravel()
+                            else:
+                                ne = np.asarray(sheet_normal_const, dtype=float).ravel()
+                            ne = ne / (np.linalg.norm(ne) + 1e-30)
+                            sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
+                            # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
+                            datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
         except (RuntimeError, ValueError) as err:
             problem = str(err)
         fault_contact._collective_raise(problem)
@@ -1351,6 +1378,38 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
     # behind the projection (see the guard after the Newton loop).
     pnull_gauge = [0.0]
+    # The rigid-rotation gauge likewise: when rotation modes are a genuine null
+    # space of the operator (a drag-free sheet on a sphere, a free-slip shell),
+    # the inner KSP cannot reduce the residual's component along them, so the
+    # outer norm is measured in that quotient space too. A viscous forcing has no
+    # such component by construction; a viscoelastic stress history on the
+    # faceted surface does (measured: the Newton loop floored at rel 1e-4 on a
+    # tidally flexed Maxwell sheet, with the linear solves converged).
+    rot_modes = []                           # orthonormal, velocity-only, rotated frame
+    rnull_gauge = [0.0]
+
+    def _collect_rotation_modes(nullspace):
+        rot_modes.clear()
+        if nullspace is None:
+            return
+        for v in nullspace.getVecs():
+            if has_pressure:
+                sp = v.getSubVector(pres_is)
+                is_pressure = sp.norm() > 0.0
+                v.restoreSubVector(pres_is, sp)
+                if is_pressure:
+                    continue
+            m = v.copy()
+            for q in rot_modes:                      # Gram-Schmidt
+                m.axpy(-m.dot(q), q)
+            nm = m.norm()
+            if nm > 0.0:
+                m.scale(1.0 / nm)
+                rot_modes.append(m)
+            else:
+                m.destroy()
+
+    _collect_rotation_modes(nsp)
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -1385,6 +1444,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
             pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if rot_modes:
+            removed = 0.0
+            for m in rot_modes:              # project out the rotation-gauge modes
+                c = Fh.dot(m)
+                Fh.axpy(-c, m)
+                removed += c * c
+            rnull_gauge[0] = removed ** 0.5
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
@@ -1489,6 +1555,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
+                _collect_rotation_modes(nsp)
             elif assemble and Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
@@ -1619,6 +1686,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # incompressible domain) parks an O(forcing) constant there — and the loop
     # above would report convergence while mass conservation is violated.
     # Surface the component: readable state always, loud when it dominates.
+    solver._rotated_rotation_gauge_residual = rnull_gauge[0] if rot_modes else 0.0
     if use_pnull:
         solver._rotated_pressure_gauge_residual = pnull_gauge[0]
         if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):

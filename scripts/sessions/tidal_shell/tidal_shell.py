@@ -40,8 +40,14 @@ ap.add_argument("--L", type=float, default=0.08, help="shell thickness / R (Ence
 ap.add_argument("--periods", type=float, default=2.0)
 ap.add_argument("--steps_per_period", type=int, default=32)
 ap.add_argument("--tol", type=float, default=1e-8)
+ap.add_argument("--objective", default="none", help="objective rate of the Maxwell history: none (tides rotate negligibly per step) or jaumann")
 ap.add_argument("--check", type=int, default=1, help="compare with the membrane closed form each step")
 ap.add_argument("--fig_every", type=int, default=8)
+ap.add_argument("--faults", type=int, default=0, help="number of parallel tiger-stripe faults near the south pole")
+ap.add_argument("--fault_len", type=float, default=0.52, help="fault length (rad; Enceladus ~130 km on R 252 km)")
+ap.add_argument("--fault_spacing", type=float, default=0.14, help="spacing between the stripes (rad; ~35 km)")
+ap.add_argument("--fault_eta", type=float, default=0.0, help="viscous interface law coefficient (0: frictionless)")
+ap.add_argument("--fault_lat", type=float, default=-90.0, help="latitude of the stripe set's centre (deg)")
 ap.add_argument("--verbose", action="store_true")
 args = ap.parse_args()
 
@@ -57,11 +63,41 @@ def log(*a):
 
 # ----------------------------------------------------------------------------- mesh and sheet
 sphere = uw.meshing.SphericalManifold(radius=1.0, cellSize=args.h, degree=1, qdegree=5)
+
+
+def stripe_points(offset, half_len, n=9, lat0=-90.0):
+    """A stripe as a polyline on the unit sphere: the exponential map at the set's
+    centre (latitude lat0 on the x-z meridian), the stripe along the local e1
+    direction at a distance `offset` along e2."""
+    th0 = np.radians(lat0)
+    c = np.array([np.cos(th0), 0.0, np.sin(th0)])              # centre
+    e1 = np.array([0.0, 1.0, 0.0])                              # east at the centre
+    e2 = np.cross(c, e1)                                        # north-ish
+    a = np.linspace(-half_len, half_len, n)
+    pts = []
+    for ai in a:
+        rho = np.hypot(ai, offset)
+        d = (ai * e1 + offset * e2) / max(rho, 1e-30)
+        pts.append(np.cos(rho) * c + np.sin(rho) * d)
+    return np.array(pts)
+
+
+fault_names = []
+if args.faults > 0:
+    offsets = (np.arange(args.faults) - 0.5 * (args.faults - 1)) * args.fault_spacing
+    faults = []
+    for i, off in enumerate(offsets):
+        name = f"Stripe{i}"
+        faults.append((name, stripe_points(off, 0.5 * args.fault_len, lat0=args.fault_lat)))
+        fault_names.append(name)
+    sphere = sphere.add_fault(faults)
 x, y, z = sphere.X
 sheet = uw.systems.ThinSheet(sphere)
+for name in fault_names:
+    sheet.add_fault_bc(args.fault_eta, name)
 if args.De > 0:
     sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        sheet.Unknowns, order=1, integrator="etd", objective_rate="jaumann")
+        sheet.Unknowns, order=1, integrator="etd", objective_rate=args.objective)
     sheet.constitutive_model.Parameters.shear_modulus = 1.0
     sheet.constitutive_model.Parameters.shear_viscosity_0 = args.De      # Maxwell time De periods
 else:
@@ -113,6 +149,69 @@ _e_north = np.column_stack([(-np.sin(LAT) * np.cos(LON)).ravel(), (-np.sin(LAT) 
 _grid_in = grid * (1.0 - 0.3 * args.h ** 2)
 
 
+# The sheet stress holds velocity gradients, which the collective cross-rank
+# evaluator cannot take (PETSc error 75 at four ranks on the faulted sphere; the
+# same class as the add-on yield indicator): evaluate it rank-locally at the
+# sheet's own P1 nodes into six scalar variables and evaluate THOSE collectively.
+_S_names = ("xx", "yy", "zz", "xy", "xz", "yz")
+_S_idx = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+_S_vars = [uw.discretisation.MeshVariable(f"S{n}", sphere, 1, degree=1) for n in _S_names]
+_S_coords = np.asarray(_S_vars[0].coords)
+_S_coords_in = _S_coords * (1.0 - 1e-9)
+
+
+def stress_to_nodes():
+    """Fill the six stress-component variables from the sheet stress (every rank
+    evaluates its own nodes; the writes are collective)."""
+    if _S_coords.shape[0]:
+        S = np.asarray(uw.function.evaluate(sheet.stress, _S_coords_in)).reshape(-1, 3, 3)
+    else:
+        S = np.zeros((0, 3, 3))
+    for var, (i, j) in zip(_S_vars, _S_idx):
+        var.array[:, 0, 0] = S[:, i, j]
+
+
+def stress_on(points):
+    """The 3x3 sheet stress at arbitrary points, from the nodal components (collective)."""
+    comps = [np.asarray(uw.function.global_evaluate(var.sym[0], points)).ravel() for var in _S_vars]
+    S = np.zeros((len(points), 3, 3))
+    for c, (i, j) in zip(comps, _S_idx):
+        S[:, i, j] = c
+        S[:, j, i] = c
+    return S
+
+
+# a coarser grid for the per-step stress diagnostics (collective evaluation)
+_lon_d = np.linspace(-np.pi, np.pi, 73)[:-1]
+_lat_d = np.linspace(-np.pi / 2, np.pi / 2, 37)[1:-1]
+_LON_d, _LAT_d = np.meshgrid(_lon_d, _lat_d)
+_grid_d = np.column_stack([(np.cos(_LAT_d) * np.cos(_LON_d)).ravel(), (np.cos(_LAT_d) * np.sin(_LON_d)).ravel(),
+                           np.sin(_LAT_d).ravel()]) * (1.0 - 0.3 * args.h ** 2)
+_w_d = np.cos(_LAT_d).ravel()                                  # area weights
+_ee_d = np.column_stack([-np.sin(_LON_d).ravel(), np.cos(_LON_d).ravel(), np.zeros(_LON_d.size)])
+_en_d = np.column_stack([(-np.sin(_LAT_d) * np.cos(_LON_d)).ravel(), (-np.sin(_LAT_d) * np.sin(_LON_d)).ravel(),
+                         np.cos(_LAT_d).ravel()])
+_pat_c = np.asarray(sympy.lambdify((x, y, z), pattern_c, "numpy")(*_grid_d.T)).ravel()
+_pat_s = np.asarray(sympy.lambdify((x, y, z), pattern_s, "numpy")(*_grid_d.T)).ravel()
+
+
+def stress_diagnostics(t):
+    """Area-weighted rms of the in-plane stress invariant and the stress trace,
+    and the trace's projection on the two forcing patterns (its phase)."""
+    S = stress_on(_grid_d)
+    s_ee = np.einsum("ni,nij,nj->n", _ee_d, S, _ee_d)
+    s_nn = np.einsum("ni,nij,nj->n", _en_d, S, _en_d)
+    s_en = 0.5 * (np.einsum("ni,nij,nj->n", _ee_d, S, _en_d) + np.einsum("ni,nij,nj->n", _en_d, S, _ee_d))
+    tr = s_ee + s_nn
+    inv2 = np.sqrt(0.5 * ((s_ee - 0.5 * tr) ** 2 + (s_nn - 0.5 * tr) ** 2) + s_en ** 2)
+    W = _w_d.sum()
+    cc, ss = (_w_d * _pat_c ** 2).sum(), (_w_d * _pat_s ** 2).sum()
+    return {"stress_inv_rms": float(np.sqrt((_w_d * inv2 ** 2).sum() / W)),
+            "stress_tr_rms": float(np.sqrt((_w_d * tr ** 2).sum() / W)),
+            "tr_on_cos": float((_w_d * tr * _pat_c).sum() / cc),
+            "tr_on_sin": float((_w_d * tr * _pat_s).sum() / ss)}
+
+
 def diagnostics(t):
     u = np.asarray(sheet.u.array[:, 0, :])
     un = (u * rh).sum(axis=1)
@@ -131,10 +230,9 @@ def diagnostics(t):
 
 
 def figure(step, t):
-    stress = sheet.stress
     # collective evaluations on the grid (every rank; drawn on rank 0): a rank-local
     # evaluate() would only know the rank's own cells
-    S = np.asarray(uw.function.global_evaluate(stress, _grid_in)).reshape(-1, 3, 3)
+    S = stress_on(_grid_in)
     U = np.asarray(uw.function.global_evaluate(sheet.u.sym, _grid_in)).reshape(-1, 3)
     if not rank0:
         return
@@ -183,8 +281,19 @@ for k in range(nsteps):
     info = sheet._rotated_freeslip_info or {}
     rec = {"step": k, "t": t, "dt": dt, "converged": bool(info.get("converged")),
            "nonlinear": info.get("nonlinear_iterations"), "t_step": round(time.perf_counter() - t0, 1)}
+    stress_to_nodes()
     if args.check:
         rec.update(diagnostics(t))
+        rec.update(stress_diagnostics(t))
+    if fault_names:
+        from underworld3.utilities.fault_contact import fault_pair_jumps
+        slips = {}
+        for name in fault_names:
+            _c, jumps, normals = fault_pair_jumps(sheet, name, info, gather=True)   # every rank holds the fault
+            v = np.linalg.norm(jumps, axis=1) if len(jumps) else np.zeros(1)
+            slips[name] = {"max": float(v.max()), "rms": float(np.sqrt((v ** 2).mean())),
+                           "leak": float(np.abs(np.einsum("ij,ij->i", jumps, normals)).max()) if len(jumps) else 0.0}
+        rec["slip"] = slips
     records.append(rec)
     log("STEP", json.dumps(rec))
     if k % args.fig_every == 0 or k == nsteps - 1:
