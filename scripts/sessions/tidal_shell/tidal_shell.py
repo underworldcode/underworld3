@@ -106,6 +106,11 @@ lon = np.linspace(-np.pi, np.pi, 181)
 lat = np.linspace(-np.pi / 2, np.pi / 2, 91)
 LON, LAT = np.meshgrid(lon, lat)
 grid = np.column_stack([(np.cos(LAT) * np.cos(LON)).ravel(), (np.cos(LAT) * np.sin(LON)).ravel(), np.sin(LAT).ravel()])
+# local tangent basis on the grid (east, north) for the in-plane 2x2 stress
+_e_east = np.column_stack([-np.sin(LON).ravel(), np.cos(LON).ravel(), np.zeros(LON.size)])
+_e_north = np.column_stack([(-np.sin(LAT) * np.cos(LON)).ravel(), (-np.sin(LAT) * np.sin(LON)).ravel(), np.cos(LAT).ravel()])
+# the faceted mesh lies inside the sphere (sagitta ~ h^2/8); evaluate just inside it
+_grid_in = grid * (1.0 - 0.3 * args.h ** 2)
 
 
 def diagnostics(t):
@@ -127,18 +132,22 @@ def diagnostics(t):
 
 def figure(step, t):
     stress = sheet.stress
-    # in-plane principal stresses from the 3x3 sheet stress on the grid (collective evaluation)
-    S = np.asarray(uw.function.evaluate(stress, grid)).reshape(-1, 3, 3)
-    U = np.asarray(uw.function.evaluate(sheet.u.sym, grid)).reshape(-1, 3)
+    # collective evaluations on the grid (every rank; drawn on rank 0): a rank-local
+    # evaluate() would only know the rank's own cells
+    S = np.asarray(uw.function.global_evaluate(stress, _grid_in)).reshape(-1, 3, 3)
+    U = np.asarray(uw.function.global_evaluate(sheet.u.sym, _grid_in)).reshape(-1, 3)
     if not rank0:
         return
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    ev = np.linalg.eigvalsh(0.5 * (S + np.swapaxes(S, 1, 2)))     # one eigenvalue ~ 0 (normal)
-    ev_sorted = np.sort(ev, axis=1)
-    s_max = ev_sorted[:, 2].reshape(LAT.shape)
-    s_min = ev_sorted[:, 0].reshape(LAT.shape)
+    # the in-plane 2x2 stress in the (east, north) basis and its principal values
+    s_ee = np.einsum("ni,nij,nj->n", _e_east, S, _e_east)
+    s_nn = np.einsum("ni,nij,nj->n", _e_north, S, _e_north)
+    s_en = 0.5 * (np.einsum("ni,nij,nj->n", _e_east, S, _e_north) + np.einsum("ni,nij,nj->n", _e_north, S, _e_east))
+    mean, rad = 0.5 * (s_ee + s_nn), np.sqrt((0.5 * (s_ee - s_nn)) ** 2 + s_en ** 2)
+    s_max = (mean + rad).reshape(LAT.shape)
+    s_min = (mean - rad).reshape(LAT.shape)
     un = (U * grid).sum(axis=1)
     ut = np.linalg.norm(U - un[:, None] * grid, axis=1).reshape(LAT.shape)
     fig, axes = plt.subplots(1, 3, figsize=(19, 4.6), subplot_kw={"projection": "mollweide"})
