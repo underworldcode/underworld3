@@ -74,6 +74,8 @@ ap.add_argument("--yield0", type=float, default=0.0, help="yield stress at the s
 ap.add_argument("--yield_depth", type=float, default=0.0, help="yield stress gradient with depth")
 ap.add_argument("--eta_min", type=float, default=1.0, help="viscosity floor under yielding")
 ap.add_argument("--T_int", type=float, default=0.6, help="initial interior temperature")
+ap.add_argument("--tol", type=float, default=1e-5, help="Stokes solve tolerance (loosen for a spin-up)")
+ap.add_argument("--yield_soft", type=float, default=0.1, help="yield-corner softness delta of the smooth yield law")
 ap.add_argument("--picard", type=int, default=3, help="Picard warm-up iterations before Newton in the rotated nonlinear loop")
 ap.add_argument("--eta_ref", type=float, default=1.0, help="temperature at which the viscosity is 1 (1: the base; T_int: the interior)")
 ap.add_argument("--advect", choices=["supg", "slcn"], default="supg",
@@ -147,6 +149,14 @@ def set_rheology(solver, mesh, Tsym, zone_sym=None):
     weak = 1 if zone_sym is None else (1 - (1 - args.eta_w) * zone_sym)
     if args.yield0 > 0:
         solver.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+        cm = solver.constitutive_model
+        for attr in ("yield_softness", "_yield_softness"):
+            if hasattr(cm, attr):
+                try:
+                    setattr(cm, attr, float(args.yield_soft))
+                    break
+                except Exception:
+                    continue
         P = solver.constitutive_model.Parameters
         P.shear_viscosity_0 = eta0 * weak
         P.shear_viscosity_min = args.eta_min
@@ -231,7 +241,7 @@ class AddOn:
         if args.arm == "split":
             s.add_fault_bc(0, boundary="Trench")
         s.petsc_use_pressure_nullspace = True
-        s.tolerance = 1e-5
+        s.tolerance = args.tol
         set_custom_fmg(s, tail, field_id=0, fac_zone=self.band if args.fac else None)
         self.stokes = s
         self.t_build = time.perf_counter() - t0
@@ -299,7 +309,7 @@ def base_stokes(tag):
     s.add_rotated_freeslip_bc(0, "Upper", normal=unit_r_b)
     s.add_rotated_freeslip_bc(0, "Lower", normal=unit_r_b)
     s.petsc_use_pressure_nullspace = True
-    s.tolerance = 1e-5
+    s.tolerance = args.tol
     set_custom_fmg(s, tail[:-1], field_id=0)
     return s, v
 
