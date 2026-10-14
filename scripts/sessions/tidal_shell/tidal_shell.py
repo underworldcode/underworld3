@@ -262,6 +262,70 @@ def figure(step, t):
     plt.close(fig)
 
 
+# polar view: azimuthal (exponential-map) grid around the stripe set's centre
+_pole_lat = args.fault_lat if args.faults > 0 else -90.0
+_th0 = np.radians(_pole_lat)
+_pc = np.array([np.cos(_th0), 0.0, np.sin(_th0)])
+_pe1 = np.array([0.0, 1.0, 0.0]); _pe2 = np.cross(_pc, _pe1)
+_prho = np.linspace(0.0, 0.9, 61)[1:]
+_ppsi = np.linspace(-np.pi, np.pi, 145)
+_PR, _PP = np.meshgrid(_prho, _ppsi)
+_pa, _pb = (_PR * np.cos(_PP)).ravel(), (_PR * np.sin(_PP)).ravel()
+_pd = (_pa[:, None] * _pe1[None] + _pb[:, None] * _pe2[None]) / np.maximum(_PR.ravel(), 1e-30)[:, None]
+_pgrid = np.cos(_PR.ravel())[:, None] * _pc[None] + np.sin(_PR.ravel())[:, None] * _pd
+_pgrid_in = _pgrid * (1.0 - 0.3 * args.h ** 2)
+_pee = np.cross(_pgrid, _pd)                                   # azimuthal direction
+_pee /= np.maximum(np.linalg.norm(_pee, axis=1), 1e-30)[:, None]
+_pen = np.cross(_pee, _pgrid)                                  # radial-in-plane direction
+
+
+def to_polar(points):
+    """Points on the sphere -> (a, b) in the azimuthal projection about the centre."""
+    pts = np.asarray(points) / np.linalg.norm(points, axis=1)[:, None]
+    cosr = np.clip(pts @ _pc, -1, 1)
+    rho = np.arccos(cosr)
+    d = pts - cosr[:, None] * _pc[None]
+    d /= np.maximum(np.linalg.norm(d, axis=1), 1e-30)[:, None]
+    return rho * (d @ _pe1), rho * (d @ _pe2)
+
+
+_fault_polylines = [to_polar(pts) for _n, pts in (faults if args.faults > 0 else [])]
+
+
+def polar_figure(step, t):
+    S = stress_on(_pgrid_in)
+    U = np.asarray(uw.function.global_evaluate(sheet.u.sym, _pgrid_in)).reshape(-1, 3)
+    if not rank0:
+        return
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    s_ee = np.einsum("ni,nij,nj->n", _pee, S, _pee); s_nn = np.einsum("ni,nij,nj->n", _pen, S, _pen)
+    s_en = 0.5 * (np.einsum("ni,nij,nj->n", _pee, S, _pen) + np.einsum("ni,nij,nj->n", _pen, S, _pee))
+    mean, rad = 0.5 * (s_ee + s_nn), np.sqrt((0.5 * (s_ee - s_nn)) ** 2 + s_en ** 2)
+    s_max = (mean + rad).reshape(_PR.shape); inv = rad.reshape(_PR.shape)
+    un = (U * _pgrid).sum(axis=1)
+    ut = np.linalg.norm(U - un[:, None] * _pgrid, axis=1).reshape(_PR.shape)
+    A_, B_ = (_PR * np.cos(_PP)), (_PR * np.sin(_PP))
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5.4))
+    for ax, fld, ttl, cmap, sym in ((axes[0], s_max, "largest in-plane principal stress", "RdBu_r", True),
+                                    (axes[1], inv, "in-plane stress invariant (max shear)", "magma", False),
+                                    (axes[2], ut, "tangential speed", "viridis", False)):
+        lim = np.abs(fld).max() + 1e-30
+        pc = ax.pcolormesh(A_, B_, fld, cmap=cmap, shading="auto", **({"vmin": -lim, "vmax": lim} if sym else {}))
+        for pa, pb in _fault_polylines:
+            ax.plot(pa, pb, color="w" if cmap != "RdBu_r" else "k", lw=2.0)
+        for r in (0.25, 0.5, 0.75):
+            ax.add_patch(plt.Circle((0, 0), r, fill=False, color="gray", lw=0.5, alpha=0.6))
+        ax.set_aspect("equal"); ax.set_xlim(-0.9, 0.9); ax.set_ylim(-0.9, 0.9)
+        ax.set_title(ttl, fontsize=10, loc="left"); ax.set_xticks([]); ax.set_yticks([])
+        fig.colorbar(pc, ax=ax, shrink=0.8)
+    fig.suptitle(f"south polar view (centre lat {_pole_lat:.0f}, radius 0.9 rad): step {step}, t = {t:.3f} periods, De = {args.De}",
+                 fontsize=10)
+    fig.savefig(os.path.join(args.out, f"polar_{step:04d}.png"), dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ----------------------------------------------------------------------------- time loop
 dt = 1.0 / args.steps_per_period
 nsteps = int(round(args.periods * args.steps_per_period))
@@ -298,6 +362,7 @@ for k in range(nsteps):
     log("STEP", json.dumps(rec))
     if k % args.fig_every == 0 or k == nsteps - 1:
         figure(k, t)
+        polar_figure(k, t)
         if rank0:
             json.dump(records, open(os.path.join(args.out, "records.json"), "w"), indent=1)
 log("DONE")
