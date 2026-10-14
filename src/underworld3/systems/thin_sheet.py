@@ -429,6 +429,33 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._needs_function_rewire = True
         self._basal_drag.sym = value
 
+    @property
+    def normal_velocity(self):
+        r"""Prescribed velocity of the sheet along its own normal, :math:`w`
+        (a number or an expression of position; time enters through a
+        constant the caller updates). On a manifold it is the datum of the
+        tangency constraint, :math:`\mathbf{u}\cdot\hat{\mathbf{n}} = w` at
+        every node, so the embedded velocity carries the normal motion and the
+        in-plane strain rate picks up its curvature term
+        :math:`w\,\nabla_s\hat{\mathbf{n}}` (:math:`(w/R)\,\mathbf{P}` on a
+        sphere): the breathing of a tidally flexed shell, say. ``None`` keeps
+        the sheet in its tangent plane. Re-evaluated at every solve."""
+        from underworld3.utilities.rotated_bc import SHEET_TANGENCY
+        return self._rotated_freeslip_datum.get(SHEET_TANGENCY)
+
+    @normal_velocity.setter
+    def normal_velocity(self, w):
+        from underworld3.utilities.rotated_bc import SHEET_TANGENCY
+        if self.mesh.dim == self.mesh.cdim:
+            raise NotImplementedError(
+                "a flat sheet has no normal direction to move along; the normal "
+                "velocity is a manifold sheet's datum (ThinSheet on a SphericalManifold).")
+        if w is None:
+            self._rotated_freeslip_datum.pop(SHEET_TANGENCY, None)
+        else:
+            self._rotated_freeslip_datum[SHEET_TANGENCY] = (
+                w if isinstance(w, (int, float)) else sympy.sympify(w))
+
     def add_basal_drag(self, coefficient, boundary=None, reference_velocity=None):
         r"""Couple the sheet to its base by a drag
         :math:`-c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})` per unit area.

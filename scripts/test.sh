@@ -195,7 +195,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   "${PYTEST[@]}" tests/test_106*py tests/test_107*py || status=1
   # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
   # thick, the quadratic benchmark); the slow ones are level_3 and marked so.
-  "${PYTEST[@]}" tests/test_108*py || status=1
+  "${PYTEST[@]}" tests/test_108*py tests/test_109*py || status=1
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign

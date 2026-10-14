@@ -1420,7 +1420,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
-        if r0 is None:
+        if r0 is None or (lift_datum and iters == 1 and r0 == 0.0):
+            # A cold start whose only forcing is the prescribed datum (a sheet
+            # breathing with the tide, say) has a zero residual at u = 0, before
+            # the lift; the reference scale is then the lifted iterate's.
             r0 = rnorm
             ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
         if verbose:
@@ -1428,7 +1431,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"rel={rnorm/(ref+1e-300):.3e}  [{phase}]")
         # residual convergence (relative to the reference scale, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
-        if rnorm <= rtol * ref + atol:
+        if rnorm <= rtol * ref + atol and not (lift_datum and iters == 0):
+            # (the lift of a cold-start datum rides the first increment, so a
+            # zero residual at u = 0 is not convergence until it has been applied)
             converged = True
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
             Fhat.destroy()
