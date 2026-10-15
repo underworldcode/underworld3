@@ -104,3 +104,55 @@ def test_fault_reaction_is_the_membrane_resultant():
     expected = L * 6 * eta * W
     assert len(sig) > 5
     assert np.abs(sig - expected).max() < 0.02 * expected
+
+
+@pytest.mark.level_3
+def test_maxwell_transfer_function_under_a_tide():
+    """A Maxwell membrane under the degree-2 eccentricity tide: the stress trace
+    on the cos pattern has amplitude (24/11) mu A * wt / sqrt(1 + wt^2) and lags
+    the displacement by atan(1/wt), wt = 2 pi De (the velocity is instantaneous:
+    3/11 of the pattern's gradient whatever the rheology). Measured at 128 steps
+    per period: amplitude within 1.5%, lag 32 deg against 28 at De 0.3; at the
+    64 steps per period used here the lag is about 4 deg larger still (first
+    order in the step)."""
+    De, A, mu = 0.3, 0.01, 1.0
+    steps, periods = 64, 3
+    sphere = _sphere(0.3)
+    x, y, z = sphere.X
+    sheet = uw.systems.ThinSheet(sphere)
+    sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        sheet.Unknowns, order=1, integrator="etd", objective_rate="none")
+    sheet.constitutive_model.Parameters.shear_modulus = mu
+    sheet.constitutive_model.Parameters.shear_viscosity_0 = De
+    sheet.thickness = 0.08
+    sheet.tolerance = 1.0e-8
+    pat_c = -sympy.Rational(3, 2) * (3 * z ** 2 - 1) / 2 + sympy.Rational(9, 4) * (x ** 2 - y ** 2)
+    pat_s = 6 * x * y
+    # projection of the stress trace on the cos pattern, area-weighted on a lat-lon grid
+    lon = np.linspace(-np.pi, np.pi, 73)[:-1]; lat = np.linspace(-np.pi / 2, np.pi / 2, 37)[1:-1]
+    LON, LAT = np.meshgrid(lon, lat)
+    g = np.column_stack([(np.cos(LAT) * np.cos(LON)).ravel(), (np.cos(LAT) * np.sin(LON)).ravel(), np.sin(LAT).ravel()])
+    wts = np.cos(LAT).ravel()
+    pc = np.asarray(sympy.lambdify((x, y, z), pat_c, "numpy")(*g.T)).ravel()
+    rhat = g / np.linalg.norm(g, axis=1)[:, None]
+    P = np.eye(3)[None] - rhat[:, :, None] * rhat[:, None, :]
+    dt = 1.0 / steps
+    t, tc, ts = 0.0, [], []
+    for k in range(steps * periods):
+        t += dt
+        c, s = float(np.cos(2 * np.pi * t)), float(np.sin(2 * np.pi * t))
+        sheet.normal_velocity = A * 2 * np.pi * (-pat_c * s + pat_s * c)
+        sheet.solve(timestep=dt, zero_init_guess=(k == 0))
+        assert sheet._rotated_freeslip_info["converged"]
+        if t > periods - 1 - 1e-9:
+            S = np.asarray(uw.function.evaluate(sheet.stress, g * (1 - 0.3 * 0.3 ** 2))).reshape(-1, 3, 3)
+            tr = np.einsum("nij,nij->n", P, S)
+            tc.append((wts * tr * pc).sum() / (wts * pc ** 2).sum()); ts.append(t)
+    ts, tc = np.array(ts), np.array(tc)
+    M = np.column_stack([np.cos(2 * np.pi * ts), np.sin(2 * np.pi * ts)])
+    a, b = np.linalg.lstsq(M, tc, rcond=None)[0]
+    amp, lag = np.hypot(a, b), -np.degrees(np.arctan2(b, a))
+    wt = 2 * np.pi * De
+    amp_th, lag_th = (24 / 11) * mu * A * wt / np.sqrt(1 + wt ** 2), np.degrees(np.arctan(1 / wt))
+    assert abs(amp - amp_th) < 0.05 * amp_th, (amp, amp_th)
+    assert lag_th - 2 < lag < lag_th + 12, (lag, lag_th)
