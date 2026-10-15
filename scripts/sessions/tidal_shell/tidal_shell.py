@@ -54,6 +54,8 @@ ap.add_argument("--fault_V0", type=float, default=1e-3, help="Coulomb regularisa
 ap.add_argument("--fault_Tb", type=float, default=0.0, help="Coulomb: constant effective overburden as a STRESS (compression positive); enters the law as L * T_b")
 ap.add_argument("--probe_stripes", type=int, default=0, help="unfaulted run: record the driving tractions on N virtual stripe traces (Berne et al. Fig 2a,b)")
 ap.add_argument("--fault_lat", type=float, default=-90.0, help="latitude of the stripe set's centre (deg)")
+ap.add_argument("--fault_lon", type=float, default=0.0, help="longitude of the stripe set's centre (deg; 0 = sub-planet meridian)")
+ap.add_argument("--save_global_stress", type=int, default=0, help="save the 3x3 stress on the lat-lon grid every step (npz), for the site/orientation analysis")
 ap.add_argument("--fault_azimuth", type=float, default=-90.0, help="stripe direction: angle from the sub-planet direction at the set's centre, counter-clockwise viewed from outside (deg); -90 = east-west")
 ap.add_argument("--verbose", action="store_true")
 args = ap.parse_args()
@@ -76,9 +78,9 @@ def stripe_points(offset, half_len, n=9, lat0=-90.0):
     """A stripe as a polyline on the unit sphere: the exponential map at the set's
     centre (latitude lat0 on the x-z meridian), the stripe along the local e1
     direction at a distance `offset` along e2."""
-    th0 = np.radians(lat0)
-    c = np.array([np.cos(th0), 0.0, np.sin(th0)])              # centre
-    east = np.array([0.0, 1.0, 0.0])
+    th0, ph0 = np.radians(lat0), np.radians(args.fault_lon)
+    c = np.array([np.cos(th0) * np.cos(ph0), np.cos(th0) * np.sin(ph0), np.sin(th0)])   # centre
+    east = np.array([-np.sin(ph0), np.cos(ph0), 0.0])
     sub = np.cross(c, east)                                     # toward the sub-planet point (+x) along the surface
     az = np.radians(args.fault_azimuth)
     e1 = np.cos(az) * sub + np.sin(az) * np.cross(c, sub)       # stripe direction
@@ -282,9 +284,9 @@ def figure(step, t):
 
 # polar view: azimuthal (exponential-map) grid around the stripe set's centre
 _pole_lat = args.fault_lat if args.faults > 0 else -90.0
-_th0 = np.radians(_pole_lat)
-_pc = np.array([np.cos(_th0), 0.0, np.sin(_th0)])
-_sub = np.cross(_pc, np.array([0.0, 1.0, 0.0]))
+_th0, _ph0 = np.radians(_pole_lat), np.radians(args.fault_lon)
+_pc = np.array([np.cos(_th0) * np.cos(_ph0), np.cos(_th0) * np.sin(_ph0), np.sin(_th0)])
+_sub = np.cross(_pc, np.array([-np.sin(_ph0), np.cos(_ph0), 0.0]))
 _az = np.radians(args.fault_azimuth)
 _pe1 = np.cos(_az) * _sub + np.sin(_az) * np.cross(_pc, _sub); _pe2 = np.cross(_pc, _pe1)
 _prho = np.linspace(0.0, 0.9, 61)[1:]
@@ -393,6 +395,10 @@ for k in range(nsteps):
     rec = {"step": k, "t": t, "dt": dt, "converged": bool(info.get("converged")),
            "nonlinear": info.get("nonlinear_iterations"), "t_step": round(time.perf_counter() - t0, 1)}
     stress_to_nodes()
+    if args.save_global_stress:
+        Sg = stress_on(_grid_in)                                     # collective
+        if rank0:
+            np.savez(os.path.join(args.out, f"gstress_{k:04d}.npz"), t=t, S=Sg, lon=LON, lat=LAT)
     if args.check:
         rec.update(diagnostics(t))
         rec.update(stress_diagnostics(t))
