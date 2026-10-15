@@ -63,6 +63,7 @@ from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities import memprobe
+from underworld3.utilities._petsc_tools import fieldsplit_sub_ksps
 from underworld3.utilities._api_tools import (
     uw_object,
     SymbolicProperty,
@@ -2047,7 +2048,6 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 self._setup_pointwise_functions(verbose)
                 self._setup_discretisation(verbose)
                 self._setup_solver(verbose)
-                self._check_velocity_preconditioner()
 
             self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
 
@@ -2069,6 +2069,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 print(f"Stokes solver - store stress and shift history", flush=True)
 
             self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
+            # After the solve, as on the plain path: before it the split is not set
+            # up and has no velocity block to inspect (#827).
+            self._check_velocity_preconditioner()
 
         else:
             # Plain Stokes — no stress history
@@ -2715,20 +2718,16 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         if getattr(self, "_pc_user_override", False):
             return                            # the user owns this block's pc_type
         # The rotated free-slip path builds its OWN fieldsplit KSP and leaves
-        # this one un-set-up, so asking it for sub-KSPs raises -- and PETSc
-        # prints a full error banner before the exception can be caught, which
-        # makes a healthy solve look broken. Skip it by the path rather than by
-        # catching. (Suppressing with pushErrorHandler was tried: it is global
-        # state and broke 23 unrelated tests.)
+        # this one un-set-up: there is nothing here to inspect.
         if getattr(self, "_rotated_freeslip_bcs", None):
             return
-        pc = self.snes.getKSP().getPC()
-        if pc.getType() != "fieldsplit":
-            return
-        try:
-            installed = pc.getFieldSplitSubKSP()[0].getPC().getType()
-        except Exception:
-            return                            # not set up: nothing to inspect
+        # A split that is not set up has no blocks -- after a rebuild, or a warm
+        # solve that converged before any linear solve -- and asking for them
+        # prints a PETSc banner even when caught (#827); the helper asks quietly.
+        blocks = fieldsplit_sub_ksps(self.snes.getKSP().getPC())
+        if not blocks:
+            return                            # not a split, or not set up
+        installed = blocks[0].getPC().getType()
         if installed == "mg":
             return
 

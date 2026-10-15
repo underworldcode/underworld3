@@ -56,3 +56,27 @@ def parse_cmd_line_options():
 
 
 import os as _os
+
+
+def fieldsplit_sub_ksps(pc):
+    """The block solvers of a field-split ``pc``, or ``[]`` when it has none yet.
+
+    The blocks exist only once ``PCSetUp`` has run, and asking an un-set-up split
+    for them is a PETSc error that PETSc prints as a full banner even when the
+    exception is caught -- so a healthy solve looks broken (#827). The banner is
+    silenced for this one call only: the ``"return"`` handler still raises, it just
+    does not print, and it is popped on every path. (The ``"ignore"`` handler is
+    different -- it turns errors into success -- and pushed broadly it broke 23
+    unrelated tests.)
+
+    Anything that is not a field split also has no blocks, so it gives ``[]``.
+    """
+    if pc.getType() != "fieldsplit":
+        return []
+    PETSc.Sys.pushErrorHandler("return")
+    try:
+        return list(pc.getFieldSplitSubKSP())
+    except PETSc.Error:
+        return []                         # not set up yet: no blocks to report
+    finally:
+        PETSc.Sys.popErrorHandler()

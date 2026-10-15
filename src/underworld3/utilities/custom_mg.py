@@ -46,6 +46,7 @@ import numpy as np
 from petsc4py import PETSc
 
 from underworld3.utilities import multigrid_options
+from underworld3.utilities._petsc_tools import fieldsplit_sub_ksps
 
 __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
            "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
@@ -2219,10 +2220,12 @@ def _pcmg_still_installed(solver, h):
         if pfx == "":
             pc = solver.snes.getKSP().getPC()
         elif pfx == "fieldsplit_velocity_":
-            outer = solver.snes.getKSP().getPC()
-            if outer.getType() != "fieldsplit":
+            # quietly: an un-set-up split has no blocks, and asking prints a
+            # PETSc banner even when caught (#827)
+            blocks = fieldsplit_sub_ksps(solver.snes.getKSP().getPC())
+            if not blocks:
                 return False
-            pc = outer.getFieldSplitSubKSP()[0].getPC()
+            pc = blocks[0].getPC()
         else:
             return False
         return (pc.getType() == "mg"
