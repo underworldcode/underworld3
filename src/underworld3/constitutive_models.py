@@ -2032,19 +2032,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             :math:`L A L^{nT} + L^n A L^T - L^n A L^{nT}` -- still linear in the
             new velocity, and wrong only by :math:`(L - L^n) A (L - L^n)^T`.
             It needs a velocity history (a Navier-Stokes solver).
-            ``"split"`` takes the stretch of the stored stress out of the
-            momentum equation's dependence on the new velocity: the momentum
-            sees :math:`\sigma^*` stretched by the last step's velocity
-            gradient, :math:`F^n \sigma^* F^{nT}` with
-            :math:`F^n = I + \Delta t L^n`, while the elastic loading stays
-            with the new velocity. The momentum tangent is then the relaxed
-            viscous one, symmetric and positive-definite whatever the stored
-            stress. The stress the history stores is the full deformation step
-            with the converged velocity, as for ``"linear"``. The stretch the
-            momentum sees lags by a step, so it is first order: a large step
-            costs accuracy, not convergence. It needs a velocity history (a
-            Navier-Stokes solver), the upper-convected rate and the
-            ``"deformation"`` step.
         """
         if integrator not in ("bdf", "etd"):
             raise ValueError(
@@ -2084,14 +2071,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             if stress_history == "log_conformation" and unknowns.u.mesh.dim != 2:
                 raise NotImplementedError("the log-conformation history uses the closed-form 2x2 matrix "
                                           "logarithm and exponential; 3-D is not implemented")
-        if stretch_in_momentum not in ("implicit", "linear", "tangent", "split"):
-            raise ValueError("stretch_in_momentum must be 'implicit', 'linear', 'tangent' or "
-                             f"'split', got {stretch_in_momentum!r}")
-        if stretch_in_momentum == "split" and not (
-                objective_rate == "upper_convected" and convected_step == "deformation"):
-            raise ValueError("stretch_in_momentum='split' stretches the stored conformation "
-                             "with the deformation step: it needs objective_rate='upper_convected' "
-                             "and convected_step='deformation'")
+        if stretch_in_momentum not in ("implicit", "linear", "tangent"):
+            raise ValueError("stretch_in_momentum must be 'implicit', 'linear' or 'tangent', "
+                             f"got {stretch_in_momentum!r}")
         self._stress_history = stress_history
         self._convected_step = convected_step
         self._stretch_in_momentum = stretch_in_momentum
@@ -2538,13 +2520,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @stretch_in_momentum.setter
     def stretch_in_momentum(self, value):
-        if value not in ("implicit", "linear", "tangent", "split"):
-            raise ValueError("stretch_in_momentum must be 'implicit', 'linear', 'tangent' or "
-                             f"'split', got {value!r}")
-        if value == "split" and not (self._objective_rate == "upper_convected"
-                                     and self._convected_step == "deformation"):
-            raise ValueError("stretch_in_momentum='split' needs objective_rate='upper_convected' "
-                             "and convected_step='deformation'")
+        if value not in ("implicit", "linear", "tangent"):
+            raise ValueError("stretch_in_momentum must be 'implicit', 'linear' or 'tangent', "
+                             f"got {value!r}")
         if value != self._stretch_in_momentum:
             self._stretch_in_momentum = value
             self._reset()
@@ -2574,24 +2552,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         same expression structure for both — it adapts naturally to the
         integrator's ``E_eff``.
         """
-        how = self._stretch_in_momentum
         self._E_eff.sym = self._effective_strain_rate(
             quadratic_stretch={"implicit": "full", "linear": "none",
-                               "tangent": "tangent", "split": "split"}[how],
-            target={"split": "none"}.get(how))
+                               "tangent": "tangent"}[self._stretch_in_momentum])
         return self._E_eff
 
-    def _effective_strain_rate(self, quadratic_stretch="full", objective=True, target=None):
+    def _effective_strain_rate(self, quadratic_stretch="full", objective=True):
         """The expression behind :attr:`E_eff`. ``quadratic_stretch`` is how the
         deformation step's terms of order :math:`\Delta t^2 L^2` enter
         (:meth:`_quadratic_in_L`); ``"none"`` leaves out the terms of order
         :math:`\Delta t^2 L^2` (see ``stretch_in_momentum``); the stored stress
         (:attr:`history_flux`) always keeps them. ``objective=False`` leaves out
-        the objective-rate terms altogether (:attr:`preconditioner_flux`).
-        ``target`` is how the quadratic stretch of the relaxation target enters
-        (``"full"``, ``"none"`` or ``"tangent"``), by default as
-        ``quadratic_stretch`` says; ``"split"`` stretches the stored stress with
-        the last step's velocity gradient instead (:meth:`_objective_term`)."""
+        the objective-rate terms altogether (:attr:`preconditioner_flux`)."""
         E = self.Unknowns.E
 
         if self.Unknowns.DFDt is None or not self.is_elastic:
@@ -2622,8 +2594,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # objective rate: the flux gains alpha * dt * S(sigma*)
             E_eff = E_eff + (alpha * self.Parameters.dt_elastic
                              * self._objective_term(sigma_star, quadratic=quadratic_stretch) / (2 * eta_raw))
-            target = quadratic_stretch if target is None else target
-            if self._convected_step == "deformation" and target != "none":
+            if self._convected_step == "deformation" and quadratic_stretch != "none":
                 # The relaxation target is stretched during the step too. The
                 # exponential step carries that as (1-a) I + b (L + L^T) with
                 # b = lam (1 - (1+x) e^-x), x = dt/lam, exact to first order in L;
@@ -2636,8 +2607,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 x = self.Parameters.dt_elastic / lam
                 decay = sympy.exp(-x)
                 b = lam * (1 - (1 + x) * decay)
-                LLT = (L * L.T if target == "full"
-                       else self._quadratic_in_L(sympy.eye(L.shape[0]), target))
+                LLT = (L * L.T if quadratic_stretch == "full"
+                       else self._quadratic_in_L(sympy.eye(L.shape[0]), quadratic_stretch))
                 E_eff = E_eff + (b ** 2 / (1 - decay)) * LLT / (2 * lam)
             return E_eff
 
@@ -2698,17 +2669,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         sigma = sympy.Matrix(sigma)
         L = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
         if self._objective_rate == "upper_convected":
-            if quadratic == "split":
-                # The stored stress stretched by the last step's F^n = I + dt L^n:
-                # F^n sigma* F^nT - sigma*, over dt. Only sigma* is lagged; the
-                # stretch of the identity, the elastic loading dt G (L + L^T), stays
-                # with the new velocity in E (lagging it too leaves most of the
-                # viscous response explicit, which is unstable at a large step).
-                # The second-order terms are left out of the momentum, as "linear"
-                # does: at dt |L| >> 1 the lagged dt L^n sigma* L^nT multiplies the
-                # stored stress many times over in one step.
-                Ln = self._last_velocity_gradient()
-                return Ln * sigma + sigma * Ln.T
             if self._convected_step == "deformation" and quadratic != "none":
                 # F c* F^T - c* = dt (L c* + c* L^T) + dt^2 L c* L^T with
                 # c = sigma/G + I: the second-order term, in stress, is

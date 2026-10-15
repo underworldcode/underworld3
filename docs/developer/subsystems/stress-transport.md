@@ -163,6 +163,83 @@ a quarter more error in the stress near a singular corner than storing the stres
 `SNES_NavierStokes` (the Navier-Stokes solver that reads its history directly as
 a flux) and the multi-material model refuse the log-conformation history.
 
+## The momentum's share of the stretch at a large step
+
+The deformation step stretches the carried stress with the *new* velocity
+gradient, so its tangent puts the stored stress into the velocity block of the
+momentum Jacobian. Where $\Delta t\,|\sigma^*|/\eta$ is of order one the
+symmetric part of that block is indefinite. Measured on the confined cylinder
+(Wi 0.5, resolution 40, wall cells one eighth of the far field, $\Delta t = 1/60$,
+cylinder-cell Courant 8): the most negative eigenvalue of the symmetric part of
+the velocity block was $-1\%$ of the largest at an easy step and $-9\%$ by the
+tenth Newton iterate of the step that failed, with negative diagonal entries; the
+offending mode lies entirely in the first cell layer at the wall. Newton stalls
+there (the inner velocity solves reach their cap), and halving the step only moves
+the failure later.
+
+`ViscoElasticPlasticFlowModel(..., stretch_in_momentum=...)` says how much of the
+stretch the momentum equation sees. The stored stress is the same in every form:
+the full deformation step with the converged velocity, positive-definite.
+
+| form | momentum residual | at a large step |
+|---|---|---|
+| `"implicit"` (default) | the whole stretch, including its $\Delta t^2 L\,\sigma^* L^T$ terms | accurate; Newton can stall |
+| `"linear"` | drops the $O(\Delta t^2 L^2)$ terms: linear in the new velocity | converges; costs accuracy |
+| `"tangent"` | each quadratic term by its tangent about the last step's $L^n$ | accurate while it converges; stalls where `"implicit"` does |
+
+Measured on the same cylinder to $t = 3$: `"linear"` with backward-Euler momentum
+(`ns.theta = 1.0`) converged at every step in 2 to 6 Newton iterations at
+$\Delta t = 1/60$ and $1/30$ (Courant 8 and 16), where `"implicit"` fails by
+$t = 0.85$. Most of what a large step costs is the step itself, not the form:
+over $t = 0.6$ to $0.84$, while every run was still going, the implicit form at
+$\Delta t = 1/60$ was 11 per cent above the implicit reference at $1/120$,
+`"linear"` with Crank-Nicolson momentum was 5 per cent below the implicit form at
+the same step, and backward Euler added 9 per cent. The two forms agree to first order in
+$\Delta t\,|L|$, so for $\Delta t\,|L| \ll 1$, the usual geodynamic regime, they
+are interchangeable.
+
+The form can change between steps. Setting `constitutive_model.stretch_in_momentum`
+rebuilds the solver's kernels (cached after the first build of each form) and
+carries no state across, since the stored stress does not depend on it; each
+solve records the form it ran in `solve_report.config["tangent"]`. A driver can
+therefore run `"implicit"` and retake a step that fails with `"linear"`, restoring
+the step with `save_state` / `load_state` and bounding each implicit attempt with
+`solver.guard(wall_per_step=...)` so that a stalled attempt ends in minutes:
+
+```python
+cm = ns.constitutive_model
+token = orchestration_model.save_state()
+ns.guard(wall_per_step=150.0)
+try:
+    ns.solve(timestep=dt, zero_init_guess=False)
+finally:
+    ns.unguard()
+if ns.snes.getConvergedReason() < 0 or ns.solve_report.deadline_expired:
+    orchestration_model.load_state(token)
+    cm.stretch_in_momentum = "linear"
+    ns.solve(timestep=dt, zero_init_guess=False)
+```
+
+On the cylinder the failure gives no warning between steps (the velocity block's
+diagonal margin, min over mean, read 0.32 on the last good step); it develops
+within the failing step's Newton iterations, so the policy has to be reactive.
+
+**The preconditioning matrix.** `solver.preconditioner_flux = "model"` builds the
+velocity block of the preconditioning matrix from the constitutive model's
+`preconditioner_flux` instead of its flux, leaving the Jacobian (and so the Newton
+step) unchanged. For the viscoelastic model that flux leaves out the
+objective-rate terms: the block is the relaxed viscous one, symmetric and
+positive-definite. It is not the answer at the cylinder wall -- there the stretch
+is most of the operator (the viscous block's largest eigenvalue was a twelfth of
+the Jacobian's) and the inner solves took three times as many iterations -- but
+it is an option wherever the stretch is a small correction.
+
+What did not work, with the measurements, is on the wiki page
+[Viscoelastic stretch at large steps](https://github.com/underworldcode/underworld3/wiki/Viscoelastic-stretch-at-large-steps):
+stronger multigrid smoothers (GMRES with ASM stalls at the same step) and
+taking the stretch with the last step's velocity gradient (unstable at
+$\Delta t\,|L| \gg 1$).
+
 ## The recommended configuration
 
 Integration-point history, the step set by the wall strain rate
