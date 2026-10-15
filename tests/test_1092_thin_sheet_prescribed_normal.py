@@ -83,3 +83,24 @@ def test_degree_two_membrane():
     assert errs[0] < 0.10
     assert errs[1] < 0.04
     assert errs[1] < 0.6 * errs[0]
+
+
+def test_fault_reaction_is_the_membrane_resultant():
+    """A split fault in the breathing sheet carries the membrane stress across
+    it: the no-opening reaction, de-smeared by the trace mass, is the resultant
+    L * 6 eta W on every pair (the trace mass once took the triangle's weights
+    on a surface mesh and read 5 to 8 times that)."""
+    from underworld3.utilities.fault_contact import fault_normal_traction
+    W, eta, L = 0.1, 1.0, 0.08
+    sphere = _sphere(0.15)
+    phi = np.linspace(-0.3, 0.3, 9)
+    split = sphere.add_fault(("Flt", np.column_stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)])))
+    sheet = _sheet(split, eta)
+    sheet.thickness = L
+    sheet.add_fault_bc(0, "Flt")
+    sheet.normal_velocity = W
+    sheet.solve()
+    _c, sig = fault_normal_traction(sheet, "Flt", sheet._rotated_freeslip_info)
+    expected = L * 6 * eta * W
+    assert len(sig) > 5
+    assert np.abs(sig - expected).max() < 0.02 * expected

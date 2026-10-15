@@ -930,8 +930,13 @@ class _InterfaceAssembler:
         # redistribution that precedes every parallel split the fault is
         # rank-interior and the exchange is a no-op on the fault rows.
         mass = np.zeros(len(rows))
+        # the branch follows the facet TOPOLOGY (mesh.dim), as the quadrature
+        # above does, not the component count: a fault on a surface mesh is an
+        # edge carried by a 3-vector, and the triangle weights gave its mid-edge
+        # nodes an eighth of their mass (measured: the breathing sphere's fault
+        # read 5 to 8 times its membrane resultant)
         for idx, measure, _law_id in facets:
-            if dim == 2:
+            if solver.mesh.dim == 2:
                 weights = (measure / 6.0, 2.0 * measure / 3.0,
                            measure / 6.0)
             else:
@@ -1042,7 +1047,10 @@ class _InterfaceAssembler:
         reaction (negative in compression): the jump-normal constraint's
         nodal load l_i = (n.r+ - n.r-)/2, de-smeared by the lumped trace
         mass. The reaction must be the PURE bulk residual — the loop
-        stashes it before the interface force is added."""
+        stashes it before the interface force is added. On a thin sheet the
+        residual carries the thickness, so this is the membrane RESULTANT
+        (L sigma_nn): the interface laws' effective normal stress and any
+        background they add are in the same units."""
         dm = solver.dm
         dim = self._nrm.shape[1]
         lvec = dm.getLocalVec()
