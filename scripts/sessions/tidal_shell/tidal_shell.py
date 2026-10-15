@@ -116,6 +116,9 @@ for name in fault_names:
     else:
         sheet.add_fault_bc(args.fault_eta if args.fault_law == "viscous" else 0.0, name)
 cum_slip = {name: 0.0 for name in fault_names}          # signed, along the stripe direction
+# per-pair accumulation along each trace (Berne et al. Fig. 4a: the cycle-integrated
+# lateral slip along the stripes): keyed by the pair coordinates seen on the first step
+_prof = {}                                               # name -> dict(coords, act, net, act_cycle, net_cycle)
 if args.De > 0:
     sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         sheet.Unknowns, order=1, integrator="etd", objective_rate=args.objective)
@@ -420,6 +423,12 @@ for k in range(nsteps):
         accumulate_displacement(dt)
         if (k + 1) % args.steps_per_period == 0 or k == nsteps - 1:
             save_displacement(k, t)                      # at every cycle boundary
+    if _prof and ((k + 1) % args.steps_per_period == 0 or k == nsteps - 1):
+        if rank0:
+            np.savez(os.path.join(args.out, f"slipprof_{k:04d}.npz"), t=t,
+                     **{f"{n}_{key}": v for n, pr in _prof.items() for key, v in pr.items()})
+        for pr in _prof.values():
+            pr["act_cycle"][:] = 0.0; pr["net_cycle"][:] = 0.0
     if args.save_global_stress:
         Sg = stress_on(_grid_in)                                     # collective
         if rank0:
@@ -445,6 +454,17 @@ for k in range(nsteps):
             else:
                 signed = 0.0
             cum_slip[name] += signed * dt
+            if len(jumps):
+                vs = np.einsum("ij,ij->i", jumps, tdir)                  # signed slip rate per pair
+                if name not in _prof:
+                    _prof[name] = {"coords": np.asarray(_c).copy(), "act": np.zeros(len(vs)), "net": np.zeros(len(vs)),
+                                   "act_cycle": np.zeros(len(vs)), "net_cycle": np.zeros(len(vs))}
+                pr = _prof[name]
+                if len(vs) == len(pr["act"]):
+                    from scipy.spatial import cKDTree
+                    _d, idx = cKDTree(np.asarray(_c)).query(pr["coords"])    # same pairs, any order
+                    pr["act"] += np.abs(vs[idx]) * dt; pr["net"] += vs[idx] * dt
+                    pr["act_cycle"] += np.abs(vs[idx]) * dt; pr["net_cycle"] += vs[idx] * dt
             # clamping: the normal traction on the stripe from the no-opening reaction
             # (negative in compression); rank-local per pair, reduced collectively
             from underworld3.utilities.fault_contact import fault_normal_traction
