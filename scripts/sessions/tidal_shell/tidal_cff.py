@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 sim, run, ref = sys.argv[1:4]
 mu = float(sys.argv[4]) if len(sys.argv) > 4 else 0.4
 planes = sys.argv[5] if len(sys.argv) > 5 else "stripes"     # "stripes" or "optimal"
+normalised = len(sys.argv) > 6 and sys.argv[6] == "normalised"   # each run scaled by its own rms shear
 
 
 def receiver_frame(d):
@@ -67,13 +68,19 @@ for f in files:
         continue
     A, B = np.load(f), np.load(g)
     p, t, n = receiver_frame(A)
+    SA, SB = A["S"], B["S"]
+    if normalised:
+        # the rheology comparison: scale each run's stress by its own rms shear on the
+        # receiver planes so the maps compare pattern and phase, not amplitude
+        _ta, _ = resolve(SA, t, n); _tb, _ = resolve(SB, t, n)
+        SA = SA / (np.sqrt(np.mean(_ta ** 2)) + 1e-30); SB = SB / (np.sqrt(np.mean(_tb ** 2)) + 1e-30)
     if planes == "optimal":
-        cff_a, ang_a = optimal(A["S"], t, n)
-        cff_b, ang_b = optimal(B["S"], t, n)
+        cff_a, ang_a = optimal(SA, t, n)
+        cff_b, ang_b = optimal(SB, t, n)
         dcff = cff_a - cff_b
     else:
-        tau_a, sn_a = resolve(A["S"], t, n)
-        tau_b, sn_b = resolve(B["S"], t, n)
+        tau_a, sn_a = resolve(SA, t, n)
+        tau_b, sn_b = resolve(SB, t, n)
         cff_a = np.abs(tau_a) + mu * sn_a
         cff_b = np.abs(tau_b) + mu * sn_b
         dcff = (tau_a - tau_b) * np.sign(tau_b + 1e-30) + mu * (sn_a - sn_b)
@@ -98,7 +105,7 @@ for f in files:
         ax.set_aspect("equal"); ax.set_xlim(-0.9, 0.9); ax.set_ylim(-0.9, 0.9); ax.set_xticks([]); ax.set_yticks([])
         ax.set_title(ttl, fontsize=10, loc="left"); fig.colorbar(pc, ax=ax, shrink=0.8)
     fig.suptitle(f"Coulomb failure stress ({'weakest plane at each point' if planes == 'optimal' else 'stripe-parallel receiver planes'}), "
-                 f"mu = {mu}: step {int(step)}, t = {float(A['t']):.3f} periods", fontsize=10)
-    out = os.path.join(sim, f"cff{'opt' if planes == 'optimal' else ''}_{run}_vs_{ref}_{step}.png")
+                 f"mu = {mu}{', each run normalised by its rms shear' if normalised else ''}: step {int(step)}, t = {float(A['t']):.3f} periods", fontsize=10)
+    out = os.path.join(sim, f"cff{'opt' if planes == 'optimal' else ''}{'norm' if normalised else ''}_{run}_vs_{ref}_{step}.png")
     fig.savefig(out, dpi=110, bbox_inches="tight"); plt.close(fig)
     print("wrote", out, "dCFF range", f"{dcff.min():.4f} {dcff.max():.4f}")
