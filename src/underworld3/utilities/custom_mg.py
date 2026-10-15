@@ -400,7 +400,7 @@ def _split_index_maps(dm, fields):
     if s1 - s0 != ps.size:
         raise RuntimeError("custom_mg: split IS and split sub-DM disagree in size")
     order = np.argsort(ps, kind="stable")
-    out = {"nloc": int(s1 - s0), "nglobal": int(nglobal)}
+    out = {"nloc": int(s1 - s0), "nglobal": int(nglobal), "s0": int(s0)}
     for f in fields:
         is_f, fdm = dm.createSubDM(f)
         pf = np.asarray(is_f.getIndices(), dtype=np.int64)
@@ -1659,19 +1659,32 @@ class CustomMGHierarchy:
         Ps = []
         for l in range(1, nlev):
             nloc_f, nloc_c = maps[l]["nloc"], maps[l - 1]["nloc"]
-            P = PETSc.Mat().create(comm=comm)
-            P.setSizes(((nloc_f, None), (nloc_c, None)))
-            P.setType("aij")
-            P.setUp()
+            s0 = maps[l]["s0"]
+            # every owned split row is exactly one field's owned row: gather the
+            # fields' local CSR blocks, renumber rows/columns into the split, and
+            # assemble one CSR (vectorised; a per-row setValues loop cost minutes)
+            rows, cols, vals = [], [], []
             for f in fields:
                 Pf = per_field[f][l - 1]
-                rmap, cmap = maps[l][f], maps[l - 1][f]
-                r0, r1 = Pf.getOwnershipRange()
-                for r in range(r0, r1):
-                    cols, vals = Pf.getRow(r)
-                    if len(cols):
-                        P.setValues([int(rmap[r])], cmap[cols].astype(PETSc.IntType),
-                                    vals, addv=PETSc.InsertMode.INSERT_VALUES)
+                r0, _r1 = Pf.getOwnershipRange()
+                ip, jj, vv = Pf.getValuesCSR()
+                nr = len(ip) - 1
+                local_rows = np.repeat(np.arange(nr), np.diff(ip))
+                rows.append(maps[l][f][r0 + local_rows] - s0)
+                cols.append(maps[l - 1][f][np.asarray(jj, dtype=np.int64)])
+                vals.append(np.asarray(vv))
+            rows = np.concatenate(rows)
+            cols = np.concatenate(cols)
+            vals = np.concatenate(vals)
+            order = np.lexsort((cols, rows))
+            rows, cols, vals = rows[order], cols[order], vals[order]
+            indptr = np.zeros(nloc_f + 1, dtype=np.int64)
+            np.add.at(indptr, rows + 1, 1)
+            indptr = np.cumsum(indptr)
+            P = PETSc.Mat().createAIJ(
+                size=((nloc_f, None), (nloc_c, None)),
+                csr=(indptr.astype(PETSc.IntType), cols.astype(PETSc.IntType), vals),
+                comm=comm)
             P.assemble()
             Ps.append(P)
         n_split = maps[-1]["nglobal"]
