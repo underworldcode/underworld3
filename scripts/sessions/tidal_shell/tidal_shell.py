@@ -55,6 +55,7 @@ ap.add_argument("--fault_Tb", type=float, default=0.0, help="Coulomb: constant e
 ap.add_argument("--probe_stripes", type=int, default=0, help="unfaulted run: record the driving tractions on N virtual stripe traces (Berne et al. Fig 2a,b)")
 ap.add_argument("--fault_lat", type=float, default=-90.0, help="latitude of the stripe set's centre (deg)")
 ap.add_argument("--fault_lon", type=float, default=0.0, help="longitude of the stripe set's centre (deg; 0 = sub-planet meridian)")
+ap.add_argument("--accumulate_displacement", type=int, default=0, help="integrate the tangential velocity on the global and polar grids every step; save the cumulative displacement at figure steps (far-field net deformation per orbit)")
 ap.add_argument("--save_global_stress", type=int, default=0, help="save the 3x3 stress on the lat-lon grid every step (npz), for the site/orientation analysis")
 ap.add_argument("--fault_azimuth", type=float, default=-90.0, help="stripe direction: angle from the sub-planet direction at the set's centre, counter-clockwise viewed from outside (deg); -90 = east-west")
 ap.add_argument("--verbose", action="store_true")
@@ -375,6 +376,26 @@ def polar_figure(step, t):
     plt.close(fig)
 
 
+# cumulative tangential displacement on the grids (rank 0 holds it; the evaluations are collective)
+_disp_g = np.zeros((grid.shape[0], 3)); _disp_p = np.zeros((_pgrid.shape[0], 3))
+
+
+def accumulate_displacement(dt_):
+    global _disp_g, _disp_p
+    Ug = np.asarray(uw.function.global_evaluate(sheet.u.sym, _grid_in)).reshape(-1, 3)
+    Up = np.asarray(uw.function.global_evaluate(sheet.u.sym, _pgrid_in)).reshape(-1, 3)
+    if rank0:
+        Ug -= (Ug * grid).sum(1)[:, None] * grid; Up -= (Up * _pgrid).sum(1)[:, None] * _pgrid
+        _disp_g += dt_ * Ug; _disp_p += dt_ * Up
+
+
+def save_displacement(step, t):
+    if rank0:
+        np.savez(os.path.join(args.out, f"disp_{step:04d}.npz"), t=t, disp_global=_disp_g, grid=grid, lon=LON, lat=LAT,
+                 disp_polar=_disp_p, pgrid=_pgrid, rho=_PR, psi=_PP, centre=_pc, e1=_pe1, e2=_pe2,
+                 faults=np.array([np.column_stack(fp) for fp in _fault_polylines]) if _fault_polylines else np.zeros((0, 0, 2)))
+
+
 # ----------------------------------------------------------------------------- time loop
 dt = 1.0 / args.steps_per_period
 nsteps = int(round(args.periods * args.steps_per_period))
@@ -395,6 +416,10 @@ for k in range(nsteps):
     rec = {"step": k, "t": t, "dt": dt, "converged": bool(info.get("converged")),
            "nonlinear": info.get("nonlinear_iterations"), "t_step": round(time.perf_counter() - t0, 1)}
     stress_to_nodes()
+    if args.accumulate_displacement:
+        accumulate_displacement(dt)
+        if (k + 1) % args.steps_per_period == 0 or k == nsteps - 1:
+            save_displacement(k, t)                      # at every cycle boundary
     if args.save_global_stress:
         Sg = stress_on(_grid_in)                                     # collective
         if rank0:
