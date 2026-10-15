@@ -172,6 +172,27 @@ every problem, for no gain. B2 is worse than A, and badly so for the
 viscous fault. A smeared band on a coarse level is a continuous shear that the split
 fine operator rejects, so the coarse space has to contain the discontinuity itself.
 
+## C on the ladder, in a convecting lid (2026-10-14)
+
+A fault placed as a ladder (`place_fault_ribbon_2d`, `cut=False` spines) on a copy of the
+base's finest level has no add-on levels, and its spines are not replayed onto the
+levels, so the tail it can be given is A. In a yielding, convecting box (4 x 1, base
+cellSize 0.125 with two refinements, rung spacing S = 0.004, frictionless split spine
+with a weak bridge to the surface) the welded tail capped the velocity sub-solve at 200
+once the lid mobilised. C was built by hand: the same ladder at 4S on the base's middle
+level and at 2S on its finest, each split along its own rungs, as the mid levels, with
+the coarsest base level welded. One solve from rest on a mobilising state, 4 ranks:
+
+| Tail | Levels (cells) | Newton increments | Velocity its, total | Newton phase, per increment | Caps |
+|---|---|---|---|---|---|
+| A, welded | 642, 2568, 10272, 11604 | 39 | 1849 | 71-200 | 2 |
+| C, every ladder on the finest base level | 642, 2568, 10272, 10573, 10966, 11612 | 42 | 636 | 26-29 | 0 |
+| C, lean (ladders on the coarser base levels) | 642, 2924, 10950, 11612 | 42 | 695 | 29-38 | 0 |
+
+The lean tail keeps C's counts at A's cost per cycle. A constant band width on every level
+and a band two of each level's own rungs wide gave the same counts. The recipe and the
+driver rules that go with it are in `guides/faults-in-convection.md`.
+
 ## State (library, 2026-10-13)
 
 In the library: the add-on levels of one `adapt` call, each split by `add_fault`; the
@@ -181,4 +202,6 @@ layer with every level split, extruded in parallel; 3-D sheet faults on add-on m
 Not yet: fault networks through the levels (a network is replayed on every level, but
 a one-cell junction ligament closes at the coarser spacing and the replay then stops
 there, leaving that level and those beneath welded), faults near a boundary,
-co-locating the levels with the finest as an optimisation.
+co-locating the levels with the finest as an optimisation, and the ribbon replay that
+would give a placed ladder its split levels automatically (a driver builds them by hand:
+`guides/faults-in-convection.md`).
