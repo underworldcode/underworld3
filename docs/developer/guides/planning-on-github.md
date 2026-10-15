@@ -89,6 +89,31 @@ gh project field-list 10 --owner underworldcode --format json \
    little left to add. Retired pages are listed, not deleted. Editing is restricted to
    collaborators.
 
+## Issues and the pull requests that fix them
+
+Our pull requests merge to `development`, and GitHub's closing keywords (`Closes #N`)
+act only on merges to the default branch, `main`. An issue's label therefore carries
+its state until the fix is released:
+
+- **While the fix is in an open PR**, the issue stays open, labelled `fixed-in-PR`, with
+  a comment naming the PR. The PR body still carries `Closes #N`, which records the link.
+- **When the PR merges to `development`**, the label becomes `fixed-in-development` and
+  a comment names the PR and the merge commit. The issue stays open, because the fix is
+  not in a release yet:
+
+  ```bash
+  gh issue edit <n> --remove-label fixed-in-PR --add-label fixed-in-development
+  gh issue comment <n> --body "Fixed by #<pr> (merged to development, <sha>)."
+  ```
+
+- **When `development` is released to `main`**, every issue labelled
+  `fixed-in-development` is closed (see the post-release tasks in
+  [the release process](release-process.md)). Closing an issue moves its Project item to
+  Done.
+
+An open issue without either label is live. One with a label has a fix, and the label
+says where it is, so it is not investigated again.
+
 ## Writing wiki pages
 
 **Structure.** Pages are organised by topic, with campaigns and benchmarks in their own
@@ -154,3 +179,7 @@ Until 2026-10-05 the Underworld plan was a file, `underworld.md`, in a private
 hub-and-spoke planning folder read through `UW_AI_TOOLS_PATH`. Its items were migrated to
 the Project with their bodies and annotations; the file now carries a pointer and is
 frozen. The hub keeps the cross-project material that does not belong on GitHub.
+
+2026-10-11: an issue is labelled `fixed-in-PR` while its fix is in an open PR and
+`fixed-in-development` once the PR merges, and is closed when the fix is released to
+`main` (Louis).

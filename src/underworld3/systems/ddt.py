@@ -104,6 +104,13 @@ class _DDtCoreState(SnapshottableState):
     history_initialised: bool = False
     n_solves_completed: int = 0
     dt: Any = None
+    # the characteristic trace this history samples from, when it has one:
+    # which recorded velocity levels are valid decides the mid-time velocity
+    # of the next trace-back (see CharacteristicTrace._step_state). A plain
+    # record rather than a nested dataclass because the disk snapshot writes
+    # this state field by field, and a dict is a field it can write. Added
+    # with a default, so states written before it still load (schema 1 kept).
+    characteristics: Any = None
 
 
 @dataclass
@@ -111,10 +118,39 @@ class DDtSymbolicState(_DDtCoreState):
     """Snapshot of a :class:`Symbolic` DDt instance's evolution state.
 
     ``Symbolic`` is the pure-symbolic flavor — ``psi_star`` history
-    slots hold sympy expressions (immutable), captured by value.
+    slots hold symbolic matrices whose containers are copied, but whose live
+    UWexpression atoms are retained by reference. This supports in-memory
+    backstepping, not isolation from subsequent changes to those atoms.
+    These references cannot be transported through disk snapshots; symbolic
+    history is currently skipped there. Reconstructing symbolic forms from
+    the solver would be needed for a general disk-restart guarantee.
     """
 
     psi_star: list = field(default_factory=list)
+
+    def __deepcopy__(self, memo):
+        """Copy history containers without reconstructing symbolic atoms.
+
+        SymPy matrices are value containers but their expression atoms include
+        UWexpression objects whose identity binds them to live parameter and
+        coefficient registries. Generic ``copy.deepcopy`` reconstructs those
+        Symbol subclasses without their wrapped value, producing invalid atoms
+        after snapshot restore. Matrix ``copy()`` keeps the immutable symbolic
+        atoms while separating the mutable history list and matrices.
+        """
+        import copy
+
+        duplicate = type(self)(
+            _schema_version=self._schema_version,
+            dt_history=copy.deepcopy(self.dt_history, memo),
+            history_initialised=self.history_initialised,
+            n_solves_completed=self.n_solves_completed,
+            dt=copy.deepcopy(self.dt, memo),
+            psi_star=[value.copy() for value in self.psi_star],
+        )
+        memo[id(self)] = duplicate
+        return duplicate
+
 
 
 @dataclass
@@ -209,6 +245,17 @@ def _as_float(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _step_ratio(dt, dt_previous):
+    r"""The ratio :math:`\Delta t / \Delta t_{n-1}` of a step to the one before,
+    rationalised (``nsimplify``) so that equal steps give exactly 1 and the
+    equal-step weights to the last bit; 1 when either length is unknown or
+    symbolic."""
+    current, previous = _as_float(dt), _as_float(dt_previous)
+    if current is None or previous is None or previous == 0.0:
+        return sympy.Integer(1)
+    return sympy.nsimplify(abs(current) / abs(previous), rational=True)
 
 
 def _history_units(psi_fn, units=None):
@@ -735,6 +782,16 @@ class _DDtBase(uw_object):
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
 
+    def _adjoint_support(self):
+        """Whether this history's shift admits a discrete adjoint.
+
+        ``(supported, reason)``, written onto the ``history_shift`` event.
+        The default is a refusal that names the class, so a scheme added
+        without a verdict shows up in the transcript as undeclared rather
+        than passing as either.
+        """
+        return (False, f"{type(self).__name__} declares no linearisation")
+
     def update_exp_coefficients(self, dt, tau_eff):
         r"""Set the exponential (ETD) coefficients for this step.
 
@@ -777,12 +834,14 @@ class _DDtBase(uw_object):
         try:
             import underworld3 as uw
 
+            supported, why = self._adjoint_support()
             part = f"{type(self).__name__}#{self.instance_number}"
             uw.get_default_model()._part_objects[part] = self
             uw.get_default_model()._record_step_event(
                 "history_shift", self._history_label(), dt=float(dt),
                 part=part,
                 tracks=self._tracked_expression(),
+                adjoint={"supported": bool(supported), "reason": why},
                 **detail,
             )
         except Exception:
@@ -870,11 +929,13 @@ class _DDtBase(uw_object):
 
     def _core_state_kwargs(self):
         """Common evolution-tracking fields for the State dataclasses."""
+        trace = getattr(self, "_characteristics", None)
         return dict(
             dt_history=list(self._dt_history),
             history_initialised=bool(self._history_initialised),
             n_solves_completed=int(self._n_solves_completed),
             dt=self._dt,
+            characteristics=trace._step_state() if trace is not None else None,
         )
 
     def _validate_state_schema(self, s, state_cls):
@@ -913,6 +974,9 @@ class _DDtBase(uw_object):
         self._history_initialised = bool(s.history_initialised)
         self._n_solves_completed = int(s.n_solves_completed)
         self._dt = s.dt
+        trace = getattr(self, "_characteristics", None)
+        if trace is not None:
+            trace._restore_step_state(s.characteristics)
         _update_bdf_values(
             self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
         )
@@ -1425,6 +1489,8 @@ class Symbolic(_DDtBase):
     Lagrangian : Swarm-based material tracking.
     """
 
+    def _adjoint_support(self):
+        return (True, "implicit residual: the linearisation is the owning solver's Jacobian")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1669,6 +1735,8 @@ class Eulerian(_DDtBase):
     Symbolic : For purely symbolic history (no mesh storage).
     """
 
+    def _adjoint_support(self):
+        return (True, "implicit residual: the linearisation is the owning solver's Jacobian")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -2486,8 +2554,9 @@ class CharacteristicTrace:
 
     A segment is ``("first", 0, dt)``: from the launch points, start velocity
     :math:`v^n` (``V_fn`` live), mid-time velocity
-    :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` (``V_fn`` alone until a level is
-    recorded, or with ``midtime_velocity=False``); or ``("older", k, dt)``:
+    :math:`v^n + \tfrac{r}{2}(v^n - v^{n-1})`, :math:`r` the ratio of the step
+    to the last (``V_fn`` alone until a level is recorded, or with
+    ``midtime_velocity=False``); or ``("older", k, dt)``:
     one more step back through cached levels, start :math:`v^{n-k}`, mid
     :math:`\tfrac12 (v^{n-k} + v^{n-k-1})`. A chain of segments is cached by
     prefix, so slot ``k`` of a multi-segment history extends slot ``k-1``.
@@ -2506,6 +2575,7 @@ class CharacteristicTrace:
         self._cache = {}
         self._step = 0
         self._dt = None
+        self._recorded_dt = None       # length of the step that began with v^{n-1}
         self.n_velocity_evaluations = 0
         self.n_cache_hits = 0
 
@@ -2577,14 +2647,20 @@ class CharacteristicTrace:
         self._evaluate_into(self._levels[1])
         self._levels_valid = min(self._levels_valid + 1, len(self._levels) - 1)
 
-    def midtime_expr(self):
-        r""":math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, or :math:`v^n` alone."""
+    def midtime_expr(self, dt=None):
+        r"""The velocity at the middle of a step of length ``dt``,
+        :math:`v^n + \tfrac{r}{2}(v^n - v^{n-1})` with
+        :math:`r = \Delta t / \Delta t_{n-1}` the ratio of this step to the one
+        that began with :math:`v^{n-1}` (:math:`\tfrac32 v^n - \tfrac12 v^{n-1}`
+        for equal steps, and when either length is unknown); or :math:`v^n` alone
+        until a level is recorded."""
         if not self.midtime_velocity:
             return self.V_matrix()
         self.ensure_levels(2)
         if not self.level_valid(1):
             return self.V_matrix()
-        return self.V_matrix() * sympy.Rational(3, 2) - self.level_expr(1) * sympy.Rational(1, 2)
+        half_ratio = _step_ratio(dt, self._recorded_dt) / 2
+        return self.V_matrix() * (1 + half_ratio) - self.level_expr(1) * half_ratio
 
     def velocity_at(self, expr, coords, use_global=False, evalf=False,
                     subtract_v_mesh=False, v_mesh_var=None):
@@ -2615,19 +2691,40 @@ class CharacteristicTrace:
 
     # -- the steps and the trace -----------------------------------------------
 
-    def begin_step(self, dt):
-        self._step += 1
-        self._dt = dt
+    def _step_state(self):
+        """What the trace carries from one step to the next: how many recorded
+        velocity levels are valid (which decides the mid-time velocity of the
+        next trace-back), the step count and the last step length. The levels'
+        values are mesh variables and travel with the fields."""
+        return {"levels_valid": int(self._levels_valid), "step": int(self._step),
+                "dt": self._dt, "recorded_dt": self._recorded_dt}
+
+    def _restore_step_state(self, record):
+        """Put back a :meth:`_step_state` record; ``None`` (a trace made after
+        the record was taken) returns the trace to its state before any step,
+        as does any entry a record lacks."""
+        record = record or {}
+        self._levels_valid = int(record.get("levels_valid", 0))
+        self._step = int(record.get("step", 0))
+        self._dt = record.get("dt")
+        self._recorded_dt = record.get("recorded_dt")
         self._cache.clear()
 
-    def finish_step(self):
-        """The velocity used this step becomes :math:`v^{n-1}`."""
+    def begin_step(self, dt):
+        self._step += 1
+        self._dt = _as_float(dt)       # non-dimensional, as the segments use
+        self._cache.clear()
+
+    def finish_step(self, dt=None):
+        """The velocity used this step becomes :math:`v^{n-1}`; ``dt`` is the
+        step's length, by default the one :meth:`begin_step` was given."""
         self.record_velocity()
+        self._recorded_dt = self._dt if dt is None else _as_float(dt)
 
     def _segment_exprs(self, seg):
         kind, k, _ = seg
         if kind == "first":
-            return self.V_matrix(), self.midtime_expr()
+            return self.V_matrix(), self.midtime_expr(seg[2])
         half = sympy.Rational(1, 2)
         return self.level_expr(k - 1), (self.level_expr(k - 1) + self.level_expr(k)) * half
 
@@ -2848,6 +2945,8 @@ class SemiLagrangian(_DDtBase):
     Lagrangian : For full particle-following Lagrangian tracking.
     """
 
+    def _adjoint_support(self):
+        return (False, "the departure-point trace is differentiable in the velocity, but the interpolation at the departure points is not materialised as an operator")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -2881,8 +2980,9 @@ class SemiLagrangian(_DDtBase):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
-        # Mid-point velocity of the RK2 trace at the mid TIME (1.5 v^n -
-        # 0.5 v^{n-1}); False reproduces the pre-2026-09 v^n-only trace.
+        # Mid-point velocity of the RK2 trace at the mid TIME (v^n extrapolated
+        # half a step with the step ratio); False reproduces the pre-2026-09
+        # v^n-only trace.
         self.midtime_velocity = bool(midtime_velocity)
         if preserve_moments:
             raise NotImplementedError(
@@ -3455,17 +3555,6 @@ class SemiLagrangian(_DDtBase):
             return out
         except Exception:
             return None
-
-    def _midtime_velocity_expr(self):
-        r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
-        trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
-        velocity has been recorded, else :math:`v^n`. :math:`v^{n-1}` is
-        ``V_fn`` as evaluated at the previous step and cached at the nodes,
-        so any expression (``-v``, ``v/2``, ``c(t) v``, ``v - v_mesh``) is
-        carried as it was then."""
-        if not getattr(self, "midtime_velocity", True):
-            return None
-        return self.characteristics.midtime_expr()
 
     def _record_velocity_history(self):
         """Cache ``V_fn`` evaluated at the true nodes as v^{n-1} for the
@@ -4123,6 +4212,9 @@ class Lagrangian(_DDtBase):
     Lagrangian_Swarm : For user-provided swarms.
     """
 
+    def _adjoint_support(self):
+        return (True, "a copy on the particle set; valid while that set is fixed across the step — the swarm's advection record says whether it was")
+
     commits_flux_in_post_solve = True
 
     #: A particle that entered through an inflow this step takes
@@ -4546,6 +4638,9 @@ class Lagrangian_Swarm(_DDtBase):
     Eulerian : Pure mesh-based history (no particle tracking).
     """
 
+    def _adjoint_support(self):
+        return (True, "a copy on the particle set; valid while that set is fixed across the step — the swarm's advection record says whether it was")
+
     commits_flux_in_post_solve = True
 
     instances = (
@@ -4908,6 +5003,9 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
     velocity history caches it by evaluation at each time level.
     """
+
+    def _adjoint_support(self):
+        return (False, "the departure-point trace is differentiable in the velocity, but the interpolation at the departure points is not materialised as an operator")
 
     #: Departure points restored to the boundary take :attr:`inflow_value`
     #: there when one is set (#745); without one they sample the edge.
@@ -5521,6 +5619,15 @@ class ForwardSemiLagrangian(_DDtBase):
     """
 
     applies_inflow_value = True
+
+    def _adjoint_support(self):
+        return (
+            False,
+            "the forward trace is differentiable in the velocity, but the "
+            "per-cell least-squares fit of the arrivals is not materialised "
+            "as an operator, and which cell an arrival lands in — and so "
+            "which fit reads it — is piecewise constant in the velocity",
+        )
 
     def __init__(
         self,
