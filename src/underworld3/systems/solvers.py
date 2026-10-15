@@ -2294,6 +2294,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         stress : Total stress (deviatoric + pressure).
         constitutive_model : Provides the viscosity relationship.
         """
+        # while the preconditioning matrix's flux is built (preconditioner_flux)
+        if getattr(self, "_stress_for_preconditioner", False):
+            return self.constitutive_model.preconditioner_flux
         return self.constitutive_model.flux
 
     @property

@@ -2317,6 +2317,14 @@ class SolverBaseClass(uw_object):
 
         tangent = dict(consistent_jacobian=self.consistent_jacobian,
                        newton_pressure_coupling=getattr(self, "newton_pressure_coupling", True))
+        # recorded only when set, so a default solve's record is unchanged
+        if getattr(self, "preconditioner_flux", "jacobian") != "jacobian":
+            tangent["preconditioner_flux"] = self.preconditioner_flux
+        # the momentum's share of a viscoelastic stretch, which can change
+        # between steps (stretch_in_momentum): each solve records the form it ran
+        _stretch = getattr(getattr(self, "constitutive_model", None), "_stretch_in_momentum", "implicit")
+        if _stretch != "implicit":
+            tangent["stretch_in_momentum"] = _stretch
         # alpha only where it is live: the blended Jacobian (a warm-up compiled it, or
         # the continuation ramp). Its value before the solve is the one the solve
         # starts from; the ramp's end value is added by _capture_solve_report.
@@ -8490,6 +8498,32 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._saddle_preconditioner = function
 
     @property
+    def preconditioner_flux(self):
+        r"""Which flux the velocity block of the preconditioning matrix is
+        differentiated from: ``"jacobian"`` (default) or ``"model"``.
+
+        ``"jacobian"`` assembles the preconditioning matrix from the same
+        kernels as the Jacobian. ``"model"`` builds its velocity block from the
+        constitutive model's :attr:`preconditioner_flux` in place of its flux,
+        while the Jacobian -- the operator the Krylov solver applies, and so the
+        Newton step -- is unchanged. A viscoelastic model's preconditioner flux
+        leaves out the objective-rate (stretch) terms, whose tangent carries the
+        stored stress into the velocity block and can make it indefinite
+        where :math:`\Delta t\,|\sigma^*|/\eta \sim 1`: the multigrid of the
+        velocity solve then sees a symmetric positive-definite viscous block
+        whatever the stress. A change recompiles the kernels.
+        """
+        return getattr(self, "_preconditioner_flux", "jacobian")
+
+    @preconditioner_flux.setter
+    def preconditioner_flux(self, value):
+        if value not in ("jacobian", "model"):
+            raise ValueError(f"preconditioner_flux must be 'jacobian' or 'model', got {value!r}")
+        if value != self.preconditioner_flux:
+            self.is_setup = False
+        self._preconditioner_flux = value
+
+    @property
     def petsc_use_nullspace(self):
         """Enable full nullspace handling: constant pressure + mesh rotation modes.
 
@@ -9156,6 +9190,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return
 
     @timing.routine_timer_decorator
+    def _preconditioner_F1(self):
+        """The momentum flux with the constitutive model's preconditioner_flux
+        in place of its flux (see :attr:`preconditioner_flux`). The F1 of each
+        solver reaches the model's flux through :attr:`stress_deviator`, which
+        reads the swap flag; the residual F1 is rebuilt afterwards so the named
+        expression holds it again."""
+        if getattr(self.constitutive_model, "preconditioner_flux", None) is None:
+            raise ValueError("preconditioner_flux='model' needs a constitutive model "
+                             "with a preconditioner_flux")
+        self._stress_for_preconditioner = True
+        try:
+            F1_pc = sympy.Array(self.F1.sym)
+        finally:
+            self._stress_for_preconditioner = False
+            self.F1
+        return F1_pc
+
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
         import sympy
 
@@ -9304,6 +9355,30 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._uu_G3 = sympy.ImmutableMatrix(G3)
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
+
+        # The preconditioning matrix's velocity block (preconditioner_flux): by
+        # default the Jacobian's own kernels; with "model", G2 and G3 come from
+        # the flux with the constitutive model's preconditioner_flux in place of
+        # its flux. F0 is common to both, so G0 and G1 are shared.
+        self._uu_PG2, self._uu_PG3 = self._uu_G2, self._uu_G3
+        if self.preconditioner_flux == "model":
+            F1_pc = self._preconditioner_F1()
+            F1_pc_jac = sympy.Array(self._jacobian_source(sympy.Array(F1_pc))).reshape(dim, dim)
+            PG2 = sympy.zeros(Nc * Nc, dim)
+            PG3 = sympy.zeros(Nc * Nc, dim * dim)
+            for gc in range(Nc):
+                dF1_dU = diff_wrt_field(F1_pc_jac, U_list[gc])
+                for fc in range(Nc):
+                    for df in range(dim):
+                        PG2[fc * Nc + gc, df] = dF1_dU[fc, df]
+                for dg in range(dim):
+                    dF1_dL = diff_wrt_field(F1_pc_jac, L[gc, dg])
+                    for fc in range(Nc):
+                        for df in range(dim):
+                            PG3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
+            self._uu_PG2 = sympy.ImmutableMatrix(PG2)
+            self._uu_PG3 = sympy.ImmutableMatrix(PG3)
+            fns_jacobian += [self._uu_PG2, self._uu_PG3]
 
         # U/P block. The constraint field is scalar (Nc_p == 1), so the g-index
         # is size 1 and only the derivative indices need explicit placement.
@@ -10046,7 +10121,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         PetscDSSetJacobian(              ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
         PetscDSSetJacobian(              ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
         PetscDSSetJacobian(              ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
-        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_G2]], ext.fns_jacobian[i_jac[self._uu_G3]])
+        PetscDSSetJacobianPreconditioner(ds.ds, 0, 0, ext.fns_jacobian[i_jac[self._uu_G0]], ext.fns_jacobian[i_jac[self._uu_G1]], ext.fns_jacobian[i_jac[self._uu_PG2]], ext.fns_jacobian[i_jac[self._uu_PG3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
