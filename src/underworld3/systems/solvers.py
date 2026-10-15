@@ -63,7 +63,7 @@ from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities import memprobe
-from underworld3.utilities._petsc_tools import fieldsplit_sub_ksps
+from underworld3.utilities._petsc_tools import _fieldsplit_sub_ksps
 from underworld3.utilities._api_tools import (
     uw_object,
     SymbolicProperty,
@@ -2724,7 +2724,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # A split that is not set up has no blocks -- after a rebuild, or a warm
         # solve that converged before any linear solve -- and asking for them
         # prints a PETSc banner even when caught (#827); the helper asks quietly.
-        blocks = fieldsplit_sub_ksps(self.snes.getKSP().getPC())
+        blocks = _fieldsplit_sub_ksps(self.snes.getKSP().getPC())
         if not blocks:
             return                            # not a split, or not set up
         installed = blocks[0].getPC().getType()

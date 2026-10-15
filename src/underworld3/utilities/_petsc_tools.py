@@ -58,18 +58,25 @@ def parse_cmd_line_options():
 import os as _os
 
 
-def fieldsplit_sub_ksps(pc):
-    """The block solvers of a field-split ``pc``, or ``[]`` when it has none yet.
+def _fieldsplit_sub_ksps(pc):
+    """The block solvers of a field-split preconditioner, asked for quietly.
 
-    The blocks exist only once ``PCSetUp`` has run, and asking an un-set-up split
-    for them is a PETSc error that PETSc prints as a full banner even when the
-    exception is caught -- so a healthy solve looks broken (#827). The banner is
-    silenced for this one call only: the ``"return"`` handler still raises, it just
-    does not print, and it is popped on every path. (The ``"ignore"`` handler is
-    different -- it turns errors into success -- and pushed broadly it broke 23
-    unrelated tests.)
+    A split has its blocks only once ``PCSetUp`` has run. Asking earlier is a
+    PETSc error, and PETSc prints its banner before the exception reaches Python,
+    so catching it alone cannot keep a healthy solve's output clean (#827). The
+    ``"return"`` error handler is pushed for this one call: the error is still
+    raised, it is just not printed, and the handler is popped on every path.
 
-    Anything that is not a field split also has no blocks, so it gives ``[]``.
+    Parameters
+    ----------
+    pc : petsc4py.PETSc.PC
+        Any preconditioner.
+
+    Returns
+    -------
+    list of petsc4py.PETSc.KSP
+        The split's block solvers, or ``[]`` when ``pc`` is not a field split or
+        PETSc declines to give its blocks (the split is not set up).
     """
     if pc.getType() != "fieldsplit":
         return []
@@ -77,6 +84,6 @@ def fieldsplit_sub_ksps(pc):
     try:
         return list(pc.getFieldSplitSubKSP())
     except PETSc.Error:
-        return []                         # not set up yet: no blocks to report
+        return []                         # no blocks to give: not set up
     finally:
         PETSc.Sys.popErrorHandler()

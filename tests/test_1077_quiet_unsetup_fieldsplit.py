@@ -6,6 +6,9 @@ stderr before the exception reaches Python, so ``except`` cannot hide it and a
 healthy solve looks broken. Three paths reached it:
 
 - a viscoelastic solve checked the velocity preconditioner before solving;
+- the same check after a plain solve that converged without a linear solve, on
+  a solver rebuilt by a ``consistent_jacobian`` change, so the new split was
+  never set up;
 - the custom-multigrid "still installed?" test, run before each solve, on a
   solver rebuilt by a ``consistent_jacobian`` change (the notch runs' path).
 
@@ -15,7 +18,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
-from underworld3.utilities._petsc_tools import fieldsplit_sub_ksps
+from underworld3.utilities._petsc_tools import _fieldsplit_sub_ksps
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
@@ -44,10 +47,10 @@ def test_helper_is_quiet_on_an_unsetup_split(capfd):
     stokes._setup_solver()
     pc = stokes.snes.getKSP().getPC()
     assert pc.getType() == "fieldsplit"
-    assert fieldsplit_sub_ksps(pc) == []
+    assert _fieldsplit_sub_ksps(pc) == []
     assert BANNER not in capfd.readouterr().err
     stokes.solve()
-    assert len(fieldsplit_sub_ksps(stokes.snes.getKSP().getPC())) == 2
+    assert len(_fieldsplit_sub_ksps(stokes.snes.getKSP().getPC())) == 2
 
 
 def test_viscoelastic_solve_prints_no_banner(capfd):
@@ -59,6 +62,24 @@ def test_viscoelastic_solve_prints_no_banner(capfd):
     stokes.constitutive_model.Parameters.shear_modulus = 1.0
     stokes.constitutive_model.Parameters.dt_elastic = sympy.Rational(1, 10)
     stokes.solve(timestep=0.1)
+    assert BANNER not in capfd.readouterr().err
+
+
+def test_warm_solve_without_a_linear_solve_prints_no_banner(capfd):
+    """A tangent change rebuilds the solver; the warm solve that follows meets its
+    (loose) tolerance at once, so no linear solve sets the new split up, and the
+    post-solve velocity-preconditioner check asked it for its blocks."""
+    stokes = _stokes()
+    stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.yield_stress = 0.3
+    stokes.consistent_jacobian = False
+    stokes.solve()
+    capfd.readouterr()
+    stokes.petsc_options["snes_atol"] = 1.0e6
+    stokes.consistent_jacobian = True
+    stokes.solve(zero_init_guess=False)
+    assert stokes.snes.getIterationNumber() == 0
     assert BANNER not in capfd.readouterr().err
 
 
