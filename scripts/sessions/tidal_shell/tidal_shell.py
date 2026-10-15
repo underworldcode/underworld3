@@ -297,6 +297,9 @@ def polar_figure(step, t):
     U = np.asarray(uw.function.global_evaluate(sheet.u.sym, _pgrid_in)).reshape(-1, 3)
     if not rank0:
         return
+    # the polar fields, for post-processing against a reference run (Coulomb stress changes)
+    np.savez(os.path.join(args.out, f"polar_{step:04d}.npz"), t=t, S=S, U=U, grid=_pgrid, rho=_PR, psi=_PP,
+             centre=_pc, e1=_pe1, e2=_pe2, faults=np.array([np.column_stack(fp) for fp in _fault_polylines]) if _fault_polylines else np.zeros((0, 0, 2)))
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
