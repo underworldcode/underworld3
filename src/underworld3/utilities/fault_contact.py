@@ -358,9 +358,15 @@ def ViscousFaultLaw(eta_f):
     return SymbolicFaultLaw(float(eta_f) * slip_rate)
 
 
-def CoulombFaultLaw(mu, sigma_n, V0):
+def CoulombFaultLaw(mu, sigma_n, V0, background=0.0):
     r"""Regularised Coulomb friction,
     :math:`\tau = \mu\sigma_n\,\tfrac{2}{\pi}\arctan(V/V_0)`.
+
+    ``background`` adds a constant effective normal stress (compression
+    positive) to the reaction-fed one: the overburden less the pore pressure
+    of a fault that stays clamped while a tide modulates its strength
+    (Berne et al. 2024 on the tiger stripes: an overburden of about 50 kPa
+    against tidal normal tractions of about 25 kPa).
 
     Smooth, bounded by the strength :math:`\mu\sigma_n`, monotone. Below
     the regularisation velocity :math:`V_0` the fault sticks (residual
@@ -372,16 +378,16 @@ def CoulombFaultLaw(mu, sigma_n, V0):
     """
     if sigma_n == "reaction":
         # the strength clamp is the law's own: bare friction loses all
-        # strength the moment the normal stress turns tensile
-        strength = float(mu) * sympy.Max(normal_stress, 0)
+        # strength the moment the (effective) normal stress turns tensile
+        strength = float(mu) * sympy.Max(normal_stress + float(background), 0)
     else:
-        strength = float(mu) * float(sigma_n)
+        strength = float(mu) * (float(sigma_n) + float(background))
     return SymbolicFaultLaw(
         strength * (2 / sympy.pi) * sympy.atan(slip_rate / float(V0)))
 
 
 def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5,
-                         normal=None):
+                         normal=None, background=0.0):
     """Regularised Coulomb friction on the split fault ``boundary``
     (value-first: ``conds`` is the friction coefficient mu).
 
@@ -401,8 +407,10 @@ def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5,
     if mu <= 0.0 or float(V0) <= 0.0 or (
             sigma_n != "reaction" and float(sigma_n) <= 0.0):
         raise ValueError("mu, sigma_n and V0 must all be positive.")
+    if float(background) < 0.0:
+        raise ValueError("background (the constant effective normal stress, compression positive) must be >= 0.")
     add_frictionless_fault_bc(solver, boundary, normal=normal)
-    _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0))
+    _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0, background))
 
 
 def RateStateFaultLaw(a, b, V0, f0, Dc, sigma_n="reaction"):

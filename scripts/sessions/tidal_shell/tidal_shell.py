@@ -47,7 +47,14 @@ ap.add_argument("--faults", type=int, default=0, help="number of parallel tiger-
 ap.add_argument("--fault_len", type=float, default=0.52, help="fault length (rad; Enceladus ~130 km on R 252 km)")
 ap.add_argument("--fault_spacing", type=float, default=0.14, help="spacing between the stripes (rad; ~35 km)")
 ap.add_argument("--fault_eta", type=float, default=0.0, help="viscous interface law coefficient (0: frictionless)")
+ap.add_argument("--fault_law", default="frictionless", choices=["frictionless", "viscous", "coulomb"],
+                help="coulomb: regularised Coulomb friction with the strength fed by the no-opening reaction")
+ap.add_argument("--fault_mu", type=float, default=0.4, help="Coulomb friction coefficient")
+ap.add_argument("--fault_V0", type=float, default=1e-3, help="Coulomb regularisation slip rate (well below the tidal slip rates)")
+ap.add_argument("--fault_Tb", type=float, default=0.0, help="Coulomb: constant effective overburden (compression positive) added to the reaction")
+ap.add_argument("--probe_stripes", type=int, default=0, help="unfaulted run: record the driving tractions on N virtual stripe traces (Berne et al. Fig 2a,b)")
 ap.add_argument("--fault_lat", type=float, default=-90.0, help="latitude of the stripe set's centre (deg)")
+ap.add_argument("--fault_azimuth", type=float, default=-90.0, help="stripe direction: angle from the sub-planet direction at the set's centre, counter-clockwise viewed from outside (deg); -90 = east-west")
 ap.add_argument("--verbose", action="store_true")
 args = ap.parse_args()
 
@@ -71,8 +78,11 @@ def stripe_points(offset, half_len, n=9, lat0=-90.0):
     direction at a distance `offset` along e2."""
     th0 = np.radians(lat0)
     c = np.array([np.cos(th0), 0.0, np.sin(th0)])              # centre
-    e1 = np.array([0.0, 1.0, 0.0])                              # east at the centre
-    e2 = np.cross(c, e1)                                        # north-ish
+    east = np.array([0.0, 1.0, 0.0])
+    sub = np.cross(c, east)                                     # toward the sub-planet point (+x) along the surface
+    az = np.radians(args.fault_azimuth)
+    e1 = np.cos(az) * sub + np.sin(az) * np.cross(c, sub)       # stripe direction
+    e2 = np.cross(c, e1)                                        # across the stripes
     a = np.linspace(-half_len, half_len, n)
     pts = []
     for ai in a:
@@ -94,7 +104,12 @@ if args.faults > 0:
 x, y, z = sphere.X
 sheet = uw.systems.ThinSheet(sphere)
 for name in fault_names:
-    sheet.add_fault_bc(args.fault_eta, name)
+    if args.fault_law == "coulomb":
+        from underworld3.utilities.fault_contact import add_coulomb_fault_bc
+        add_coulomb_fault_bc(sheet, args.fault_mu, name, sigma_n="reaction", V0=args.fault_V0, background=args.fault_Tb)
+    else:
+        sheet.add_fault_bc(args.fault_eta if args.fault_law == "viscous" else 0.0, name)
+cum_slip = {name: 0.0 for name in fault_names}          # signed, along the stripe direction
 if args.De > 0:
     sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         sheet.Unknowns, order=1, integrator="etd", objective_rate=args.objective)
@@ -266,7 +281,9 @@ def figure(step, t):
 _pole_lat = args.fault_lat if args.faults > 0 else -90.0
 _th0 = np.radians(_pole_lat)
 _pc = np.array([np.cos(_th0), 0.0, np.sin(_th0)])
-_pe1 = np.array([0.0, 1.0, 0.0]); _pe2 = np.cross(_pc, _pe1)
+_sub = np.cross(_pc, np.array([0.0, 1.0, 0.0]))
+_az = np.radians(args.fault_azimuth)
+_pe1 = np.cos(_az) * _sub + np.sin(_az) * np.cross(_pc, _sub); _pe2 = np.cross(_pc, _pe1)
 _prho = np.linspace(0.0, 0.9, 61)[1:]
 _ppsi = np.linspace(-np.pi, np.pi, 145)
 _PR, _PP = np.meshgrid(_prho, _ppsi)
@@ -290,6 +307,30 @@ def to_polar(points):
 
 
 _fault_polylines = [to_polar(pts) for _n, pts in (faults if args.faults > 0 else [])]
+
+# virtual stripe traces for the driving tractions of an unfaulted (locked) shell
+_probe = []
+if args.probe_stripes > 0 and args.faults == 0:
+    offsets = (np.arange(args.probe_stripes) - 0.5 * (args.probe_stripes - 1)) * args.fault_spacing
+    for i, off in enumerate(offsets):
+        pts = stripe_points(off, 0.5 * args.fault_len, n=33, lat0=args.fault_lat)
+        tt = np.gradient(pts, axis=0); tt -= (tt * pts).sum(1)[:, None] * pts
+        tt /= np.maximum(np.linalg.norm(tt, axis=1), 1e-30)[:, None]
+        nn = np.cross(pts, tt)
+        _probe.append((f"Stripe{i}", pts * (1.0 - 0.3 * args.h ** 2), tt, nn))
+    _fault_polylines = [to_polar(pts) for _n, pts, _t, _nn in _probe]
+
+
+def driving_tractions():
+    """Shear (along the stripe, signed) and normal (tension positive) traction on
+    each virtual stripe, averaged along it: the locked shell's driving tractions."""
+    out = {}
+    for name, pts, tt, nn in _probe:
+        S = stress_on(pts)
+        tau = np.einsum("ni,nij,nj->n", tt, S, nn)
+        sn = np.einsum("ni,nij,nj->n", nn, S, nn)
+        out[name] = {"tau": float(tau.mean()), "sigma_n": float(sn.mean()), "tau_max": float(np.abs(tau).max())}
+    return out
 
 
 def polar_figure(step, t):
@@ -352,13 +393,35 @@ for k in range(nsteps):
     if args.check:
         rec.update(diagnostics(t))
         rec.update(stress_diagnostics(t))
+    if _probe:
+        rec["drive"] = driving_tractions()
     if fault_names:
         from underworld3.utilities.fault_contact import fault_pair_jumps
         slips = {}
         for name in fault_names:
             _c, jumps, normals = fault_pair_jumps(sheet, name, info, gather=True)   # every rank holds the fault
             v = np.linalg.norm(jumps, axis=1) if len(jumps) else np.zeros(1)
+            # signed slip along the stripe direction (the stripes run along e1 at the
+            # set's centre; its tangent projection at each pair)
+            if len(jumps):
+                pc_ = np.asarray(_c) / np.linalg.norm(_c, axis=1)[:, None]
+                tdir = _pe1[None] - (pc_ @ _pe1)[:, None] * pc_
+                tdir /= np.maximum(np.linalg.norm(tdir, axis=1), 1e-30)[:, None]
+                signed = float(np.mean(np.einsum("ij,ij->i", jumps, tdir)))
+            else:
+                signed = 0.0
+            cum_slip[name] += signed * dt
+            # clamping: the normal traction on the stripe from the no-opening reaction
+            # (negative in compression); rank-local per pair, reduced collectively
+            from underworld3.utilities.fault_contact import fault_normal_traction
+            _cs, sig = fault_normal_traction(sheet, name, info)
+            loc = np.array([float(np.sum(sig)), float(len(sig)), float(np.min(sig)) if len(sig) else np.inf,
+                            float(np.max(sig)) if len(sig) else -np.inf])
+            tot = comm.allreduce(loc[0], op=MPI.SUM), comm.allreduce(loc[1], op=MPI.SUM)
+            sn_min, sn_max = comm.allreduce(loc[2], op=MPI.MIN), comm.allreduce(loc[3], op=MPI.MAX)
             slips[name] = {"max": float(v.max()), "rms": float(np.sqrt((v ** 2).mean())),
+                           "signed_mean": signed, "cumulative": cum_slip[name],
+                           "sigma_n_mean": float(tot[0] / max(tot[1], 1.0)), "sigma_n_min": float(sn_min), "sigma_n_max": float(sn_max),
                            "leak": float(np.abs(np.einsum("ij,ij->i", jumps, normals)).max()) if len(jumps) else 0.0}
         rec["slip"] = slips
     records.append(rec)
