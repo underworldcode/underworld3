@@ -51,7 +51,7 @@ ap.add_argument("--fault_law", default="frictionless", choices=["frictionless", 
                 help="coulomb: regularised Coulomb friction with the strength fed by the no-opening reaction")
 ap.add_argument("--fault_mu", type=float, default=0.4, help="Coulomb friction coefficient")
 ap.add_argument("--fault_V0", type=float, default=1e-3, help="Coulomb regularisation slip rate (well below the tidal slip rates)")
-ap.add_argument("--fault_Tb", type=float, default=0.0, help="Coulomb: constant effective overburden (compression positive) added to the reaction")
+ap.add_argument("--fault_Tb", type=float, default=0.0, help="Coulomb: constant effective overburden as a STRESS (compression positive); enters the law as L * T_b")
 ap.add_argument("--probe_stripes", type=int, default=0, help="unfaulted run: record the driving tractions on N virtual stripe traces (Berne et al. Fig 2a,b)")
 ap.add_argument("--fault_lat", type=float, default=-90.0, help="latitude of the stripe set's centre (deg)")
 ap.add_argument("--fault_azimuth", type=float, default=-90.0, help="stripe direction: angle from the sub-planet direction at the set's centre, counter-clockwise viewed from outside (deg); -90 = east-west")
@@ -106,7 +106,10 @@ sheet = uw.systems.ThinSheet(sphere)
 for name in fault_names:
     if args.fault_law == "coulomb":
         from underworld3.utilities.fault_contact import add_coulomb_fault_bc
-        add_coulomb_fault_bc(sheet, args.fault_mu, name, sigma_n="reaction", V0=args.fault_V0, background=args.fault_Tb)
+        # the sheet's fault reaction is thickness-integrated (a force per unit length,
+        # L times the stress), so the overburden given as a stress enters as L * T_b
+        add_coulomb_fault_bc(sheet, args.fault_mu, name, sigma_n="reaction", V0=args.fault_V0,
+                             background=args.fault_Tb * args.L)
     else:
         sheet.add_fault_bc(args.fault_eta if args.fault_law == "viscous" else 0.0, name)
 cum_slip = {name: 0.0 for name in fault_names}          # signed, along the stripe direction
@@ -415,6 +418,7 @@ for k in range(nsteps):
             # (negative in compression); rank-local per pair, reduced collectively
             from underworld3.utilities.fault_contact import fault_normal_traction
             _cs, sig = fault_normal_traction(sheet, name, info)
+            sig = np.asarray(sig) / args.L                    # resultant -> stress (negative in compression)
             loc = np.array([float(np.sum(sig)), float(len(sig)), float(np.min(sig)) if len(sig) else np.inf,
                             float(np.max(sig)) if len(sig) else -np.inf])
             tot = comm.allreduce(loc[0], op=MPI.SUM), comm.allreduce(loc[1], op=MPI.SUM)
