@@ -29,7 +29,10 @@ mag_p = np.linalg.norm(net_p, axis=1).reshape(F["rho"].shape)
 rs = json.load(open(os.path.join(sim, fr, "records.json")))
 t = np.array([r["t"] for r in rs]); last = t > t.max() - 1 + 1e-9
 names = sorted(rs[0]["slip"].keys())
-net_slip = np.mean([rs[-1]["slip"][n]["cumulative"] - rs[int(np.argmax(last))]["slip"][n]["cumulative"] for n in names])
+# the orbit's net slip is the cumulative at its end minus the cumulative at the end
+# of the previous orbit (the record BEFORE the first step of the last cycle)
+i0 = int(np.argmax(last))
+net_slip = np.mean([rs[-1]["slip"][n]["cumulative"] - rs[i0 - 1]["slip"][n]["cumulative"] for n in names])
 # the unfaulted shell's own residual (numerical): the noise floor
 floor = np.linalg.norm(dgU, axis=1)
 print(f"orbit length {TF:.3f}; stripe-mean net slip over the orbit {net_slip:+.5f}")
