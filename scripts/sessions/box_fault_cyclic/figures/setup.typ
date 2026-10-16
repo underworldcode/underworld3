@@ -112,7 +112,7 @@
   // 8. boundary annotations
   content(P(0.5 * Lx, Ly, H), text(fill: edge-colour, size: 8pt)[free surface], anchor: "south", padding: 2pt)
   content(P(0.5 * Lx, 0, 0), text(fill: edge-colour, size: 8pt)[base: free-slip], anchor: "north", padding: 3pt)
-  content(P(0.30 * Lx, 0, 0.32 * H), text(fill: edge-colour, size: 8pt)[$y$ faces: periodic\ (or in/outflow)], anchor: "center")
+  content(P(0.30 * Lx, 0, 0.32 * H), text(fill: edge-colour, size: 8pt)[$y$ faces: traction-free\ (or $u_x = u_z = 0$)], anchor: "center")
   content(P(0.74 * Lx, 0, 0), text(fill: edge-colour, size: 8pt)[Maxwell block, Wallace number $"Wa" = T_"orbit" \/ T_M$], anchor: "north-west", padding: 3pt)
 })
 
