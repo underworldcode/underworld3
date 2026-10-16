@@ -2420,5 +2420,17 @@ def split_fault(mesh, name, orientation=None, verbose=False,
     if prior_normals or seam_normals:
         child._fault_seam_normals = dict(prior_normals)
         child._fault_seam_normals[name] = seam_normals
+    # The split re-represents the same grid (only the fault vertices are
+    # duplicated), so a mesh-owned geometric-MG tail serves it unchanged —
+    # the rule add_fault and split_faults already applied to their results.
+    # Here too, or the direct 3-D pipeline (adapt -> add_conforming_sheet ->
+    # split_fault) silently solved on GAMG. The FAC zone is not inherited:
+    # a split fault needs no patch.
+    own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is not None:
+        child._custom_mg_coarse_meshes = list(own_tail)
+        child._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                           "barycentric")
+        child._custom_mg_fac_zone = None
     mesh._registered_children.add(child)
     return child
