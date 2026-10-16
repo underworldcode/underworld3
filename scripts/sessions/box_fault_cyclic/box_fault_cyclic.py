@@ -38,7 +38,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--h", type=float, default=0.15, help="cell size away from the fault")
 ap.add_argument("--h_fault", type=float, default=0.05, help="cell size on the fault (gmsh mesher; 0: uniform)")
 ap.add_argument("--grading", type=float, default=0.0, help="distance over which the size grades back to --h (0: 8 h_fault)")
-ap.add_argument("--mesher", default="adapt", choices=["adapt", "gmsh", "place"])
+ap.add_argument("--mesher", default="gmsh", choices=["gmsh", "adapt", "place"])
 ap.add_argument("--adapt_levels", type=int, default=2, help="adapt-on-top levels toward the fault")
 ap.add_argument("--clearance", type=float, default=0.9, help="sheet placement clearance (0.9 on a bisection child)")
 ap.add_argument("--allow_gamg", action="store_true", help="accept a GAMG velocity block (no multigrid tail); otherwise refused")
@@ -47,7 +47,7 @@ ap.add_argument("--Ly", type=float, default=2.0)
 ap.add_argument("--H", type=float, default=1.0)
 ap.add_argument("--fault_len", type=float, default=1.0, help="fault length along x")
 ap.add_argument("--fault_depth", type=float, default=0.5, help="depth of the fault bottom below the surface")
-ap.add_argument("--setback", type=float, default=4.0, help="setback of the fault top below the surface, in fault cells (adapt, gmsh) or cells (place)")
+ap.add_argument("--setback", type=float, default=2.0, help="setback of the fault top below the surface, in fault cells (adapt, gmsh) or cells (place)")
 ap.add_argument("--damage", type=float, default=0.01,
                 help="viscosity ratio in the damage band above the fault top (1: no damage band)")
 ap.add_argument("--damage_width", type=float, default=0.0, help="half-width of the damage band (0: one cell)")
@@ -86,15 +86,18 @@ def log(*a):
 
 # ----------------------------------------------------------------------------- mesh, fault, split
 # Three routes to a blind vertical fault whose rim is strictly inside the box:
-#  adapt — the designed pipeline, and the only one with geometric multigrid: a box built
-#          with one uniform refinement level (the coarse tail), adapt-on-top toward the
-#          fault plane (exact-distance callable metric), the sheet placed by carving a
-#          cavity (add_conforming_sheet with setback, clearance 0.9 on a bisection child),
-#          the patch split. The tail rides through every step and the rotated solve
-#          takes the custom-P FMG velocity block.
 #  gmsh  — BoxInternalPatch: the rectangle is a conforming patch of a gmsh mesh graded
-#          to the fault. No cavity, so a two-cell setback works, but NO multigrid tail:
-#          the velocity block falls back to GAMG (refused below unless --allow_gamg).
+#          to the fault. No cavity, so a two-cell setback works. The mesh has no
+#          multigrid tail of its own, so two plain boxes at 2h and 4h are REGISTERED
+#          as the coarse tail (set_custom_fmg, non-nested, barycentric transfers) and
+#          the rotated solve takes the custom-P FMG velocity block (measured serially:
+#          3 velocity, 12 pressure iterations, converged). Default.
+#  adapt — a box with one refinement level, adapt-on-top toward the fault column, the
+#          sheet placed by carving a cavity, the patch split; the tail rides through
+#          by itself. The cavity reaches ~2 cell diameters above the sheet top, so
+#          the setback must be >= 5 fine cells (0.20 refused, 0.25 passed), and the
+#          parallel placement currently under-reaches its gather on this geometry
+#          (TODO(BUG) in place_surface.py; serial passes).
 #  place — a uniform box, cavity placement with setback (needs three to four cells).
 h = args.h
 hf = args.h_fault if args.h_fault > 0 else h
@@ -208,11 +211,21 @@ else:
 N_t = uw.discretisation.MeshVariable("N_t", mesh, 1, degree=1)
 S_t = uw.discretisation.MeshVariable("S_t", mesh, 1, degree=1)
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Left")                      # x = 0 fixed
-stokes.add_natural_bc(sympy.Matrix([[N_t.sym[0], S_t.sym[0], 0.0]]), "Right")   # x = Lx: (sigma_xx, sigma_xy, 0)
+# sign convention (measured): a positive value in add_natural_bc pushes INTO the domain, so
+# the traction sigma.n = (N, S, 0) on the outward normal +x enters negated: N > 0 is tension
+# (the loaded end moves +x), S > 0 is shear traction in +y on the x = Lx face.
+stokes.add_natural_bc(sympy.Matrix([[-N_t.sym[0], -S_t.sym[0], 0.0]]), "Right")
 stokes.add_dirichlet_bc((None, None, 0.0), "Bottom")                  # free-slip base
 if args.side_bc == "uxuz0":
     stokes.add_dirichlet_bc((0.0, None, 0.0), "Front")
     stokes.add_dirichlet_bc((0.0, None, 0.0), "Back")
+
+if args.mesher == "gmsh":
+    from underworld3.utilities.custom_mg import set_custom_fmg
+    coarse_tail = [uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
+                                                      cellSize=c, regular=False, qdegree=3) for c in (4.0 * h, 2.0 * h)]
+    set_custom_fmg(stokes, coarse_tail, field_id=0)
+    log(f"coarse tail registered: {[comm.allreduce(int(m.dm.getHeightStratum(0)[1] - m.dm.getHeightStratum(0)[0]), op=MPI.SUM) for m in coarse_tail]} cells")
 
 if args.fault_law == "coulomb":
     fault_contact.add_coulomb_fault_bc(stokes, args.fault_mu, "Fault", sigma_n="reaction",
