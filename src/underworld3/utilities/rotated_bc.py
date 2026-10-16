@@ -1778,6 +1778,18 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     resolved = custom_mg.build_transfers(solver, field_id=0)
     h, Ps = resolved if resolved is not None else (None, None)
     if h is None or Ps is None:
+        # Loud, not silent: a GAMG velocity block on a fault or free-slip mesh is
+        # a symptom of a mesh built without its multigrid tail (a gmsh mesh with a
+        # conforming patch, a split that dropped the tail), not a configuration
+        # anyone chooses — it crawls against the sub-solve cap on 3-D fault
+        # meshes. Ruling 2026-10-17: flag the fallback every time it happens.
+        if not getattr(solver, "_rotated_gamg_fallback_warned", False):
+            mpi.pprint("[rotated_bc] WARNING: no multigrid hierarchy on this mesh "
+                       "(no adapt tail, no set_custom_fmg registration); the "
+                       "velocity block falls back to GAMG. Build the mesh through "
+                       "adapt() so the tail rides through, or register a coarse "
+                       "tail with set_custom_fmg.")
+            solver._rotated_gamg_fallback_warned = True
         return None
     walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
     if getattr(h, "has_split_levels", False) or \
