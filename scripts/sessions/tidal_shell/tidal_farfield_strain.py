@@ -39,11 +39,16 @@ dil = e_rr + e_pp
 shear = np.sqrt((0.5 * (e_rr - e_pp)) ** 2 + e_rp ** 2)
 mask = rho < 0.03
 dil = np.where(mask, np.nan, dil); shear = np.where(mask, np.nan, shear)
+# the stripes' own offsets are displacement discontinuities, so the finite-difference
+# strain inside the stripe block (corners at ~0.33 rad) is slip over grid spacing, not
+# a far-field quantity: the colour scale is set from the field beyond 0.35 rad
+far = rho > 0.35
+lim_d = np.nanpercentile(np.abs(dil[far]), 99); lim_s = np.nanpercentile(shear[far], 99)
 X, Y = rho * np.cos(psi), rho * np.sin(psi)
 fig, axes = plt.subplots(1, 2, figsize=(13, 5.6))
 for ax, fld, ttl, cmap, sym in ((axes[0], dil, "dilatation of the net displacement per orbit", "RdBu_r", True),
                                 (axes[1], shear, "maximum shear strain of the net displacement per orbit", "magma", False)):
-    lim = np.nanmax(np.abs(fld)); kw = {"vmin": -lim, "vmax": lim} if sym else {"vmin": 0, "vmax": lim}
+    lim = lim_d if sym else lim_s; kw = {"vmin": -lim, "vmax": lim} if sym else {"vmin": 0, "vmax": lim}
     pc = ax.pcolormesh(X, Y, fld, cmap=cmap, shading="auto", **kw)
     for fp in F["faults"]:
         ax.plot(fp[:, 0], fp[:, 1], color="cyan" if not sym else "k", lw=2)
@@ -54,7 +59,8 @@ for ax, fld, ttl, cmap, sym in ((axes[0], dil, "dilatation of the net displaceme
 fig.suptitle(f"{fr} minus {ur}: far-field strain per orbit (polar view, tidal strain scale A = {A})", fontsize=10)
 out = os.path.join(sim, f"farfield_strain_{fr}_vs_{ur}.png"); fig.savefig(out, dpi=120, bbox_inches="tight"); print("wrote", out)
 w = np.sin(rho)
-for lo, hi in ((0.03, 0.25), (0.25, 0.5), (0.5, 0.9)):
+print("  (inside 0.35 rad the strain is the stripes' own offsets over the grid spacing; far-field bands only)")
+for lo, hi in ((0.35, 0.5), (0.5, 0.7), (0.7, 0.9)):
     m = (rho >= lo) & (rho < hi)
     print(f"  {np.degrees(lo):3.0f}-{np.degrees(hi):3.0f} deg from the set: rms shear strain {np.sqrt((w[m]*shear[m]**2).sum()/w[m].sum()):.2e} "
           f"({np.sqrt((w[m]*shear[m]**2).sum()/w[m].sum())/A:.3f} A), rms dilatation {np.sqrt((w[m]*dil[m]**2).sum()/w[m].sum()):.2e}")
