@@ -86,13 +86,15 @@ def stripe_points(offset, half_len, n=9, lat0=-90.0):
     az = np.radians(args.fault_azimuth)
     e1 = np.cos(az) * sub + np.sin(az) * np.cross(c, sub)       # stripe direction
     e2 = np.cross(c, e1)                                        # across the stripes
+    # each stripe is ONE great-circle arc: through the point at `offset` along e2
+    # from the centre, in the direction e1 (which is tangent there too). A chain of
+    # arcs between points of the exponential-map locus has a kink at every vertex,
+    # and the cut lost part of such a stripe silently (measured: the outer stripe
+    # of the south-polar set kept 11 of 16 facets at 9 points, 8 at a 0.005 shift
+    # of the offset, and fragmented at 13 points).
+    cp = np.cos(offset) * c + np.sin(offset) * e2
     a = np.linspace(-half_len, half_len, n)
-    pts = []
-    for ai in a:
-        rho = np.hypot(ai, offset)
-        d = (ai * e1 + offset * e2) / max(rho, 1e-30)
-        pts.append(np.cos(rho) * c + np.sin(rho) * d)
-    return np.array(pts)
+    return np.array([np.cos(ai) * cp + np.sin(ai) * e1 for ai in a])
 
 
 fault_names = []
