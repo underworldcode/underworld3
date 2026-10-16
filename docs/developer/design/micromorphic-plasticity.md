@@ -88,6 +88,13 @@ covers only part of the operator. To carry coupled fields:
 Then the guard goes, with a regression test: the same problem with a rotated wall and
 with a Dirichlet (or Nitsche) wall.
 
+**Done (2026-10-17, `753e1417`).** Items 1-3 as above; item 4 is refused with a
+message (a rigid rotation admitted together with a coupled field that enters the
+momentum flux). Tests in `test_1070`. Noted on the way: a driven lid meeting a
+rotated wall at a corner gives a different solution (~30% of the velocity) from the
+same wall as a Dirichlet condition, with or without a coupled field; the two impose
+conflicting corner values and resolve them differently. Pre-existing.
+
 ## Decisions (maintainer, 2026-10-17)
 
 1. **One regularisation object**, not loose parameters:
