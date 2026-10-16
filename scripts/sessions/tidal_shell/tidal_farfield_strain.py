@@ -27,16 +27,25 @@ r_ = rho.ravel()
 d_ = pg - (pg @ c)[:, None] * c; d_ /= np.maximum(np.linalg.norm(d_, axis=1), 1e-30)[:, None]
 e_r = np.cos(r_)[:, None] * d_ - np.sin(r_)[:, None] * c[None]        # geodesic radial direction
 e_p = np.cross(pg, e_r)                                                # azimuthal
-u_r = (net * e_r).sum(1).reshape(rho.shape); u_p = (net * e_p).sum(1).reshape(rho.shape)
-r1 = rho[0]; p1 = psi[:, 0]
-du_r_dr = np.gradient(u_r, r1, axis=1); du_p_dr = np.gradient(u_p, r1, axis=1)
-du_r_dp = np.gradient(u_r, p1, axis=0); du_p_dp = np.gradient(u_p, p1, axis=0)
-sr, cr = np.sin(rho), np.cos(rho)
-e_rr = du_r_dr
-e_pp = du_p_dp / sr + u_r * cr / sr
-e_rp = 0.5 * (du_r_dp / sr + du_p_dr - u_p * cr / sr)
-dil = e_rr + e_pp
-shear = np.sqrt((0.5 * (e_rr - e_pp)) ** 2 + e_rp ** 2)
+
+
+def strain_of(disp):
+    u_r = (disp * e_r).sum(1).reshape(rho.shape); u_p = (disp * e_p).sum(1).reshape(rho.shape)
+    r1 = rho[0]; p1 = psi[:, 0]
+    du_r_dr = np.gradient(u_r, r1, axis=1); du_p_dr = np.gradient(u_p, r1, axis=1)
+    du_r_dp = np.gradient(u_r, p1, axis=0); du_p_dp = np.gradient(u_p, p1, axis=0)
+    sr, cr = np.sin(rho), np.cos(rho)
+    e_rr = du_r_dr
+    e_pp = du_p_dp / sr + u_r * cr / sr
+    e_rp = 0.5 * (du_r_dp / sr + du_p_dr - u_p * cr / sr)
+    return e_rr + e_pp, np.sqrt((0.5 * (e_rr - e_pp)) ** 2 + e_rp ** 2)
+
+
+dil, shear = strain_of(net)
+# the noise floor of this finite-difference measure: the same strain of the UNFAULTED
+# shell's own residual over the orbit (a periodic shell has none; what remains is the
+# grid interpolation of a P2 field, differenced)
+dil_n, shear_n = strain_of(dU)
 mask = rho < 0.03
 dil = np.where(mask, np.nan, dil); shear = np.where(mask, np.nan, shear)
 # the stripes' own offsets are displacement discontinuities, so the finite-difference
@@ -62,5 +71,6 @@ w = np.sin(rho)
 print("  (inside 0.35 rad the strain is the stripes' own offsets over the grid spacing; far-field bands only)")
 for lo, hi in ((0.35, 0.5), (0.5, 0.7), (0.7, 0.9)):
     m = (rho >= lo) & (rho < hi)
-    print(f"  {np.degrees(lo):3.0f}-{np.degrees(hi):3.0f} deg from the set: rms shear strain {np.sqrt((w[m]*shear[m]**2).sum()/w[m].sum()):.2e} "
-          f"({np.sqrt((w[m]*shear[m]**2).sum()/w[m].sum())/A:.3f} A), rms dilatation {np.sqrt((w[m]*dil[m]**2).sum()/w[m].sum()):.2e}")
+    rs = lambda f: np.sqrt((w[m] * f[m] ** 2).sum() / w[m].sum())
+    print(f"  {np.degrees(lo):3.0f}-{np.degrees(hi):3.0f} deg from the set: rms shear strain {rs(shear):.2e} ({rs(shear)/A:.3f} A), "
+          f"rms dilatation {rs(dil):.2e}; NOISE FLOOR (unfaulted residual) shear {rs(shear_n):.2e}, dilatation {rs(dil_n):.2e}")
