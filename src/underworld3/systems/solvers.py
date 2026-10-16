@@ -532,7 +532,12 @@ class _StressHistoryMixin:
         swarm of material points the solver creates and advects, reading the
         constitutive flux at the particles each step and never projecting it
         back to the mesh: no numerical diffusion of the history, at the cost of
-        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`). The default
+        the swarm (see :class:`~underworld3.systems.ddt.Lagrangian`). ``"none"``
+        keeps the stress history on the grid and never transports it: the
+        choice when the displacement per step is far below a cell (a tidal or
+        seismic cycle), where every transport is a numerical cost with no
+        physics in it, and where a traced-back query across a split-node fault
+        can read the other side of the slit. The default
         is ``"semi_lagrangian"``. Set
         it before the constitutive model is assigned: assigning the model
         creates the history, and the choice cannot change after that.
@@ -543,10 +548,10 @@ class _StressHistoryMixin:
     def stress_transport(self, value):
         value = str(value)
         if value not in ("semi_lagrangian", "integration_point", "forward",
-                         "lagrangian", "eulerian"):
+                         "lagrangian", "eulerian", "none"):
             raise ValueError(
                 "stress_transport must be 'semi_lagrangian', 'integration_point', "
-                f"'forward', 'lagrangian' or 'eulerian', not {value!r}.")
+                f"'forward', 'lagrangian', 'eulerian' or 'none', not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
@@ -730,17 +735,18 @@ class _StressHistoryMixin:
                 proxy_location="cells",
                 **lag_common,
             )
-        elif self.stress_transport == "eulerian":
+        elif self.stress_transport in ("eulerian", "none"):
             if ddt_kwargs:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which only the semi-Lagrangian flavour "
                     "provides; use stress_transport='semi_lagrangian' for it.")
+            # "none": the same grid store, with the transport switched off
             self.Unknowns.DFDt = uw.systems.ddt.EulerianSUPG(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.cdim, self.mesh.cdim),
                 self.u.sym,
-                transport_on_update=True,
+                transport_on_update=(self.stress_transport == "eulerian"),
                 **common,
             )
         else:

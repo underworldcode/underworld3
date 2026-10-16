@@ -66,6 +66,8 @@ ap.add_argument("--periods", type=float, default=2.0)
 ap.add_argument("--steps_per_period", type=int, default=32)
 ap.add_argument("--tol", type=float, default=1e-6)
 ap.add_argument("--picard", type=int, default=0)
+ap.add_argument("--stress_transport", default="none", choices=["none", "eulerian", "semi_lagrangian", "integration_point"],
+                help="flavour of the Maxwell stress history. Default none: the displacement per step is far below a cell, so transport is a cost not physics, and a traced-back query across the split fault reads the other side")
 ap.add_argument("--surface_grid", type=int, default=40, help="points along x of the surface displacement grid")
 ap.add_argument("--verbose", action="store_true")
 args = ap.parse_args()
@@ -198,6 +200,7 @@ damage = g_x * g_y * g_z                                   # 1 in the band, 0 aw
 eta_factor = 1.0 - (1.0 - args.damage) * damage if args.damage < 1.0 else 1.0
 
 if args.De > 0:
+    stokes.stress_transport = args.stress_transport          # before the model: it creates the history
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         stokes.Unknowns, order=1, integrator="etd", objective_rate="none")
     stokes.constitutive_model.Parameters.shear_modulus = 1.0
