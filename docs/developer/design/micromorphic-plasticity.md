@@ -88,21 +88,21 @@ covers only part of the operator. To carry coupled fields:
 Then the guard goes, with a regression test: the same problem with a rotated wall and
 with a Dirichlet (or Nitsche) wall.
 
-## Decisions for the maintainer
+## Decisions (maintainer, 2026-10-17)
 
-1. **Names.** `plastic_length_scale` and `plastic_gradient_modulus`, alongside
-   `plastic_rate_strengthening`? Or one object,
-   `cm.Parameters.plastic_regularisation = Micromorphic(length, modulus)`, which would
-   also take Cosserat later?
-2. **Default $H$.** The campaign uses $H = 0.1\,\eta_{bg}$ ($\beta = 0.1$, the
-   recommendation still open). A default of $0.1 \times$ `shear_viscosity_0`, or no
-   default (the length scale alone refused)?
-3. **Region mask $m$.** The campaign confines the source to the strong layer, so the
-   weak layer's large strain rate does not smear into $\chi$ across the interface. In
-   a `MultiMaterialConstitutiveModel` the material's own indicator is the natural $m$;
-   on a single model, 1 everywhere, with an optional override?
-4. **Order.** Rotated driver first (useful on its own for the fault models), then the
-   model parameters; both on this branch before its PR.
+1. **One regularisation object**, not loose parameters:
+   `cm.Parameters.plastic_regularisation = Micromorphic(length=..., modulus=...)`. The
+   slot is built to take other regularisations later (Cosserat, and the rate
+   strengthening that is a bare parameter today). The user-side example above becomes
+   `cm.Parameters.plastic_regularisation = uw.constitutive_models.Micromorphic(
+   length=uw.quantity(1, "km"))`.
+2. **Default $H = 0.1 \times$ `shear_viscosity_0`** ($\beta = 0.1$) when only the
+   length is given.
+3. **Region mask: the material indicator.** 1 everywhere on a single model; in a
+   `MultiMaterialConstitutiveModel` each yielding material's own indicator. An optional
+   override on the object.
+4. **Order: the rotated driver first**, then the regularisation object; both on this
+   branch before its PR.
 
 ## Tests
 
