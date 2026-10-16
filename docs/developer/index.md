@@ -37,6 +37,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
 | Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
+| Coupled fields & multipliers in the Stokes split | [subsystems/saddle-point-field-groups.md](subsystems/saddle-point-field-groups.md) (design: [design/micromorphic-plasticity.md](design/micromorphic-plasticity.md)) |
 | Fault networks in parallel (placement, split, tail) | [design/fault-parallel-placement-2026-09.md](design/fault-parallel-placement-2026-09.md) (subsystem reference: [conforming-surfaces-and-fault-zones.md](subsystems/conforming-surfaces-and-fault-zones.md)) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
@@ -182,6 +183,7 @@ guides/uw-line-diagrams
 :caption: Design Documents
 
 design/run-plan-and-transcript
+design/micromorphic-plasticity
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
 design/ND_UNITS_BOUNDARY_CONTRACT
 design/WHY_UNITS_NOT_DIMENSIONALITY
@@ -233,6 +235,7 @@ subsystems/integration-point-variables
 subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing
 subsystems/rotated-freeslip
+subsystems/saddle-point-field-groups
 subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
