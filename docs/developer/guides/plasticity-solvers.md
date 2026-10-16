@@ -1,7 +1,7 @@
 ---
 name: plasticity-solvers
 description: How to get hard-Min viscoplastic / visco-elastic-plastic (VEP) Stokes solves to CONVERGE in Underworld3 — Newton (solver.consistent_jacobian) warmed by real Picard steps via solve(picard=N) (one is automatic on a cold start), which tangent per model, grid sequencing for the hard cases, and the δ-soft-min substrate (yield_mode / yield_smoother / yield_anchor) as a modelling choice. Reach for THIS first when a Drucker-Prager / yield-stress Stokes solve stalls, diverges (DIVERGED_LINEAR_SOLVE / line-search fail), or grinds through ~20+ nonlinear iterations. Tells you which tangent to use per model, how to confirm you are actually running Newton, and the measured failure modes. For the solver-config trap list and multigrid, see `nonlinear-solver`.
-families: [Stokes, ViscoPlasticFlowModel, ViscoElasticPlasticFlowModel]
+families: [Stokes, ViscoPlasticFlowModel, ViscoElasticPlasticFlowModel, TransverseIsotropicVEPFlowModel]
 kind: recipe
 ---
 
@@ -228,6 +228,41 @@ the last converged rung, and warns. The summary carries `scale0`, `rungs`,
 `reached_one`, `converged`. Measured on the notch: the equivalent ladder keeps the
 velocity block healthy on every rung and reaches a converged state no single solve
 could.
+
+## A length scale: `plastic_regularisation = Micromorphic(...)`
+
+Rate strengthening bounds the tangent but gives a band no width of its own: the band
+narrows with the mesh. The micromorphic regularisation gives the yield law a length
+scale:
+
+```python
+cm.Parameters.plastic_regularisation = uw.constitutive_models.Micromorphic(
+    length=uw.quantity(1, "km"))                   # modulus default 0.1 x shear_viscosity_0
+```
+
+The model owns a field chi, the strain-rate invariant smoothed over `length`, and the
+solver solves it with the flow: `H (chi - m edot) - div(H l^2 grad chi) = 0`, with the
+yield stress shifted by `m H (edot - chi)` before its floor. Modes longer than `l` see
+no extra stiffness; a collapsing band (shorter than `l`) sees about `H`. On ViscoPlastic,
+VEP (the effective strain rate, elastic history included) and TI-VEP (the in-plane shear
+rate on the weak plane). In a `MultiMaterialConstitutiveModel` each material's chi
+source is masked by its own indicator; `mask=` overrides.
+
+What comes with it, without being asked for:
+- chi is a coupled field (`add_coupled_field`), registered at the first solve.
+- Newton only, with the automatic cold Picard warm-up; `consistent_jacobian = False`
+  is refused.
+- The default fieldsplit groups velocity and chi in split 0 under the velocity
+  multigrid; native nested FMG and custom non-nested FMG (`set_custom_fmg`) both
+  build the multi-field transfer.
+- Rotated free-slip and fault contact carry chi. Refused: a geometry that admits a
+  rigid rotation together with a coupled field that enters the momentum flux (a
+  Cosserat micro-rotation), whose rotation null mode is not built.
+
+The setting the shear-band campaign uses (`uw3-campaigns/notch_length_scale`): `H =
+0.1 eta_bg`, `l` physical (1 km on the 30 km Spiegelman notch), capped Eisenstat-Walker
+(`snes_ksp_ew` with rtol0 = rtolmax = 1e-2). Design record:
+`docs/developer/design/micromorphic-plasticity.md`.
 
 ## Floors
 

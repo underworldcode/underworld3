@@ -362,6 +362,11 @@ For a pressure-dependent constitutive law use the mechanical pressure,
 - Benchmark **every** default change — "Solver Stability is Paramount".
 - ξ (rate-strengthening) is a **non-homotopic** regularisation: put a user loop
   *around* `solve()`, never inside the δ-march.
+- A **coupled field** (a `Micromorphic` regularisation's chi, or `add_coupled_field`)
+  makes the problem Newton-only and joins velocity in split 0 of the fieldsplit; the
+  velocity multigrid (native, custom non-nested, or under rotated free-slip) then
+  carries the multi-field transfer. Do not set a velocity `mat_block_size` on that
+  split: it is not node-blocked. See `plasticity-solvers`.
 
 ## Reference
 

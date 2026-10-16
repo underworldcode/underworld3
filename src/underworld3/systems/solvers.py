@@ -2021,6 +2021,11 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 homotopy_options, verbose=verbose, solve_kwargs=inner
             )
 
+        # A constitutive model that needs a field solved with the flow (a
+        # Micromorphic yield-law regularisation) asks for it; it must be part of
+        # the DM before setup.
+        self._register_model_coupled_fields()
+
         # The penalty enters the compiled weak form, so it must be decided
         # BEFORE setup -- and it depends on which velocity preconditioner
         # will be used, which is only certain afterwards. Bet here; the
@@ -2699,6 +2704,27 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         if not hasattr(self, "_pc_fallbacks"):
             self._pc_fallbacks = {}
         return self._pc_fallbacks
+
+    def _register_model_coupled_fields(self):
+        """Register the coupled fields the constitutive model asks for
+        (``Constitutive_Model._coupled_field_requests``) that are not yet on this
+        solver. Idempotent: a field already registered is left alone, so this runs
+        before every solve. Coupled problems are Newton only (with the automatic cold
+        Picard warm-up), so an explicit frozen tangent is refused."""
+        cm = getattr(self, "_constitutive_model", None)
+        if cm is None or not hasattr(cm, "_coupled_field_requests"):
+            return
+        requests = cm._coupled_field_requests()
+        if not requests:
+            return
+        if self.consistent_jacobian is False:
+            raise ValueError(
+                "the constitutive model's yield-law regularisation solves a field with "
+                "the flow, which needs the consistent (Newton) tangent: "
+                "consistent_jacobian = False is not supported with it")
+        for field, F0, F1 in requests:
+            if not any(c.field is field for c in self._coupled_fields):
+                self.add_coupled_field(field, F0=F0, F1=F1)
 
     def _check_velocity_preconditioner(self):
         """After setup: did the velocity block fall back off the multigrid?

@@ -90,6 +90,152 @@ def _plastic_rate_strengthening_parameter():
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 
+class Micromorphic:
+    r"""Micromorphic (gradient-plasticity) regularisation of a yield law.
+
+    Gives the yield law a length scale :math:`\ell` through an extra field
+    :math:`\chi`, the strain-rate invariant smoothed over :math:`\ell`, solved in the
+    same Newton system as the flow:
+
+    .. math::
+
+        H\,(\chi - m\,\dot\varepsilon_{II}) - \nabla\cdot(H\ell^2\nabla\chi) = 0,
+        \qquad
+        \tau_y \rightarrow \tau_y + m\,H\,(\dot\varepsilon_{II} - \chi).
+
+    Modes longer than :math:`\ell` see no extra stiffness; modes shorter than
+    :math:`\ell` (a collapsing shear band) see about :math:`H`. The shift enters the
+    yield stress before its floor (``yield_stress_min``).
+
+    Set it on a yielding model and solve; the solver registers :math:`\chi` as a
+    coupled field (:meth:`SNES_Stokes.add_coupled_field`) and solves it with the flow,
+    Newton only (with the automatic cold Picard warm-up)::
+
+        cm.Parameters.plastic_regularisation = uw.constitutive_models.Micromorphic(
+            length=uw.quantity(1, "km"))
+
+    Parameters
+    ----------
+    length : float, quantity or expression
+        The length scale :math:`\ell` (a length).
+    modulus : float, quantity or expression, optional
+        The modulus :math:`H` (a viscosity). Default :math:`0.1\,\eta_0`, a tenth of
+        the model's ``shear_viscosity_0``.
+    mask : expression, optional
+        The region :math:`m` where the source and the shift apply. Default 1; inside a
+        :class:`MultiMaterialConstitutiveModel`, the material's own indicator, so a
+        neighbouring material's strain rate does not enter :math:`\chi`.
+    degree : int, optional
+        Polynomial degree of :math:`\chi` (continuous). Default 1.
+    """
+
+    def __init__(self, length, modulus=None, mask=None, degree=1):
+        self._length_value = length
+        self._modulus_value = modulus
+        self._mask = mask
+        self._degree = int(degree)
+        self._model = None
+        self._chi = None
+        self._length = None
+        self._modulus = None
+        self._material_indicator = None
+
+    def _bind(self, model):
+        """Attach to the model that owns this regularisation (one model each: the
+        field chi belongs to it)."""
+        if self._model is not None and self._model is not model:
+            raise ValueError(
+                "Micromorphic: this regularisation already belongs to another model; "
+                "create one per model (each owns its own chi field)")
+        self._model = model
+
+    @property
+    def length(self):
+        r"""The length scale :math:`\ell` as an expression."""
+        if self._length is None:
+            self._length = expression(r"\ell_{\chi}", self._length_value,
+                                      "micromorphic length scale")
+        return self._length
+
+    @property
+    def modulus(self):
+        r"""The modulus :math:`H` as an expression (default :math:`0.1\,\eta_0`)."""
+        if self._modulus is None:
+            value = self._modulus_value
+            if value is None:
+                value = sympy.Rational(1, 10) * self._model.Parameters.shear_viscosity_0
+            self._modulus = expression(r"H_{\chi}", value, "micromorphic modulus")
+        return self._modulus
+
+    @property
+    def mask(self):
+        """The region where the source and the shift apply."""
+        if self._mask is not None:
+            return self._mask
+        if self._material_indicator is not None:
+            return self._material_indicator
+        return sympy.Integer(1)
+
+    @property
+    def chi(self):
+        r"""The field :math:`\chi` (a continuous scalar ``MeshVariable``), created on
+        first use on the model's mesh."""
+        if self._chi is None:
+            if self._model is None:
+                raise RuntimeError("Micromorphic: set it on a model before using chi")
+            mesh = self._model.Unknowns.u.mesh
+            units = "1/s" if uw.get_default_model().has_units() else None
+            self._chi = uw.discretisation.MeshVariable(
+                f"chi_micromorphic_{self._model.instance_number}", mesh, 1,
+                degree=self._degree, continuous=True, varsymbol=r"\chi", units=units)
+        return self._chi
+
+    def _strain_rate(self):
+        return self._model._regularisation_strain_rate()
+
+    def shift(self):
+        r"""The yield-stress shift :math:`m\,H\,(\dot\varepsilon_{II} - \chi)`."""
+        return self.mask * self.modulus * (self._strain_rate() - self.chi.sym[0])
+
+    def coupled_field_request(self):
+        """``(field, F0, F1)`` for :meth:`SNES_Stokes.add_coupled_field`."""
+        chi = self.chi
+        mesh = chi.mesh
+        H = self.modulus
+        F0 = H * (chi.sym[0] - self.mask * self._strain_rate())
+        F1 = H * self.length ** 2 * chi.sym.jacobian(mesh.CoordinateSystem.N)
+        return chi, F0, F1
+
+
+class _PlasticRegularisationSlot:
+    """``plastic_regularisation`` on a yielding model's Parameters: None (default)
+    or a regularisation object (:class:`Micromorphic`)."""
+
+    @property
+    def plastic_regularisation(self):
+        """The yield law's regularisation (:class:`Micromorphic`), or None."""
+        return getattr(self, "_plastic_regularisation", None)
+
+    @plastic_regularisation.setter
+    def plastic_regularisation(self, value):
+        if value is not None and not isinstance(value, Micromorphic):
+            raise TypeError(
+                f"plastic_regularisation must be a Micromorphic regularisation or None, "
+                f"not {type(value).__name__}")
+        previous = getattr(self, "_plastic_regularisation", None)
+        if previous is not None and previous is not value and previous._chi is not None:
+            raise NotImplementedError(
+                "plastic_regularisation: the regularisation's field is already part of "
+                "the model; replacing or removing it needs a new solver")
+        if value is not None:
+            value._bind(self._owning_model)
+        object.__setattr__(self, "_plastic_regularisation", value)
+        model = self._owning_model
+        if hasattr(model, "_reset"):
+            model._reset()
+
+
+
 class _ParameterBase:
     """Base class for all constitutive model ``_Parameters`` containers.
 
@@ -685,6 +831,27 @@ class Constitutive_Model(uw_object):
         # else triggers a re-setup.
         self._solver_is_setup = False
 
+    def _coupled_field_requests(self):
+        """Coupled volume fields this model needs solved with the flow, as
+        ``(field, F0, F1)`` tuples for :meth:`SNES_Stokes.add_coupled_field`. The
+        solver registers them before it is set up. None for most models; a yielding
+        model with a :class:`Micromorphic` regularisation asks for its chi."""
+        params = getattr(self, "Parameters", None)
+        reg = getattr(params, "plastic_regularisation", None) if params is not None else None
+        return [] if reg is None else [reg.coupled_field_request()]
+
+    def _regularisation_strain_rate(self):
+        """The strain-rate invariant a yield-law regularisation reads: the one the
+        model's own yield law compares against."""
+        return self._strainrate_inv_II
+
+    def _regularised_yield_stress(self, tau_y):
+        """``tau_y`` plus the regularisation's shift (none without one). Applied
+        before the floor, wherever the model's yield law reads its yield stress."""
+        params = getattr(self, "Parameters", None)
+        reg = getattr(params, "plastic_regularisation", None) if params is not None else None
+        return tau_y if reg is None else tau_y + reg.shift()
+
     def _reset(self):
         """Flags that the expressions in the consitutive tensor need to be refreshed and also that the
         solver will need to rebuild the stiffness matrix and jacobians"""
@@ -847,6 +1014,17 @@ class Constitutive_Model(uw_object):
                 entry = term(name, value)
                 entry["where"] = unpack(value.sym, 1, set())
                 terms.append(entry)
+        facts = {"dimension": getattr(self, "dim", None)}
+        reg = getattr(params, "plastic_regularisation", None) if params is not None else None
+        if reg is not None:
+            facts["plastic regularisation"] = (
+                f"{type(reg).__name__}: field {reg.chi.clean_name} solved with the flow; "
+                f"yield stress + mask H (edot_II - chi)")
+            for name, value in (("plastic_regularisation.length", reg.length),
+                                ("plastic_regularisation.modulus", reg.modulus)):
+                entry = term(name, value)
+                entry["where"] = unpack(value.sym, 1, set())
+                terms.append(entry)
         forms = {}
         try:
             flux = self.flux
@@ -856,8 +1034,7 @@ class Constitutive_Model(uw_object):
             pass
         doc = (type(self).__doc__ or "").strip().split("\n")[0]
         return record("constitutive_model", type(self).__name__, doc,
-                      facts={"dimension": getattr(self, "dim", None)},
-                      terms=terms, forms=forms or None)
+                      facts=facts, terms=terms, forms=forms or None)
 
 
 
@@ -1667,7 +1844,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         self._yield_offset_expr = None    # onset-offset atom (created lazily)
         self._yield_sharpness_expr = None  # power-mean sharpness atom (created lazily)
 
-    class _Parameters(_ParameterBase, _ViscousParameterAlias):
+    class _Parameters(_ParameterBase, _ViscousParameterAlias, _PlasticRegularisationSlot):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1752,12 +1929,12 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # Parameters exist so sympy can cancel an unused term away; that trick is
         # wrong here, so this one defaults to 0 — maintainer ruling 2026-07-26.)
         # An explicit -oo still disables the floor.
+        # A regularisation's shift (Micromorphic) enters before the floor.
+        tau_y = self._regularised_yield_stress(inner_self.yield_stress)
         if inner_self.yield_stress_min.sym != -sympy.oo:
-            yield_stress = self._apply_floor(
-                inner_self.yield_stress, inner_self.yield_stress_min
-            )
+            yield_stress = self._apply_floor(tau_y, inner_self.yield_stress_min)
         else:
-            yield_stress = inner_self.yield_stress
+            yield_stress = tau_y
 
         # Rate regularisation. eta_pl = tau_y / (2 edot_II) is unbounded as edot -> 0;
         # adding a floor to the strain rate caps it at tau_y/(2 edot_min) and so bounds
@@ -1811,7 +1988,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # See ViscousFlowModel._rate_strengthening_probe_terms: the same floors as
         # the viscosity above, so the ladder reads the law the solve runs.
         inner_self = self.Parameters
-        tau = inner_self.yield_stress
+        tau = self._regularised_yield_stress(inner_self.yield_stress)
         if inner_self.yield_stress_min.sym != -sympy.oo:
             tau = self._apply_floor(tau, inner_self.yield_stress_min)
         edot = self._strainrate_inv_II
@@ -1885,7 +2062,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         stress_II = sympy.sqrt((stress**2).trace() / 2)
 
-        correction = parameters.yield_stress / stress_II
+        correction = self._regularised_yield_stress(parameters.yield_stress) / stress_II
 
         return correction
 
@@ -2121,7 +2298,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         return
 
-    class _Parameters(_ParameterBase, _ViscousParameterAlias):
+    class _Parameters(_ParameterBase, _ViscousParameterAlias, _PlasticRegularisationSlot):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -2814,6 +2991,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     # docs/developer/design/jacobian-consistent-tangent.md. The generic
     # Constitutive_Model.flux_jacobian hook (default None) remains available.
 
+    def _regularisation_strain_rate(self):
+        """The effective strain-rate invariant (elastic history included), the one
+        the yield criterion compares against."""
+        Edot = self.E_eff.sym
+        return sympy.sqrt((Edot ** 2).trace() / 2)
+
     @property
     def _plastic_effective_viscosity(self):
         parameters = self.Parameters
@@ -2843,10 +3026,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # through constants[]) and needs no ordering test, which sympy cannot
             # resolve against an opaque UWexpression. eps = 0 makes it exactly Max.
             yield_stress = uw.maths.smooth_max(
-                parameters.yield_stress, parameters.yield_stress_min, 0
+                self._regularised_yield_stress(parameters.yield_stress),
+                parameters.yield_stress_min, 0
             )
         else:
-            yield_stress = parameters.yield_stress
+            yield_stress = self._regularised_yield_stress(parameters.yield_stress)
 
         if parameters.strainrate_inv_II_min.sym != 0:
             viscosity_yield = yield_stress / (
@@ -2869,7 +3053,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
         stress_inv_II = sympy.sqrt((stress**2).trace() / 2)
-        correction = parameters.yield_stress / stress_inv_II
+        correction = self._regularised_yield_stress(parameters.yield_stress) / stress_inv_II
 
         return correction
         # return sympy.Min(1, correction)
@@ -3852,7 +4036,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         return
 
-    class _Parameters(_ParameterBase, _ViscousParameterAlias):
+    class _Parameters(_ParameterBase, _ViscousParameterAlias, _PlasticRegularisationSlot):
         """Parameters for transverse isotropic VEP model.
 
         Combines anisotropic parameters (η₀, η₁, director) with VEP
@@ -4238,6 +4422,18 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         """Effective stiffness for preconditioner."""
         return self.Parameters.shear_viscosity_0
 
+    def _regularisation_strain_rate(self):
+        """The in-plane shear rate on the weak plane, the measure the plane's yield
+        law compares against: the effective strain rate resolved onto the director
+        by Pythagoras."""
+        Edot = self.E_eff.sym
+        n = self.Parameters.director.sym
+        T = Edot * n                        # "traction" vector on fault
+        edot_n = (n.T * T)[0, 0]            # normal component
+        T_sq = (T.T * T)[0, 0]              # |T|²
+        gamma_dot_sq = T_sq - edot_n**2     # in-plane shear²
+        return sympy.sqrt(sympy.Max(gamma_dot_sq, 0))
+
     @property
     def _plastic_effective_viscosity(self):
         """Plastic viscosity from resolved fault-plane shear strain rate.
@@ -4257,17 +4453,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         if ty_val is sympy.oo:
             return sympy.oo
 
-        Edot = self.E_eff.sym
+        gamma_dot_abs = self._regularisation_strain_rate()
 
-        # Resolve strain rate onto fault plane via Pythagoras
-        n = parameters.director.sym
-        T = Edot * n                        # "traction" vector on fault
-        edot_n = (n.T * T)[0, 0]            # normal component
-        T_sq = (T.T * T)[0, 0]              # |T|²
-        gamma_dot_sq = T_sq - edot_n**2     # in-plane shear²
-        gamma_dot_abs = sympy.sqrt(sympy.Max(gamma_dot_sq, 0))
-
-        tau_y = parameters.yield_stress
+        tau_y = self._regularised_yield_stress(parameters.yield_stress)
         # Guard on the DISABLING sentinel, not on zero — zero is the default and a
         # real floor (a negative yield stress is meaningless against an invariant).
         if parameters.yield_stress_min.sym != -sympy.oo:
@@ -5081,6 +5269,26 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
                 raise ValueError(f"Model {i} is not properly initialized")
 
         return True
+
+    def _coupled_field_requests(self):
+        """The constituents' coupled-field requests. A constituent's yield-law
+        regularisation that states no mask takes its material's indicator (the same
+        level set that weights its flux), so a neighbouring material's strain rate
+        does not enter its field."""
+        requests = []
+        for i, model in enumerate(self._constitutive_models):
+            reg = getattr(getattr(model, "Parameters", None), "plastic_regularisation", None)
+            if reg is None:
+                continue
+            fraction = self._material_var.sym[i]
+            if self._normalize_levelsets:
+                fraction = fraction / sum(
+                    self._material_var.sym[j] for j in range(self._material_var.indices))
+            if reg._material_indicator is None or reg._material_indicator != fraction:
+                reg._material_indicator = fraction
+                model._reset()                  # its law reads the mask
+            requests.extend(model._coupled_field_requests())
+        return requests
 
     @property
     def flux(self):
