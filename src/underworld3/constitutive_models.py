@@ -2437,7 +2437,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                     mu_val = float(params.shear_modulus.sym)
                     tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
                 except (TypeError, ValueError):
-                    tau_eff = None
+                    # a viscosity (or modulus) that varies in space: the Maxwell
+                    # time is a field and the ETD coefficients are formed
+                    # symbolically (ddt._update_exp_values); None here meant the
+                    # viscous limit and lost the elastic response silently
+                    tau_eff = sympy.sympify(params.shear_viscosity_0.sym) / sympy.sympify(params.shear_modulus.sym)
             try:
                 dt_val = (
                     float(params.dt_elastic.sym)
@@ -4169,7 +4173,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
                 mu_val = float(params.shear_modulus.sym)
                 tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
             except (TypeError, ValueError):
-                tau_eff = None
+                # spatially varying: symbolic coefficients (see the isotropic model)
+                tau_eff = sympy.sympify(params.shear_viscosity_1.sym) / sympy.sympify(params.shear_modulus.sym)
         try:
             dt_val = (
                 float(params.dt_elastic.sym)

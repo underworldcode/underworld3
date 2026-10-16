@@ -544,11 +544,28 @@ def _update_exp_values(coeffs, dt, tau_eff):
         Two-element list ``[α, φ]`` to update.
     dt : float or None
         Current timestep.
-    tau_eff : float or None
+    tau_eff : float, sympy expression or None
         Maxwell relaxation time (η_eff/μ). When None or non-positive,
-        defaults to the viscous limit.
+        defaults to the viscous limit. A sympy expression (a viscosity that
+        varies in space) gives symbolic coefficients, evaluated pointwise.
     """
     dt_f = _as_float(dt)
+    if (isinstance(tau_eff, sympy.Basic) and not tau_eff.is_number
+            and dt_f is not None and dt_f > 0.0):
+        # A spatially varying Maxwell time (a viscosity written as an expression
+        # of position or of a field): the coefficients are FIELDS, formed
+        # symbolically and evaluated by the kernels where they are used. Taking
+        # the float here failed and fell to the viscous limit, which silently
+        # removed the elastic response wherever the viscosity was not a plain
+        # number (measured: a damage band made the whole block viscous).
+        # tau <= 0 anywhere is read as the viscous limit there (x -> inf).
+        tau_pos = sympy.Max(tau_eff, sympy.Float(1e-300))
+        x = sympy.Float(dt_f) / tau_pos
+        alpha = sympy.exp(-x)
+        phi = (1 - alpha) / x
+        coeffs[0].sym = alpha
+        coeffs[1].sym = phi
+        return
     tau_f = _as_float(tau_eff)
     if dt_f is None or tau_f is None or tau_f <= 0.0 or dt_f <= 0.0:
         alpha, phi = 0.0, 0.0  # viscous limit
