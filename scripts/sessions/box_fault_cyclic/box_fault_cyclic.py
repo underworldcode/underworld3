@@ -38,13 +38,16 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--h", type=float, default=0.15, help="cell size away from the fault")
 ap.add_argument("--h_fault", type=float, default=0.05, help="cell size on the fault (gmsh mesher; 0: uniform)")
 ap.add_argument("--grading", type=float, default=0.0, help="distance over which the size grades back to --h (0: 8 h_fault)")
-ap.add_argument("--mesher", default="gmsh", choices=["gmsh", "place"])
+ap.add_argument("--mesher", default="adapt", choices=["adapt", "gmsh", "place"])
+ap.add_argument("--adapt_levels", type=int, default=2, help="adapt-on-top levels toward the fault")
+ap.add_argument("--clearance", type=float, default=0.9, help="sheet placement clearance (0.9 on a bisection child)")
+ap.add_argument("--allow_gamg", action="store_true", help="accept a GAMG velocity block (no multigrid tail); otherwise refused")
 ap.add_argument("--Lx", type=float, default=3.0)
 ap.add_argument("--Ly", type=float, default=2.0)
 ap.add_argument("--H", type=float, default=1.0)
 ap.add_argument("--fault_len", type=float, default=1.0, help="fault length along x")
 ap.add_argument("--fault_depth", type=float, default=0.5, help="depth of the fault bottom below the surface")
-ap.add_argument("--setback", type=float, default=2.0, help="setback of the fault top below the surface, in fault cells (gmsh) or cells (place)")
+ap.add_argument("--setback", type=float, default=4.0, help="setback of the fault top below the surface, in fault cells (adapt, gmsh) or cells (place)")
 ap.add_argument("--damage", type=float, default=0.01,
                 help="viscosity ratio in the damage band above the fault top (1: no damage band)")
 ap.add_argument("--damage_width", type=float, default=0.0, help="half-width of the damage band (0: one cell)")
@@ -82,21 +85,65 @@ def log(*a):
 
 
 # ----------------------------------------------------------------------------- mesh, fault, split
-# Two routes to a blind vertical fault whose rim is strictly inside the box:
-#  gmsh  — BoxInternalPatch: the rectangle is a conforming patch of the gmsh mesh,
-#          graded from --h_fault on the patch to --h far away. No cavity, so the
-#          setback below the surface can be a couple of FAULT cells.
-#  place — a uniform box, the sheet placed by carving a cavity (add_conforming_sheet)
-#          with setback; the cavity must not touch the top face, which needs a
-#          setback of three to four cells (measured: refused at two).
+# Three routes to a blind vertical fault whose rim is strictly inside the box:
+#  adapt — the designed pipeline, and the only one with geometric multigrid: a box built
+#          with one uniform refinement level (the coarse tail), adapt-on-top toward the
+#          fault plane (exact-distance callable metric), the sheet placed by carving a
+#          cavity (add_conforming_sheet with setback, clearance 0.9 on a bisection child),
+#          the patch split. The tail rides through every step and the rotated solve
+#          takes the custom-P FMG velocity block.
+#  gmsh  — BoxInternalPatch: the rectangle is a conforming patch of a gmsh mesh graded
+#          to the fault. No cavity, so a two-cell setback works, but NO multigrid tail:
+#          the velocity block falls back to GAMG (refused below unless --allow_gamg).
+#  place — a uniform box, cavity placement with setback (needs three to four cells).
 h = args.h
 hf = args.h_fault if args.h_fault > 0 else h
 yf = 0.5 * args.Ly
 xa, xb = 0.5 * (args.Lx - args.fault_len), 0.5 * (args.Lx + args.fault_len)
 zb = args.H - args.fault_depth
-setback = args.setback * (hf if args.mesher == "gmsh" else h)
+setback = args.setback * (h if args.mesher == "place" else hf)
 ztop_fault = args.H - setback
 trace = [[xa, yf, args.H], [xb, yf, args.H]]           # the would-be surface trace (a straight fault)
+
+
+def fault_distance(pts):
+    """Exact distance from points to the fault plane's column (axis-aligned rectangle in
+    the plane y = yf from the fault bottom up THROUGH the free surface): the refinement
+    must reach the surface above the fault, both for the damage band and so the
+    placement's cavity (clearance x local h, plus the dropped cells) stays clear of
+    the top face — a coarse cell above the fault top reached it (measured)."""
+    pts = np.asarray(pts, dtype=float).reshape(-1, 3)
+    dx = np.maximum(np.maximum(xa - pts[:, 0], pts[:, 0] - xb), 0.0)
+    dz = np.maximum(zb - pts[:, 2], 0.0)
+    dy = np.abs(pts[:, 1] - yf)
+    return np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+
+
+def fault_metric(pts):
+    """M = 1/h^2: h_fault within one fault cell of the plane, grading linearly to h."""
+    d = fault_distance(pts)
+    width = args.grading if args.grading > 0 else 6.0 * hf
+    hh = np.where(d < hf, hf, np.minimum(hf + (h - hf) * (d - hf) / width, h))
+    return 1.0 / hh ** 2
+
+
+def sheet_triangulation(cell):
+    """The fault rectangle as a triangulated sheet of size `cell`, run past the top so the
+    placement clips it and stops it `setback` below the surface."""
+    nx = max(2, int(round(args.fault_len / cell)) + 1)
+    nz = max(2, int(round((args.H + 0.3 * cell - zb) / cell)) + 1)
+    xs = np.linspace(xa, xb, nx)
+    zs = np.linspace(zb, args.H + 0.3 * cell, nz)
+    XX, ZZ = np.meshgrid(xs, zs, indexing="ij")
+    pts = np.column_stack([XX.ravel(), np.full(XX.size, yf), ZZ.ravel()])
+    tris = []
+    for i in range(nx - 1):
+        for j in range(nz - 1):
+            a, b, c, d = i * nz + j, (i + 1) * nz + j, (i + 1) * nz + j + 1, i * nz + j + 1
+            tris += [[a, b, c], [a, c, d]]
+    return pts, np.array(tris, dtype=np.int64)
+
+
 t0 = time.perf_counter()
 if args.mesher == "gmsh":
     patch = np.array([[xa, yf, zb], [xb, yf, zb], [xb, yf, ztop_fault], [xa, yf, ztop_fault]])
@@ -105,29 +152,29 @@ if args.mesher == "gmsh":
                                       patch_cellSize=hf if hf < h else None,
                                       grading_distance=args.grading if args.grading > 0 else None,
                                       qdegree=3)
+elif args.mesher == "adapt":
+    base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
+                                              cellSize=2.0 * h, regular=False, qdegree=3, refinement=1)
+    child = base.adapt(fault_metric, max_levels=args.adapt_levels, verbose=args.verbose)
+    n_tail = len(getattr(child, "_custom_mg_coarse_meshes", None) or [])
+    log(f"adapt: {comm.allreduce(int(child.dm.getHeightStratum(0)[1] - child.dm.getHeightStratum(0)[0]), op=MPI.SUM)} cells, "
+        f"multigrid tail of {n_tail} coarse levels")
+    pts, tris = sheet_triangulation(hf)
+    cut = child.add_conforming_sheet(pts, tris, "Fault", setback=setback, clearance=args.clearance,
+                                     verbose=args.verbose)
 else:
     base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
                                               cellSize=h, regular=False, qdegree=3)
-    nx = max(2, int(round(args.fault_len / h)) + 1)
-    nz = max(2, int(round((args.H + 0.3 * h - zb) / h)) + 1)
-    xs = np.linspace(xa, xb, nx)
-    zs = np.linspace(zb, args.H + 0.3 * h, nz)
-    XX, ZZ = np.meshgrid(xs, zs, indexing="ij")
-    sheet_pts = np.column_stack([XX.ravel(), np.full(XX.size, yf), ZZ.ravel()])
-    tris = []
-    for i in range(nx - 1):
-        for j in range(nz - 1):
-            a, b, c, d = i * nz + j, (i + 1) * nz + j, (i + 1) * nz + j + 1, i * nz + j + 1
-            tris += [[a, b, c], [a, c, d]]
-    cut = base.add_conforming_sheet(sheet_pts, np.array(tris, dtype=np.int64), "Fault", setback=setback,
-                                    verbose=args.verbose)
-    tr = cut._surface_info.get("surface_trace") if hasattr(cut, "_surface_info") else None
-    if tr:
-        trace = tr
+    pts, tris = sheet_triangulation(h)
+    cut = base.add_conforming_sheet(pts, tris, "Fault", setback=setback, verbose=args.verbose)
+if hasattr(cut, "_surface_info") and cut._surface_info.get("surface_trace"):
+    trace = cut._surface_info["surface_trace"]
 mesh = split_fault(cut, "Fault")
+n_tail = len(getattr(mesh, "_custom_mg_coarse_meshes", None) or [])
 ncell = comm.allreduce(int(mesh.dm.getHeightStratum(0)[1] - mesh.dm.getHeightStratum(0)[0]), op=MPI.SUM)
 log(f"mesh ({args.mesher}) h {h} h_fault {hf}: {ncell} cells after fault + split ({time.perf_counter() - t0:.1f}s); "
-    f"fault x [{xa:.2f}, {xb:.2f}], z [{zb:.2f}, {ztop_fault:.3f}], setback {setback:.3f}")
+    f"fault x [{xa:.2f}, {xb:.2f}], z [{zb:.2f}, {ztop_fault:.3f}], setback {setback:.3f}; "
+    f"multigrid tail {n_tail} levels")
 x, y, z = mesh.X
 
 # ----------------------------------------------------------------------------- solver
@@ -174,10 +221,15 @@ else:
     stokes.add_fault_bc(args.fault_eta if args.fault_law == "viscous" else 0.0, "Fault")
 
 
+load_now = {"N": 0.0, "S": 0.0}
+
+
 def set_load(t):
     w = 2 * np.pi
-    N_t.array[...] = args.N * np.sin(w * t + np.radians(args.phi))
-    S_t.array[...] = args.S * np.sin(w * t)
+    load_now["N"] = args.N * np.sin(w * t + np.radians(args.phi))
+    load_now["S"] = args.S * np.sin(w * t)
+    N_t.array[...] = load_now["N"]
+    S_t.array[...] = load_now["S"]
 
 
 # ----------------------------------------------------------------------------- diagnostics
@@ -243,6 +295,12 @@ for k in range(nsteps):
         stokes.solve(zero_init_guess=(k == 0), verbose=args.verbose, picard=args.picard)
     t = t_new
     info = getattr(stokes, "_rotated_freeslip_info", None) or {}
+    if k == 0:
+        vpc = info.get("velocity_pc")
+        log(f"velocity block: {vpc}; velocity its (last) {info.get('vel_its_last')}, pressure its (last) {info.get('pres_its_last')}")
+        if vpc == "GAMG" and not args.allow_gamg:
+            raise SystemExit("the velocity block fell back to GAMG: the mesh carries no multigrid tail. "
+                             "Use --mesher adapt (or pass --allow_gamg to accept it).")
     rec = {"step": k, "t": t, "converged": bool(info.get("converged", True)),
            "nonlinear": info.get("nonlinear_iterations"), "t_step": round(time.perf_counter() - tk, 1)}
     rec.update(fault_diagnostics(info, dt))
@@ -252,7 +310,7 @@ for k in range(nsteps):
     rec["surf_ux_absmax"] = float(np.abs(U[:, 0]).max())
     right = surf_pts[:, 0] > 0.9 * args.Lx
     rec["surf_ux_right"] = float(U[right, 0].mean())             # signed: +N on the loaded face must pull it out (+x)
-    rec["load_N"], rec["load_S"] = float(N_t.array.ravel()[0]) if N_t.array.size else 0.0, float(S_t.array.ravel()[0]) if S_t.array.size else 0.0
+    rec["load_N"], rec["load_S"] = float(load_now["N"]), float(load_now["S"])
     records.append(rec)
     log(f"step {k:4d} t {t:.4f} its {rec['nonlinear']} {rec['t_step']}s | slip rate mean {rec['slip_rate_mean']:+.2e} "
         f"max {rec['slip_rate_absmax']:.2e} leak {rec['leak_max']:.1e} | sigma_n [{rec['sigma_n_min']:+.3f}, {rec['sigma_n_max']:+.3f}]"
