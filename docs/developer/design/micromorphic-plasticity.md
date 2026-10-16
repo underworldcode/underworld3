@@ -1,6 +1,7 @@
 # Micromorphic plasticity as a first-class constitutive choice
 
-Status: proposal, 2026-10-17. Branch `feature/shear-band-length-scale`.
+Status: implemented 2026-10-17 on `feature/shear-band-length-scale` (`753e1417` rotated driver,
+`fa97582a` the option). Tests: `test_1070` (rotated), `test_1078` (the option).
 
 ## What it is
 
