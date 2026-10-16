@@ -2782,7 +2782,11 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         # makes a healthy solve look broken. Skip it by the path rather than by
         # catching. (Suppressing with pushErrorHandler was tried: it is global
         # state and broke 23 unrelated tests.)
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        # A fault contact (split-node pairs) takes the same manual rotated loop
+        # with no free-slip wall registered, so it is skipped by its own marker
+        # (measured: the banner on every step of a faulted box with no walls).
+        if (getattr(self, "_rotated_freeslip_bcs", None)
+                or getattr(self, "_fault_contact_faults", None)):
             return
         pc = self.snes.getKSP().getPC()
         if pc.getType() != "fieldsplit":
