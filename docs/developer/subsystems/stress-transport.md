@@ -102,6 +102,20 @@ co-rotational part of the tangent grows with $|W||\sigma^*|/G$ and is a solver
 setting) from a solve that has lost its problem (nothing recovers it). Print this
 line every step on a new problem.
 
+The `max` entry says how far the elastic element is stretched: the largest
+eigenvalue of $c$, one at rest. A value of order ten means elastic strains of
+order ten, a regime that is a polymer one (a dumbbell stretched several times its
+rest length) and not a rock one, which yields at elastic strains of order
+$10^{-3}$. On the confined cylinder at Wi 0.5 the upstream shoulders reached
+tr $c$ of 3500 in a layer a fifth of a wall cell wide, and that layer is where
+Newton fails at a large step; FENE-P with $L^2 = 100$ reached its cap at the same
+place and failed at the same step. A geodynamic model that shows a large `max` is
+missing the yield that would have limited it; yielding on the full stress
+invariant (as `ViscoElasticPlasticFlowModel` does, through the effective strain
+rate that carries the stored stress) releases it, where a limit on resolved shear
+stress would not: the stored stress there is almost entirely streamwise normal
+stress.
+
 ## Past the conformation limit: the deformation step and the log-conformation history
 
 Two things lose the conformation at a re-entrant corner or a stagnation point at
