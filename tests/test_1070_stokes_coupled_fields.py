@@ -222,22 +222,110 @@ def _scalar_field(mesh, name):
     return uw.discretisation.MeshVariable(name, mesh, 1, degree=1)
 
 
-@pytest.mark.tier_b
-def test_rotated_freeslip_and_coupled_field_are_refused_in_either_order():
-    # the rotated solve splits velocity and pressure by field number; a coupled
-    # field outside that split was measured to stop the solve at iteration 0
-    mesh, stokes = _driven_stokes()
-    chi = _scalar_field(mesh, "chi_r1")
-    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
-    with pytest.raises(RuntimeError, match="coupled volume field"):
+def _free_slip_left(rotated, name, fmg=False):
+    """Two-way coupled Stokes (eta = 1 + 0.5 chi^2) with a free-slip left wall, as a
+    rotated constraint or as a Dirichlet condition on the normal component. On a
+    straight wall the two are the same discrete problem. Driven by a body force, not
+    a lid: a driven lid meets the wall at a corner where the two impose different
+    values, and they resolve that conflict differently with or without a coupled
+    field."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3,
+        refinement=1 if fmg else None)
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    x, y = mesh.X
+    stokes.bodyforce = sympy.Matrix([[sympy.sin(sympy.pi * y), 0]])
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    if rotated:
         stokes.add_rotated_freeslip_bc(0, "Left")
+    else:
+        stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
+    chi = _scalar_field(mesh, name)
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + 50.0 * chi.sym[0] ** 2
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    if fmg:
+        # an independent coarsest level, non-nested: the multi-field transfer
+        tail = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.3)
+        stokes.set_custom_fmg([tail] + mesh._coarse_level_meshes()[:-1], field_id=0)
+    stokes.consistent_jacobian = True
+    stokes.petsc_options["snes_rtol"] = 1.0e-10
+    stokes.tolerance = 1.0e-8
+    return mesh, stokes, chi
 
-    mesh, stokes = _driven_stokes()
-    stokes.add_rotated_freeslip_bc(0, "Left")
-    chi = _scalar_field(mesh, "chi_r2")
-    with pytest.raises(RuntimeError, match="coupled volume field"):
-        stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
-    assert stokes._coupled_fields == []
+
+def _probe():
+    g = np.linspace(0.05, 0.95, 7)
+    return np.array([[x, y] for x in g for y in g])
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("fmg", [False, True])
+def test_rotated_freeslip_carries_a_coupled_field(fmg):
+    # The rotated driver builds its own split; split 0 must hold velocity AND the
+    # coupled field, as the native grouped split does, and its multigrid the
+    # multi-field transfer. Before, the coupled field lay outside both splits and the
+    # pair was refused (measured: the solve stopped at iteration 0,
+    # DIVERGED_LINE_SEARCH).
+    solutions = []
+    for rotated in (False, True):
+        mesh, stokes, chi = _free_slip_left(rotated, f"chi_wall_{int(rotated)}{int(fmg)}", fmg)
+        stokes.solve()
+        assert stokes.snes.getConvergedReason() > 0
+        solutions.append((np.asarray(uw.function.global_evaluate(stokes.Unknowns.u.sym, _probe())),
+                          np.asarray(uw.function.global_evaluate(chi.sym, _probe()))))
+    (u_d, c_d), (u_r, c_r) = solutions
+    assert np.abs(c_d).max() > 0.05                    # chi is driven, not zero
+    scale = np.abs(u_d).max()
+    assert np.abs(u_r - u_d).max() < 1.0e-6 * scale
+    assert np.abs(c_r - c_d).max() < 1.0e-6 * np.abs(c_d).max()
+
+
+@pytest.mark.tier_b
+def test_rotated_freeslip_on_a_curved_wall_with_a_coupled_field():
+    # Annulus, free-slip on both arcs: the rotation is non-trivial and a rigid
+    # rotation is a null mode, which carries zero in chi (a rigid rotation leaves the
+    # strain rate unchanged). A one-way coupled chi must leave the flow exactly as the
+    # same solve without it, keep the wall-normal velocity exact, and be driven.
+    RI, RO = 0.5, 1.0
+
+    def solve(with_chi):
+        mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.15, qdegree=3)
+        x, y = mesh.X
+        r = sympy.sqrt(x ** 2 + y ** 2)
+        th = sympy.atan2(y, x)
+        stokes = uw.systems.Stokes(mesh)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.bodyforce = sympy.Matrix([[x / r, y / r]]) * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40
+        nhat = sympy.Matrix([[x / r, y / r]])
+        stokes.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+        stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
+        stokes.petsc_use_pressure_nullspace = True
+        chi = None
+        if with_chi:
+            chi = _scalar_field(mesh, "chi_annulus")
+            stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+            stokes.consistent_jacobian = True
+        stokes.petsc_options["snes_rtol"] = 1.0e-10
+        stokes.tolerance = 1.0e-8
+        stokes.solve()
+        assert stokes.snes.getConvergedReason() > 0
+        v = stokes.Unknowns.u
+        rr = np.hypot(v.coords[:, 0], v.coords[:, 1])
+        on_wall = (np.abs(rr - RI) < 1e-4) | (np.abs(rr - RO) < 1e-4)
+        vr = np.einsum("ij,ij->i", v.data, v.coords / rr[:, None])
+        leak = uw.mpi.comm.allreduce(float(np.abs(vr[on_wall]).max(initial=0.0)), op=uw.MPI.MAX)
+        pts = np.array([[0.75 * np.cos(t), 0.75 * np.sin(t)] for t in np.linspace(0, 6, 13)])
+        return (np.asarray(uw.function.global_evaluate(v.sym, pts)), leak,
+                None if chi is None else chi.max())
+
+    u0, leak0, _ = solve(False)
+    u1, leak1, chi_max = solve(True)
+    assert chi_max > 0.01                    # driven (the flow is weak: max chi 0.05)
+    assert leak1 < 1.0e-10 * np.abs(u1).max()
+    assert np.abs(u1 - u0).max() < 1.0e-6 * np.abs(u0).max()
 
 
 @pytest.mark.tier_b

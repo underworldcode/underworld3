@@ -1623,7 +1623,9 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     h, Ps = resolved if resolved is not None else (None, None)
     if h is None or Ps is None:
         return None
-    vel_is = solver._subdict["velocity"][0]
+    # split 0: velocity plus any coupled fields, in the numbering the multi-field
+    # transfer was built in; Q is the identity on the coupled rows
+    vel_is = _velocity_split_is(solver)
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
@@ -1700,6 +1702,24 @@ def _destroy_rotated_ksp_ctx(ctx):
         ctx["cns"] = None
 
 
+def _velocity_split_is(solver):
+    """Global index set of split 0 of the rotated saddle: the velocity, plus every
+    coupled volume field (``add_coupled_field``), as the native grouped split has
+    it (``pc_fieldsplit_0_fields = 0,<coupled ids>``). A coupled field outside both
+    splits would leave part of the operator unsolved.
+
+    With coupled fields it is the index set of ``dm.createSubDM([0, ids...])``, the
+    numbering the multi-field custom-MG transfer is built in
+    (``CustomMGHierarchy._build_multifield``), so the split block, its rotation and
+    its prolongation all agree. Collective."""
+    coupled = getattr(solver, "_coupled_fields", None) or []
+    if not coupled:
+        return solver._subdict["velocity"][0]
+    fields = [0] + [int(c.field._solver_field_id) for c in coupled]
+    split_is, _subdm = solver.dm.createSubDM(fields)
+    return split_is
+
+
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
                              custom_Pl=None, nsp=None, Mp=None, ctx=None,
                              refresh_operator=True):
@@ -1742,7 +1762,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     right-hand side changes."""
     from underworld3.utilities import custom_mg
     dm = solver.dm
-    vel_is = solver._subdict["velocity"][0]
+    vel_is = _velocity_split_is(solver)
     pres_is = solver._subdict["pressure"][0]
 
     if ctx is None:
@@ -2050,6 +2070,18 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # mode lives in the pressure block), so only then is the SVD coarse
     # solve required.
     solver._rotated_velocity_null_modes = n_rot
+    # A rotation mode carries zero in every coupled field. That is the null mode for a
+    # field a rigid rotation leaves unchanged (a scalar invariant, the micromorphic
+    # chi). A field that enters the momentum flux (a Cosserat micro-rotation) turns
+    # with the body, so the mode would need it too; a wrong null mode corrupts the
+    # solve, so the case is refused until that mode is built.
+    if n_rot and any(c.momentum_flux is not None
+                     for c in getattr(solver, "_coupled_fields", None) or []):
+        raise NotImplementedError(
+            "rotated constraints admit a rigid rotation here, and a coupled field "
+            "enters the momentum flux (a Cosserat micro-rotation): its rotation null "
+            "mode is not built. Fix the rotation with a Dirichlet point, or impose "
+            "the wall another way.")
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
