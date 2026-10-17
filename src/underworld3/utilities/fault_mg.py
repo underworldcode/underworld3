@@ -66,9 +66,26 @@ def is_split_level(mesh):
 
 def _cell_vertex_table(mesh):
     """Vertex coordinates ``(n_v, cdim)`` and the ``(n_cells, dim + 1)`` table of
-    vertex rows per cell — the P1 node table, which the mesh caches."""
-    vxy = np.asarray(mesh._get_coords_for_basis(1, True))
-    cv = np.asarray(mesh._cell_node_indices(1, True))
+    vertex rows per cell.
+
+    Read straight from the DM: the vertex coordinates through the coordinate
+    section and each cell's vertices from its closure, with no interpolation
+    built. A periodic mesh carries its coordinates cell by cell, so there the
+    P1 node table of the mesh is used, which handles them."""
+    from underworld3.utilities._plex_topology import closure_points, section_offsets
+    dm = mesh.dm
+    cell_coordinates = dm.getCellCoordinatesLocal()
+    if cell_coordinates is not None and cell_coordinates.handle:
+        return (np.asarray(mesh._get_coords_for_basis(1, True)),
+                np.asarray(mesh._cell_node_indices(1, True)))
+    cdim = dm.getCoordinateDim()
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    rows = section_offsets(dm.getCoordinateSection(), np.arange(vS, vE)) // cdim
+    vxy = X[rows]
+    cv = (closure_points(dm, np.arange(cS, cE), 0) - vS).reshape(
+        cE - cS, dm.getDimension() + 1)
     return vxy, cv
 
 

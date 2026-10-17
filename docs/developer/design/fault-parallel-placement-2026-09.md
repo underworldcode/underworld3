@@ -12,9 +12,11 @@ and the multigrid side is `fault-patch-multigrid-2026-08.md`. Issues:
 For the cut, the 3-D sheet placement and the split reached through the Mesh API, the
 per-region gather and the per-split moves described here are superseded by one
 partition of the add-on hierarchy before any surgery
-([parallel-addon-distribution-2026-10](parallel-addon-distribution-2026-10.md)). The
-gather remains the mechanism of a direct `place_sheet` call and of
-`place_thin_volume`; the seam-ligament and seam-conform modes below are unchanged.
+([parallel-addon-distribution-2026-10](parallel-addon-distribution-2026-10.md)), and
+so is the band routes' gather (`FaultNetwork.build`, `place_fault_ribbon_2d` in
+gather mode). The gather remains the mechanism of a direct `place_sheet` or
+`place_thin_volume` call; the seam-ligament and seam-conform modes below are
+unchanged.
 ```
 
 ## The frame: adapt-on-top

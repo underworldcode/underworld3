@@ -73,18 +73,30 @@ Should-fix, fixed:
   `FAULT_MULTIGRID_HIERARCHIES.md` and the conforming-surfaces subsystem page.
 - Probes: the broken and unrelated ones deleted, a README dating the rest.
 
-Left open, recorded:
+Left open at the review, and their state on 18 October:
 
-- `place_thin_volume` (the 3-D band of `FaultNetwork.build`) still gathers its own
-  regions, and `adopt_hierarchy` still co-locates the tail behind it
-  (`_colocate_level`). The placed-band route is the next one to put on the partition.
-- A direct `place_sheet` call keeps the under-reaching mask (`TODO(BUG)` at the mask).
-- Python loops per cell, face and vertex in the partition and the section fill:
-  seconds per level at 1e5 cells per rank, tens at 1e6. Not measured at scale.
+- `place_thin_volume` behind `FaultNetwork.build` and the 2-D ribbon gathered its
+  own regions and `adopt_hierarchy` co-located the tail. **Done**: both routes
+  partition first with `mark_band`; `adopt_hierarchy` does not co-locate behind a
+  partitioned host (`test_1099`).
+- A direct `place_sheet` call kept the under-reaching mask. **Done**: two growth
+  layers (`test_1097::test_direct_place_sheet_on_a_partitioned_adapt_child`, shown
+  failing first).
+- Python loops per cell, face and vertex. **Done** for the partition, the region
+  growth, the marks, the redistribution's fields, the mesh's point-location index
+  and node table, and the node-cloud transfer assembly (`_plex_topology.pyx`;
+  equivalence checked entry for entry; `test_1098`). The 3-D partition at 87,525
+  cells on four ranks went from 6.87 s to 1.35 s. The splitter's whole-mesh rebuild
+  is still per point (0.1 s of a 3.6 s split at 19,072 cells).
+- When nothing needs to move, `partition_addon` stamps its record on the input mesh,
+  so a later placement on that same base that does not partition skips the tail's
+  co-location; its transfers then take the cross-partition path, correct and slower.
 - The balance's seam adjacency is the original partition's; received units are not
   passed on. It converges on the fixtures; not a bound.
 - `_face_other_rank` and `place_surface._propagate_vertex` return early on a
   `getGraph` exception before a star-forest collective (pre-existing pattern).
+- `DMPlex.getPeriodicity()` segfaults on a non-periodic mesh in this petsc4py; the
+  periodic test reads the cell-coordinate handle instead.
 - Only np = 2 runs in CI; the 4- and 8-rank runs here are by hand.
 
 ## Attacks that found nothing

@@ -140,6 +140,23 @@ def _fingerprint(mesh):
             comm.allreduce(float(np.abs(v6).sum()) / 6.0)]
 
 
+def test_direct_place_sheet_on_a_partitioned_adapt_child():
+    """``place_sheet`` called on a DM directly, without the Mesh API's
+    partition: its own gather must cover the cavity's growth rounds. Before
+    the fix the mask grew one layer, the grown cavity touched a shared point
+    and the surgery rank refused ("the gather mask under-reached") on this
+    fixture at 2 ranks, where the same placement passes serially."""
+    from underworld3.utilities.place_surface import place_sheet
+    comm = uw.mpi.comm
+    child = base_3d().adapt(graded_disc_metric(), max_levels=1)
+    pts, tris = disc_sheet()
+    dm, info = place_sheet(child.dm, pts, tris, label="Fault", label_value=40,
+                           size=H_NEAR)
+    assert info["n_surface_facets"] > 0
+    v6 = _cell_volumes_signed6(dm)
+    assert abs(comm.allreduce(float(np.abs(v6).sum()) / 6.0) - 1.0) < 1e-9
+
+
 if __name__ == "__main__":
     _base, _placed, _split = _placed_and_split()
     emit(_counts(_placed, _split), _fingerprint(_split))

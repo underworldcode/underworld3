@@ -890,6 +890,45 @@ def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
     return builder(coarse_coords, fine_coords)
 
 
+def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
+                            comm):
+    """A node-level transfer ``Pn`` (scipy CSR, fine local nodes by coarse
+    nodes) as the reduced->reduced MPIAIJ prolongation, assembled in one call.
+
+    Component ``c`` of fine node ``i`` is row ``fine_layout.l2g[i*ncomp + c]``
+    and takes, for each weight ``w`` on coarse node ``j``, the column
+    ``coarse_cols[j, c]``. Only this rank's OWNED rows are set (ghost nodes
+    are another rank's); constrained coarse DOFs (column ``-1``) drop out, so
+    the map is reduced->reduced."""
+    import scipy.sparse as sp
+    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64)
+    fstart, fend = fine_layout.rstart, fine_layout.rend
+    nloc_f = fend - fstart
+    nloc_c = coarse_layout.rend - coarse_layout.rstart
+    Pn = Pn.tocsr()
+    node = np.repeat(np.arange(Pn.shape[0]), np.diff(Pn.indptr))
+    rows, cols, vals = [], [], []
+    for c in range(ncomp):
+        grow = l2g_f[node * ncomp + c]
+        gcol = coarse_cols[Pn.indices, c]
+        keep = (grow >= fstart) & (grow < fend) & (gcol >= 0)
+        rows.append(grow[keep] - fstart)
+        cols.append(gcol[keep])
+        vals.append(Pn.data[keep])
+    rows, cols, vals = (np.concatenate(rows), np.concatenate(cols),
+                        np.concatenate(vals))
+    n_cols = int(comm.tompi4py().allreduce(nloc_c))
+    loc = sp.csr_matrix((vals, (rows, cols)), shape=(nloc_f, n_cols))
+    loc.sum_duplicates()
+    loc.sort_indices()
+    P = PETSc.Mat().createAIJ(
+        size=((nloc_f, None), (nloc_c, None)),
+        csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
+             loc.data), comm=comm)
+    P.assemble()
+    return P
+
+
 def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
                              fine_layout, ncomp, builder, comm):
     """One reduced->reduced prolongation as an MPIAIJ matrix.
@@ -900,33 +939,11 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
     l2g_c = coarse_layout.l2g
-    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
     Pn = _drop_structural_zeros(
         _node_transfer_no_repair(builder, coarse_coords, fine_coords))  # (n_f_nodes, n_c_nodes), local
-    nloc_f = fend - fstart
-    nloc_c = coarse_layout.rend - coarse_layout.rstart
-
-    P = PETSc.Mat().create(comm=comm)
-    P.setSizes(((nloc_f, None), (nloc_c, None)))
-    P.setType("aij")
-    P.setUp()
-    for i in range(Pn.shape[0]):                 # fine local node
-        js = Pn.indices[Pn.indptr[i]:Pn.indptr[i + 1]]
-        ws = Pn.data[Pn.indptr[i]:Pn.indptr[i + 1]]
-        for c in range(ncomp):
-            grow = int(l2g_f[i * ncomp + c])
-            if grow < fstart or grow >= fend:    # set OWNED rows only
-                continue
-            gcols, vals = [], []
-            for jj, w in zip(js.tolist(), ws.tolist()):
-                gcol = int(l2g_c[jj * ncomp + c])
-                if gcol >= 0:                    # skip constrained coarse DOFs
-                    gcols.append(gcol)
-                    vals.append(w)
-            if gcols:
-                P.setValues([grow], gcols, vals, addv=PETSc.InsertMode.INSERT_VALUES)
-    P.assemble()
-    return P
+    return _assemble_node_transfer(
+        Pn, np.asarray(l2g_c, dtype=np.int64).reshape(-1, ncomp), fine_layout,
+        coarse_layout, ncomp, comm)
 
 
 def _gather_coarse_cloud(coarse_coords, coarse_layout, ncomp, comm):
@@ -962,36 +979,13 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     small — that is what makes a coarse MG level coarse), so point location spans
     partitions. Columns are the coarse GLOBAL reduced indices (off-rank columns are
     fine for MPIAIJ); constrained coarse DOFs (col < 0) drop out."""
-    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
     Pn = _drop_structural_zeros(
         _node_transfer_no_repair(builder, coords_u, fine_coords))   # (n_f_local, Nu)
-    nloc_f = fend - fstart
-    nloc_c = coarse_layout.rend - coarse_layout.rstart
-
-    P = PETSc.Mat().create(comm=comm)
-    P.setSizes(((nloc_f, None), (nloc_c, None)))
-    P.setType("aij")
-    P.setUp()
-    for i in range(Pn.shape[0]):                 # fine local node
-        js = Pn.indices[Pn.indptr[i]:Pn.indptr[i + 1]]
-        ws = Pn.data[Pn.indptr[i]:Pn.indptr[i + 1]]
-        for c in range(ncomp):
-            grow = int(l2g_f[i * ncomp + c])
-            if grow < fstart or grow >= fend:    # set OWNED rows only
-                continue
-            gcols, vals = [], []
-            for jj, w in zip(js.tolist(), ws.tolist()):
-                gcol = int(cols_u[jj, c])
-                if gcol >= 0:                    # skip constrained coarse DOFs
-                    gcols.append(gcol)
-                    vals.append(w)
-            if gcols:
-                P.setValues([grow], gcols, vals, addv=PETSc.InsertMode.INSERT_VALUES)
-    P.assemble()
-    return P
+    return _assemble_node_transfer(Pn, np.asarray(cols_u, dtype=np.int64),
+                                   fine_layout, coarse_layout, ncomp, comm)
 
 
 def _count_zero_columns_parallel(P, comm):
@@ -2330,11 +2324,16 @@ def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):
     own = getattr(base_mesh, "_custom_mg_coarse_meshes", None)
     tail = (list(own) + [base_mesh] if own is not None
             else list(base_mesh._coarse_level_meshes()))
-    # In parallel the placed mesh is gathered onto its surgery rank while
-    # the tail is load-balanced: co-locate every level with the finest so
-    # the transfers pair rank-locally (the coarse levels are small; the
-    # fine mesh and its FAC patch never move).
-    if mesh.dm.getComm().getSize() > 1:
+    # A base the add-on partition produced (addon_partition.partition_addon,
+    # called by the placement routes before they place) is aligned with its
+    # tail already: the placement moved nothing, the pair it separated is
+    # read from the recorded provenance, and nothing is co-located.
+    # Otherwise the placed mesh was gathered onto its surgery rank while the
+    # tail is load-balanced: co-locate every level with the finest so the
+    # transfers pair rank-locally (the coarse levels are small; the fine
+    # mesh and its FAC patch never move).
+    if (mesh.dm.getComm().getSize() > 1
+            and getattr(base_mesh, "_addon_partition", None) is None):
         tail = [_colocate_level(level, mesh) for level in tail]
     mesh._custom_mg_coarse_meshes = tail
     mesh._custom_mg_builder = (builder if builder is not None

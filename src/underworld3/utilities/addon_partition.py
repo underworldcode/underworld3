@@ -35,7 +35,8 @@ import underworld3 as uw
 # tolerance is the cell locator's own, so a point it accepts is accepted here.
 from underworld3.utilities.fault_mg import _INSIDE_TOL
 
-__all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets"]
+__all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets",
+           "mark_band"]
 
 
 
@@ -50,6 +51,20 @@ def _allreduce(comm, values, op=MPI.SUM):
 # --------------------------------------------------------------------------- #
 #  Marks: which vertices the fault touches
 # --------------------------------------------------------------------------- #
+def _mark_facet_vertices(dm, facets, value, ids):
+    """Raise ``ids`` (chart-length) to at least ``value`` on every vertex of
+    the given facets (points of the height-1 stratum; others are skipped)."""
+    from underworld3.utilities._plex_topology import closure_points
+    fS, fE = dm.getHeightStratum(1)
+    pStart, _pEnd = dm.getChart()
+    facets = np.asarray(facets, dtype=np.int64)
+    facets = facets[(facets >= fS) & (facets < fE)]
+    if facets.size:
+        v = closure_points(dm, facets, 0)
+        v = v[v >= 0] - pStart
+        np.maximum.at(ids, v, value)
+
+
 def mark_labels(labels, groups=None):
     """The marking rule for labelled fault facets: region ``k`` on every vertex
     of a facet of group ``k`` (one group per fault when ``groups`` is None).
@@ -62,21 +77,15 @@ def mark_labels(labels, groups=None):
         groups = [[lab] for lab in labels]
 
     def marks(dm):
-        fS, fE = dm.getHeightStratum(1)
-        vS, vE = dm.getDepthStratum(0)
         pStart, pEnd = dm.getChart()
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
         for g, group in enumerate(groups, start=1):
             for name, value in group:
-                if not (dm.hasLabel(name)
+                if (dm.hasLabel(name)
                         and dm.getLabel(name).getStratumSize(int(value)) > 0):
-                    continue
-                for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
-                    if fS <= int(f) < fE:
-                        for q in dm.getTransitiveClosure(int(f))[0]:
-                            if vS <= int(q) < vE:
-                                i = int(q) - pStart
-                                ids[i] = max(ids[i], g)
+                    _mark_facet_vertices(
+                        dm, dm.getLabel(name).getStratumIS(int(value)).getIndices(),
+                        g, ids)
         return ids
     return marks
 
@@ -100,20 +109,19 @@ def mark_polylines(polylines):
     polylines = [np.asarray(poly, dtype=float)[:, :2] for poly in polylines]
 
     def marks(dm):
+        from underworld3.utilities._plex_topology import closure_points
         from underworld3.utilities.edge_split import cell_diameters
+        from underworld3.utilities.place_surface import _propagate_vertex
         vS, vE = dm.getDepthStratum(0)
         cS, cE = dm.getHeightStratum(0)
         pStart, pEnd = dm.getChart()
         X = dm.getCoordinatesLocal().array.reshape(
             -1, dm.getCoordinateDim())[: vE - vS]
-        h_cell = np.asarray(cell_diameters(dm))
-        from underworld3.utilities.place_surface import _propagate_vertex
         h_chart = np.zeros(pEnd - pStart)
-        for c in range(cS, cE):
-            for q in dm.getTransitiveClosure(c)[0]:
-                if vS <= int(q) < vE:
-                    i = int(q) - pStart
-                    h_chart[i] = max(h_chart[i], h_cell[c - cS])
+        if cE > cS:
+            h_cell = np.asarray(cell_diameters(dm))
+            CV = closure_points(dm, np.arange(cS, cE), 0) - pStart
+            np.maximum.at(h_chart, CV, np.broadcast_to(h_cell[:, None], CV.shape))
         # a seam vertex sees only its local cells: the largest incident cell
         # over every rank, so the reach is a function of the mesh alone
         h_chart = _propagate_vertex(dm, h_chart, MPI.MAX, np.maximum)
@@ -153,6 +161,50 @@ def mark_sheets(sheets, clearance):
     return marks
 
 
+def mark_band(paths, width, clearance):
+    """The marking rule for a placed fault band (``place_thin_volume``): a
+    superset of the placement's own mask, so its gather finds the region
+    rank-interior. The placement marks every vertex within
+    ``max(clearance h, 0.6 width) + h`` of the band's skin (``h`` the
+    smallest incident cell diameter); the skin lies within a mitred half
+    width of the band's path, so a vertex within that reach plus one band
+    width of the path is marked here. ``paths`` are the paths the band is
+    built along: ``(n, 2)`` polylines in 2-D, planar convex ``(n, 3)``
+    polygons in 3-D (the patches)."""
+    paths = [np.asarray(P, dtype=float) for P in paths]
+
+    def marks(dm):
+        from underworld3.utilities.place_surface import (
+            _coords, _sheet_distance_within, _tet_vertices, _vertex_h_3d)
+        vS, vE = dm.getDepthStratum(0)
+        pStart, pEnd = dm.getChart()
+        X = _coords(dm)[: vE - vS]
+        h_vertex, _h_cell = _vertex_h_3d(dm, _tet_vertices(dm) if dm.getDimension() == 3
+                                         else _cell_vertices(dm), len(X))
+        reach = (np.maximum(float(clearance) * h_vertex, 0.6 * float(width))
+                 + h_vertex + float(width))
+        ids = np.zeros(pEnd - pStart, dtype=np.int32)
+        for k, P in enumerate(paths, start=1):
+            if dm.getDimension() == 2:
+                d = _segment_distance(X[:, :2], P[:, :2])
+            else:
+                fan = np.array([(0, i, i + 1) for i in range(1, len(P) - 1)],
+                               dtype=np.int64)
+                d = _sheet_distance_within(X, P, fan, reach)
+            near = np.flatnonzero(d < reach)
+            ids[near + vS - pStart] = np.maximum(ids[near + vS - pStart], k)
+        return ids
+    return marks
+
+
+def _cell_vertices(dm):
+    """(n_cells, dim + 1) local vertex indices of every simplex."""
+    from underworld3.utilities._plex_topology import closure_points
+    vS, _vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    return (closure_points(dm, np.arange(cS, cE), 0) - vS).reshape(
+        cE - cS, dm.getDimension() + 1)
+
 def embedded_surface_names(mesh):
     """The fault surfaces ``mesh`` already carries, as boundary names: every
     split fault (its own label and its ``Plus`` / ``Minus`` sides) and every
@@ -171,8 +223,6 @@ def _embedded_surface_marks(mesh, names, first_id):
     vertex of a facet of the ``j``-th name (sorted). ``names`` is the same on
     every rank, so the ids are."""
     dm = mesh.dm
-    fS, fE = dm.getHeightStratum(1)
-    vS, vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
     ids = np.zeros(pEnd - pStart, dtype=np.int32)
     present = {b.name: int(b.value) for b in mesh.boundaries}
@@ -180,14 +230,9 @@ def _embedded_surface_marks(mesh, names, first_id):
         if name not in present or not dm.hasLabel(name):
             continue
         lab = dm.getLabel(name)
-        if lab.getStratumSize(present[name]) == 0:
-            continue
-        for f in lab.getStratumIS(present[name]).getIndices():
-            if fS <= int(f) < fE:
-                for q in dm.getTransitiveClosure(int(f))[0]:
-                    if vS <= int(q) < vE:
-                        i = int(q) - pStart
-                        ids[i] = max(ids[i], first_id + j)
+        if lab.getStratumSize(present[name]) > 0:
+            _mark_facet_vertices(dm, lab.getStratumIS(present[name]).getIndices(),
+                                 first_id + j, ids)
     return ids
 
 
@@ -353,31 +398,32 @@ def _unit_adjacency(dm, unit_of_cell, face_other):
     share a face, and ``(u, rank)`` pairs of local units with a face on the
     seam to ``rank``. Computed once; the assignment changes, the mesh does
     not."""
+    from underworld3.utilities._plex_topology import supports
     cS, cE = dm.getHeightStratum(0)
     fS, fE = dm.getHeightStratum(1)
-    inner, seam = [], []
-    for f in range(fS, fE):
-        sup = [int(c) for c in dm.getSupport(f)]
-        if len(sup) == 2:
-            ua, ub = unit_of_cell[sup[0] - cS], unit_of_cell[sup[1] - cS]
-            if ua != ub:
-                inner.append((ua, ub))
-        elif len(sup) == 1 and face_other[f - fS] >= 0:
-            seam.append((unit_of_cell[sup[0] - cS], face_other[f - fS]))
-    inner = (np.asarray(inner, dtype=np.int64).reshape(-1, 2))
-    seam = (np.asarray(seam, dtype=np.int64).reshape(-1, 2))
-    return inner, seam
+    sup = supports(dm, np.arange(fS, fE))
+    if sup.shape[1] < 2:
+        sup = np.column_stack([sup, np.full((sup.shape[0], 2 - sup.shape[1]), -1)])
+    both = (sup[:, 0] >= 0) & (sup[:, 1] >= 0)
+    ua = unit_of_cell[sup[both, 0] - cS]
+    ub = unit_of_cell[sup[both, 1] - cS]
+    inner = np.column_stack([ua, ub])[ua != ub].astype(np.int64)
+    one = (sup[:, 0] >= 0) & (sup[:, 1] < 0) & (face_other >= 0)
+    seam = np.column_stack([unit_of_cell[sup[one, 0] - cS],
+                            face_other[one]]).astype(np.int64)
+    return inner.reshape(-1, 2), seam.reshape(-1, 2)
 
 
-def _units_touching(inner, seam, assign_unit):
+def _units_touching(inner, seam, assign_unit, n_ranks):
     """``(unit, rank)`` pairs: every local unit with the ranks it touches
-    across a face, under the current assignment."""
+    across a face, under the current assignment, each pair once. A pair is
+    encoded as ``unit * n_ranks + rank`` so the deduplication is a 1-D sort."""
     a, b = inner[:, 0], inner[:, 1]
-    pairs = np.concatenate([
-        np.column_stack([a, assign_unit[b]]),
-        np.column_stack([b, assign_unit[a]]),
-        seam])
-    return np.unique(pairs, axis=0) if pairs.size else pairs.reshape(0, 2)
+    keys = np.unique(np.concatenate([
+        a * n_ranks + assign_unit[b],
+        b * n_ranks + assign_unit[a],
+        seam[:, 0] * n_ranks + seam[:, 1]]))
+    return np.column_stack([keys // n_ranks, keys % n_ranks])
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +457,7 @@ def _peel_balance(dm, unit_of_cell, assign_unit, weight, unit_region,
         if load.max() <= mean * (1.0 + tolerance):
             break
         n_sweeps += 1
-        touching = _units_touching(inner, seam, assign_unit)
+        touching = _units_touching(inner, seam, assign_unit, size)
         mine = free & (assign_unit == comm.rank)
         touching = touching[mine[touching[:, 0]]]
         proposals = {}            # receiver -> list of (unit, weight)
@@ -614,17 +660,27 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     for l, lev in enumerate(levels):
         cell_region, _canon, _regions = _region_cells(
             lev.dm, marks[l], layers=layers)
-        for c in np.flatnonzero(cell_region):
-            u = unit_of[l][c]
-            k = int(cell_region[c])
-            if unit_region[u] and unit_region[u] != k:
-                pairs.add((int(unit_region[u]), k))
-            unit_region[u] = max(unit_region[u], k)
+        sel = np.flatnonzero(cell_region)
+        u, k = unit_of[l][sel], cell_region[sel]
+        # a unit takes the largest id among its cells' and its own; the ids
+        # that meet in one unit touch
+        best = unit_region.copy()
+        np.maximum.at(best, u, k)
+        held = np.concatenate([k, unit_region[u]])
+        top = np.concatenate([best[u], best[u]])
+        meet = (held > 0) & (held != top)
+        if meet.any():
+            for a, b in np.unique(np.column_stack([held[meet], top[meet]]),
+                                  axis=0).tolist():
+                pairs.add((int(a), int(b)))
+        unit_region = best
     n_ids = int(comm.allreduce(int(unit_region.max()) if n_units else 0,
                                op=MPI.MAX))
     canon = _merge_regions(pairs, n_ids, comm)
-    for u in np.flatnonzero(unit_region):
-        unit_region[u] = canon[int(unit_region[u])]
+    lookup = np.zeros(n_ids + 1, dtype=np.int32)
+    for key, value in canon.items():
+        lookup[key] = value
+    unit_region = lookup[unit_region]
     regions = sorted(set(canon.values()))
     local = np.array([float(weight[unit_region == k].sum()) for k in regions])
     counts = np.asarray(comm.allgather(local)).reshape(comm.size, len(regions))

@@ -1330,11 +1330,10 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
 
 def _tet_vertices(dm):
     """(n_cells, 4) local vertex indices of every tetrahedron."""
-    vS, vE = dm.getDepthStratum(0)
+    from underworld3.utilities._plex_topology import closure_points
+    vS, _vE = dm.getDepthStratum(0)
     cS, cE = dm.getHeightStratum(0)
-    return np.array([[int(p) - vS for p in dm.getTransitiveClosure(c)[0]
-                      if vS <= p < vE] for c in range(cS, cE)],
-                    dtype=np.int64).reshape(cE - cS, 4)
+    return (closure_points(dm, np.arange(cS, cE), 0) - vS).reshape(cE - cS, 4)
 
 
 def _face_vertex_triple(dm, f, vS):
@@ -1594,9 +1593,10 @@ def _vertex_h_3d(dm, cells, n_vertices):
     vS, _vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
     work = np.full(pEnd - pStart, np.inf)
-    for c, tet in enumerate(cells):
-        idx = tet + vS - pStart
-        work[idx] = np.minimum(work[idx], h_cell[c])
+    if len(cells):
+        cells = np.asarray(cells, dtype=np.int64)
+        np.minimum.at(work, cells + vS - pStart,
+                      np.broadcast_to(h_cell[:, None], cells.shape))
     work = _propagate_vertex(dm, work, MPI.MIN, np.minimum)
     return work[vS - pStart: vS - pStart + n_vertices], h_cell
 
@@ -1612,13 +1612,15 @@ def _true_wall_vertex_mask(dm, n_vertices):
     """
     vS, _vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
+    from underworld3.utilities._plex_topology import closure_points, supports
     shared = _shared_point_flags(dm)
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    for f in range(*dm.getHeightStratum(1)):
-        if len(dm.getSupport(f)) == 1 and not shared[f - pStart]:
-            for q in dm.getTransitiveClosure(f)[0]:
-                if dm.getPointDepth(int(q)) == 0:
-                    mark[int(q) - pStart] = 1
+    fS, fE = dm.getHeightStratum(1)
+    faces = np.arange(fS, fE)
+    n_support = (supports(dm, faces) >= 0).sum(axis=1)
+    wall = faces[(n_support == 1) & (shared[faces - pStart] == 0)]
+    if wall.size:
+        mark[closure_points(dm, wall, 0).ravel() - pStart] = 1
     mark = _propagate_vertex(dm, mark, MPI.MAX, np.maximum)
     return mark[vS - pStart: vS - pStart + n_vertices] == 1
 
@@ -1656,8 +1658,9 @@ def _assembly_components(cells):
     return (comp + 1).astype(np.int32)
 
 
-def _gather_region(dm, vertex_mark_chart, verbose=False):
-    """Redistribute so every marked vertex's cell star (+1 layer) is one rank's.
+def _gather_region(dm, vertex_mark_chart, verbose=False, layers=1):
+    """Redistribute so every marked vertex's cell star (+ ``layers``) is one
+    rank's.
 
     The one-region form of :func:`_gather_regions` (a 0/1 mask is one
     region). Returns ``(new_dm, n_moved)``: the global count of cells
@@ -1667,7 +1670,7 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     """
     ids = (np.asarray(vertex_mark_chart) != 0).astype(np.int32)
     work, _n_region, n_moved, _owner, _canon = _gather_regions(
-        dm, ids, verbose=verbose, layers=1)
+        dm, ids, verbose=verbose, layers=layers)
     return work, n_moved
 
 
@@ -1702,9 +1705,13 @@ def _region_cells(dm, vertex_region_chart, layers=1):
     n_ids = int(comm.allreduce(int(ids_in.max()) if ids_in.size else 0,
                                op=MPI.MAX))
     cS, cE = dm.getHeightStratum(0)
-    vS, vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
     pairs = set()          # (a, b): regions that touch, to be merged
+
+    def add_pairs(a, b):
+        if a.size:
+            for x, y in np.unique(np.column_stack([a, b]), axis=0).tolist():
+                pairs.add((int(x), int(y)))
 
     def reconcile(chart):
         # every rank agrees on every point it can see; where a rank's own
@@ -1712,23 +1719,26 @@ def _region_cells(dm, vertex_region_chart, layers=1):
         before = chart.copy()
         after = _propagate_vertex(dm, chart, MPI.MAX, np.maximum)
         touch = (before > 0) & (after != before)
-        for a, b in zip(before[touch], after[touch]):
-            pairs.add((int(a), int(b)))
+        add_pairs(before[touch], after[touch])
         return after
 
+    from underworld3.utilities._plex_topology import closure_points
+    # each cell's vertices, as chart indices
+    CV = closure_points(dm, np.arange(cS, cE), 0) - pStart
     cell_region = np.zeros(cE - cS, dtype=np.int32)
 
+    def note_touching(ids, best):
+        # every nonzero id that differs from its row's largest touches it
+        rows, cols = np.nonzero((ids > 0) & (ids != best[:, None]))
+        add_pairs(ids[rows, cols], best[rows])
+
     def claim_cells(chart):
-        for v in range(vS, vE):
-            k = int(chart[v - pStart])
-            if k == 0:
-                continue
-            for q in dm.getTransitiveClosure(v, useCone=False)[0]:
-                if cS <= int(q) < cE:
-                    c = int(q) - cS
-                    if cell_region[c] and cell_region[c] != k:
-                        pairs.add((int(cell_region[c]), k))
-                    cell_region[c] = max(cell_region[c], k)
+        # a cell takes the largest id among its own and its vertices'; the
+        # ids that meet in one cell touch
+        ids = np.column_stack([cell_region, chart[CV]])
+        best = ids.max(axis=1)
+        note_touching(ids, best)
+        cell_region[:] = best
 
     claim_cells(reconcile(ids_in.copy()))
     # Growth layers: a point is unshared exactly when all its incident
@@ -1736,20 +1746,17 @@ def _region_cells(dm, vertex_region_chart, layers=1):
     # closures unshared.
     for _grow in range(int(layers)):
         layer = np.zeros(pEnd - pStart, dtype=np.int32)
-        for c in np.flatnonzero(cell_region):
-            k = int(cell_region[c])
-            for q in dm.getTransitiveClosure(int(c) + cS)[0]:
-                if vS <= int(q) < vE:
-                    i = int(q) - pStart
-                    if layer[i] and layer[i] != k:
-                        pairs.add((int(layer[i]), k))
-                    layer[i] = max(layer[i], k)
+        held = np.broadcast_to(cell_region[:, None], CV.shape)
+        np.maximum.at(layer, CV, held)
+        # a vertex in cells of two ids: each cell's id touches the vertex's
+        note_touching(held.reshape(-1, 1), layer[CV].reshape(-1))
         claim_cells(reconcile(layer))
 
     canon = _merge_regions(pairs, n_ids, comm)
-    for c in np.flatnonzero(cell_region):
-        cell_region[c] = canon[int(cell_region[c])]
-    return cell_region, canon, sorted(set(canon.values()))
+    lookup = np.zeros(n_ids + 1, dtype=np.int32)
+    for k, v in canon.items():
+        lookup[k] = v
+    return lookup[cell_region], canon, sorted(set(canon.values()))
 
 
 def _gather_regions(dm, vertex_region_chart, verbose=False, layers=1):
@@ -3303,15 +3310,13 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # The Mesh API (add_conforming_sheet, add_fault) partitions the add-on
     # for the sheet BEFORE calling here, with this mask plus two growth
     # layers on every add-on level (addon_partition.mark_sheets), so the
-    # gather below finds the region rank-interior and moves nothing.
-    # TODO(BUG): on a dm handed in directly, this mask alone does not cover
-    # the cavity GROWTH (_carve_cavity_3d's enclosed-cell and pinched-vertex
-    # rounds take whole vertex stars at the shell, one more diameter out): on
-    # a partitioned adapt child the grown cavity touched a shared point and
-    # the surgery rank raised "the gather mask under-reached" (measured
-    # 2026-10-17 at 2 and 8 ranks on the Mesh path before it partitioned; no
-    # test exercises the direct path). The gather here needs the second layer
-    # too. See planning file: underworld.md.
+    # gather below finds the region rank-interior and moves nothing. A dm
+    # handed in directly is gathered with the same two layers: the carve's
+    # growth rounds (_carve_cavity_3d's enclosed-cell and pinched-vertex
+    # rounds) take whole vertex stars at the shell, one more diameter out,
+    # and with one layer the grown cavity touched a shared point (measured
+    # 2026-10-17 on a partitioned adapt child at 2 and 8 ranks;
+    # tests/parallel/test_1097).
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
     mark[np.flatnonzero(d_sheet < (clearance + 1.0) * h_vertex)
          + vS - pStart] = 1
@@ -3320,7 +3325,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         [_owned_cell_volume(dm)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, volume_before, op=MPI.SUM)
 
-    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
+    dm_work, moved = _gather_region(dm, mark, verbose=verbose, layers=2)
     if moved:
         vS, vE = dm_work.getDepthStratum(0)
         pStart, pEnd = dm_work.getChart()
@@ -9298,7 +9303,6 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
             f"{labels}")
     if spines is None:
         spines = [(label, np.asarray(P, dtype=float)) for label, P in traces]
-    dm = base_mesh.dm
     spacing_all, rungs_all, extended = [], [], []
     for label, P in spines:
         P = np.asarray(P, dtype=float)
@@ -9310,6 +9314,18 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         spacing_all.append(
             float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean()))
         rungs_all.append(len(P))
+
+    # In parallel, gather mode: the add-on is partitioned for the bands
+    # first, so each placement's gather moves nothing and the tail is not
+    # co-located behind it (utilities.addon_partition). The ligament and
+    # conform modes mesh across the seams in place, by design.
+    host = base_mesh
+    if base_mesh.dm.getComm().getSize() > 1 and seams == "gather":
+        from underworld3.utilities.addon_partition import (mark_band,
+                                                           partition_addon)
+        host = partition_addon(base_mesh, mark_band(extended, width, clearance),
+                               layers=2, verbose=verbose)
+    dm = host.dm
 
     if mesher == "network":
         # ONE placement call for the whole network: the ribbons are fused
@@ -9342,6 +9358,8 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         dm, simplex=True, qdegree=base_mesh.qdegree,
         coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
         boundaries=base_mesh.boundaries, verbose=False)
+    from underworld3.utilities.addon_partition import inherit_provenance
+    inherit_provenance(mesh, host)
     # The placed mesh OWNS the base's multigrid tail (the coarse levels do
     # not need the fault): every solver on it drives FMG automatically,
     # and the band label is its FAC patch key for volumetric rheologies.
@@ -9349,7 +9367,7 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     band_all = np.zeros(int(mesh.dm.getHeightStratum(0)[1]), dtype=bool)
     for k in range(len(spines)):
         band_all |= mesh.cells_labelled(band_label, band_value + k)
-    adopt_hierarchy(mesh, base_mesh, fac_zone=band_all)
+    adopt_hierarchy(mesh, host, fac_zone=band_all)
     if split:
         # ONE network call — cut all, then split all (chained add_fault
         # calls do not compose: each split re-derives the pairing records

@@ -1940,6 +1940,7 @@ def _fault_labels_touch_seam(dm, labels):
     """
     if uw.mpi.size == 1:
         return False
+    from underworld3.utilities._plex_topology import closure_points
     shared = _shared_points(dm)
     pStart, _pEnd = dm.getChart()
     fS, fE = dm.getHeightStratum(1)
@@ -1950,15 +1951,15 @@ def _fault_labels_touch_seam(dm, labels):
         if not (dm.hasLabel(name)
                 and dm.getLabel(name).getStratumSize(int(value)) > 0):
             continue
-        for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
-            f = int(f)
-            if not (fS <= f < fE):
-                continue
-            if shared[f - pStart] or any(
-                    shared[int(q) - pStart]
-                    for q in dm.getTransitiveClosure(f)[0]):
-                touch = True
-                break
+        f = np.asarray(dm.getLabel(name).getStratumIS(int(value)).getIndices(),
+                       dtype=np.int64)
+        f = f[(f >= fS) & (f < fE)]
+        if not f.size:
+            continue
+        # the facet itself and every point below it in its closure
+        below = [closure_points(dm, f, d) for d in range(dm.getDimension() - 1)]
+        pts = np.concatenate([f] + [b[b >= 0] for b in below])
+        touch = bool(shared[pts - pStart].any())
     return bool(uw.mpi.comm.allreduce(touch, op=MPI.LOR))
 
 
@@ -1991,19 +1992,8 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     comm = dm.getComm().tompi4py()
     if comm.size == 1:
         return dm
-    fS, fE = dm.getHeightStratum(1)
-    vS, vE = dm.getDepthStratum(0)
-    pStart, pEnd = dm.getChart()
-    ids = np.zeros(pEnd - pStart, dtype=np.int32)
-    for name, value in labels:
-        if not (dm.hasLabel(name)
-                and dm.getLabel(name).getStratumSize(int(value)) > 0):
-            continue
-        for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
-            if fS <= int(f) < fE:
-                for q in dm.getTransitiveClosure(int(f))[0]:
-                    if vS <= int(q) < vE:
-                        ids[int(q) - pStart] = 1
+    from underworld3.utilities.addon_partition import mark_labels
+    ids = (mark_labels(list(labels), [list(labels)])(dm) > 0).astype(np.int32)
     if comm.allreduce(int(ids.max()) if ids.size else 0, op=MPI.MAX) == 0:
         names = sorted(name for name, _value in labels)
         raise RuntimeError(
@@ -2112,18 +2102,17 @@ def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
     if fields:
         # one cell-wise section, the fields interleaved; integers travel as
         # doubles, exact below 2**53
+        from underworld3.utilities._plex_topology import (fill_section,
+                                                           section_offsets)
         nf = len(fields)
+        cells = np.arange(cS, cE)
         sec = PETSc.Section().create(comm=work.getComm())
-        sec.setChart(*work.getChart())
-        for c in range(cS, cE):
-            sec.setDof(c, nf)
-        sec.setUp()
+        fill_section(sec, work, cells, nf)
         vec = PETSc.Vec().createSeq(sec.getStorageSize(), comm=PETSc.COMM_SELF)
         arr = vec.getArray()
-        for c in range(cS, cE):
-            o = sec.getOffset(c)
-            for j, f in enumerate(fields):
-                arr[o + j] = float(f[c - cS])
+        offs = section_offsets(sec, cells)
+        for j, f in enumerate(fields):
+            arr[offs + j] = np.asarray(f, dtype=float)
         vec.setArray(arr)
     part = work.getPartitioner()
     part.setType(PETSc.Partitioner.Type.SHELL)
@@ -2136,7 +2125,7 @@ def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
         newsec, newvec = work.distributeField(sf, sec, vec)
         ncS, ncE = work.getHeightStratum(0)
         narr = newvec.getArray()
-        offs = np.array([newsec.getOffset(c) for c in range(ncS, ncE)], dtype=np.int64)
+        offs = section_offsets(newsec, np.arange(ncS, ncE))
         new_fields = [np.rint(narr[offs + j]).astype(np.int64) if offs.size
                       else np.zeros(0, dtype=np.int64) for j in range(nf)]
     new_pairs, dropped = (collect_point_pairs(work, names) if pairs
