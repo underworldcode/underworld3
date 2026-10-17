@@ -55,7 +55,13 @@ __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
 # --------------------------------------------------------------------------- #
 #  Prolongation builders (return scipy CSR matrices)
 # --------------------------------------------------------------------------- #
-def barycentric_prolongation(coarse_coords, fine_coords):
+#: What the last barycentric build saw: fine nodes outside the coarse hull
+#: (snapped to the nearest coarse node — a wrong row, not an empty one) and the
+#: orphan columns it repaired. Read by the parallel builders right after a call.
+last_builder_stats = {"outside_hull": 0, "orphans_repaired": 0}
+
+
+def barycentric_prolongation(coarse_coords, fine_coords, repair_orphans=True):
     """Prolongation by linear interpolation over a Delaunay triangulation of the
     coarse DOF cloud. Partition of unity (row sums = 1) and linear fields are
     reproduced exactly; fine points outside the coarse hull fall back to the
@@ -98,6 +104,8 @@ def barycentric_prolongation(coarse_coords, fine_coords):
     tri = Delaunay(coarse_coords)
     simp = tri.find_simplex(fine_coords)
     tree = cKDTree(coarse_coords)
+    last_builder_stats["outside_hull"] = int((simp < 0).sum())
+    last_builder_stats["orphans_repaired"] = 0
     dim = coarse_coords.shape[1]
     rows, cols, vals = [], [], []
     for i in range(fine_coords.shape[0]):
@@ -133,7 +141,17 @@ def barycentric_prolongation(coarse_coords, fine_coords):
     # The alternative — switching to the global-support RBF builder — removes
     # the singularity but returns a DENSE transfer (nnz/row == n_coarse), which
     # makes PᵀAP dense and is unusable at production sizes.
-    orphans = np.nonzero(np.asarray((P != 0).sum(axis=0)).ravel() == 0)[0]
+    # In PARALLEL the repair is wrong by construction and is switched off by
+    # the parallel builders: a rank sees only its own fine nodes, so a coarse
+    # column reached from another rank (a ghost at a partition boundary, or
+    # most of an all-gathered coarse cloud) looks orphaned here and the repair
+    # overwrote a local fine row with a weight-one injection onto a coarse node
+    # far away (measured: thousands of rows at distance 0.6-0.9 on a box of
+    # length 3, and a velocity multigrid that needed 55 iterations on 8 ranks
+    # against 4 in serial). Genuine orphans are dropped at install instead.
+    orphans = (np.nonzero(np.asarray((P != 0).sum(axis=0)).ravel() == 0)[0]
+               if repair_orphans else np.zeros(0, dtype=np.int64))
+    last_builder_stats["orphans_repaired"] = int(orphans.size)
     if orphans.size:
         k = int(min(orphans.size + 8, fine_coords.shape[0]))
         _, cand = cKDTree(fine_coords).query(coarse_coords[orphans], k=k)
@@ -863,6 +881,15 @@ def _coarse_dof_layout(solver, coarse_mesh, field_id=None):
     return _level_dof_layout(cdm, field_id)
 
 
+def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
+    """The node-level transfer for a parallel build: the barycentric builder
+    with its serial orphan repair switched off (see the note in
+    :func:`barycentric_prolongation`); any other builder as it is."""
+    if builder is barycentric_prolongation:
+        return builder(coarse_coords, fine_coords, repair_orphans=False)
+    return builder(coarse_coords, fine_coords)
+
+
 def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
                              fine_layout, ncomp, builder, comm):
     """One reduced->reduced prolongation as an MPIAIJ matrix.
@@ -875,7 +902,7 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     l2g_c = coarse_layout.l2g
     l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
     Pn = _drop_structural_zeros(
-        builder(coarse_coords, fine_coords))           # (n_f_nodes, n_c_nodes), local
+        _node_transfer_no_repair(builder, coarse_coords, fine_coords))  # (n_f_nodes, n_c_nodes), local
     nloc_f = fend - fstart
     nloc_c = coarse_layout.rend - coarse_layout.rstart
 
@@ -939,7 +966,8 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
-    Pn = _drop_structural_zeros(builder(coords_u, fine_coords))  # (n_f_local, Nu)
+    Pn = _drop_structural_zeros(
+        _node_transfer_no_repair(builder, coords_u, fine_coords))   # (n_f_local, Nu)
     nloc_f = fend - fstart
     nloc_c = coarse_layout.rend - coarse_layout.rstart
 
@@ -1527,10 +1555,19 @@ class CustomMGHierarchy:
                     # nonsense (KSP reason -11 at the first iteration). The
                     # few genuine orphans are the repair's job below.
                     n_zero = _count_zero_columns_parallel(P, comm)
-                    if self.cross_partition == "auto" and n_zero > 0:
+                    # A fine node outside its rank's LOCAL coarse hull is snapped
+                    # to the nearest local coarse node: a WRONG row, which no
+                    # zero-column count can see. It happens whenever the fine
+                    # partition is not the coarse one — a split finest whose
+                    # fault star was moved to one rank (measured: 3026 of 7500
+                    # nodes on that rank, 2192 wrong rows). Such a level is
+                    # rebuilt across partitions whatever its column count.
+                    n_out = comm.tompi4py().allreduce(
+                        int(last_builder_stats.get("outside_hull", 0)))
+                    if self.cross_partition == "auto" and (n_zero > 0 or n_out > 0):
                         P_x = _build_crosspart_transfer(*args)
                         n_x = _count_zero_columns_parallel(P_x, comm)
-                        if n_x < n_zero:
+                        if n_out > 0 or n_x < n_zero:
                             P.destroy()
                             P = P_x
                         else:
