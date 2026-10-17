@@ -413,3 +413,22 @@ def test_split_sheet_keeps_the_multigrid_tail():
     info = stokes._rotated_freeslip_info
     assert info["velocity_pc"] == "custom-FMG", info["velocity_pc"]
     assert info["converged"]
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_split_patch_box_keeps_the_refinement_hierarchy():
+    """A refined box with a conforming patch is its own multigrid hierarchy:
+    the split takes the native coarse levels as its tail (the finest level is
+    the split mesh itself), so a refined cuboid needs no registered coarse
+    meshes for geometric multigrid."""
+    mesh = uw.meshing.BoxInternalPatch(cellSize=0.4, patch_points=PATCH,
+                                       patch_name="FltA", refinement=1)
+    assert len(mesh.dm_hierarchy) == 2
+    split = split_fault(mesh, "FltA")
+    tail = split._custom_mg_coarse_meshes
+    assert tail is not None and len(tail) == 1, tail
+    # the one coarse level is the unrefined patch box, half the finest's cells
+    n_coarse = tail[0].dm.getHeightStratum(0)[1] - tail[0].dm.getHeightStratum(0)[0]
+    n_fine = split.dm.getHeightStratum(0)[1] - split.dm.getHeightStratum(0)[0]
+    assert 6 * n_coarse <= n_fine <= 10 * n_coarse, (n_coarse, n_fine)

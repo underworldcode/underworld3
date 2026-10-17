@@ -2131,6 +2131,8 @@ def split_faults(mesh, names, verbose=False, groups=None,
     # NOT inherited (a split fault needs no patch — the keying ruling);
     # callers that key a zone re-adopt on the child explicitly.
     own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is None and len(getattr(mesh, "dm_hierarchy", []) or []) > 1:
+        own_tail = mesh._coarse_level_meshes()[:-1]        # as in split_fault
     if (own_tail is not None
             and getattr(out, "_custom_mg_coarse_meshes", None) is None):
         out._custom_mg_coarse_meshes = list(own_tail)
@@ -2427,6 +2429,14 @@ def split_fault(mesh, name, orientation=None, verbose=False,
     # split_fault) silently solved on GAMG. The FAC zone is not inherited:
     # a split fault needs no patch.
     own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is None and len(getattr(mesh, "dm_hierarchy", []) or []) > 1:
+        # A mesh built with refinement >= 1 (a refined box, a refined box with
+        # a conforming patch) carries its coarse levels natively; the cut child
+        # takes them through _coarse_level_meshes, and so does the split. The
+        # finest level is this mesh itself, which the split re-represents, so
+        # it is not a level of its own (a refined cuboid needs no second mesh
+        # to get geometric multigrid — ruling 2026-10-17).
+        own_tail = mesh._coarse_level_meshes()[:-1]
     if own_tail is not None:
         child._custom_mg_coarse_meshes = list(own_tail)
         child._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
