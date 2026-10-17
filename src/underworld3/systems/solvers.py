@@ -2712,12 +2712,17 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         before every solve. Coupled problems are Newton only (with the automatic cold
         Picard warm-up), so an explicit frozen tangent is refused."""
         cm = getattr(self, "_constitutive_model", None)
-        if cm is None or not hasattr(cm, "_coupled_field_requests"):
-            return
-        requests = cm._coupled_field_requests()
-        if not requests:
-            return
-        if self.consistent_jacobian is False:
+        requests = (cm._coupled_field_requests()
+                    if cm is not None and hasattr(cm, "_coupled_field_requests") else [])
+        # The fields registered for the model are tracked so a regularisation that
+        # is replaced or removed takes its field off the solver too; fields the user
+        # added with add_coupled_field are not touched.
+        owned = getattr(self, "_model_coupled_fields", [])
+        wanted = [field for field, _, _ in requests]
+        for field in [f for f in owned if not any(f is w for w in wanted)]:
+            self.remove_coupled_field(field)
+        owned = [f for f in owned if any(f is w for w in wanted)]
+        if requests and self.consistent_jacobian is False:
             raise ValueError(
                 "the constitutive model's yield-law regularisation solves a field with "
                 "the flow, which needs the consistent (Newton) tangent: "
@@ -2725,6 +2730,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         for field, F0, F1 in requests:
             if not any(c.field is field for c in self._coupled_fields):
                 self.add_coupled_field(field, F0=F0, F1=F1)
+                owned.append(field)
+        self._model_coupled_fields = owned
 
     def _check_velocity_preconditioner(self):
         """After setup: did the velocity block fall back off the multigrid?

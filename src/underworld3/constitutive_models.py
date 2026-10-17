@@ -222,11 +222,8 @@ class _PlasticRegularisationSlot:
             raise TypeError(
                 f"plastic_regularisation must be a Micromorphic regularisation or None, "
                 f"not {type(value).__name__}")
-        previous = getattr(self, "_plastic_regularisation", None)
-        if previous is not None and previous is not value and previous._chi is not None:
-            raise NotImplementedError(
-                "plastic_regularisation: the regularisation's field is already part of "
-                "the model; replacing or removing it needs a new solver")
+        # A replaced or removed regularisation's field leaves the solver at its next
+        # solve (SNES_Stokes._register_model_coupled_fields).
         if value is not None:
             value._bind(self._owning_model)
         object.__setattr__(self, "_plastic_regularisation", value)

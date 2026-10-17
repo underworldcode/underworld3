@@ -2052,6 +2052,10 @@ class SolverBaseClass(uw_object):
         """
         mechanisms = self._constraint_mechanisms()
         rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        # TODO(BUG): unfinished work, not a limit of the method. The rotated adjoint
+        # is the same normal-row constraint applied to J^T: assemble the transpose by
+        # kernels (the by_kernels route of adjoint_solve) and solve it through
+        # rotated_bc's rotation and split. Fault-slip inversions need it.
         if rotated:
             return (False,
                     f"{len(rotated)} rotated constraint(s): the solve runs on a "
@@ -8479,6 +8483,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             mechanism is already in place and which one was refused.
         """
 
+        # TODO(BUG): unfinished work. The rotated split can take the multipliers into
+        # its split 1 the way it takes coupled fields into split 0
+        # (rotated_bc._velocity_split_is), with Q the identity on their rows.
         mechanisms = self._constraint_mechanisms()
         rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
         multipliers = mechanisms["multipliers"]
@@ -8598,6 +8605,30 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         self._needs_function_rewire = True
         return field
+
+    def remove_coupled_field(self, field):
+        r"""Take a coupled field (and its boundary conditions) off this solver.
+
+        The inverse of :meth:`add_coupled_field`: the field leaves the DM, its
+        equation and Jacobian blocks are dropped, and the solver is rebuilt at the
+        next solve. The ``MeshVariable`` itself is left as it is.
+
+        Parameters
+        ----------
+        field : MeshVariable
+            A field registered with :meth:`add_coupled_field`.
+        """
+        if not any(c.field is field for c in self._coupled_fields):
+            raise ValueError(
+                f"remove_coupled_field(): {field.name} is not a coupled field of "
+                f"this solver")
+        self._coupled_fields = [c for c in self._coupled_fields if c.field is not field]
+        self._coupled_essential_bcs = [(f, bc) for f, bc in self._coupled_essential_bcs
+                                       if f is not field]
+        self.fields.pop(getattr(field, "_solver_field_name", None), None)
+        # One field fewer in the DM: the discretisation and the solver are rebuilt.
+        self.is_setup = False
+        self._needs_function_rewire = True
 
     def add_coupled_dirichlet_bc(self, conds, boundary, field):
         r"""Fix the value of a coupled field on a boundary.
@@ -10107,6 +10138,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         group1 = ["1"] + [str(cbc.lam._solver_field_id) for cbc in self._block_constraint_bcs]
         opts["pc_fieldsplit_0_fields"] = ",".join(group0)
         opts["pc_fieldsplit_1_fields"] = ",".join(group1)
+        # What this wrote, so a solver that goes back to two fields can take exactly
+        # these away again (_clear_block_fieldsplit_options) and leave the user's own.
+        written = {"pc_fieldsplit_0_fields", "pc_fieldsplit_1_fields"}
 
         # Mirror velocity_->0_ and pressure_->1_, but DON'T clobber any
         # fieldsplit_0_*/fieldsplit_1_* the user set explicitly (so the grouped
@@ -10133,6 +10167,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 mirrored = "fieldsplit_1_" + key[len("fieldsplit_pressure_"):]
             if mirrored is not None and mirrored not in allopts:
                 opts[mirrored] = None if val in (None, "") else val
+                written.add(mirrored)
+        self._block_fieldsplit_written = (
+            getattr(self, "_block_fieldsplit_written", set()) | written)
+
+    def _clear_block_fieldsplit_options(self):
+        """Remove the grouped-split options :meth:`_setup_block_fieldsplit_options`
+        wrote, once the solver is back to two fields (its last coupled field or
+        multiplier removed): left in place, ``pc_fieldsplit_0_fields`` would name a
+        field the DM no longer has."""
+        written = getattr(self, "_block_fieldsplit_written", None)
+        if not written:
+            return
+        for key in written:
+            self.petsc_options.delValue(key)
+        self._block_fieldsplit_written = set()
 
     def _attach_stokes_nullspace(self):
         """Attach the configured coupled Stokes nullspace to the solver matrices."""
@@ -11606,6 +11655,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # MG/FMG. Must precede setFromOptions.
             if self._block_constraint_bcs or self._coupled_fields:
                 self._setup_block_fieldsplit_options()
+            else:
+                self._clear_block_fieldsplit_options()
 
             self._withdraw_block_size_if_not_node_blocked(
                 "velocity", prefix="fieldsplit_velocity_")
@@ -12511,6 +12562,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
             # Re-check here: this path never reaches the instrumentation, so an armed
             # guard would be silently inert -- the exact state guard() exists to refuse.
+            # TODO(BUG): unfinished work. The rotated Krylov loop can carry the same
+            # instrumentation (the guard is KSP monitors and convergence tests).
             if (getattr(self, "_instrumentation", None) is not None
                     and self._instrumentation.armed):
                 raise NotImplementedError(
@@ -12526,6 +12579,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # after its first increment, so no up-front nonlinearity probe is
             # paid (the loop self-terminates; _residual_is_nonlinear survives as
             # a lazy guard inside the picard+pure-Newton corner).
+            # TODO(BUG): only the user's explicit `picard` reaches the rotated loop, so
+            # the automatic cold Picard warm-up (_plan_picard_warmup) never runs under
+            # rotated walls: a cold viscoplastic solve starts in pure Newton.
             from underworld3.utilities.rotated_bc import solve_rotated_freeslip
             self._rotated_freeslip_info = solve_rotated_freeslip(
                 self, self._rotated_freeslip_bcs, verbose=verbose,

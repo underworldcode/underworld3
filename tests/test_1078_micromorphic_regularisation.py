@@ -177,3 +177,30 @@ def test_a_snapshot_carries_chi(tmp_path):
     assert np.array_equal(np.asarray(reg.chi.data), saved)
     stokes.solve(zero_init_guess=False)
     assert stokes.snes.getIterationNumber() == 0
+
+
+def test_the_regularisation_can_be_replaced_and_removed():
+    # Changing the slot after a solve changes what is solved: the old field leaves the
+    # solver, the new one joins it, and with none the solve is the plain yield law.
+    mesh, stokes, tau0 = _shear_box()
+    stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    cm = stokes.constitutive_model
+    cm.Parameters.yield_stress = tau0
+    first = Micromorphic(length=ELL)
+    cm.Parameters.plastic_regularisation = first
+    _solve(stokes)
+
+    second = Micromorphic(length=2 * ELL)
+    cm.Parameters.plastic_regularisation = second
+    _solve(stokes)
+    assert [c.field for c in stokes._coupled_fields] == [second.chi]
+
+    cm.Parameters.plastic_regularisation = None
+    u_removed = _solve(stokes)
+    assert stokes._coupled_fields == []
+
+    mesh, plain, tau0 = _shear_box()
+    plain.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    plain.constitutive_model.Parameters.yield_stress = tau0
+    u_plain = _solve(plain)
+    assert np.abs(u_removed - u_plain).max() < 1.0e-8 * np.abs(u_plain).max()

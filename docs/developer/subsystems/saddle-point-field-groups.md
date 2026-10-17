@@ -130,11 +130,11 @@ explicit index sets. Split 0 is `_velocity_split_is`: the velocity, plus the cou
 fields when there are any, as the index set of `dm.createSubDM([0, coupled ids])` (the
 numbering the multi-field transfer is built in). The rotation $Q$ is the identity on
 coupled rows (walls constrain $\mathbf{u}$ only), and the constrained normal rows are
-zeroed in the split-0 prolongation, velocity rows only. A rigid-rotation null mode
-carries zero in every coupled field: that is the mode for a field a rotation leaves
-unchanged (a scalar invariant such as $\chi$); for a field that enters the momentum
-flux (a Cosserat micro-rotation turns with the body) the mode is not built, and the
-case is refused at null-space build. A solver cannot carry rotated constraints and
+zeroed in the split-0 prolongation, velocity rows only. Each rigid-rotation null mode is completed on the coupled fields from
+the operator's own rows, $c = -A_{cc}^{-1}A_{cu}\mathbf{u}_{rot}$
+(`_complete_mode_on_coupled_fields`), in both the null space and the gauge removal:
+zero for a field a rotation leaves unchanged (the micromorphic $\chi$), the rotation
+rate for a Cosserat micro-rotation. A solver cannot carry rotated constraints and
 multipliers together (`_reject_mixed_constraint_mechanisms`, #464): they are
 alternative ways to impose the same wall-normal condition, and the rotated split has no
 place for a multiplier.
@@ -152,26 +152,30 @@ place for a multiplier.
 5. Test serially and at np 2, 3 and 4 (odd rank counts find block-size and
    partition asymmetries), with the native and a custom hierarchy.
 
-## Open
+## Open: bugs, not constraints
 
-- Coupled fields and multipliers on one solver (both groups populated, e.g. a
-  micromorphic yield law under a constrained free surface) are structurally the same
-  split; there is no test of the combination yet.
-- `add_constraint_bc` could live on `Stokes`, switching on the split-1 defaults above
-  with its first multiplier, leaving `SNES_Stokes_Constrained` as an alias. User
-  overrides of the Schur preconditioner and Krylov type must keep winning.
-- `add_coupled_field` covers volume terms only; a field with boundary terms in split 0
+These are unfinished work (maintainer ruling, 2026-10-17: a refusal of an unfinished
+case is a bug to fix, never a constraint to design or advise around). Each is marked
+`TODO(BUG)` at its site.
+
+- Rotated constraints refuse an adjoint (`_adjoint_support`). Fix: assemble the
+  transpose by kernels (the `by_kernels` route of `adjoint_solve`) and apply the same
+  rotation and normal-row constraint.
+- Rotated constraints and multipliers are refused together
+  (`_reject_mixed_constraint_mechanisms`, #464). Fix: the rotated split takes the
+  multipliers into split 1, as it takes coupled fields into split 0.
+- The automatic cold Picard warm-up never reaches the rotated loop (only an explicit
+  `picard` does), and an explicit one with `consistent_jacobian=True` is refused
+  (`rotated_bc.solve_rotated_freeslip`). Fix: compile the frozen tangent for the
+  warm-up steps, as the standard path does.
+- A wall-clock guard is refused on the rotated path. Fix: instrument the rotated KSP.
+- `adjoint_solve` returns no adjoint field for a coupled field or a multiplier (its
+  `rhs` / `target` handle velocity and pressure only), and no test covers either.
+- Coupled fields and multipliers on one solver: no test of the combination.
+- `add_constraint_bc` on `Stokes` itself (switching on the split-1 defaults with its
+  first multiplier), with `SNES_Stokes_Constrained` an alias.
+- `add_coupled_field` covers volume terms only; a split-0 field with boundary terms
   has no API.
-- Adjoints. `adjoint_solve` transposes the whole composite system, so multipliers and
-  coupled fields are inside it, but its `rhs` / `target` handle velocity and pressure
-  only (no adjoint field for chi or h is returned), and no test covers a coupled field
-  or a multiplier. Any rotated constraint refuses an adjoint (`_adjoint_support`: no
-  transpose path through the rotated Krylov loop). The rotated adjoint is
-  implementable: assemble the transpose by kernels, as the `by_kernels` route does, and
-  apply the same rotation and normal-row constraint to it.
-- The rotated split could take multipliers into its split 1 the way it now takes
-  coupled fields into split 0 (`_velocity_split_is`); #464 refuses the pair as a
-  configuration error, and nothing has needed it.
 
 ## Where the code is
 

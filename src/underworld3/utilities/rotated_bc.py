@@ -1067,6 +1067,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # Picard warmup is meaningless for a linear residual, so ignore it there;
         # for a genuinely nonlinear model pure Newton has no frozen tangent
         # compiled in to warm up with, so fail loudly.
+        # TODO(BUG): unfinished work. The frozen tangent can be compiled for the
+        # warm-up steps alongside the Newton one, as the standard path's cold
+        # warm-up does.
         if solver._residual_is_nonlinear():
             raise NotImplementedError(
                 f"rotated free-slip: a Picard->Newton warmup (picard={picard}) with the "
@@ -2070,18 +2073,6 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # mode lives in the pressure block), so only then is the SVD coarse
     # solve required.
     solver._rotated_velocity_null_modes = n_rot
-    # A rotation mode carries zero in every coupled field. That is the null mode for a
-    # field a rigid rotation leaves unchanged (a scalar invariant, the micromorphic
-    # chi). A field that enters the momentum flux (a Cosserat micro-rotation) turns
-    # with the body, so the mode would need it too; a wrong null mode corrupts the
-    # solve, so the case is refused until that mode is built.
-    if n_rot and any(c.momentum_flux is not None
-                     for c in getattr(solver, "_coupled_fields", None) or []):
-        raise NotImplementedError(
-            "rotated constraints admit a rigid rotation here, and a coupled field "
-            "enters the momentum flux (a Cosserat micro-rotation): its rotation null "
-            "mode is not built. Fix the rotation with a Dirichlet point, or impose "
-            "the wall another way.")
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -2398,6 +2389,53 @@ def _rigid_rotation_modes(solver):
         sg = tg.getSubVector(vis)
         solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
         tg.restoreSubVector(vis, sg)
+        _complete_mode_on_coupled_fields(solver, tg)
         modes.append(tg)
     v.data[...] = saved
     return modes
+
+
+def _complete_mode_on_coupled_fields(solver, tg):
+    """Give a rigid-rotation mode its coupled-field part, in place.
+
+    The rotation fixes only the velocity; a coupled field takes the values that make
+    its own rows of the operator vanish on the mode, ``c = -A_cc^-1 A_cu u_rot``,
+    from the assembled Jacobian. A field a rotation leaves unchanged (a scalar
+    invariant such as the micromorphic chi) gets zero, since ``A_cu u_rot = 0``; a
+    Cosserat micro-rotation gets the rotation rate. No per-model knowledge is
+    needed. Collective; a no-op without coupled fields."""
+    coupled = getattr(solver, "_coupled_fields", None) or []
+    if not coupled:
+        return
+    J = solver.snes.getJacobian()[0]
+    if J is None or not J.assembled:
+        raise RuntimeError(
+            "rigid-rotation mode with coupled fields: the Jacobian must be assembled "
+            "before the mode is built")
+    uis = solver._subdict["velocity"][0]
+    cis_list = [solver._subdict[c.field._solver_field_name][0] for c in coupled]
+    cis = cis_list[0] if len(cis_list) == 1 else PETSc.IS().concatenate(cis_list)
+    A_cu = J.createSubMatrix(cis, uis)
+    ur = tg.getSubVector(uis)
+    rhs = A_cu.createVecLeft()
+    A_cu.mult(ur, rhs)
+    tg.restoreSubVector(uis, ur)
+    A_cu.destroy()
+    scale = max(float(rhs.norm(PETSc.NormType.NORM_INFINITY)), 0.0)
+    if scale > 0.0:
+        rhs.scale(-1.0)
+        A_cc = J.createSubMatrix(cis, cis)
+        ksp = PETSc.KSP().create(comm=A_cc.getComm())
+        ksp.setOperators(A_cc)
+        ksp.setType("gmres")
+        ksp.getPC().setType("gamg")
+        ksp.setTolerances(rtol=1.0e-12, atol=0.0, max_it=500)
+        c = A_cc.createVecRight()
+        c.set(0.0)
+        ksp.solve(rhs, c)
+        _warn_if_ksp_diverged(ksp, "rigid-rotation mode, coupled-field part")
+        sub = tg.getSubVector(cis)
+        c.copy(sub)
+        tg.restoreSubVector(cis, sub)
+        ksp.destroy(); A_cc.destroy(); c.destroy()
+    rhs.destroy()

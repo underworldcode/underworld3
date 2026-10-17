@@ -329,6 +329,56 @@ def test_rotated_freeslip_on_a_curved_wall_with_a_coupled_field():
 
 
 @pytest.mark.tier_b
+def test_cosserat_on_a_rotating_annulus_completes_the_rotation_mode():
+    # Free-slip on both arcs admits a rigid rotation, and a Cosserat micro-rotation
+    # turns with the body: the null mode is (u_rot, omega = Omega). It is completed on
+    # the coupled field from the operator's own rows, in the null space and in the
+    # gauge removal. Shifting a solution by that mode and solving again must give the
+    # same state back; a velocity-only mode would leave the omega offset behind.
+    # Before, the case was refused.
+    RI, RO = 0.5, 1.0
+    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.15, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    th = sympy.atan2(y, x)
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = ETA
+    stokes.bodyforce = sympy.Matrix([[x / r, y / r]]) * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40
+    nhat = sympy.Matrix([[x / r, y / r]])
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
+    stokes.petsc_use_pressure_nullspace = True
+    omega = uw.discretisation.MeshVariable("omega_annulus", mesh, 1, degree=2)
+    spin = stokes.Unknowns.W[1, 0]
+    rotation = sympy.Matrix([[0, -1], [1, 0]])
+    stokes.add_coupled_field(
+        omega, F0=4 * ETA_C * (omega.sym[0] - spin),
+        F1=B_COUPLE * omega.sym.jacobian(mesh.CoordinateSystem.N),
+        momentum_flux=2 * ETA_C * (spin - omega.sym[0]) * rotation)
+    stokes.consistent_jacobian = True
+    stokes.tolerance = 1.0e-9
+    stokes.petsc_options["snes_rtol"] = 1.0e-10
+    stokes.solve()
+    assert stokes.snes.getConvergedReason() > 0
+    v = stokes.Unknowns.u
+    u_a, w_a = np.array(v.data, copy=True), np.array(omega.data, copy=True)
+    assert np.abs(w_a).max() > 1.0e-3                    # omega is driven
+
+    shift = 0.3                                          # a rigid rotation, Omega = 0.3
+    vc = v.coords
+    v.data[...] = u_a + shift * np.column_stack([-vc[:, 1], vc[:, 0]])
+    omega.data[...] = w_a + shift
+    stokes.solve(zero_init_guess=False)
+    assert stokes.snes.getConvergedReason() > 0
+    du = uw.mpi.comm.allreduce(float(np.abs(v.data - u_a).max(initial=0.0)), op=uw.MPI.MAX)
+    dw = uw.mpi.comm.allreduce(float(np.abs(omega.data - w_a).max(initial=0.0)), op=uw.MPI.MAX)
+    scale = uw.mpi.comm.allreduce(float(np.abs(u_a).max(initial=0.0)), op=uw.MPI.MAX)
+    assert du < 1.0e-6 * scale
+    assert dw < 1.0e-6 * scale
+
+
+@pytest.mark.tier_b
 def test_a_field_is_coupled_once():
     mesh, stokes = _driven_stokes()
     chi = _scalar_field(mesh, "chi_twice")
