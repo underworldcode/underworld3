@@ -357,6 +357,7 @@ for k in range(nsteps):
 if _prof is not None:
     import pstats
     _prof.disable()
+    _prof.dump_stats(os.path.join(args.out, "profile.prof"))
     with open(os.path.join(args.out, "profile.txt"), "w") as f:
         pstats.Stats(_prof, stream=f).sort_stats("cumulative").print_stats(60)
 log("done")

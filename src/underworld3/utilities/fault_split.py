@@ -1752,6 +1752,13 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
                coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
                qdegree=mesh.qdegree,
                boundaries=Enum("boundaries", members), verbose=False)
+    # TODO(BUG): the cut child drops the parent's multigrid tail. A base built
+    # with refinement >= 1 carries its coarse levels natively and
+    # Mesh._adopt_cut_child (the add_conforming_surface / add_conforming_sheet
+    # route) adopts them; this constructor does not, so every solver on an
+    # add_fault() child of a refined base fell back to GAMG (measured
+    # 2026-10-17: 2-D box, refinement=2, add_fault -> tail 0, velocity KSP at
+    # its 200-iteration cap). Adopt the tail here as _adopt_cut_child does.
     cut.parent = mesh
     cut._relationship_kind = "refinement"
     cut._refine_dofs_coincide = False
