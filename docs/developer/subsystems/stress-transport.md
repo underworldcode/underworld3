@@ -107,14 +107,16 @@ eigenvalue of $c$, one at rest. A value of order ten means elastic strains of
 order ten, a regime that is a polymer one (a dumbbell stretched several times its
 rest length) and not a rock one, which yields at elastic strains of order
 $10^{-3}$. On the confined cylinder at Wi 0.5 the upstream shoulders reached
-tr $c$ of 3500 in a layer a fifth of a wall cell wide, and that layer is where
-Newton fails at a large step; FENE-P with $L^2 = 100$ reached its cap at the same
-place and failed at the same step. A geodynamic model that shows a large `max` is
-missing the yield that would have limited it; yielding on the full stress
-invariant (as `ViscoElasticPlasticFlowModel` does, through the effective strain
-rate that carries the stored stress) releases it, where a limit on resolved shear
-stress would not: the stored stress there is almost entirely streamwise normal
-stress.
+tr $c$ of 3500 in a layer whose half-width is 0.21 wall cells, and that layer is
+where Newton fails at a large step; FENE-P with $L^2 = 100$ reached its cap at the
+same place and failed at the same step. A geodynamic model that shows a large
+`max` is missing the yield that would have limited it. The stored stress there is
+almost entirely streamwise normal stress, so a limit on resolved shear stress would
+not see it; `ViscoElasticPlasticFlowModel` yields on the invariant of the effective
+strain rate, which carries the stored stress, and so would (we have not run a
+yielding case on the cylinder). The check reads the stress history's own points:
+it is not available for the Eulerian SUPG history (`NotImplementedError`), where
+the stored tensor has to be sampled directly.
 
 ## Past the conformation limit: the deformation step and the log-conformation history
 
@@ -199,16 +201,24 @@ the full deformation step with the converged velocity, positive-definite.
 |---|---|---|
 | `"implicit"` (default) | the whole stretch, including its $\Delta t^2 L\,\sigma^* L^T$ terms | accurate; Newton can stall |
 | `"linear"` | drops the $O(\Delta t^2 L^2)$ terms: linear in the new velocity | converges; costs accuracy |
-| `"tangent"` | each quadratic term by its tangent about the last step's $L^n$ | accurate while it converges; stalls where `"implicit"` does |
+| `"tangent"` | each quadratic term by its tangent about the last step's $L^n$ | matches `"implicit"` to $10^{-3}$ while it runs; stalled with it at $\Delta t = 1/60$, and went unstable at $t = 1.75$ at $\Delta t = 1/120$ (Crank-Nicolson) where `"implicit"` ran to $2.75$ |
+
+`"linear"` and `"tangent"` change only the deformation step's second-order terms,
+so they need `convected_step="deformation"` (both integrators); elsewhere they are
+refused. `"tangent"` needs the last step's velocity, so a Navier-Stokes solver.
+`NavierStokesSLCN` and `NavierStokesSwarm` build their flux from the stress
+history, which takes the whole step, and refuse both; `uw.systems.NavierStokes`
+and `Stokes` honour them.
 
 Measured on the same cylinder to $t = 3$: `"linear"` with backward-Euler momentum
 (`ns.theta = 1.0`) converged at every step in 2 to 6 Newton iterations at
 $\Delta t = 1/60$ and $1/30$ (Courant 8 and 16), where `"implicit"` fails by
-$t = 0.85$. Most of what a large step costs is the step itself, not the form:
-over $t = 0.6$ to $0.84$, while every run was still going, the implicit form at
-$\Delta t = 1/60$ was 11 per cent above the implicit reference at $1/120$,
-`"linear"` with Crank-Nicolson momentum was 5 per cent below the implicit form at
-the same step, and backward Euler added 9 per cent. The two forms agree to first order in
+$t = 0.85$. Its cost is accuracy. Over $t = 0.6$ to $0.84$, while every run was
+still going, the mean drag of the implicit form at $\Delta t = 1/60$ was 11 per
+cent above the implicit reference at $1/120$; `"linear"` with Crank-Nicolson
+momentum at the same step was 5 per cent below the implicit form; and backward
+Euler in place of Crank-Nicolson added 14.5 per cent to `"linear"`. The time scheme
+costs as much as the step, and the form least. The two forms agree to first order in
 $\Delta t\,|L|$, so for $\Delta t\,|L| \ll 1$, the usual geodynamic regime, they
 are interchangeable.
 
@@ -242,8 +252,11 @@ within the failing step's Newton iterations, so the policy has to be reactive.
 velocity block of the preconditioning matrix from the constitutive model's
 `preconditioner_flux` instead of its flux, leaving the Jacobian (and so the Newton
 step) unchanged. For the viscoelastic model that flux leaves out the
-objective-rate terms: the block is the relaxed viscous one, symmetric and
-positive-definite. It is not the answer at the cylinder wall -- there the stretch
+objective-rate terms: the block is the relaxed viscous one (symmetric and
+positive-definite for Stokes without a yield stress; a Navier-Stokes solver keeps
+its advective and stabilisation terms in it). The option is refused where it cannot
+act: rotated free-slip, the semi-Lagrangian Navier-Stokes solvers, and a smooth
+Jacobian surrogate. It is not the answer at the cylinder wall -- there the stretch
 is most of the operator (the viscous block's largest eigenvalue was a twelfth of
 the Jacobian's) and the inner solves took three times as many iterations -- but
 it is an option wherever the stretch is a small correction.

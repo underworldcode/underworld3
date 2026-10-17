@@ -1934,6 +1934,17 @@ def _logm_sym2(m):
                          [k * c, (l1 + l2) / 2 + k * (b - mean)]])
 
 
+def _check_stretch_in_momentum(form, convected_step):
+    """Refuse a ``stretch_in_momentum`` the model cannot honour: the forms differ
+    only in the deformation step's terms of order dt^2 L^2, so outside that step
+    a non-default form would be recorded and change nothing."""
+    if form not in ("implicit", "linear", "tangent"):
+        raise ValueError(f"stretch_in_momentum must be 'implicit', 'linear' or 'tangent', got {form!r}")
+    if form != "implicit" and convected_step != "deformation":
+        raise ValueError(f"stretch_in_momentum={form!r} changes the deformation step's second-order "
+                         "terms; it needs convected_step='deformation' (and so the upper-convected rate)")
+
+
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
     Viscoelastic-plastic flow constitutive model.
@@ -1960,7 +1971,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                  material_name: str = None, objective_rate: str = "none",
                  stress_history: str = "stress", convected_step: str = None,
                  stretch_in_momentum: str = "implicit"):
-        """Construct a viscoelastic-plastic flow model.
+        r"""Construct a viscoelastic-plastic flow model.
 
         Parameters
         ----------
@@ -2071,9 +2082,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             if stress_history == "log_conformation" and unknowns.u.mesh.dim != 2:
                 raise NotImplementedError("the log-conformation history uses the closed-form 2x2 matrix "
                                           "logarithm and exponential; 3-D is not implemented")
-        if stretch_in_momentum not in ("implicit", "linear", "tangent"):
-            raise ValueError("stretch_in_momentum must be 'implicit', 'linear' or 'tangent', "
-                             f"got {stretch_in_momentum!r}")
+        _check_stretch_in_momentum(stretch_in_momentum, convected_step)
         self._stress_history = stress_history
         self._convected_step = convected_step
         self._stretch_in_momentum = stretch_in_momentum
@@ -2520,9 +2529,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @stretch_in_momentum.setter
     def stretch_in_momentum(self, value):
-        if value not in ("implicit", "linear", "tangent"):
-            raise ValueError("stretch_in_momentum must be 'implicit', 'linear' or 'tangent', "
-                             f"got {value!r}")
+        _check_stretch_in_momentum(value, self._convected_step)
         if value != self._stretch_in_momentum:
             self._stretch_in_momentum = value
             self._reset()
@@ -2558,7 +2565,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return self._E_eff
 
     def _effective_strain_rate(self, quadratic_stretch="full", objective=True):
-        """The expression behind :attr:`E_eff`. ``quadratic_stretch`` is how the
+        r"""The expression behind :attr:`E_eff`. ``quadratic_stretch`` is how the
         deformation step's terms of order :math:`\Delta t^2 L^2` enter
         (:meth:`_quadratic_in_L`); ``"none"`` leaves out the terms of order
         :math:`\Delta t^2 L^2` (see ``stretch_in_momentum``); the stored stress
@@ -2607,9 +2614,13 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 x = self.Parameters.dt_elastic / lam
                 decay = sympy.exp(-x)
                 b = lam * (1 - (1 + x) * decay)
-                LLT = (L * L.T if quadratic_stretch == "full"
-                       else self._quadratic_in_L(sympy.eye(L.shape[0]), quadratic_stretch))
-                E_eff = E_eff + (b ** 2 / (1 - decay)) * LLT / (2 * lam)
+                if quadratic_stretch == "full":
+                    # this operand order is the one the default form has always
+                    # compiled: a factored L L^T changes the generated C
+                    E_eff = E_eff + (b ** 2 / (1 - decay)) * L * L.T / (2 * lam)
+                else:
+                    E_eff = E_eff + (b ** 2 / (1 - decay)) * self._quadratic_in_L(
+                        sympy.eye(L.shape[0]), quadratic_stretch) / (2 * lam)
             return E_eff
 
         # BDF default
@@ -2623,11 +2634,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # ONE whatever the BDF order (the BDF weights belong to the time
         # derivative, not to the source; -c1 = 2 at order 2 would double it).
         if objective:
-            E += self._objective_term(self._carried_stress_sym(0)) / (2 * self.Parameters.shear_modulus)
+            E += self._objective_term(self._carried_stress_sym(0), quadratic=quadratic_stretch) \
+                / (2 * self.Parameters.shear_modulus)
         return E
 
     def _velocity_gradient(self):
-        """:math:`L_{ij} = \partial u_i / \partial x_j` of the unknown velocity."""
+        r""":math:`L_{ij} = \partial u_i / \partial x_j` of the unknown velocity."""
         return sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
 
     def _quadratic_in_L(self, A, how):
@@ -3052,11 +3064,13 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         matrix (``solver.preconditioner_flux = "model"``). The stretch of the
         stored stress puts :math:`\sigma^*` into the velocity tangent, which
         is non-symmetric and, where :math:`\Delta t\,|\sigma^*|/\eta \sim 1`,
-        indefinite; what is left is the relaxed viscous tangent, symmetric and
-        positive-definite, which the velocity multigrid can be built from."""
-        solvent = 2 * self.Parameters.solvent_viscosity * self.Unknowns.E
+        indefinite; what is left is the relaxed viscous tangent. Without a yield
+        stress that is symmetric and positive-definite; a yielding viscosity adds
+        its own Newton term, and a Navier-Stokes solver keeps its advective and
+        stabilisation terms in the block whatever the flux."""
         if not self.is_elastic or self.Unknowns.DFDt is None:
             return self.flux
+        solvent = 2 * self.Parameters.solvent_viscosity * self.Unknowns.E
         return 2 * self.viscosity * self._effective_strain_rate(
             quadratic_stretch="none", objective=False) + solvent
 

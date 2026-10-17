@@ -2,23 +2,26 @@
 
 The deformation step stretches the stored conformation by F = I + dt L with the
 new velocity gradient. ``"implicit"`` puts the whole stretch in the momentum
-residual; ``"linear"`` leaves out its O(dt^2 L^2) terms, so the momentum is linear
-in the new velocity. Every form stores the same thing: the full deformation step
-with the converged velocity. So the form can change between steps with no state
-to carry, and a driver can retake a step that Newton cannot finish under
-``"implicit"`` with ``"linear"``.
+residual, which is quadratic in L; ``"linear"`` leaves out its O(dt^2 L^2) terms;
+``"tangent"`` replaces them by their tangent about the last step's gradient L^n.
+Every form stores the same thing: the full deformation step with the converged
+velocity. So the form can change between steps with no state to carry.
 
-Checked here: both forms store the same stress expression; ``"linear"`` at a step
-twice the relaxation time converges and keeps the stored conformation
-positive-definite; a model switched to a form steps exactly as one built with it,
-both ways; a switch between steps changes the next solve, which records the form
-it ran; an unknown form is refused.
+Checked here, against exact properties: the momentum flux is quadratic in L under
+"implicit" and not under "linear" or "tangent"; "tangent" equals "implicit" at
+L = L^n and "linear" does not; every form stores the same stress; a switch between
+steps rebuilds the compiled residual (quadratic before, not after) and the solve
+records the form it ran; "linear" at a step twice the relaxation time keeps the
+stored conformation positive-definite; a form the model cannot honour is refused.
 """
 
 import numpy as np
 import pytest
 
+import sympy
+
 import underworld3 as uw
+from underworld3.function._function import diff_wrt_field
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -77,8 +80,37 @@ def _steps(built, schedule):
     return velocity, stored, forms
 
 
-def _rel(a, b):
-    return np.abs(a - b).max() / np.abs(b).max()
+def _quadratic_in_L(expr, L):
+    """Whether ``expr`` has a non-zero second derivative in the velocity gradient."""
+    M = sympy.Matrix(expr)
+    for i in range(2):
+        for j in range(2):
+            d = sympy.Matrix(diff_wrt_field(M, L[i, j]))
+            for k in range(2):
+                for l in range(2):
+                    if any(sympy.simplify(e) != 0 for e in diff_wrt_field(d, L[k, l])):
+                        return True
+    return False
+
+
+def test_the_forms_are_what_they_say():
+    ns, cm = _channel("implicit")
+    cm.Parameters.dt_elastic = 0.1
+    L = ns.Unknowns.L
+    implicit = sympy.Matrix(cm.flux)
+    assert _quadratic_in_L(implicit, L)
+    cm.stretch_in_momentum = "linear"
+    linear = sympy.Matrix(cm.flux)
+    assert not _quadratic_in_L(linear, L)
+    cm.stretch_in_momentum = "tangent"
+    tangent = sympy.Matrix(cm.flux)
+    assert not _quadratic_in_L(tangent, L)
+    # the tangent touches the quadratic terms at the last step's gradient; the
+    # linear form does not
+    Ln = cm._last_velocity_gradient()
+    at_n = {L[i, j]: Ln[i, j] for i in range(2) for j in range(2)}
+    assert all(sympy.simplify(e) == 0 for e in (implicit - tangent).xreplace(at_n))
+    assert not all(sympy.simplify(e) == 0 for e in (implicit - linear).xreplace(at_n))
 
 
 def test_every_form_stores_the_same_stress():
@@ -98,28 +130,53 @@ def test_linear_converges_at_a_long_step_and_keeps_the_conformation():
     assert np.linalg.eigvalsh(c)[:, 0].min() > 0.0
 
 
-def test_a_switch_rebuilds_the_momentum_kernels():
-    """A model switched to a form steps exactly as one built with it, both ways."""
-    v_lin, _, f_lin = _steps("linear", [None, None])
-    v_to_lin, _, f_to_lin = _steps("implicit", ["linear", None])
-    assert _rel(v_to_lin, v_lin) < 1.0e-8, _rel(v_to_lin, v_lin)
-    assert f_lin == f_to_lin == ["linear", "linear"]
-
-    v_imp, _, f_imp = _steps("implicit", [None, None])
-    v_to_imp, _, _ = _steps("linear", ["implicit", None])
-    assert _rel(v_to_imp, v_imp) < 1.0e-8, _rel(v_to_imp, v_imp)
-    assert f_imp == ["implicit", "implicit"]
-
-
-def test_a_switch_between_steps_changes_the_next_solve():
-    v_imp, _, _ = _steps("implicit", [None, None])
-    v_mid, _, forms = _steps("implicit", [None, "linear"])
-    assert forms == ["implicit", "linear"]
-    assert _rel(v_mid, v_imp) > 1.0e-10, _rel(v_mid, v_imp)
+def test_a_switch_between_steps_rebuilds_the_compiled_residual():
+    """An implicit step, then a switch: the residual the solver compiled is
+    quadratic in L before and not after, and each solve records its form."""
+    uw.reset_default_model()
+    ns, cm = _channel("implicit")
+    L = ns.Unknowns.L
+    dt = 2 * LAM
+    cm.Parameters.dt_elastic = dt
+    ns.solve(timestep=dt, zero_init_guess=False)
+    assert ns.solve_report.config["tangent"].get("stretch_in_momentum", "implicit") == "implicit"
+    assert _quadratic_in_L(ns._u_F1, L)
+    cm.stretch_in_momentum = "linear"
+    ns.solve(timestep=dt, zero_init_guess=False)
+    assert ns.snes.getConvergedReason() > 0
+    assert ns.solve_report.config["tangent"]["stretch_in_momentum"] == "linear"
+    assert not _quadratic_in_L(ns._u_F1, L)
 
 
-def test_an_unknown_form_is_refused():
+def test_a_form_the_model_cannot_honour_is_refused():
     ns, cm = _channel("implicit")
     with pytest.raises(ValueError):
         cm.stretch_in_momentum = "split"
     assert cm.stretch_in_momentum == "implicit"
+    # outside the deformation step there are no second-order terms to drop
+    uw.reset_default_model()
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    v = uw.discretisation.MeshVariable("U_r", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_r", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    with pytest.raises(ValueError):
+        uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            stokes.Unknowns, order=1, objective_rate="upper_convected", convected_step="linear",
+            stretch_in_momentum="linear")
+    # the semi-Lagrangian Navier-Stokes builds its flux from the stress history,
+    # which carries the whole deformation step: a form would change nothing there
+    uw.reset_default_model()
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("U_sl", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_sl", mesh, 1, degree=1)
+    ns = uw.systems.NavierStokesSLCN(mesh, velocityField=v, pressureField=p, rho=1.0, order=1)
+    ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        ns.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        convected_step="deformation", stretch_in_momentum="linear")
+    ns.constitutive_model.Parameters.dt_elastic = 2 * LAM
+    ns.bodyforce = sympy.Matrix([0, 0]).T
+    ns.add_dirichlet_bc((1.0, 0.0), "Top")
+    for wall in ("Bottom", "Left", "Right"):
+        ns.add_dirichlet_bc((0.0, 0.0), wall)
+    with pytest.raises(NotImplementedError):
+        ns.solve(timestep=2 * LAM)

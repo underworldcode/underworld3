@@ -261,6 +261,7 @@ could.
 | Newton stalls with no divergence reason | admissible uselessness — steps accepted, residual flat | revert to best iterate, Picard block (`solve(picard=N)` or `"continuation"`); consider grid sequencing |
 | Converges but σ sits **below** τ_y | a fixed δ>0 soft-min under the default `"onset"` anchor is a WEAKER law (4.5 % at the yield point at δ = 0.1) | that is the modelling choice you made — a smaller δ, or `yield_mode="min"` for the exact surface (`yield_anchor="yield"` reaches τ_y but stiffens every unyielded cell and softens above yield) |
 | Linear (~20-iter) convergence | Picard tangent when you wanted Newton | `consistent_jacobian=True` on a non-elastic model (see "Confirm" above) |
+| Upper-convected VE: Newton creeps and the inner velocity solves sit at their cap at a large step, at a wall | the deformation step's stretch puts the stored stress in the velocity tangent, indefinite where $\Delta t\,|\sigma^*|/\eta \sim 1$ (measured, confined cylinder 2026-10); no preconditioner or smoother fixes it | `stretch_in_momentum="linear"` (converges, costs accuracy) or retake failed steps with it; a large conformation `max` means the model is outside its elastic-strain range — see `subsystems/stress-transport.md` |
 
 ---
 

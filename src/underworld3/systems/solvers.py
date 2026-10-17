@@ -5609,6 +5609,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                 raise NotImplementedError(
                     "SNES_NavierStokes reads its history as a flux (Adams-Moulton), so it cannot "
                     "decode a log-conformation history; use uw.systems.NavierStokes")
+            if getattr(self._constitutive_model, "stretch_in_momentum", "implicit") != "implicit":
+                # its flux is the history's record, which takes the whole deformation step
+                raise NotImplementedError(
+                    "SNES_NavierStokes builds its flux from the stress history, which carries the "
+                    "whole deformation step: stretch_in_momentum other than 'implicit' would change "
+                    "nothing; use uw.systems.NavierStokes")
             DFDt.psi_fn = getattr(self._constitutive_model, 'history_flux', self._constitutive_model.flux).T
 
             F1 = expression(

@@ -108,6 +108,27 @@ def _transpose_kernels(G0, G1, G2, G3, nc_test, nc_trial, dim):
             sympy.ImmutableMatrix(H2), sympy.ImmutableMatrix(H3))
 
 
+def _flux_velocity_kernels(F1, U_list, L, Nc, dim):
+    """The velocity-block kernels of a flux, in PETSc's flat layout:
+    uu_G2[fc*Nc + gc, df] = dF1[fc, df]/dU[gc] and
+    uu_G3[fc*Nc + gc, df*dim + dg] = dF1[fc, df]/dL[gc, dg] (row-major, the
+    contract in docs/developer/subsystems/petsc-jacobian-layout.md)."""
+    G2 = sympy.zeros(Nc * Nc, dim)
+    for gc in range(Nc):
+        dF1_dU = diff_wrt_field(F1, U_list[gc])
+        for fc in range(Nc):
+            for df in range(dim):
+                G2[fc * Nc + gc, df] = dF1_dU[fc, df]
+    G3 = sympy.zeros(Nc * Nc, dim * dim)
+    for gc in range(Nc):
+        for dg in range(dim):
+            dF1_dL = diff_wrt_field(F1, L[gc, dg])
+            for fc in range(Nc):
+                for df in range(dim):
+                    G3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
+    return G2, G3
+
+
 def _solve_transposed(ksp, J, P, b, x):
     """Solve :math:`J^T x = b` with the solver's OWN KSP and preconditioner.
 
@@ -3204,11 +3225,11 @@ class SolverBaseClass(uw_object):
         tangent = dict(consistent_jacobian=self.consistent_jacobian,
                        newton_pressure_coupling=getattr(self, "newton_pressure_coupling", True))
         # recorded only when set, so a default solve's record is unchanged
-        if getattr(self, "preconditioner_flux", "jacobian") != "jacobian":
-            tangent["preconditioner_flux"] = self.preconditioner_flux
+        if getattr(self, "_preconditioner_flux_applied", False):
+            tangent["preconditioner_flux"] = "model"
         # the momentum's share of a viscoelastic stretch, which can change
         # between steps (stretch_in_momentum): each solve records the form it ran
-        _stretch = getattr(getattr(self, "constitutive_model", None), "_stretch_in_momentum", "implicit")
+        _stretch = getattr(getattr(self, "constitutive_model", None), "stretch_in_momentum", "implicit")
         if _stretch != "implicit":
             tangent["stretch_in_momentum"] = _stretch
         # alpha only where it is live: the blended Jacobian (a warm-up compiled it, or
@@ -9419,9 +9440,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         Newton step -- is unchanged. A viscoelastic model's preconditioner flux
         leaves out the objective-rate (stretch) terms, whose tangent carries the
         stored stress into the velocity block and can make it indefinite
-        where :math:`\Delta t\,|\sigma^*|/\eta \sim 1`: the multigrid of the
-        velocity solve then sees a symmetric positive-definite viscous block
-        whatever the stress. A change recompiles the kernels.
+        where :math:`\Delta t\,|\sigma^*|/\eta \sim 1`: the velocity
+        multigrid is then built from the relaxed viscous block (symmetric and
+        positive-definite for Stokes without a yield stress; a Navier-Stokes
+        solver keeps its advective and stabilisation terms). A change rewires
+        the kernels.
+
+        ``"model"`` is refused where it cannot act: with rotated free-slip
+        conditions (that path preconditions with its own rotated operator), on a
+        solver whose flux does not reach the model through
+        :attr:`stress_deviator`, and with a smooth Jacobian surrogate
+        (``flux_jacobian`` or ``set_jacobian_F1_source``), which the
+        preconditioner flux has no counterpart of. An adjoint solve
+        preconditions with the transposed Jacobian.
         """
         return getattr(self, "_preconditioner_flux", "jacobian")
 
@@ -9430,7 +9461,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if value not in ("jacobian", "model"):
             raise ValueError(f"preconditioner_flux must be 'jacobian' or 'model', got {value!r}")
         if value != self.preconditioner_flux:
-            self.is_setup = False
+            # only the Jacobian kernels change: rewire them, keep the DM and the solution
+            self._needs_function_rewire = True
         self._preconditioner_flux = value
 
     @property
@@ -10105,16 +10137,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         in place of its flux (see :attr:`preconditioner_flux`). The F1 of each
         solver reaches the model's flux through :attr:`stress_deviator`, which
         reads the swap flag; the residual F1 is rebuilt afterwards so the named
-        expression holds it again."""
-        if getattr(self.constitutive_model, "preconditioner_flux", None) is None:
-            raise ValueError("preconditioner_flux='model' needs a constitutive model "
-                             "with a preconditioner_flux")
+        expression holds it again. A solver whose flux does not read
+        :attr:`stress_deviator` would hand back its own F1 unchanged; that is
+        refused rather than recorded as preconditioned."""
         self._stress_for_preconditioner = True
         try:
             F1_pc = sympy.Array(self.F1.sym)
         finally:
             self._stress_for_preconditioner = False
-            self.F1
+            F1 = sympy.Array(self.F1.sym)
+        cm = self.constitutive_model
+        if F1_pc == F1 and sympy.Matrix(cm.preconditioner_flux) != sympy.Matrix(cm.flux):
+            raise NotImplementedError(
+                f"preconditioner_flux='model': the flux of {type(self).__name__} does not reach "
+                "the constitutive model through stress_deviator, so the preconditioner would "
+                "be the Jacobian")
         return F1_pc
 
     def _setup_pointwise_functions(self, verbose=False, debug=False, debug_name=None):
@@ -10242,22 +10279,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 for fc in range(Nc):
                     G1[fc * Nc + gc, dg] = dF0_dL[fc]
 
-        # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
-        G2 = sympy.zeros(Nc * Nc, dim)
-        for gc in range(Nc):
-            dF1_dU = diff_wrt_field(F1_for_jac, U_list[gc])
-            for fc in range(Nc):
-                for df in range(dim):
-                    G2[fc * Nc + gc, df] = dF1_dU[fc, df]
-
-        # uu_G3[fc*Nc + gc, df*dim + dg] = dF1[fc, df] / dL[gc, dg]
-        G3 = sympy.zeros(Nc * Nc, dim * dim)
-        for gc in range(Nc):
-            for dg in range(dim):
-                dF1_dL = diff_wrt_field(F1_for_jac, L[gc, dg])
-                for fc in range(Nc):
-                    for df in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
+        G2, G3 = _flux_velocity_kernels(F1_for_jac, U_list, L, Nc, dim)
 
         self._uu_G0 = sympy.ImmutableMatrix(G0)
         self._uu_G1 = sympy.ImmutableMatrix(G1)
@@ -10271,24 +10293,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # the flux with the constitutive model's preconditioner_flux in place of
         # its flux. F0 is common to both, so G0 and G1 are shared.
         self._uu_PG2, self._uu_PG3 = self._uu_G2, self._uu_G3
-        if self.preconditioner_flux == "model":
+        self._preconditioner_flux_applied = False
+        if self.preconditioner_flux == "model" and not getattr(self, "_adjoint_kernels", False):
+            if getattr(self, "_rotated_freeslip_bcs", None):
+                raise NotImplementedError(
+                    "preconditioner_flux='model' with rotated free-slip: that path builds its "
+                    "velocity preconditioner from the rotated Jacobian, not from this block")
+            if F1_jac_src is not None or self._newton_flux(F1) is not None:
+                raise NotImplementedError(
+                    "preconditioner_flux='model' with a smooth Jacobian surrogate (flux_jacobian "
+                    "or set_jacobian_F1_source): the preconditioner flux has no surrogate of its own")
             F1_pc = self._preconditioner_F1()
             F1_pc_jac = sympy.Array(self._jacobian_source(sympy.Array(F1_pc))).reshape(dim, dim)
-            PG2 = sympy.zeros(Nc * Nc, dim)
-            PG3 = sympy.zeros(Nc * Nc, dim * dim)
-            for gc in range(Nc):
-                dF1_dU = diff_wrt_field(F1_pc_jac, U_list[gc])
-                for fc in range(Nc):
-                    for df in range(dim):
-                        PG2[fc * Nc + gc, df] = dF1_dU[fc, df]
-                for dg in range(dim):
-                    dF1_dL = diff_wrt_field(F1_pc_jac, L[gc, dg])
-                    for fc in range(Nc):
-                        for df in range(dim):
-                            PG3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
+            PG2, PG3 = _flux_velocity_kernels(F1_pc_jac, U_list, L, Nc, dim)
             self._uu_PG2 = sympy.ImmutableMatrix(PG2)
             self._uu_PG3 = sympy.ImmutableMatrix(PG3)
             fns_jacobian += [self._uu_PG2, self._uu_PG3]
+            self._preconditioner_flux_applied = True
 
         # U/P block. The constraint field is scalar (Nc_p == 1), so the g-index
         # is size 1 and only the derivative indices need explicit placement.
@@ -10367,7 +10388,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                             dim, 1, dim)
             self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3 = _transpose_kernels(
                 self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3, dim, dim, dim)
-            # the preconditioning matrix of K^T is the transposed Jacobian
             self._uu_PG2, self._uu_PG3 = self._uu_G2, self._uu_G3
             self._up_G0, self._up_G1, self._up_G2, self._up_G3 = up_from_pu
             self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3 = pu_from_up

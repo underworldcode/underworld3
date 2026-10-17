@@ -11,11 +11,13 @@ the Jacobian -- so the Newton step and the converged answer -- unchanged.
 One step of planar extension from a stressed state, every Dirichlet value the
 extension field: the default preconditioning matrix is the Jacobian; with the
 model's flux its velocity block is symmetric while the Jacobian's is not, and
-the solution is the default's.
+the solution is the default's. The option rewires the kernels without a cold
+start, the solve records it, and it is refused where it cannot act.
 """
 
 import numpy as np
 import pytest
+import sympy
 
 import underworld3 as uw
 
@@ -47,7 +49,7 @@ def _extension(preconditioner_flux):
     stokes.petsc_options["snes_type"] = "newtonls"
     stokes.preconditioner_flux = preconditioner_flux
     X = np.asarray(v.coords)
-    v.data[:, 0], v.data[:, 1] = RATE * X[:, 0], -RATE * X[:, 1]
+    v.array[:, 0, 0], v.array[:, 0, 1] = RATE * X[:, 0], -RATE * X[:, 1]
     # a uniform stored stress, so the stretch tangent is not small
     stokes.DFDt.set_initial_history([SIGMA])
     stokes.solve(timestep=DT, zero_init_guess=False)
@@ -93,10 +95,73 @@ def test_model_flux_preconditions_with_a_symmetric_block_and_keeps_the_answer():
     assert dv < 1.0e-6, dv
 
 
-def test_preconditioner_flux_is_validated_and_recompiles():
+def test_preconditioner_flux_is_validated_and_rewires_without_a_cold_start():
     stokes, _, _, _ = _extension("jacobian")
     with pytest.raises(ValueError):
         stokes.preconditioner_flux = "viscous"
     assert stokes.is_setup
     stokes.preconditioner_flux = "model"
+    # only the kernels change: the DM and the solution the next solve warms from stay
     assert not stokes.is_setup
+    assert not stokes._needs_dm_rebuild
+    assert stokes.state.has_solution
+
+
+def test_the_solve_records_the_preconditioner_it_used():
+    stokes, _, _, _ = _extension("model")
+    assert stokes.solve_report.config["tangent"]["preconditioner_flux"] == "model"
+    stokes, _, _, _ = _extension("jacobian")
+    assert "preconditioner_flux" not in stokes.solve_report.config["tangent"]
+
+
+def _viscoelastic(solver):
+    solver.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        solver.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        convected_step="deformation" if solver.Unknowns.DFDt is not None else None)
+    parameters = solver.constitutive_model.Parameters
+    parameters.shear_viscosity_0 = 1.0
+    parameters.shear_modulus = 1.0
+    parameters.dt_elastic = DT
+    return solver.constitutive_model
+
+
+def test_model_is_refused_where_it_cannot_act():
+    """Rotated free-slip preconditions with its own rotated operator; the
+    semi-Lagrangian Navier-Stokes builds its flux from the history, not through
+    stress_deviator; a smooth Jacobian surrogate has no preconditioner
+    counterpart. Each refuses rather than recording a preconditioner it did not use."""
+    uw.reset_default_model()
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("U_rot", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_rot", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.stress_transport = "eulerian"
+    _viscoelastic(stokes)
+    stokes.bodyforce = sympy.Matrix([[0, sympy.sin(sympy.pi * x)]])
+    for wall in ("Left", "Right", "Top", "Bottom"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.preconditioner_flux = "model"
+    with pytest.raises(NotImplementedError):
+        stokes.solve(timestep=DT)
+
+    uw.reset_default_model()
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("U_sl", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P_sl", mesh, 1, degree=1)
+    ns = uw.systems.NavierStokesSLCN(mesh, velocityField=v, pressureField=p, rho=1.0, order=1)
+    _viscoelastic(ns)
+    ns.bodyforce = sympy.Matrix([0, 0]).T
+    ns.add_dirichlet_bc((1.0, 0.0), "Top")
+    for wall in ("Bottom", "Left", "Right"):
+        ns.add_dirichlet_bc((0.0, 0.0), wall)
+    ns.preconditioner_flux = "model"
+    with pytest.raises(NotImplementedError):
+        ns.solve(timestep=DT)
+
+    stokes, _, _, _ = _extension("jacobian")
+    stokes.consistent_jacobian = True
+    stokes.constitutive_model.flux_jacobian = stokes.constitutive_model.flux
+    stokes.preconditioner_flux = "model"
+    with pytest.raises(NotImplementedError):
+        stokes.solve(timestep=DT, zero_init_guess=False)
