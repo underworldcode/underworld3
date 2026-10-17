@@ -44,6 +44,19 @@ def prose(body):
 FAILED = re.compile(r"^FAILED\s+(\S+?)::(\S+?)(?:\[|\s|$)")
 
 BASE = "development"
+#: Two labels, by where the fix has got to. An issue whose fix is in an OPEN PR
+#: carries `fixed-in-PR`; once that PR merges to `development` it is relabelled
+#: `fixed-in-development` and stays open until the release, because GitHub's own
+#: `Closes #N` fires on a DEFAULT-branch merge and that is `main`.
+#:
+#: Neither state is visible without a label. An unmerged PR can hold the only
+#: fix there is -- #785 carried #783 and #784 and could not merge, its base
+#: branch having no PR of its own -- and a merged one has not closed anything.
+#:
+#: Which PR, and whether it merged, belongs in the issue and in this tool's
+#: output, where it can be kept true. A label cannot be.
+LABEL_IN_PR = "fixed-in-PR"
+LABEL_IN_DEV = "fixed-in-development"
 
 
 def sh(*args, check=True, tries=1):
@@ -57,8 +70,13 @@ def sh(*args, check=True, tries=1):
         out = subprocess.run(args, capture_output=True, text=True)
         if out.returncode == 0:
             return out.stdout
-        transient = any(code in out.stderr for code in ("502", "503", "504",
-                                                        "timeout", "rate limit"))
+        # "unexpected end of JSON input" is gh's own report of a short read
+        # from the API: a transient, and one it exits non-zero on, so it has to
+        # be listed here rather than caught at the parse.
+        transient = any(code in out.stderr for code in
+                        ("502", "503", "504", "timeout", "rate limit",
+                         "unexpected end of JSON input", "connection reset",
+                         "EOF"))
         if attempt < tries and transient:
             wait = 2 ** attempt
             print(f"triage: {out.stderr.strip().splitlines()[-1][:70]} "
@@ -72,8 +90,29 @@ def sh(*args, check=True, tries=1):
     return ""
 
 
-def gh_json(*args):
-    return json.loads(sh("gh", *args, tries=4) or "[]")
+def gh_json(*args, tries=4):
+    """``gh ... --json`` as parsed JSON, retrying a truncated response.
+
+    A short read gives valid-looking output that fails to parse ("unexpected
+    end of JSON input"), which `sh` cannot see because the exit status is 0.
+    That is the same class of transient as the bare 502s this endpoint also
+    returns, so it is retried the same way rather than killing a tool meant to
+    be run several times a session.
+    """
+    for attempt in range(1, tries + 1):
+        raw = sh("gh", *args, tries=tries) or "[]"
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            if attempt == tries:
+                print(f"triage: `gh {' '.join(args[:2])}…` returned unparseable "
+                      f"JSON {tries} times ({exc})", file=sys.stderr)
+                sys.exit(1)
+            wait = 2 ** attempt
+            print(f"triage: truncated JSON from gh -- retrying in {wait}s "
+                  f"({attempt}/{tries - 1})", file=sys.stderr)
+            time.sleep(wait)
+    return []
 
 
 def issues():
@@ -81,9 +120,17 @@ def issues():
                    "number,title,labels,author,createdAt,body")
 
 
+def _reached_base(pr):
+    """Whether a merged PR's merge commit is on ``origin/BASE``."""
+    oid = (pr.get("mergeCommit") or {}).get("oid")
+    if not oid:
+        return False
+    return f"origin/{BASE}" in sh("git", "branch", "-r", "--contains", oid, check=False)
+
+
 def prs(state="open"):
     fields = ("number,title,mergeable,additions,deletions,changedFiles,"
-              "statusCheckRollup,body,headRefName,author,updatedAt")
+              "statusCheckRollup,body,headRefName,baseRefName,mergeCommit,author,updatedAt")
     args = ["pr", "list", "--limit", "400", "--json", fields]
     if state != "open":
         args += ["--state", state]
@@ -165,7 +212,7 @@ def main():
     # An issue labelled fixed-in-development has been adjudicated: it stays open
     # only until the release, so it is counted, never probed again.
     fixed = {i["number"] for i in iss
-             if any(l["name"] == "fixed-in-development" for l in i["labels"])}
+             if any(l["name"] == LABEL_IN_DEV for l in i["labels"])}
     open_numbers = {i["number"] for i in iss} - fixed
     titles = {i["number"]: i["title"] for i in iss}
     opn = prs()
@@ -223,6 +270,57 @@ def main():
 
     no_closes = [p for p in opn if not CLOSES.search(prose(p["body"]))]
     print(f"  {len(no_closes)} of {len(opn)} carry no Closes line")
+
+    # ---- issues whose fix is already written ------------------------------
+    # Two ways an open issue can already be fixed, and neither is visible
+    # anywhere. A PR merged to `development` has not closed it, because GitHub
+    # closes on a DEFAULT-branch merge and that is `main` (139 declared closes
+    # across the project's life, 5 slipped -- release-gated, not broken). And
+    # an UNMERGED PR can hold the only fix: #785 carries #783 and #784 and
+    # cannot merge, its base branch having no PR of its own.
+    labels = {i["number"]: {l["name"] for l in i["labels"]} for i in iss}
+    declared = {}
+    for p in merged:
+        # A stacked PR merged into its feature base is a written fix that has
+        # reached `development` only if that base has since landed there: the
+        # merge commit says which.
+        base = p.get("baseRefName") or BASE
+        state = "merged" if base == BASE or _reached_base(p) else f"merged to {base}"
+        for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}:
+            if n in open_numbers:
+                declared.setdefault(n, []).append((p["number"], state))
+    for p in opn:
+        for n in {int(m) for m in CLOSES.findall(prose(p["body"]))}:
+            if n in open_numbers:
+                declared.setdefault(n, []).append((p["number"], "open"))
+    limbo = {n: v for n, v in declared.items() if LABEL_IN_PR not in labels.get(n, ())}
+    print("\nFIX ALREADY WRITTEN  (a PR declares it; neither label applied)")
+    if not limbo:
+        print("  none -- every declared fix is closed or labelled")
+    for n in sorted(limbo):
+        src = ", ".join(f"#{p} ({st})" for p, st in sorted(limbo[n]))
+        print(f"  #{n:<5} {src:<26} {titles[n][:52]}")
+    if limbo:
+        print("\n  Probe each. Three outcomes, and the third is why this is a list")
+        print("  of candidates rather than a list of fixes:")
+        print("    already in a release on main          -> gh issue close <N>")
+        print(f"    fix is in an OPEN pr, or merged to a  -> gh issue edit <N> "
+              f"--add-label {LABEL_IN_PR}")
+        print("    feature base that has not landed")
+        print(f"    its PR has MERGED to {BASE:<13}    -> gh issue edit <N> "
+              f"--add-label {LABEL_IN_DEV}")
+        print("    NOT fixed -- the PR addressed a neighbour, or papered over it")
+        print("                                          -> leave open, say which part is live")
+        print("  #611 is the standing example of the third: #656 was credited with")
+        print("  closing it, and the hang is handled by a --deselect in scripts/test.sh")
+        print("  at the very rank count the issue reports.")
+        print("  A PR marked (open) is the commoner case here -- the fix is written")
+        print("  and cannot land. Label the issue; the work is on the PR.")
+    carrying = [n for n, ls in labels.items() if {LABEL_IN_PR, LABEL_IN_DEV} & ls]
+    if carrying:
+        print(f"\n  {len(carrying)} issue(s) are flagged as fixed somewhere; the release "
+              f"closes the merged ones:")
+        print("    " + " ".join(f"#{n}" for n in sorted(carrying)))
 
     # ---- the one that cost ten days ---------------------------------------
     if args.no_logs:
