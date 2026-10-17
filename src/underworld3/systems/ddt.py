@@ -587,8 +587,12 @@ def _update_exp_values(coeffs, dt, tau_eff):
         # the float here failed and fell to the viscous limit, which silently
         # removed the elastic response wherever the viscosity was not a plain
         # number (measured: a damage band made the whole block viscous).
-        # tau <= 0 anywhere is read as the viscous limit there (x -> inf).
-        tau_pos = sympy.Max(tau_eff, sympy.Float(1e-300))
+        # tau <= 0 anywhere is read as the viscous limit there (x -> inf); the
+        # floor is the declared vanishing regulariser, not a literal.
+        # At order 1 phi is replaced by alpha; at order 2 phi = (1 - alpha)/x
+        # loses digits only for x below ~1e-12, which a field of Maxwell times
+        # on the scale of the step does not reach.
+        tau_pos = sympy.Max(tau_eff, uw.maths.functions.vanishing)
         x = sympy.Float(dt_f) / tau_pos
         alpha = sympy.exp(-x)
         phi = (1 - alpha) / x
