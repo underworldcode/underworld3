@@ -8288,12 +8288,24 @@ class Mesh(Stateful, uw_object):
                 "add_conforming_sheet is 3-D; in 2-D use "
                 "add_conforming_surface.")
 
-        boundaries = self._boundaries_with(name)
+        # In parallel the add-on is partitioned for the sheet first — the
+        # placement's own mask with two growth layers, on this level and on
+        # every add-on level below it — so the carve and the fill run on a
+        # rank-interior region and the placement gathers nothing; a split of
+        # the sheet later moves nothing either.
+        host = self
+        if self.dm.getComm().getSize() > 1:
+            from underworld3.utilities.addon_partition import (mark_sheets,
+                                                               partition_addon)
+            host = partition_addon(
+                self, mark_sheets([(points, triangles)], clearance), layers=2,
+                verbose=verbose)
+        boundaries = host._boundaries_with(name)
         cut_dm, info = place_sheet(
-            self.dm, points, triangles, label=name,
+            host.dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
             verbose=verbose, setback=setback, size=size)
-        return self._adopt_cut_child(cut_dm, boundaries, info,
+        return host._adopt_cut_child(cut_dm, boundaries, info,
                                      mg_coarsening_ratio, verbose)
 
     def extrude(self, thickness, layers=2, base="Base", surface="Surface",

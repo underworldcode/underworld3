@@ -1666,9 +1666,9 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     it. The input is untouched.
     """
     ids = (np.asarray(vertex_mark_chart) != 0).astype(np.int32)
-    work, n_region, _n_moved, _owner, _canon = _gather_regions(
+    work, _n_region, n_moved, _owner, _canon = _gather_regions(
         dm, ids, verbose=verbose, layers=1)
-    return work, n_region
+    return work, n_moved
 
 
 def _merge_regions(pairs, n_ids, comm):
@@ -3300,15 +3300,17 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # so a wider mask here only moves cells the surgery never touches (#670:
     # a +2 margin gathered 91% of a fixture whose cavity was 6%). The carve
     # asserts nothing shared afterwards, so an under-reach is loud.
-    # TODO(BUG): the mask does not cover the cavity GROWTH (_carve_cavity_3d's
-    # enclosed-cell and pinched-vertex rounds take whole vertex stars at the
-    # shell, one more diameter out), so on a partitioned adapt child the grown
-    # cavity touched a shared point and the surgery rank raised "the gather
-    # mask under-reached" (measured 2026-10-17: box 3x2x1, adapt to h 0.05 on
-    # the fault column, blind sheet with setback 0.25, 8 ranks; the same
-    # placement passes serially). Fix: on that refusal re-gather from the
-    # original dm with a wider margin and retry, rather than widening every
-    # gather (#670's cost note). See planning file: underworld.md.
+    # The Mesh API (add_conforming_sheet, add_fault) partitions the add-on
+    # for the sheet BEFORE calling here, with this mask plus two growth
+    # layers on every add-on level (addon_partition.mark_sheets), so the
+    # gather below finds the region rank-interior and moves nothing.
+    # TODO(BUG): on a dm handed in directly, this mask alone does not cover
+    # the cavity GROWTH (_carve_cavity_3d's enclosed-cell and pinched-vertex
+    # rounds take whole vertex stars at the shell, one more diameter out): on
+    # a partitioned adapt child the grown cavity touched a shared point and
+    # the surgery rank raised "the gather mask under-reached" (measured
+    # 2026-10-17 at 2 and 8 ranks; tests/parallel/test_1097 reproduces it
+    # through the old Mesh path). The direct path needs the second layer too.
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
     mark[np.flatnonzero(d_sheet < (clearance + 1.0) * h_vertex)
          + vS - pStart] = 1

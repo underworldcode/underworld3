@@ -65,6 +65,20 @@ forest "maps points to the wrong depth" came from reading remote point numbers
 against the local chart; the forest is a point map, and `distributeField` is the API
 for riding it.
 
+## Measured after (same fixtures, the partition in place)
+
+Refined patch box, split: velocity iterations 5 / 6 / 6 at np 2 / 4 / 8 (4 in
+serial), wall 65 / 34 / 25 s against 72 / 38 / 30 s before. Adapt-on-top fault, 2-D,
+np 2: finest cells per rank 742 / 618 (max / mean 1.09, from 1.38); every add-on pair
+co-partitioned, every recorded parent contains its cell; the base-to-add-on pair
+fetched, no query. At np 4 and 8 on that 1360-cell fixture the fault region itself
+(544 cells with its growth layers, lifted to units) exceeds the mean load, so the
+owner keeps it whole and the balance stops there: a region is the indivisible unit,
+as the September note's granularity remark says, and the test bounds the load by
+the region's weight. The 3-D sheet placement on a partitioned adapt child, refused
+before ("the gather mask under-reached" at np 2 on the disc fixture of test_0867),
+places with nothing gathered and splits with nothing moved (test_1097).
+
 ## The decision
 
 **One assignment for the whole add-on, computed on the finest level before any

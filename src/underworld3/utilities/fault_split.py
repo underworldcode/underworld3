@@ -44,11 +44,14 @@ domain boundary; and in parallel the fault's cell fans must not touch the
 partition seam — the replicas are then rank-local and the star-forest carries
 over by renumbering alone, exactly as the deletion pass argues for its own
 seam freeze. A fault that DOES touch the seam is not the user's problem:
-:func:`split_fault` (and :func:`add_fault`) REDISTRIBUTE first — the fault's
-cell star plus one growth layer moves to the rank that already owns most of
-it (:func:`_redistribute_fault_interior`), the chain or patch becomes
-rank-interior, and the split runs with serial topology. Only a direct call
-to the low-level splitters on a seam-touching fault is refused. The 2-D
+:func:`split_fault` (and :func:`add_fault`) PARTITION the add-on first — one
+assignment for the finest level and every add-on level below it, each fault's
+cell star plus a growth layer glued and sent to the rank that already owns
+most of it, the load balanced
+(:func:`~underworld3.utilities.addon_partition.partition_addon`) — so the
+chain or patch is rank-interior and the split runs with serial topology,
+moving nothing itself. Only a direct call to the low-level splitters on a
+seam-touching fault is refused. The 2-D
 split can instead run THROUGH the seam (``across_seams=True``, the path of
 a band meshed through it by ``place_thin_volume(seams="conform")``): the
 chain is assembled globally from the star-forest identities of its
