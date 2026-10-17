@@ -48,7 +48,9 @@ ap.add_argument("--allow_gamg", action="store_true", help="accept a GAMG velocit
 ap.add_argument("--Lx", type=float, default=3.0)
 ap.add_argument("--Ly", type=float, default=2.0)
 ap.add_argument("--H", type=float, default=1.0)
-ap.add_argument("--fault_len", type=float, default=1.0, help="fault length along x")
+ap.add_argument("--fault_len", type=float, default=1.0, help="fault length along strike")
+ap.add_argument("--fault_angle", type=float, default=0.0,
+                help="strike of the vertical fault in plan, degrees anticlockwise from x (0: parallel to x, where the end load sigma_xx does not clamp it; at theta it clamps with sigma_xx sin^2 theta)")
 ap.add_argument("--fault_depth", type=float, default=0.5, help="depth of the fault bottom below the surface")
 ap.add_argument("--setback", type=float, default=2.0, help="setback of the fault top below the surface, in fault cells (adapt, gmsh) or cells (place)")
 ap.add_argument("--damage", type=float, default=0.01,
@@ -107,12 +109,28 @@ def log(*a):
 #  place — a uniform box, cavity placement with setback (needs three to four cells).
 h = args.h
 hf = args.h_fault if args.h_fault > 0 else h
-yf = 0.5 * args.Ly
-xa, xb = 0.5 * (args.Lx - args.fault_len), 0.5 * (args.Lx + args.fault_len)
+# the fault: a vertical rectangle centred in the box, strike at fault_angle to x in plan
+cx, cy = 0.5 * args.Lx, 0.5 * args.Ly
+th = np.radians(args.fault_angle)
+cs, sn = float(np.cos(th)), float(np.sin(th))
+strike = np.array([cs, sn, 0.0])                       # slip is measured along this
+half = 0.5 * args.fault_len
+end_a = np.array([cx - half * cs, cy - half * sn])
+end_b = np.array([cx + half * cs, cy + half * sn])
+yf = cy                                                 # (the x-parallel names, kept for the log)
+xa, xb = float(min(end_a[0], end_b[0])), float(max(end_a[0], end_b[0]))
 zb = args.H - args.fault_depth
 setback = args.setback * (h if args.mesher == "place" else hf)
 ztop_fault = args.H - setback
-trace = [[xa, yf, args.H], [xb, yf, args.H]]           # the would-be surface trace (a straight fault)
+for e in (end_a, end_b):
+    if not (0.0 < e[0] < args.Lx and 0.0 < e[1] < args.Ly):
+        raise SystemExit(f"the fault end {e} lies outside the box: shorten the fault or change its angle")
+trace = [[end_a[0], end_a[1], args.H], [end_b[0], end_b[1], args.H]]   # the would-be surface trace
+
+
+def _local(px, py):
+    """Along-strike and fault-normal coordinates about the fault centre."""
+    return (px - cx) * cs + (py - cy) * sn, -(px - cx) * sn + (py - cy) * cs
 
 
 def fault_distance(pts):
@@ -122,9 +140,10 @@ def fault_distance(pts):
     placement's cavity (clearance x local h, plus the dropped cells) stays clear of
     the top face — a coarse cell above the fault top reached it (measured)."""
     pts = np.asarray(pts, dtype=float).reshape(-1, 3)
-    dx = np.maximum(np.maximum(xa - pts[:, 0], pts[:, 0] - xb), 0.0)
+    xi, eta = _local(pts[:, 0], pts[:, 1])
+    dx = np.maximum(np.abs(xi) - half, 0.0)
     dz = np.maximum(zb - pts[:, 2], 0.0)
-    dy = np.abs(pts[:, 1] - yf)
+    dy = np.abs(eta)
     return np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
 
 
@@ -141,10 +160,10 @@ def sheet_triangulation(cell):
     placement clips it and stops it `setback` below the surface."""
     nx = max(2, int(round(args.fault_len / cell)) + 1)
     nz = max(2, int(round((args.H + 0.3 * cell - zb) / cell)) + 1)
-    xs = np.linspace(xa, xb, nx)
+    xis = np.linspace(-half, half, nx)
     zs = np.linspace(zb, args.H + 0.3 * cell, nz)
-    XX, ZZ = np.meshgrid(xs, zs, indexing="ij")
-    pts = np.column_stack([XX.ravel(), np.full(XX.size, yf), ZZ.ravel()])
+    XI, ZZ = np.meshgrid(xis, zs, indexing="ij")
+    pts = np.column_stack([cx + XI.ravel() * cs, cy + XI.ravel() * sn, ZZ.ravel()])
     tris = []
     for i in range(nx - 1):
         for j in range(nz - 1):
@@ -159,7 +178,8 @@ if args.mesher == "gmsh":
     # conforming under uniform refinement, the grading survives it, and the k
     # coarse levels are the multigrid tail (nested, exact transfers)
     f = 2 ** args.refinement
-    patch = np.array([[xa, yf, zb], [xb, yf, zb], [xb, yf, ztop_fault], [xa, yf, ztop_fault]])
+    patch = np.array([[end_a[0], end_a[1], zb], [end_b[0], end_b[1], zb],
+                      [end_b[0], end_b[1], ztop_fault], [end_a[0], end_a[1], ztop_fault]])
     # the grading distance is PHYSICAL (gmsh's default is 8 x the patch size, which at
     # the coarse size made the fine region four times wider: 78k cells for 16k)
     cut = uw.meshing.BoxInternalPatch(cellSize=f * h, minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
@@ -188,7 +208,7 @@ mesh = split_fault(cut, "Fault")
 n_tail = len(getattr(mesh, "_custom_mg_coarse_meshes", None) or [])
 ncell = comm.allreduce(int(mesh.dm.getHeightStratum(0)[1] - mesh.dm.getHeightStratum(0)[0]), op=MPI.SUM)
 log(f"mesh ({args.mesher}) h {h} h_fault {hf}: {ncell} cells after fault + split ({time.perf_counter() - t0:.1f}s); "
-    f"fault x [{xa:.2f}, {xb:.2f}], z [{zb:.2f}, {ztop_fault:.3f}], setback {setback:.3f}; "
+    f"fault strike {args.fault_angle:g} deg, ends {end_a.round(3)} {end_b.round(3)}, z [{zb:.2f}, {ztop_fault:.3f}], setback {setback:.3f}; "
     f"multigrid tail {n_tail} levels")
 x, y, z = mesh.X
 
@@ -203,9 +223,10 @@ stokes.tolerance = args.tol
 # the width of a cell (or --damage_width) either side of the trace
 wd = args.damage_width if args.damage_width > 0 else hf
 ztop = ztop_fault - 0.5 * wd
-g_y = sympy.exp(-((y - yf) / wd) ** 2)
+xi_s, eta_s = _local(x, y)                               # the same local frame, symbolic
+g_y = sympy.exp(-(eta_s / wd) ** 2)
 g_z = 0.5 * (1 + sympy.tanh((z - ztop) / (0.5 * wd)))
-g_x = 0.25 * (1 + sympy.tanh((x - xa) / (0.5 * wd))) * (1 + sympy.tanh((xb - x) / (0.5 * wd)))
+g_x = 0.25 * (1 + sympy.tanh((xi_s + half) / (0.5 * wd))) * (1 + sympy.tanh((half - xi_s) / (0.5 * wd)))
 damage = g_x * g_y * g_z                                   # 1 in the band, 0 away from it
 eta_factor = 1.0 - (1.0 - args.damage) * damage if args.damage < 1.0 else 1.0
 
@@ -278,7 +299,7 @@ def fault_diagnostics(info, dt):
         pair_tab = {"coords": coords, "cum": np.zeros(len(coords)), "cycle": np.zeros(len(coords)),
                     "act": np.zeros(len(coords))}
     leak = np.einsum("ij,ij->i", jumps, normals)
-    rate = jumps[:, 0]                                     # strike direction is x
+    rate = jumps @ strike if len(jumps) else np.zeros(0)  # signed slip rate along strike
     pair_tab["cum"] += rate * dt
     pair_tab["cycle"] += rate * dt
     pair_tab["act"] += np.abs(rate) * dt

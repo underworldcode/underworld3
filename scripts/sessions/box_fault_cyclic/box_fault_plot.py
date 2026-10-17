@@ -53,9 +53,13 @@ h1, l1 = ax.get_legend_handles_labels()
 h2, l2 = ax2.get_legend_handles_labels()
 ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper left", bbox_to_anchor=(0.0, -0.18), ncol=2, frameon=False)
 ax.set_xlabel("t / period")
-ax.set_title(f"{run}: De {args['De']}, mu {args['fault_mu']}, Tb {args['fault_Tb']}, phi {args['phi']}", fontsize=10)
+ax.set_title(f"{run}: De {args['De']}, mu {args['fault_mu']}, Tb {args['fault_Tb']}, phi {args['phi']}, strike {args.get('fault_angle', 0.0):g}", fontsize=10)
 
-pc = last["pair_coords"]
+pc = np.array(last["pair_coords"], dtype=float)
+_th = np.radians(args.get("fault_angle", 0.0))
+# along-strike coordinate about the fault centre, shifted so an x-parallel fault reads as x
+pc[:, 0] = ((pc[:, 0] - 0.5 * args["Lx"]) * np.cos(_th) + (pc[:, 1] - 0.5 * args["Ly"]) * np.sin(_th)
+            + 0.5 * args["Lx"])
 for ax, key, title in ((axes[0, 1], "slip_cycle", "net slip over the last cycle"),
                        (axes[1, 0], "slip_cum", "cumulative slip")):
     val = last[key]
