@@ -282,6 +282,14 @@ a labelled edge, so a placed surface comes through any later repair with the
 facets it was placed with. The fill itself rarely needs repair (see above),
 but the composition remains sound.
 
+```{note}
+Since October 2026 the Mesh API (`add_conforming_sheet`, `add_fault`) partitions the
+add-on for the surface before placing it, so the gather below finds the region
+rank-interior and moves nothing (`info["n_gathered"]` is then zero). The gather is
+what a direct call to `place_sheet` or `place_thin_volume` still does. See
+[parallel-addon-distribution-2026-10](../design/parallel-addon-distribution-2026-10.md).
+```
+
 The 3-D forms are **parallel** by gather-first: the surface's region is
 redistributed onto one rank, the serial carve-and-fill runs there, and every
 rank rebuilds its chart collectively (uninterpolate + `DMPlexInterpolate`).

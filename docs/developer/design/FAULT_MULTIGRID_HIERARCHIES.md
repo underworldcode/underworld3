@@ -153,6 +153,10 @@ A, the existing path, had three defects at np > 1:
    cell-located transfer, which asks the other ranks for the nodes it cannot locate
    locally, and unreached unknowns are dropped rather than repaired: A converges at
    np = 2 (15 iterations against 13 serial), C in 6 at np = 2 and 7 at np = 4 (k = 2).
+   (Superseded in October 2026: the add-on is now partitioned once before the cut,
+   so the split levels are co-partitioned with each other and nothing is asked of
+   other ranks on those pairs; see
+   [parallel-addon-distribution-2026-10](parallel-addon-distribution-2026-10.md).)
 
 The pairing rides every redistribution as a pair of DM labels. The migration star
 forest PETSc returns for an initial distribution does not index the stratified point

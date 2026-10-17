@@ -1507,6 +1507,24 @@ class CustomMGHierarchy:
         comm = solver.dm.comm
         from underworld3.utilities import fault_mg
         for l in range(1, nlev):
+            # A pair the add-on partition recorded (the base's finest static
+            # level against the first add-on level, which the partition moved
+            # apart, and any unsplit pair of moved add-on levels) carries the
+            # exact parent relation: each fine cell's parent is fetched from
+            # its rank through a star forest, and nothing is located across
+            # partitions. Split coarse levels are never recorded against, so
+            # their pairs keep the side-aware cell-located transfer.
+            pre = (fault_mg.provenance_source(self.level_meshes[l - 1],
+                                              self.level_meshes[l])
+                   if parallel else None)
+
+            def provenance_transfer():
+                P = fault_mg.provenance_transfer_parallel(
+                    self.level_meshes[l - 1], self.level_meshes[l], pre, degree,
+                    continuous, coords[l - 1], coords[l], maps[l - 1], maps[l],
+                    nc, comm)
+                self.level_transfer_stats[l] = fault_mg.last_transfer_stats
+                return P
             # Split-level multigrid: every pair touching a split level takes
             # the cell-located transfer. A split COARSE level defeats the
             # node-cloud builders (they triangulate the coarse nodes, and
@@ -1522,7 +1540,9 @@ class CustomMGHierarchy:
             if self.has_split_levels and (
                     fault_mg.is_split_level(self.level_meshes[l - 1])
                     or fault_mg.is_split_level(self.level_meshes[l])):
-                if parallel:
+                if pre is not None:
+                    P = provenance_transfer()
+                elif parallel:
                     P = fault_mg.cell_located_transfer_parallel(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
                         continuous, coords[l - 1], coords[l], maps[l - 1],
@@ -1540,7 +1560,9 @@ class CustomMGHierarchy:
             if parallel:
                 args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
-                if self.cross_partition is True:
+                if pre is not None:
+                    P = provenance_transfer()
+                elif self.cross_partition is True:
                     P = _build_crosspart_transfer(*args)
                 else:
                     P = _build_parallel_transfer(*args)

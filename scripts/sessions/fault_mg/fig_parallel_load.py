@@ -75,7 +75,7 @@ for n in nps:
     for li, s in enumerate(st):
         if s:
             xs.append(li)
-            ys.append(100.0 * s["misses"] / max(s["owned_nodes"], 1))
+            ys.append(100.0 * s.get("misses", 0) / max(s["owned_nodes"], 1))
     if xs:
         ax.plot(xs, ys, "o-", label=f"{n} ranks")
 ax.set_xlabel("level (fine side of the transfer)")

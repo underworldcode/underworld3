@@ -40,6 +40,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Thin sheet (plane stress, sphere, faults) | [subsystems/thin-sheet.md](subsystems/thin-sheet.md) |
 | Fault multigrid (split-level hierarchy, parallel pairing) | [subsystems/fault-split-multigrid.md](subsystems/fault-split-multigrid.md) |
 | Fault networks in parallel (placement, split, tail) | [design/fault-parallel-placement-2026-09.md](design/fault-parallel-placement-2026-09.md) (subsystem reference: [conforming-surfaces-and-fault-zones.md](subsystems/conforming-surfaces-and-fault-zones.md)) |
+| The add-on's partition in parallel (one partition for the add-on hierarchy) | [design/parallel-addon-distribution-2026-10.md](design/parallel-addon-distribution-2026-10.md) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |

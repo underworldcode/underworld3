@@ -101,22 +101,37 @@ zero). Two further rules came out of the same case:
 
 ## Parallel
 
-Every split level is redistributed so its fault star is rank-interior (the split's own
-rule), so the pair blocks are rank-local on every level. The transfer locates each
-owned fine node in the *local* coarse mesh (owned plus ghost cells); the nodes whose
-coarse cell lives elsewhere are all-gathered as query points, answered by the rank
-holding the cell with global column indices, and the asker keeps the best answer. The
-levels need not be co-partitioned.
+The add-on is partitioned **once, before any surgery**, as one hierarchy
+(`utilities/addon_partition.partition_addon`, design note
+[parallel-addon-distribution-2026-10](../design/parallel-addon-distribution-2026-10.md)).
+`add_fault`, `add_conforming_sheet`, `split_fault` and `split_faults` call it in
+parallel: the fault regions — each fault's cell star plus growth layers, marked on
+every add-on level because a coarser level's star reaches further — are glued and
+sent to the rank already holding most of them, the load is balanced by diffusion
+over the seams (free cells move from a heavier rank to a lighter neighbour, the
+cells farthest from the faults first), and the one assignment is applied to every
+add-on level through the parent-cell relation. The background levels never move.
+The cut, the placement and the split then run on rank-interior regions and move
+nothing; the replay of the faults on the add-on levels (`split_tail_levels`) arrives
+on levels already partitioned with the finest.
+
+Every add-on pair is therefore co-partitioned exactly and the cell-located transfer
+finds every node in its local coarse cells (`level_transfer_stats` records `misses`
+zero; the query exchange still runs, with nothing to send). The one pair the
+partition separates — the base's finest static level against the first add-on
+level — carries the exact relation: each level records, per cell, where its parent
+on the level below lives (provenance riding the move through `distributeField`, the
+new addresses resolved through two star forests), and `provenance_transfer_parallel`
+fetches each fine cell's parent through one star forest (its record carries
+`fetched_remote`). Nothing on that pair is located across partitions; a fine node in
+no recorded cell is a collective refusal.
 
 A coincident pairing rides a redistribution as a pair of DM labels
-(`fault_split.stamp_point_pairs` / `collect_point_pairs`): one value per pair on its
-Minus and Plus points. The migration star forest PETSc returns for an *initial*
-distribution does not index the stratified numbering (measured: three quarters of the
-points mapped to the wrong depth), so the forest is not used. `extrude_sheet` builds the
-layer on one rank, distributes it with the labels on, redistributes the fault stars
-rank-interior and reads the pairing back; a balanced partition readily puts the whole
-Minus side on one rank and the whole Plus side on another, since the slit disconnects
-them.
+(`fault_split.stamp_point_pairs` / `collect_point_pairs`), and a per-cell field as
+a cell-wise section through `distributeField` on the migration star forest
+(`redistribute_by_assignment(fields=...)`). `extrude_sheet` builds the layer on
+one rank and distributes it with the labels on; its fault stars are then made
+rank-interior by the older per-fault move, which remains for that path.
 
 ## Measured (box in simple shear, straight fault, 2026-10-13)
 
@@ -181,6 +196,4 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
   welded. A network whose junction ligament is one fine cell wide closes at the next
   coarser spacing (the two labels meet), so such a network gets split levels only where
   the ligament survives — on `test_0866`'s kissing Y with one add-on level, none.
-- Co-locating the add-on levels with the finest in parallel is an optimisation the
-  query path makes unnecessary for correctness; not measured at scale.
 - The one-rank build of `extrude_sheet` bounds the layer size by one rank's memory.

@@ -73,7 +73,7 @@ def _gather_sheet(dm, pairs):
     """Everything onto rank 0: ``(dm, pairs)`` in the gathered numbering."""
     from underworld3.utilities.fault_split import redistribute_by_assignment
     cS, cE = dm.getHeightStratum(0)
-    gathered, pairs, _dropped = redistribute_by_assignment(
+    gathered, pairs, _dropped, _fields = redistribute_by_assignment(
         dm, np.zeros(cE - cS, dtype=np.int32), pairs=pairs)
     return gathered, pairs or {}
 

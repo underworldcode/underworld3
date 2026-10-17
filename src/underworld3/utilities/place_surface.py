@@ -1666,9 +1666,90 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     it. The input is untouched.
     """
     ids = (np.asarray(vertex_mark_chart) != 0).astype(np.int32)
-    work, n_region, _n_moved, _owner, _canon = _gather_regions(
+    work, _n_region, n_moved, _owner, _canon = _gather_regions(
         dm, ids, verbose=verbose, layers=1)
-    return work, n_region
+    return work, n_moved
+
+
+def _merge_regions(pairs, n_ids, comm):
+    """Union-find over the gathered set of touching region ``pairs`` —
+    identical on every rank. Returns ``canon`` mapping every region id in
+    ``1..n_ids`` to its merged id. Collective."""
+    parent = list(range(n_ids + 1))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in sorted(set().union(*comm.allgather(pairs))):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    return {k: find(k) for k in range(1, n_ids + 1)}
+
+
+def _region_cells(dm, vertex_region_chart, layers=1):
+    """The cells of each marked region: the marked vertices' cell star grown by
+    ``layers``, with touching regions merged (the marking rule of
+    :func:`_gather_regions`, which applies it; :func:`addon_partition.partition_addon`
+    lifts it to its units). Returns ``(cell_region, canon, regions)``: the
+    merged region id per local cell (``0`` outside every region), the id map
+    and the sorted list of merged ids. Collective; the dm is read, not changed."""
+    comm = dm.getComm().tompi4py()
+    ids_in = np.asarray(vertex_region_chart, dtype=np.int32)
+    n_ids = int(comm.allreduce(int(ids_in.max()) if ids_in.size else 0,
+                               op=MPI.MAX))
+    cS, cE = dm.getHeightStratum(0)
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    pairs = set()          # (a, b): regions that touch, to be merged
+
+    def reconcile(chart):
+        # every rank agrees on every point it can see; where a rank's own
+        # id loses to a neighbour's under MAX the two regions touch
+        before = chart.copy()
+        after = _propagate_vertex(dm, chart, MPI.MAX, np.maximum)
+        touch = (before > 0) & (after != before)
+        for a, b in zip(before[touch], after[touch]):
+            pairs.add((int(a), int(b)))
+        return after
+
+    cell_region = np.zeros(cE - cS, dtype=np.int32)
+
+    def claim_cells(chart):
+        for v in range(vS, vE):
+            k = int(chart[v - pStart])
+            if k == 0:
+                continue
+            for q in dm.getTransitiveClosure(v, useCone=False)[0]:
+                if cS <= int(q) < cE:
+                    c = int(q) - cS
+                    if cell_region[c] and cell_region[c] != k:
+                        pairs.add((int(cell_region[c]), k))
+                    cell_region[c] = max(cell_region[c], k)
+
+    claim_cells(reconcile(ids_in.copy()))
+    # Growth layers: a point is unshared exactly when all its incident
+    # cells are co-resident, so each layer makes the previous cells'
+    # closures unshared.
+    for _grow in range(int(layers)):
+        layer = np.zeros(pEnd - pStart, dtype=np.int32)
+        for c in np.flatnonzero(cell_region):
+            k = int(cell_region[c])
+            for q in dm.getTransitiveClosure(int(c) + cS)[0]:
+                if vS <= int(q) < vE:
+                    i = int(q) - pStart
+                    if layer[i] and layer[i] != k:
+                        pairs.add((int(layer[i]), k))
+                    layer[i] = max(layer[i], k)
+        claim_cells(reconcile(layer))
+
+    canon = _merge_regions(pairs, n_ids, comm)
+    for c in np.flatnonzero(cell_region):
+        cell_region[c] = canon[int(cell_region[c])]
+    return cell_region, canon, sorted(set(canon.values()))
 
 
 def _gather_regions(dm, vertex_region_chart, verbose=False, layers=1):
@@ -1715,69 +1796,7 @@ def _gather_regions(dm, vertex_region_chart, verbose=False, layers=1):
 
     work = dm.clone()
     cS, cE = work.getHeightStratum(0)
-    vS, vE = work.getDepthStratum(0)
-    pStart, pEnd = work.getChart()
-    pairs = set()          # (a, b): regions that touch, to be merged
-
-    def reconcile(chart):
-        # every rank agrees on every point it can see; where a rank's own
-        # id loses to a neighbour's under MAX the two regions touch
-        before = chart.copy()
-        after = _propagate_vertex(work, chart, MPI.MAX, np.maximum)
-        touch = (before > 0) & (after != before)
-        for a, b in zip(before[touch], after[touch]):
-            pairs.add((int(a), int(b)))
-        return after
-
-    cell_region = np.zeros(cE - cS, dtype=np.int32)
-
-    def claim_cells(chart):
-        for v in range(vS, vE):
-            k = int(chart[v - pStart])
-            if k == 0:
-                continue
-            for q in work.getTransitiveClosure(v, useCone=False)[0]:
-                if cS <= int(q) < cE:
-                    c = int(q) - cS
-                    if cell_region[c] and cell_region[c] != k:
-                        pairs.add((int(cell_region[c]), k))
-                    cell_region[c] = max(cell_region[c], k)
-
-    claim_cells(reconcile(ids_in.copy()))
-    # Growth layers: a point is unshared exactly when all its incident
-    # cells are co-resident, so each layer makes the previous cells'
-    # closures unshared.
-    for _grow in range(int(layers)):
-        layer = np.zeros(pEnd - pStart, dtype=np.int32)
-        for c in np.flatnonzero(cell_region):
-            k = int(cell_region[c])
-            for q in work.getTransitiveClosure(int(c) + cS)[0]:
-                if vS <= int(q) < vE:
-                    i = int(q) - pStart
-                    if layer[i] and layer[i] != k:
-                        pairs.add((int(layer[i]), k))
-                    layer[i] = max(layer[i], k)
-        claim_cells(reconcile(layer))
-
-    # merge touching regions: union-find on the gathered pair set, the same
-    # on every rank
-    parent = list(range(n_ids + 1))
-
-    def find(a):
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    for a, b in sorted(set().union(*comm.allgather(pairs))):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-    canon = {k: find(k) for k in range(1, n_ids + 1)}
-    for c in np.flatnonzero(cell_region):
-        cell_region[c] = canon[int(cell_region[c])]
-
-    regions = sorted(set(canon.values()))
+    cell_region, canon, regions = _region_cells(work, ids_in, layers=layers)
     local = np.array([int((cell_region == k).sum()) for k in regions],
                      dtype=np.int64)
     counts = np.asarray(comm.allgather(local))          # (size, n_regions)
@@ -3281,15 +3300,18 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # so a wider mask here only moves cells the surgery never touches (#670:
     # a +2 margin gathered 91% of a fixture whose cavity was 6%). The carve
     # asserts nothing shared afterwards, so an under-reach is loud.
-    # TODO(BUG): the mask does not cover the cavity GROWTH (_carve_cavity_3d's
-    # enclosed-cell and pinched-vertex rounds take whole vertex stars at the
-    # shell, one more diameter out), so on a partitioned adapt child the grown
-    # cavity touched a shared point and the surgery rank raised "the gather
-    # mask under-reached" (measured 2026-10-17: box 3x2x1, adapt to h 0.05 on
-    # the fault column, blind sheet with setback 0.25, 8 ranks; the same
-    # placement passes serially). Fix: on that refusal re-gather from the
-    # original dm with a wider margin and retry, rather than widening every
-    # gather (#670's cost note). See planning file: underworld.md.
+    # The Mesh API (add_conforming_sheet, add_fault) partitions the add-on
+    # for the sheet BEFORE calling here, with this mask plus two growth
+    # layers on every add-on level (addon_partition.mark_sheets), so the
+    # gather below finds the region rank-interior and moves nothing.
+    # TODO(BUG): on a dm handed in directly, this mask alone does not cover
+    # the cavity GROWTH (_carve_cavity_3d's enclosed-cell and pinched-vertex
+    # rounds take whole vertex stars at the shell, one more diameter out): on
+    # a partitioned adapt child the grown cavity touched a shared point and
+    # the surgery rank raised "the gather mask under-reached" (measured
+    # 2026-10-17 at 2 and 8 ranks on the Mesh path before it partitioned; no
+    # test exercises the direct path). The gather here needs the second layer
+    # too. See planning file: underworld.md.
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
     mark[np.flatnonzero(d_sheet < (clearance + 1.0) * h_vertex)
          + vS - pStart] = 1

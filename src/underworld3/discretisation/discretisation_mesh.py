@@ -7960,6 +7960,10 @@ class Mesh(Stateful, uw_object):
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
         child._surface_info = info
+        if getattr(self, "_embedded_surfaces", None):
+            child._embedded_surfaces = set(self._embedded_surfaces)
+        from underworld3.utilities.addon_partition import inherit_provenance
+        inherit_provenance(child, self)
 
         # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
         # mesh, so this mesh plus everything below it is a valid coarse tail and
@@ -8288,13 +8292,30 @@ class Mesh(Stateful, uw_object):
                 "add_conforming_sheet is 3-D; in 2-D use "
                 "add_conforming_surface.")
 
-        boundaries = self._boundaries_with(name)
+        # In parallel the add-on is partitioned for the sheet first — the
+        # placement's own mask with two growth layers, on this level and on
+        # every add-on level below it — so the carve and the fill run on a
+        # rank-interior region and the placement gathers nothing; a split of
+        # the sheet later moves nothing either.
+        host = self
+        if self.dm.getComm().getSize() > 1:
+            from underworld3.utilities.addon_partition import (mark_sheets,
+                                                               partition_addon)
+            host = partition_addon(
+                self, mark_sheets([(points, triangles)], clearance), layers=2,
+                verbose=verbose)
+        boundaries = host._boundaries_with(name)
         cut_dm, info = place_sheet(
-            self.dm, points, triangles, label=name,
+            host.dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
             verbose=verbose, setback=setback, size=size)
-        return self._adopt_cut_child(cut_dm, boundaries, info,
-                                     mg_coarsening_ratio, verbose)
+        child = host._adopt_cut_child(cut_dm, boundaries, info,
+                                      mg_coarsening_ratio, verbose)
+        # a placed sheet is a fault surface to be: every later partition
+        # keeps it whole (addon_partition.embedded_surface_names)
+        child._embedded_surfaces = (
+            set(getattr(host, "_embedded_surfaces", ()) or ()) | {name})
+        return child
 
     def extrude(self, thickness, layers=2, base="Base", surface="Surface",
                 qdegree=None, verbose=False):
@@ -8332,11 +8353,10 @@ class Mesh(Stateful, uw_object):
         crossings are represented as OFFSET segments (a one-to-two-cell
         ligament). The result inherits a MESH-OWNED geometric-MG tail (the
         parent's coarse levels, the cut mesh finest — a cut is the same
-        grid re-represented); a parent without one yields a standalone
-        mesh — no tail, since
-        the coarse levels do not carry the fault (see
-        :meth:`add_conforming_surface`); solvers take their
-        algebraic-multigrid defaults.
+        grid re-represented): the parent's registered tail, or the coarse
+        levels of a parent built with ``refinement >= 1``. In parallel the
+        add-on is partitioned once for the faults before the cut
+        (``utilities.addon_partition``), so nothing moves afterwards.
 
         ``cut=False`` labels the mesh edges already on each polyline (the
         embedded spines of a placed band); ``across_seams=True`` then
@@ -8371,40 +8391,27 @@ class Mesh(Stateful, uw_object):
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve
-        # with the cut mesh as the finest level. The static background
-        # levels serve unchanged; the add-on levels are split too (above).
-        # Without this every solver on a split mesh fell to GAMG unless it
-        # called set_custom_fmg by hand. The FAC zone is NOT inherited: a
+        # with the cut mesh as the finest level (fault_split.add_fault hands
+        # them to the cut child — partitioned with it in parallel). The static
+        # background levels serve unchanged; the add-on levels are split too,
+        # each on its own partition, which the add-on partition made the
+        # finest's: nothing is moved here. The FAC zone is NOT inherited: a
         # split fault needs no patch (the keying ruling).
-        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        if (own_tail is not None
-                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
-            tail = list(own_tail)
-            # a placed band's spines (cut=False) have no counterpart on the
-            # levels, which were never placed: only a CUT fault is replayed
-            if split_levels and cut:
-                from underworld3.utilities.fault_mg import (
-                    addon_level_indices, split_tail_levels)
-                idx = addon_level_indices(tail)
-                if idx:
-                    split = split_tail_levels([tail[k] for k in idx],
-                                              child._fault_specs,
-                                              verbose=verbose)
-                    if self.dm.getComm().getSize() > 1:
-                        # each level's star onto the rank holding the finest's,
-                        # so the transfers locate the band rank-locally
-                        from underworld3.utilities.fault_mg import (
-                            colocate_split_level, fault_star_owner)
-                        target = fault_star_owner(child)
-                        split = [colocate_split_level(m, target)
-                                 if getattr(m, "_fault_point_pairs", None) else m
-                                 for m in split]
-                    for k, m in zip(idx, split):
-                        tail[k] = m
+        tail = getattr(child, "_custom_mg_coarse_meshes", None)
+        # a placed band's spines (cut=False) have no counterpart on the
+        # levels, which were never placed: only a CUT fault is replayed
+        if tail is not None and split_levels and cut:
+            from underworld3.utilities.fault_mg import (
+                addon_level_indices, split_tail_levels)
+            tail = list(tail)
+            idx = addon_level_indices(tail)
+            if idx:
+                split = split_tail_levels([tail[k] for k in idx],
+                                          child._fault_specs,
+                                          verbose=verbose)
+                for k, m in zip(idx, split):
+                    tail[k] = m
             child._custom_mg_coarse_meshes = tail
-            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
-                                               "barycentric")
-            child._custom_mg_fac_zone = None
         return child
 
 

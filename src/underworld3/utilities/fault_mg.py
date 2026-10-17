@@ -359,6 +359,162 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     Call = np.concatenate(hit_cols) if len(hit_cols) > 1 else hit_cols[0]
 
     # --- assemble owned rows ---------------------------------------------- #
+    return _assemble_owned_rows(nodes, Wall, Call, l2g_f, fstart, fend, cstart,
+                                cend, ncomp, nb, comm)
+
+
+def locate_in_cells_exhaustive(points, vxy, cv):
+    """:func:`locate_in_cells`, widening the search for every point still outside
+    its candidate. On a graded mesh a large cell's centroid can be farther from a
+    point inside it than many small neighbours' centroids are, so the nearest
+    sixteen can all miss: the misses are retried against the nearest 128 and
+    1024, and what still misses is tested against every cell, one point at a
+    time (memory one cell table, not points times cells). Returns
+    ``(cell, lam)``; a point inside no cell keeps its best candidate with
+    ``lam.min() < -_INSIDE_TOL``."""
+    cell, lam = locate_in_cells(points, vxy, cv)
+    if cv.shape[0] == 0:
+        return cell, lam
+    for k in (128, 1024):
+        miss = np.flatnonzero(lam.min(axis=1) < -_INSIDE_TOL)
+        if miss.size == 0:
+            return cell, lam
+        c2, l2 = locate_in_cells(points[miss], vxy, cv, k=k)
+        better = l2.min(axis=1) > lam[miss].min(axis=1)
+        cell[miss[better]] = c2[better]
+        lam[miss[better]] = l2[better]
+    V = vxy[cv]
+    for k in np.flatnonzero(lam.min(axis=1) < -_INSIDE_TOL):
+        lam_all = _barycentric(np.repeat(points[k][None, :], cv.shape[0], axis=0), V)
+        best = int(np.argmax(lam_all.min(axis=1)))
+        if lam_all[best].min() > lam[k].min():
+            cell[k], lam[k] = best, lam_all[best]
+    return cell, lam
+
+
+# --------------------------------------------------------------------------- #
+#  The provenance transfer: the one pair the add-on partition moved
+# --------------------------------------------------------------------------- #
+def provenance_source(coarse, fine):
+    """The mesh that records, per cell, where its parent on ``coarse`` lives —
+    ``fine`` itself or an ancestor of it (the add-on level as the add-on
+    partition left it, before the cut and the split re-represented it; see
+    ``addon_partition``). ``None`` when the pair carries no such record."""
+    m = fine
+    while m is not None:
+        if (getattr(m, "_addon_below", None) is coarse
+                and getattr(m, "_addon_parent", None) is not None):
+            return m
+        m = getattr(m, "parent", None)
+    return None
+
+
+def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
+                                 coarse_coords, fine_coords, coarse_layout,
+                                 fine_layout, ncomp, comm):
+    """The cell-located transfer for a pair the add-on partition moved apart,
+    built from the recorded parent relation instead of a search.
+
+    ``pre`` carries the record (``provenance_source``): every cell of ``pre``
+    knows the rank and local index of its parent on ``coarse``. It is ``fine``
+    itself whenever the record was inherited when ``fine`` was made (the cut,
+    the placement and the split call ``addon_partition.inherit_provenance``),
+    and then a node's own cell is the recorded cell. Otherwise the fine cell's
+    centroid is located in ``pre`` (rank-local, since the surgery was, and a
+    centroid is never on the fault). The recorded parent is then fetched — its node columns and vertex and node
+    coordinates — through one star forest. Co-resident parents are a local
+    copy; the moved units' parents come from their ranks. Nothing is
+    all-gathered. ``coarse_layout`` / ``fine_layout`` are
+    :class:`custom_mg.LevelLayout`.
+    """
+    m4 = comm.tompi4py()
+    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
+    fn = np.asarray(fine._cell_node_indices(degree, continuous))
+    Xc = np.asarray(coarse_coords)
+    Xf = np.asarray(fine_coords)
+    vxy_c, cv_c = _cell_vertex_table(coarse)
+    vxy_f, cv_f = _cell_vertex_table(fine)
+    vxy_p, cv_p = _cell_vertex_table(pre)
+    l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+    fstart, fend = fine_layout.rstart, fine_layout.rend
+    cstart, cend = coarse_layout.rstart, coarse_layout.rend
+    n_f = Xf.shape[0]
+    nb = cn.shape[1]
+    nv = cv_c.shape[1]
+    dim = Xc.shape[1]
+
+    owner = _fine_cell_of_node(fn, n_f)
+    if m4.allreduce(int((owner < 0).sum())):
+        raise RuntimeError("fault_mg: a fine node belongs to no cell")
+    mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
+    fcent = vxy_f[cv_f].mean(axis=1)
+    if pre is fine:
+        # the record is on this very mesh: a node's cell IS the recorded cell
+        pcell = owner[mine]
+        plam = np.zeros((mine.size, nv))
+    elif mine.size:
+        pcell, plam = locate_in_cells_exhaustive(fcent[owner[mine]], vxy_p, cv_p)
+    else:
+        pcell = np.zeros(0, dtype=np.int64)
+        plam = np.zeros((0, nv))
+    n_out = int(m4.allreduce(int((plam.min(axis=1) < -_INSIDE_TOL).sum())
+                             if mine.size else 0))
+    if n_out:
+        raise RuntimeError(
+            f"fault_mg: {n_out} fine node(s) lie in no cell of the level as the "
+            f"add-on partition left it; the surgery was not rank-local.")
+    parent = np.asarray(pre._addon_parent, dtype=np.int32)[pcell]   # (nm, 2)
+
+    # one fetch per distinct parent: node columns, node coordinates and
+    # vertex coordinates, packed as doubles (indices exact below 2**53)
+    uniq, inv = np.unique(parent, axis=0, return_inverse=True)
+    inv = inv.ravel()
+    width = nb * ncomp + nb * dim + nv * dim
+    nc_loc = cv_c.shape[0]
+    root = np.empty((nc_loc, width))
+    root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, -1)
+    root[:, nb * ncomp: nb * ncomp + nb * dim] = Xc[cn].reshape(nc_loc, -1)
+    root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, -1)
+    sf = PETSc.SF().create(comm=comm)
+    sf.setGraph(nc_loc, None, np.ascontiguousarray(uniq, dtype=np.int32))
+    sf.setUp()
+    got = np.zeros((uniq.shape[0], width))
+    unit = MPI.DOUBLE.Create_contiguous(width)
+    unit.Commit()
+    sf.bcastBegin(unit, root, got, MPI.REPLACE)
+    sf.bcastEnd(unit, root, got, MPI.REPLACE)
+    unit.Free()
+    sf.destroy()
+    cols_u = np.rint(got[:, : nb * ncomp]).astype(np.int64).reshape(-1, nb, ncomp)
+    Xn_u = got[:, nb * ncomp: nb * ncomp + nb * dim].reshape(-1, dim)
+    V_u = got[:, nb * ncomp + nb * dim:].reshape(-1, dim)
+    # the fetched parents as a virtual coarse mesh: cell k has nodes
+    # k*nb .. and vertices k*nv ..
+    nu = uniq.shape[0]
+    cn_u = np.arange(nu * nb).reshape(nu, nb)
+    cv_u = np.arange(nu * nv).reshape(nu, nv)
+    lam = _barycentric(Xf[mine], V_u[cv_u[inv]]) if mine.size else np.zeros((0, nv))
+    W = (_node_weights(Xf[mine], inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
+         if mine.size else np.zeros((0, nb)))
+    gcols = cols_u[inv]                                        # (nm, nb, ncomp)
+
+    global last_transfer_stats
+    last_transfer_stats = {
+        "owned_nodes": int(m4.allreduce(int(mine.size))),
+        "fetched_remote": int(m4.allreduce(int((uniq[:, 0] != m4.rank).sum()))),
+        "local_coarse_cells": m4.allgather(int(nc_loc)),
+        "local_fine_cells": m4.allgather(int(cv_f.shape[0])),
+    }
+    return _assemble_owned_rows(mine, W, gcols, l2g_f, fstart, fend, cstart,
+                                cend, ncomp, nb, comm)
+
+
+def _assemble_owned_rows(nodes, Wall, Call, l2g_f, fstart, fend, cstart, cend,
+                         ncomp, nb, comm):
+    """The owned rows of a reduced->reduced MPIAIJ transfer from per-node
+    weights ``Wall (n, nb)`` on global coarse columns ``Call (n, nb, ncomp)``."""
+    m4 = comm.tompi4py()
     nloc_f = fend - fstart
     nloc_c = cend - cstart
     rows_l, cols_l, vals_l = [], [], []
@@ -431,7 +587,10 @@ def split_tail_levels(levels, fault_specs, verbose=False):
     for k in range(len(levels) - 1, -1, -1):
         level = levels[k]
         try:
-            split = add_fault(level, entries, verbose=verbose, **kwargs)
+            # the level arrives partitioned with the finest (the add-on
+            # partition ran once, for every level): no second partition
+            split = add_fault(level, entries, verbose=verbose, partition=False,
+                              **kwargs)
         except (ValueError, RuntimeError, NotImplementedError) as exc:
             warnings.warn(
                 f"fault_mg: the fault(s) could not be carried onto add-on "
@@ -442,89 +601,6 @@ def split_tail_levels(levels, fault_specs, verbose=False):
         split._custom_mg_coarse_meshes = None
         out[k] = split
     return out
-
-
-def _fault_star_cells(mesh):
-    """The local cells of every split fault's star on ``mesh``: cells incident to a
-    vertex of a Plus or Minus facet, plus one growth layer (the same two-layer
-    rule as the split's own redistribution, so a moved star stays
-    rank-interior). Returns local cell indices (``cS``-based)."""
-    dm = mesh.dm
-    cS, cE = dm.getHeightStratum(0)
-    fS, fE = dm.getHeightStratum(1)
-    vS, vE = dm.getDepthStratum(0)
-    names = [b.name for b in mesh.boundaries]
-    verts = set()
-    for name in getattr(mesh, "_fault_point_pairs", {}):
-        for side in ("Plus", "Minus"):
-            lab_name = f"{name}{side}"
-            if lab_name not in names:
-                continue
-            lab = dm.getLabel(lab_name)
-            value = mesh.boundaries[lab_name].value
-            if lab and lab.getStratumSize(value) > 0:
-                for f in lab.getStratumIS(value).getIndices():
-                    if fS <= int(f) < fE:
-                        verts.update(int(q) for q in dm.getTransitiveClosure(int(f))[0]
-                                     if vS <= int(q) < vE)
-
-    def star(vs):
-        cells = set()
-        for v in vs:
-            cells.update(int(q) for q in dm.getTransitiveClosure(v, useCone=False)[0]
-                         if cS <= int(q) < cE)
-        return cells
-
-    cells = star(verts)
-    ring = set()
-    for c in cells:
-        ring.update(int(q) for q in dm.getTransitiveClosure(c)[0] if vS <= int(q) < vE)
-    cells |= star(ring)
-    return np.array(sorted(c - cS for c in cells), dtype=np.int64)
-
-
-def fault_star_owner(mesh):
-    """The rank holding most of the split faults' star on ``mesh`` (collective)."""
-    comm = mesh.dm.getComm().tompi4py()
-    counts = np.asarray(comm.allgather(int(_fault_star_cells(mesh).size)))
-    return int(np.argmax(counts))
-
-
-def colocate_split_level(level, target):
-    """Move a split level's fault star (two layers, as the split gathers it) onto
-    rank ``target`` — the rank holding the FINEST level's star — carrying the
-    pairing through as labels. The split gathers each level's star onto the
-    rank already holding most of it, which differs from level to level, and a
-    transfer between stars on different ranks locates most of the fault-band
-    nodes remotely (measured: 48 % of the finest nodes at np = 2, 58 % at
-    np = 8). With the stars on one rank the misses are the band's rim only.
-    Returns ``level`` itself when nothing moves. Collective."""
-    from underworld3.utilities.fault_split import redistribute_by_assignment
-
-    comm = level.dm.getComm().tompi4py()
-    if comm.size == 1:
-        return level
-    cS, cE = level.dm.getHeightStratum(0)
-    assign = np.full(cE - cS, comm.rank, dtype=np.int32)
-    assign[_fault_star_cells(level)] = target
-    dm, pairs, dropped = redistribute_by_assignment(
-        level.dm, assign, pairs=dict(level._fault_point_pairs))
-    if dm is level.dm:
-        return level
-    if dropped:
-        raise RuntimeError(
-            f"fault_mg: {dropped} pair(s) lost co-locating a level's fault star")
-    moved = uw.discretisation.Mesh(
-        dm, simplex=level.dm.isSimplex(), qdegree=level.qdegree,
-        coordinate_system_type=level.CoordinateSystem.coordinate_type,
-        boundaries=level.boundaries, verbose=False)
-    moved._fault_point_pairs = pairs
-    for attr in ("_fault_traces", "_fault_specs", "_fault_surfaces", "_fault_seam_normals"):
-        if getattr(level, attr, None) is not None:
-            setattr(moved, attr, getattr(level, attr))
-    moved._custom_mg_coarse_meshes = None
-    moved._mg_static = False
-    return moved
 
 
 # --------------------------------------------------------------------------- #
