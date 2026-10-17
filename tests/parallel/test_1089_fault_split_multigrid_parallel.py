@@ -21,44 +21,21 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from fault_fixtures import faulted_2d, shear_fault_solve
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(1800)]
 
-TIP_A, TIP_B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 SERIAL_PEAK_SLIP = 0.159581          # k = 2, frictionless, solve tolerance 1e-6
 
 
 def _faulted_box(k, split_levels=True):
-    base = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, refinement=1,
-        qdegree=2)
-    pts = np.column_stack([np.linspace(TIP_A[0], TIP_B[0], 9),
-                           np.linspace(TIP_A[1], TIP_B[1], 9), np.zeros(9)])
-    guide = uw.meshing.Surface("guide", base, pts)
-    guide.discretize()
-    child = base.adapt(guide.refinement_metric_function(
-        h_near=0.05 / 2**k, h_far=0.05, width=0.08, profile="linear"), max_levels=k)
-    return child.add_fault([("Flt", np.vstack([TIP_A, TIP_B]))],
-                           split_levels=split_levels)
+    return faulted_2d(k, split_levels=split_levels)
 
 
 def _solve(mesh):
-    x, y = mesh.X
-    stokes = uw.systems.Stokes(mesh)
-    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
-    stokes.tolerance = 1.0e-6
-    stokes.petsc_use_pressure_nullspace = True
-    for side in ("Top", "Bottom", "Left", "Right"):
-        stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
-    stokes.add_fault_bc(0, "Flt")
-    stokes.solve()
-    info = stokes._rotated_freeslip_info
-    from underworld3.utilities.fault_contact import fault_slip
-    _s, V, _leak = fault_slip(stokes, "Flt", info)
-    local = float(np.abs(V).max()) if len(V) else 0.0
-    return info, float(uw.mpi.comm.allreduce(local, op=max))
+    _stokes, info, slip = shear_fault_solve(mesh)
+    return info, slip
 
 
 def test_split_levels_converge_like_serial():

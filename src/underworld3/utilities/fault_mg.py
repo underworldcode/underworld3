@@ -364,15 +364,28 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
 
 
 def locate_in_cells_exhaustive(points, vxy, cv):
-    """:func:`locate_in_cells`, then every point still outside its candidate is
-    tested against EVERY cell. On a graded mesh a large cell's centroid can be
-    farther from a point inside it than many small neighbours' centroids are,
-    so the nearest-centroid candidates can all miss. Returns ``(cell, lam)``;
-    a point inside no cell keeps its best candidate with ``lam.min() < 0``."""
+    """:func:`locate_in_cells`, widening the search for every point still outside
+    its candidate. On a graded mesh a large cell's centroid can be farther from a
+    point inside it than many small neighbours' centroids are, so the nearest
+    sixteen can all miss: the misses are retried against the nearest 128 and
+    1024, and what still misses is tested against every cell, one point at a
+    time (memory one cell table, not points times cells). Returns
+    ``(cell, lam)``; a point inside no cell keeps its best candidate with
+    ``lam.min() < -_INSIDE_TOL``."""
     cell, lam = locate_in_cells(points, vxy, cv)
+    if cv.shape[0] == 0:
+        return cell, lam
+    for k in (128, 1024):
+        miss = np.flatnonzero(lam.min(axis=1) < -_INSIDE_TOL)
+        if miss.size == 0:
+            return cell, lam
+        c2, l2 = locate_in_cells(points[miss], vxy, cv, k=k)
+        better = l2.min(axis=1) > lam[miss].min(axis=1)
+        cell[miss[better]] = c2[better]
+        lam[miss[better]] = l2[better]
+    V = vxy[cv]
     for k in np.flatnonzero(lam.min(axis=1) < -_INSIDE_TOL):
-        lam_all = _barycentric(np.repeat(points[k][None, :], cv.shape[0], axis=0),
-                               vxy[cv])
+        lam_all = _barycentric(np.repeat(points[k][None, :], cv.shape[0], axis=0), V)
         best = int(np.argmax(lam_all.min(axis=1)))
         if lam_all[best].min() > lam[k].min():
             cell[k], lam[k] = best, lam_all[best]
@@ -402,13 +415,13 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     """The cell-located transfer for a pair the add-on partition moved apart,
     built from the recorded parent relation instead of a search.
 
-    ``pre`` is the fine level as the partition left it (``provenance_source``):
-    every cell of ``pre`` knows the rank and local index of its parent on
-    ``coarse``. A fine node's cell has a centroid, the centroid lies in one
-    local cell of ``pre`` (the surgery that made ``fine`` from ``pre`` was
-    rank-local, and a centroid is never on the fault, so this is the same
-    side-aware rule as :func:`cell_located_transfer_parallel`), and that
-    cell's parent is fetched — its node columns and vertex and node
+    ``pre`` carries the record (``provenance_source``): every cell of ``pre``
+    knows the rank and local index of its parent on ``coarse``. It is ``fine``
+    itself whenever the record was inherited when ``fine`` was made (the cut,
+    the placement and the split call ``addon_partition.inherit_provenance``),
+    and then a node's own cell is the recorded cell. Otherwise the fine cell's
+    centroid is located in ``pre`` (rank-local, since the surgery was, and a
+    centroid is never on the fault). The recorded parent is then fetched — its node columns and vertex and node
     coordinates — through one star forest. Co-resident parents are a local
     copy; the moved units' parents come from their ranks. Nothing is
     all-gathered. ``coarse_layout`` / ``fine_layout`` are
@@ -432,11 +445,15 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     dim = Xc.shape[1]
 
     owner = _fine_cell_of_node(fn, n_f)
-    if (owner < 0).any():
+    if m4.allreduce(int((owner < 0).sum())):
         raise RuntimeError("fault_mg: a fine node belongs to no cell")
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
     fcent = vxy_f[cv_f].mean(axis=1)
-    if mine.size:
+    if pre is fine:
+        # the record is on this very mesh: a node's cell IS the recorded cell
+        pcell = owner[mine]
+        plam = np.zeros((mine.size, nv))
+    elif mine.size:
         pcell, plam = locate_in_cells_exhaustive(fcent[owner[mine]], vxy_p, cv_p)
     else:
         pcell = np.zeros(0, dtype=np.int64)
@@ -485,7 +502,6 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     global last_transfer_stats
     last_transfer_stats = {
         "owned_nodes": int(m4.allreduce(int(mine.size))),
-        "misses": 0,
         "fetched_remote": int(m4.allreduce(int((uniq[:, 0] != m4.rank).sum()))),
         "local_coarse_cells": m4.allgather(int(nc_loc)),
         "local_fine_cells": m4.allgather(int(cv_f.shape[0])),

@@ -116,15 +116,15 @@ nothing; the replay of the faults on the add-on levels (`split_tail_levels`) arr
 on levels already partitioned with the finest.
 
 Every add-on pair is therefore co-partitioned exactly and the cell-located transfer
-finds every node in its local coarse cells. The one pair the partition separates —
-the base's finest static level against the first add-on level — carries the exact
-relation: each level records, per cell, where its parent on the level below lives
-(provenance riding the move through `distributeField`, the new addresses resolved
-through two star forests), and `provenance_transfer_parallel` fetches each fine
-cell's parent through one star forest. Nothing is located across partitions and
-nothing is all-gathered. The transfer's record on the hierarchy
-(`level_transfer_stats`) shows `misses` zero on every pair and `fetched_remote` on
-the moved one.
+finds every node in its local coarse cells (`level_transfer_stats` records `misses`
+zero; the query exchange still runs, with nothing to send). The one pair the
+partition separates — the base's finest static level against the first add-on
+level — carries the exact relation: each level records, per cell, where its parent
+on the level below lives (provenance riding the move through `distributeField`, the
+new addresses resolved through two star forests), and `provenance_transfer_parallel`
+fetches each fine cell's parent through one star forest (its record carries
+`fetched_remote`). Nothing on that pair is located across partitions; a fine node in
+no recorded cell is a collective refusal.
 
 A coincident pairing rides a redistribution as a pair of DM labels
 (`fault_split.stamp_point_pairs` / `collect_point_pairs`), and a per-cell field as
@@ -196,6 +196,4 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
   welded. A network whose junction ligament is one fine cell wide closes at the next
   coarser spacing (the two labels meet), so such a network gets split levels only where
   the ligament survives — on `test_0866`'s kissing Y with one add-on level, none.
-- Co-locating the add-on levels with the finest in parallel is an optimisation the
-  query path makes unnecessary for correctness; not measured at scale.
 - The one-rank build of `extrude_sheet` bounds the layer size by one rank's memory.

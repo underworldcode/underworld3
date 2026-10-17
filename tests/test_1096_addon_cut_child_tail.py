@@ -28,23 +28,16 @@ def _refined_box(refinement):
         refinement=refinement, qdegree=2)
 
 
-def _cells(mesh):
-    cS, cE = mesh.dm.getHeightStratum(0)
-    return cE - cS
-
-
 @pytest.mark.parametrize("refinement", [1, 2])
 def test_cut_child_takes_the_base_coarse_levels(refinement):
     base = _refined_box(refinement)
     child = base.add_fault([("Flt", TRACE)])
     tail = child._custom_mg_coarse_meshes
+    # the levels are the base's own static wraps, coarsest first, the cut
+    # mesh re-representing the finest one
+    wraps = base._coarse_level_meshes()
     assert tail is not None and len(tail) == refinement, tail
-    # the levels are the base's own static wraps, coarsest first: each one
-    # about a quarter of the next (2-D uniform refinement), none of them the
-    # cut finest
-    sizes = [_cells(m) for m in tail] + [_cells(child)]
-    for coarse, fine in zip(sizes[:-1], sizes[1:]):
-        assert 3 * coarse <= fine <= 5 * coarse + 64, sizes
+    assert all(t is w for t, w in zip(tail, wraps[:-1]))
     assert all(getattr(m, "_mg_static", False) for m in tail)
 
 

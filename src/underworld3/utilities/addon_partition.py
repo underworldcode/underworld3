@@ -13,8 +13,9 @@ transfer, gather and diagnostic carried its own cross-partition handling.
 assignment computed on the finest level and applied to every add-on level
 through the parent-cell relation, so the add-on levels stay co-partitioned
 with each other exactly, the fault regions are rank-interior, and the load is
-balanced by peeling non-fault cells from the owner rank to its underloaded
-neighbours. The base levels never move (load fixes go on the child). Every
+balanced by diffusion over the seams: any rank heavier than a neighbour passes
+it cells that belong to no fault region, the owner's farthest first. The base
+levels never move (load fixes go on the child). Every
 level carries, per cell, the cell it came from and its parent on the level
 below, so the one pair that is no longer co-partitioned — the base's finest
 level against the first add-on level — is an exact relation to fetch, not a
@@ -30,12 +31,12 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
+# A fine cell's centroid lies inside its parent for nested refinement; the
+# tolerance is the cell locator's own, so a point it accepts is accepted here.
+from underworld3.utilities.fault_mg import _INSIDE_TOL
 
 __all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets"]
 
-# A fine cell's centroid lies inside its parent for nested refinement; the
-# tolerance absorbs the round-off of the barycentric solve.
-_INSIDE_TOL = 1e-9
 
 
 def _allreduce(comm, values, op=MPI.SUM):
@@ -106,12 +107,17 @@ def mark_polylines(polylines):
         X = dm.getCoordinatesLocal().array.reshape(
             -1, dm.getCoordinateDim())[: vE - vS]
         h_cell = np.asarray(cell_diameters(dm))
-        h_vertex = np.zeros(vE - vS)
+        from underworld3.utilities.place_surface import _propagate_vertex
+        h_chart = np.zeros(pEnd - pStart)
         for c in range(cS, cE):
             for q in dm.getTransitiveClosure(c)[0]:
                 if vS <= int(q) < vE:
-                    i = int(q) - vS
-                    h_vertex[i] = max(h_vertex[i], h_cell[c - cS])
+                    i = int(q) - pStart
+                    h_chart[i] = max(h_chart[i], h_cell[c - cS])
+        # a seam vertex sees only its local cells: the largest incident cell
+        # over every rank, so the reach is a function of the mesh alone
+        h_chart = _propagate_vertex(dm, h_chart, MPI.MAX, np.maximum)
+        h_vertex = h_chart[vS - pStart: vE - pStart]
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
         for k, poly in enumerate(polylines, start=1):
             near = np.flatnonzero(_segment_distance(X[:, :2], poly) <= h_vertex)
@@ -147,6 +153,78 @@ def mark_sheets(sheets, clearance):
     return marks
 
 
+def embedded_surface_names(mesh):
+    """The fault surfaces ``mesh`` already carries, as boundary names: every
+    split fault (its own label and its ``Plus`` / ``Minus`` sides) and every
+    sheet placed into it or an ancestor (``_embedded_surfaces``, recorded by
+    the placement). These are glued by every later partition, so a second
+    fault or sheet never breaks up the first. A material interface or a
+    domain-spanning internal boundary is not among them."""
+    names = set(getattr(mesh, "_embedded_surfaces", ()) or ())
+    for name in (getattr(mesh, "_fault_point_pairs", {}) or {}):
+        names.update((name, f"{name}Plus", f"{name}Minus"))
+    return names
+
+
+def _embedded_surface_marks(mesh, names, first_id):
+    """Chart-length ids gluing the named surfaces: ``first_id + j`` on every
+    vertex of a facet of the ``j``-th name (sorted). ``names`` is the same on
+    every rank, so the ids are."""
+    dm = mesh.dm
+    fS, fE = dm.getHeightStratum(1)
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    ids = np.zeros(pEnd - pStart, dtype=np.int32)
+    present = {b.name: int(b.value) for b in mesh.boundaries}
+    for j, name in enumerate(names):
+        if name not in present or not dm.hasLabel(name):
+            continue
+        lab = dm.getLabel(name)
+        if lab.getStratumSize(present[name]) == 0:
+            continue
+        for f in lab.getStratumIS(present[name]).getIndices():
+            if fS <= int(f) < fE:
+                for q in dm.getTransitiveClosure(int(f))[0]:
+                    if vS <= int(q) < vE:
+                        i = int(q) - pStart
+                        ids[i] = max(ids[i], first_id + j)
+    return ids
+
+
+def inherit_provenance(child, host):
+    """Record on ``child`` — a mesh made from ``host`` by a cut, a placement or
+    a split — the parent of each of its cells on the level ``host`` records
+    them against, while the two geometries still agree. The surgery was
+    rank-local (the partition made the region interior), so every child
+    centroid lies in a local host cell. Recording it here, rather than
+    locating later, keeps the relation exact after the child's nodes move.
+    A no-op when ``host`` carries no record (serial, or never partitioned).
+    Collective."""
+    from underworld3.utilities.fault_mg import locate_in_cells_exhaustive
+    parent = getattr(host, "_addon_parent", None)
+    if parent is None or getattr(host, "_addon_below", None) is None:
+        return
+    comm = child.dm.getComm().tompi4py()
+    fcent, _v, cvf = _cell_centroids(child)
+    _c, vxy_h, cv_h = _cell_centroids(host)
+    cell = np.zeros(cvf.shape[0], dtype=np.int64)
+    n_bad = 0
+    if cvf.shape[0]:
+        if cv_h.shape[0] == 0:
+            n_bad = cvf.shape[0]
+        else:
+            cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
+            n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+    n_bad = int(comm.allreduce(n_bad))
+    if n_bad:
+        raise RuntimeError(
+            f"addon_partition: {n_bad} cell(s) of a surgery's result lie in no "
+            f"local cell of the mesh it was made from; the surgery was not "
+            f"rank-local.")
+    child._addon_parent = np.asarray(parent, dtype=np.int64)[cell]
+    child._addon_below = host._addon_below
+
+
 # --------------------------------------------------------------------------- #
 #  The parent relation and the units
 # --------------------------------------------------------------------------- #
@@ -178,6 +256,45 @@ def _parent_cells_local(coarse, fine):
             f"on the level below; the add-on levels are not co-partitioned "
             f"(an add-on is partitioned once, as adapt made it).")
     return cell
+
+
+def _base_parent_addresses(base, lev, comm):
+    """``(n_cells, 2)``: rank and local cell of each cell's parent on ``base``.
+
+    Located in this rank's base cells while the two are co-partitioned (as
+    ``adapt`` leaves them). Once a partition has moved the add-on, the pair is
+    not co-partitioned any more and the relation is READ, not searched: the
+    mesh that recorded it (``fault_mg.provenance_source`` — ``lev`` itself, or
+    the level a cut or a placement re-represented) is located locally, the
+    surgery having been rank-local, and its recorded parent is taken. That is
+    what lets a second sheet, or a fault after a material interface, be
+    partitioned on top of a first."""
+    from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
+                                                provenance_source)
+    pre = provenance_source(base, lev)
+    if pre is None:
+        local = _parent_cells_local(base, lev)
+        return np.column_stack([np.full(local.shape[0], comm.rank,
+                                        dtype=np.int64), local])
+    if pre is lev:
+        return np.asarray(lev._addon_parent, dtype=np.int64).copy()
+    fcent, _v, cvf = _cell_centroids(lev)
+    _c, vxy_p, cv_p = _cell_centroids(pre)
+    cell = np.zeros(cvf.shape[0], dtype=np.int64)
+    n_bad = 0
+    if cvf.shape[0]:
+        if cv_p.shape[0] == 0:
+            n_bad = cvf.shape[0]
+        else:
+            cell, lam = locate_in_cells_exhaustive(fcent, vxy_p, cv_p)
+            n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+    n_bad = int(comm.allreduce(n_bad))
+    if n_bad:
+        raise RuntimeError(
+            f"addon_partition: {n_bad} cell(s) lie in no local cell of the "
+            f"level their provenance is recorded on; the surgery since the "
+            f"last partition was not rank-local.")
+    return np.asarray(pre._addon_parent, dtype=np.int64)[cell]
 
 
 def _levels_of(mesh):
@@ -216,6 +333,8 @@ def _face_other_rank(dm):
     try:
         nroots, ilocal, iremote = sf.getGraph()
     except (ValueError, TypeError):
+        # Sanctioned: petsc4py raises on a forest with no graph set, which is
+        # a rank that shares no point; every face is then interior.
         return other[fS - pStart: fE - pStart]
     leaf = np.full(pEnd - pStart, -1, dtype=np.int64)
     if ilocal is not None and len(ilocal):
@@ -312,8 +431,10 @@ def _peel_balance(dm, unit_of_cell, assign_unit, weight, unit_region,
             gap[s] = room
             chosen = []
             for u in cand:
-                if room <= 0:
-                    break
+                # a unit heavier than twice the room left would overshoot the
+                # gap and could be traded back next sweep
+                if room < 0.5 * weight[u]:
+                    continue
                 chosen.append((int(u), float(weight[u])))
                 room -= weight[u]
                 taken[u] = True
@@ -385,7 +506,7 @@ def _resolve_parents(below, lev):
     sf_get.bcastEnd(unit, directory, parent_new, MPI.REPLACE)
     sf_get.destroy()
     unit.Free()
-    if (parent_new < 0).any():
+    if comm.tompi4py().allreduce(int((parent_new < 0).sum())):
         raise RuntimeError(
             "addon_partition internal: a cell's parent was not found after "
             "the move.")
@@ -401,7 +522,7 @@ def _moved_wrap(level, dm, fields, pairs):
         boundaries=level.boundaries, verbose=False)
     moved._mg_static = False
     for attr in ("_fault_traces", "_fault_specs", "_fault_surfaces",
-                 "_fault_seam_normals"):
+                 "_fault_seam_normals", "_embedded_surfaces"):
         if getattr(level, attr, None) is not None:
             setattr(moved, attr, getattr(level, attr))
     if pairs is not None:
@@ -433,8 +554,10 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         belongs to (:func:`mark_polylines`, :func:`mark_sheets`,
         :func:`mark_labels`). It is evaluated on EVERY add-on level, because
         the same fault's cell star reaches further on a coarser level and the
-        split replayed there needs its own star rank-interior. Regions whose
-        stars touch merge.
+        split replayed there needs its own star rank-interior. Every fault
+        surface the levels already carry (:func:`embedded_surface_names`) is
+        glued as well, so an add-on can be partitioned again for a further
+        fault without breaking up the first. Regions whose stars touch merge.
     layers : int
         Growth layers beyond the marked vertices' cell star: one makes every
         point of a star cell unshared (the split's seam rule); the 3-D carve's
@@ -457,17 +580,17 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     comm = mesh.dm.getComm().tompi4py()
     if comm.size == 1:
         return mesh
-    if getattr(mesh, "_addon_partition", None) is not None:
-        raise NotImplementedError(
-            "addon_partition: this add-on is already partitioned. Partition "
-            "once, with every fault of the network in one call.")
-
     base, static, addon = _levels_of(mesh)
     levels = addon + [mesh]
-    parents = []
-    for l, lev in enumerate(levels):
-        below = base if l == 0 else levels[l - 1]
-        parents.append(None if below is None else _parent_cells_local(below, lev))
+    # the add-on levels are co-partitioned with each other (adapt made them
+    # so, or an earlier partition did): their parents are local. The first
+    # add-on level's parent on the base is local too unless an earlier
+    # partition moved it, in which case the recorded address is used
+    parents = [None]
+    for l in range(1, len(levels)):
+        parents.append(_parent_cells_local(levels[l - 1], levels[l]))
+    base_parent = (None if base is None
+                   else _base_parent_addresses(base, levels[0], comm))
     cS0, cE0 = levels[0].dm.getHeightStratum(0)
     n_units = cE0 - cS0
     unit_of = [np.arange(n_units, dtype=np.int64)]
@@ -475,12 +598,22 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         unit_of.append(unit_of[l - 1][parents[l]])
     weight = np.bincount(unit_of[-1], minlength=n_units).astype(float)
 
-    # fault regions on every level, lifted to units
+    # fault regions on every level, lifted to units: the faults asked for,
+    # and every interior surface the levels already carry (placed or split
+    # by an earlier call), so a second partition keeps those whole
+    marks = [np.asarray(region_marks(lev.dm), dtype=np.int32) for lev in levels]
+    n_asked = int(comm.allreduce(max((int(m.max()) for m in marks if m.size),
+                                     default=0), op=MPI.MAX))
+    glued = sorted(set().union(*comm.allgather(
+        set().union(*[embedded_surface_names(lev) for lev in levels]))))
+    for l, lev in enumerate(levels):
+        marks[l] = np.maximum(marks[l],
+                              _embedded_surface_marks(lev, glued, n_asked + 1))
     unit_region = np.zeros(n_units, dtype=np.int32)
     pairs = set()
     for l, lev in enumerate(levels):
         cell_region, _canon, _regions = _region_cells(
-            lev.dm, np.asarray(region_marks(lev.dm)), layers=layers)
+            lev.dm, marks[l], layers=layers)
         for c in np.flatnonzero(cell_region):
             u = unit_of[l][c]
             k = int(cell_region[c])
@@ -495,6 +628,11 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     regions = sorted(set(canon.values()))
     local = np.array([float(weight[unit_region == k].sum()) for k in regions])
     counts = np.asarray(comm.allgather(local)).reshape(comm.size, len(regions))
+    # an id no level marked anywhere (a fault outside the mesh, a glued
+    # surface absent from these levels) is not a region
+    present = counts.sum(axis=0) > 0
+    regions = [k for k, keep in zip(regions, present) if keep]
+    counts = counts[:, present]
     assign = np.full(n_units, comm.rank, dtype=np.int32)
     owner = {}
     for j, k in enumerate(regions):
@@ -520,7 +658,17 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     load_after = _allreduce(comm, np.bincount(assign, weights=weight,
                                               minlength=comm.size))
     n_moved_units = int(comm.allreduce(int((assign != comm.rank).sum())))
+    record = {
+        "regions": len(regions), "owners": owner,
+        "region_weight": {k: float(counts[:, j].sum())
+                          for j, k in enumerate(regions)},
+        "units_moved": n_moved_units, "sweeps": n_sweeps,
+        "load_before": load_before.tolist(), "load_after": load_after.tolist(),
+    }
     if n_moved_units == 0:
+        # already as the partition would leave it: the mesh stands, with the
+        # record of the decision
+        mesh._addon_partition = record
         if verbose:
             uw.pprint(f"[addon_partition] {len(regions)} fault region(s) "
                       f"already rank-interior, load within tolerance "
@@ -528,16 +676,31 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
                       f"nothing moves")
         return mesh
 
+    # Every unit has a cell on every level, so a rank that receives no unit
+    # holds nothing on any level. A DM with every point on one rank reads as
+    # not distributed, and the Mesh constructor would partition it afresh,
+    # which the provenance cannot ride: refuse instead (collectively).
+    owners_used = int(np.count_nonzero(_allreduce(
+        comm, np.bincount(assign, minlength=comm.size))))
+    if owners_used < 2:
+        raise RuntimeError(
+            "addon_partition: the whole add-on would sit on one rank (its "
+            "fault regions cover it); run on fewer ranks or refine the base.")
+
     # apply the one assignment to every level, provenance riding along
     moved = []
     for l, lev in enumerate(levels):
         cS, cE = lev.dm.getHeightStratum(0)
         n = cE - cS
         a_level = assign[unit_of[l]]
-        parent_rank = np.full(n, comm.rank if parents[l] is not None else -1,
-                              dtype=np.int64)
-        parent_local = (parents[l] if parents[l] is not None
-                        else np.full(n, -1, dtype=np.int64))
+        if l > 0:
+            parent_rank = np.full(n, comm.rank, dtype=np.int64)
+            parent_local = parents[l]
+        elif base_parent is not None:
+            parent_rank, parent_local = base_parent[:, 0], base_parent[:, 1]
+        else:
+            parent_rank = np.full(n, -1, dtype=np.int64)
+            parent_local = np.full(n, -1, dtype=np.int64)
         self_rank = np.full(n, comm.rank, dtype=np.int64)
         self_local = np.arange(n, dtype=np.int64)
         fields = [parent_rank, parent_local, self_rank, self_local]
@@ -549,8 +712,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
                 f"addon_partition: {dropped} fault pair(s) split across ranks "
                 f"by the move on level {l}")
         # every unit has a cell on every level, so a moved unit moves every
-        # level: the shell partition never hands the input back here
-        assert dm is not lev.dm
+        # level and the shell partition never hands the input back here
         moved.append(_moved_wrap(lev, dm, new_fields, new_pairs))
     for l, lev in enumerate(moved):
         below = base if l == 0 else moved[l - 1]
@@ -574,13 +736,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         out._custom_mg_coarse_meshes = list(static) + moved[:-1]
         out._custom_mg_builder = getattr(mesh, "_custom_mg_builder", "barycentric")
         out._custom_mg_fac_zone = getattr(mesh, "_custom_mg_fac_zone", None)
-    out._addon_partition = {
-        "regions": len(regions), "owners": owner,
-        "region_weight": {k: float(counts[:, j].sum())
-                          for j, k in enumerate(regions)},
-        "units_moved": n_moved_units, "sweeps": n_sweeps,
-        "load_before": load_before.tolist(), "load_after": load_after.tolist(),
-    }
+    out._addon_partition = record
     if verbose:
         uw.pprint(f"[addon_partition] {len(regions)} fault region(s) to ranks "
                   f"{sorted(owner.values())}; {n_moved_units} unit(s) moved "

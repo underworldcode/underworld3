@@ -7960,6 +7960,10 @@ class Mesh(Stateful, uw_object):
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
         child._surface_info = info
+        if getattr(self, "_embedded_surfaces", None):
+            child._embedded_surfaces = set(self._embedded_surfaces)
+        from underworld3.utilities.addon_partition import inherit_provenance
+        inherit_provenance(child, self)
 
         # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
         # mesh, so this mesh plus everything below it is a valid coarse tail and
@@ -8305,8 +8309,13 @@ class Mesh(Stateful, uw_object):
             host.dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
             verbose=verbose, setback=setback, size=size)
-        return host._adopt_cut_child(cut_dm, boundaries, info,
-                                     mg_coarsening_ratio, verbose)
+        child = host._adopt_cut_child(cut_dm, boundaries, info,
+                                      mg_coarsening_ratio, verbose)
+        # a placed sheet is a fault surface to be: every later partition
+        # keeps it whole (addon_partition.embedded_surface_names)
+        child._embedded_surfaces = (
+            set(getattr(host, "_embedded_surfaces", ()) or ()) | {name})
+        return child
 
     def extrude(self, thickness, layers=2, base="Base", surface="Surface",
                 qdegree=None, verbose=False):
@@ -8344,11 +8353,10 @@ class Mesh(Stateful, uw_object):
         crossings are represented as OFFSET segments (a one-to-two-cell
         ligament). The result inherits a MESH-OWNED geometric-MG tail (the
         parent's coarse levels, the cut mesh finest — a cut is the same
-        grid re-represented); a parent without one yields a standalone
-        mesh — no tail, since
-        the coarse levels do not carry the fault (see
-        :meth:`add_conforming_surface`); solvers take their
-        algebraic-multigrid defaults.
+        grid re-represented): the parent's registered tail, or the coarse
+        levels of a parent built with ``refinement >= 1``. In parallel the
+        add-on is partitioned once for the faults before the cut
+        (``utilities.addon_partition``), so nothing moves afterwards.
 
         ``cut=False`` labels the mesh edges already on each polyline (the
         embedded spines of a placed band); ``across_seams=True`` then

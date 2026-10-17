@@ -3309,8 +3309,9 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # rounds take whole vertex stars at the shell, one more diameter out): on
     # a partitioned adapt child the grown cavity touched a shared point and
     # the surgery rank raised "the gather mask under-reached" (measured
-    # 2026-10-17 at 2 and 8 ranks; tests/parallel/test_1097 reproduces it
-    # through the old Mesh path). The direct path needs the second layer too.
+    # 2026-10-17 at 2 and 8 ranks on the Mesh path before it partitioned; no
+    # test exercises the direct path). The gather here needs the second layer
+    # too. See planning file: underworld.md.
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
     mark[np.flatnonzero(d_sheet < (clearance + 1.0) * h_vertex)
          + vS - pStart] = 1

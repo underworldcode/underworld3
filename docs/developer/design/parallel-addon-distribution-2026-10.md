@@ -94,44 +94,53 @@ places with nothing gathered and splits with nothing moved (test_1097).
 surgery, applied to every add-on level through the parent-cell relation, once.** The
 base levels never move. Concretely:
 
-1. **Units.** The unit of assignment is a cell of the base's finest level together
-   with all its descendants on the add-on levels (nested refinement: every add-on
-   cell has exactly one parent on the level below, found by centroid containment
-   while the levels are still co-partitioned, which is exact for a bisection
-   hierarchy). Every cell of a unit goes to the same rank, so every add-on pair stays
-   co-partitioned exactly, and the base-to-add-on pair is co-partitioned except
-   where a unit moved.
+1. **Units.** The unit of assignment is a cell of the coarsest add-on level together
+   with all its descendants on the finer add-on levels (the finest mesh itself when
+   there is no add-on level below it). Every add-on cell has one parent on the level
+   below, found by centroid containment while the levels are co-partitioned (exact
+   for a bisection hierarchy). Every cell of a unit goes to the same rank, so every
+   add-on pair stays co-partitioned exactly, and the base-to-add-on pair is
+   co-partitioned except where a unit moved.
 2. **Fault regions.** The cells the surgery will touch — the star of the vertices
-   within reach of the fault geometry, plus two growth layers so every point the
-   carve or the split touches is unshared — are lifted to units and glued: a region
-   is one indivisible block, sent to the rank already holding most of it, or left
-   where it is when it is already interior. Regions whose shells touch merge (the
+   within reach of the fault geometry, plus growth layers so every point the carve
+   or the split touches is unshared (one for a cut, two for a 3-D carve) — are
+   marked on every add-on level, lifted to units and glued: a region is one
+   indivisible block, sent to the rank already holding most of it, or left where it
+   is when it is already interior. Every interior surface the levels already carry
+   is glued the same way, so a second partition (a second sheet, a fault after a
+   material interface) keeps the first whole. Regions whose shells touch merge (the
    existing `_gather_regions` rule). The split's pairs and the fault cell fans are
    therefore rank-local by construction, and never because a later pass moved them.
-3. **Balance.** The owner of a region is overloaded by the region's weight (its
-   finest cells). Units that belong to no region are peeled from an overloaded rank
-   to an underloaded neighbour across their common seam, one layer per sweep, until
-   every rank is within a tolerance of the mean or no seam can give. The load fix is
-   on the child; the base's partition is read, never written.
+3. **Balance.** By diffusion over the seams: in each sweep any rank heavier than a
+   face-neighbouring rank by more than the tolerance offers it units that belong to
+   no region, up to half the difference, the cells farthest from the faults first,
+   and a receiver's intake is capped by the largest half-gap offered to it. Sweeps
+   stop when every rank is within the tolerance of the mean or nothing can move. The
+   load fix is on the child; the base's partition is read, never written.
 4. **Provenance rides.** Each level carries, per cell, its parent cell on the level
    below and its own pre-move identity, as cell-wise fields moved by
-   `distributeField`. After the move every fine cell knows where its parent now
-   lives, and the transfer for every pair — the add-on pairs and the one
-   base-to-add-on pair — is the coarse cell's Lagrange basis evaluated at the fine
-   node (the existing dual-basis evaluation of `fault_mg`), with the parent's node
-   columns and vertex coordinates fetched through one star forest. Co-partitioned
-   pairs fetch locally; the base boundary fetches the moved regions' parents from
-   their ranks. No point location across partitions, no all-gathered query cloud.
+   `distributeField`; two star forests then give every cell its parent's current
+   address. The add-on pairs are co-partitioned and keep the existing cell-located
+   transfer, which now finds every node locally (its query exchange still runs as a
+   collective, with nothing to send). The base-to-add-on pair is built by
+   `provenance_transfer_parallel`: the coarse cell's Lagrange basis evaluated at the
+   fine node (the dual-basis evaluation of `fault_mg`), with the parent's node
+   columns and coordinates fetched through one star forest. Its contract is a
+   collective refusal if any fine node lies in no cell of the level the provenance
+   is recorded on.
 5. **Surgery afterwards.** Cut, placement and split run on the partitioned levels
-   and move nothing; their seam tests become assertions of the precondition. A level
-   created by surgery inherits provenance from the cells it re-represents (the split
-   is one-to-one; a cut cell or a fill cell takes the pre-surgery cell holding its
-   centroid, a local test since the region is rank-interior).
+   and move nothing; the split's seam test becomes a collective refusal. A level
+   created by surgery is related to the level it re-represents by locating its
+   cell centroids there (a local test, since the region is rank-interior), and that
+   level's record gives the parent on the base.
 
-What this retires: `colocate_split_level`, `_colocate_level` and the per-level
-`_redistribute_fault_interior` calls; the cross-partition query path of the transfer
-builder becomes unreachable for an add-on built this way and is kept only for a
-hierarchy registered by hand (`set_custom_fmg` with independently built meshes).
+What this retires: `colocate_split_level` and the per-level fault-interior moves of
+the cut, placement and split pipelines. Still in place, outside this change:
+`_colocate_level` in `custom_mg.adopt_hierarchy`, which the placed-band route
+(`FaultNetwork.build` with the thin volume, `place_surface`'s ladder) uses because
+`place_thin_volume` still gathers its own regions; the per-mesh fault-interior move
+of `extrude_sheet`; and the node-cloud builders' cross-partition path, reachable for
+a pair with an empty column on a hierarchy registered by hand.
 
 ## What was weighed and rejected
 
