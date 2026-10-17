@@ -40,6 +40,9 @@ ap.add_argument("--h_fault", type=float, default=0.05, help="cell size on the fa
 ap.add_argument("--grading", type=float, default=0.0, help="distance over which the size grades back to --h (0: 8 h_fault)")
 ap.add_argument("--mesher", default="gmsh", choices=["gmsh", "adapt", "place"])
 ap.add_argument("--adapt_levels", type=int, default=2, help="adapt-on-top levels toward the fault")
+ap.add_argument("--refinement", type=int, default=2, help="gmsh route: uniform refinement levels of the patch box (its multigrid tail)")
+ap.add_argument("--tail", default="hierarchy", choices=["hierarchy", "boxes"],
+                help="gmsh route: the multigrid tail is the native refinement hierarchy, or plain coarse boxes registered with set_custom_fmg (comparison)")
 ap.add_argument("--clearance", type=float, default=0.9, help="sheet placement clearance (0.9 on a bisection child)")
 ap.add_argument("--allow_gamg", action="store_true", help="accept a GAMG velocity block (no multigrid tail); otherwise refused")
 ap.add_argument("--Lx", type=float, default=3.0)
@@ -70,6 +73,7 @@ ap.add_argument("--stress_transport", default="none", choices=["none", "eulerian
                 help="flavour of the Maxwell stress history. Default none: the displacement per step is far below a cell, so transport is a cost not physics, and a traced-back query across the split fault reads the other side")
 ap.add_argument("--surface_grid", type=int, default=40, help="points along x of the surface displacement grid")
 ap.add_argument("--verbose", action="store_true")
+ap.add_argument("--profile", action="store_true", help="cProfile the time loop on rank 0 (profile.txt in the run directory)")
 args = ap.parse_args()
 
 from mpi4py import MPI                          # noqa: E402  (collective bookkeeping only)
@@ -89,11 +93,11 @@ def log(*a):
 # ----------------------------------------------------------------------------- mesh, fault, split
 # Three routes to a blind vertical fault whose rim is strictly inside the box:
 #  gmsh  — BoxInternalPatch: the rectangle is a conforming patch of a gmsh mesh graded
-#          to the fault. No cavity, so a two-cell setback works. The mesh has no
-#          multigrid tail of its own, so two plain boxes at 2h and 4h are REGISTERED
-#          as the coarse tail (set_custom_fmg, non-nested, barycentric transfers) and
-#          the rotated solve takes the custom-P FMG velocity block (measured serially:
-#          3 velocity, 12 pressure iterations, converged). Default.
+#          to the fault, built at 2^k the target size and refined k times: no cavity
+#          (a two-cell setback works), the patch stays conforming, and the k coarse
+#          levels are the multigrid tail — nested, so the transfers are exact. The
+#          split keeps that tail and the rotated solve takes the custom-P FMG
+#          velocity block. Default.
 #  adapt — a box with one refinement level, adapt-on-top toward the fault column, the
 #          sheet placed by carving a cavity, the patch split; the tail rides through
 #          by itself. The cavity reaches ~2 cell diameters above the sheet top, so
@@ -151,12 +155,18 @@ def sheet_triangulation(cell):
 
 t0 = time.perf_counter()
 if args.mesher == "gmsh":
+    # the patch box at (2^k) x the target sizes, refined k times: the patch stays
+    # conforming under uniform refinement, the grading survives it, and the k
+    # coarse levels are the multigrid tail (nested, exact transfers)
+    f = 2 ** args.refinement
     patch = np.array([[xa, yf, zb], [xb, yf, zb], [xb, yf, ztop_fault], [xa, yf, ztop_fault]])
-    cut = uw.meshing.BoxInternalPatch(cellSize=h, minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
+    # the grading distance is PHYSICAL (gmsh's default is 8 x the patch size, which at
+    # the coarse size made the fine region four times wider: 78k cells for 16k)
+    cut = uw.meshing.BoxInternalPatch(cellSize=f * h, minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
                                       patch_points=patch, patch_name="Fault",
-                                      patch_cellSize=hf if hf < h else None,
-                                      grading_distance=args.grading if args.grading > 0 else None,
-                                      qdegree=3)
+                                      patch_cellSize=f * hf if hf < h else None,
+                                      grading_distance=args.grading if args.grading > 0 else 8.0 * hf,
+                                      refinement=args.refinement, qdegree=3)
 elif args.mesher == "adapt":
     base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
                                               cellSize=2.0 * h, regular=False, qdegree=3, refinement=1)
@@ -223,12 +233,12 @@ if args.side_bc == "uxuz0":
     stokes.add_dirichlet_bc((0.0, None, 0.0), "Front")
     stokes.add_dirichlet_bc((0.0, None, 0.0), "Back")
 
-if args.mesher == "gmsh":
+if args.mesher == "gmsh" and args.tail == "boxes":
     from underworld3.utilities.custom_mg import set_custom_fmg
     coarse_tail = [uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(args.Lx, args.Ly, args.H),
                                                       cellSize=c, regular=False, qdegree=3) for c in (4.0 * h, 2.0 * h)]
     set_custom_fmg(stokes, coarse_tail, field_id=0)
-    log(f"coarse tail registered: {[comm.allreduce(int(m.dm.getHeightStratum(0)[1] - m.dm.getHeightStratum(0)[0]), op=MPI.SUM) for m in coarse_tail]} cells")
+    log("tail: plain coarse boxes registered (set_custom_fmg) in place of the native hierarchy")
 
 if args.fault_law == "coulomb":
     fault_contact.add_coulomb_fault_bc(stokes, args.fault_mu, "Fault", sigma_n="reaction",
@@ -301,6 +311,11 @@ records = []
 t = 0.0
 log(f"De {args.De}, S {args.S}, N {args.N}, phi {args.phi}, law {args.fault_law} mu {args.fault_mu} Tb {args.fault_Tb}; "
     f"dt {dt}, {nsteps} steps")
+_prof = None
+if args.profile and rank0:
+    import cProfile
+    _prof = cProfile.Profile()
+    _prof.enable()
 for k in range(nsteps):
     tk = time.perf_counter()
     t_new = t + dt
@@ -339,4 +354,9 @@ for k in range(nsteps):
     if rank0:
         with open(os.path.join(args.out, "records.json"), "w") as f:
             json.dump(records, f)
+if _prof is not None:
+    import pstats
+    _prof.disable()
+    with open(os.path.join(args.out, "profile.txt"), "w") as f:
+        pstats.Stats(_prof, stream=f).sort_stats("cumulative").print_stats(60)
 log("done")
