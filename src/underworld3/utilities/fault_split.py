@@ -1752,19 +1752,26 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
                coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
                qdegree=mesh.qdegree,
                boundaries=Enum("boundaries", members), verbose=False)
-    # TODO(BUG): the cut child drops the parent's multigrid tail. A base built
-    # with refinement >= 1 carries its coarse levels natively and
-    # Mesh._adopt_cut_child (the add_conforming_surface / add_conforming_sheet
-    # route) adopts them; this constructor does not, so every solver on an
-    # add_fault() child of a refined base fell back to GAMG (measured
-    # 2026-10-17: 2-D box, refinement=2, add_fault -> tail 0, velocity KSP at
-    # its 200-iteration cap). Adopt the tail here as _adopt_cut_child does.
     cut.parent = mesh
     cut._relationship_kind = "refinement"
     cut._refine_dofs_coincide = False
     cut.regions = mesh.regions
     cut._parent_mesh_version = mesh._mesh_version
     mesh._registered_children.add(cut)
+    # A cut re-represents the parent's finest grid with the fault conformed,
+    # so the coarse levels of a base built with refinement >= 1 serve the cut
+    # mesh as its tail, the cut mesh being the finest level (the rule
+    # split_fault and Mesh._adopt_cut_child apply). A parent that owns an
+    # add-on tail hands it over in Mesh.add_fault, where the add-on levels are
+    # split too. Without this every solver on an add_fault child of a refined
+    # base fell back to algebraic multigrid (measured 2026-10-17: 2-D box,
+    # refinement=2, velocity KSP at its 200-iteration cap).
+    if (getattr(mesh, "_custom_mg_coarse_meshes", None) is None
+            and len(getattr(mesh, "dm_hierarchy", []) or []) > 1):
+        cut._custom_mg_coarse_meshes = list(mesh._coarse_level_meshes()[:-1])
+        cut._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                         "barycentric")
+        cut._custom_mg_fac_zone = None
 
     out = cut
     for name, poly in segments:
