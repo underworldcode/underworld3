@@ -8371,40 +8371,27 @@ class Mesh(Stateful, uw_object):
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve
-        # with the cut mesh as the finest level. The static background
-        # levels serve unchanged; the add-on levels are split too (above).
-        # Without this every solver on a split mesh fell to GAMG unless it
-        # called set_custom_fmg by hand. The FAC zone is NOT inherited: a
+        # with the cut mesh as the finest level (fault_split.add_fault hands
+        # them to the cut child — partitioned with it in parallel). The static
+        # background levels serve unchanged; the add-on levels are split too,
+        # each on its own partition, which the add-on partition made the
+        # finest's: nothing is moved here. The FAC zone is NOT inherited: a
         # split fault needs no patch (the keying ruling).
-        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        if (own_tail is not None
-                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
-            tail = list(own_tail)
-            # a placed band's spines (cut=False) have no counterpart on the
-            # levels, which were never placed: only a CUT fault is replayed
-            if split_levels and cut:
-                from underworld3.utilities.fault_mg import (
-                    addon_level_indices, split_tail_levels)
-                idx = addon_level_indices(tail)
-                if idx:
-                    split = split_tail_levels([tail[k] for k in idx],
-                                              child._fault_specs,
-                                              verbose=verbose)
-                    if self.dm.getComm().getSize() > 1:
-                        # each level's star onto the rank holding the finest's,
-                        # so the transfers locate the band rank-locally
-                        from underworld3.utilities.fault_mg import (
-                            colocate_split_level, fault_star_owner)
-                        target = fault_star_owner(child)
-                        split = [colocate_split_level(m, target)
-                                 if getattr(m, "_fault_point_pairs", None) else m
-                                 for m in split]
-                    for k, m in zip(idx, split):
-                        tail[k] = m
+        tail = getattr(child, "_custom_mg_coarse_meshes", None)
+        # a placed band's spines (cut=False) have no counterpart on the
+        # levels, which were never placed: only a CUT fault is replayed
+        if tail is not None and split_levels and cut:
+            from underworld3.utilities.fault_mg import (
+                addon_level_indices, split_tail_levels)
+            tail = list(tail)
+            idx = addon_level_indices(tail)
+            if idx:
+                split = split_tail_levels([tail[k] for k in idx],
+                                          child._fault_specs,
+                                          verbose=verbose)
+                for k, m in zip(idx, split):
+                    tail[k] = m
             child._custom_mg_coarse_meshes = tail
-            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
-                                               "barycentric")
-            child._custom_mg_fac_zone = None
         return child
 
 

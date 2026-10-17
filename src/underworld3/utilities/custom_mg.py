@@ -1507,6 +1507,24 @@ class CustomMGHierarchy:
         comm = solver.dm.comm
         from underworld3.utilities import fault_mg
         for l in range(1, nlev):
+            # The pair the add-on partition moved apart (the base's finest
+            # static level against the first add-on level) carries the exact
+            # parent relation: each fine cell's parent is fetched from its
+            # rank through a star forest, nothing is located across
+            # partitions and nothing is all-gathered. Every other add-on
+            # pair is co-partitioned by the same partition and the
+            # rank-local builders below find every node where it stands.
+            pre = (fault_mg.provenance_source(self.level_meshes[l - 1],
+                                              self.level_meshes[l])
+                   if parallel else None)
+            if pre is not None:
+                P = fault_mg.provenance_transfer_parallel(
+                    self.level_meshes[l - 1], self.level_meshes[l], pre, degree,
+                    continuous, coords[l - 1], coords[l], maps[l - 1], maps[l],
+                    nc, comm)
+                self.level_transfer_stats[l] = fault_mg.last_transfer_stats
+                Ps.append(P)
+                continue
             # Split-level multigrid: every pair touching a split level takes
             # the cell-located transfer. A split COARSE level defeats the
             # node-cloud builders (they triangulate the coarse nodes, and
