@@ -1223,6 +1223,13 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         ``None`` when the file was written without ``petsc_reload=True``.
         """
+        # TODO(BUG): the writer puts the native payload under
+        # /restart/petsc/topologies (Mesh._write_petsc_reload_file, since
+        # 36c01399) while this looks for a top-level "topologies" group, so a
+        # payload written with petsc_reload=True is never found and a split
+        # mesh's read_timestep refuses (tests/test_0864_split_checkpoint_
+        # roundtrip.py::test_roundtrip_keeps_the_two_sides_distinct fails on
+        # feature/tidal-shell too). Found 2026-10-18; not fixed on this branch.
         import h5py
 
         found = None

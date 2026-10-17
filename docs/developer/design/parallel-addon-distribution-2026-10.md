@@ -142,6 +142,50 @@ the cut, placement and split pipelines. Still in place, outside this change:
 of `extrude_sheet`; and the node-cloud builders' cross-partition path, reachable for
 a pair with an empty column on a hierarchy registered by hand.
 
+## The band routes and the direct placement (18 October)
+
+`FaultNetwork.build` (the 3-D band) and `place_fault_ribbon_2d` in gather mode now
+partition before placing, with `mark_band`: a superset of the thin-volume
+placement's own mask, at the placement's reach plus one band width from the band's
+path (the skin lies within a mitred half width of it), with two growth layers. The
+placement then moves nothing, `adopt_hierarchy` keeps the base's own levels under
+the partitioned host instead of co-locating copies of them, and the pair the
+partition separated is read from the recorded provenance (`test_1099`). The ribbon's
+ligament and conform modes mesh across the seams in place and are unchanged.
+
+A direct `place_sheet` call, without the Mesh API's partition, now gathers with two
+growth layers, the rule the partition uses for sheets. With one, the carve's growth
+rounds reached a shared point on a partitioned adapt child and the placement
+refused (`test_1097::test_direct_place_sheet_on_a_partitioned_adapt_child`, shown
+failing before).
+
+## Cost: the per-point loops compiled (18 October)
+
+The partition, the region growth shared with the placement gather, the marking
+rules, the redistribution's per-cell fields, and the mesh's own point-location
+index and per-cell node table walked the mesh one petsc4py call per point.
+`utilities/_plex_topology.pyx` builds the tables they need in one C loop per
+stratum: closures by depth, supports, a per-cell section and its offsets, and each
+cell's dof rows. The loops above them are now array operations. The node-cloud
+transfer builders set one matrix row per Python call; they now assemble once
+(`custom_mg._assemble_node_transfer`). Every converted function was checked against
+its previous version, entry for entry, serially and on four ranks
+(`scripts/sessions/parallel_addon/check_topology_equivalence.py`,
+`check_transfer_assembly.py`); `tests/test_1098` pins the tables to DMPlex's own
+point-by-point answers.
+
+| partition_addon, 4 ranks | cells | before | after | Python calls |
+|---|---|---|---|---|
+| 3-D adapt child, one sheet | 87525 | 6.87 s | 1.35 s | 1.46 M to 48 k |
+| 2-D adapt child, k = 2 | 94910 | 2.94 s | 0.64 s | |
+
+What remains of the 3-D time is mostly PETSc building interpolation matrices for the
+mesh's coordinate tables in the Mesh constructor, in C. A fault split of 19,072
+cells takes 3.6 s, of which the splitter's own per-point Python is about 0.1 s and
+the four Mesh constructions most of the rest; the splitter's whole-mesh rebuild
+(one cone per cell, one callback per point) grows linearly and is the next loop to
+compile if splits at a million cells per rank are needed.
+
 ## What was weighed and rejected
 
 - **Partition the base around the faults at construction.** Perfect co-partition and

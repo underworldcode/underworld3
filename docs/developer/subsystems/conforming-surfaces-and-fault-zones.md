@@ -283,7 +283,8 @@ facets it was placed with. The fill itself rarely needs repair (see above),
 but the composition remains sound.
 
 ```{note}
-Since October 2026 the Mesh API (`add_conforming_sheet`, `add_fault`) partitions the
+Since October 2026 the Mesh API (`add_conforming_sheet`, `add_fault`) and the band
+routes (`FaultNetwork.build`, `place_fault_ribbon_2d` in gather mode) partition the
 add-on for the surface before placing it, so the gather below finds the region
 rank-interior and moves nothing (`info["n_gathered"]` is then zero). The gather is
 what a direct call to `place_sheet` or `place_thin_volume` still does. See

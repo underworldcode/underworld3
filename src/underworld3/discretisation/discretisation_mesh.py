@@ -5685,35 +5685,28 @@ class Mesh(Stateful, uw_object):
         if key in self._cell_node_array:
             return self._cell_node_array[key]
 
-        dmnew = self._basis_coordinate_dm(degree, continuous)
-        section = dmnew.getLocalSection()
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        cdim = self.cdim
+        from underworld3.utilities._plex_topology import closure_dof_rows
 
-        rows = []
-        for cell in range(cStart, cEnd):
-            cell_rows = []
-            for point in dmnew.getTransitiveClosure(cell)[0]:
-                ndof = section.getDof(point) // cdim
-                if ndof:
-                    offset = section.getOffset(point) // cdim
-                    cell_rows.extend(range(offset, offset + ndof))
-            rows.append(cell_rows)
+        dmnew = self._basis_coordinate_dm(degree, continuous)
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        rows = closure_dof_rows(dmnew, dmnew.getLocalSection(),
+                                numpy.arange(cStart, cEnd), self.cdim)
         dmnew.destroy()
 
         expected = comb(degree + self.dim, self.dim)
-        if not self.isSimplex or any(len(r) != expected for r in rows):
+        counts = (rows >= 0).sum(axis=1)
+        if not self.isSimplex or (counts != expected).any():
             # A tensor-product Q_k cell carries (k+1)^dim nodes, so the monomial
             # basis of total degree <= k would not be square against them and
             # the dual-basis construction does not apply. Say so here rather
             # than return a ragged array the caller has to second-guess.
-            got = sorted({len(r) for r in rows})
+            got = sorted(set(counts.tolist()))
             raise NotImplementedError(
                 f"_cell_node_indices needs a simplex mesh: expected "
                 f"{expected} nodes per cell for degree {degree} in {self.dim}D, "
                 f"got {got}")
 
-        self._cell_node_array[key] = numpy.asarray(rows, dtype=numpy.int64)
+        self._cell_node_array[key] = rows.reshape(cEnd - cStart, expected)
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
@@ -5762,13 +5755,10 @@ class Mesh(Stateful, uw_object):
         so the rows returned here are bit-identical to the previous affine
         indexing (verified) and serial navigation is unchanged.
         """
-        coord_section = nav_dm.getCoordinateSection()
-        cdim = self.cdim
-        return numpy.fromiter(
-            (coord_section.getOffset(p) // cdim for p in points),
-            dtype=numpy.int64,
-            count=len(points),
-        )
+        from underworld3.utilities._plex_topology import section_offsets
+
+        return section_offsets(nav_dm.getCoordinateSection(),
+                               numpy.asarray(points, dtype=numpy.int64)) // self.cdim
 
     def _navigation_coords_from_dm(self, nav_dm):
         """Section-consistent LOCAL coordinate rows for a navigation DM.
@@ -5806,84 +5796,45 @@ class Mesh(Stateful, uw_object):
         nav_coords = self._nav_coords
 
         cStart, cEnd = nav_dm.getHeightStratum(0)
-        fStart, fEnd = nav_dm.getHeightStratum(1)
-        pStart, pEnd = nav_dm.getDepthStratum(0)
-        cell_num_faces = self.element.entities[1]
-        cell_num_points = self.element.entities[self.dim]
-        face_num_points = self.element.face_entities[self.dim]
 
-        control_points_list = []
-        control_points_cell_list = []
-        centroids_list = []
+        from underworld3.utilities._plex_topology import closure_points
+
+        # Each cell's vertices in closure order, read as one table. The count
+        # is the closure's own: the element table's vertex count does not
+        # describe a 1-D surface mesh (it gave 4 for a line cell, and the
+        # earlier per-cell slice then took the edge point itself as a vertex).
+        cells = numpy.arange(cStart, cEnd)
+        verts = closure_points(nav_dm, cells, 0)
+        if (verts < 0).any():
+            raise RuntimeError(
+                "_build_kd_tree_index: the cells do not all have the same "
+                "number of vertices")
+        cell_num_points = verts.shape[1]
+        n_cells = cEnd - cStart
+        # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
+        P = nav_coords[self._coord_rows_for_points(nav_dm, verts.ravel())].reshape(
+            n_cells, cell_num_points, self.cdim)
+        centroids = P.mean(axis=1)
         # Largest distance from a cell centroid to one of that cell's own
         # vertices, maximised over local cells. A convex cell is the convex
         # hull of its vertices, so every point of it lies within this distance
         # of its centroid — which makes it the rejection radius the locator
         # needs (see _get_closest_local_cells_internal).
-        cell_reach = 0.0
-
-        for cell, cell_id in enumerate(range(cStart, cEnd)):
-
-            cell_faces = nav_dm.getCone(cell_id)
-            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
-            # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
-            cell_centroid = cell_point_coords.mean(axis=0)
-            centroids_list.append(cell_centroid)
-            cell_reach = max(cell_reach, float(numpy.linalg.norm(
-                cell_point_coords - cell_centroid, axis=1).max()))
-
-            # for face in range(cell_num_faces):
-
-            #     points = self.dm.getTransitiveClosure(cell_faces[face])[0][
-            #         -face_num_points:
-            #     ]
-            #     point_coords = self.data[points - pStart]
-
-            #     face_centroid = point_coords.mean(axis=0)
-            #     cell_centroid = cell_point_coords.mean(axis=0)
-
-            #     # 2D case
-            #     if self.dim == 2:
-            #         vector = point_coords[1] - point_coords[0]
-            #         normal = numpy.array((-vector[1], vector[0]))
-
-            #     # 3D simplex case (probably also OK for hexes)
-            #     else:
-            #         normal = numpy.cross(
-            #             (point_coords[1] - point_coords[0]),
-            #             (point_coords[2] - point_coords[0]),
-            #         )
-
-            #     inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
-            #     normal *= inward_outward / numpy.sqrt(normal.dot(normal))
-
-            #     inside_control_point = -1e-3 * normal + face_centroid
-
-            #     control_points_list.append(inside_control_point)
-            #     control_points_cell_list.append(cell_id)
-            #     control_points_list.append(cell_centroid)
-            #     control_points_cell_list.append(cell_id)
-
-            # Add points near the cell vertices
-
-            for i in range(cell_point_coords.shape[0]):
-                control_points_list.append(0.99 * cell_point_coords[i] + 0.01 * cell_centroid)
-                control_points_cell_list.append(cell_id)
-
-            # Add centroid
-            control_points_list.append(cell_centroid)
-            control_points_cell_list.append(cell_id)
+        cell_reach = (float(numpy.linalg.norm(P - centroids[:, None, :],
+                                              axis=2).max())
+                      if n_cells else 0.0)
+        # Control points: each cell's vertices pulled 1% toward its centroid,
+        # then the centroid itself, cell by cell.
+        control = numpy.concatenate(
+            [0.99 * P + 0.01 * centroids[:, None, :], centroids[:, None, :]], axis=1)
 
         # A rank can own zero cells (small mesh / imbalanced partition):
-        # shape the point arrays explicitly so an empty list becomes a
-        # well-formed (0, cdim) array rather than a 1-D numpy.array([]),
-        # which crashed the KDTree construction (issue #399).
-        self._indexCoords = numpy.array(
-            control_points_list, dtype=numpy.float64).reshape(-1, self.cdim)
+        # shape the point arrays explicitly so an empty table is a
+        # well-formed (0, cdim) array, which the KDTree accepts (issue #399).
+        self._indexCoords = numpy.ascontiguousarray(
+            control, dtype=numpy.float64).reshape(-1, self.cdim)
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        # self._index.build_index()
-        self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
+        self._indexMap = numpy.repeat(cells, cell_num_points + 1).astype(numpy.int64)
 
         # Cell-centroid kdtree, built from the nav-DM cells in the
         # same enumeration order as _indexMap, so the indices it
@@ -5891,8 +5842,8 @@ class Mesh(Stateful, uw_object):
         # We keep _nav_centroids separate from _centroids (which is
         # the main-DM cell centroids set in __init__) so the FE-side
         # ``_centroids`` semantics are unchanged on manifold meshes.
-        self._nav_centroids = numpy.array(
-            centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
+        self._nav_centroids = numpy.ascontiguousarray(
+            centroids, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
@@ -6017,6 +5968,11 @@ class Mesh(Stateful, uw_object):
         pStart, pEnd = nav_dm.getDepthStratum(0)
         num_local_cells = cEnd - cStart
         cell_num_faces = self.element.entities[1]
+        # TODO(BUG): the element table gives 4 vertices for a 1-D surface
+        # mesh's line cell, so a slice of the last cell_num_points closure
+        # points takes the edge point as a vertex there; read the count from
+        # the closure (utilities._plex_topology.closure_points), as
+        # _build_kd_tree_index does.
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
@@ -6237,6 +6193,11 @@ class Mesh(Stateful, uw_object):
         fStart, fEnd = nav_dm.getHeightStratum(1)
         pStart, pEnd = nav_dm.getDepthStratum(0)
         cell_num_faces = self.element.entities[1]
+        # TODO(BUG): the element table gives 4 vertices for a 1-D surface
+        # mesh's line cell, so a slice of the last cell_num_points closure
+        # points takes the edge point as a vertex there; read the count from
+        # the closure (utilities._plex_topology.closure_points), as
+        # _build_kd_tree_index does.
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
@@ -6914,6 +6875,11 @@ class Mesh(Stateful, uw_object):
         if cEnd == cStart:
             return 0.0, 0.0
         cell_num_faces = self.element.entities[1]
+        # TODO(BUG): the element table gives 4 vertices for a 1-D surface
+        # mesh's line cell, so a slice of the last cell_num_points closure
+        # points takes the edge point as a vertex there; read the count from
+        # the closure (utilities._plex_topology.closure_points), as
+        # _build_kd_tree_index does.
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
