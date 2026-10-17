@@ -162,6 +162,13 @@ place for a multiplier.
   overrides of the Schur preconditioner and Krylov type must keep winning.
 - `add_coupled_field` covers volume terms only; a field with boundary terms in split 0
   has no API.
+- Adjoints. `adjoint_solve` transposes the whole composite system, so multipliers and
+  coupled fields are inside it, but its `rhs` / `target` handle velocity and pressure
+  only (no adjoint field for chi or h is returned), and no test covers a coupled field
+  or a multiplier. Any rotated constraint refuses an adjoint (`_adjoint_support`: no
+  transpose path through the rotated Krylov loop). The rotated adjoint is
+  implementable: assemble the transpose by kernels, as the `by_kernels` route does, and
+  apply the same rotation and normal-row constraint to it.
 - The rotated split could take multipliers into its split 1 the way it now takes
   coupled fields into split 0 (`_velocity_split_is`); #464 refuses the pair as a
   configuration error, and nothing has needed it.
