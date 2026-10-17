@@ -212,6 +212,34 @@ log(f"mesh ({args.mesher}) h {h} h_fault {hf}: {ncell} cells after fault + split
     f"multigrid tail {n_tail} levels")
 x, y, z = mesh.X
 
+
+def _plus_side_sign():
+    """+1 when the split's Plus side is the LEFT of the strike (the side n_ref = z x strike
+    points to), -1 otherwise. The splitter labels the sides by a coordinate-order rule,
+    which swaps as the fault rotates (measured: left at 0 and 30 degrees, right at 45 and
+    60), so the jump v+ - v- alone has no fixed sense. Collective: every rank votes with
+    the cells it holds beside Plus facets."""
+    dm = mesh.dm
+    cS, cE = dm.getHeightStratum(0)
+    vS, vE = dm.getDepthStratum(0)
+    Xv = mesh.X.coords
+    n_ref = np.array([-sn, cs])
+    vote = 0.0
+    if "FaultPlus" in mesh.boundaries.__members__:
+        iss = dm.getStratumIS("FaultPlus", mesh.boundaries["FaultPlus"].value)
+        if iss is not None:
+            for fc in iss.getIndices()[:50]:
+                for c in dm.getSupport(fc):
+                    if cS <= c < cE:
+                        vs = [p - vS for p in dm.getTransitiveClosure(c)[0] if vS <= p < vE]
+                        vote += float(np.sign((Xv[vs, :2].mean(axis=0) - (cx, cy)) @ n_ref))
+    total = comm.allreduce(vote, op=MPI.SUM)
+    return 1.0 if total >= 0 else -1.0
+
+
+plus_sign = _plus_side_sign()
+log(f"fault Plus side is the {'left' if plus_sign > 0 else 'right'} of the strike; slip is reported right-lateral positive")
+
 # ----------------------------------------------------------------------------- solver
 v = uw.discretisation.MeshVariable("v", mesh, 3, degree=2)
 p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
@@ -299,7 +327,9 @@ def fault_diagnostics(info, dt):
         pair_tab = {"coords": coords, "cum": np.zeros(len(coords)), "cycle": np.zeros(len(coords)),
                     "act": np.zeros(len(coords))}
     leak = np.einsum("ij,ij->i", jumps, normals)
-    rate = jumps @ strike if len(jumps) else np.zeros(0)  # signed slip rate along strike
+    # right-lateral positive whichever side the splitter called Plus: with Plus on the left
+    # of the strike, the left block moving along +strike relative to the right is right-lateral
+    rate = plus_sign * (jumps @ strike) if len(jumps) else np.zeros(0)
     pair_tab["cum"] += rate * dt
     pair_tab["cycle"] += rate * dt
     pair_tab["act"] += np.abs(rate) * dt
@@ -320,6 +350,7 @@ def save_cycle(step, t):
         np.savez(os.path.join(args.out, f"cycle_{step:04d}.npz"), t=t,
                  pair_coords=pair_tab["coords"], slip_cum=pair_tab["cum"], slip_cycle=pair_tab["cycle"],
                  activity=pair_tab["act"], surf_pts=surf_pts, disp=disp, disp_cycle=disp_cycle,
+                 plus_sign=plus_sign, slip_sense="right-lateral positive",
                  trace=np.array(trace, dtype=float))
     pair_tab["cycle"][:] = 0.0
     disp_cycle[:] = 0.0

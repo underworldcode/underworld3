@@ -30,8 +30,18 @@ if not cycles:
     sys.exit("no cycle files yet")
 last = np.load(cycles[-1])
 
+# slip sense: runs made before the driver oriented the slip (no "plus_sign" in the cycle
+# files) reported v+ - v- along strike, whose sense depends on which side the splitter
+# called Plus: the left of the strike at 0 and 30 degrees, the right at 45 and 60
+# (measured on this geometry). Those runs are corrected here to right-lateral positive.
+_legacy = "plus_sign" not in last.files
+_ang = float(args.get("fault_angle", 0.0))
+SENSE = (-1.0 if (_legacy and _ang >= 45.0) else 1.0)
+if _legacy and _ang not in (0.0, 30.0, 45.0, 60.0):
+    print(f"warning: legacy run at strike {_ang}: slip sense not verified for this angle")
+
 t = np.array([r["t"] for r in rec])
-rate = np.array([r["slip_rate_mean"] for r in rec])
+rate = SENSE * np.array([r["slip_rate_mean"] for r in rec])
 N = np.array([r.get("load_N", np.nan) for r in rec])
 S = np.array([r.get("load_S", np.nan) for r in rec])
 sig_min = np.array([r["sigma_n_min"] for r in rec])
@@ -62,7 +72,7 @@ pc[:, 0] = ((pc[:, 0] - 0.5 * args["Lx"]) * np.cos(_th) + (pc[:, 1] - 0.5 * args
             + 0.5 * args["Lx"])
 for ax, key, title in ((axes[0, 1], "slip_cycle", "net slip over the last cycle"),
                        (axes[1, 0], "slip_cum", "cumulative slip")):
-    val = last[key]
+    val = SENSE * last[key]
     vmax = np.abs(val).max() if len(val) else 1.0
     sc = ax.scatter(pc[:, 0], pc[:, 2], c=val, cmap="RdBu_r", vmin=-vmax, vmax=vmax, s=18)
     ax.set_aspect("equal")
@@ -99,6 +109,6 @@ fig.savefig(out, dpi=130)
 print("wrote", out)
 for c in cycles:
     z = np.load(c)
-    sc_ = z["slip_cycle"]
+    sc_ = SENSE * z["slip_cycle"]
     print(f"  t {float(z['t']):.2f}: net slip per cycle mean {sc_.mean():+.3e} (max {sc_.max():+.3e}, min {sc_.min():+.3e}); "
-          f"cumulative mean {z['slip_cum'].mean():+.3e}; surface net |u| max {np.linalg.norm(z['disp_cycle'][:, :2], axis=1).max():.2e}")
+          f"cumulative mean {SENSE * z['slip_cum'].mean():+.3e}; surface net |u| max {np.linalg.norm(z['disp_cycle'][:, :2], axis=1).max():.2e}")
