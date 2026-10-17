@@ -67,8 +67,17 @@ for riding it.
 
 ## Measured after (same fixtures, the partition in place)
 
-Refined patch box, split: velocity iterations 5 / 6 / 6 at np 2 / 4 / 8 (4 in
-serial), wall 65 / 34 / 25 s against 72 / 38 / 30 s before. Adapt-on-top fault, 2-D,
+Refined patch box, split (`scripts/sessions/parallel_addon/probe_load_3d.py`):
+
+| np | finest P2 nodes per rank (max / mean) | before | velocity iterations | wall |
+|---|---|---|---|---|
+| 2 | 13683 / 16090 (1.08) | 1.16 | 5 | 65 s (72) |
+| 4 | 8170 / 8470 / 7766 / 7697 (1.06) | 1.27 | 6 | 34 s (38) |
+| 8 | 5899 / 4062 / 4007 / 4165 / 3772 / 3642 / 3949 / 3907 (1.41) | 2.12 | 6 | 25 s (30) |
+
+At eight ranks the owner holds exactly the fault region (3524 of 19072 cells) and
+nothing else, after 13 balance sweeps; the region is the indivisible unit. The
+2-D adapt-on-top fault,
 np 2: finest cells per rank 742 / 618 (max / mean 1.09, from 1.38); every add-on pair
 co-partitioned, every recorded parent contains its cell; the base-to-add-on pair
 fetched, no query. At np 4 and 8 on that 1360-cell fixture the fault region itself
