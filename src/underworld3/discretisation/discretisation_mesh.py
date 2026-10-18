@@ -652,8 +652,11 @@ class Mesh(Stateful, uw_object):
         self.qdegree = qdegree
 
         # Populate the element information for this mesh. This is intended to be
-        # human readable because the mesh is quite simple: either quads / tris in 2D
-        # tetrahedra / hexahedra in 3D
+        # human readable because the mesh is quite simple: lines in 1D (a surface
+        # submesh of a 2-D domain), quads / tris in 2D, tetrahedra / hexahedra
+        # in 3D. ``entities[k]`` counts a cell's points of codimension k
+        # (entities[1] its faces, entities[dim] its vertices); face_entities[dim]
+        # counts a face's vertices.
 
         from dataclasses import dataclass
 
@@ -663,7 +666,12 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
-        if self.isSimplex:
+        if self.dim == 1:
+            # A line cell, simplex or not: two faces, which are its two
+            # vertices. Without this a 1-D mesh fell through to the
+            # tetrahedron entry and read 4 faces and 4 vertices per cell.
+            self._element = ElementInfo("line", (1, 2), (0, 1))
+        elif self.isSimplex:
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
             else:
@@ -5968,11 +5976,6 @@ class Mesh(Stateful, uw_object):
         pStart, pEnd = nav_dm.getDepthStratum(0)
         num_local_cells = cEnd - cStart
         cell_num_faces = self.element.entities[1]
-        # TODO(BUG): the element table gives 4 vertices for a 1-D surface
-        # mesh's line cell, so a slice of the last cell_num_points closure
-        # points takes the edge point as a vertex there; read the count from
-        # the closure (utilities._plex_topology.closure_points), as
-        # _build_kd_tree_index does.
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
@@ -6193,11 +6196,6 @@ class Mesh(Stateful, uw_object):
         fStart, fEnd = nav_dm.getHeightStratum(1)
         pStart, pEnd = nav_dm.getDepthStratum(0)
         cell_num_faces = self.element.entities[1]
-        # TODO(BUG): the element table gives 4 vertices for a 1-D surface
-        # mesh's line cell, so a slice of the last cell_num_points closure
-        # points takes the edge point as a vertex there; read the count from
-        # the closure (utilities._plex_topology.closure_points), as
-        # _build_kd_tree_index does.
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
@@ -6875,11 +6873,6 @@ class Mesh(Stateful, uw_object):
         if cEnd == cStart:
             return 0.0, 0.0
         cell_num_faces = self.element.entities[1]
-        # TODO(BUG): the element table gives 4 vertices for a 1-D surface
-        # mesh's line cell, so a slice of the last cell_num_points closure
-        # points takes the edge point as a vertex there; read the count from
-        # the closure (utilities._plex_topology.closure_points), as
-        # _build_kd_tree_index does.
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
