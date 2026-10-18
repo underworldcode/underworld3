@@ -75,6 +75,35 @@ def _parameter_is_zero(par):
         return False
 
 
+def _depends_on_a_field(par):
+    """True when a parameter reads a mesh or swarm variable (the pressure, a damage
+    field, ...): its value is not known until the solve, and can change sign."""
+    from underworld3.function.expressions import unwrap_expression
+    try:
+        value = unwrap_expression(par, mode="nondimensional")
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return any(hasattr(f, "meshvar") for f in sympy.sympify(value).atoms(sympy.Function))
+
+
+def _require_residual_strength(parameters):
+    """Refuse a yield stress that reads a field (Drucker-Prager through the pressure,
+    a cohesion that weakens with damage) floored at zero: where it reaches the floor
+    the plastic viscosity tau_y / (2 edot_II) is exactly zero and the operator is
+    singular (#759). The residual strength must be stated, in stress units; an
+    explicit -oo removes the floor for a yield stress known to stay positive."""
+    floor = parameters.yield_stress_min
+    if floor.sym == -sympy.oo or not _parameter_is_zero(floor):
+        return
+    if _depends_on_a_field(parameters.yield_stress):
+        raise ValueError(
+            "the yield stress depends on a field (the pressure, or a weakening "
+            "variable) and can fall to the zero floor, where the plastic viscosity "
+            "is zero and the operator singular. Set Parameters.yield_stress_min to "
+            "the residual strength (> 0, in stress units), or to -sympy.oo if the "
+            "yield stress is known to stay positive.")
+
+
 def _plastic_rate_strengthening_parameter():
     """The declared plastic rate strengthening, shared by every yielding model's
     Parameters (ViscoPlastic, ViscoElasticPlastic, TransverseIsotropicVEP)."""
@@ -1379,9 +1408,11 @@ class ViscousFlowModel(Constitutive_Model):
         Which SIDE of ``Min`` a family sits on is set by ``yield_anchor``, not by the
         family — see that property.
 
-        Selecting ``"powermean"`` bumps a zero ``yield_softness`` to ``1.0``
-        (``s≈1``, the parameter-free harmonic mean) since ``δ=0`` is the sharp
-        hard-``Min`` limit it only *approaches*.
+        Selecting a family never changes ``yield_softness``: the power mean runs
+        at the δ the model states, ``s = 1/(δ + 0.001)`` -- ``δ = 0`` is
+        ``s = 1000``, close to the exact ``Min``; ``δ = 1`` is the harmonic mean,
+        a distinct, strongly smoothed law (#782: selecting it used to bump a zero
+        δ to 1 silently).
         """
         return getattr(self, "_yield_smoother", "sqrt")
 
@@ -1392,10 +1423,6 @@ class ViscousFlowModel(Constitutive_Model):
                 f"yield_smoother must be 'sqrt' or 'powermean', got '{value}'"
             )
         self._yield_smoother = value
-        if value == "powermean" and getattr(self, "_yield_softness", 0.0) == 0.0:
-            # δ=0 ⇒ s=1/δ=∞ is the singular Min limit; default to the
-            # parameter-free harmonic mean (s=1) instead.
-            self.yield_softness = 1.0
         self._reset()
 
     # --- Smooth lower bounds (viscosity / yield floors) -----------------------------
@@ -1706,7 +1733,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
             lambda inner_self: 0,
-            "Yield stress (DP) minimum cutoff",
+            "Residual strength: the floor of the yield stress (stated, > 0, when the yield stress reads a field)",
             units="Pa",
         )
 
@@ -1751,7 +1778,9 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # than propagated into tau_y/(2 edot_II). (The ±oo defaults elsewhere in
         # Parameters exist so sympy can cancel an unused term away; that trick is
         # wrong here, so this one defaults to 0 — maintainer ruling 2026-07-26.)
-        # An explicit -oo still disables the floor.
+        # An explicit -oo still disables the floor. A yield stress that reads a field
+        # needs a stated, positive floor (_require_residual_strength).
+        _require_residual_strength(inner_self)
         if inner_self.yield_stress_min.sym != -sympy.oo:
             yield_stress = self._apply_floor(
                 inner_self.yield_stress, inner_self.yield_stress_min
@@ -2189,7 +2218,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
             lambda inner_self: 0,
-            "Yield stress (DP) minimum cutoff",
+            "Residual strength: the floor of the yield stress (stated, > 0, when the yield stress reads a field)",
             units="Pa",
         )
 
@@ -2835,7 +2864,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # Guard on the DISABLING sentinel, not on zero: zero is the default and a
         # physically meaningful floor (the yield stress is compared against the second
         # invariant of the stress, so a negative tau_y is meaningless). Only an
-        # explicit -oo turns the floor off.
+        # explicit -oo turns the floor off. A yield stress that reads a field needs a
+        # stated, positive floor (_require_residual_strength).
+        _require_residual_strength(parameters)
         if parameters.yield_stress_min.sym != -sympy.oo:
             # Literal 0 for the default floor, not the parameter atom: sympy cannot
             # fuzzy-compare an opaque UWexpression and Max canonicalisation recurses.
@@ -3910,7 +3941,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
             lambda inner_self: 0,
-            "Yield stress minimum cutoff", units="Pa",
+            "Residual strength: the floor of the yield stress (stated, > 0, when the yield stress reads a field)", units="Pa",
         )
         strainrate_inv_II_min = api_tools.Parameter(
             R"{\dot\varepsilon_{II,\mathrm{min}}}",
@@ -4270,6 +4301,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         tau_y = parameters.yield_stress
         # Guard on the DISABLING sentinel, not on zero — zero is the default and a
         # real floor (a negative yield stress is meaningless against an invariant).
+        # A yield stress that reads a field needs a stated, positive floor.
+        _require_residual_strength(parameters)
         if parameters.yield_stress_min.sym != -sympy.oo:
             # Literal 0 for the default floor (sympy fuzzy-compare recursion on atoms).
             # smooth_max: keeps the floor symbolic, no ordering test (see the note
