@@ -178,7 +178,7 @@ def test_yield_stress_is_floored_at_zero_by_default():
                          [("min", None), ("softmin", "powermean")])
 def test_pressure_dependent_yield_survives_tension(mode, smoother):
     """A Drucker-Prager yield that goes NEGATIVE in tension must not poison the
-    viscosity in any yield mode — the zero floor must catch it first."""
+    viscosity in any yield mode — the residual-strength floor must catch it first."""
     import numpy as np
 
     mesh, stokes = _viscoplastic_stokes(cellSize=0.5)
@@ -187,6 +187,8 @@ def test_pressure_dependent_yield_survives_tension(mode, smoother):
     # C + sin(phi)*p with the pressure driven strongly negative (tension) over part
     # of the domain, so the raw yield stress changes sign inside the mesh.
     cm.Parameters.yield_stress = 1.0 + 0.5 * stokes.p.sym[0]
+    # the residual strength left in tension, stated as a tension cut-off needs (#759)
+    cm.Parameters.yield_stress_min = 0.05
     cm.yield_mode = mode
     if smoother is not None:
         cm.yield_smoother = smoother
@@ -354,3 +356,31 @@ def test_homotopy_refuses_a_stress_history_solver():
 
     with pytest.raises(NotImplementedError, match="stress history"):
         stokes.solve(homotopy=True, timestep=0.1)
+
+
+def test_a_field_dependent_yield_needs_a_residual_strength():
+    """#759: a yield stress that reads a field (here Drucker-Prager through the
+    pressure) floored at zero gives eta_pl = tau_y/(2 edot_II) = 0 wherever it is cut
+    off in tension, a singular operator. It is refused until the residual strength is
+    stated; a stated strength bounds the plastic viscosity below by
+    tau_res/(2 edot_II) > 0; an explicit -oo is the opt-out for a yield stress known
+    to stay positive; a constant yield stress is unaffected."""
+    import numpy as np
+
+    mesh, stokes = _viscoplastic_stokes(cellSize=0.5)
+    cm = stokes.constitutive_model
+    cm.Parameters.yield_stress = 1.0 + 0.5 * stokes.p.sym[0]
+    with pytest.raises(ValueError, match="residual strength"):
+        cm.viscosity
+
+    cm.Parameters.yield_stress_min = 0.05
+    cm.yield_mode = "min"
+    eta = np.asarray(uw.function.evaluate(cm.viscosity.sym, mesh.X.coords)).ravel()
+    assert np.all(np.isfinite(eta)) and np.all(eta > 0.0)
+
+    cm.Parameters.yield_stress_min = -sympy.oo
+    cm.viscosity                                   # the opt-out is honoured
+
+    cm.Parameters.yield_stress_min = 0
+    cm.Parameters.yield_stress = 5.0
+    cm.viscosity                                   # a constant cannot fall to the floor
