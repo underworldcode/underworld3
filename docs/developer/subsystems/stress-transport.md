@@ -27,6 +27,17 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
+```{warning}
+Until 2026-10-18 the nodal history did not carry the stress it stored: its
+commit projection read the history as it was *before* the trace-back, so the
+momentum solve saw the carried stress while the record stayed where it was made
+(`test_1076`, a stress carried by a rigid rotation). Results for the nodal
+flavour in flows where the stress varies along the flow — the confined cylinder
+and its wall layer above among them — were measured on that defect and need
+re-measuring. Benchmarks whose stress is uniform along the flow (the shear box,
+Waters and King) were not affected.
+```
+
 The nodal and integration-point flavours store the stress after every solve by
 the same global L2 projection onto the continuous space. The integration-point
 flavour differs only in where it samples that field: the quadrature points along
@@ -231,4 +242,5 @@ Related: [constitutive models](constitutive-models.md),
 histories, the conformation check, the elastic timestep), `test_1060` (store
 smoothing below Courant one), `test_1061` (the forward flavour on Waters and
 King), `tests/parallel/test_1062` (the forward flavour at np 2), `test_1063`
-(save and restore).
+(save and restore), `test_1076` (a stored stress carried by a rigid rotation:
+the trace-back itself, which the uniform benchmarks cannot see).

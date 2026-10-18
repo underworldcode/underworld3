@@ -22,7 +22,11 @@ pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]   # several hundred solve
 _uid = itertools.count()   # every helper names its variables uniquely: a name reused on a new mesh is a trap
 
 # BASELINES for the cases without a closed form, filled from the baseline run (see the ledger)
-VARYING_SL2, VARYING_EU2, VARYING_EU2_REFINED = 0.87325, 0.87206, 0.87563
+# VARYING_SL2 was 0.87325 until 2026-10-18, pinned while the semi-Lagrangian
+# history stored a stress that did not move (its commit read the history before
+# the trace-back; test_1076). Carried, it is 0.87163: 4.3e-4 from the Eulerian
+# value at the same step, where it was 1.2e-3.
+VARYING_SL2, VARYING_EU2, VARYING_EU2_REFINED = 0.87163, 0.87206, 0.87563
 NS_ORDER2_XY, CN_ORDER1_XY = 0.70726, 0.64668
 
 COMPONENTS = ((0, 0), (0, 1), (1, 1))

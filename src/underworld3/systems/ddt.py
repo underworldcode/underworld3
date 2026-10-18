@@ -3968,16 +3968,6 @@ class SemiLagrangian(_DDtBase):
                             and self._oldframe_X is not None)
         _oldframe_X = self._oldframe_X
 
-        # Refresh the source-snapshot variable so the projection's source
-        # field captures psi_star[0]'s state from BEFORE this step's solve.
-        # Per-step memcpy keeps the snapshot machinery aligned with
-        # psi_star[0] without recompiling the projection.  Routes through
-        # ``.data`` rather than ``.array`` to skip unit conversion (both
-        # variables already live in non-dimensional space) while keeping
-        # the callback sync that pushes values into the underlying PETSc
-        # local Vec.
-        self._refresh_source_snapshot()
-
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
@@ -4038,6 +4028,14 @@ class SemiLagrangian(_DDtBase):
                 i, end_pt_coords, evalf, monotone_mode,
                 _oldframe_active, _oldframe_X,
             )
+
+        # Freeze the projection's source input at psi_star[0] as carried to
+        # this step: the history the solve reads. Taken before the trace, the
+        # stored stress was rebuilt from the field that had not moved, so the
+        # record stayed where it was made. A memcpy, no recompile; ``.data``
+        # skips unit conversion (both variables are non-dimensional) and keeps
+        # the callback sync into the PETSc local Vec.
+        self._refresh_source_snapshot()
 
         # The velocity used this step becomes v^{n-1} for the next
         # step's mid-time extrapolation.
