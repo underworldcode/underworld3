@@ -2299,10 +2299,10 @@ class ViscoElasticPlasticFlowModel(_ExponentialCoefficients, ViscousFlowModel):
         @property
         def ve_effective_viscosity(inner_self):
             r"""Visco-elastic effective viscosity: :math:`\eta_{\mathrm{eff}} = \frac{\eta G \Delta t}{\eta + G \Delta t}`."""
-            # the dt_elastic defaults to infinity, t_relax to zero,
-            # so this should be well behaved in the viscous limit
-
-            if inner_self.shear_modulus == sympy.oo:
+            # An infinite modulus or an infinite step (the default before the
+            # solver sets one) is the viscous limit; written out, either is
+            # inf/inf or 0*inf.
+            if inner_self.shear_modulus == sympy.oo or inner_self.dt_elastic.sym is sympy.oo:
                 return inner_self.shear_viscosity_0
 
             # BDF-k effective viscosity: eta_eff = eta*mu*dt / (c0*eta + mu*dt)
@@ -3934,10 +3934,17 @@ class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotro
 
         @dt_elastic.setter
         def dt_elastic(inner_self, value):
+            model = inner_self._owning_model
+            was_viscous = model._dt.sym is sympy.oo
             if hasattr(value, 'sym'):
-                inner_self._owning_model._dt.sym = value.sym
+                model._dt.sym = value.sym
             else:
-                inner_self._owning_model._dt.sym = value
+                model._dt.sym = value
+            # The tensor is cached, and built from the raw viscosities while the
+            # step is infinite (the viscous limit) but from the step's atom once
+            # it is finite: crossing between the two is a different tensor.
+            if was_viscous != (model._dt.sym is sympy.oo):
+                model._reset()
 
         # Viscosity limits
         shear_viscosity_min = api_tools.Parameter(
@@ -3979,7 +3986,9 @@ class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotro
         def ve_effective_viscosity(inner_self):
             r"""VE effective viscosity using η₁ (fault-plane viscosity)."""
             mu_val = inner_self.shear_modulus.sym if hasattr(inner_self.shear_modulus, 'sym') else inner_self.shear_modulus
-            if mu_val is sympy.oo:
+            # infinite modulus or infinite step: the viscous limit (see the
+            # isotropic model)
+            if mu_val is sympy.oo or inner_self.dt_elastic.sym is sympy.oo:
                 return inner_self.shear_viscosity_1
 
             eta = inner_self.shear_viscosity_1
@@ -4338,7 +4347,7 @@ class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotro
             dt_e = self.Parameters.dt_elastic
             c0 = self._bdf_c0
             mu_val = mu.sym if hasattr(mu, 'sym') else mu
-            if mu_val is sympy.oo:
+            if mu_val is sympy.oo or dt_e.sym is sympy.oo:
                 eta_0 = eta_0_raw
             else:
                 eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
