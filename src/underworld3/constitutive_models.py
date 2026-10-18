@@ -1963,8 +1963,7 @@ class _ExponentialCoefficients:
     def _allocate_exp_coefficients(self):
         """Allocate ``[alpha, phi]`` at the viscous limit (both zero); called once
         the model has its instance number."""
-        self._exp_coeffs = _create_exp_coefficients(
-            self._global_instance_number, owner="constitutive model")
+        self._exp_coeffs = _create_exp_coefficients(self._global_instance_number)
         _update_exp_values(self._exp_coeffs, None, None)
 
     @property
