@@ -20,6 +20,7 @@ represents exactly, so :math:`\\dot\\varepsilon_{II} = R` and the yielded viscos
 
 import numpy as np
 import pytest
+import sympy
 
 import underworld3 as uw
 from underworld3.function.expressions import unwrap_expression
@@ -74,7 +75,11 @@ def _pure_shear_viscosity(tau_pa, floor_spelling):
     C0 = uw.expression(r"C_0", uw.quantity(tau_pa, "Pa"), "cohesion")
     constitutive_model.Parameters.yield_stress = C0 * seed.sym[0]
     constitutive_model.yield_mode = "min"
-    if floor_spelling is not None:
+    if floor_spelling is None:
+        # no floor at all: the yield stress reads a field, so the floor's absence
+        # is stated explicitly (#759)
+        constitutive_model.Parameters.yield_stress_min = -sympy.oo
+    else:
         constitutive_model.Parameters.yield_stress_min = (
             FLOOR_SPELLINGS[floor_spelling](C0, tau_pa))
 
@@ -114,7 +119,6 @@ def test_floor_above_the_yield_stress_is_honoured(floor_spelling):
     assert compiled == pytest.approx(np.full_like(compiled, expected), rel=1.0e-8)
 
 
-@pytest.mark.level_1
 @pytest.mark.tier_b
 def test_sum_of_field_expression_and_quantity_expression_scales_each_operand():
     """The root cause, directly: a sum of a field expression and a dimensional

@@ -373,10 +373,21 @@ def test_a_field_dependent_yield_needs_a_residual_strength():
     with pytest.raises(ValueError, match="residual strength"):
         cm.viscosity
 
-    cm.Parameters.yield_stress_min = 0.05
+    cm.Parameters.yield_stress_min = -0.1         # a negative floor is no residual strength
+    with pytest.raises(ValueError, match="residual strength"):
+        cm.viscosity
+
+    # In tension everywhere (p = -4, so 1 + 0.5 p = -1) under a uniform shear
+    # (u = y: edot_II = 1/2), the stated strength sets eta = tau_res / (2 edot_II).
+    tau_res = 0.05
+    cm.Parameters.yield_stress_min = tau_res
     cm.yield_mode = "min"
+    stokes.p.array[...] = -4.0
+    X = np.asarray(stokes.u.coords)
+    stokes.u.array[:, 0, 0] = X[:, 1]
+    stokes.u.array[:, 0, 1] = 0.0
     eta = np.asarray(uw.function.evaluate(cm.viscosity.sym, mesh.X.coords)).ravel()
-    assert np.all(np.isfinite(eta)) and np.all(eta > 0.0)
+    assert np.abs(eta - tau_res / (2 * 0.5)).max() < 1e-10, eta
 
     cm.Parameters.yield_stress_min = -sympy.oo
     cm.viscosity                                   # the opt-out is honoured

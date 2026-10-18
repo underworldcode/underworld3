@@ -75,33 +75,57 @@ def _parameter_is_zero(par):
         return False
 
 
-def _depends_on_a_field(par):
-    """True when a parameter reads a mesh or swarm variable (the pressure, a damage
-    field, ...): its value is not known until the solve, and can change sign."""
+def _fields_read_by(par):
+    """The names of the mesh or swarm variables a parameter reads (the pressure, a
+    damage field, ...): a value not known until the solve, which can change sign."""
     from underworld3.function.expressions import unwrap_expression
     try:
         value = unwrap_expression(par, mode="nondimensional")
     except (TypeError, ValueError, AttributeError):
-        return False
-    return any(hasattr(f, "meshvar") for f in sympy.sympify(value).atoms(sympy.Function))
+        # Sanctioned: a parameter that cannot be unwrapped is not inspected, and the
+        # residual-strength check then trusts it (fails open, as before #759)
+        return []
+    return sorted({str(f.func) for f in sympy.sympify(value).atoms(sympy.Function)
+                   if hasattr(f, "meshvar")})
 
 
-def _require_residual_strength(parameters):
+def _numeric_value(par):
+    """A parameter's non-dimensional value as a float, or None when it is not a
+    number (an expression of a field)."""
+    from underworld3.function.expressions import unwrap_expression
+    try:
+        value = unwrap_expression(par, mode="nondimensional")
+        return float(getattr(value, "magnitude", value))
+    except (TypeError, ValueError, AttributeError):
+        # Sanctioned: an expression has no single value; None says so
+        return None
+
+
+def _require_residual_strength(constitutive_model, parameters):
     """Refuse a yield stress that reads a field (Drucker-Prager through the pressure,
-    a cohesion that weakens with damage) floored at zero: where it reaches the floor
-    the plastic viscosity tau_y / (2 edot_II) is exactly zero and the operator is
-    singular (#759). The residual strength must be stated, in stress units; an
-    explicit -oo removes the floor for a yield stress known to stay positive."""
+    a cohesion that weakens with damage) with a floor that is not positive: where it
+    reaches the floor the plastic viscosity tau_y / (2 edot_II) is zero or negative
+    and the operator singular (#759). The residual strength must be stated, > 0 in
+    stress units; an explicit -oo removes the floor for a yield stress known to stay
+    positive."""
     floor = parameters.yield_stress_min
-    if floor.sym == -sympy.oo or not _parameter_is_zero(floor):
+    if floor.sym == -sympy.oo:
         return
-    if _depends_on_a_field(parameters.yield_stress):
+    value = _numeric_value(floor)
+    if value is not None and value > 0.0:
+        return
+    if value is None and not _parameter_is_zero(floor):
+        return                                     # a floor that is itself a field
+    fields = _fields_read_by(parameters.yield_stress)
+    if fields:
+        material = getattr(constitutive_model, "_material_name", None)
+        where = type(constitutive_model).__name__ + (f" ({material})" if material else "")
         raise ValueError(
-            "the yield stress depends on a field (the pressure, or a weakening "
-            "variable) and can fall to the zero floor, where the plastic viscosity "
-            "is zero and the operator singular. Set Parameters.yield_stress_min to "
-            "the residual strength (> 0, in stress units), or to -sympy.oo if the "
-            "yield stress is known to stay positive.")
+            f"{where}: the yield stress reads {', '.join(fields)} and can fall to the "
+            f"floor yield_stress_min = {value}, where the plastic viscosity is zero or "
+            "negative and the operator singular. Set Parameters.yield_stress_min to the "
+            "residual strength (> 0, in stress units), or to -sympy.oo if the yield "
+            "stress is known to stay positive.")
 
 
 def _plastic_rate_strengthening_parameter():
@@ -1780,7 +1804,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # wrong here, so this one defaults to 0 — maintainer ruling 2026-07-26.)
         # An explicit -oo still disables the floor. A yield stress that reads a field
         # needs a stated, positive floor (_require_residual_strength).
-        _require_residual_strength(inner_self)
+        _require_residual_strength(self, inner_self)
         if inner_self.yield_stress_min.sym != -sympy.oo:
             yield_stress = self._apply_floor(
                 inner_self.yield_stress, inner_self.yield_stress_min
@@ -2866,7 +2890,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # invariant of the stress, so a negative tau_y is meaningless). Only an
         # explicit -oo turns the floor off. A yield stress that reads a field needs a
         # stated, positive floor (_require_residual_strength).
-        _require_residual_strength(parameters)
+        _require_residual_strength(self, parameters)
         if parameters.yield_stress_min.sym != -sympy.oo:
             # Literal 0 for the default floor, not the parameter atom: sympy cannot
             # fuzzy-compare an opaque UWexpression and Max canonicalisation recurses.
@@ -4302,7 +4326,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         # Guard on the DISABLING sentinel, not on zero — zero is the default and a
         # real floor (a negative yield stress is meaningless against an invariant).
         # A yield stress that reads a field needs a stated, positive floor.
-        _require_residual_strength(parameters)
+        _require_residual_strength(self, parameters)
         if parameters.yield_stress_min.sym != -sympy.oo:
             # Literal 0 for the default floor (sympy fuzzy-compare recursion on atoms).
             # smooth_max: keeps the floor symbolic, no ordering test (see the note
@@ -4827,6 +4851,8 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             except (TypeError, ValueError):
                 edot_min_val = 1.0e-6
 
+        # TODO(BUG): the lagged estimate uses the unfloored yield stress, so it ignores
+        # yield_stress_min and the residual-strength rule (#759); see _require_residual_strength.
         tau_y_sym = params.yield_stress.sym
         vp_eff_lag = tau_y_sym / (
             2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))

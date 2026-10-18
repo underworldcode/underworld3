@@ -55,6 +55,8 @@ Example
 >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 >>> stokes.constitutive_model.Parameters.yield_stress = \\
 ...     net.damage_yield(v, dial=0.05)
+>>> # positive by construction (dial + rate term): no floor needed
+>>> stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo
 >>> stokes.consistent_jacobian = True
 >>> net.apply(stokes)
 >>> # ... boundary conditions ...
@@ -1171,6 +1173,8 @@ class FaultNetwork:
 
             stokes.constitutive_model.Parameters.yield_stress = \
                 net.band_yield(tau_y=4.0)
+            # tau_y or tau_far everywhere: positive, no floor needed
+            stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo
 
         This is the damage the SPLIT realisation wants. A released fault
         flank sits far below ``tau_y`` and is untouched; the places that
