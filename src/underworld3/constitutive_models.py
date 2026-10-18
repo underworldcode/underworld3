@@ -1926,6 +1926,30 @@ def _logm_sym2(m):
                          [k * c, (l1 + l2) / 2 + k * (b - mean)]])
 
 
+def _etd_maxwell_time(eta, mu):
+    """The Maxwell time tau = eta/mu the ETD coefficients are formed from: a plain
+    number when both parameters are numbers, otherwise the ratio of the parameters'
+    own expression atoms -- a field the kernels evaluate pointwise, scaled by the
+    units system like any other parameter."""
+    if mu.sym is sympy.oo:
+        return sympy.oo
+    try:
+        eta_val = float(eta.sym)
+        mu_val = float(mu.sym)
+    except (TypeError, ValueError):
+        return eta / mu
+    return eta_val / mu_val if mu_val > 0 else sympy.oo
+
+
+def _etd_timestep(dt):
+    """The elastic timestep as a plain number, or None when it is unset (infinite)
+    or cannot be read as one."""
+    try:
+        return float(dt.sym) if dt.sym is not sympy.oo else None
+    except (TypeError, ValueError):
+        return None
+
+
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
     Viscoelastic-plastic flow constitutive model.
@@ -2386,28 +2410,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             if self.Unknowns.DFDt is None:
                 return
             params = self.Parameters
-            if params.shear_modulus.sym is sympy.oo:
-                tau_eff = sympy.oo
-            else:
-                try:
-                    eta_val = float(params.shear_viscosity_0.sym)
-                    mu_val = float(params.shear_modulus.sym)
-                    tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-                except (TypeError, ValueError):
-                    # a viscosity (or modulus) that varies in space: the Maxwell
-                    # time is a field and the ETD coefficients are formed
-                    # symbolically (ddt._update_exp_values); None here meant the
-                    # viscous limit and lost the elastic response silently
-                    tau_eff = sympy.sympify(params.shear_viscosity_0.sym) / sympy.sympify(params.shear_modulus.sym)
-            try:
-                dt_val = (
-                    float(params.dt_elastic.sym)
-                    if params.dt_elastic.sym is not sympy.oo
-                    else None
-                )
-            except (TypeError, ValueError):
-                dt_val = None
-            self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+            self.Unknowns.DFDt.update_exp_coefficients(
+                _etd_timestep(params.dt_elastic),
+                _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus),
+                dt_symbol=params.dt_elastic)
             if self._order == 1:
                 # ETD-1 reduction: φ = α makes the (φ-α)·ε̇* term zero
                 # AND turns (1-φ)·ε̇ into (1-α)·ε̇.
@@ -4010,25 +4016,10 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         if self.Unknowns.DFDt is None:
             return
         params = self.Parameters
-        if params.shear_modulus.sym is sympy.oo:
-            tau_eff = sympy.oo
-        else:
-            try:
-                eta_val = float(params.shear_viscosity_1.sym)
-                mu_val = float(params.shear_modulus.sym)
-                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-            except (TypeError, ValueError):
-                # spatially varying: symbolic coefficients (see the isotropic model)
-                tau_eff = sympy.sympify(params.shear_viscosity_1.sym) / sympy.sympify(params.shear_modulus.sym)
-        try:
-            dt_val = (
-                float(params.dt_elastic.sym)
-                if params.dt_elastic.sym is not sympy.oo
-                else None
-            )
-        except (TypeError, ValueError):
-            dt_val = None
-        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+        self.Unknowns.DFDt.update_exp_coefficients(
+            _etd_timestep(params.dt_elastic),
+            _etd_maxwell_time(params.shear_viscosity_1, params.shear_modulus),
+            dt_symbol=params.dt_elastic)
 
     def _update_history_coefficients(self):
         r"""Pre-solve hook — dispatches BDF, ETD (order 1/2), or hybrid.
@@ -4712,24 +4703,10 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         if self._integrator != "etd" or self.Unknowns.DFDt is None:
             return super()._update_history_coefficients()
         params = self.Parameters
-        if params.shear_modulus.sym is sympy.oo:
-            tau_perp = sympy.oo
-        else:
-            try:
-                eta_val = float(params.shear_viscosity_0.sym)
-                mu_val = float(params.shear_modulus.sym)
-                tau_perp = eta_val / mu_val if mu_val > 0 else sympy.oo
-            except (TypeError, ValueError):
-                tau_perp = None
-        try:
-            dt_val = (
-                float(params.dt_elastic.sym)
-                if params.dt_elastic.sym is not sympy.oo
-                else None
-            )
-        except (TypeError, ValueError):
-            dt_val = None
-        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_perp)
+        self.Unknowns.DFDt.update_exp_coefficients(
+            _etd_timestep(params.dt_elastic),
+            _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus),
+            dt_symbol=params.dt_elastic)
 
     def _eta_par_eff(self):
         """Yield-clipped ``η_∥_eff`` — same softmin/min/harmonic as parent.

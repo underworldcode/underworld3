@@ -558,7 +558,7 @@ def _create_exp_coefficients(instance_id):
     return [alpha, phi]
 
 
-def _update_exp_values(coeffs, dt, tau_eff):
+def _update_exp_values(coeffs, dt, tau_eff, dt_symbol=None):
     r"""Update exponential-integrator coefficient values for current state.
 
     Computes :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}` and
@@ -575,29 +575,27 @@ def _update_exp_values(coeffs, dt, tau_eff):
         Current timestep.
     tau_eff : float, sympy expression or None
         Maxwell relaxation time (η_eff/μ). When None or non-positive,
-        defaults to the viscous limit. A sympy expression (a viscosity that
-        varies in space) gives symbolic coefficients, evaluated pointwise.
+        defaults to the viscous limit. An expression (a viscosity that varies
+        in space) gives symbolic coefficients, evaluated pointwise.
+    dt_symbol : expression, optional
+        The timestep's own atom, used in the symbolic coefficients so that a
+        new step value reaches the kernels as a constant.
     """
     dt_f = _as_float(dt)
     if (isinstance(tau_eff, sympy.Basic) and not tau_eff.is_number
             and dt_f is not None and dt_f > 0.0):
-        # A spatially varying Maxwell time (a viscosity written as an expression
-        # of position or of a field): the coefficients are FIELDS, formed
-        # symbolically and evaluated by the kernels where they are used. Taking
-        # the float here failed and fell to the viscous limit, which silently
-        # removed the elastic response wherever the viscosity was not a plain
-        # number (measured: a damage band made the whole block viscous).
-        # tau <= 0 anywhere is read as the viscous limit there (x -> inf); the
-        # floor is the declared vanishing regulariser, not a literal.
-        # At order 1 phi is replaced by alpha; at order 2 phi = (1 - alpha)/x
-        # loses digits only for x below ~1e-12, which a field of Maxwell times
-        # on the scale of the step does not reach.
-        tau_pos = sympy.Max(tau_eff, uw.maths.functions.vanishing)
-        x = sympy.Float(dt_f) / tau_pos
+        # A Maxwell time that varies in space: alpha and phi are fields the
+        # kernels evaluate pointwise. The step enters as its own constant atom
+        # (dt_symbol), so a change of step updates a constant rather than a
+        # number frozen into the compiled kernel. tau <= 0 is the viscous limit
+        # there (x -> inf); the floor is the declared vanishing regulariser.
+        # phi = (1 - alpha)/x, used at order 2 only, loses digits for x below
+        # about 1e-12.
+        dt_s = dt_symbol if dt_symbol is not None else sympy.Float(dt_f)
+        x = dt_s / sympy.Max(tau_eff, uw.maths.functions.vanishing)
         alpha = sympy.exp(-x)
-        phi = (1 - alpha) / x
         coeffs[0].sym = alpha
-        coeffs[1].sym = phi
+        coeffs[1].sym = (1 - alpha) / x
         return
     tau_f = _as_float(tau_eff)
     if dt_f is None or tau_f is None or tau_f <= 0.0 or dt_f <= 0.0:
@@ -813,7 +811,7 @@ class _DDtBase(uw_object):
         """
         return (False, f"{type(self).__name__} declares no linearisation")
 
-    def update_exp_coefficients(self, dt, tau_eff):
+    def update_exp_coefficients(self, dt, tau_eff, dt_symbol=None):
         r"""Set the exponential (ETD) coefficients for this step.
 
         ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
@@ -824,7 +822,7 @@ class _DDtBase(uw_object):
         Every flavour that can carry a Maxwell stress allocates these
         coefficients (#739); the particle flavours do not.
         """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+        _update_exp_values(self._exp_coeffs, dt, tau_eff, dt_symbol)
 
     @property
     def _exp_alpha(self):
