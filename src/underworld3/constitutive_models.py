@@ -1927,6 +1927,16 @@ def _logm_sym2(m):
                          [k * c, (l1 + l2) / 2 + k * (b - mean)]])
 
 
+def _nondimensional_float(par):
+    """A parameter's value as the kernels see it: scaled by the units system, as a
+    float. ``float(par.sym)`` would be the magnitude in the parameter's own units
+    (a viscosity in Pa s against a step in kyr). Raises TypeError or ValueError
+    when the parameter is not a number."""
+    from underworld3.function.expressions import unwrap_expression
+    value = unwrap_expression(par, mode="nondimensional")
+    return float(getattr(value, "magnitude", value))
+
+
 def _etd_maxwell_time(eta, mu):
     """The Maxwell time tau = eta/mu the ETD coefficients are formed from: a plain
     number when both parameters are numbers, otherwise the ratio of the parameters'
@@ -1935,8 +1945,8 @@ def _etd_maxwell_time(eta, mu):
     if mu.sym is sympy.oo:
         return sympy.oo
     try:
-        eta_val = float(eta.sym)
-        mu_val = float(mu.sym)
+        eta_val = _nondimensional_float(eta)
+        mu_val = _nondimensional_float(mu)
     except (TypeError, ValueError):
         # a vanishing modulus is the elastic limit (tau -> inf), as below
         return eta / sympy.Max(mu, uw.maths.functions.vanishing)
@@ -1947,7 +1957,7 @@ def _etd_timestep(dt):
     """The elastic timestep as a plain number, or None when it is unset (infinite)
     or cannot be read as one."""
     try:
-        return float(dt.sym) if dt.sym is not sympy.oo else None
+        return _nondimensional_float(dt) if dt.sym is not sympy.oo else None
     except (TypeError, ValueError):
         return None
 

@@ -98,3 +98,32 @@ def test_a_weak_band_keeps_the_elastic_response():
     u_band_viscous = _end_velocities(band, [1.0e6])[0]
     assert u_band > u_const                      # a weak band only adds compliance
     assert u_band > 3.0 * u_band_viscous, (u_const, u_band, u_band_viscous)
+
+
+@pytest.mark.parametrize("model", ["isotropic", "ti"])
+def test_dimensional_parameters_give_the_nondimensional_maxwell_time(model):
+    """eta, mu and dt stated with units: the coefficients come from their scaled
+    values (dt/tau = 0.1 here), not their magnitudes (1e21 Pa s / 3.2e7 Pa is a
+    Maxwell time in seconds against a step of 100 kyr)."""
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1.0, "km"), viscosity=uw.quantity(1.0e21, "Pa*s"),
+        time=uw.quantity(1.0, "Myr"))
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("U", mesh, 2, degree=2, units="km/Myr")
+    p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, units="Pa")
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    if model == "isotropic":
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            stokes.Unknowns, order=1, integrator="etd")
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = uw.quantity(1.0e21, "Pa*s")
+    else:
+        stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
+            stokes.Unknowns, order=1, integrator="etd")
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = uw.quantity(1.0e21, "Pa*s")
+        stokes.constitutive_model.Parameters.shear_viscosity_1 = uw.quantity(1.0e21, "Pa*s")
+        stokes.constitutive_model.Parameters.director = sympy.Matrix([0, 1])
+    stokes.constitutive_model.Parameters.shear_modulus = uw.quantity(1.0e21 / 3.15576e13, "Pa")
+    stokes.constitutive_model.Parameters.dt_elastic = uw.quantity(100.0, "kyr")
+    stokes.constitutive_model._update_history_coefficients()
+    alpha = float(stokes.DFDt._exp_alpha.sym)
+    assert abs(alpha - np.exp(-0.1)) < 1.0e-6, alpha
