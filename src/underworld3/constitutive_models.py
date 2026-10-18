@@ -85,8 +85,12 @@ def _fields_read_by(par):
         # Sanctioned: a parameter that cannot be unwrapped is not inspected, and the
         # residual-strength check then trusts it (fails open, as before #759)
         return []
-    return sorted({str(f.func) for f in sympy.sympify(value).atoms(sympy.Function)
-                   if hasattr(f, "meshvar")})
+    names = set()
+    for f in sympy.sympify(value).atoms(sympy.Function):
+        if hasattr(f, "meshvar"):
+            variable = f.meshvar() if callable(f.meshvar) else f.meshvar
+            names.add(getattr(variable, "name", None) or str(f.func))
+    return sorted(names)
 
 
 def _numeric_value(par):
@@ -101,15 +105,24 @@ def _numeric_value(par):
         return None
 
 
+def _floor_is_off(floor):
+    """True when the yield-stress floor is disabled: -oo, bare or wrapped in an
+    expression (a wrapped -oo applied as a floor evaluates to NaN)."""
+    if floor.sym == -sympy.oo:
+        return True
+    value = _numeric_value(floor)
+    return value is not None and value == -float("inf")
+
+
 def _require_residual_strength(constitutive_model, parameters):
     """Refuse a yield stress that reads a field (Drucker-Prager through the pressure,
     a cohesion that weakens with damage) with a floor that is not positive: where it
     reaches the floor the plastic viscosity tau_y / (2 edot_II) is zero or negative
     and the operator singular (#759). The residual strength must be stated, > 0 in
     stress units; an explicit -oo removes the floor for a yield stress known to stay
-    positive."""
+    positive. A floor that is itself a field expression is trusted as stated."""
     floor = parameters.yield_stress_min
-    if floor.sym == -sympy.oo:
+    if _floor_is_off(floor):
         return
     value = _numeric_value(floor)
     if value is not None and value > 0.0:
@@ -122,7 +135,7 @@ def _require_residual_strength(constitutive_model, parameters):
         where = type(constitutive_model).__name__ + (f" ({material})" if material else "")
         raise ValueError(
             f"{where}: the yield stress reads {', '.join(fields)} and can fall to the "
-            f"floor yield_stress_min = {value}, where the plastic viscosity is zero or "
+            f"floor yield_stress_min = {floor.sym}, where the plastic viscosity is zero or "
             "negative and the operator singular. Set Parameters.yield_stress_min to the "
             "residual strength (> 0, in stress units), or to -sympy.oo if the yield "
             "stress is known to stay positive.")
@@ -1805,7 +1818,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # An explicit -oo still disables the floor. A yield stress that reads a field
         # needs a stated, positive floor (_require_residual_strength).
         _require_residual_strength(self, inner_self)
-        if inner_self.yield_stress_min.sym != -sympy.oo:
+        if not _floor_is_off(inner_self.yield_stress_min):
             yield_stress = self._apply_floor(
                 inner_self.yield_stress, inner_self.yield_stress_min
             )
@@ -1865,7 +1878,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # the viscosity above, so the ladder reads the law the solve runs.
         inner_self = self.Parameters
         tau = inner_self.yield_stress
-        if inner_self.yield_stress_min.sym != -sympy.oo:
+        if not _floor_is_off(inner_self.yield_stress_min):
             tau = self._apply_floor(tau, inner_self.yield_stress_min)
         edot = self._strainrate_inv_II
         if not _parameter_is_zero(inner_self.strainrate_inv_II_min):
@@ -2891,7 +2904,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # explicit -oo turns the floor off. A yield stress that reads a field needs a
         # stated, positive floor (_require_residual_strength).
         _require_residual_strength(self, parameters)
-        if parameters.yield_stress_min.sym != -sympy.oo:
+        if not _floor_is_off(parameters.yield_stress_min):
             # Literal 0 for the default floor, not the parameter atom: sympy cannot
             # fuzzy-compare an opaque UWexpression and Max canonicalisation recurses.
             # smooth_max keeps both operands symbolic (the JIT routes the floor
@@ -4327,7 +4340,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         # real floor (a negative yield stress is meaningless against an invariant).
         # A yield stress that reads a field needs a stated, positive floor.
         _require_residual_strength(self, parameters)
-        if parameters.yield_stress_min.sym != -sympy.oo:
+        if not _floor_is_off(parameters.yield_stress_min):
             # Literal 0 for the default floor (sympy fuzzy-compare recursion on atoms).
             # smooth_max: keeps the floor symbolic, no ordering test (see the note
             # in Constitutive_Model._apply_floor). eps = 0 is exactly Max.

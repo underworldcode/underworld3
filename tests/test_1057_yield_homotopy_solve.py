@@ -391,6 +391,11 @@ def test_a_field_dependent_yield_needs_a_residual_strength():
 
     cm.Parameters.yield_stress_min = -sympy.oo
     cm.viscosity                                   # the opt-out is honoured
+    # the opt-out wrapped in an expression is the same opt-out, not a NaN floor
+    cm.Parameters.yield_stress_min = uw.expression(r"\tau_{\mathrm{off}}", -sympy.oo, "no floor")
+    cm.Parameters.yield_stress = 2.0 + 0.0 * stokes.p.sym[0]
+    eta = np.asarray(uw.function.evaluate(cm.viscosity.sym, mesh.X.coords)).ravel()
+    assert np.all(np.isfinite(eta)), eta
 
     cm.Parameters.yield_stress_min = 0
     cm.Parameters.yield_stress = 5.0
