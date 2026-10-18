@@ -20,7 +20,9 @@ the single material); 4:1 Maxwell times 5.6e-4 / 5.2e-4; BDF-1 beside ETD-1
 6.0e-4, BDF-2 beside BDF-1 2.3e-4; yield in one
 constituent 5.7e-4 / 6.0e-4; isotropic beside transversely isotropic 1.42e-3 /
 1.40e-3 (the larger jump, 1.55 against 0.47, read relative to the smaller
-stress). Tolerances are about three times these.
+stress); viscous eta = 4 beside VEP, 7.9e-3 / 7.3e-3 in the VEP material.
+The smearing grows with the stress jump measured against the local stress.
+Tolerances are about three times these.
 
 Also here, single-material regressions found on the way: a transversely
 isotropic model given its parameters before it meets a solver (its tensor was
@@ -45,6 +47,7 @@ POINTS = np.array([[0.15, 0.5], [0.85, 0.5]])
 # module docstring): about three times the largest measured error.
 SMEARED = 2.0e-3
 SMEARED_TI = 4.0e-3
+SMEARED_VISCOUS = 2.5e-2
 EXACT = 1.0e-8
 
 
@@ -215,24 +218,62 @@ def test_yield_in_one_constituent(integrator):
 @pytest.mark.tier_b
 @pytest.mark.parametrize("integrator", ["bdf", "etd"])
 def test_a_constituent_change_reaches_the_solver(integrator):
-    """Changing a constituent's parameter between steps changes the next step."""
+    """A yield stress given to B between steps caps B's stress at the next step.
+
+    The change is structural (a new term in B's flux, not a new value of a
+    constant), so it reaches the solve only if the composite tells the solver
+    to rebuild what it compiled. Measured 2026-10-18: B after the change
+    [0.4996, 0.5067] (BDF), within 1.4e-2 / 1.5e-2 (BDF / ETD) of tau_y = 0.5
+    (the stress of the unyielded A beside it smears in), A within 7.5e-4 /
+    7.8e-4 of its closed form; without the rebuild B carries on to
+    [0.976, 1.18]."""
+    tau_y = 0.5
     mesh, stokes = _pure_shear_box(f"c{integrator}")
     swarm, material = _left_right_materials(mesh, f"c{integrator}")
     a, b = _vep(stokes, 1.0, integrator, "A"), _vep(stokes, 1.0, integrator, "B")
     stokes.constitutive_model = uw.MultiMaterialConstitutiveModel(stokes.Unknowns, material, [a, b])
-    first = _history_sigma_xx(stokes, nsteps=1)[0]
-    b.Parameters.shear_viscosity_0 = 4.0
-    second = _history_sigma_xx(stokes, nsteps=1)[0]
-    # B continues from A's first-step stress, now with eta = 4
-    if integrator == "etd":
-        alpha = np.exp(-DT * MU / 4.0)
-        expected_b = alpha * first[1] + (1.0 - alpha) * 2.0 * 4.0 * EDOT
-    else:
-        eta_e = 4.0 * MU * DT / (4.0 + MU * DT)
-        expected_b = eta_e * (2.0 * EDOT + first[1] / (MU * DT))
-    expected_a = _closed_form(1.0, integrator, nsteps=2)[1]
-    assert abs(second[0] - expected_a) < SMEARED * expected_a, (second, expected_a)
-    assert abs(second[1] - expected_b) < SMEARED * expected_b, (second, expected_b)
+    _history_sigma_xx(stokes, nsteps=2)
+    b.Parameters.yield_stress = tau_y
+    b.yield_mode = "min"
+    after = _history_sigma_xx(stokes, nsteps=2)
+    assert np.abs(after[:, 1] - tau_y).max() < 0.05 * tau_y, after[:, 1]
+    assert _relative_error(after[:, 0], _closed_form(1.0, integrator, nsteps=4)[2:]) < SMEARED, after[:, 0]
+
+
+@pytest.mark.tier_a
+def test_reassigning_the_composite_keeps_each_constituent_order():
+    """The solver passes its history's order to a model it is given again; a
+    BDF-1 constituent beside a BDF-2 one stays BDF-1."""
+    mesh, stokes = _pure_shear_box("o")
+    swarm, material = _left_right_materials(mesh, "o")
+    a = _vep(stokes, 1.0, "bdf", "A", order=2)
+    b = _vep(stokes, 4.0, "bdf", "B", order=1)
+    composite = uw.MultiMaterialConstitutiveModel(stokes.Unknowns, material, [a, b])
+    stokes.constitutive_model = composite
+    stokes.constitutive_model = composite
+    assert (a.order, b.order) == (2, 1)
+    sim = _history_sigma_xx(stokes)
+    for side, eta, order in ((0, 1.0, 2), (1, 4.0, 1)):
+        ref = _closed_form(eta, "bdf", order=order)
+        assert _relative_error(sim[:, side], ref) < SMEARED, (side, sim[:, side], ref)
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("integrator", ["bdf", "etd"])
+def test_viscous_beside_viscoelastic(integrator):
+    """A purely viscous constituent (eta = 4: stress 8 from the first step)
+    beside a VEP one. The stress jump is large against A's stress, so the
+    smearing is larger than for two VEP constituents. Measured 2026-10-18, A /
+    B, BDF 7.9e-3 / 8.1e-4, ETD 7.3e-3 / 8.0e-4."""
+    mesh, stokes = _pure_shear_box(f"v{integrator}")
+    swarm, material = _left_right_materials(mesh, f"v{integrator}")
+    viscous = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns, material_name="B")
+    viscous.Parameters.shear_viscosity_0 = 4.0
+    stokes.constitutive_model = uw.MultiMaterialConstitutiveModel(
+        stokes.Unknowns, material, [_vep(stokes, 1.0, integrator, "A"), viscous])
+    sim = _history_sigma_xx(stokes)
+    assert _relative_error(sim[:, 0], _closed_form(1.0, integrator)) < SMEARED_VISCOUS, sim[:, 0]
+    assert _relative_error(sim[:, 1], np.full(NSTEPS, 2.0 * 4.0 * EDOT)) < SMEARED, sim[:, 1]
 
 
 # --- single-material regressions -------------------------------------------------
@@ -243,7 +284,9 @@ def test_a_constituent_change_reaches_the_solver(integrator):
 @pytest.mark.parametrize("parameters_first", [True, False])
 def test_transversely_isotropic_parameters_before_the_solver(integrator, parameters_first):
     """Setting the parameters before the model meets the solver (its tensor built
-    at an infinite timestep) gives the same relaxation as setting them after."""
+    at an infinite timestep) gives the same relaxation as setting them after.
+    The regression is [True-bdf]; the other three are controls (setting after,
+    and the exponential tensor, which never read the step, passed before)."""
     mesh, stokes = _pure_shear_box(f"p{integrator}{int(parameters_first)}")
     constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
         stokes.Unknowns, order=1, integrator=integrator)

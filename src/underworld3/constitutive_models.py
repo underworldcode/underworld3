@@ -5174,10 +5174,15 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
 
     @order.setter
     def order(self, value):
-        """Set the order of every viscoelastic constituent (the solver does this
-        when its history already fixes one)."""
-        for constituent in self._viscoelastic_constituents():
-            constituent.order = value
+        """The solver passes the order of a history it already holds. Each
+        constituent keeps its own order: a history of at least the highest of
+        them serves every one (a lower-order constituent reads its extra levels
+        with zero weight), and one of lower order cannot serve them all."""
+        if value < self.order:
+            raise ValueError(
+                f"the stress history has order {value}, but a constituent of the "
+                f"multi-material model integrates at order {self.order}; create the "
+                f"history at that order or lower the constituent's order")
 
     @property
     def effective_order(self):

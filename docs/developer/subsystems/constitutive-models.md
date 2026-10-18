@@ -108,7 +108,7 @@ stress-history interface to its constituents:
 | Interface | Composite behaviour |
 |---|---|
 | `requires_stress_history` | true when any constituent integrates a history |
-| `order` / `effective_order` | the highest over the viscoelastic constituents (the history is allocated at that order; a rebuild follows the start-up ramp of the highest-order one) |
+| `order` / `effective_order` | the highest over the viscoelastic constituents (the history is allocated at that order; a rebuild follows the start-up ramp of the highest-order one). Setting `order` (the solver does, when it already holds a history) leaves each constituent's own order alone and refuses a history of lower order than a constituent needs |
 | `stress_history_ddt_kwargs` | every slot any constituent asks for; contradictory requests raise |
 | `Parameters.dt_elastic` | set on every viscoelastic constituent; read from the first |
 | `_update_history_coefficients`, `_update_history_post_solve` | called on every constituent |
@@ -132,10 +132,16 @@ would no longer be the stress), and constituents whose history requests contradi
 each other.
 
 **Accuracy.** The history is a continuous projection of a stress that jumps at the
-interface, so it is smeared over about a cell there. Away from the interface each
-material follows its own closed form: in pure shear, a 4:1 Maxwell-time contrast on
-an 8x8 mesh is within 6e-4 of the peak stress at 0.35 from the interface
-(`tests/test_1054_multimaterial_viscoelastic.py`).
+interface, so it is smeared there, and the error reaching a point grows with the
+stress jump measured against the local stress and falls with the distance in cells.
+Measured in pure shear on an 8x8 mesh, at 0.35 from the interface (about 2.8 cells),
+relative to the local peak stress: two VEP materials with a 4:1 Maxwell-time
+contrast, 6e-4; VEP beside TI-VEP (stresses 1.55 and 0.47), 1.4e-3 in the TI
+material; a viscous material ($\eta = 4$, stress 8) beside a VEP one (stress up to
+1.55), 7.9e-3 (BDF) and 7.3e-3 (ETD) in the VEP material. Three materials in thirds
+(about 1.3 cells from each interface in the middle band) reach 4.1e-2. Where the
+stress jump is large against the stress of interest, resolve the interface or read
+the stress further from it (`tests/test_1054_multimaterial_viscoelastic.py`).
 
 ### Retargeting a model to another solver
 
