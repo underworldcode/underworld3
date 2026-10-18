@@ -49,6 +49,7 @@ from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
 from underworld3.systems.ddt import _bdf_coefficients, _as_float
+from underworld3.systems.ddt import _create_exp_coefficients, _update_exp_values
 from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
@@ -1951,7 +1952,39 @@ def _etd_timestep(dt):
         return None
 
 
-class ViscoElasticPlasticFlowModel(ViscousFlowModel):
+class _ExponentialCoefficients:
+    r"""The exponential (ETD) integrator's coefficients, owned by the model:
+    :math:`\alpha = e^{-\Delta t/\tau}` and :math:`\varphi = (1-\alpha)\,\tau/\Delta t`
+    with :math:`\tau` the model's own Maxwell time. Models that share one stress
+    history (the constituents of a multi-material model) each relax on theirs;
+    a single pair on the history would carry whichever Maxwell time was written
+    last."""
+
+    def _allocate_exp_coefficients(self):
+        """Allocate ``[alpha, phi]`` at the viscous limit (both zero); called once
+        the model has its instance number."""
+        self._exp_coeffs = _create_exp_coefficients(
+            self._global_instance_number, owner="constitutive model")
+        _update_exp_values(self._exp_coeffs, None, None)
+
+    @property
+    def _exp_alpha(self):
+        r"""The ETD :math:`\alpha` coefficient UWexpression."""
+        return self._exp_coeffs[0]
+
+    @property
+    def _exp_phi(self):
+        r"""The ETD :math:`\varphi` coefficient UWexpression."""
+        return self._exp_coeffs[1]
+
+    def _update_exp_coefficients(self, maxwell_time):
+        """Refresh ``[alpha, phi]`` for this step from ``maxwell_time``; the step
+        enters as the ``dt_elastic`` atom, so a field Maxwell time stays symbolic."""
+        dt = self.Parameters.dt_elastic
+        _update_exp_values(self._exp_coeffs, _etd_timestep(dt), maxwell_time, dt_symbol=dt)
+
+
+class ViscoElasticPlasticFlowModel(_ExponentialCoefficients, ViscousFlowModel):
     r"""
     Viscoelastic-plastic flow constitutive model.
 
@@ -2143,6 +2176,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._reset()
 
         super().__init__(unknowns, material_name=material_name)
+
+        self._allocate_exp_coefficients()
 
         return
 
@@ -2401,24 +2436,20 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         Dispatches on ``(self._integrator, self._order)``:
         - ``"bdf"`` (order 1 or 2): updates BDF c-coefficients via
           :py:meth:`_update_bdf_coefficients`.
-        - ``"etd"`` order=2 (Phase B ETD-2): updates α, φ on the DDt
+        - ``"etd"`` order=2 (Phase B ETD-2): updates the model's own α, φ
           from ``τ_VE = η/μ``; forcing-history slot active.
         - ``"etd"`` order=1 (ETD-1): updates α, φ as for ETD-2 then
           forces ``φ = α`` so the ``(φ-α)·ε̇*`` term zeros out — fully
           L-stable single-step, no forcing-history slot needed.
         """
         if self._integrator == "etd":
-            if self.Unknowns.DFDt is None:
-                return
             params = self.Parameters
-            self.Unknowns.DFDt.update_exp_coefficients(
-                _etd_timestep(params.dt_elastic),
-                _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus),
-                dt_symbol=params.dt_elastic)
+            self._update_exp_coefficients(
+                _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus))
             if self._order == 1:
                 # ETD-1 reduction: φ = α makes the (φ-α)·ε̇* term zero
                 # AND turns (1-φ)·ε̇ into (1-α)·ε̇.
-                self.Unknowns.DFDt._exp_phi.sym = self.Unknowns.DFDt._exp_alpha.sym
+                self._exp_phi.sym = self._exp_alpha.sym
         else:
             self._update_bdf_coefficients()
 
@@ -2529,8 +2560,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # ETD-1 (order=1): φ = α (set in _update_history_coefficients),
             # so the (φ-α)·ε̇* term zeros out and (1-φ)·ε̇ → (1-α)·ε̇ — same
             # expression tree, no separate code path needed.
-            alpha = DDt._exp_alpha
-            phi = DDt._exp_phi
+            alpha = self._exp_alpha
+            phi = self._exp_phi
             sigma_star = self._carried_stress_sym(0)
             if DDt.forcing_star is not None:
                 edot_star = DDt.forcing_star.sym
@@ -3695,7 +3726,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
 
 
-class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
+class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotropicFlowModel):
     r"""Transversely isotropic viscoelastic-plastic flow model for fault mechanics.
 
     Combines the anisotropic viscosity tensor from :class:`TransverseIsotropicFlowModel`
@@ -3861,6 +3892,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         super().__init__(unknowns, material_name=material_name)
 
+        self._allocate_exp_coefficients()
+
         return
 
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
@@ -4013,20 +4046,16 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         return self._order
 
     def _update_etd_coefficients(self):
-        """Refresh DDt's (α, φ) UWexpressions from τ_eff = η_1/μ."""
-        if self.Unknowns.DFDt is None:
-            return
+        """Refresh the model's (α, φ) UWexpressions from τ_eff = η_1/μ."""
         params = self.Parameters
-        self.Unknowns.DFDt.update_exp_coefficients(
-            _etd_timestep(params.dt_elastic),
-            _etd_maxwell_time(params.shear_viscosity_1, params.shear_modulus),
-            dt_symbol=params.dt_elastic)
+        self._update_exp_coefficients(
+            _etd_maxwell_time(params.shear_viscosity_1, params.shear_modulus))
 
     def _update_history_coefficients(self):
         r"""Pre-solve hook — dispatches BDF, ETD (order 1/2), or hybrid.
 
-        BDF: refresh ``_bdf_c0..c3``. ETD-2 (order=2): refresh ``α, φ``
-        on the DDt from ``η_1/μ``. ETD-1 (order=1): same plus force
+        BDF: refresh ``_bdf_c0..c3``. ETD-2 (order=2): refresh the model's
+        ``α, φ`` from ``η_1/μ``. ETD-1 (order=1): same plus force
         ``φ = α`` so the ``(φ-α)·ε̇*`` history term vanishes. Hybrid:
         refresh both BDF and ETD-2 — flux uses both per-spatial weight.
         """
@@ -4035,9 +4064,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             if self._order == 1:
                 # ETD-1 reduction: φ = α zeros (φ-α)·ε̇* and turns
                 # (1-φ)·ε̇ into (1-α)·ε̇.
-                DDt = self.Unknowns.DFDt
-                if DDt is not None:
-                    DDt._exp_phi.sym = DDt._exp_alpha.sym
+                self._exp_phi.sym = self._exp_alpha.sym
         elif self._integrator == "hybrid":
             # Hybrid uses BOTH integrators with spatial blend; update
             # both coefficient sets each step.
@@ -4162,8 +4189,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         DDt = self.Unknowns.DFDt
 
         if integrator_mode == "etd":
-            alpha = DDt._exp_alpha
-            phi = DDt._exp_phi
+            alpha = self._exp_alpha
+            phi = self._exp_phi
             sigma_star = DDt.psi_star[0].sym
             if DDt.forcing_star is not None:
                 edot_star = DDt.forcing_star.sym
@@ -4650,8 +4677,8 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
     relaxes each channel on its proper timescale; the analytical floor
     on ``σ_∥`` is then ``≲ τ_y`` by construction.
 
-    Implementation choice: ``α_⊥, φ_⊥`` come from the DDt's existing
-    scalar ``_exp_coeffs`` (matrix viscosity is fixed and spatially
+    Implementation choice: ``α_⊥, φ_⊥`` are the model's own scalar
+    ``_exp_coeffs`` (matrix viscosity is fixed and spatially
     uniform — a single per-step scalar is right). ``α_∥, φ_∥`` are
     inlined as sympy expressions of the yield-clipped ``η_∥_eff`` so
     the JIT evaluates them per quadrature point (spatial heterogeneity
@@ -4701,13 +4728,11 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         ``(α_∥, φ_∥)`` are inlined per-quadrature in :py:meth:`stress`.
         Picks ``τ_⊥ = η_0/μ`` (raw matrix viscosity).
         """
-        if self._integrator != "etd" or self.Unknowns.DFDt is None:
+        if self._integrator != "etd":
             return super()._update_history_coefficients()
         params = self.Parameters
-        self.Unknowns.DFDt.update_exp_coefficients(
-            _etd_timestep(params.dt_elastic),
-            _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus),
-            dt_symbol=params.dt_elastic)
+        self._update_exp_coefficients(
+            _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus))
 
     def _eta_par_eff(self):
         """Yield-clipped ``η_∥_eff`` — same softmin/min/harmonic as parent.
@@ -4869,9 +4894,9 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         DDt = self.Unknowns.DFDt
         E = self.Unknowns.E
 
-        # Matrix branch: scalar (α_⊥, φ_⊥) from DDt
-        alpha_perp = DDt._exp_alpha
-        phi_perp = DDt._exp_phi
+        # Matrix branch: the model's scalar (α_⊥, φ_⊥)
+        alpha_perp = self._exp_alpha
+        phi_perp = self._exp_phi
         eta_perp = params.shear_viscosity_0
         eta_perp_sym = eta_perp.sym
 

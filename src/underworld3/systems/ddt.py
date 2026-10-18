@@ -536,23 +536,25 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
         coeffs[i].sym = sympy.Integer(0)
 
 
-def _create_exp_coefficients(instance_id):
+def _create_exp_coefficients(instance_id, owner="DDt instance"):
     """Create UWexpression objects for the ETD-2 coefficients ``[α, φ]``.
 
     These are named to render as ``α_exp`` and ``φ_exp`` (with the
-    DDt instance id appended) so they remain visually distinct from
-    BDF/AM coefficients in symbolic output.
+    owner's instance id appended) so they remain visually distinct from
+    BDF/AM coefficients in symbolic output. ``owner`` names what holds them
+    in the description: a DDt, or a constitutive model, which carries its
+    own because the Maxwell time they come from is the model's.
     """
     alpha = _UWexpression(
         rf"{{\alpha^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
         sym=0.0,
-        description=f"Exp integrator α = exp(-Δt/τ) (DDt instance {instance_id})",
+        description=f"Exp integrator α = exp(-Δt/τ) ({owner} {instance_id})",
         _unique_name_generation=True,
     )
     phi = _UWexpression(
         rf"{{\varphi^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
         sym=0.0,
-        description=f"Exp integrator φ = (1-α)/(Δt/τ) (DDt instance {instance_id})",
+        description=f"Exp integrator φ = (1-α)/(Δt/τ) ({owner} {instance_id})",
         _unique_name_generation=True,
     )
     return [alpha, phi]
@@ -794,6 +796,11 @@ class _DDtBase(uw_object):
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
         if with_exp:
+            # TODO(DESIGN): no constitutive model reads these any more: each
+            # viscoelastic model owns its (alpha, phi), formed from its own
+            # Maxwell time, so that constituents sharing this history each relax
+            # on theirs. Kept for update_exp_coefficients callers outside the
+            # library; remove with that method once none remain.
             self._exp_coeffs = _create_exp_coefficients(self.instance_number)
         # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
