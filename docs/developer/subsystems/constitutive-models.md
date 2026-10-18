@@ -108,7 +108,7 @@ stress-history interface to its constituents:
 | Interface | Composite behaviour |
 |---|---|
 | `requires_stress_history` | true when any constituent integrates a history |
-| `order` / `effective_order` | the highest over the viscoelastic constituents (the history is allocated at that order; a rebuild follows the start-up ramp of the highest-order one). Setting `order` (the solver does, when it already holds a history) leaves each constituent's own order alone and refuses a history of lower order than a constituent needs |
+| `order` / `effective_order` | the highest over the viscoelastic constituents (the history is allocated at that order; a rebuild follows the start-up ramp of the highest-order one). Setting `order` (the solver does, when it already holds a history) leaves each constituent's own order alone and refuses a history of lower order than a constituent needs; the solver then keeps the model it had. A single viscoelastic model is different: the solver sets its order to the history's, so an order-1 model given to an order-2 history integrates at order 2 |
 | `stress_history_ddt_kwargs` | every slot any constituent asks for; contradictory requests raise |
 | `Parameters.dt_elastic` | set on every viscoelastic constituent; read from the first |
 | `_update_history_coefficients`, `_update_history_post_solve` | called on every constituent |

@@ -317,3 +317,50 @@ def test_infinite_timestep_is_the_viscous_limit(model_class):
     value = sympy.sympify(unwrap_expression(eta, mode="nondimensional"))
     expected = 2 if model_class == "isotropic" else sympy.Rational(1, 4)
     assert value.is_finite and sympy.nsimplify(value) == expected, value
+
+
+@pytest.mark.tier_a
+def test_a_refused_composite_is_not_assigned():
+    """A history of order 1 cannot serve a BDF-2 constituent: the solver refuses
+    the composite and keeps the model it had."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("vr", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("pr", mesh, 1, degree=1)
+    with pytest.warns(DeprecationWarning):
+        stokes = uw.systems.VE_Stokes(mesh, velocityField=v, pressureField=p, order=1)
+    before = stokes.constitutive_model
+    swarm, material = _left_right_materials(mesh, "r")
+    a = _vep(stokes, 1.0, "bdf", "A", order=2)
+    b = _vep(stokes, 4.0, "bdf", "B", order=1)
+    composite = uw.MultiMaterialConstitutiveModel(stokes.Unknowns, material, [a, b])
+    with pytest.raises(ValueError, match="order"):
+        stokes.constitutive_model = composite
+    assert stokes.constitutive_model is before
+
+
+@pytest.mark.tier_a
+def test_dimensional_constituents_take_the_scaled_maxwell_time():
+    """eta, mu and dt with units: each constituent's ETD coefficient comes from
+    its scaled Maxwell time (dt/tau = 0.1 and 0.025), not the parameters'
+    magnitudes in their own units."""
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1.0, "km"), viscosity=uw.quantity(1.0e21, "Pa*s"),
+        time=uw.quantity(1.0, "Myr"))
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("vu", mesh, mesh.dim, degree=2, units="km/Myr")
+    p = uw.discretisation.MeshVariable("pu", mesh, 1, degree=1, units="Pa")
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    swarm, material = _left_right_materials(mesh, "u")
+    constituents = []
+    for name, eta in (("A", 1.0e21), ("B", 4.0e21)):
+        constituent = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            stokes.Unknowns, order=1, integrator="etd", material_name=name)
+        constituent.Parameters.shear_viscosity_0 = uw.quantity(eta, "Pa*s")
+        constituent.Parameters.shear_modulus = uw.quantity(1.0e21 / 3.15576e13, "Pa")
+        constituent.Parameters.dt_elastic = uw.quantity(100.0, "kyr")
+        constituents.append(constituent)
+    stokes.constitutive_model = uw.MultiMaterialConstitutiveModel(
+        stokes.Unknowns, material, constituents)
+    stokes.constitutive_model._update_history_coefficients()
+    alphas = [float(c._exp_alpha.sym) for c in constituents]
+    assert np.allclose(alphas, np.exp([-0.1, -0.025]), rtol=0, atol=1.0e-6), alphas

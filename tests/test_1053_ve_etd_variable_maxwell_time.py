@@ -125,5 +125,5 @@ def test_dimensional_parameters_give_the_nondimensional_maxwell_time(model):
     stokes.constitutive_model.Parameters.shear_modulus = uw.quantity(1.0e21 / 3.15576e13, "Pa")
     stokes.constitutive_model.Parameters.dt_elastic = uw.quantity(100.0, "kyr")
     stokes.constitutive_model._update_history_coefficients()
-    alpha = float(stokes.DFDt._exp_alpha.sym)
+    alpha = float(stokes.constitutive_model._exp_alpha.sym)
     assert abs(alpha - np.exp(-0.1)) < 1.0e-6, alpha
