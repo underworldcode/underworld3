@@ -5001,6 +5001,24 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
     - Solver owns Unknowns (including :math:`D\mathbf{F}/Dt` stress history)
     - All constituent models share solver's Unknowns
     - Composite flux becomes stress history for all materials
+
+    Viscoelastic constituents
+    -------------------------
+    The stress history stores the composite stress
+    :math:`\sigma^* = \sum_i \phi_i \sigma_i^*`, which inside material :math:`i`
+    is that material's own stress. Each constituent advances it with its own
+    law, its own integrator and its own coefficients (the BDF weights, or the
+    exponential :math:`\alpha, \varphi` from its own Maxwell time), so any mix of
+    viscous, viscoelastic(-plastic) and transversely isotropic constituents,
+    BDF or exponential, first or second order, is the same set of Maxwell laws
+    each integrated where it applies. The composite forwards the elastic
+    timestep and the history hooks to every constituent; the history is
+    allocated at the highest order any constituent asks for, with every slot
+    (a forcing history) any of them asks for. Refused: a constituent that
+    stores something other than the stress (``stress_history='log_conformation'``)
+    and constituents whose history requests contradict each other.
+    Across the interface the history is the projection of a stress that jumps,
+    so it is smeared over about a cell there.
     """
 
     def __init__(
@@ -5031,10 +5049,6 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         # utilities/_jitextension.py and tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
-        if any(getattr(m, "_stress_history", "stress") != "stress" for m in constitutive_models):
-            raise NotImplementedError(
-                "the multi-material model stores its averaged flux as a stress; a constituent "
-                "with stress_history='log_conformation' cannot share that history")
 
         self._material_var = material_swarmVariable
         self._constitutive_models = constitutive_models
@@ -5052,6 +5066,39 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
 
         # Composite model doesn't have its own material_name - constituents do
         super().__init__(unknowns, material_name=None)
+
+    class _Parameters(_ParameterBase):
+        """The composite has no material parameters: each constituent carries its
+        own. It exposes the elastic timestep, which the solver sets once per step
+        and every viscoelastic constituent integrates over, and passes the
+        solver reference on to every constituent, so that a change to any
+        constituent's parameters rebuilds the solver's functions."""
+
+        def __init__(inner_self, _owning_model):
+            inner_self._owning_model = _owning_model
+
+        @property
+        def dt_elastic(inner_self):
+            """The elastic timestep the viscoelastic constituents share."""
+            constituents = inner_self._owning_model._viscoelastic_constituents()
+            if not constituents:
+                raise AttributeError("no constituent of this multi-material model is viscoelastic")
+            return constituents[0].Parameters.dt_elastic
+
+        @dt_elastic.setter
+        def dt_elastic(inner_self, value):
+            for constituent in inner_self._owning_model._viscoelastic_constituents():
+                constituent.Parameters.dt_elastic = value
+
+        @property
+        def _solver(inner_self):
+            return inner_self._solver_reference
+
+        @_solver.setter
+        def _solver(inner_self, solver):
+            inner_self._solver_reference = solver
+            for constituent in inner_self._owning_model._constitutive_models:
+                constituent.Parameters._solver = solver
 
     def _setup_shared_unknowns(self, constitutive_models, unknowns):
         """
@@ -5080,6 +5127,11 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         - Same spatial dimension (2D/3D consistency)
         - Compatible flux tensor shapes
         - All models properly initialized
+        - A stress history, if any, stores the stress: the averaged flux is a
+          stress, so a constituent that stores another quantity (the
+          log-conformation) cannot share it. Mixed integrators and orders are
+          allowed (see the class docstring); contradictory history requests are
+          refused when the history is created (:attr:`stress_history_ddt_kwargs`).
         """
         if not models:
             raise ValueError("At least one constitutive model required")
@@ -5097,7 +5149,99 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             if not hasattr(model, "Unknowns"):
                 raise ValueError(f"Model {i} is not properly initialized")
 
+        if any(getattr(m, "_stress_history", "stress") != "stress" for m in models):
+            raise NotImplementedError(
+                "the multi-material model stores its averaged flux as a stress; a constituent "
+                "with stress_history='log_conformation' cannot share that history")
+
         return True
+
+    # ----- the stress-history interface, forwarded to the constituents -----
+
+    def _viscoelastic_constituents(self):
+        """The constituents that integrate a stress history."""
+        return [m for m in self._constitutive_models if m.requires_stress_history]
+
+    @property
+    def requires_stress_history(self):
+        """True when any constituent integrates a stress history."""
+        return bool(self._viscoelastic_constituents())
+
+    @property
+    def order(self):
+        """The history order: the highest any constituent asks for (0 when none
+        integrates a history)."""
+        return max((m.order for m in self._viscoelastic_constituents()), default=0)
+
+    @order.setter
+    def order(self, value):
+        """Set the order of every viscoelastic constituent (the solver does this
+        when its history already fixes one)."""
+        for constituent in self._viscoelastic_constituents():
+            constituent.order = value
+
+    @property
+    def effective_order(self):
+        """The highest order any constituent is integrating at this step. The
+        solver rebuilds its functions when this changes, so it must follow the
+        start-up ramp of the highest-order constituent; the lowest would hide
+        it behind a first-order one."""
+        return max((m.effective_order for m in self._viscoelastic_constituents()), default=0)
+
+    @property
+    def stress_history_ddt_kwargs(self):
+        """Every history slot any constituent asks for; contradictory requests
+        (one constituent asking for a slot another refuses) are an error."""
+        kwargs = {}
+        for constituent in self._constitutive_models:
+            for key, value in constituent.stress_history_ddt_kwargs.items():
+                if key in kwargs and kwargs[key] != value:
+                    raise ValueError(
+                        f"constituents of the multi-material model ask the stress history for "
+                        f"{key}={kwargs[key]!r} and {key}={value!r}; one history cannot be both")
+                kwargs[key] = value
+        return kwargs
+
+    def _update_history_coefficients(self):
+        """Pre-solve: each constituent refreshes its own integrator coefficients."""
+        for constituent in self._constitutive_models:
+            constituent._update_history_coefficients()
+
+    def _update_history_post_solve(self):
+        """Post-solve: each constituent stores its own integrator state. The
+        forcing history (ETD-2) is the strain rate, the same for every
+        constituent, so a second second-order constituent rewrites the same
+        values."""
+        for constituent in self._constitutive_models:
+            constituent._update_history_post_solve()
+
+    @property
+    def _solver_is_setup(self):
+        """Set up only while every constituent is: a change to any constituent's
+        parameters must rebuild what the solver compiled from the composite."""
+        return self._composite_is_setup and all(
+            m._solver_is_setup for m in self._constitutive_models)
+
+    @_solver_is_setup.setter
+    def _solver_is_setup(self, value):
+        self._composite_is_setup = value
+        for constituent in self._constitutive_models:
+            constituent._solver_is_setup = value
+
+    def _level_set_weighted(self, constituent_flux):
+        r""":math:`\sum_i \phi_i\, f_i` over the constituents, with
+        :math:`f_i` = ``constituent_flux(model_i)`` and the level sets
+        normalised to a partition of unity when asked for."""
+        weights = [self._material_var.sym[i] for i in range(self._material_var.indices)]
+        if self._normalize_levelsets:
+            total_levelset = sum(weights)
+            weights = [w / total_levelset for w in weights]
+
+        fluxes = [constituent_flux(m) for m in self._constitutive_models]
+        combined_flux = sympy.Matrix.zeros(*fluxes[0].shape)
+        for weight, flux in zip(weights, fluxes):
+            combined_flux += weight * flux
+        return combined_flux
 
     @property
     def flux(self):
@@ -5108,36 +5252,19 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         all constituent models (including elastic ones) will read via
         ``DFDt.psi_star[0]`` in the next time step.
         """
-        # Get reference flux shape from first model
-        reference_flux = self._constitutive_models[0].flux
-        combined_flux = sympy.Matrix.zeros(*reference_flux.shape)
+        return self._level_set_weighted(lambda m: m.flux)
 
-        if self._normalize_levelsets:
-            # Compute normalization factor to ensure partition of unity
-            total_levelset = sum(
-                self._material_var.sym[i] for i in range(self._material_var.indices)
-            )
+    @property
+    def history_flux(self):
+        r"""The stress the history carries: the level-set average of each
+        constituent's own history stress (its flux without any solvent part,
+        see :attr:`ViscoElasticPlasticFlowModel.history_flux`), or its flux
+        when it has none."""
+        def history_part(constituent):
+            part = getattr(constituent, "history_flux", None)
+            return constituent.flux if part is None else part
 
-            for i in range(self._material_var.indices):
-                # Get normalized level-set function for material i
-                material_fraction = self._material_var.sym[i] / total_levelset
-
-                # Get flux contribution from constituent model i
-                model_flux = self._constitutive_models[i].flux
-
-                # Add weighted contribution to composite flux
-                combined_flux += material_fraction * model_flux
-        else:
-            # Use level-sets directly (assuming they already maintain partition of unity)
-            for i in range(self._material_var.indices):
-                # Get flux contribution from constituent model i
-                model_flux = self._constitutive_models[i].flux
-
-                # Add weighted contribution using level-set directly
-                combined_flux += self._material_var.sym[i] * model_flux
-
-        # This combined_flux will become the stress history for ALL materials
-        return combined_flux
+        return self._level_set_weighted(history_part)
 
     @property
     def K(self):

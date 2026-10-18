@@ -97,6 +97,46 @@ stress_history = self.Unknowns.DFDt.psi_star[0]  # Correct $\psi^*[0]$
 ```
 ```
 
+### Viscoelastic constituents in a multi-material model
+
+The history stores the composite stress $\sigma^* = \sum_i \phi_i \sigma_i^*$, which
+inside material $i$ is that material's own stress. Each constituent advances it with
+its own law, integrator and coefficients, so the composite is the set of Maxwell laws,
+each integrated where it applies. `MultiMaterialConstitutiveModel` forwards the
+stress-history interface to its constituents:
+
+| Interface | Composite behaviour |
+|---|---|
+| `requires_stress_history` | true when any constituent integrates a history |
+| `order` / `effective_order` | the highest over the viscoelastic constituents (the history is allocated at that order; a rebuild follows the start-up ramp of the highest-order one) |
+| `stress_history_ddt_kwargs` | every slot any constituent asks for; contradictory requests raise |
+| `Parameters.dt_elastic` | set on every viscoelastic constituent; read from the first |
+| `_update_history_coefficients`, `_update_history_post_solve` | called on every constituent |
+| `history_flux` | $\sum_i \phi_i h_i$, with $h_i$ the constituent's `history_flux` (its `flux` when it has none) |
+| `Parameters._solver`, `_solver_is_setup` | passed to / gathered from every constituent, so a constituent's parameter change rebuilds the solver's functions |
+
+**What combines.** Any mix of `ViscousFlowModel`, `ViscoElasticPlasticFlowModel`,
+`TransverseIsotropicVEPFlowModel` (and the split variant), with `integrator="bdf"`
+or `"etd"`, first or second order, with or without yield. Mixing integrators is
+consistent because the shared history is only the stress: a BDF constituent reads
+$\sigma^*$ through its own BDF weights, an exponential one through its own
+$\alpha = e^{-\Delta t/\tau_i}$, $\varphi$. Each viscoelastic model therefore owns its
+`(alpha, phi)` coefficients (`_ExponentialCoefficients`), formed from its own Maxwell
+time; one pair on the history would carry the Maxwell time of whichever constituent
+wrote it last. A BDF-1 constituent beside a BDF-2 one reads a second-order history with
+a zero second weight; an ETD-1 constituent ignores the forcing slot an ETD-2 one asks
+for ($\varphi = \alpha$ removes that term).
+
+**Refused.** A constituent with `stress_history="log_conformation"` (the history
+would no longer be the stress), and constituents whose history requests contradict
+each other.
+
+**Accuracy.** The history is a continuous projection of a stress that jumps at the
+interface, so it is smeared over about a cell there. Away from the interface each
+material follows its own closed form: in pure shear, a 4:1 Maxwell-time contrast on
+an 8x8 mesh is within 6e-4 of the peak stress at 0.35 from the interface
+(`tests/test_1054_multimaterial_viscoelastic.py`).
+
 ### Retargeting a model to another solver
 
 Because a constitutive model reads the solver's unknowns, its parameter expressions
