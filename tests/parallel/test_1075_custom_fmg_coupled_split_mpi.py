@@ -13,7 +13,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from test_1075_custom_fmg_coupled_split import check_custom_fmg_on_coupled_split  # noqa: E402
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(300)]
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(300),
+              pytest.mark.level_2, pytest.mark.tier_b]
 
 
 @pytest.mark.mpi(min_size=2)

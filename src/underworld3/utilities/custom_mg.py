@@ -398,7 +398,10 @@ def _split_index_maps(dm, fields):
     s0, s1 = gs.getOwnershipRange()
     nglobal = gs.getSize()
     sdm.restoreGlobalVec(gs)
-    if s1 - s0 != ps.size:
+    # The consistency checks below are decided per rank and followed by
+    # collectives: each is reduced first, so a failure raises on every rank
+    # instead of leaving the others waiting in the allgather.
+    if m4.allreduce(int(s1 - s0 != ps.size), op=MPI.MAX):
         raise RuntimeError("custom_mg: split IS and split sub-DM disagree in size")
     order = np.argsort(ps, kind="stable")
     out = {"nloc": int(s1 - s0), "nglobal": int(nglobal), "s0": int(s0)}
@@ -408,10 +411,12 @@ def _split_index_maps(dm, fields):
         gf = fdm.getGlobalVec()
         f0, f1 = gf.getOwnershipRange()
         fdm.restoreGlobalVec(gf)
-        if f1 - f0 != pf.size:
+        if m4.allreduce(int(f1 - f0 != pf.size), op=MPI.MAX):
             raise RuntimeError(f"custom_mg: field {f} IS and sub-DM disagree in size")
         k = np.searchsorted(ps[order], pf)
-        if pf.size and (np.any(k >= ps.size) or np.any(ps[order][np.minimum(k, ps.size - 1)] != pf)):
+        outside = bool(pf.size) and bool(
+            np.any(k >= ps.size) or np.any(ps[order][np.minimum(k, ps.size - 1)] != pf))
+        if m4.allreduce(int(outside), op=MPI.MAX):
             raise RuntimeError(f"custom_mg: field {f}'s DOFs are not all in the split "
                                f"(owned on another rank?)")
         local = (s0 + order[k]).astype(np.int64)
@@ -1622,10 +1627,17 @@ class CustomMGHierarchy:
                 rmap, nfull = (_reduced_map(solver.dm, self.field_id) if finest
                                else _coarse_reduced_map(solver, mesh, self.field_id))
                 maps.append(rmap)
-            nc = nfull // c.shape[0]
-            if nfull % c.shape[0] != 0:
+            # Components per node, from the rank's own nodes; a rank that owns no
+            # cell on this level has none and takes the others' value (collective:
+            # every rank walks the same levels).
+            bad = bool(c.shape[0]) and nfull % c.shape[0] != 0
+            nc = nfull // c.shape[0] if c.shape[0] else -1
+            comm_k = solver.dm.comm.tompi4py()
+            if comm_k.allreduce(int(bad), op=MPI.MAX):
                 raise RuntimeError(
-                    f"level {k}: full DOFs {nfull} not divisible by nodes {c.shape[0]}")
+                    f"level {k}: full DOFs not divisible by nodes on some rank "
+                    f"(here {nfull} / {c.shape[0]})")
+            nc = comm_k.allreduce(int(nc), op=MPI.MAX)
             coords.append(c)
             ncomp.append(nc)
 
@@ -1651,7 +1663,14 @@ class CustomMGHierarchy:
             if parallel:
                 args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
-                if self.cross_partition is True:
+                # A rank with fine nodes but no coarse node of its own (an
+                # independent coarse level partitioned differently) has nothing to
+                # locate them in: only the cross-partition build can serve it.
+                # Decided collectively, so every rank takes the same branch.
+                no_local_coarse = comm.tompi4py().allreduce(
+                    int(coords[l - 1].shape[0] == 0 and coords[l].shape[0] > 0),
+                    op=MPI.MAX)
+                if self.cross_partition is True or no_local_coarse:
                     P = _build_crosspart_transfer(*args)
                 else:
                     P = _build_parallel_transfer(*args)

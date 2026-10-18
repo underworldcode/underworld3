@@ -109,23 +109,45 @@ def test_a_stated_modulus_and_the_refusals():
         stokes.solve()
 
 
+def _flux_has(cm, symbol):
+    """Whether the model's compiled flux depends on ``symbol``."""
+    from underworld3.function.expressions import unwrap
+    flux = sympy.Matrix(cm.flux)
+    return any(sympy.sympify(unwrap(e)).has(symbol) for e in flux)
+
+
 def test_each_yielding_family_takes_the_shift():
+    # The model's own flux, not the helper, must carry chi: a family whose law
+    # skipped _regularised_yield_stress would pass a test of the helper alone.
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25)
     stokes = uw.systems.Stokes(mesh)
-    for family, kwargs in ((uw.constitutive_models.ViscoElasticPlasticFlowModel, {}),
-                           (uw.constitutive_models.TransverseIsotropicVEPFlowModel, {})):
+    families = (
+        (uw.constitutive_models.ViscoPlasticFlowModel, {}, {}),
+        (uw.constitutive_models.ViscoElasticPlasticFlowModel, {},
+         dict(shear_modulus=1.0, dt_elastic=0.1)),
+        (uw.constitutive_models.TransverseIsotropicVEPFlowModel, {},
+         dict(shear_modulus=1.0, dt_elastic=0.1)),
+    )
+    for family, kwargs, params in families:
         cm = family(stokes.Unknowns, **kwargs)
-        cm.Parameters.yield_stress = 1.0
+        for key, value in params.items():
+            setattr(cm.Parameters, key, value)
         if family is uw.constitutive_models.TransverseIsotropicVEPFlowModel:
             cm.Parameters.director = sympy.Matrix([0.0, 1.0])
-        before = cm._regularised_yield_stress(cm.Parameters.yield_stress)
+        cm.Parameters.yield_stress = 1.0
         reg = Micromorphic(length=ELL)
         cm.Parameters.plastic_regularisation = reg
-        after = cm._regularised_yield_stress(cm.Parameters.yield_stress)
-        assert before == cm.Parameters.yield_stress
-        assert sympy.sympify(after - before).has(reg.chi.sym[0])
+        assert _flux_has(cm, reg.chi.sym[0]), family.__name__
         (field, F0, F1), = cm._coupled_field_requests()
         assert field is reg.chi
+
+
+def test_no_field_when_the_yield_is_disabled():
+    mesh, stokes, tau0 = _shear_box()
+    stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    cm = stokes.constitutive_model
+    cm.Parameters.plastic_regularisation = Micromorphic(length=ELL)  # yield_stress oo
+    assert cm._coupled_field_requests() == []
 
 
 def test_multimaterial_masks_each_source_by_its_material():
@@ -145,6 +167,20 @@ def test_multimaterial_masks_each_source_by_its_material():
     assert [c.field for c in stokes._coupled_fields] == [reg.chi]
     assert reg.mask == material.sym[1]
 
+    # the registered chi equation follows the mask: normalised level sets
+    stokes.constitutive_model = uw.MultiMaterialConstitutiveModel(
+        stokes.Unknowns, material, [weak, strong], normalize_levelsets=True)
+    stokes._register_model_coupled_fields()
+    total = material.sym[0] + material.sym[1]
+    assert sympy.simplify(reg.mask - material.sym[1] / total) == 0
+    (coupled,) = stokes._coupled_fields
+    assert sympy.sympify(coupled.F0).has(total)
+
+    # used on its own, the model is not masked by a material it no longer has
+    stokes.constitutive_model = strong
+    stokes._register_model_coupled_fields()
+    assert reg.mask == 1
+
 
 def test_describe_reports_the_regularisation():
     mesh, stokes, tau0 = _shear_box()
@@ -158,6 +194,7 @@ def test_describe_reports_the_regularisation():
     assert {"plastic_regularisation.length", "plastic_regularisation.modulus"} <= names
 
 
+@pytest.mark.skipif(uw.mpi.size > 1, reason="tmp_path differs per rank")
 def test_a_snapshot_carries_chi(tmp_path):
     # chi is part of the state: restored with the flow, the next solve starts converged
     mesh, stokes, tau0 = _shear_box()
@@ -167,14 +204,14 @@ def test_a_snapshot_carries_chi(tmp_path):
     reg = Micromorphic(length=ELL)
     cm.Parameters.plastic_regularisation = reg
     _solve(stokes)
-    saved = np.array(reg.chi.data, copy=True)
+    saved = np.array(reg.chi.array)
     path = str(tmp_path / "micromorphic.snap.h5")
     orchestration_model = uw.get_default_model()
     orchestration_model.save_state(file=path)
-    reg.chi.data[...] = 0.0
-    stokes.Unknowns.u.data[...] = 0.0
+    reg.chi.array[...] = 0.0
+    stokes.Unknowns.u.array[...] = 0.0
     orchestration_model.load_state(path)
-    assert np.array_equal(np.asarray(reg.chi.data), saved)
+    assert np.array_equal(np.asarray(reg.chi.array), saved)
     stokes.solve(zero_init_guess=False)
     assert stokes.snes.getIterationNumber() == 0
 
@@ -190,10 +227,11 @@ def test_the_regularisation_can_be_replaced_and_removed():
     cm.Parameters.plastic_regularisation = first
     _solve(stokes)
 
-    second = Micromorphic(length=2 * ELL)
+    second = Micromorphic(length=2 * ELL, degree=2)
     cm.Parameters.plastic_regularisation = second
     _solve(stokes)
     assert [c.field for c in stokes._coupled_fields] == [second.chi]
+    assert second.chi is not first.chi and second.chi.degree == 2
 
     cm.Parameters.plastic_regularisation = None
     u_removed = _solve(stokes)

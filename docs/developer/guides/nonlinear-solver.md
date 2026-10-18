@@ -108,11 +108,13 @@ leave the next solve cold.
 `consistent_jacobian=True` (the consistent Newton tangent) is the DEFAULT for every
 solver class since 2026-10-05. On a **cold** solve ONE Picard step is taken
 automatically (a real one — #791 replaced the former nrichardson sweep), in Stokes and
-in the Scalar, Vector and MultiComponent solvers alike. No automatic step is taken for a
-`ksponly` (linear) solve, for a flux whose coefficient does not depend on the unknowns
-(the two tangents coincide), or on the rotated free-slip and fault-contact paths, which
-run their own loops; an explicit `picard=N` on the rotated path stages N Picard
-iterations then Newton on the same blended Jacobian. A warm start takes none.
+in the Scalar, Vector and MultiComponent solvers alike, and in the rotated free-slip and
+fault-contact loops, which stage it themselves on the same blended Jacobian. No
+automatic step is taken for a `ksponly` (linear) solve or for a flux whose coefficient
+does not depend on the unknowns (the two tangents coincide). An explicit `picard=N`
+means N Picard steps, then Newton, on every path (`consistent_jacobian="continuation"`
+on the rotated path switches on the residual instead). `picard=-1` forbids the step.
+A warm start takes none.
 
 ```python
 stokes.solve()                 # cold -> one Picard step, then Newton

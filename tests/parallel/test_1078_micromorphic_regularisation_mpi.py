@@ -13,7 +13,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import test_1078_micromorphic_regularisation as serial  # noqa: E402
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(600),
+              pytest.mark.level_2, pytest.mark.tier_b]
 
 
 @pytest.mark.mpi(min_size=2)

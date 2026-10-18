@@ -54,6 +54,8 @@ strengthening; the campaign report is `notch_length_scale/REPORT.md` in uw3-camp
    multipliers are already refused for. `_reject_rotated_with_coupled_fields` now refuses
    the pair in `add_coupled_field`, `add_rotated_freeslip_bc`, `add_fault_bc` and
    `solve`. Tested in both orders.
+   *Superseded (2026-10-17, `753e1417`):* the refusal is gone; the rotated driver's
+   split 0 carries the coupled fields (`rotated_bc._velocity_split_is`).
 3. **`momentum_flux` was silently dropped by solvers that build their own `F1`
    (fixed: refusal).** Only the `SNES_Stokes` template adds it. `SNES_NavierStokes` and
    `SNES_NavierStokes_Composed` do not. The class flag `_F1_carries_coupled_momentum_flux`

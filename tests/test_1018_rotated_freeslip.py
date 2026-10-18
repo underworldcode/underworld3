@@ -1063,6 +1063,8 @@ def test_rotated_freeslip_cold_start_takes_the_automatic_picard_step(plaw_box_re
     info = s._rotated_freeslip_info
     assert info["continuation_switched"], "no automatic Picard step on the cold start"
     assert info["picard_steps"] == 1, info["picard_steps"]
+    # recorded as on the standard path
+    assert s.solve_report.config["tangent"]["picard_warmup_its"] == 1
     assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
     s.solve(zero_init_guess=False)
     assert s._rotated_freeslip_info["picard_steps"] == 0

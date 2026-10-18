@@ -75,8 +75,8 @@ def check_custom_fmg_on_coupled_split():
     A = vpc.getOperators()[0]
     assert h.transfers[-1].getSize()[0] == A.getSize()[0] == h.split_size
     # the same Newton solution as the native hierarchy
-    assert rel_l2(v_c.data, v_ref.data) < 1.0e-6
-    assert rel_l2(chi_c.data, chi_ref.data) < 1.0e-6
+    assert rel_l2(v_c.array, v_ref.array) < 1.0e-6
+    assert rel_l2(chi_c.array, chi_ref.array) < 1.0e-6
     assert chi_c.max() > 1.0                             # driven, not trivially zero
 
 

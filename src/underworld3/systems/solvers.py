@@ -2731,6 +2731,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             if not any(c.field is field for c in self._coupled_fields):
                 self.add_coupled_field(field, F0=F0, F1=F1)
                 owned.append(field)
+            else:
+                # the model's request is the equation now (a changed mask, length,
+                # strain-rate measure): a registered field follows it
+                self._set_coupled_equation(field, F0, F1)
         self._model_coupled_fields = owned
 
     def _check_velocity_preconditioner(self):

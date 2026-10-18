@@ -984,11 +984,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
       given) to enter Newton's basin; phase 2 sets α=1 (consistent Newton tangent) and
       drives to the requested tolerance. α is restored to 0 afterwards.
     * ``consistent_jacobian is True`` (the default, consistent Newton) with
-      ``picard > 0`` — the same two-phase solve on the blended Jacobian that
-      ``solve()`` compiles for an explicit warm-up. A cold start takes NO automatic
-      Picard step on this path (pure Newton from rest converges here). Called directly,
-      without that compile, a nonlinear residual **raises** ``NotImplementedError``
-      rather than silently ignoring the request.
+      ``picard > 0`` — exactly ``picard`` Picard steps, then Newton, on the blended
+      Jacobian ``solve()`` compiles for the warm-up; ``solve()`` passes the cold start's
+      automatic step as ``picard=1`` (``_plan_picard_warmup``). Called directly, without
+      that compile, a nonlinear residual **raises** ``NotImplementedError`` rather than
+      silently ignoring the request.
     * ``consistent_jacobian is False`` (frozen/Picard) — the whole solve is already the
       frozen tangent, so ``picard`` is inherently satisfied.
 
@@ -1053,11 +1053,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         rtol = float(solver.tolerance)
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
-    # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
-    # picard>0 runs the same staging on the blended Jacobian that solve() compiled for
-    # it (_plan_picard_warmup, staged_loop); the frozen tangent already satisfies a
-    # warmup. No automatic cold-start step is taken here: from rest, pure Newton on
-    # this path converges (measured 8-9 its against 27-29 frozen on a VP box).
+    # staged α=0 → α=1 solve. Under the consistent tangent (the default) picard>0 runs
+    # the same staging on the blended Jacobian that solve() compiled for it
+    # (_plan_picard_warmup, staged_loop), including the cold start's automatic step;
+    # the frozen tangent already satisfies a warmup.
     mode = getattr(solver, "consistent_jacobian", False)
     continuation = (mode == "continuation"
                     or (mode is True and bool(picard) and picard > 0
@@ -1457,10 +1456,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # to factorisation round-off at the decoupled constraint rows)
             _zero_rows_local(dhat, normal_rows)
         else:
+            # half the nonlinear target: the increment then lands the next residual
+            # below it (inexact Newton's absolute floor)
             dhat, last_reason, ctx = _solve_rotated_iterative(
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
-                refresh_operator=assemble)
+                refresh_operator=assemble, lin_atol=0.5 * (rtol * ref + atol))
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
@@ -1608,8 +1609,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "continuation_switched": continuation and phase == "newton",
+            # the Picard increments taken: those before the switch, or every
+            # increment when the loop ended still in the Picard phase
             "picard_steps": picard_steps if phase == "newton" else (
-                iters + 1 if continuation else 0),
+                len(lin_its) if continuation else 0),
             "rotation_reused": rotation_reused,
             "workspace_reused": workspace_reused}
 
@@ -1727,14 +1730,26 @@ def _velocity_split_is(solver):
     coupled = getattr(solver, "_coupled_fields", None) or []
     if not coupled:
         return solver._subdict["velocity"][0]
-    fields = [0] + [int(c.field._solver_field_id) for c in coupled]
-    split_is, _subdm = solver.dm.createSubDM(fields)
+    fields = tuple([0] + [int(c.field._solver_field_id) for c in coupled])
+    # Built once per DM and field set: createSubDM is collective and the loop asks
+    # for this every Newton iteration. The cache is tied to the solver's _subdict,
+    # which every rank rebuilds with the DM (a field added or removed), so the
+    # "still valid?" test is the same on every rank; holding the dict keeps its
+    # identity from being reused.
+    cached = getattr(solver, "_rotated_split_is", None)
+    if cached is not None and cached[0] is solver._subdict and cached[1] == fields:
+        return cached[2]
+    if cached is not None:
+        cached[2].destroy()
+    split_is, subdm = solver.dm.createSubDM(list(fields))
+    subdm.destroy()
+    solver._rotated_split_is = (solver._subdict, fields, split_is)
     return split_is
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
                              custom_Pl=None, nsp=None, Mp=None, ctx=None,
-                             refresh_operator=True):
+                             refresh_operator=True, lin_atol=0.0):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
     (PR#290, rotated) whenever the solver has a hierarchy — ``set_custom_fmg`` or a
@@ -2001,6 +2016,14 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs
 
+    # The absolute floor the caller asks for (lin_atol, in residual units): a Newton
+    # increment need only bring the linear residual below the nonlinear target, so
+    # near convergence, where the right-hand side is tiny, the relative tolerance
+    # alone asks the nested solves for reductions they cannot reach and their caps
+    # multiply into a solve that does not end (measured: a rotated VP box at rel
+    # |F| 5e-8 against a 1e-8 target).
+    _rt, _at, _dt, _mi = ksp.getTolerances()
+    ksp.setTolerances(rtol=_rt, atol=float(lin_atol), divtol=_dt, max_it=_mi)
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
@@ -2422,16 +2445,17 @@ def _complete_mode_on_coupled_fields(solver, tg):
             "rigid-rotation mode with coupled fields: the Jacobian must be assembled "
             "before the mode is built")
     uis = solver._subdict["velocity"][0]
-    cis_list = [solver._subdict[c.field._solver_field_name][0] for c in coupled]
-    cis = cis_list[0] if len(cis_list) == 1 else PETSc.IS().concatenate(cis_list)
+    # every coupled field together, in the DM's own numbering (one index set for
+    # the sub-matrix and the sub-vector alike)
+    cis, cdm = solver.dm.createSubDM([int(c.field._solver_field_id) for c in coupled])
+    cdm.destroy()
     A_cu = J.createSubMatrix(cis, uis)
     ur = tg.getSubVector(uis)
     rhs = A_cu.createVecLeft()
     A_cu.mult(ur, rhs)
     tg.restoreSubVector(uis, ur)
     A_cu.destroy()
-    scale = max(float(rhs.norm(PETSc.NormType.NORM_INFINITY)), 0.0)
-    if scale > 0.0:
+    if rhs.norm(PETSc.NormType.NORM_INFINITY) > 0.0:     # a global norm: rank-uniform
         rhs.scale(-1.0)
         A_cc = J.createSubMatrix(cis, cis)
         ksp = PETSc.KSP().create(comm=A_cc.getComm())
@@ -2448,3 +2472,4 @@ def _complete_mode_on_coupled_fields(solver, tg):
         tg.restoreSubVector(cis, sub)
         ksp.destroy(); A_cc.destroy(); c.destroy()
     rhs.destroy()
+    cis.destroy()

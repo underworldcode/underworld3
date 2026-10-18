@@ -2628,10 +2628,18 @@ class SolverBaseClass(uw_object):
     def _adjoint_by_kernels(self):
         """Whether the adjoint operator is ASSEMBLED from the transposed
         kernels rather than obtained by transposing the assembled matrix.
-        The kernel route covers the volume terms; a boundary Jacobian (a
-        natural or Nitsche condition with a tangent) is not swapped yet, so
-        such a solver takes the matrix route."""
-        return not (getattr(self, "natural_bcs", None) or [])
+        The kernel route transposes the solver's own volume kernels only. A
+        boundary Jacobian (a natural or Nitsche condition with a tangent, a
+        multiplier constraint's boundary pair) and the blocks of a coupled
+        volume field are not swapped by it, so such a solver takes the matrix
+        route, which transposes the whole assembled operator."""
+        if getattr(self, "natural_bcs", None):
+            return False
+        if getattr(self, "_coupled_fields", None):
+            return False
+        if getattr(self, "_block_constraint_bcs", None):
+            return False
+        return True
 
     def _install_adjoint_kernels(self):
         """Rewire the solver to the kernels of the transposed form.
@@ -2842,6 +2850,7 @@ class SolverBaseClass(uw_object):
             "rotated_freeslip": list(getattr(self, "_rotated_freeslip_bcs", None) or []),
             "fault_contact": list(getattr(self, "_fault_contact_faults", None) or []),
             "multipliers": list(getattr(self, "_multipliers", None) or []),
+            "coupled_essential": list(getattr(self, "_coupled_essential_bcs", None) or []),
         }
 
     #: The terms this solver is given, as ``(attribute, description)`` pairs,
@@ -3040,6 +3049,22 @@ class SolverBaseClass(uw_object):
                 "text": str(expression),
             }
             forms[name]["where"] = unpack(expression, 1, seen)
+        # A coupled volume field's own equation (add_coupled_field), solved with
+        # these: part of what the solver solves.
+        for coupled in getattr(self, "_coupled_fields", None) or []:
+            fname = getattr(coupled.field, "clean_name", coupled.field.name)
+            for part, expression in (("F0", coupled.F0), ("F1", coupled.F1),
+                                     ("momentum flux", coupled.momentum_flux)):
+                if expression is None:
+                    continue
+                key = f"{fname}: {part}"
+                forms[key] = {
+                    "symbol": f"{part}[{fname}]",
+                    "description": f"coupled field {fname}, solved with the flow",
+                    "latex": sympy.latex(expression),
+                    "text": str(expression),
+                }
+                forms[key]["where"] = unpack(expression, 1, seen)
 
         mechanisms = self._constraint_mechanisms()
         conditions = []
@@ -3070,6 +3095,15 @@ class SolverBaseClass(uw_object):
                 "latex": sympy.latex(value) if value is not None else r"\mathbf{u}\cdot\hat{\mathbf{n}} = 0",
                 "text": str(value) if value is not None else "u . n = 0",
                 "normal": "mesh" if normal is None else str(normal),
+            })
+        for field, bc in mechanisms["coupled_essential"]:
+            function = getattr(bc, "fn", None)
+            conditions.append({
+                "mechanism": "coupled_essential",
+                "type": f"dirichlet on {getattr(field, 'clean_name', field.name)}",
+                "boundary": str(getattr(bc, "boundary", "?")),
+                "latex": sympy.latex(function) if function is not None else None,
+                "text": str(function) if function is not None else None,
             })
         for fault in mechanisms["fault_contact"]:
             conditions.append({
@@ -3461,6 +3495,10 @@ class SolverBaseClass(uw_object):
         config = dict(tangent=dict(consistent_jacobian=self.consistent_jacobian,
                                    newton_pressure_coupling=self.newton_pressure_coupling,
                                    path="rotated_freeslip"))
+        # the Picard warm-up the loop took, under the key the standard path uses
+        picard_steps = int((info or {}).get("picard_steps") or 0)
+        if picard_steps:
+            config["tangent"]["picard_warmup_its"] = picard_steps
         try:
             self._snapshot_model_facts(config)
         except Exception:
@@ -8565,8 +8603,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         momentum_flux : sympy Matrix, optional
             A ``(dim, dim)`` stress added to the momentum flux :math:`F_1`.
 
-        Example
+        Returns
         -------
+        MeshVariable
+            ``field``.
+
+        Examples
+        --------
         A smoothed strain-rate invariant :math:`\chi - l^2 \nabla^2 \chi = \dot\varepsilon_{II}`
         solved in the same system as the flow::
 
@@ -8610,6 +8653,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._needs_function_rewire = True
         return field
 
+    def _set_coupled_equation(self, field, F0, F1=None):
+        """Replace a registered coupled field's equation in place (same field, same
+        DM): its residual and Jacobian kernels are recompiled at the next solve if
+        the expressions changed. Returns whether they did."""
+        # the same normal form add_coupled_field stores, so an unchanged equation
+        # compares equal and costs no rewire
+        n_components = field.num_components
+        F0 = sympy.Matrix(sympy.Array(sympy.sympify(F0)).reshape(1, n_components))
+        if F1 is not None:
+            F1 = sympy.Matrix(sympy.Array(sympy.sympify(F1)).reshape(
+                n_components, self.mesh.dim))
+        for k, coupled in enumerate(self._coupled_fields):
+            if coupled.field is field:
+                same_f1 = ((coupled.F1 is None) == (F1 is None)
+                           and (F1 is None or coupled.F1 == F1))
+                if coupled.F0 == F0 and same_f1:
+                    return False
+                self._coupled_fields[k] = coupled._replace(F0=F0, F1=F1)
+                self._needs_function_rewire = True
+                return True
+        raise ValueError(f"{field.name} is not a coupled field of this solver")
+
     def remove_coupled_field(self, field):
         r"""Take a coupled field (and its boundary conditions) off this solver.
 
@@ -8647,8 +8712,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         field : MeshVariable
             A field registered with :meth:`add_coupled_field`.
 
-        Example
-        -------
+        Examples
+        --------
         A Cosserat micro-rotation held at zero on a wall::
 
             stokes.add_coupled_dirichlet_bc(0.0, "Bottom", omega)
@@ -10159,7 +10224,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         #
         # TODO(BUG): with multipliers only (split 0 = velocity), the mirrored
         # fieldsplit_0_mat_block_size survives _withdraw_block_size_if_not_node_blocked,
-        # which removes only the fieldsplit_velocity_ key. Not reproduced yet.
+        # which removes only the fieldsplit_velocity_ key. Not reproduced yet. Fix:
+        # withdraw the mirrored fieldsplit_0_ key with it.
         allopts = opts.getAll()
         for key, val in list(allopts.items()):
             mirrored = None

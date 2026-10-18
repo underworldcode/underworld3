@@ -30,6 +30,17 @@
 .. autoclass:: underworld3.constitutive_models.ViscoElasticPlasticFlowModel
 ```
 
+## Yield-law regularisation
+
+### Micromorphic
+
+Set on a yielding model as ``cm.Parameters.plastic_regularisation``.
+
+```{eval-rst}
+.. autoclass:: underworld3.constitutive_models.Micromorphic
+   :members: length, modulus, mask, chi, shift, coupled_field_request
+```
+
 ## Darcy Flow
 
 ### DarcyFlowModel

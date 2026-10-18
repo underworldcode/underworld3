@@ -315,15 +315,28 @@ def test_rotated_freeslip_on_a_curved_wall_with_a_coupled_field():
         v = stokes.Unknowns.u
         rr = np.hypot(v.coords[:, 0], v.coords[:, 1])
         on_wall = (np.abs(rr - RI) < 1e-4) | (np.abs(rr - RO) < 1e-4)
-        vr = np.einsum("ij,ij->i", v.data, v.coords / rr[:, None])
+        vr = np.einsum("ij,ij->i", v.array[:, 0, :], v.coords / rr[:, None])
         leak = uw.mpi.comm.allreduce(float(np.abs(vr[on_wall]).max(initial=0.0)), op=uw.MPI.MAX)
         pts = np.array([[0.75 * np.cos(t), 0.75 * np.sin(t)] for t in np.linspace(0, 6, 13)])
-        return (np.asarray(uw.function.global_evaluate(v.sym, pts)), leak,
-                None if chi is None else chi.max())
+        chi_error = None
+        if chi is not None:
+            # chi is the screened projection of the strain rate it was coupled to
+            chi_ref = _scalar_field(mesh, "chi_annulus_ref")
+            projection = uw.systems.Projection(mesh, chi_ref)
+            projection.uw_function = stokes.Unknowns.Einv2
+            projection.smoothing = SMOOTHING
+            projection.petsc_options["snes_rtol"] = 1.0e-12
+            projection.solve()
+            c, r = chi.array[:, 0, 0], chi_ref.array[:, 0, 0]
+            scale = uw.mpi.comm.allreduce(float(np.abs(r).max(initial=0.0)), op=uw.MPI.MAX)
+            diff = uw.mpi.comm.allreduce(float(np.abs(c - r).max(initial=0.0)), op=uw.MPI.MAX)
+            chi_error = (diff, scale)
+        return np.asarray(uw.function.global_evaluate(v.sym, pts)), leak, chi_error
 
     u0, leak0, _ = solve(False)
-    u1, leak1, chi_max = solve(True)
-    assert chi_max > 0.01                    # driven (the flow is weak: max chi 0.05)
+    u1, leak1, (chi_diff, chi_scale) = solve(True)
+    assert chi_scale > 0.01                  # driven (the flow is weak: max chi 0.05)
+    assert chi_diff < 1.0e-6 * chi_scale
     assert leak1 < 1.0e-10 * np.abs(u1).max()
     assert np.abs(u1 - u0).max() < 1.0e-6 * np.abs(u0).max()
 
@@ -362,20 +375,92 @@ def test_cosserat_on_a_rotating_annulus_completes_the_rotation_mode():
     stokes.solve()
     assert stokes.snes.getConvergedReason() > 0
     v = stokes.Unknowns.u
-    u_a, w_a = np.array(v.data, copy=True), np.array(omega.data, copy=True)
+    u_a, w_a = np.array(v.array[:, 0, :]), np.array(omega.array[:, 0, 0])
     assert np.abs(w_a).max() > 1.0e-3                    # omega is driven
 
     shift = 0.3                                          # a rigid rotation, Omega = 0.3
     vc = v.coords
-    v.data[...] = u_a + shift * np.column_stack([-vc[:, 1], vc[:, 0]])
-    omega.data[...] = w_a + shift
+    v.array[:, 0, :] = u_a + shift * np.column_stack([-vc[:, 1], vc[:, 0]])
+    omega.array[:, 0, 0] = w_a + shift
     stokes.solve(zero_init_guess=False)
     assert stokes.snes.getConvergedReason() > 0
-    du = uw.mpi.comm.allreduce(float(np.abs(v.data - u_a).max(initial=0.0)), op=uw.MPI.MAX)
-    dw = uw.mpi.comm.allreduce(float(np.abs(omega.data - w_a).max(initial=0.0)), op=uw.MPI.MAX)
+    du = uw.mpi.comm.allreduce(float(np.abs(v.array[:, 0, :] - u_a).max(initial=0.0)), op=uw.MPI.MAX)
+    dw = uw.mpi.comm.allreduce(float(np.abs(omega.array[:, 0, 0] - w_a).max(initial=0.0)), op=uw.MPI.MAX)
     scale = uw.mpi.comm.allreduce(float(np.abs(u_a).max(initial=0.0)), op=uw.MPI.MAX)
     assert du < 1.0e-6 * scale
     assert dw < 1.0e-6 * scale
+
+
+@pytest.mark.tier_b
+def test_the_adjoint_of_a_coupled_solve_is_the_transpose():
+    # The adjoint must transpose the coupled blocks too. The kernel route
+    # transposes only the solver's own volume kernels, so a coupled solve takes the
+    # matrix route; measured before: relative error 0.20 against an explicit J^T
+    # solve, residual ||J^T mu - b|| / ||b|| = 15.6, while the run recorded the
+    # adjoint as supported.
+    from petsc4py import PETSc
+    mesh, stokes = _driven_stokes()
+    chi = _scalar_field(mesh, "chi_adjoint")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + chi.sym[0] ** 2
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    stokes.consistent_jacobian = True
+    _exact_linear_solves(stokes)
+    stokes.solve()
+    assert stokes.adjoint_support()[0]
+    x = stokes.dm.getGlobalVec()
+    stokes._gather_fields_to_global(x)
+    J, P, _ = stokes.snes.getJacobian()
+    stokes.snes.computeJacobian(x, J, P)
+    JT = J.copy()
+    JT.transpose()
+    b = x.duplicate()
+    b.array[:] = np.random.default_rng(3).standard_normal(b.getLocalSize())
+    rhs = np.array(b.array, copy=True)
+    mu, reason = stokes.adjoint_solve(rhs)
+    assert reason > 0
+    m = x.duplicate()
+    m.array[:] = mu
+    r = x.duplicate()
+    JT.mult(m, r)
+    r.axpy(-1.0, b)
+    assert r.norm() < 1.0e-8 * b.norm()
+    stokes.dm.restoreGlobalVec(x)
+
+
+@pytest.mark.tier_b
+def test_rotated_freeslip_carries_two_coupled_fields():
+    # The rigid-rotation mode is completed on every coupled field together (one
+    # index set from the DM for all of them); with two it used to raise on every
+    # rank (petsc4py has no IS.concatenate).
+    solutions = []
+    for rotated in (False, True):
+        mesh, stokes, chi = _free_slip_left(rotated, f"chi_two_{int(rotated)}")
+        psi = _scalar_field(mesh, f"psi_two_{int(rotated)}")
+        stokes.add_coupled_field(psi, **_screened_strain_rate(mesh, stokes, psi))
+        stokes.solve()
+        assert stokes.snes.getConvergedReason() > 0
+        solutions.append((np.asarray(uw.function.global_evaluate(stokes.Unknowns.u.sym, _probe())),
+                          np.asarray(uw.function.global_evaluate(psi.sym, _probe()))))
+    (u_d, p_d), (u_r, p_r) = solutions
+    assert np.abs(u_r - u_d).max() < 1.0e-6 * np.abs(u_d).max()
+    assert np.abs(p_r - p_d).max() < 1.0e-6 * np.abs(p_d).max()
+
+
+@pytest.mark.tier_b
+def test_describe_shows_a_coupled_field_and_its_conditions():
+    # What the solver solves includes the coupled field's own equation and the
+    # conditions on it (add_coupled_dirichlet_bc).
+    mesh, stokes = _driven_stokes()
+    chi = _scalar_field(mesh, "chi_described")
+    stokes.add_coupled_field(chi, **_screened_strain_rate(mesh, stokes, chi))
+    stokes.add_coupled_dirichlet_bc(0.0, "Top", chi)
+    d = stokes.describe()
+    name = chi.clean_name
+    assert f"{name}: F0" in d["forms"] and f"{name}: F1" in d["forms"]
+    coupled_conditions = [c for c in d["boundary_conditions"]
+                          if c["mechanism"] == "coupled_essential"]
+    assert [c["boundary"] for c in coupled_conditions] == ["Top"]
+    assert stokes._constraint_mechanisms()["coupled_essential"]
 
 
 @pytest.mark.tier_b

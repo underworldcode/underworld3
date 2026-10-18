@@ -130,9 +130,13 @@ def _solver_classes():
     from underworld3.cython.generic_solvers import SolverBaseClass
     found = {}
 
+    # The library's own classes: a test module that defines a solver subclass
+    # (test_1057's transport plug-ins) would otherwise join the list whenever it
+    # ran first in the same process.
     def walk(cls):
         for sub in cls.__subclasses__():
-            found[sub.__name__] = sub
+            if sub.__module__.startswith("underworld3"):
+                found[sub.__name__] = sub
             walk(sub)
     walk(SolverBaseClass)
     return found

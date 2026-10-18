@@ -249,15 +249,18 @@ rate on the weak plane). In a `MultiMaterialConstitutiveModel` each material's c
 source is masked by its own indicator; `mask=` overrides.
 
 What comes with it, without being asked for:
-- chi is a coupled field (`add_coupled_field`), registered at the first solve.
+- chi is a coupled field (`add_coupled_field`), registered at the first solve and
+  kept in step with the regularisation at every solve (replace it or set it to
+  `None` and the field follows).
 - Newton only, with the automatic cold Picard warm-up; `consistent_jacobian = False`
-  is refused.
+  is refused for the regularisation.
 - The default fieldsplit groups velocity and chi in split 0 under the velocity
   multigrid; native nested FMG and custom non-nested FMG (`set_custom_fmg`) both
   build the multi-field transfer.
-- Rotated free-slip and fault contact carry chi. Refused: a geometry that admits a
-  rigid rotation together with a coupled field that enters the momentum flux (a
-  Cosserat micro-rotation), whose rotation null mode is not built.
+- Rotated free-slip and fault contact carry chi, with the automatic warm-up; a
+  rigid-rotation null mode is completed on every coupled field from the operator
+  (zero for chi).
+- The adjoint (`adjoint_solve`) transposes the whole coupled operator.
 
 The setting the shear-band campaign uses (`uw3-campaigns/notch_length_scale`): `H =
 0.1 eta_bg`, `l` physical (1 km on the 30 km Spiegelman notch), capped Eisenstat-Walker

@@ -44,7 +44,7 @@ mass (below). The field kinds differ in support and terms:
 | Its residual | $\int_\Omega F_0\psi + F_1\cdot\nabla\psi$, user/model given | $\int_\Gamma \psi\,(\mathbf{n}\cdot\mathbf{u} - g)$ |
 | Into the momentum row | through the flux (the flux may depend on it), or an added `momentum_flux` | $\int_\Gamma (h + r(\mathbf{n}\cdot\mathbf{u}-g))\,\mathbf{n}\cdot\mathbf{v}$ |
 | Group | split 0, with velocity | split 1, with pressure |
-| Tangent | Newton only (the cross blocks need it) | linear in $h$ |
+| Tangent | the consistent one for a model's request (refused frozen); `add_coupled_field` itself follows `consistent_jacobian` | linear in $h$ |
 
 ## Coupled fields (split 0)
 
@@ -67,8 +67,16 @@ The cross blocks scale with $H$ (default $0.1\,\eta_0$), not with the viscosity
 contrast, which is why the coupled split 0 is no harder to precondition than the
 velocity block alone: it adds stiffness of order $H$ to the short-wavelength mode (a
 collapsing band) that makes the yielded velocity block near-singular. Coupled problems
-are Newton only: the frozen tangent drops $A_{uc}$, and the notch campaign measured it
-stalling (review record `docs/reviews/2026-10/coupled-volume-fields-adversarial-review.md`).
+are meant to run Newton (ruling 2026-10-11): the frozen tangent drops the yield-law part
+of $A_{uc}$, and the notch campaign measured it stalling (review record
+`docs/reviews/2026-10/coupled-volume-fields-adversarial-review.md`). A model's request
+(`Micromorphic`) refuses `consistent_jacobian=False`; a plain `add_coupled_field`
+follows the setting, as the Stokes blocks do.
+
+**The adjoint** (`adjoint_solve`) of a coupled solve takes the matrix route: it
+transposes the whole assembled operator, the coupled blocks included
+(`_adjoint_by_kernels` is False with coupled fields or multipliers; the kernel route
+transposes only the solver's own volume kernels).
 
 **Split 0 is not node-blocked.** The velocity block size (`mat_block_size = dim`) is
 not mirrored onto split 0 when coupled fields share it: a block would group a coupled
@@ -155,8 +163,8 @@ place for a multiplier.
 ## Open: bugs, not constraints
 
 These are unfinished work (maintainer ruling, 2026-10-17: a refusal of an unfinished
-case is a bug to fix, never a constraint to design or advise around). Each is marked
-`TODO(BUG)` at its site.
+case is a bug to fix, never a constraint to design or advise around). The refusals among
+them are marked `TODO(BUG)` at their sites; the rest are gaps with no site to mark.
 
 - Rotated constraints refuse an adjoint (`_adjoint_support`). Fix: assemble the
   transpose by kernels (the `by_kernels` route of `adjoint_solve`) and apply the same
@@ -165,8 +173,9 @@ case is a bug to fix, never a constraint to design or advise around). Each is ma
   (`_reject_mixed_constraint_mechanisms`, #464). Fix: the rotated split takes the
   multipliers into split 1, as it takes coupled fields into split 0.
 - A wall-clock guard is refused on the rotated path. Fix: instrument the rotated KSP.
-- `adjoint_solve` returns no adjoint field for a coupled field or a multiplier (its
-  `rhs` / `target` handle velocity and pressure only), and no test covers either.
+- `adjoint_solve` returns no adjoint *field* for a coupled field or a multiplier (its
+  `rhs` / `target` handle velocity and pressure only; the composite vector it returns
+  is complete). The constrained solver's adjoint has no test.
 - Coupled fields and multipliers on one solver: no test of the combination.
 - `add_constraint_bc` on `Stokes` itself (switching on the split-1 defaults with its
   first multiplier), with `SNES_Stokes_Constrained` an alias.

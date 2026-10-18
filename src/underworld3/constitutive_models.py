@@ -129,6 +129,8 @@ class Micromorphic:
         Polynomial degree of :math:`\chi` (continuous). Default 1.
     """
 
+    _instances = 0               # names each chi field uniquely (rank-uniform order)
+
     def __init__(self, length, modulus=None, mask=None, degree=1):
         self._length_value = length
         self._modulus_value = modulus
@@ -148,6 +150,10 @@ class Micromorphic:
                 "Micromorphic: this regularisation already belongs to another model; "
                 "create one per model (each owns its own chi field)")
         self._model = model
+        # chi is created here, where the setter runs on every rank: creating a
+        # MeshVariable is collective, so it must not wait for the first (possibly
+        # rank-gated) read.
+        self.chi
 
     @property
     def length(self):
@@ -162,6 +168,10 @@ class Micromorphic:
         r"""The modulus :math:`H` as an expression (default :math:`0.1\,\eta_0`)."""
         if self._modulus is None:
             value = self._modulus_value
+            if value is None and self._model is None:
+                raise RuntimeError(
+                    "Micromorphic: the default modulus is 0.1 x the model's "
+                    "shear_viscosity_0; set the regularisation on a model first")
             if value is None:
                 value = sympy.Rational(1, 10) * self._model.Parameters.shear_viscosity_0
             self._modulus = expression(r"H_{\chi}", value, "micromorphic modulus")
@@ -185,8 +195,9 @@ class Micromorphic:
                 raise RuntimeError("Micromorphic: set it on a model before using chi")
             mesh = self._model.Unknowns.u.mesh
             units = "1/s" if uw.get_default_model().has_units() else None
+            Micromorphic._instances += 1
             self._chi = uw.discretisation.MeshVariable(
-                f"chi_micromorphic_{self._model.instance_number}", mesh, 1,
+                f"chi_micromorphic_{Micromorphic._instances}", mesh, 1,
                 degree=self._degree, continuous=True, varsymbol=r"\chi", units=units)
         return self._chi
 
@@ -198,7 +209,13 @@ class Micromorphic:
         return self.mask * self.modulus * (self._strain_rate() - self.chi.sym[0])
 
     def coupled_field_request(self):
-        """``(field, F0, F1)`` for :meth:`SNES_Stokes.add_coupled_field`."""
+        """The field and its equation, for :meth:`SNES_Stokes.add_coupled_field`.
+
+        Returns
+        -------
+        tuple
+            ``(chi, F0, F1)``.
+        """
         chi = self.chi
         mesh = chi.mesh
         H = self.modulus
@@ -230,7 +247,6 @@ class _PlasticRegularisationSlot:
         model = self._owning_model
         if hasattr(model, "_reset"):
             model._reset()
-
 
 
 class _ParameterBase:
@@ -828,14 +844,35 @@ class Constitutive_Model(uw_object):
         # else triggers a re-setup.
         self._solver_is_setup = False
 
-    def _coupled_field_requests(self):
+    def _coupled_field_requests(self, material_indicator=None):
         """Coupled volume fields this model needs solved with the flow, as
         ``(field, F0, F1)`` tuples for :meth:`SNES_Stokes.add_coupled_field`. The
-        solver registers them before it is set up. None for most models; a yielding
-        model with a :class:`Micromorphic` regularisation asks for its chi."""
+        solver registers them before it is set up, and refreshes them at every
+        solve. None for most models; a yielding model with a :class:`Micromorphic`
+        regularisation asks for its chi, unless its yield is disabled.
+
+        Parameters
+        ----------
+        material_indicator : expression, optional
+            The model's material indicator when it is a constituent of a
+            :class:`MultiMaterialConstitutiveModel` (the default mask of its
+            regularisation); None for a model used on its own.
+
+        Returns
+        -------
+        list of tuple
+        """
         params = getattr(self, "Parameters", None)
         reg = getattr(params, "plastic_regularisation", None) if params is not None else None
-        return [] if reg is None else [reg.coupled_field_request()]
+        if reg is None:
+            return []
+        if reg._material_indicator is not material_indicator:
+            reg._material_indicator = material_indicator
+            self._reset()                       # its law reads the mask
+        tau_y = getattr(params, "yield_stress", None)
+        if tau_y is not None and getattr(tau_y, "sym", tau_y) == sympy.oo:
+            return []                           # no yield law to regularise
+        return [reg.coupled_field_request()]
 
     def _regularisation_strain_rate(self):
         """The strain-rate invariant a yield-law regularisation reads: the one the
@@ -4979,7 +5016,9 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             except (TypeError, ValueError):
                 edot_min_val = 1.0e-6
 
-        tau_y_sym = params.yield_stress.sym
+        # the regularisation's shift, as on the current-state path (_eta_par_eff)
+        tau_y = self._regularised_yield_stress(params.yield_stress)
+        tau_y_sym = getattr(tau_y, "sym", tau_y)
         vp_eff_lag = tau_y_sym / (
             2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))
         )
@@ -5267,7 +5306,20 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
 
         return True
 
-    def _coupled_field_requests(self):
+    def _material_indicator(self, i):
+        """Material ``i``'s indicator, the weight of its flux (normalised when the
+        level sets are). The same object on every call, so a constituent's mask is
+        compared by identity."""
+        cache = getattr(self, "_material_indicators", None)
+        if cache is None or len(cache) != self._material_var.indices:
+            phi = [self._material_var.sym[j] for j in range(self._material_var.indices)]
+            if self._normalize_levelsets:
+                total = sum(phi)
+                phi = [p / total for p in phi]
+            cache = self._material_indicators = phi
+        return cache[i]
+
+    def _coupled_field_requests(self, material_indicator=None):
         """The constituents' coupled-field requests. A constituent's yield-law
         regularisation that states no mask takes its material's indicator (the same
         level set that weights its flux), so a neighbouring material's strain rate
@@ -5277,14 +5329,8 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             reg = getattr(getattr(model, "Parameters", None), "plastic_regularisation", None)
             if reg is None:
                 continue
-            fraction = self._material_var.sym[i]
-            if self._normalize_levelsets:
-                fraction = fraction / sum(
-                    self._material_var.sym[j] for j in range(self._material_var.indices))
-            if reg._material_indicator is None or reg._material_indicator != fraction:
-                reg._material_indicator = fraction
-                model._reset()                  # its law reads the mask
-            requests.extend(model._coupled_field_requests())
+            fraction = self._material_indicator(i)
+            requests.extend(model._coupled_field_requests(material_indicator=fraction))
         return requests
 
     @property

@@ -29,18 +29,19 @@ the region mask, units of $H$).
 The same pattern as the stress history of the viscoelastic models: the constitutive
 model states what it needs, and the solver builds it during set-up.
 
-**User side.** Two parameters on every yielding model (ViscoPlastic,
-ViscoElasticPlastic, TransverseIsotropicVEP), next to `plastic_rate_strengthening`:
+**User side.** One regularisation object on every yielding model (ViscoPlastic,
+ViscoElasticPlastic, TransverseIsotropicVEP), next to `plastic_rate_strengthening`
+(decision 1 below; the proposal had two loose parameters):
 
 ```python
 cm = uw.constitutive_models.ViscoPlasticFlowModel
 cm.Parameters.yield_stress = C + sin_phi * p
-cm.Parameters.plastic_length_scale = uw.quantity(1, "km")       # ell; 0 = off (default)
-cm.Parameters.plastic_gradient_modulus = uw.quantity(1e20, "Pa*s")  # H; see default below
+cm.Parameters.plastic_regularisation = uw.constitutive_models.Micromorphic(
+    length=uw.quantity(1, "km"))          # modulus default 0.1 x shear_viscosity_0
 stokes.solve()
 ```
 
-Setting a non-zero length scale is the whole switch. Nothing else in the script
+Setting the regularisation is the whole switch. Nothing else in the script
 changes: no field to create, no coupled field to register, no solver options.
 
 **Model side.**
@@ -58,8 +59,8 @@ changes: no field to create, no coupled field to register, no solver options.
 - geometric multigrid on split 0: native nested FMG, and custom/non-nested FMG
   through the multi-field transfer (`CustomMGHierarchy._build_multifield`, on this
   branch);
-- rotated free-slip and fault contact: needs the rotated driver to carry coupled
-  fields (below; today refused by `_reject_rotated_with_coupled_fields`);
+- rotated free-slip and fault contact: the rotated driver carries coupled fields
+  (below; the pair was refused before 753e1417);
 - Newton only, plus the automatic cold Picard warm-up step (ruling 2026-10-11,
   `docs/reviews/2026-10/coupled-volume-fields-adversarial-review.md`). An explicit
   `consistent_jacobian = False` with the length scale set is refused with a message,
@@ -89,9 +90,9 @@ covers only part of the operator. To carry coupled fields:
 Then the guard goes, with a regression test: the same problem with a rotated wall and
 with a Dirichlet (or Nitsche) wall.
 
-**Done (2026-10-17, `753e1417`).** Items 1-3 as above; item 4 is refused with a
-message (a rigid rotation admitted together with a coupled field that enters the
-momentum flux). Tests in `test_1070`. Noted on the way: a driven lid meeting a
+**Done.** Items 1-3 in `753e1417`; item 4 in `73ca4744`
+(`_complete_mode_on_coupled_fields`: each mode's coupled part solves the coupled rows
+of the operator). Tests in `test_1070`. Noted on the way: a driven lid meeting a
 rotated wall at a corner gives a different solution (~30% of the velocity) from the
 same wall as a Dirichlet condition, with or without a coupled field; the two impose
 conflicting corner values and resolve them differently. Pre-existing.
@@ -118,7 +119,8 @@ conflicting corner values and resolve them differently. Pre-existing.
   (2-D notch, small mesh), serial and np 2 / 4.
 - Rotated wall against Dirichlet wall with a coupled field.
 - Restart: solve, checkpoint, restore, re-solve converges at iteration 0.
-- Each yielding family (VP, VEP, TI-VEP) gives the shift; `length = 0` is
-  bit-identical to the model without it.
-
-Underworld development team with AI support from Claude Code
+- Each yielding family (VP, VEP, TI-VEP) carries the shift in its own flux.
+- Without a regularisation the model's residual and Jacobian are unchanged
+  (compared bit for bit against development in the adversarial review).
+- Replacing or removing the regularisation; a changed mask refreshes the equation.
+- The adjoint of a coupled solve is the transpose of the whole operator.
