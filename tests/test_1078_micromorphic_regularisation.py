@@ -204,3 +204,24 @@ def test_the_regularisation_can_be_replaced_and_removed():
     plain.constitutive_model.Parameters.yield_stress = tau0
     u_plain = _solve(plain)
     assert np.abs(u_removed - u_plain).max() < 1.0e-8 * np.abs(u_plain).max()
+
+
+def test_cold_start_under_a_rotated_wall_takes_the_picard_step():
+    # A cold micromorphic solve under a rotated free-slip wall: the automatic Picard
+    # step reaches the rotated loop, then Newton converges.
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), cellSize=1.0 / 12, qdegree=3)
+    stokes = uw.systems.Stokes(mesh)
+    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_rotated_freeslip_bc(0, "Left")
+    x, y = mesh.X
+    stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    cm = stokes.constitutive_model
+    cm.Parameters.yield_stress = 0.6 + 0.4 * sympy.exp(-((x - 1) ** 2 + y ** 2) / 0.02)
+    cm.Parameters.plastic_regularisation = Micromorphic(length=ELL)
+    stokes.tolerance = 1.0e-8
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert stokes.snes.getConvergedReason() > 0
+    assert info["picard_steps"] == 1

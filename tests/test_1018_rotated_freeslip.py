@@ -1050,6 +1050,24 @@ def test_rotated_freeslip_picard_under_newton_stages_picard_then_newton(plaw_box
     assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
 
 
+def test_rotated_freeslip_cold_start_takes_the_automatic_picard_step(plaw_box_ref):
+    """A cold nonlinear solve under the consistent tangent takes ONE automatic Picard
+    step, then Newton, through the rotated loop as on the standard path (#791). It
+    used to reach only an explicit picard, so a cold rotated solve started in pure
+    Newton. A warm solve takes none."""
+    mesh, vE, _ = plaw_box_ref
+    s, vR, pR = _powerlaw_stokes(mesh, "cpR", cj=True)
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.solve()
+    info = s._rotated_freeslip_info
+    assert info["continuation_switched"], "no automatic Picard step on the cold start"
+    assert info["picard_steps"] == 1, info["picard_steps"]
+    assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
+    s.solve(zero_init_guess=False)
+    assert s._rotated_freeslip_info["picard_steps"] == 0
+
+
 def test_rotated_freeslip_nonlinear_warm_start(plaw_box_ref):
     """Warm-start (zero_init_guess=False) through the nonlinear rotated path: a 2-step
     'time loop' re-solving from the previous converged state stays correct and

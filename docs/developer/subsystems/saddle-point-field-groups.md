@@ -164,10 +164,6 @@ case is a bug to fix, never a constraint to design or advise around). Each is ma
 - Rotated constraints and multipliers are refused together
   (`_reject_mixed_constraint_mechanisms`, #464). Fix: the rotated split takes the
   multipliers into split 1, as it takes coupled fields into split 0.
-- The automatic cold Picard warm-up never reaches the rotated loop (only an explicit
-  `picard` does), and an explicit one with `consistent_jacobian=True` is refused
-  (`rotated_bc.solve_rotated_freeslip`). Fix: compile the frozen tangent for the
-  warm-up steps, as the standard path does.
 - A wall-clock guard is refused on the rotated path. Fix: instrument the rotated KSP.
 - `adjoint_solve` returns no adjoint field for a coupled field or a multiplier (its
   `rhs` / `target` handle velocity and pressure only), and no test covers either.

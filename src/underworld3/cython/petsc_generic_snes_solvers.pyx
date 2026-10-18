@@ -1656,17 +1656,18 @@ class SolverBaseClass(uw_object):
         per-solve records. By :attr:`consistent_jacobian`:
 
         * ``True``: ``picard`` Picard steps, then Newton. A cold start takes ONE
-          automatically, except for a ``ksponly`` solve, a flux whose coefficient does
-          not depend on the unknowns, and a solver that runs its own loop
-          (``own_loop``: rotated free-slip, fault contact). ``picard < 0`` forbids it.
-          The first warm-up compiles the Jacobian in the blended form
-          ``J_p + alpha (J_n - J_p)`` (one rewire; sticky).
+          automatically, except for a ``ksponly`` solve and a flux whose coefficient
+          does not depend on the unknowns. ``picard < 0`` forbids it. The first
+          warm-up compiles the Jacobian in the blended form
+          ``J_p + alpha (J_n - J_p)`` (one rewire; sticky). A solver that runs its
+          own loop (``own_loop``: rotated free-slip, fault contact) gets the same
+          count in ``self._own_loop_picard`` and stages it itself.
         * ``"continuation"``: ``picard`` holds alpha = 0 for the first ``picard``
           iterations of the ramp.
         * ``False``: every iteration already is a Picard step.
 
         ``staged_loop``: the solver's own loop stages Picard then Newton itself
-        (rotated free-slip); an explicit ``picard > 0`` under ``True`` then only
+        (rotated free-slip, fault contact); a warm-up under ``True`` then only
         compiles the blended Jacobian for it to stage with.
         """
         picard = int(picard or 0)
@@ -1676,22 +1677,25 @@ class SolverBaseClass(uw_object):
         self._warned_this_solve = set()
         self._continuation_min_picard = 0
         self._continuation_stages = None      # never report a previous solve's stages
+        self._own_loop_picard = max(picard, 0)
         mode = self.consistent_jacobian
         if mode == "continuation":
             self._continuation_min_picard = max(picard, 0)
             return
         if mode is not True:
             return
-        if own_loop:
-            if staged_loop and picard > 0 and not self._picard_blend:
-                self._picard_blend = True
-                self._needs_function_rewire = True
-            return
         # Cheapest test first: warm solves (every time step after the first) stop at
         # zero_init_guess / the norm and never reach the symbolic linearity test.
         if (picard == 0 and (zero_init_guess or self._solution_is_trivially_zero())
                 and not self._snes_is_linear() and not self._flux_is_linear_in_unknowns()):
             picard = 1
+        if own_loop:
+            # The same cold-start rule; the loop takes the steps itself.
+            self._own_loop_picard = max(picard, 0)
+            if staged_loop and picard > 0 and not self._picard_blend:
+                self._picard_blend = True
+                self._needs_function_rewire = True
+            return
         if picard <= 0:
             return
         self._pending_picard = picard
@@ -12525,14 +12529,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # ---- Picard warm-up policy (#791) — decided BEFORE _build, because under the
         # consistent tangent a Picard step needs the frozen operator compiled in.
-        # Rotated free-slip and fault contact run their own loop (utilities/rotated_bc.py)
-        # with their own picard semantics: no automatic step there.
-        self._plan_picard_warmup(
-            picard, zero_init_guess,
-            own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
-                          or getattr(self, "_fault_contact_faults", None)),
-            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
-        picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
+        # Rotated free-slip and fault contact run their own loop (utilities/rotated_bc.py),
+        # which stages the planned steps itself (the cold start's automatic one too).
+        own_loop = bool(getattr(self, "_rotated_freeslip_bcs", None)
+                        or getattr(self, "_fault_contact_faults", None))
+        self._plan_picard_warmup(picard, zero_init_guess,
+                                 own_loop=own_loop, staged_loop=own_loop)
+        picard = (self._own_loop_picard if own_loop
+                  else max(int(picard or 0), 0))  # picard < 0 = "no warm-up" from here on
 
         self._build(verbose, debug, debug_name)
         if self._picard_blend and self.consistent_jacobian is True:
@@ -12579,9 +12583,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # after its first increment, so no up-front nonlinearity probe is
             # paid (the loop self-terminates; _residual_is_nonlinear survives as
             # a lazy guard inside the picard+pure-Newton corner).
-            # TODO(BUG): only the user's explicit `picard` reaches the rotated loop, so
-            # the automatic cold Picard warm-up (_plan_picard_warmup) never runs under
-            # rotated walls: a cold viscoplastic solve starts in pure Newton.
             from underworld3.utilities.rotated_bc import solve_rotated_freeslip
             self._rotated_freeslip_info = solve_rotated_freeslip(
                 self, self._rotated_freeslip_bcs, verbose=verbose,

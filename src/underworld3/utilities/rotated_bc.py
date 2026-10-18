@@ -1018,6 +1018,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
           (feed the solve report);
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
+        * ``"picard_steps"`` — the Picard (frozen-tangent) iterations taken first;
         * ``"rotation_reused"`` — the GEOMETRY tier (Q/Qt/constrained rows/
           prolongation) came from the cross-solve cache;
         * ``"workspace_reused"`` — the iteration-0 operator fast path fired
@@ -1067,9 +1068,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # Picard warmup is meaningless for a linear residual, so ignore it there;
         # for a genuinely nonlinear model pure Newton has no frozen tangent
         # compiled in to warm up with, so fail loudly.
-        # TODO(BUG): unfinished work. The frozen tangent can be compiled for the
-        # warm-up steps alongside the Newton one, as the standard path's cold
-        # warm-up does.
+        # Reached only when the blended Jacobian was not compiled for the warm-up,
+        # i.e. by calling this function directly without solve()'s planning
+        # (_plan_picard_warmup compiles it whenever it plans a step).
         if solver._residual_is_nonlinear():
             raise NotImplementedError(
                 f"rotated free-slip: a Picard->Newton warmup (picard={picard}) with the "
@@ -1341,6 +1342,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # rotated solve as unconverged — including ones that converged at rel 1e-8.
     exit_reason = _SNES_DIVERGED_MAX_IT
     phase = "picard" if continuation else "newton"
+    picard_steps = 0                     # Picard (frozen-tangent) iterations taken
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
@@ -1357,12 +1359,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
             Fhat.destroy()
             break
-        # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
-        # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
-        # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
-        if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
+        # Switch the frozen (Picard, α=0) tangent to the consistent (Newton, α=1) one.
+        # Under consistent_jacobian=True, `picard` means what it means on the standard
+        # path: exactly that many Picard steps, then Newton (the cold start's automatic
+        # one is picard=1). Under "continuation", once the residual has dropped into
+        # Newton's basin (the loose newton_switch_rtol) and at least `picard` Picard
+        # iterations have run.
+        in_basin = mode is True or rnorm <= switch_rtol * r0
+        if continuation and phase == "picard" and in_basin and iters >= picard:
             solver._set_newton_alpha(1.0)
             phase = "newton"
+            picard_steps = iters
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
                            f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
@@ -1601,6 +1608,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "continuation_switched": continuation and phase == "newton",
+            "picard_steps": picard_steps if phase == "newton" else (
+                iters + 1 if continuation else 0),
             "rotation_reused": rotation_reused,
             "workspace_reused": workspace_reused}
 
