@@ -1937,7 +1937,8 @@ def _etd_maxwell_time(eta, mu):
         eta_val = float(eta.sym)
         mu_val = float(mu.sym)
     except (TypeError, ValueError):
-        return eta / mu
+        # a vanishing modulus is the elastic limit (tau -> inf), as below
+        return eta / sympy.Max(mu, uw.maths.functions.vanishing)
     return eta_val / mu_val if mu_val > 0 else sympy.oo
 
 

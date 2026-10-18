@@ -589,13 +589,13 @@ def _update_exp_values(coeffs, dt, tau_eff, dt_symbol=None):
         # (dt_symbol), so a change of step updates a constant rather than a
         # number frozen into the compiled kernel. tau <= 0 is the viscous limit
         # there (x -> inf); the floor is the declared vanishing regulariser.
-        # phi = (1 - alpha)/x, used at order 2 only, loses digits for x below
-        # about 1e-12.
+        # phi = (1 - e^-x)/x is written with expm1, which keeps its digits as
+        # x -> 0 (the elastic limit) and gives 1/x as x -> inf.
+        from sympy.codegen.cfunctions import expm1
         dt_s = dt_symbol if dt_symbol is not None else sympy.Float(dt_f)
         x = dt_s / sympy.Max(tau_eff, uw.maths.functions.vanishing)
-        alpha = sympy.exp(-x)
-        coeffs[0].sym = alpha
-        coeffs[1].sym = (1 - alpha) / x
+        coeffs[0].sym = sympy.exp(-x)
+        coeffs[1].sym = -expm1(-x) / x
         return
     tau_f = _as_float(tau_eff)
     if dt_f is None or tau_f is None or tau_f <= 0.0 or dt_f <= 0.0:

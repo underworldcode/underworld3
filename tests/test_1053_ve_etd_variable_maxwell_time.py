@@ -2,10 +2,10 @@
 
 The exponential (ETD) coefficients alpha = exp(-dt/tau) and phi = (1 - alpha)/x
 come from the Maxwell time tau = eta/mu. A viscosity written as an expression of
-position (a damage band, a temperature-dependent law) has no float, and the
-coefficients used to fall to the viscous limit (alpha = phi = 0): the model lost
-its elastic response with no warning (measured on a box fault model, 2026-10-17:
-first-step end velocity 7e-3, the viscous value, against 6e-2).
+position (a damage band, a temperature-dependent law) has no float, so the
+coefficients are formed symbolically and evaluated pointwise; reading such a
+viscosity as the viscous limit (alpha = phi = 0) would remove the elastic response
+everywhere.
 
 Checked here against the constant the expression equals (a numerically uniform
 expression, 1 + 1e-12 x, has no float but the same value): the first step at
@@ -60,7 +60,6 @@ def _end_velocities(eta_expr, dts, order=1, model="isotropic"):
     stokes.add_natural_bc(sympy.Matrix([[-0.01, 0.0]]), "Right")
     out = []
     for k, dt in enumerate(dts):
-        stokes.constitutive_model.Parameters.dt_elastic = dt
         stokes.solve(timestep=dt, zero_init_guess=(k == 0))
         out.append(float(np.asarray(uw.function.evaluate(v.sym, np.array([[2.95, 0.5]]))).reshape(-1, 2)[0, 0]))
     return np.array(out)
