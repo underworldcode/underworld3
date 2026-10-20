@@ -757,7 +757,11 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
                 f"swarm variable {var_name!r} shape mismatch on restore: "
                 f"sidecar {saved.shape} vs current {current.shape}"
             )
-        current[...] = saved
+        # Write THROUGH the canonical array so the PETSc pack callback fires
+        # (as Swarm.apply_snapshot_payload does, #313): writing into the
+        # detached view above left the DMSwarm field at its post-realloc
+        # values, which the cells proxy and the next cache invalidation read.
+        var.data[...] = saved
 
 
 # ----- Phase 3a: state-bearer (Snapshottable) serialisation ----------------

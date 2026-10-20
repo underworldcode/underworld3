@@ -1826,6 +1826,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                                           "logarithm and exponential; 3-D is not implemented")
         self._stress_history = stress_history
         self._convected_step = convected_step
+        # EXPERIMENTAL (ve-benchmark): a lagged velocity (e.g. the solver's
+        # extrapolated advecting velocity) for one factor of the terms that are
+        # quadratic in the velocity gradient (the deformation step's L s L^T, G L L^T
+        # and the exponential step's L L^T). Set, the flux is linear in the unknown
+        # velocity and Newton takes one step; None keeps the fully implicit product.
+        self.lagged_stretch_velocity = None
         if element not in (None, "maxwell", "jeffreys"):
             raise ValueError(f"element must be 'maxwell' or 'jeffreys', got {element!r}")
         if relaxation not in ("linear", "fene_p"):
@@ -2497,7 +2503,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 b = lam * (1 - (1 + x) * decay)
                 # on the conformation the coefficient is b_c^2/(1-a) with b_c = b/f*;
                 # the stress multiplies by G f*, leaving b^2/((1-a) f*)
-                E_eff = E_eff + (b ** 2 / ((1 - decay) * self._spring_factor_sym())) * L * L.T / (2 * lam)
+                Ls = self._lagged_stretch_gradient(L)
+                E_eff = E_eff + (b ** 2 / ((1 - decay) * self._spring_factor_sym())) * (L * Ls.T + Ls * L.T) / (4 * lam)
             self._E_eff.sym = E_eff
             return self._E_eff
 
@@ -2514,6 +2521,13 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         E += self._objective_term(self._carried_strain_sym(0)) / (2 * self.Parameters.shear_modulus)
         self._E_eff.sym = E
         return self._E_eff
+
+    def _lagged_stretch_gradient(self, L):
+        """The gradient of ``lagged_stretch_velocity``, or ``L`` itself when unset."""
+        if self.lagged_stretch_velocity is None:
+            return L
+        a = sympy.Matrix(self.lagged_stretch_velocity).reshape(1, L.shape[0])
+        return a.jacobian(self.Unknowns.u.mesh.X)
 
     def _objective_term(self, sigma):
         r"""The stretching / rotation source of the chosen objective rate,
@@ -2534,7 +2548,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 # dt (L sigma L^T + G L L^T).
                 dt = self.Parameters.dt_elastic
                 G = self.Parameters.shear_modulus
-                return L * sigma + sigma * L.T + dt * (L * sigma * L.T + G * L * L.T)
+                Ls = self._lagged_stretch_gradient(L)
+                return L * sigma + sigma * L.T + dt * ((L * sigma * Ls.T + Ls * sigma * L.T) / 2
+                                                       + G * (L * Ls.T + Ls * L.T) / 2)
             return L * sigma + sigma * L.T
         W = (L - L.T) / 2
         return W * sigma - sigma * W
