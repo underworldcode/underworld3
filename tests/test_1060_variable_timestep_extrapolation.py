@@ -88,3 +88,53 @@ def test_the_navier_stokes_advecting_velocity_is_the_linear_extrapolation():
     assert np.allclose(advecting, expected, rtol=0.0, atol=1.0e-12 * scale), (
         f"advecting velocity departs from the extrapolation with the step ratio by "
         f"{np.abs(advecting - expected).max():.3e}")
+
+
+def test_swarm_advection_takes_the_mid_time_velocity_with_the_step_ratio():
+    """Through the real path: a swarm advected through a uniform velocity
+    that grows linearly in time, with steps of 0.02, 0.01, 0.02 and 0.005.
+    Once a velocity level is recorded, each step moves a particle by exactly
+    dt times the velocity at the middle of that step."""
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8), minCoords=(0.0, 0.0),
+                                        maxCoords=(1.0, 1.0))
+    v = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=1)
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_coordinates(np.array([[0.3, 0.5]]))
+    speed, rate = 1.0, 2.0
+    t = 0.0
+    errors = []
+    for dt in (0.02, 0.01, 0.02, 0.005):
+        v.array[:, 0, 0] = speed + rate * t
+        x0 = np.asarray(swarm._particle_coordinates.data).copy()
+        swarm.advection(v.sym, dt, order=2, midtime_velocity=True)
+        x1 = np.asarray(swarm._particle_coordinates.data)
+        moved = float(x1[0, 0] - x0[0, 0]) if x1.size else 0.0
+        errors.append(abs(moved - dt * (speed + rate * (t + 0.5 * dt))) / dt)
+        t += dt
+    # the first step has no recorded level and takes v^n alone
+    assert max(errors[1:]) < 1.0e-12, (
+        f"mid-time displacement error per unit step {errors[1:]} "
+        "(expected round-off once a level is recorded)")
+
+
+def test_a_restore_brings_back_the_step_length_of_a_swarm_trace():
+    """A swarm's own mid-time trace records the length of the step its
+    velocity level belongs to; a regretted step of another length must not
+    leave that length behind."""
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8), minCoords=(0.0, 0.0),
+                                        maxCoords=(1.0, 1.0))
+    v = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=1)
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_coordinates(np.array([[0.3, 0.5]]))
+    v.array[:, 0, 0] = 1.0
+    orchestration_model = uw.get_default_model()
+    for _ in range(2):
+        swarm.advection(v.sym, 0.02, order=2, midtime_velocity=True)
+    token = orchestration_model.save_state()
+    swarm.advection(v.sym, 0.04, order=2, midtime_velocity=True)
+    orchestration_model.load_state(token)
+    assert swarm._characteristics._recorded_dt == 0.02
