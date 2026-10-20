@@ -160,10 +160,23 @@ cdef class CachedDMInterpolationInfo:
         # which are a valid hint (the pre-merge serial behaviour, bit-for-bit).
         # Non-simplex volume meshes (deformed quad/hex faces) keep NULL ->
         # PETSc DMLocatePoints, where the kdtree-nearest hint can be wrong.
+        # BUGFIX(#360): the bypass decision must be UNIFORM across ranks.
+        # use_hint depends only on mesh-global properties, but n_points is
+        # rank-local — gating the branch on it sent zero-point ranks down the
+        # NULL path (collective DMLocatePoints on the mesh comm, incl. the
+        # grid-hash bounding-box Allreduce after a deform) while ranks holding
+        # points took the non-collective bypass -> MPI collective-order desync
+        # ("Message truncated" abort during mesh.deform on SphericalManifold
+        # at np=4). With zero points any non-NULL pointer is safe: the C code
+        # only reads owning_cell inside loops over N (== 0 here).
         cdef bint use_hint = (bool(mesh.dm.isSimplex()) or (mesh.dim != mesh.cdim))
-        if n_points > 0 and use_hint:
-            cells_view = np.ascontiguousarray(self.cells)
-            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, <size_t*> &cells_view[0])
+        cdef size_t dummy_cell = <size_t> -1
+        if use_hint:
+            if n_points > 0:
+                cells_view = np.ascontiguousarray(self.cells)
+                ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, <size_t*> &cells_view[0])
+            else:
+                ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, &dummy_cell)
         else:
             ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, NULL)
         if ierr != 0:

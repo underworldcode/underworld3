@@ -2363,15 +2363,20 @@ class Mesh(Stateful, uw_object):
                 self.dm.getCoordinatesLocal().array
             ).reshape(-1, self.cdim)
         else:
-            # manifold mesh: the nav clone carries its own (ghosted) coords;
-            # refresh them from the rebuilt main DM where possible.
-            try:
-                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
-                self._nav_coords = numpy.asarray(
-                    self._nav_dm.getCoordinatesLocal().array
-                ).reshape(-1, self.cdim)
-            except Exception:
-                pass
+            # BUGFIX(#360): manifold mesh — the nav DM is a 1-cell-overlap
+            # clone, so its local coordinate vector is LARGER than the main
+            # DM's (it carries the halo vertices). Pushing self.dm's local
+            # vector in via setCoordinatesLocal silently truncates the halo
+            # coordinates, and every navigation index built from them then
+            # reads out of bounds (IndexError in _build_kd_tree_index at
+            # np>1). Rebuild the overlap clone from the updated DM instead —
+            # the same construction as __init__; the halo coordinates are
+            # migrated from the new geometry.
+            self._nav_dm = self.dm.clone()
+            self._nav_dm.distributeOverlap(1)
+            self._nav_coords = numpy.asarray(
+                self._nav_dm.getCoordinatesLocal().array
+            ).reshape(-1, self.cdim)
 
         self._index = None
         self._build_kd_tree_index()
@@ -4502,6 +4507,24 @@ class Mesh(Stateful, uw_object):
 
         return
 
+    def _vertex_coord_rows(self, dm):
+        """Vertex plex-point -> coordinate-array row map for ``dm``.
+
+        Returns an int64 array over the depth-0 (vertex) stratum such that
+        ``coords[rows[p - pStart]]`` is the coordinate of plex point ``p``,
+        where ``coords`` is ``dm.getCoordinatesLocal()`` reshaped to
+        ``(-1, cdim)``. The affine guess ``row = p - pStart`` is only a
+        layout coincidence; the authoritative mapping is the coordinate
+        PetscSection offsets (issue #360).
+        """
+        section = dm.getCoordinateSection()
+        pStart, pEnd = dm.getDepthStratum(0)
+        return numpy.fromiter(
+            (section.getOffset(p) // self.cdim for p in range(pStart, pEnd)),
+            dtype=numpy.int64,
+            count=pEnd - pStart,
+        )
+
     def _build_kd_tree_index(self):
 
         if hasattr(self, "_index") and self._index is not None:
@@ -4518,6 +4541,7 @@ class Mesh(Stateful, uw_object):
         cStart, cEnd = nav_dm.getHeightStratum(0)
         fStart, fEnd = nav_dm.getHeightStratum(1)
         pStart, pEnd = nav_dm.getDepthStratum(0)
+        coord_rows = self._vertex_coord_rows(nav_dm)
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
@@ -4531,7 +4555,7 @@ class Mesh(Stateful, uw_object):
             cell_faces = nav_dm.getCone(cell_id)
             points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[points - pStart]
+            cell_point_coords = nav_coords[coord_rows[points - pStart]]
             cell_centroid = cell_point_coords.mean(axis=0)
             centroids_list.append(cell_centroid)
 
@@ -4689,6 +4713,7 @@ class Mesh(Stateful, uw_object):
         cStart, cEnd = nav_dm.getHeightStratum(0)
         fStart, fEnd = nav_dm.getHeightStratum(1)
         pStart, pEnd = nav_dm.getDepthStratum(0)
+        coord_rows = self._vertex_coord_rows(nav_dm)
         num_local_cells = cEnd - cStart
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
@@ -4707,13 +4732,13 @@ class Mesh(Stateful, uw_object):
             cell_faces = nav_dm.getCone(cell_id)
             points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[points - pStart]
+            cell_point_coords = nav_coords[coord_rows[points - pStart]]
 
             for face in range(cell_num_faces):
 
                 points = nav_dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
                 # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-                point_coords = nav_coords[points - pStart]
+                point_coords = nav_coords[coord_rows[points - pStart]]
 
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
@@ -4949,6 +4974,7 @@ class Mesh(Stateful, uw_object):
         cStart, cEnd = nav_dm.getHeightStratum(0)
         fStart, fEnd = nav_dm.getHeightStratum(1)
         pStart, pEnd = nav_dm.getDepthStratum(0)
+        coord_rows = self._vertex_coord_rows(nav_dm)
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
@@ -4998,7 +5024,7 @@ class Mesh(Stateful, uw_object):
         for face in boundary_faces:
             cell = nav_dm.getJoin(face)[0]
             points = nav_dm.getTransitiveClosure(face)[0][-face_num_points:]
-            point_coords = nav_coords[points - pStart]  # Use raw array for internal calculations
+            point_coords = nav_coords[coord_rows[points - pStart]]  # Use raw array for internal calculations
             face_centroid = point_coords.mean(axis=0)
             cell_centroid = nav_centroids[cell - cStart]
 
@@ -5019,7 +5045,7 @@ class Mesh(Stateful, uw_object):
                 # boundary edge — needs the cell's third vertex to
                 # build the cell normal.
                 cell_points = nav_dm.getTransitiveClosure(cell)[0][-cell_num_points:]
-                cell_point_coords = nav_coords[cell_points - pStart]
+                cell_point_coords = nav_coords[coord_rows[cell_points - pStart]]
                 cell_normal = numpy.cross(
                     cell_point_coords[1] - cell_point_coords[0],
                     cell_point_coords[2] - cell_point_coords[0],
@@ -5510,6 +5536,7 @@ class Mesh(Stateful, uw_object):
 
         cStart, cEnd = self.dm.getHeightStratum(0)
         pStart, pEnd = self.dm.getDepthStratum(0)
+        coord_rows = self._vertex_coord_rows(self.dm)
         cell_length = np.empty(centroids.shape[0])
         cell_min_r = np.empty(centroids.shape[0])
         cell_r = np.empty(centroids.shape[0])
@@ -5518,7 +5545,7 @@ class Mesh(Stateful, uw_object):
             cell_num_points = self.dm.getConeSize(cell)
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_coords = self._coords[cell_points - pStart]
+            cell_coords = self._coords[coord_rows[cell_points - pStart]]
 
             distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
 
