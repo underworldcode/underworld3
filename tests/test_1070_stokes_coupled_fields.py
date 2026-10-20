@@ -172,9 +172,10 @@ def _cosserat_shear_layer_error(cell_size):
     stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
     stokes.add_dirichlet_bc((u_e, 0.0), "Left")
     # the exact traction F1 . n on the right wall, n = (1, 0): the skew stress makes
-    # sigma_yx = (eta - eta_c) u_x' - 2 eta_c omega, not sigma_xy
-    stokes.add_natural_bc(
-        (0.0, (ETA - ETA_C) * du_exact.subs(ys, y) - 2 * ETA_C * omega_e), "Right")
+    # sigma_yx = (eta - eta_c) u_x' - 2 eta_c omega, not sigma_xy. The natural-BC value
+    # enters the boundary residual as is (PETSc's f0), so it is MINUS the traction.
+    traction_y = (ETA - ETA_C) * du_exact.subs(ys, y) - 2 * ETA_C * omega_e
+    stokes.add_natural_bc((0.0, -traction_y), "Right")
     stokes.add_coupled_dirichlet_bc(0.0, "Top", omega)
     stokes.add_coupled_dirichlet_bc(0.0, "Bottom", omega)
     _exact_linear_solves(stokes)
