@@ -1119,6 +1119,11 @@ class _DDtBase(uw_object):
             indep = self._psi_star_indep_indices
             row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
             if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+                # TODO(BUG): .subs does not reach psi_star[0] held inside a
+                # UWexpression (at yield the viscosity reads E_eff_inv_II,
+                # whose .sym contains it), so that occurrence still reads the
+                # history live. No effect on the result while the snapshot
+                # equals psi_star[0] at the commit; substitute after unwrapping.
                 ps0 = self.psi_star[0]
                 psi_snapshot = self._psi_snapshot
                 substitutions = {
@@ -1148,16 +1153,11 @@ class _DDtBase(uw_object):
         ``psi_star[0]`` between that refresh and the commit, so the copy equals
         ``psi_star[0]`` at the commit (difference 0.0 at every commit of a
         rotating flow, nodal and Eulerian, 2026-10-22) and the projected
-        stress is the same with or without it. What it guarantees is that the
-        projection stays explicit in its source whatever writes the history.
-        It was introduced (8f2b0dd,
-        2026-04-25) when the projection was implicit in its own target: at a
-        Min-mode yield kink that admits two fixed points, and under a change of
-        timestep the iteration drifted to the elastic one, off the yield
-        surface. Taken before the carry instead of after it, the copy is wrong
-        rather than redundant: from beb4f2e3 (2026-04-25) to 2026-10-18 the
-        nodal history rebuilt its stored stress from the field before the
-        trace-back, so the record never moved with the flow.
+        stress is the same with or without it. The order is the constraint:
+        refreshed before the carry, the copy holds the history where it was
+        made and the stored stress is rebuilt from it, so the record does not
+        move with the flow (see the warning in the stress-transport subsystem
+        notes).
 
         Wired for tensor histories only. Idempotent.
         """
@@ -2061,9 +2061,9 @@ class Eulerian(_DDtBase):
         self._carry_history(dt, evalf=evalf, verbose=verbose)
 
         # Freeze the projection's source input at psi_star[0] as carried to
-        # this step, the history the solve reads. Taken before the carry, the
-        # stored stress is rebuilt from the field that has not moved and the
-        # record stays where it was made.
+        # this step, the history the solve reads. It must follow the carry:
+        # taken before it, the stored stress is rebuilt from the field that
+        # has not moved.
         self._refresh_source_snapshot()
 
         return
@@ -3807,6 +3807,12 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
             # (e.g., containing derivatives — true for the NS viscous flux every step).
+            # TODO(BUG): with the source snapshot enabled this projection reads
+            # the snapshot, which update_pre_solve refreshes only after the
+            # trace-back, so it holds the previous step's carried history, not
+            # the last commit. Latent: Stokes, the one caller that enables the
+            # snapshot, passes store_result=False. Refresh before this record
+            # if a store_result=True caller ever needs it.
             # Route via _build_projection_source so the (1, Nc) row-matrix flattening
             # required by SNES_MultiComponent_Projection is applied for tensor vtypes.
             # Without this, a (dim, dim) tensor function meets a (1, Nc) solver field
@@ -4055,9 +4061,9 @@ class SemiLagrangian(_DDtBase):
             )
 
         # Freeze the projection's source input at psi_star[0] as carried to
-        # this step: the history the solve reads. Taken before the trace, the
-        # stored stress was rebuilt from the field that had not moved, so the
-        # record stayed where it was made. A memcpy, no recompile; ``.data``
+        # this step: the history the solve reads. It must follow the trace:
+        # taken before it, the stored stress is rebuilt from the field that
+        # has not moved. A memcpy, no recompile; ``.data``
         # skips unit conversion (both variables are non-dimensional) and keeps
         # the callback sync into the PETSc local Vec.
         self._refresh_source_snapshot()

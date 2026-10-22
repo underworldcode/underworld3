@@ -16,8 +16,8 @@ Bugs each test would have caught
 
 2. ``test_vep_yield_lock_variable_dt`` — halving and doubling dt at yield
    should not knock σ off the yield surface. Catches: the implicit-
-   projection drift fixed by the psi_snapshot machinery (see commits
-   8f2b0dd, 31abad1, 380ab4b).  Pre-fix this test would have shown peak
+   drift fixed in 5b3548c8 (2026-04-25; the psi_snapshot machinery, then
+   attributed to an implicit projection).  Pre-fix this test would have shown peak
    |σ| ≈ 0.65 against τ_y = 0.5.
 
 3. ``test_vep_snes_no_divergence_loading_through_yield`` — loading from
@@ -131,8 +131,8 @@ def test_vep_yield_lock_fixed_dt():
 def test_vep_yield_lock_variable_dt():
     """Halving and doubling dt at yield must not push σ off the yield surface.
 
-    Catches: implicit-projection drift fixed by psi_snapshot. Pre-fix this
-    test would have shown peak |σ| ≈ 0.65 (30% violation).
+    Catches: the drift fixed in 5b3548c8 (the psi_snapshot machinery).
+    Pre-fix this test would have shown peak |σ| ≈ 0.65 (30% violation).
     """
     _, stokes, V_top = _build_stokes("yield_lock_var")
     dt_max, dt_min = 0.20 * T_R, 0.10 * T_R
@@ -277,8 +277,9 @@ def test_pure_ve_variable_dt_accuracy():
     """Pure VE under variable dt should match the analytical square-wave
     solution within a loose tolerance.
 
-    Catches: regressions in variable-dt BDF-2 coefficients or in the
-    snapshot refresh ordering.  The threshold (max_err < 0.10) is loose
+    Catches: regressions in variable-dt BDF-2 coefficients. It cannot see
+    the snapshot refresh order: the stress is uniform in the box, so
+    carrying it changes nothing (that is test_1102's).  The threshold (max_err < 0.10) is loose
     enough that minor BDF-coefficient tuning won't false-trip it but
     tight enough to catch large drifts. Current head produces ~0.06.
     """

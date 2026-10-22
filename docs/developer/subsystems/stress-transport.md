@@ -21,14 +21,15 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
-| `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
+| `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs (both measured on the defect in the warning below) |
 | `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
 | `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
 ```{warning}
-From beb4f2e3 (2026-04-25) until 2026-10-18 the nodal history did not carry
+From beb4f2e3 (2026-04-25) until the fix on `bugfix/backward-nodes-snapshot-order`
+(d77bc9d2, 2026-10-18; on `development` once that branch merges) the nodal history did not carry
 the stress it stored: its commit projection read the history as it was *before*
 the trace-back, so the momentum solve saw the carried stress while the record
 stayed where it was made (`test_1102`, a stress carried by a rigid rotation).
@@ -85,7 +86,7 @@ the split recovers it. That is the default, linear step; the deformation step
 below does not have the limit. On the confined cylinder at Courant one on the far-field
 mesh the wall shear rate is ten times the far-field one: every history lost the
 conformation at the cylinder top in step one, the nodal history then ran away and
-the solve hung, and the integration-point history gave out at Wi 0.6. At a step
+the solve hung (measured on the defect in the warning above), and the integration-point history gave out at Wi 0.6. At a step
 ten times smaller the integration-point history is admissible everywhere to Wi 0.6,
 and at Wi 0.8 the conformation is mildly indefinite on two percent of its points.
 

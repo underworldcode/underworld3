@@ -43,7 +43,7 @@ a flux history lives on the integration points (or on the grid, with DEVSS
 opted in); a scalar field's history lives on the nodes. The two rules are
 not in conflict: they are different quantities. The nodal measurement was
 made while the nodal history did not carry the stress it stored (from
-beb4f2e3, 2026-04-25, to 2026-10-18; see the warning in
+beb4f2e3, 2026-04-25, until d77bc9d2 on `bugfix/backward-nodes-snapshot-order`; see the warning in
 [stress transport](../subsystems/stress-transport.md)), so its wall excess
 is to be re-measured before this ruling is confirmed.
 

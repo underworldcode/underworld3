@@ -1898,8 +1898,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             )
         # The stress flux 2·viscosity·E_eff contains psi_star[0] in E_eff's
         # history term; the commit projection reads it through a frozen copy
-        # taken after the step's transport, so the projection is explicit in
-        # its source (see enable_source_snapshot).
+        # taken after the step's transport (see enable_source_snapshot).
         self.Unknowns.DFDt.enable_source_snapshot()
         # the history stores the model's encoding of a stress; an inflow datum
         # is given as a stress and stored through the same encoding
