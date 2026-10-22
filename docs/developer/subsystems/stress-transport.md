@@ -31,7 +31,7 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 Until 2026-10-18 the nodal history did not carry the stress it stored: its
 commit projection read the history as it was *before* the trace-back, so the
 momentum solve saw the carried stress while the record stayed where it was made
-(`test_1076`, a stress carried by a rigid rotation). Results for the nodal
+(`test_1102`, a stress carried by a rigid rotation). Results for the nodal
 flavour in flows where the stress varies along the flow — the confined cylinder
 and its wall layer above among them — were measured on that defect and need
 re-measuring. Benchmarks whose stress is uniform along the flow (the shear box,
@@ -242,5 +242,5 @@ Related: [constitutive models](constitutive-models.md),
 histories, the conformation check, the elastic timestep), `test_1060` (store
 smoothing below Courant one), `test_1061` (the forward flavour on Waters and
 King), `tests/parallel/test_1062` (the forward flavour at np 2), `test_1063`
-(save and restore), `test_1076` (a stored stress carried by a rigid rotation:
+(save and restore), `test_1102` (a stored stress carried by a rigid rotation:
 the trace-back itself, which the uniform benchmarks cannot see).
