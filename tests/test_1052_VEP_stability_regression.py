@@ -28,9 +28,11 @@ Bugs each test would have caught
 
 4. ``test_pure_ve_variable_dt_accuracy`` — pure-VE accuracy under variable
    dt against the analytical Maxwell square-wave solution. Catches:
-   regressions in variable-dt BDF-2 coefficients or in the snapshot
-   refresh ordering. Threshold loose enough (max_err < 0.10) that it
-   doesn't false-trip on minor BDF-coefficient tuning.
+   regressions in variable-dt BDF-2 coefficients. Threshold loose enough
+   (max_err < 0.10) that it doesn't false-trip on minor BDF-coefficient
+   tuning. It cannot see the order of the snapshot refresh against the
+   history's transport: the stress is uniform in a shear box, so carrying
+   it changes nothing. That order is test_1102's.
 """
 
 import pytest

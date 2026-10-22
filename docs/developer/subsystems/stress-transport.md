@@ -28,10 +28,13 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 
 ```{warning}
-Until 2026-10-18 the nodal history did not carry the stress it stored: its
-commit projection read the history as it was *before* the trace-back, so the
-momentum solve saw the carried stress while the record stayed where it was made
-(`test_1102`, a stress carried by a rigid rotation). Results for the nodal
+From beb4f2e3 (2026-04-25) until 2026-10-18 the nodal history did not carry
+the stress it stored: its commit projection read the history as it was *before*
+the trace-back, so the momentum solve saw the carried stress while the record
+stayed where it was made (`test_1102`, a stress carried by a rigid rotation).
+The Eulerian flavours refreshed in the same wrong order but never took the
+snapshot (the request came before their projection existed, and lapsed), so
+their results were not affected; both now refresh after the carry. Results for the nodal
 flavour in flows where the stress varies along the flow — the confined cylinder
 and its wall layer above among them — were measured on that defect and need
 re-measuring. Benchmarks whose stress is uniform along the flow (the shear box,

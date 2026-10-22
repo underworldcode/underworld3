@@ -1134,26 +1134,32 @@ class _DDtBase(uw_object):
             return source_fn
 
     def enable_source_snapshot(self):
-        """Enable snapshot substitution in the projection's source field.
+        """Make the commit projection read a frozen copy of ``psi_star[0]``.
 
-        Call this once when the source expression (``psi_fn``) references
-        ``psi_star[0]`` itself — without it the projection's residual
-        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
-        because target and source share the same data field. With Min-mode
-        plasticity at the yield kink, the implicit projection admits two
-        fixed points (elastic and yield branches); under timestep change the
-        iteration drifts to the elastic-branch fixed point and σ violates
-        the yield surface.
+        For a flux history the source expression (``psi_fn``) contains
+        ``psi_star[0]`` itself: a viscoelastic stress is formed from an
+        effective strain rate whose elastic term is the stored stress. The
+        snapshot is a separate mesh variable of ``psi_star[0]``'s shape, vtype
+        and degree, substituted for it in the projection's compiled source.
+        ``update_pre_solve`` refreshes it (a memcpy, no recompile) once the
+        step has carried the history, so it holds the history the solve reads.
 
-        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
-        shape/vtype/degree. Each call to ``update_pre_solve`` copies
-        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
-        input for the upcoming projection. Substitution makes the
-        projection's compiled C code read from ``psi_snapshot.array``
-        instead of ``psi_star[0].array`` — there's no recompile per step,
-        just a memcpy.
+        The projection writes a separate flat variable, and nothing writes
+        ``psi_star[0]`` between that refresh and the commit, so the copy equals
+        ``psi_star[0]`` at the commit (difference 0.0 at every commit of a
+        rotating flow, nodal and Eulerian, 2026-10-22) and the projected
+        stress is the same with or without it. What it guarantees is that the
+        projection stays explicit in its source whatever writes the history.
+        It was introduced (8f2b0dd,
+        2026-04-25) when the projection was implicit in its own target: at a
+        Min-mode yield kink that admits two fixed points, and under a change of
+        timestep the iteration drifted to the elastic one, off the yield
+        surface. Taken before the carry instead of after it, the copy is wrong
+        rather than redundant: from beb4f2e3 (2026-04-25) to 2026-10-18 the
+        nodal history rebuilt its stored stress from the field before the
+        trace-back, so the record never moved with the flow.
 
-        Idempotent: safe to call more than once.
+        Wired for tensor histories only. Idempotent.
         """
         if not getattr(self, '_psi_star_use_multicomponent', False):
             # Currently only wired for tensor projections (the case that
@@ -1912,6 +1918,16 @@ class Eulerian(_DDtBase):
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
+    def enable_source_snapshot(self):
+        """As :meth:`_DDtBase.enable_source_snapshot`, building the projection first.
+
+        This flavour builds its projection on first use, and only then knows
+        whether it is the multi-component one the snapshot is wired for; asked
+        before that, the base method would find no projection and do nothing.
+        """
+        self._setup_projections()
+        super().enable_source_snapshot()
+
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection.
 
@@ -2039,15 +2055,23 @@ class Eulerian(_DDtBase):
             self.initialise_history()
 
         # Update coefficient values for current effective_order and dt
-        self._refresh_source_snapshot()
-
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
-        if self.V_fn is not None and dt is not None and self._advection_mode == "split":
-            self._apply_split_advection(dt, evalf)
+        self._carry_history(dt, evalf=evalf, verbose=verbose)
+
+        # Freeze the projection's source input at psi_star[0] as carried to
+        # this step, the history the solve reads. Taken before the carry, the
+        # stored stress is rebuilt from the field that has not moved and the
+        # record stays where it was made.
+        self._refresh_source_snapshot()
 
         return
+
+    def _carry_history(self, dt, evalf=False, verbose=False):
+        """Carry the stored history over the step: the explicit split correction."""
+        if self.V_fn is not None and dt is not None and self._advection_mode == "split":
+            self._apply_split_advection(dt, evalf)
 
     def _apply_split_advection(self, dt, evalf=False):
         """Explicit operator-splitting correction: ``psi_star[0] -= dt (V . grad) psi``."""
@@ -2060,6 +2084,10 @@ class Eulerian(_DDtBase):
         # psi_fn the shape is (1,1); for vector it is (1,dim).
         psi = self.psi_fn
         V = self.V_fn
+        # TODO(BUG): right for a scalar or a vector only. A 2x2 symmetric
+        # tensor has 3 stored components, but this corrects 2 data columns
+        # with the flat entries psi[0], psi[1] (xx, xy); it should walk
+        # psi_star[0]._data_layout(i, j) as EulerianSUPG._transport_history does.
         ncomp = max(psi.shape)  # number of tracked components
 
         for c in range(ncomp):
@@ -2512,12 +2540,9 @@ class EulerianSUPG(Eulerian):
                 values = np.asarray(flat.data[:, k])
                 history.data[:, history._data_layout(i, j)] = values
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True):
-        """Refresh the scheme's coefficients and, when this manager owns the
-        transport of its history, carry every level forward by one step."""
-        dt = self._nondim_timestep(dt)
-        super().update_pre_solve(dt, evalf=evalf, verbose=verbose,
-                                 store_result=store_result)
+    def _carry_history(self, dt, evalf=False, verbose=False):
+        """When this manager owns the transport of its history, carry every
+        level forward by one step."""
         if self.transport_on_update and self.V_fn is not None and dt:
             self._transport_history(dt, verbose=verbose)
 

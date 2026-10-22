@@ -1896,10 +1896,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 **ddt_kwargs,
                 **common,
             )
-        # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
-        # history term — without snapshot substitution the projection of
-        # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
-        # yield admits the wrong fixed point under timestep change.
+        # The stress flux 2·viscosity·E_eff contains psi_star[0] in E_eff's
+        # history term; the commit projection reads it through a frozen copy
+        # taken after the step's transport, so the projection is explicit in
+        # its source (see enable_source_snapshot).
         self.Unknowns.DFDt.enable_source_snapshot()
         # the history stores the model's encoding of a stress; an inflow datum
         # is given as a stress and stored through the same encoding
