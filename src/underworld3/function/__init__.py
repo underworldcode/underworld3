@@ -64,6 +64,7 @@ from .functions_unit_system import (
 
 
 from .expressions import UWexpression as expression
+from .expressions import template_expression
 from .expressions import UWDerivativeExpression as _derivative_expression
 from .quantities import quantity, UWQuantity
 from .expressions import substitute as fn_substitute_expressions

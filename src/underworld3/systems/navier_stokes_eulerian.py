@@ -39,6 +39,7 @@ from underworld3.checkpoint.state import SolverStepState
 from underworld3.systems.ddt import _step_ratio
 import underworld3.timing as timing
 from underworld3.function import expression as public_expression
+from underworld3.function import template_expression
 from underworld3.systems.ddt import _DDtBase
 from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.advection_diffusion_eulerian import _check_supplied_manager
@@ -479,7 +480,14 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # a second Navier-Stokes solver in the same process re-declared it with
         # its own instance's symbols, which silently rebound the name under any
         # formula already written against the first solver's residual.
-        f0 = public_expression(
+        #
+        # A template, not a declaration: each access re-derives the residual
+        # from the parameters as they stand, so the contents legitimately
+        # change from one access to the next as \Delta t and the Adams-Moulton
+        # coefficients move. template_expression writes through .sym, which is
+        # the sanctioned path for that; constructing again would read as a
+        # declaration and is what the re-declaration guard refuses.
+        f0 = template_expression(
             rf"\mathbf{{f}}_0\left( \mathbf{{u}}_{{{self.instance_number}}} \right)",
             self._strong_residual(),
             "Navier-Stokes SUPG: strong residual (time derivative, advection, body force)",
@@ -493,7 +501,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         dim = self.mesh.dim
         mechanical_pressure = (
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
-        F1 = public_expression(
+        # A template, refreshed on every access -- see F0.
+        F1 = template_expression(
             rf"\mathbf{{F}}_1\left( \mathbf{{u}}_{{{self.instance_number}}} \right)",
             self._viscous_flux() + self._devss_flux() - sympy.eye(dim) * mechanical_pressure
             + self._stabilisation_flux(),

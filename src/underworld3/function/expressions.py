@@ -2065,6 +2065,32 @@ def mesh_vars_in_expression(expr):
     return mesh, varfns, derivfns
 
 
+def template_expression(name, sym, description="No description provided", units=None):
+    """Declare a derived quantity, or refresh what it already holds.
+
+    A solver's ``F0``/``F1`` are templates: each access re-derives them from the
+    parameters as they stand now, so the second access within a step carries a
+    different ``\\Delta t`` and different Adams-Moulton coefficients from the
+    first. Construction is the wrong verb for that. A plain
+    ``expression(name, ...)`` call reads as a declaration, and a declaration
+    that silently replaced the contents is exactly what the re-declaration
+    guard refuses -- rightly, because for any other caller a repeated name is
+    an accident.
+
+    So the owner says what it means: write through ``.sym``, the sanctioned
+    path for changing what a container holds, and declare only when the
+    container does not exist yet. Formulae already written against the name go
+    on seeing the refreshed contents, which is the container contract and the
+    behaviour these properties have always relied on.
+    """
+    existing = UWexpression._expr_names.get(name)
+    if existing is None:
+        return UWexpression(name, sym, description, units=units)
+
+    existing.sym = sym
+    return existing
+
+
 # ============================================================================
 # Backward Compatibility Aliases
 # ============================================================================
