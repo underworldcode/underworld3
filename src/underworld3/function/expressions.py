@@ -704,6 +704,28 @@ def reset_expression_registry():
     UWexpression._ephemeral_expr_names.clear()
 
 
+def _wrap_with_units(sym, units):
+    """Wrap a plain number in a UWQuantity, leaving anything symbolic alone.
+
+    One definition, because two callers need it: construction, and
+    :func:`template_expression` refreshing a container that already exists. A
+    second copy of this is how a refresh ends up dropping the units that
+    construction applied.
+    """
+    if units is None or isinstance(sym, UWQuantity):
+        return sym
+    if isinstance(sym, (int, float, np.integer, np.floating)):
+        return UWQuantity(sym, units)
+    if sym is not None and not isinstance(sym, (sympy.Basic, UWexpression)):
+        # numeric-like, e.g. a numpy scalar; anything that will not convert
+        # keeps the units parameter unapplied rather than failing the call
+        try:
+            return UWQuantity(float(sym), units)
+        except (TypeError, ValueError):
+            pass
+    return sym
+
+
 def live_expressions():
     """The persistent expression containers, in a stable order.
 
@@ -1024,19 +1046,7 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         if value is not None and sym is not None:
             raise ValueError("Both 'sym' and 'value' provided - use only one")
 
-        # If units are provided and sym is a plain numeric value, wrap it in UWQuantity
-        # Don't wrap if sym is already a UWQuantity, UWexpression, or SymPy expression
-        if units is not None and not isinstance(sym, UWQuantity):
-            # Only wrap plain numeric values - not expressions or other complex types
-            if isinstance(sym, (int, float, np.integer, np.floating)):
-                sym = UWQuantity(sym, units)
-            elif sym is not None and not isinstance(sym, (sympy.Basic, UWexpression)):
-                # Try to wrap other numeric-like things (e.g., numpy scalars)
-                try:
-                    sym = UWQuantity(float(sym), units)
-                except (TypeError, ValueError):
-                    # Can't convert to float - ignore units parameter
-                    pass
+        sym = _wrap_with_units(sym, units)
 
         # TRANSPARENT CONTAINER PRINCIPLE (2025-11-27):
         # Store the wrapped object directly - don't extract or decompose it.
@@ -2082,12 +2092,20 @@ def template_expression(name, sym, description="No description provided", units=
     container does not exist yet. Formulae already written against the name go
     on seeing the refreshed contents, which is the container contract and the
     behaviour these properties have always relied on.
+
+    The name must be unique to the owner. This function does deliberately what
+    the guard refuses, so a name two owners both reach is silently rebound by
+    it, which is the bug the guard exists to catch -- tag the name with the
+    owner (``self.instance_number``) and it cannot happen.
     """
     existing = UWexpression._expr_names.get(name)
     if existing is None:
         return UWexpression(name, sym, description, units=units)
 
-    existing.sym = sym
+    # Through the same wrapping construction uses: a refresh that skipped it
+    # would quietly strip the units the container was declared with.
+    existing.sym = _wrap_with_units(sym, units)
+    existing._description = description
     return existing
 
 
