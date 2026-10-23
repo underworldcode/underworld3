@@ -826,7 +826,11 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     ref = np.asarray([c for c in ref_cnodes if c >= 0], dtype=np.int64)
     if ref.size:
         csel[ref] = True
-    halo_rows = (~row_is_patch) & (bg_cnode >= 0) & csel[np.clip(bg_cnode, 0, None)]
+    # Index csel only where a row has a background coarse node: a rank can
+    # hold fine rows and no coarse node at all, and then csel is empty.
+    halo_rows = np.zeros(n, dtype=bool)
+    with_bg = (~row_is_patch) & (bg_cnode >= 0)
+    halo_rows[with_bg] = csel[bg_cnode[with_bg]]
     node_in_sub = node_is_patch.copy()
     if n:
         node_in_sub[node_of_row[halo_rows]] = True
@@ -884,7 +888,18 @@ def _coarse_dof_layout(solver, coarse_mesh, field_id=None):
 def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
     """The node-level transfer for a parallel build: the barycentric builder
     with its serial orphan repair switched off (see the note in
-    :func:`barycentric_prolongation`); any other builder as it is."""
+    :func:`barycentric_prolongation`); any other builder as it is.
+
+    A rank can hold none of a small level. With no fine node it has no rows.
+    With too few coarse nodes to span a simplex it cannot place its fine nodes
+    locally: they count as outside the local hull, which is what sends the
+    "auto" build across partitions, where the coarse cloud is the whole level."""
+    import scipy.sparse as sp
+    n_fine, n_coarse = fine_coords.shape[0], coarse_coords.shape[0]
+    if n_fine == 0 or n_coarse <= coarse_coords.shape[1]:
+        last_builder_stats["outside_hull"] = n_fine
+        last_builder_stats["orphans_repaired"] = 0
+        return sp.csr_matrix((n_fine, n_coarse))
     if builder is barycentric_prolongation:
         return builder(coarse_coords, fine_coords, repair_orphans=False)
     return builder(coarse_coords, fine_coords)
@@ -1472,10 +1487,16 @@ class CustomMGHierarchy:
                 rmap, nfull = (_reduced_map(solver.dm, self.field_id) if finest
                                else _coarse_reduced_map(solver, mesh, self.field_id))
                 maps.append(rmap)
-            nc = nfull // c.shape[0]
-            if nfull % c.shape[0] != 0:
+            # The component count is the field's: take it over the whole level,
+            # since a rank can hold no node of a small one.
+            nodes, dofs = c.shape[0], nfull
+            if parallel:
+                level_comm = solver.dm.comm.tompi4py()
+                nodes, dofs = level_comm.allreduce(nodes), level_comm.allreduce(dofs)
+            nc = dofs // nodes
+            if dofs % nodes != 0:
                 raise RuntimeError(
-                    f"level {k}: full DOFs {nfull} not divisible by nodes {c.shape[0]}")
+                    f"level {k}: full DOFs {dofs} not divisible by nodes {nodes}")
             coords.append(c)
             ncomp.append(nc)
 
@@ -2261,7 +2282,11 @@ def _colocate_level(coarse_mesh, fine_mesh):
     if comm.size == 1:
         return coarse_mesh
     cS, cE = dm.getHeightStratum(0)
-    cen_c = np.array([dm.computeCellGeometryFVM(c)[1] for c in range(cS, cE)])
+    # Shaped from the coordinate dimension, not from the cells found: a coarse
+    # level is small, and on a large run most ranks own none of it.
+    cdim = dm.getCoordinateDim()
+    cen_c = np.array([dm.computeCellGeometryFVM(c)[1] for c in range(cS, cE)],
+                     dtype=float).reshape(-1, cdim)
     fdm = fine_mesh.dm
     fS, fE = fdm.getHeightStratum(0)
     # OWNED fine cells only: a ghost cell belongs to another rank
@@ -2272,8 +2297,8 @@ def _colocate_level(coarse_mesh, fine_mesh):
     except (ValueError, TypeError):
         ghost = set()
     owned_f = [c for c in range(fS, fE) if c not in ghost]
-    cen_f = (np.array([fdm.computeCellGeometryFVM(c)[1] for c in owned_f])
-             if owned_f else np.zeros((0, cen_c.shape[1])))
+    cen_f = np.array([fdm.computeCellGeometryFVM(c)[1] for c in owned_f],
+                     dtype=float).reshape(-1, cdim)
     # every rank offers its nearest owned fine cell to EVERY coarse centroid
     # in the mesh (all-gathered: the coarse levels are small)
     cen_all = np.vstack(comm.allgather(cen_c))
