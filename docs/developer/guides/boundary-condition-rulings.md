@@ -87,3 +87,21 @@ given as `None` (or `sympy.oo`) are left free. Three things to know:
 - A boundary condition on a field that is not the solver's unknown (a
   pressure datum on a Stokes solver) is accepted by the solver but not by
   the adjoint, which refuses rather than drop it.
+
+## Explicit circular-wall correction on affine annuli
+
+For the restricted constant-viscosity, continuous P2/P1 annulus workflow,
+`stokes.add_cylindrical_wall_transfer(...)` registers numerical normal and
+natural data together; `stokes.solve_cylindrical_wall_updates(...)` alternates
+accepted solves and lagged boundary updates. Do not also register homogeneous
+rotated conditions on the same walls. The correction follows the physical
+circle while retaining affine elements, so it is explicitly selected rather
+than a change to the default rotated condition.
+
+`stokes.cylindrical_pressure_lifting(...)` constructs a prescribed circular-sheet
+pressure extraction, including the nonzero outer-chord natural datum. It leaves
+force and datum registration visible to the caller.
+`stokes.recover_cylindrical_topography(...)` transfers CBF moments into a spatial
+P2 target without changing the raw reaction cache or fitting harmonics. See the
+[circular geometry guide](../../advanced/cylindrical-geometry-correction.md)
+for equations, limitations and source/pressure conventions.

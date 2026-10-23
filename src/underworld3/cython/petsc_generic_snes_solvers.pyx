@@ -8652,6 +8652,226 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             J1.destroy(); J2.destroy()
         return rel > tol
 
+    def cylindrical_pressure_lifting(self, *, interface_radius, outer_radius,
+                                     wavenumber, amplitude, quadrature_points):
+        r"""Construct an exact-circle pressure lift and moment-equivalent force.
+
+        Parameters
+        ----------
+        interface_radius, outer_radius : float
+            Prescribed circular sheet and outer wall radii, with outer > sheet.
+        wavenumber : int
+            Azimuthal cosine mode of the prescribed radial sheet load.
+        amplitude : float
+            Sheet amplitude in :math:`f=-A\cos(n\theta)e_r\delta(r-R)`.
+        quadrature_points : int
+            Points per direction in circular-cut quadrature.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump``, ``regular_force`` (DG P2 MeshVariable),
+            ``natural_datum``, ``pressure_jump_integral`` and ``checks``.
+            Reconstruct physical pressure as :math:`p=q+p_J`. Assign the
+            force and register ``natural_datum`` on the outer boundary; the
+            latter is :math:`-p_J\Gamma` and does not vanish on outer chords.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Explicitly selected correction for affine 2D P2/continuous-P1 annuli,
+        constant viscosity and a fitted circular sheet. No analytical Stokes
+        solution enters construction. Call collectively on every rank.
+
+        References
+        ----------
+        K. S. Chang and D. Y. Kwak (2009), "Extraction method for Stokes
+        Flow with jumps in the pressure", arXiv:0911.4769,
+        https://arxiv.org/abs/0911.4769, Section 2, equations (4)-(6).
+        The pressure split motivates this method. The radial lift, circular-cut
+        load integration and outer-chord natural datum are UW3 adaptations,
+        not the paper's harmonic-extension/CR scheme.
+        """
+        from underworld3.utilities._cylindrical_pressure import _create_circular_pressure_lift
+        if self.u.degree != 2 or not self.u.continuous or self.p.degree != 1 or not self.p.continuous:
+            raise ValueError("Circular pressure lifting requires continuous P2/P1 fields.")
+        return _create_circular_pressure_lift(self.mesh, interface_radius, outer_radius,
+                                             wavenumber, amplitude, quadrature_points)
+
+    def add_cylindrical_wall_transfer(self, *, boundary, radius, sign, viscosity,
+                                      interface_radius, outer_radius, wavenumber,
+                                      amplitude, quadrature):
+        r"""Register numerical Taylor data for a circular free-slip wall.
+
+        Parameters
+        ----------
+        boundary : str
+            Exterior boundary label, before registering another condition on it.
+        radius : float
+            Physical circular wall radius.
+        sign : {-1, 1}
+            Outward radial orientation: -1 for inner, +1 for outer.
+        viscosity : float
+            Constant viscosity used by this Stokes system.
+        interface_radius, outer_radius : float
+            Radii of the prescribed pressure lift and outer wall.
+        wavenumber : int
+            Prescribed cosine sheet mode.
+        amplitude : float
+            Pressure-lift amplitude; use zero for smooth physical pressure.
+        quadrature : int
+            Number of line quadrature points.
+
+        Returns
+        -------
+        wall
+            Opaque numerical wall handle, with ``normal_field`` and
+            ``traction_field``. Pass it to wall updates and reaction recovery.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Restricted to affine 2D P2/continuous-P1 annuli and constant viscosity.
+        Registers rotated normal and tangential natural data. Only owned
+        boundary-cell traces are replicated; no volume field is gathered.
+
+        References
+        ----------
+        N. M. Atallah, C. Canuto and G. Scovazzi (2020), "The
+        second-generation Shifted Boundary Method and its numerical analysis",
+        Computer Methods in Applied Mechanics and Engineering 372, 113341,
+        https://doi.org/10.1016/j.cma.2020.113341; arXiv:2004.10584,
+        Section 2.2, equations (8)-(13).
+        These equations motivate Taylor transfer. Strong free-slip constraints,
+        lagged numerical traction and flux/torque projection are UW3 additions.
+        This is not that paper's Nitsche scheme; its Section 4.2 assumes
+        body-fitted Neumann boundaries and does not prove this method stable.
+        """
+        from underworld3.utilities._cylindrical_wall import _add_cylindrical_wall_transfer
+        return _add_cylindrical_wall_transfer(
+            self, boundary=boundary, radius=radius, sign=sign, viscosity=viscosity,
+            interface_radius=interface_radius, outer_radius=outer_radius,
+            wavenumber=wavenumber, amplitude=amplitude, quadrature=quadrature)
+
+    def solve_cylindrical_wall_updates(self, *, walls, updates):
+        """Alternate accepted Stokes solves and numerical wall-data updates.
+
+        Parameters
+        ----------
+        walls : dict
+            Boundary labels mapped to handles returned by
+            :meth:`add_cylindrical_wall_transfer`.
+        updates : int
+            Number of updates; four produces five solves.
+
+        Returns
+        -------
+        list of dict
+            Convergence and boundary-update histories. Partial history remains
+            available as ``cylindrical_wall_history`` if an iterate fails. This
+            method performs no file I/O. A residual-accepted zero-increment
+            warm start counts as an accepted solve.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Before calling, set ``stokes.petsc_use_pressure_nullspace = True``.
+        The accepted-solve history reads the rotated solver's projected
+        pressure-gauge residual, which is recorded only with this projection
+        enabled. This method does not configure the gauge automatically;
+        other pressure-gauge configurations are outside its supported contract.
+
+        This lagged solve/update schedule is a UW3 implementation choice.
+        The Taylor motivation is Atallah, Canuto and Scovazzi (2020),
+        "The second-generation Shifted Boundary Method and its numerical
+        analysis", CMAME 372, 113341,
+        https://doi.org/10.1016/j.cma.2020.113341, Section 2.2.
+        Four updates and their convergence are verified by benchmark evidence;
+        they are not guarantees provided by that paper.
+        """
+        from underworld3.utilities._cylindrical_wall import _solve_with_wall_updates
+        return _solve_with_wall_updates(self, walls, updates)
+
+    def recover_cylindrical_topography(self, *, wall, field, buoyancy_scale):
+        r"""Transfer CBF reaction moments to a circular spatial P2 topography.
+
+        Parameters
+        ----------
+        wall : wall
+            Handle returned by :meth:`add_cylindrical_wall_transfer`.
+        field : scalar continuous P2 MeshVariable
+            Spatial target; only this boundary's values are written.
+        buoyancy_scale : float
+            Nonzero signed :math:`\Delta\rho g`, with :math:`h=-R/(\Delta\rho g)`.
+
+        Returns
+        -------
+        dict
+            Circular length, moment, mean and correction checks. The original
+            assembled CBF reaction cache remains unchanged. No coefficients or
+            reference fields enter this transfer.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        References
+        ----------
+        S. Zhong, M. Gurnis and G. Hulbert (1993), "Accurate determination
+        of surface normal stress in viscous flow from a consistent boundary
+        flux method", Physics of the Earth and Planetary Interiors 78(1-2),
+        1-8, https://doi.org/10.1016/0031-9201(93)90078-N.
+        Cited for momentum-residual CBF stress recovery. The circular-minus-
+        polygonal moment transfer and Taylor correction here are UW3
+        adaptations; this reference does not analyse those corrections.
+        """
+        from underworld3.utilities._cylindrical_reactions import _recover_circular_topography
+        return _recover_circular_topography(self, wall, field, buoyancy_scale)
+
+    def cylindrical_boundary_coefficient(self, *, wall, field, wavenumber):
+        r"""Integrate a spatial P2 wall field's cosine coefficient on the circle.
+
+        Parameters
+        ----------
+        wall : wall
+            Handle returned by :meth:`add_cylindrical_wall_transfer`.
+        field : scalar continuous P2 MeshVariable
+            Spatial field on the same mesh and P2 nodes as the wall.
+        wavenumber : int
+            Nonzero cosine harmonic. The spatial mean is removed first.
+
+        Returns
+        -------
+        float
+            Circle-weighted least-squares cosine coefficient. This operation
+            is for spectral postprocessing; Direct-field Poisson uses the
+            spatial field directly. Call collectively on every rank.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        This circle-weighted integration of an existing spatial field is a UW3
+        postprocessing construction. The underlying CBF provenance is Zhong,
+        Gurnis and Hulbert (1993), "Accurate determination of surface normal
+        stress in viscous flow from a consistent boundary flux method",
+        Physics of the Earth and Planetary Interiors 78(1-2), 1-8,
+        https://doi.org/10.1016/0031-9201(93)90078-N. That paper does not
+        define the circle-transfer Jacobian or this coefficient integration.
+        """
+        from underworld3.utilities._cylindrical_reactions import _circular_field_coefficient
+        if wavenumber <= 0:
+            raise ValueError("A mean-removed boundary coefficient requires wavenumber > 0.")
+        return _circular_field_coefficient(wall, field, wavenumber)
+
     def boundary_normal_traction(self, boundary, mass="auto"):
         r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
         rotated-free-slip ``boundary`` as the constraint reaction from the last
