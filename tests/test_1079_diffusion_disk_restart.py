@@ -31,7 +31,19 @@ def _checkpoint_fields(wrapper):
                     data.visititems(lambda key, obj: arrays.update({key: obj[()]})
                                     if isinstance(obj, h5py.Dataset) else None)
                 assert arrays, f"Missing checkpoint datasets for {name}"
-                assert f"uw_checkpoint/{name}" in arrays
+                # The field's saved vector, wherever the writer put it. It sat
+                # at uw_checkpoint/<name> until #756 moved the payload under
+                # /restart/petsc, where the same vector is one group deeper as
+                # .../dms/<name>/vecs/<name>/<name>. Pinning one spelling made
+                # this test fail on a relocation that broke nothing -- both
+                # phases had already restarted and the metadata already
+                # compared equal by the time this line ran -- and it is the
+                # same assumption that regressed #640 in the reader (#847).
+                assert any(
+                    key == f"uw_checkpoint/{name}"
+                    or key.endswith(f"dms/{name}/vecs/{name}/{name}")
+                    for key in arrays
+                ), sorted(arrays)
                 fields[mesh_name, name] = arrays
     assert fields
     return fields
