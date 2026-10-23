@@ -2089,6 +2089,13 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     smoother=solver._mg_smoother_variant,
                     patch_rows=getattr(_hier, "level_patch_rows", None))
                 vel_pc.setUp()
+                # TODO(MEASURE): coarse-solve prototype, measurement only; remove
+                # or promote once the benchmark is in (UW_ROTATED_COARSE unset:
+                # behaviour unchanged).
+                import os as _os
+                if _os.environ.get("UW_ROTATED_COARSE") and nsp is not None:
+                    _prototype_coarse_with_nullspace(
+                        vel_pc, nsp, vel_is, _os.environ["UW_ROTATED_COARSE"])
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
                     # row beside the two-row nodes, and the inode SOR's 2x2
@@ -2673,3 +2680,92 @@ def _rigid_rotation_modes(solver):
         modes.append(tg)
     v.data[...] = saved
     return modes
+
+
+def _prototype_coarse_with_nullspace(vel_pc, nsp, vel_is, variant):
+    """TODO(MEASURE): measurement prototype for the coarse solve (see the caller).
+
+    The velocity part of every rotation mode in ``nsp`` is restricted down the
+    custom-P hierarchy by least squares, (P^T P) m_c = P^T m_f, and attached as
+    the null space of the finest velocity block and of the coarsest operator; the
+    coarse PC is then set by ``variant``: ``svd_nsp`` (SVD, null space attached),
+    ``mumps`` (distributed MUMPS LU, null-pivot detection), ``redundant_mumps``,
+    ``lu_shift`` (redundant PETSc LU with a nonzero shift). Records, per level,
+    ||A m|| / (||A||_F ||m||) of the restricted mode in ``last_coarse_prototype``.
+    """
+    global last_coarse_prototype
+    modes = []
+    for vec in nsp.getVecs():
+        sub = vec.getSubVector(vel_is)
+        m = sub.copy()
+        vec.restoreSubVector(vel_is, sub)
+        if m.norm() > 0.0:
+            m.normalize()
+            modes.append(m)
+    nlev = vel_pc.getMGLevels()
+    record = {"variant": variant, "modes": len(modes), "levels": nlev, "null_residual": {}}
+    A_fine = vel_pc.getOperators()[0]
+    A_fine.setNullSpace(PETSc.NullSpace().create(vectors=[m.copy() for m in modes],
+                                                 comm=A_fine.getComm()))
+    level_modes = modes
+    for lev in range(nlev - 1, 0, -1):
+        P = vel_pc.getMGInterpolation(lev)
+        PtP = P.transposeMatMult(P)
+        ksp = PETSc.KSP().create(comm=P.getComm())
+        ksp.setOperators(PtP)
+        ksp.setType("cg")
+        ksp.getPC().setType("jacobi")
+        ksp.setTolerances(rtol=1e-12, max_it=2000)
+        coarse_modes = []
+        for m in level_modes:
+            rhs = P.createVecRight()
+            P.multTranspose(m, rhs)
+            x = rhs.duplicate()
+            ksp.solve(rhs, x)
+            coarse_modes.append(x)
+        for i, q in enumerate(coarse_modes):          # Gram-Schmidt
+            for r in coarse_modes[:i]:
+                q.axpy(-q.dot(r), r)
+            q.normalize()
+        A_l = vel_pc.getMGSmoother(lev - 1).getOperators()[0]
+        nf = A_l.norm(PETSc.NormType.FROBENIUS)
+        res = []
+        for q in coarse_modes:
+            y = q.duplicate()
+            A_l.mult(q, y)
+            res.append(float(y.norm() / (nf + 1e-300)))
+        record["null_residual"][lev - 1] = res
+        ksp.destroy()
+        PtP.destroy()
+        level_modes = coarse_modes
+    ksp_c = vel_pc.getMGCoarseSolve()
+    A_c = ksp_c.getOperators()[0]
+    A_c.setNullSpace(PETSc.NullSpace().create(vectors=level_modes, comm=A_c.getComm()))
+    pc_c = ksp_c.getPC()
+    opts = PETSc.Options()
+    prefix = pc_c.getOptionsPrefix() or ""
+    if variant == "svd_nsp":
+        pc_c.setType("svd")
+    elif variant == "mumps":
+        pc_c.setType("lu")
+        pc_c.setFactorSolverType("mumps")
+        opts[prefix + "mat_mumps_icntl_24"] = 1
+        pc_c.setFromOptions()
+    elif variant == "redundant_mumps":
+        pc_c.setType("redundant")
+        opts[prefix + "redundant_pc_type"] = "lu"
+        opts[prefix + "redundant_pc_factor_mat_solver_type"] = "mumps"
+        opts[prefix + "redundant_mat_mumps_icntl_24"] = 1
+        pc_c.setFromOptions()
+    elif variant == "lu_shift":
+        pc_c.setType("redundant")
+        opts[prefix + "redundant_pc_type"] = "lu"
+        opts[prefix + "redundant_pc_factor_shift_type"] = "nonzero"
+        pc_c.setFromOptions()
+    else:
+        raise ValueError(f"UW_ROTATED_COARSE={variant!r}")
+    ksp_c.setUp()
+    last_coarse_prototype = record
+
+
+last_coarse_prototype = None
