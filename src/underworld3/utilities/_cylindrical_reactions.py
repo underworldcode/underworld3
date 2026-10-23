@@ -15,6 +15,9 @@ References
    of surface normal stress in viscous flow from a consistent boundary flux
    method. Physics of the Earth and Planetary Interiors, 78(1-2), 1-8.
    https://doi.org/10.1016/0031-9201(93)90078-N
+
+Only nondimensional mesh coordinates, fields and input scalars are supported.
+Active reference-unit scaling is outside this helper's supported contract.
 """
 
 import numpy as np

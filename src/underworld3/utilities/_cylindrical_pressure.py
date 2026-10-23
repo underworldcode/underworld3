@@ -10,6 +10,9 @@ https://arxiv.org/abs/0911.4769, Section 2, equations (4)-(6). The prescribed
 radial lift, exact-circle cap integration, DG P2 moment representation and
 outer-chord natural datum are this UW3 implementation. It does not implement
 the paper's Section 3 harmonic extension or Section 4 CR discretisation.
+
+Only nondimensional mesh coordinates, fields and input scalars are supported.
+Active reference-unit scaling is outside this helper's supported contract.
 """
 
 from typing import NamedTuple

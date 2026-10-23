@@ -2,7 +2,9 @@
 
 These explicitly selected Stokes methods support two-dimensional, affine
 triangular annuli with continuous P2 velocity, continuous P1 regular pressure
-and constant viscosity. They correct source integration, wall data and reaction
+and constant viscosity. Use nondimensional mesh coordinates, fields and input
+parameters throughout; active reference-unit scaling is unsupported.
+They correct source integration, wall data and reaction
 recovery; they do not replace straight elements with curved elements. Numerical
 validation currently targets the isoviscous annulus benchmarks. They do not
 establish support for spherical shells, variable viscosity or other FE pairs.

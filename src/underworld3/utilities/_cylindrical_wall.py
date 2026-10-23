@@ -13,6 +13,9 @@ https://doi.org/10.1016/j.cma.2020.113341, Section 2.2, equations (8)-(13).
 This lagged strong free-slip/traction projection is a UW3 adaptation, not their
 Nitsche formulation. Their Section 4.2 assumes body-fitted Neumann boundaries;
 its stability/convergence analysis does not cover this implementation.
+
+Only nondimensional mesh coordinates, fields and input scalars are supported.
+Active reference-unit scaling is outside this helper's supported contract.
 """
 
 import numpy as np

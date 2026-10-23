@@ -5,12 +5,16 @@ no Stokes model or spherical mesh is run.
 """
 
 import numpy as np
+import pytest
 import underworld3 as uw
 from mpi4py import MPI
 
 from underworld3.utilities.rotated_bc import _datum_batches, _eval_datum
 
+pytestmark = pytest.mark.level_1
 
+
+@pytest.mark.tier_b
 def test_registered_boundaries_determine_collective_schedule_not_local_nodes():
     rank = uw.mpi.rank
     boundaries = ["Upper", "Lower"]
@@ -27,6 +31,7 @@ def test_registered_boundaries_determine_collective_schedule_not_local_nodes():
             assert coords.shape == (0, 2)
 
 
+@pytest.mark.tier_b
 def test_fe_datum_evaluation_accepts_empty_coordinate_batches_on_other_ranks():
     mesh = uw.meshing.Annulus(radiusInner=1.22, radiusOuter=2.22, cellSize=1/32, qdegree=2)
     field = uw.discretisation.MeshVariable("DatumCollectiveP2", mesh, 1, degree=2, continuous=True)

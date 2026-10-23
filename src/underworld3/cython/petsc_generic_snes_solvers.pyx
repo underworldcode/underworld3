@@ -8678,6 +8678,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Notes
         -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
         Explicitly selected correction for affine 2D P2/continuous-P1 annuli,
         constant viscosity and a fitted circular sheet. No analytical Stokes
         solution enters construction. Call collectively on every rank.
@@ -8729,6 +8732,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Notes
         -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
         Restricted to affine 2D P2/continuous-P1 annuli and constant viscosity.
         Registers rotated normal and tangential natural data. Only owned
         boundary-cell traces are replicated; no volume field is gathered.
@@ -8772,6 +8778,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Notes
         -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
         Before calling, set ``stokes.petsc_use_pressure_nullspace = True``.
         The accepted-solve history reads the rotated solver's projected
         pressure-gauge residual, which is recorded only with this projection
@@ -8808,6 +8817,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             assembled CBF reaction cache remains unchanged. No coefficients or
             reference fields enter this transfer.
 
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
         References
         ----------
         S. Zhong, M. Gurnis and G. Hulbert (1993), "Accurate determination
@@ -8842,6 +8856,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Notes
         -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
         This circle-weighted integration of an existing spatial field is a UW3
         postprocessing construction. The underlying CBF provenance is Zhong,
         Gurnis and Hulbert (1993), "Accurate determination of surface normal
