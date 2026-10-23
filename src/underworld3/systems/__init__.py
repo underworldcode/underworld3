@@ -22,6 +22,8 @@ AdvDiffusion : class
     manager, EulerianSUPG, assembles implicit advection with SUPG).
 AdvDiffusionSLCN : class
     Advection-diffusion with semi-Lagrangian transport (flux history).
+LevelSetSolver : class
+    Conservative level-set transport (advection, reinitialisation, mass correction).
 NavierStokes : class
     Navier-Stokes composed from a DDt transport manager (EulerianSUPG default).
 NavierStokesSLCN : class
@@ -104,3 +106,10 @@ from .ddt import EulerianSUPG as EulerianSUPG_DDt
 from .yield_continuation import (yield_continuation, YieldHomotopyControl,
                                  rate_strengthening_continuation, RateStrengtheningControl)
 from .solve_report import SolveReport
+
+# level_set lives at the package top level, not under systems: the Crameri
+# examples reach uw.level_set.MaterialCLS and free_surface.py imports
+# underworld3.level_set. It imports `systems` itself, so this import sits
+# last, after the names it needs are bound.
+from .. import level_set
+from ..level_set import LevelSetSolver

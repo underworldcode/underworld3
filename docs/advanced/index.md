@@ -150,6 +150,7 @@ particle-population-and-materials
 semi-lagrangian-time-integration
 eulerian-advection-diffusion
 eulerian-navier-stokes
+level-set-transport
 porous-flow
 snapshot-restore
 troubleshooting
