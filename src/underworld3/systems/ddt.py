@@ -118,10 +118,39 @@ class DDtSymbolicState(_DDtCoreState):
     """Snapshot of a :class:`Symbolic` DDt instance's evolution state.
 
     ``Symbolic`` is the pure-symbolic flavor — ``psi_star`` history
-    slots hold sympy expressions (immutable), captured by value.
+    slots hold symbolic matrices whose containers are copied, but whose live
+    UWexpression atoms are retained by reference. This supports in-memory
+    backstepping, not isolation from subsequent changes to those atoms.
+    These references cannot be transported through disk snapshots; symbolic
+    history is currently skipped there. Reconstructing symbolic forms from
+    the solver would be needed for a general disk-restart guarantee.
     """
 
     psi_star: list = field(default_factory=list)
+
+    def __deepcopy__(self, memo):
+        """Copy history containers without reconstructing symbolic atoms.
+
+        SymPy matrices are value containers but their expression atoms include
+        UWexpression objects whose identity binds them to live parameter and
+        coefficient registries. Generic ``copy.deepcopy`` reconstructs those
+        Symbol subclasses without their wrapped value, producing invalid atoms
+        after snapshot restore. Matrix ``copy()`` keeps the immutable symbolic
+        atoms while separating the mutable history list and matrices.
+        """
+        import copy
+
+        duplicate = type(self)(
+            _schema_version=self._schema_version,
+            dt_history=copy.deepcopy(self.dt_history, memo),
+            history_initialised=self.history_initialised,
+            n_solves_completed=self.n_solves_completed,
+            dt=copy.deepcopy(self.dt, memo),
+            psi_star=[value.copy() for value in self.psi_star],
+        )
+        memo[id(self)] = duplicate
+        return duplicate
+
 
 
 @dataclass
@@ -753,6 +782,16 @@ class _DDtBase(uw_object):
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
 
+    def _adjoint_support(self):
+        """Whether this history's shift admits a discrete adjoint.
+
+        ``(supported, reason)``, written onto the ``history_shift`` event.
+        The default is a refusal that names the class, so a scheme added
+        without a verdict shows up in the transcript as undeclared rather
+        than passing as either.
+        """
+        return (False, f"{type(self).__name__} declares no linearisation")
+
     def update_exp_coefficients(self, dt, tau_eff):
         r"""Set the exponential (ETD) coefficients for this step.
 
@@ -795,12 +834,14 @@ class _DDtBase(uw_object):
         try:
             import underworld3 as uw
 
+            supported, why = self._adjoint_support()
             part = f"{type(self).__name__}#{self.instance_number}"
             uw.get_default_model()._part_objects[part] = self
             uw.get_default_model()._record_step_event(
                 "history_shift", self._history_label(), dt=float(dt),
                 part=part,
                 tracks=self._tracked_expression(),
+                adjoint={"supported": bool(supported), "reason": why},
                 **detail,
             )
         except Exception:
@@ -1448,6 +1489,8 @@ class Symbolic(_DDtBase):
     Lagrangian : Swarm-based material tracking.
     """
 
+    def _adjoint_support(self):
+        return (True, "implicit residual: the linearisation is the owning solver's Jacobian")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1692,6 +1735,8 @@ class Eulerian(_DDtBase):
     Symbolic : For purely symbolic history (no mesh storage).
     """
 
+    def _adjoint_support(self):
+        return (True, "implicit residual: the linearisation is the owning solver's Jacobian")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -2900,6 +2945,8 @@ class SemiLagrangian(_DDtBase):
     Lagrangian : For full particle-following Lagrangian tracking.
     """
 
+    def _adjoint_support(self):
+        return (False, "the departure-point trace is differentiable in the velocity, but the interpolation at the departure points is not materialised as an operator")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -4165,6 +4212,9 @@ class Lagrangian(_DDtBase):
     Lagrangian_Swarm : For user-provided swarms.
     """
 
+    def _adjoint_support(self):
+        return (True, "a copy on the particle set; valid while that set is fixed across the step — the swarm's advection record says whether it was")
+
     commits_flux_in_post_solve = True
 
     #: A particle that entered through an inflow this step takes
@@ -4588,6 +4638,9 @@ class Lagrangian_Swarm(_DDtBase):
     Eulerian : Pure mesh-based history (no particle tracking).
     """
 
+    def _adjoint_support(self):
+        return (True, "a copy on the particle set; valid while that set is fixed across the step — the swarm's advection record says whether it was")
+
     commits_flux_in_post_solve = True
 
     instances = (
@@ -4950,6 +5003,9 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
     velocity history caches it by evaluation at each time level.
     """
+
+    def _adjoint_support(self):
+        return (False, "the departure-point trace is differentiable in the velocity, but the interpolation at the departure points is not materialised as an operator")
 
     #: Departure points restored to the boundary take :attr:`inflow_value`
     #: there when one is set (#745); without one they sample the edge.
@@ -5563,6 +5619,15 @@ class ForwardSemiLagrangian(_DDtBase):
     """
 
     applies_inflow_value = True
+
+    def _adjoint_support(self):
+        return (
+            False,
+            "the forward trace is differentiable in the velocity, but the "
+            "per-cell least-squares fit of the arrivals is not materialised "
+            "as an operator, and which cell an arrival lands in — and so "
+            "which fit reads it — is piecewise constant in the velocity",
+        )
 
     def __init__(
         self,

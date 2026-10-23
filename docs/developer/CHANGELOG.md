@@ -6,6 +6,29 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### Legacy Diffusion Restart Consistency (September 2026, #708)
+
+`Diffusion` now initializes symbolic flux history before compiling its
+first residual. Previously the initial kernel embedded zero history slots;
+subsequent coefficient updates could not restore the missing symbolic terms.
+A snapshot restore rebuilt the kernel with populated slots and therefore
+changed the operator despite restoring all fields exactly. Initializing the
+slots before compilation makes cold and rebuilt operators agree. This also
+corrects affected uninterrupted legacy Diffusion trajectories; it does not
+change the composed `AdvDiffusion` or SLCN implementation. Small serial/MPI
+tests cover startup and established histories, orders 1-3 and varying steps.
+
+The general hazard is a symbolic slot compiled while it holds zero:
+simplification can remove it permanently from the kernel (for example,
+`x**0` folds to one), so later ramping cannot recover the omitted term.
+
+PR #708 review follow-up adds a fresh-process disk regression. Disk snapshots
+still skip live symbolic matrices; their replay limitation is tracked as a
+strict expected failure, not claimed fixed by the in-memory correction.
+Saving any unsupported state field now emits a warning naming the field.
+Symbolic snapshot docstrings explicitly document shared live atom references
+and their lack of isolation from subsequent mutation or disk portability.
+
 ### The Multiplier Was Not the Whole Traction (August 2026)
 
 **`Stokes_Constrained.topography()` now returns the traction the boundary is
