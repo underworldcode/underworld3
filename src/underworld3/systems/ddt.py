@@ -537,22 +537,24 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
 
 
 def _create_exp_coefficients(instance_id):
-    """Create UWexpression objects for the ETD-2 coefficients ``[α, φ]``.
+    """Create UWexpression objects for the ETD coefficients ``[α, φ]`` of a
+    viscoelastic constitutive model.
 
-    These are named to render as ``α_exp`` and ``φ_exp`` (with the
-    DDt instance id appended) so they remain visually distinct from
-    BDF/AM coefficients in symbolic output.
+    These are named to render as ``α_exp`` and ``φ_exp`` (with the model's
+    instance id appended) so they remain visually distinct from BDF/AM
+    coefficients in symbolic output. The model owns them because the
+    Maxwell time they come from is the model's.
     """
     alpha = _UWexpression(
         rf"{{\alpha^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
         sym=0.0,
-        description=f"Exp integrator α = exp(-Δt/τ) (DDt instance {instance_id})",
+        description=f"Exp integrator α = exp(-Δt/τ) (constitutive model {instance_id})",
         _unique_name_generation=True,
     )
     phi = _UWexpression(
         rf"{{\varphi^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
         sym=0.0,
-        description=f"Exp integrator φ = (1-α)/(Δt/τ) (DDt instance {instance_id})",
+        description=f"Exp integrator φ = (1-α)/(Δt/τ) (constitutive model {instance_id})",
         _unique_name_generation=True,
     )
     return [alpha, phi]
@@ -662,8 +664,6 @@ class _DDtBase(uw_object):
     - **History symbols**: Symbolic stores raw sympy matrices in
       ``psi_star``; the storage-backed flavors store variables and
       contribute ``.sym`` (see :meth:`_history_syms`).
-    - **ETD-2 exp coefficients** exist on every flavour that can carry a
-      viscoelastic stress (``with_exp=True``: all but the particle flavours).
     """
 
     @classmethod
@@ -769,8 +769,8 @@ class _DDtBase(uw_object):
         """
         return self._delta_t
 
-    def _init_coefficient_expressions(self, order, theta, with_exp):
-        """Create BDF/AM (and optionally ETD-2 exp) coefficient UWexpressions.
+    def _init_coefficient_expressions(self, order, theta):
+        """Create the BDF/AM coefficient UWexpressions.
 
         The coefficients are routed through PetscDS constants[] (see the
         module-level coefficient helpers), so order ramp-up and variable
@@ -785,21 +785,15 @@ class _DDtBase(uw_object):
             Adams-Moulton order-1 implicitness for the startup values —
             ``self.theta`` for flavors that expose it, 0.5
             (Crank-Nicolson) for the Lagrangian flavors that don't.
-        with_exp : bool
-            Also create the ETD-2 ``[α, φ]`` coefficients used by
-            Maxwell-relaxation integration; values are pushed via
-            PetscDSSetConstants every step in ``update_exp_coefficients``
-            (every flavour but the particle ones, #739).
+
+        The exponential (ETD) coefficients are not here: each viscoelastic
+        constitutive model owns its own, formed from its own Maxwell time.
         """
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        if with_exp:
-            self._exp_coeffs = _create_exp_coefficients(self.instance_number)
         # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, theta)
-        if with_exp:
-            _update_exp_values(self._exp_coeffs, None, None)
 
     def _adjoint_support(self):
         """Whether this history's shift admits a discrete adjoint.
@@ -811,28 +805,6 @@ class _DDtBase(uw_object):
         """
         return (False, f"{type(self).__name__} declares no linearisation")
 
-    def update_exp_coefficients(self, dt, tau_eff, dt_symbol=None):
-        r"""Set the exponential (ETD) coefficients for this step.
-
-        ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
-        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)``, with τ_eff the
-        Maxwell relaxation time :math:`\eta_\mathrm{eff}/\mu`. Called by the
-        constitutive model, which owns τ_eff, before each solve -- peer to the
-        BDF/AM coefficient updates that ``update_pre_solve`` makes itself.
-        Every flavour that can carry a Maxwell stress allocates these
-        coefficients (#739); the particle flavours do not.
-        """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff, dt_symbol)
-
-    @property
-    def _exp_alpha(self):
-        """The ETD ``α`` coefficient UWexpression."""
-        return self._exp_coeffs[0]
-
-    @property
-    def _exp_phi(self):
-        """The ETD ``φ`` coefficient UWexpression."""
-        return self._exp_coeffs[1]
     def _note_history_shift(self, dt, **detail):
         """Tell the model's open step that this history advanced.
 
@@ -1552,7 +1524,7 @@ class Symbolic(_DDtBase):
         # Create the history list: each element is a Matrix of shape _shape.
         self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
 
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -1834,7 +1806,7 @@ class Eulerian(_DDtBase):
                 )
             )
 
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -3148,7 +3120,7 @@ class SemiLagrangian(_DDtBase):
             self.forcing_star.remesh_policy = RemeshPolicy.CARRY
             self.forcing_star._remesh_managed_by = self
 
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
 
         # Phase-2 remesh redesign: mark every DDt-owned mesh variable as
         # CARRY + operator-managed so the generic per-variable REMAP pass
@@ -4299,7 +4271,7 @@ class Lagrangian(_DDtBase):
 
         # No user-settable theta on the swarm-based Lagrangian flavors:
         # Crank-Nicolson (0.5) is their fixed Adams-Moulton value.
-        self._init_coefficient_expressions(order, 0.5, with_exp=False)
+        self._init_coefficient_expressions(order, 0.5)
 
         dudt_swarm.populate(fill_param)
         # The class owns this swarm and carries the stress on it, so it also
@@ -4756,7 +4728,7 @@ class Lagrangian_Swarm(_DDtBase):
 
         # No user-settable theta on the swarm-based Lagrangian flavors:
         # Crank-Nicolson (0.5) is their fixed Adams-Moulton value.
-        self._init_coefficient_expressions(order, 0.5, with_exp=False)
+        self._init_coefficient_expressions(order, 0.5)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -5179,7 +5151,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # V_fn evaluated at the nodes at that time, so V_fn may be any
         # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)          # velocity levels the segments read
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
         self._register_with_default_model()
         # The forcing (strain-rate) history the second-order exponential
         # integrator reads. Unlike the nodal flavour, which re-evaluates the
@@ -5723,7 +5695,7 @@ class ForwardSemiLagrangian(_DDtBase):
             degree=1, continuous=True, varsymbol=rf"{{ F^{{\mathrm{{nodal}}}}_{{ [{inst}] }} }}")
         self._flux_projection = None
         self._n_v = 2
-        self._init_coefficient_expressions(1, self.theta, with_exp=True)
+        self._init_coefficient_expressions(1, self.theta)
         self._register_with_default_model()
 
     @property

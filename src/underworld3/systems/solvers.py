@@ -1751,10 +1751,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
                                    store_result=False)
-        # Uniform pre-solve coefficient hook: VEP delegates to
-        # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
-        # α, φ on the DDt via _update_exp_coefficients(). No isinstance
-        # checks at the solver layer.
+        # Uniform pre-solve coefficient hook: each model refreshes its own BDF
+        # or exponential (α, φ) coefficients. No isinstance checks at the
+        # solver layer.
         self.constitutive_model._update_history_coefficients()
 
     def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
@@ -1847,9 +1846,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
                     "not provide; use stress_transport='semi_lagrangian' for it.")
-            # Order 1 BDF only for now: the particle flavour has no exponential
-            # coefficients (it is built with_exp=False), and order 2 is not yet
-            # validated. Refuse cleanly rather than crash inside the first solve.
+            # Order 1 BDF only for now: the exponential integrator is not
+            # validated on the particle flavour, and neither is order 2. Refuse cleanly rather than crash inside the first solve.
             if getattr(cm, "_integrator", "bdf") != "bdf":
                 raise NotImplementedError(
                     "the particle Lagrangian stress history supports the BDF "
