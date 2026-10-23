@@ -1018,6 +1018,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
           (feed the solve report);
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
+        * ``"continuation_switch_iteration"`` — the iteration it fired at (``None``
+          if it did not);
         * ``"rotation_reused"`` — the GEOMETRY tier (Q/Qt/constrained rows/
           prolongation) came from the cross-solve cache;
         * ``"workspace_reused"`` — the iteration-0 operator fast path fired
@@ -1338,6 +1340,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # rotated solve as unconverged — including ones that converged at rel 1e-8.
     exit_reason = _SNES_DIVERGED_MAX_IT
     phase = "picard" if continuation else "newton"
+    switch_iteration = None
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
@@ -1357,12 +1360,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
         # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
         # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
-        if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
+        # Measured against the convergence reference, not r0: a warm start is already
+        # in the basin, and against its own residual it had to shrink that a
+        # hundredfold under Picard first (12 of 13 iterations on the power-law box).
+        if continuation and phase == "picard" and rnorm <= switch_rtol * ref and iters >= picard:
             solver._set_newton_alpha(1.0)
             phase = "newton"
+            switch_iteration = iters
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
-                           f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
+                           f"(rel |F̂| {rnorm/(ref+1e-300):.2e})")
         # Iteration 0 may ride the cross-solve fast path: the cached Ahat still
         # holds the rotated, constraint-eliminated operator and the cached
         # KSP/PC is set up on it. Every LATER iteration always reassembles —
@@ -1598,6 +1605,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "continuation_switched": continuation and phase == "newton",
+            "continuation_switch_iteration": switch_iteration,
             "rotation_reused": rotation_reused,
             "workspace_reused": workspace_reused}
 
