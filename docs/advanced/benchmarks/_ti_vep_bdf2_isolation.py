@@ -66,6 +66,7 @@ def build(label, *, spatial_yield, yield_mode):
     cm.Parameters.shear_viscosity_1 = ETA_1
     cm.Parameters.shear_modulus = MU
     cm.Parameters.yield_stress = ty
+    cm.Parameters.yield_stress_min = -sympy.oo  # the fault ty = 1/weakness reads a field but stays >= TAU_Y > 0
     cm.Parameters.director = sympy.Matrix([0.0, 1.0])  # θ=0 throughout
     cm.Parameters.strainrate_inv_II_min = 1.0e-6
     cm._yield_mode = yield_mode

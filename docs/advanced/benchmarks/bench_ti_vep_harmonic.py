@@ -130,6 +130,7 @@ def build_ti_stokes(label, theta_deg, tau_y, bdf_order):
     cm.Parameters.shear_viscosity_1 = ETA_1
     cm.Parameters.shear_modulus = MU
     cm.Parameters.yield_stress = tau_y_field
+    cm.Parameters.yield_stress_min = -sympy.oo  # reads the distance field, but 1/weakness >= tau_y > 0 by construction
     cm.Parameters.director = director
     cm.Parameters.shear_viscosity_min = ETA_0 * 1.0e-3
     cm.Parameters.strainrate_inv_II_min = 1.0e-6
