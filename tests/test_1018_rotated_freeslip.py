@@ -1031,6 +1031,31 @@ def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
         "picard did not extend the continuation Picard phase")
 
 
+def test_rotated_continuation_warm_start_switches_to_newton_at_once(plaw_box_ref):
+    """A warm re-solve under consistent_jacobian='continuation' is already in
+    Newton's basin, and must switch at once. The switch is measured against the
+    same reference scale as convergence (the larger of the start's residual and
+    the rest-state residual), not against the warm start's own residual: against
+    that, a good start must still shrink its residual a hundredfold under Picard
+    before Newton is allowed. Measured 2026-10-23 on this box, the body force
+    changed by 1% from a converged state: the switch at iteration 12 and 13
+    iterations in all, against 17 for the cold solve."""
+    mesh, _, _ = plaw_box_ref
+    s, _, _ = _powerlaw_stokes(mesh, "wsR", cj="continuation")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.solve()
+    assert s._rotated_freeslip_info["continuation_switched"]
+
+    x, _y = mesh.X
+    s.bodyforce = sympy.Matrix([[0.0, -2.02 * sympy.cos(sympy.pi * x)]])
+    s.solve(zero_init_guess=False)
+    info = s._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["continuation_switch_iteration"] in (0, 1), info["continuation_switch_iteration"]
+    assert info["nonlinear_iterations"] <= 4, info["nonlinear_iterations"]
+
+
 def test_rotated_freeslip_picard_under_newton_stages_picard_then_newton(plaw_box_ref):
     """picard>0 under the consistent-Newton tangent (the default since 2026-10-05) stages
     at least N Picard iterations, then Newton, on the blended Jacobian solve() compiles
