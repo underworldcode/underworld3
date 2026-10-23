@@ -84,3 +84,17 @@ def test_custom_fmg_with_a_coarsest_level_smaller_than_the_ranks():
     num = uw.mpi.comm.allreduce(float(np.sum(diff ** 2)))
     den = uw.mpi.comm.allreduce(float(np.sum(np.asarray(reference.Unknowns.u.data) ** 2)))
     assert (num / den) ** 0.5 < 1.0e-6
+
+
+
+def test_cutting_a_line_with_empty_ranks():
+    """The fault line cut runs on every rank and splits the edges it crosses."""
+    from underworld3.utilities.line_cut import cut_along_lines
+    mesh = _box(1.0)
+    empty = uw.mpi.comm.allreduce(int(_cells(mesh) == 0))
+    assert empty > 0, empty                                     # the case under test
+    line = np.array([[-0.1, 0.55], [1.1, 0.55]])               # wall to wall
+    cut, _info = cut_along_lines(mesh.dm, [line])
+    start, end = cut.getHeightStratum(0)
+    assert uw.mpi.comm.allreduce(end - start) > uw.mpi.comm.allreduce(_cells(mesh))
+

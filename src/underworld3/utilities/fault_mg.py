@@ -490,9 +490,11 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     width = nb * ncomp + nb * dim + nv * dim
     nc_loc = cv_c.shape[0]
     root = np.empty((nc_loc, width))
-    root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, -1)
-    root[:, nb * ncomp: nb * ncomp + nb * dim] = Xc[cn].reshape(nc_loc, -1)
-    root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, -1)
+    # explicit widths: a rank can own no cell of the coarse level, and
+    # reshape(0, -1) cannot infer one
+    root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, nb * ncomp)
+    root[:, nb * ncomp: nb * ncomp + nb * dim] = Xc[cn].reshape(nc_loc, nb * dim)
+    root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, nv * dim)
     sf = PETSc.SF().create(comm=comm)
     sf.setGraph(nc_loc, None, np.ascontiguousarray(uniq, dtype=np.int32))
     sf.setUp()
