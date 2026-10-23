@@ -473,8 +473,14 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     @property
     def F0(self):
         """Pointwise momentum residual: strong residual of the time scheme."""
+        # Tagged with the instance number, as \rho, \mathbf{a} and
+        # \mathbf{u}^{n-1} are above. A UWexpression's identity is its NAME, so
+        # an untagged name is ONE container shared by every solver of this class:
+        # a second Navier-Stokes solver in the same process re-declared it with
+        # its own instance's symbols, which silently rebound the name under any
+        # formula already written against the first solver's residual.
         f0 = public_expression(
-            r"\mathbf{f}_0\left( \mathbf{u} \right)",
+            rf"\mathbf{{f}}_0\left( \mathbf{{u}}_{{{self.instance_number}}} \right)",
             self._strong_residual(),
             "Navier-Stokes SUPG: strong residual (time derivative, advection, body force)",
         )
@@ -488,7 +494,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         mechanical_pressure = (
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
         F1 = public_expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
+            rf"\mathbf{{F}}_1\left( \mathbf{{u}}_{{{self.instance_number}}} \right)",
             self._viscous_flux() + self._devss_flux() - sympy.eye(dim) * mechanical_pressure
             + self._stabilisation_flux(),
             "Navier-Stokes SUPG: viscous flux of the time scheme, pressure, tau R (x) a",

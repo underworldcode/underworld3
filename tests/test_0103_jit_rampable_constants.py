@@ -13,6 +13,23 @@ import numpy as np
 import pytest
 import underworld3 as uw
 
+
+def _param(name, value, description):
+    """Declare a named parameter, or fetch it and assign.
+
+    An expression's identity is its NAME: the same name reaches the same
+    container, so a second declaration carrying a different value is refused
+    rather than silently rebinding every formula already written against it.
+    A factory that rebuilds the same problem in one process is asking to SET
+    the value, and assignment is how that is said.
+    """
+    try:
+        return uw.expression(name, value, description)
+    except ValueError:
+        existing = uw.expression(name)
+        existing.sym = value
+        return existing
+
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 
@@ -21,12 +38,17 @@ def _build():
         elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
     T = uw.discretisation.MeshVariable("T302", mesh, 1, degree=2)
 
-    k_direct = uw.expression(r"k_d", 1.0, "constant at parameter top level")
-    k_nested = uw.expression(r"k_n302", 1.0, "constant nested in a wrapper")
+    k_direct = _param(r"k_d", 1.0, "constant at parameter top level")
+    k_nested = _param(r"k_n302", 1.0, "constant nested in a wrapper")
     # Non-constant wrapper: the collection recurses into it and manifests
     # k_nested, but a top-level substitution cannot see inside it — the
     # baked-constant topology from issue #302.
-    wrapper = uw.expression(
+    #
+    # Assigned, not re-declared. On a second _build() the wrapper's contents
+    # still reference the FIRST build's T302, and a declaration that silently
+    # replaced them is what used to rebind it. Saying it with `.sym =` makes the
+    # rebinding the visible act it is.
+    wrapper = _param(
         r"\eta_{w302}", k_nested * 2.0 + 0.05 * T.sym[0] ** 2, "wrapper")
 
     poisson = uw.systems.Poisson(mesh, u_Field=T)
