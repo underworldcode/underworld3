@@ -28,12 +28,14 @@ sizing to np, in place of the dense SVD on one rank.
   inside the rotated solve after the empty-rank fixes: one rank skips a matrix
   assembly another performs. Reproducer: `repro_faulted_annulus_np8_test.py`.
 
-## Partial sweep (`sweep-partial.txt`)
+## Partial sweep (`sweep-1-swap-ineffective.txt`)
 
-Caveat: with 612 coarse cells every variant costs the same 268 ms per cycle as
-SVD, so the coarse PC swap in the prototype is very probably not taking
-effect. Being checked (the bench now prints the installed coarse PC). Do not
-read the variant columns as a comparison yet.
+Sweep 1's variant columns are void: the installed coarse PC was SVD in every
+variant (checked after the solve). The prototype swapped the PC before the
+bundle's options were removed from the database, and a later setFromOptions
+restored SVD. Fixed in the next commit (the swap now runs after the cleanup and
+keeps its own keys); MUMPS then installs as `lu mumps` and the redundant
+variants as `redundant`. Only the SVD rows below are valid.
 
 | np | coarse cells | coarse solve | V-cycles | coarse ms/cycle | linear solve s |
 |---|---|---|---|---|---|

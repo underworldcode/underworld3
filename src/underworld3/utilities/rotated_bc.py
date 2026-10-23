@@ -2089,13 +2089,6 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     smoother=solver._mg_smoother_variant,
                     patch_rows=getattr(_hier, "level_patch_rows", None))
                 vel_pc.setUp()
-                # TODO(MEASURE): coarse-solve prototype, measurement only; remove
-                # or promote once the benchmark is in (UW_ROTATED_COARSE unset:
-                # behaviour unchanged).
-                import os as _os
-                if _os.environ.get("UW_ROTATED_COARSE") and nsp is not None:
-                    _prototype_coarse_with_nullspace(
-                        vel_pc, nsp, vel_is, _os.environ["UW_ROTATED_COARSE"])
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
                     # row beside the two-row nodes, and the inode SOR's 2x2
@@ -2130,6 +2123,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     vopts.delValue(vpfx + key)
                 for key in _fac_keys or ():
                     vopts.delValue(vpfx + key)
+                # TODO(MEASURE): coarse-solve prototype, measurement only; after
+                # the bundle cleanup so no later setFromOptions restores SVD.
+                import os as _os
+                if _os.environ.get("UW_ROTATED_COARSE") and nsp is not None:
+                    _prototype_coarse_with_nullspace(
+                        vel_pc, nsp, vel_is, _os.environ["UW_ROTATED_COARSE"])
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -2744,27 +2743,25 @@ def _prototype_coarse_with_nullspace(vel_pc, nsp, vel_is, variant):
     pc_c = ksp_c.getPC()
     opts = PETSc.Options()
     prefix = pc_c.getOptionsPrefix() or ""
-    if variant == "svd_nsp":
-        pc_c.setType("svd")
-    elif variant == "mumps":
-        pc_c.setType("lu")
-        pc_c.setFactorSolverType("mumps")
-        opts[prefix + "mat_mumps_icntl_24"] = 1
-        pc_c.setFromOptions()
-    elif variant == "redundant_mumps":
-        pc_c.setType("redundant")
-        opts[prefix + "redundant_pc_type"] = "lu"
-        opts[prefix + "redundant_pc_factor_mat_solver_type"] = "mumps"
-        opts[prefix + "redundant_mat_mumps_icntl_24"] = 1
-        pc_c.setFromOptions()
-    elif variant == "lu_shift":
-        pc_c.setType("redundant")
-        opts[prefix + "redundant_pc_type"] = "lu"
-        opts[prefix + "redundant_pc_factor_shift_type"] = "nonzero"
-        pc_c.setFromOptions()
-    else:
+    keys = {"svd_nsp": {"pc_type": "svd"},
+            "mumps": {"pc_type": "lu", "pc_factor_mat_solver_type": "mumps",
+                      "mat_mumps_icntl_24": "1"},
+            "redundant_mumps": {"pc_type": "redundant", "redundant_pc_type": "lu",
+                                "redundant_pc_factor_mat_solver_type": "mumps",
+                                "redundant_mat_mumps_icntl_24": "1"},
+            "lu_shift": {"pc_type": "redundant", "redundant_pc_type": "lu",
+                         "redundant_pc_factor_shift_type": "nonzero"}}
+    if variant not in keys:
         raise ValueError(f"UW_ROTATED_COARSE={variant!r}")
+    # left in the database on purpose (measurement): a later setFromOptions on
+    # this level re-applies the variant instead of restoring SVD
+    for k, v in keys[variant].items():
+        opts[prefix + k] = v
+    pc_c.reset()
+    ksp_c.setOperators(A_c, A_c)
+    pc_c.setFromOptions()
     ksp_c.setUp()
+    record["installed"] = pc_c.getType()
     last_coarse_prototype = record
 
 

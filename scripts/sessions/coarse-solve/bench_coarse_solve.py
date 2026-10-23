@@ -70,8 +70,12 @@ from underworld3.utilities import rotated_bc
 _orig_configure = custom_mg._configure_pcmg
 
 
+_vel_pcs = []
+
+
 def _configure_logged(pc, *args, **kwargs):
     PETSc.Options()[(pc.getOptionsPrefix() or "") + "pc_mg_log"] = True
+    _vel_pcs.append(pc)
     return _orig_configure(pc, *args, **kwargs)
 
 
@@ -125,6 +129,13 @@ uw.pprint(f"BENCH np {uw.mpi.size} coarse_cells {coarse_cells} fine_cells {fine_
           f"ksp_its {info.get('ksp_its')}; wall {wall:.2f}s; "
           f"null modes {getattr(stokes, '_rotated_velocity_null_modes', None)}; "
           f"prototype {rotated_bc.last_coarse_prototype}")
+for _pc in _vel_pcs[-1:]:
+    _kc = _pc.getMGCoarseSolve()
+    _pcc = _kc.getPC()
+    _inner = ""
+    if _pcc.getType() == "lu":
+        _inner = str(_pcc.getFactorSolverType())
+    uw.pprint(f"COARSE installed: ksp {_kc.getType()} pc {_pcc.getType()} {_inner}")
 
 if str(params.uw_logview):
     _viewer = PETSc.Viewer().createASCII(str(params.uw_logview), comm=PETSc.COMM_WORLD)
