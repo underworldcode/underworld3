@@ -202,7 +202,11 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
 
   # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
   "${PYTEST[@]}" tests/test_110*py || status=1
-  "${PYTEST[@]}" tests/test_1110*py tests/test_1120*py || status=1  # Annulus + vector SL
+  # test_111*/test_112* rather than the two names that were here: the names
+  # caught test_1110 and test_1120 and left the eight CitcomS SUPG
+  # predictor-corrector files (test_1113..test_1119, test_1121) matching no
+  # glob at all, which is how the integration-point suite went dark (#721).
+  "${PYTEST[@]}" tests/test_111*py tests/test_112*py || status=1  # Annulus, vector SL, SUPG PC
   "${PYTEST[@]}" tests/test_1450*py || status=1
 
   # Named (un-numbered) test files - JIT, docstrings, projections

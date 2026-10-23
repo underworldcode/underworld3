@@ -29,6 +29,17 @@ Saving any unsupported state field now emits a warning naming the field.
 Symbolic snapshot docstrings explicitly document shared live atom references
 and their lack of isolation from subsequent mutation or disk portability.
 
+### Predictor-Corrector Transport Manager (September 2026, #689)
+
+`uw.systems.ddt.EulerianSUPGPC`, supplied as `DuDt=` to
+`uw.systems.AdvDiffusion`, owns the P1 predictor-corrector update, rate state
+and restart controls. `method="citcoms"` retains fixed corrections and the
+explicit timestep bound; `method="pc_converged"` provides a residual-converged
+accuracy reference. The default `EulerianSUPG` CN/BDF transport is unchanged.
+The [transport guide](../advanced/eulerian-advection-diffusion.md) explains
+why two lumped corrections do not generally establish second-order time
+accuracy and records the separate consistent-mass reference measurements.
+
 ### The Multiplier Was Not the Whole Traction (August 2026)
 
 **`Stokes_Constrained.topography()` now returns the traction the boundary is
