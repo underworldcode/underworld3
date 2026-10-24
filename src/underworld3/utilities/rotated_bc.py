@@ -985,7 +985,8 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
     and replaced by the accepted iterate. Returns ``(u, improved)``; ``improved``
     is False when no step reduced the residual below ``rnorm`` — the iteration has
     stalled (typically because it is already at the solution) and the caller should
-    stop rather than accept a non-decreasing step."""
+    stop rather than accept a non-decreasing step. Also returns the accepted step
+    length ``alpha`` (0.0 on a stall), which the loop records per increment."""
     alpha = 1.0
     for _ls in range(max_halvings):
         utry = u.copy()
@@ -996,10 +997,10 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
         Ftry.destroy()
         if fnorm < rnorm:
             u.destroy()
-            return utry, True
+            return utry, True, alpha
         utry.destroy()
         alpha *= 0.5
-    return u, False
+    return u, False, 0.0
 
 
 def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
@@ -1332,6 +1333,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Mp = ctx["Mp"] if ctx is not None else None
     diag_scale = cache["diag_scale"] if cache is not None else None
     lin_its = []
+    # per-iteration records for campaign diagnostics: |F̂| at each iteration start,
+    # and the step accepted for each increment (0.0: not applied)
+    rnorm_history = []
+    line_search_alpha = []
     # velocity / pressure sub-KSP LAST-APPLICATION counts, one per Newton increment
     # (iterative path only — the direct-LU path has no sub-KSPs and records None)
     vel_its_last = []
@@ -1423,6 +1428,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
+        rnorm_history.append(float(rnorm))
         if r0 is None:
             r0 = rnorm
             ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
@@ -1575,9 +1581,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
             step_converged = False
             improved = True
+            line_search_alpha.append(1.0)
         elif not step_converged:
-            u, improved = _backtracking_line_search(
+            u, improved, alpha = _backtracking_line_search(
                 u, d, rnorm, rotated_residual, Q, Qt, normal_rows, datum_map)
+            line_search_alpha.append(alpha)
+        else:
+            line_search_alpha.append(0.0)    # step-norm exit: the increment is not applied
         # every per-iteration temporary dies HERE, on all exit paths
         dhat.destroy()
         d.destroy()
@@ -1681,6 +1691,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
+            # the rest-state residual ‖F̂(0)‖ (warm starts only; None cold) and the
+            # reference the convergence and switch tests compare against
+            "fnorm_rest": fnorm_rest, "ref": ref,
+            "rnorm_history": rnorm_history, "line_search_alpha": line_search_alpha,
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
             # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
             # with ctx unset when a warm start is already converged at increment 0.
