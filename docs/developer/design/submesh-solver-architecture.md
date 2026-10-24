@@ -49,6 +49,15 @@ lineage link (`parent`, registration in `parent._registered_submeshes`)
 and supports explicit field transfer back and forth. There are three
 flavours, and they share one usage pattern:
 
+Region and surface extraction preserve the parent-derived partition, even when
+only one rank contains the extracted mesh. PETSc's `isDistributed()` reports
+whether multiple ranks own points; a false result does not require redistributing
+an extracted child. Implicit redistribution would invalidate rank-local parent
+maps and the saved subpoint mapping. Shared field values are still reduced through
+the parent field DM, since a parent DOF owner need not own an extracted cell.
+Independent child repartitioning requires migrating the parent--child mapping;
+it is not provided by coordinate-coincidence injection.
+
 > **get a child → build a solver on it → map fields back and forth**
 
 | | Subdomain | Resolution level | Surface |
