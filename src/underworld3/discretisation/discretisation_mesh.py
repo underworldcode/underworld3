@@ -6157,14 +6157,11 @@ class Mesh(Stateful, uw_object):
             roughly ``tol`` of the face (relative to the face-normal
             separation), while still rejecting points that lie inside a
             *different* cell (whose diff is strongly negative). The
-            parallel evaluation locator
-            (``Mesh._robust_owning_cells``) uses ``tol=1e-2`` to admit
-            on-face / partition-seam node queries that ``on_boundary=True``'s
-            absolute 1e-12 floor is too tight to accept — for query
-            coordinates slightly off the face (e.g. RBF-shifted node
-            points), the geometric scale of the test needs to match the
-            *mesh* spacing, not float roundoff. See memory
-            project_pr207_loose_boundary_clash.
+            evaluation locator uses a tight tolerance for full-dimensional,
+            geometrically exact cells. Its previous ``1e-2`` tolerance could
+            admit a point genuinely inside a neighbour; reference-coordinate
+            clamping then moved the query. Approximate warped-face and
+            embedded-manifold evaluation retain their previous tolerance.
         """
         # Internal version - points assumed to already be in model units
         self._mark_faces_inside_and_out()
@@ -6855,14 +6852,26 @@ class Mesh(Stateful, uw_object):
     # point another rank owns. A point in the (closed) domain is then found by
     # exactly one rank (verified: 360/360, owners==1), and the migration routes
     # it to that owner.
-    _EVAL_FACE_TOL = 1.0e-2
+    _EVAL_FACE_TOL = 1.0e-10
+    _EVAL_APPROX_FACE_TOL = 1.0e-2
 
     def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
         """Per-point owning cell for parallel evaluation (coords in model units).
 
         This is the strict barycentric/cell-wall locator
-        (:meth:`_get_closest_local_cells_internal`) with a *tight* face
-        tolerance (``_EVAL_FACE_TOL``): it returns the containing cell for
+        (:meth:`_get_closest_local_cells_internal`) with a roundoff-scale face
+        tolerance for full-dimensional, geometrically exact cells
+        (``_EVAL_FACE_TOL``). The previous ``1e-2`` tolerance relative to the
+        face control-point separation could claim a point in its neighbour;
+        reference-coordinate clamping then moves that point onto a face. Continuity alone does not
+        justify this: an exactly represented continuous field with a gradient
+        jump can acquire finite point errors. Tight containment returns the
+        actual containing cell, including near an internal density sheet.
+
+        Approximate warped faces and embedded manifolds retain their previous
+        tolerance (``_EVAL_APPROX_FACE_TOL``); this change does not extend the
+        cell-wall estimator's geometric authority. The exact-cell locator returns
+        the containing cell for
         interior points and a valid sharing cell for genuinely-on-face points,
         and ``-1`` for points that lie inside a *different* cell or outside the
         local mesh. Crucially it does **not** fall back to a bounding-sphere
@@ -6884,8 +6893,13 @@ class Mesh(Stateful, uw_object):
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
+        tolerance = (
+            self._EVAL_FACE_TOL
+            if self.dim == self.cdim and self._location_capability() == "exact"
+            else self._EVAL_APPROX_FACE_TOL
+        )
         return numpy.asarray(
-            self._get_closest_local_cells_internal(coords, tol=self._EVAL_FACE_TOL),
+            self._get_closest_local_cells_internal(coords, tol=tolerance),
             dtype=numpy.int64,
         )
 
