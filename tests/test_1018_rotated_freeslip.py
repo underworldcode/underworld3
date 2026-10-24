@@ -1056,6 +1056,44 @@ def test_rotated_continuation_warm_start_switches_to_newton_at_once(plaw_box_ref
     assert info["nonlinear_iterations"] <= 4, info["nonlinear_iterations"]
 
 
+def test_rotated_solve_records_its_diagnostics(plaw_box_ref):
+    """The rotated solve reports what it measured, so a campaign can record it per
+    step without scraping verbose logs: the rest-state residual ‖F̂(0)‖ and the
+    reference the convergence and switch tests use, the residual at every iteration
+    start, and the accepted line-search step of every increment (0.0 when the
+    increment was not applied)."""
+    mesh, _, _ = plaw_box_ref
+    s, _, _ = _powerlaw_stokes(mesh, "dgR", cj="continuation")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+
+    def check(info):
+        its = info["nonlinear_iterations"]
+        hist, alpha = info["rnorm_history"], info["line_search_alpha"]
+        assert len(hist) in (its, its + 1), (len(hist), its)
+        assert hist[0] == info["rnorm0"] and hist[-1] == info["rnorm"], (hist[0], hist[-1])
+        assert len(alpha) == its, (len(alpha), its)
+        assert all(a == 0.0 or 0.0 < a <= 1.0 for a in alpha), alpha
+        return its, alpha
+
+    s.solve()
+    cold = s._rotated_freeslip_info
+    assert cold["converged"], cold
+    check(cold)
+    assert cold["fnorm_rest"] is None                 # a cold start's r0 IS the rest scale
+    assert cold["ref"] == cold["rnorm0"]
+
+    x, _y = mesh.X
+    s.bodyforce = sympy.Matrix([[0.0, -2.02 * sympy.cos(sympy.pi * x)]])
+    s.solve(zero_init_guess=False)
+    warm = s._rotated_freeslip_info
+    assert warm["converged"], warm
+    _its, alpha = check(warm)
+    assert warm["fnorm_rest"] > 0.0
+    assert warm["ref"] == max(warm["rnorm0"], warm["fnorm_rest"])
+    assert alpha[-1] == 1.0, alpha                    # a full step is accepted at the solution
+
+
 def test_rotated_freeslip_picard_under_newton_stages_picard_then_newton(plaw_box_ref):
     """picard>0 under the consistent-Newton tangent (the default since 2026-10-05) stages
     at least N Picard iterations, then Newton, on the blended Jacobian solve() compiles
