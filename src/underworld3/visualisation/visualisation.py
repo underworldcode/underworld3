@@ -47,8 +47,11 @@ def initialise(jupyter_backend):
             pv.global_theme.trame.server_proxy_enabled = True
             # Don't set prefix - let PyVista/trame auto-detect from environment
 
-    except RuntimeError:
-        pv.global_theme.jupyter_backend = "panel"
+    except (RuntimeError, ImportError):
+        # No usable notebook backend (trame not installed: a headless
+        # container or cluster node). The static backend is always there, and
+        # conversions and off-screen renders do not need any other.
+        pv.global_theme.jupyter_backend = "static"
 
     return
 
