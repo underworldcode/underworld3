@@ -223,6 +223,9 @@ class _BaseMeshVariable(Stateful, uw_object):
             units = params["units"]
             units_backend = params["units_backend"]
             remesh_policy = params.get("remesh_policy", remesh_policy)
+            # consumed: kept, its strong "mesh" entry pinned the mesh for as
+            # long as the variable lived (the variable holds its mesh weakly)
+            del self._init_params
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
