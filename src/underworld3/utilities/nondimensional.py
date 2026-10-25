@@ -31,7 +31,7 @@ def derive_scaling_coefficients(model):
     fundamental_scales = model._fundamental_scales
 
     # Process all registered variables
-    for name, var in model._variables.items():
+    for name, var in list(model._variables.items()):
         if hasattr(var, "dimensionality") and var.dimensionality:
             # Try to derive scaling coefficient from dimensionality
             scale = _derive_scale_for_variable(var, fundamental_scales, model._reference_quantities)
@@ -464,7 +464,7 @@ def apply_nondimensional_scaling(expr, model):
     # Find all function symbols (variables)
     for func_symbol in expr.atoms(sympy.Function):
         # Try to find corresponding variable in model
-        for var_name, var in model._variables.items():
+        for var_name, var in list(model._variables.items()):
             if hasattr(var, "sym"):
                 # Check if this function matches the variable's symbolic form
                 if str(func_symbol.func) == str(var.sym.func):

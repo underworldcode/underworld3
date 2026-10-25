@@ -238,7 +238,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         # Store qualified name for later reference (for persistent variables)
         model = uw.get_default_model()
         self._qualified_name = None
-        for name, var in model._variables.items():
+        for name, var in list(model._variables.items()):
             if var is self:
                 self._qualified_name = name
                 break
