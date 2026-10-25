@@ -61,3 +61,62 @@ the linear solve, and it does not fall with more ranks (268 ms/cycle at np 8,
 - The prototype is `_prototype_coarse_with_nullspace` in
   `src/underworld3/utilities/rotated_bc.py`, behind `UW_ROTATED_COARSE`
   (unset: no change).
+
+## Sweep 2 (`sweep-2.txt`, 2026-10-25): the variants take effect
+
+Faulted annulus (one strand), free slip on both boundaries, isoviscous, P2/P1,
+three refinements above the coarsest level; velocity sub-solve FGMRES to
+0.033 x tol, one V-cycle per iteration. "vs SVD" is the linear solve time
+against the SVD row at the same np and coarse size.
+
+| coarse cells | np | coarse solve | V-cycles | coarse ms/cycle | linear solve s | vs SVD |
+|---|---|---|---|---|---|---|
+| 144 | 8 | svd | 435 | 1.85 | 2.49 | 1.00 |
+| 144 | 8 | svd_nsp | 450 | 0.36 | 1.81 | 0.73 |
+| 144 | 8 | mumps | 450 | 1.18 | 2.24 | 0.90 |
+| 144 | 8 | redundant_mumps | 450 | 0.19 | 1.76 | 0.71 |
+| 144 | 8 | lu_shift | timed out (rc 124) | | | |
+| 144 | 16 | svd | 420 | 2.27 | 1.86 | 1.00 |
+| 144 | 16 | svd_nsp | 425 | 0.46 | 1.13 | 0.60 |
+| 144 | 16 | mumps | 425 | 1.48 | 1.53 | 0.82 |
+| 144 | 16 | redundant_mumps | 425 | 0.22 | 1.02 | 0.55 |
+| 144 | 16 | lu_shift | 425 | 0.12 | 0.97 | 0.52 |
+| 144 | 32 | svd | 450 | 3.16 | 2.24 | 1.00 |
+| 144 | 32 | svd_nsp | 445 | 0.73 | 1.12 | 0.50 |
+| 144 | 32 | mumps | 445 | 2.03 | 1.68 | 0.75 |
+| 144 | 32 | redundant_mumps | 445 | 0.29 | 0.88 | 0.39 |
+| 144 | 32 | lu_shift | 445 | 0.16 | 0.84 | 0.38 |
+| 612 | 8 | svd | 420 | 270.19 | 118.70 | 1.00 |
+| 612 | 8 | svd_nsp | 425 | 8.42 | 9.33 | 0.08 |
+| 612 | 8 | mumps | 425 | 1.49 | 5.98 | 0.05 |
+| 612 | 8 | redundant_mumps | 425 | 0.70 | 5.89 | 0.05 |
+| 612 | 8 | lu_shift | 425 | 0.54 | 5.53 | 0.05 |
+| 612 | 16 | svd | 435 | 287.03 | 127.93 | 1.00 |
+| 612 | 16 | svd_nsp | 435 | 9.38 | 7.13 | 0.06 |
+| 612 | 16 | mumps | 435 | 1.62 | 3.83 | 0.03 |
+| 612 | 16 | redundant_mumps | 435 | 0.74 | 3.35 | 0.03 |
+| 612 | 16 | lu_shift | 435 | 0.61 | 3.39 | 0.03 |
+| 612 | 32 | svd | 420 | 416.26 | 176.75 | 1.00 |
+| 612 | 32 | svd_nsp | 430 | 14.72 | 8.29 | 0.05 |
+| 612 | 32 | mumps | 430 | 2.31 | 2.98 | 0.02 |
+| 612 | 32 | redundant_mumps | 430 | 0.89 | 2.31 | 0.01 |
+| 612 | 32 | lu_shift | 430 | 0.79 | 2.30 | 0.01 |
+
+Read:
+- Contraction is unchanged: every variant takes the SVD's V-cycle count
+  (420-450). The restricted rotation mode is enough for a sparse direct coarse
+  solve to replace the SVD with nothing lost in the cycle.
+- The coarse solve stops mattering. At 612 coarse cells a redundant sparse LU is
+  300-500x cheaper per cycle than the SVD and the linear solve 20-77x faster,
+  and the time now FALLS with np (5.9, 3.4, 2.3 s at np 8, 16, 32) where the
+  SVD's rose (119, 128, 177 s). That is the kaiju symptom removed.
+- Redundant (gathered) MUMPS beats distributed MUMPS at these sizes: the coarse
+  matrix is too small to distribute.
+- Open: (1) lu_shift timed out once (np 8, 144 cells; log
+  `sweep-2-np8-c144-lu_shift-timeout.log`), so the shift is not robust;
+  redundant MUMPS with null-pivot detection ran clean in every case.
+  (2) svd_nsp, the SAME SVD with only the null space attached and the PC reset,
+  is 30x cheaper than the default SVD per cycle. A factorisation does not get
+  cheaper from a null space, so the default path is doing extra work per apply
+  (a re-setup, or a non-preonly coarse KSP); to be explained before any default
+  changes.
