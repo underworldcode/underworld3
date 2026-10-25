@@ -27,6 +27,8 @@ params = uw.Params(
     uw_steps=3,              # solves on each mesh
     uw_depth=3,              # add-on levels k
     uw_log="rebuild_memory.jsonl",
+    uw_logview="",           # write PETSc's object table here at the end
+    uw_petsc_cleanup=0,      # free PETSc's deferred garbage after each rebuild
 )
 
 HALF = np.array([0.20, 0.05])                 # half the fault, centre to tip
@@ -53,6 +55,9 @@ def live_objects():
         counts[name] = sum(isinstance(o, kind) for o in objects)
     return counts
 
+
+if str(params.uw_logview):
+    PETSc.Log.begin()
 
 base = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1,
@@ -96,8 +101,19 @@ for rebuild in range(int(params.uw_rebuilds)):
     # drop everything this rebuild made, as a driver does
     del stokes, viscosity, mesh, child, guide, metric, x, y
     gc.collect()
+    if int(params.uw_petsc_cleanup):
+        # in parallel petsc4py defers destroying collected objects until a
+        # collective cleanup; without one they are never freed
+        PETSc.garbage_cleanup()
 
 with uw.selective_ranks(0) as writer:
     if writer:
         with open(params.uw_log, "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in log)
+
+if str(params.uw_logview):
+    gc.collect()
+    viewer = PETSc.Viewer().createASCII(str(params.uw_logview),
+                                        comm=PETSc.COMM_WORLD)
+    PETSc.Log.view(viewer)
+    viewer.destroy()

@@ -437,6 +437,14 @@ class Mesh(Stateful, uw_object):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
+        # Building a mesh is collective over its DM's communicator, so it is
+        # where the PETSc objects of meshes dropped since the last one are
+        # destroyed in parallel (a file is read on COMM_WORLD).
+        from underworld3.mpi import _free_petsc_garbage
+        _free_petsc_garbage(plex_or_meshfile.getComm()
+                            if isinstance(plex_or_meshfile, PETSc.DM)
+                            else PETSc.COMM_WORLD)
+
         # Coordinate units come from the model (not a user parameter):
         # the model owns the unit system so all meshes and variables agree.
         import underworld3 as uw
