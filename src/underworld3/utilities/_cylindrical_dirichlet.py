@@ -47,7 +47,9 @@ def _labelled_edge_keys(mesh, boundary, radius, tolerance):
     dm = mesh.dm
     facets = _boundary_stratum_is(dm, mesh, boundary)
     indices = np.empty(0, dtype=int)
-    if facets is not None:
+    # PETSc may return a false IS wrapper with a null C handle on empty ranks.
+    # Checking only Python None would dereference that null handle at .indices.
+    if facets:
         indices = np.asarray(facets.indices).copy()
         facets.destroy()
     f0, f1 = dm.getDepthStratum(1)

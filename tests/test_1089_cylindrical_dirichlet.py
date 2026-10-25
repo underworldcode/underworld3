@@ -315,3 +315,59 @@ def test_lagged_solve_requires_the_standard_pressure_nullspace():
     stokes = SimpleNamespace(petsc_use_pressure_nullspace=False)
     with pytest.raises(ValueError, match="petsc_use_pressure_nullspace=True"):
         _solve_cylindrical_zero_slip_updates(stokes, walls={}, updates=1)
+
+
+@pytest.mark.parametrize("local_stratum", ["null_petsc_is", "false_sentinel", "valid_empty_is"])
+def test_absent_local_boundary_is_not_dereferenced_before_global_edge_gather(local_stratum, monkeypatch):
+    """PETSc.IS() has a false null handle, distinct from a valid zero-length IS.
+
+    The Gadi MPI16 gate first exposed the real null-handle crash. Never inspect
+    its .indices here; a separate false sentinel safely makes any such access
+    an assertion failure instead of triggering the native segmentation fault.
+    """
+    from petsc4py import PETSc
+    from underworld3.utilities import _cylindrical_dirichlet as module
+
+    class FalseHandle:
+        def __bool__(self):
+            return False
+
+        @property
+        def indices(self):
+            raise AssertionError("A false PETSc handle must not be dereferenced.")
+
+        def destroy(self):
+            raise AssertionError("A false PETSc handle must not be destroyed.")
+
+    if local_stratum == "null_petsc_is":
+        facets = PETSc.IS()
+        assert not facets
+    elif local_stratum == "valid_empty_is":
+        facets = PETSc.IS().createGeneral(np.empty(0, dtype=PETSc.IntType), comm=PETSc.COMM_SELF)
+        assert bool(facets)  # Handle validity, not the length of its index array.
+    else:
+        facets = FalseHandle()
+    radius = 1.7
+    remote_edges = _ring(11, radius, True).edges
+
+    class OtherRankOwnsWall:
+        def allreduce(self, value, op):
+            assert value is False
+            return False
+
+        def allgather(self, local):
+            np.testing.assert_array_equal(local.shape, (0, 2, 2))
+            return [local, remote_edges.copy()]
+
+    empty_dm = SimpleNamespace(
+        getDepthStratum=lambda depth: (0, 0),
+        getCoordinateSection=lambda: SimpleNamespace(),
+        getCoordinatesLocal=lambda: SimpleNamespace(array=np.empty(0)),
+    )
+    monkeypatch.setattr(module, "_boundary_stratum_is", lambda dm, mesh, boundary: facets)
+    monkeypatch.setattr(uw.mpi, "comm", OtherRankOwnsWall())
+    tolerance = 1e-10*radius
+    actual = module._labelled_edge_keys(SimpleNamespace(dm=empty_dm), "Outer", radius, tolerance)
+    assert actual == {module._edge_key(edge, tolerance) for edge in remote_edges}
+    if local_stratum == "valid_empty_is":
+        assert not facets  # The valid empty IS is released; null handles are untouched.
