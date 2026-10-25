@@ -416,7 +416,11 @@ class Model(PintNativeModelMixin, BaseModel):
     )
 
     # Declare private attributes for Pydantic v2
-    _meshes: Any = PrivateAttr(default_factory=dict)
+    # Weak, like the swarms below: a strong registry kept every mesh ever
+    # built, with its DM hierarchy, its variables' vectors and its solvers'
+    # matrices. A driver that rebuilds a faulted mesh at each fault move grew
+    # by ~0.4 GB per rank per rebuild until it was killed (kaiju, 2026-10).
+    _meshes: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _primary_mesh_id: Optional[int] = PrivateAttr(default=None)
     # WeakValueDictionary so dropping the user's last reference to a swarm
     # actually lets it be garbage-collected. Without this, transient swarms
@@ -429,8 +433,9 @@ class Model(PintNativeModelMixin, BaseModel):
     # traversal (summaries, snapshots) should iterate a copy such as
     # ``list(self._swarms.items())``.
     _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
-    _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
-    _solvers: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # Weak for the same reason: a variable or solver held here pins its mesh.
+    _variables: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
+    _solvers: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
 
     # State-bearing objects (DDt instances, parameter-history holders,
     # any helper that exposes a .state dataclass per the Snapshottable
@@ -609,7 +614,7 @@ class Model(PintNativeModelMixin, BaseModel):
         except ImportError:
             return
         names_to_drop = [
-            name for name, var in self._variables.items()
+            name for name, var in list(self._variables.items())
             if isinstance(var, SwarmVariable) and getattr(var, "_swarm_ref", None) is not None
             and var._swarm_ref() is swarm
         ]
@@ -865,7 +870,7 @@ class Model(PintNativeModelMixin, BaseModel):
         str or None : Qualified name if found, None otherwise
         """
         # Search through all registered names
-        for name, registered_var in self._variables.items():
+        for name, registered_var in list(self._variables.items()):
             if registered_var is variable:
                 return name
         return None
@@ -2388,7 +2393,7 @@ class Model(PintNativeModelMixin, BaseModel):
         results = {"valid": True, "warnings": [], "errors": []}
 
         # Check all registered variables
-        for var_name, var in self._variables.items():
+        for var_name, var in list(self._variables.items()):
             # Skip variables without units
             if not hasattr(var, "units") or var.units is None:
                 continue
@@ -5734,7 +5739,7 @@ class Model(PintNativeModelMixin, BaseModel):
         facts["swarms"] = len(self._swarms)
         facts["solvers"] = len(self._solvers) + sum(
             1 for obj in getattr(self, "_part_objects", {}).values()
-            if not any(obj is s for s in self._solvers.values()))
+            if not any(obj is s for s in list(self._solvers.values())))
         if self.materials:
             facts["materials"] = list(self.materials.keys())
         children = []

@@ -499,7 +499,7 @@ def read_snapshot(model, path: str) -> None:
         )
 
     # Build {original_name -> registered Mesh} for lookup
-    meshes_by_name = {m.name: m for m in model._meshes.values()}
+    meshes_by_name = {m.name: m for m in list(model._meshes.values())}
 
     with h5py.File(path, "r") as f:
         meshes_group = f[_GROUP_MESHES]
