@@ -39,6 +39,8 @@ params = uw.Params(
 )
 
 DEPTHS = [int(k) for k in str(params.uw_depths).split(",")]
+# label offsets (points) so equal counts of two series stay readable
+OFFSET = {"A": (6, 4), "B2": (6, -3), "C": (-14, 4), "D": (6, -11)}
 STYLE = {"A": ("#7f8c8d", "o", "A  welded tail"),
          "B2": ("#d68910", "s", "B2  welded, TI band"),
          "C": ("#c0392b", "D", "C  split add-on levels"),
@@ -82,7 +84,7 @@ for name, its in frictionless.items():
         left.plot(*zip(*points), marker=marker, color=colour, label=label)
         for k, n in points:
             left.annotate(f"{n}", (k, n), textcoords="offset points",
-                          xytext=(6, -3), fontsize=7, color=colour)
+                          xytext=OFFSET[name], fontsize=7, color=colour)
 left.set_xticks(DEPTHS)
 left.set_xlabel("add-on depth k")
 left.set_ylabel("velocity iterations per solve")

@@ -1,0 +1,47 @@
+[
+ {
+  "centre": 0.3,
+  "np": 8,
+  "cells": 132,
+  "levels": 5,
+  "vel_its": [
+   7
+  ],
+  "peak_slip_local_max": 0.0,
+  "times": {
+   "refine": 0.578,
+   "conform and split": 0.885,
+   "solve": 4.832
+  }
+ },
+ {
+  "centre": 0.5,
+  "np": 8,
+  "cells": 130,
+  "levels": 5,
+  "vel_its": [
+   7
+  ],
+  "peak_slip_local_max": 0.0,
+  "times": {
+   "refine": 0.263,
+   "conform and split": 0.777,
+   "solve": 4.629
+  }
+ },
+ {
+  "centre": 0.7,
+  "np": 8,
+  "cells": 102,
+  "levels": 5,
+  "vel_its": [
+   7
+  ],
+  "peak_slip_local_max": 0.0,
+  "times": {
+   "refine": 0.293,
+   "conform and split": 0.754,
+   "solve": 4.54
+  }
+ }
+]

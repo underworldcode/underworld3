@@ -11,7 +11,8 @@ The figure: top row, the mesh and log10 of the deviatoric stress invariant
 near the fault at each position; bottom row, stacked wall time per step for
 the runs whose JSON is listed in ``-uw_bars``. Outside the refinement band
 every cell is a background cell: the count of cells there that coincide
-with the background's finest level is recorded per position.
+with the background's finest level is recorded per position (distance
+``-uw_far`` from the trace; grading and conformity reach past the band).
 
     mpirun -np 8 python fig_moving_fault.py -uw_render 0 -uw_json np8.json
     python fig_moving_fault.py -uw_render 1 -uw_json np1.json \\
@@ -30,6 +31,7 @@ params = uw.Params(
     uw_positions=3,             # fault centres from x = 0.3 to 0.7
     uw_base_cell=0.1,           # background cell size; refinement 1 halves it
     uw_band_width=0.08,         # width of the refinement band about the trace
+    uw_far=0.15,                # beyond this from the trace: background test
     uw_render=1,                # draw the figure (a serial run)
     uw_json="timings.json",     # this run's record
     uw_bars="",                 # records to draw as bars, comma separated
@@ -106,7 +108,7 @@ def solve_at(centre):
     # this rank's largest slip: the whole fault's in a serial run
     peak = float(np.abs(slip).max()) if len(slip) else 0.0
     record = {"centre": float(centre), "np": uw.mpi.size,
-              "cells": int(mesh.dm.getHeightStratum(0)[1]),
+              "cells_this_rank": int(mesh.dm.getHeightStratum(0)[1]),
               "levels": len(mesh._custom_mg_coarse_meshes) + 1,
               "vel_its": info["vel_its_last"],
               "peak_slip_local_max": peak,
@@ -127,7 +129,7 @@ for centre in CENTRES:
         cent, corners, X = centroids(mesh)
         values = np.asarray(uw.function.evaluate(tau, cent)).reshape(-1)
         # cells beyond the band that coincide with background cells
-        far = distance_to(cent, *tips) > params.uw_band_width
+        far = distance_to(cent, *tips) > params.uw_far
         base_cent = {tuple(c) for c in centroids(background_finest)[0]}
         same = sum(tuple(c) in base_cent for c in cent[far])
         record["far_cells"] = int(far.sum())
@@ -148,15 +150,16 @@ if int(params.uw_render):
 
     runs = [json.load(open(p)) for p in str(params.uw_bars).split(",") if p]
     columns = len(fields)
-    fig, axes = plt.subplots(2, columns, figsize=(3.4 * columns, 6.0),
-                             gridspec_kw={"height_ratios": [1.15, 1.0]})
+    fig, axes = plt.subplots(2, columns, figsize=(3.4 * columns, 4.6),
+                             gridspec_kw={"height_ratios": [1.0, 1.1],
+                                          "hspace": 0.25})
     low = min(np.log10(f[2][f[2] > 0].min()) for f in fields)
     high = max(np.log10(f[2].max()) for f in fields)
     for ax, (X, corners, values, tips, record) in zip(axes[0], fields):
         tri = Triangulation(X[:, 0], X[:, 1], corners)
         image = ax.tripcolor(tri, np.log10(np.maximum(values, 10 ** low)),
                              cmap="viridis", vmin=low, vmax=high)
-        ax.triplot(tri, color="w", lw=0.15, alpha=0.6)
+        ax.triplot(tri, color="k", lw=0.12, alpha=0.35)
         ax.plot(*np.vstack(tips).T, color="#c0392b", lw=1.2)
         cx = record["centre"]
         ax.set_xlim(cx - VIEW, cx + VIEW)
@@ -164,13 +167,15 @@ if int(params.uw_render):
         ax.set_aspect("equal")
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.set_title(f"x = {cx:.1f}: {record['cells']} cells, "
+        ax.set_title(f"x = {cx:.1f}: {record['cells_this_rank']} cells, "
                      f"{record['vel_its'][0]} its", fontsize=8)
     fig.colorbar(image, ax=axes[0], shrink=0.8,
                  label=r"$\log_{10}\,\tau_{II}$")
 
     colours = ("#7f8c8d", "#2e86c1", "#c0392b")
     width = 0.8 / max(len(runs), 1)
+    tallest = max(sum(run[step]["times"].values()) for run in runs
+                  for step in range(columns))
     for ax, step in zip(axes[1], range(columns)):
         for r, run in enumerate(runs):
             bottom = 0.0
@@ -181,7 +186,9 @@ if int(params.uw_render):
                 bottom += t
         ax.set_xticks([r * width for r in range(len(runs))])
         ax.set_xticklabels([f"np {run[step]['np']}" for run in runs])
-        ax.set_ylabel("wall time per step (s)")
-    axes[1][0].legend(fontsize=7, frameon=False)
+        ax.set_ylim(0, 1.05 * tallest)
+    axes[1][0].set_ylabel("wall time per step (s)")
+    axes[1][-1].legend(fontsize=7, frameon=False, loc="upper left",
+                       bbox_to_anchor=(1.02, 1.0))
     fig.savefig(params.uw_out, dpi=200, bbox_inches="tight")
     uw.pprint(f"wrote {params.uw_out}")
