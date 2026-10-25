@@ -103,15 +103,22 @@ def solve_at(centre):
     times["solve"] = time.perf_counter() - start
 
     info = stokes._rotated_freeslip_info
-    from underworld3.utilities.fault_contact import fault_slip
+    from underworld3.utilities.fault_contact import (fault_pair_jumps,
+                                                     fault_slip)
     _s, slip, _leak = fault_slip(stokes, "Flt", info)
     # this rank's largest slip: the whole fault's in a serial run
     peak = float(np.abs(slip).max()) if len(slip) else 0.0
+    # the whole fault's: every pair's jump, gathered onto every rank by the
+    # library, along the (straight) fault
+    _x, jumps, _n = fault_pair_jumps(stokes, "Flt", info, gather=True)
+    along = (tip_b - tip_a) / np.linalg.norm(tip_b - tip_a)
+    peak_all = float(np.abs(np.asarray(jumps) @ along).max())
     record = {"centre": float(centre), "np": uw.mpi.size,
               "cells_this_rank": int(mesh.dm.getHeightStratum(0)[1]),
               "levels": len(mesh._custom_mg_coarse_meshes) + 1,
               "vel_its": info["vel_its_last"],
               "peak_slip_local_max": peak,
+              "peak_slip": peak_all,
               "times": {k: round(v, 3) for k, v in times.items()}}
     return record, mesh, stokes, (tip_a, tip_b)
 

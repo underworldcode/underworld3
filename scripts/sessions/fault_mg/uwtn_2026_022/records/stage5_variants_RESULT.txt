@@ -1,0 +1,6 @@
+RESULT V k=2 law=frictionless variant=B2 weak=0.1 wfac=1.0 h_near=0.01250 pc=custom-FMG vel_its=[14] pres_its=[15] conv=True peak_slip=0.15958 wall=3.8s
+RESULT V k=3 law=frictionless variant=B2 weak=0.1 wfac=1.0 h_near=0.00625 pc=custom-FMG vel_its=[22] pres_its=[15] conv=True peak_slip=0.15899 wall=14.4s
+RESULT V k=4 law=frictionless variant=B2 weak=0.1 wfac=1.0 h_near=0.00313 pc=custom-FMG vel_its=[30] pres_its=[15] conv=True peak_slip=0.15926 wall=40.8s
+RESULT V k=2 law=frictionless variant=D weak=0.1 wfac=1.0 h_near=0.01250 pc=custom-FMG vel_its=[7] pres_its=[15] conv=True peak_slip=0.15958 wall=2.0s
+RESULT V k=3 law=frictionless variant=D weak=0.1 wfac=1.0 h_near=0.00625 pc=custom-FMG vel_its=[4] pres_its=[15] conv=True peak_slip=0.15899 wall=3.6s
+RESULT V k=4 law=frictionless variant=D weak=0.1 wfac=1.0 h_near=0.00313 pc=custom-FMG vel_its=[4] pres_its=[15] conv=True peak_slip=0.15926 wall=5.8s

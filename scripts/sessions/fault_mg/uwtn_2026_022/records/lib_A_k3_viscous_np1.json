@@ -1,0 +1,29 @@
+[
+ {
+  "strategy": "A",
+  "k": 3,
+  "law": "viscous",
+  "step": 0,
+  "cx": 0.5,
+  "np": 1,
+  "cells": 2006,
+  "levels": 5,
+  "split_levels": 0,
+  "pc": "custom-FMG",
+  "vel_its": [
+   12
+  ],
+  "pres_its": [
+   15
+  ],
+  "newton": 1,
+  "conv": true,
+  "peak_slip": 0.1365087172185583,
+  "times": {
+   "adapt": 0.98,
+   "add_fault": 0.48,
+   "solver_build": 0.28,
+   "solve": 7.47
+  }
+ }
+]

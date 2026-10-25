@@ -11,15 +11,16 @@ the four hierarchies of FAULT_MULTIGRID_HIERARCHIES.md:
 
 Right: the viscous fault at k = 3, A against C.
 
-Every number is re-measured, not copied: A and C from the library driver
-``library_c.py`` (one JSON record per run), B2 and D from the exploration
-driver ``stage5_variants.py`` (B2 and D exist only there; its ``RESULT``
-lines are read from the logs). See the README for the commit.
+The numbers were re-measured for the note (see the README for the commit)
+and ship beside this script in ``records/``: A and C from the library driver
+``../library_c.py`` (one JSON record per run, ``lib_<A|C>_k<k>_<law>_np1``),
+B2 and D from the exploration driver ``../stage5_variants.py`` (B2 and D
+exist only there; its ``RESULT`` lines, one per run, in
+``stage5_variants_RESULT.txt``). Re-running those drivers and pointing
+``-uw_records`` at their output regenerates the plot from new numbers.
 
-    python fig_iterations.py -uw_library ~/+Simulations/fault_split_mg \\
-        -uw_logs /mnt/data/lmoresi/logs -uw_out iterations.png
+    python fig_iterations.py -uw_out iterations.png
 """
-import glob
 import json
 import os
 import re
@@ -31,9 +32,10 @@ import matplotlib.pyplot as plt
 
 import underworld3 as uw
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
 params = uw.Params(
-    uw_library="~/+Simulations/fault_split_mg",   # library_c.py records
-    uw_logs="/mnt/data/lmoresi/logs",             # stage5_variants.py logs
+    uw_records=os.path.join(HERE, "records"),     # the shipped records
     uw_depths="2,3,4",
     uw_out="iterations.png",
 )
@@ -49,7 +51,7 @@ STYLE = {"A": ("#7f8c8d", "o", "A  welded tail"),
 
 def library_iterations(strategy, k, law):
     """Velocity iterations of one library run, or None if absent."""
-    path = os.path.join(os.path.expanduser(str(params.uw_library)),
+    path = os.path.join(os.path.expanduser(str(params.uw_records)),
                         f"lib_{strategy}_k{k}_{law}_np1.json")
     if not os.path.exists(path):
         return None
@@ -58,12 +60,13 @@ def library_iterations(strategy, k, law):
 
 def exploration_iterations(variant, k):
     """Velocity iterations of one stage5_variants.py run, or None."""
-    for path in glob.glob(os.path.join(str(params.uw_logs),
-                                       f"uwtn-stage5-{variant}-k{k}.log")):
-        for line in open(path):
-            match = re.search(r"variant=(\w+) .*vel_its=\[(\d+)\]", line)
-            if line.startswith("RESULT") and match:
-                return int(match.group(2))
+    path = os.path.join(os.path.expanduser(str(params.uw_records)),
+                        "stage5_variants_RESULT.txt")
+    for line in open(path):
+        match = re.search(r"k=(\d+) .*variant=(\w+) .*vel_its=\[(\d+)\]",
+                          line)
+        if match and (int(match.group(1)), match.group(2)) == (k, variant):
+            return int(match.group(3))
     return None
 
 

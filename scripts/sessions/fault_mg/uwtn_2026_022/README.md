@@ -33,9 +33,10 @@ single vertices.
 ## iterations.png (`fig_iterations.py`)
 
 Re-measured, serial, fault centred at (0.5, 0.5), half-vector (0.20, 0.05).
-A and C through the library (`../library_c.py`, records in
-`~/+Simulations/fault_split_mg/lib_*_np1.json`); B2 and D exist only in the
-exploration driver (`../stage5_variants.py`, `RESULT` lines).
+A and C through the library (`../library_c.py`), B2 and D through the
+exploration driver (`../stage5_variants.py`, where alone they exist). The
+records ship in `records/` (`lib_*_np1.json`, `stage5_variants_RESULT.txt`)
+and the script reads them from there.
 
 Velocity iterations per solve, frictionless fault:
 
@@ -74,6 +75,16 @@ building the solver and its transfers. Finest cells (serial): 3102, 3034, 3080;
 six levels. Peak slip: 0.153319, 0.159264, 0.153278. The machine was otherwise
 idle.
 
+Peak slip, global (every pair's jump gathered through the library,
+`fault_pair_jumps(gather=True)`, along the fault; `slip_np8.json`,
+`slip_np1.json`, a rerun without rendering, since the slip is measured after
+the timed solve): x = 0.3: 0.1533189716 at np 8, 0.1533192591 serial
+(1.9e-6 relative); x = 0.5: 0.1592638891, 0.1592638795 (6.1e-8);
+x = 0.7: 0.1532785097, 0.1532784236 (5.6e-7). Parallel matches serial to six
+figures. In the serial run the gathered peak equals the rank-local one. The
+`peak_slip_local_max` of the np 8 timings record (0.0) is rank 0's own
+value, which holds no fault pair.
+
 Background cells outside the band: of the cells farther than 0.15 from the
 trace, 760 of 840, 747 of 833 and 762 of 832 coincide with cells of the
 background's finest level (about 90%); at 0.08 (the band width) 836 of 945.
@@ -109,3 +120,6 @@ the 3-D hierarchy still has no split coarse level.
 - 2026-10-25 (hyperion): figures and numbers above at library `e135429f`; the
   note's tables should take these, and claims (a), (b), (c) need the
   corrections above.
+- 2026-10-25 (hyperion): `fig_iterations.py` reads the shipped `records/`;
+  `fig_moving_fault.py` records the global peak slip (`peak_slip`); np 8
+  matches serial to 2e-6 relative at every position. The figures are unchanged.

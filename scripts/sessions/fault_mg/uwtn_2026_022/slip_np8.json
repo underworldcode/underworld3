@@ -1,0 +1,50 @@
+[
+ {
+  "centre": 0.3,
+  "np": 8,
+  "cells_this_rank": 132,
+  "levels": 5,
+  "vel_its": [
+   7
+  ],
+  "peak_slip_local_max": 0.0,
+  "peak_slip": 0.1533189715926668,
+  "times": {
+   "refine": 0.516,
+   "conform and split": 0.887,
+   "solve": 4.715
+  }
+ },
+ {
+  "centre": 0.5,
+  "np": 8,
+  "cells_this_rank": 130,
+  "levels": 5,
+  "vel_its": [
+   7
+  ],
+  "peak_slip_local_max": 0.0,
+  "peak_slip": 0.15926388914994477,
+  "times": {
+   "refine": 0.241,
+   "conform and split": 0.774,
+   "solve": 4.574
+  }
+ },
+ {
+  "centre": 0.7,
+  "np": 8,
+  "cells_this_rank": 102,
+  "levels": 5,
+  "vel_its": [
+   7
+  ],
+  "peak_slip_local_max": 0.0,
+  "peak_slip": 0.15327850969976653,
+  "times": {
+   "refine": 0.289,
+   "conform and split": 0.789,
+   "solve": 4.73
+  }
+ }
+]

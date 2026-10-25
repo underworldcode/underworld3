@@ -1,0 +1,29 @@
+[
+ {
+  "strategy": "C",
+  "k": 4,
+  "law": "frictionless",
+  "step": 0,
+  "cx": 0.5,
+  "np": 1,
+  "cells": 3034,
+  "levels": 6,
+  "split_levels": 3,
+  "pc": "custom-FMG",
+  "vel_its": [
+   4
+  ],
+  "pres_its": [
+   15
+  ],
+  "newton": 1,
+  "conv": true,
+  "peak_slip": 0.1592638795127958,
+  "times": {
+   "adapt": 1.33,
+   "add_fault": 1.12,
+   "solver_build": 0.2,
+   "solve": 5.99
+  }
+ }
+]
