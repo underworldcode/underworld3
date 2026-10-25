@@ -433,8 +433,12 @@ class Model(PintNativeModelMixin, BaseModel):
     # traversal (summaries, snapshots) should iterate a copy such as
     # ``list(self._swarms.items())``.
     _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
-    # Weak for the same reason: a variable or solver held here pins its mesh.
-    _variables: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
+    # Variables are held strongly: the registry is their owner (a mesh holds
+    # its variables weakly, so a variable the caller did not keep lives here).
+    # A variable holds its mesh weakly and does not pin it; when a mesh dies,
+    # _register_mesh's finalizer drops the variables that belonged to it.
+    _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # Solvers weakly: a solver holds its mesh, so a registered solver pinned it.
     _solvers: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
 
     # State-bearing objects (DDt instances, parameter-history holders,
@@ -550,12 +554,27 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         mesh_id = id(mesh)
         self._meshes[mesh_id] = mesh
+        # when the mesh is freed, its variables leave the registry with it
+        weakref.finalize(mesh, Model._forget_dead_mesh_variables,
+                         weakref.ref(self))
 
         # Set as primary mesh if no primary mesh exists
         if self._primary_mesh_id is None:
             self._primary_mesh_id = mesh_id
 
         self.version += 1
+
+    @staticmethod
+    def _forget_dead_mesh_variables(model_ref):
+        """Drop the registered mesh variables whose mesh has been freed."""
+        model = model_ref()
+        if model is None:
+            return
+        from .discretisation import MeshVariable
+        for name, var in list(model._variables.items()):
+            ref = getattr(var, "_mesh_ref", None)
+            if isinstance(var, MeshVariable) and ref is not None and ref() is None:
+                del model._variables[name]
 
     def list_meshes(self) -> Dict[int, Any]:
         """List all meshes registered with this model"""
