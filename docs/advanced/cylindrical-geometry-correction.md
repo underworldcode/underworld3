@@ -31,6 +31,7 @@ lift = stokes.cylindrical_pressure_lifting(
     amplitude=1.0, quadrature_points=12,
 )
 stokes.bodyforce = lift.regular_force.sym
+# Register only on a natural/free-slip wall; omit for full velocity Dirichlet.
 stokes.add_natural_bc(lift.natural_datum, "Upper")
 physical_pressure = stokes.p.sym[0] + lift.pressure_jump
 ```
@@ -74,6 +75,58 @@ configuration; other pressure-gauge configurations are outside this helper's
 supported contract. The helper does not install the pressure projection or
 velocity nullspace itself. Configure the rigid-rotation velocity modes separately
 when required by the enclosing free-slip system.
+
+## Full-vector zero-slip wall transfer
+
+The separate zero-slip API registers one vector P2 essential datum per wall.
+For each boundary node $x_h$, project to $P(x_h)=R x_h/|x_h|$ and update
+
+$$g_h(x_h)=u_h(x_h)-u_h(P(x_h)).$$
+
+This evaluates the complete one-sided P2 polynomial, including the quadratic
+Taylor term. The radial shift has the same coordinate sign at both walls;
+the inner/outer normal sign enters only polygon-flux integration. No exact
+Stokes field, pressure trace or harmonic coefficient supplies the update.
+
+```python
+walls = {
+    "Lower": stokes.add_cylindrical_zero_slip_transfer(
+        boundary="Lower", radius=1.22, sign=-1, quadrature=12),
+    "Upper": stokes.add_cylindrical_zero_slip_transfer(
+        boundary="Upper", radius=2.22, sign=1, quadrature=12),
+}
+stokes.petsc_use_pressure_nullspace = True
+history = stokes.solve_cylindrical_zero_slip_updates(walls=walls, updates=4)
+```
+
+Use standard Stokes with both velocity components prescribed; there is no
+rigid-rotation nullspace. Creating the handles registers the essential fields
+once. Later updates change their values before each standard solve. Pressure
+extraction is independent: zero-slip case3 uses the same regular force and
+physical $q+p_J$, with no outer natural datum because its test trace is zero.
+
+Before each solve, remove the combined polygon flux using the normal P2
+midpoint bubbles on both walls. For total chord length $L$ and raw net flux $F$,
+subtract $c n_h$ at every midpoint, where $c=F/(2L/3)$. Vertex and midpoint
+tangential values remain unchanged. This is the minimum integrated-L2 change
+within that bubble span. It enforces one global compatibility condition;
+individual wall fluxes are recorded rather than fitted independently.
+
+`cylindrical_zero_slip_history` retains accepted standard-solver reports,
+flux before/after projection, its L2 change, and true-circle nodal/full-Gauss
+velocity residuals. At a fixed point a nonzero $c$ perturbs the true-circle
+constraint; verify that defect and its refinement behaviour. Four updates are
+an explicit experiment schedule, not a convergence guarantee.
+
+Ruas (2019), DOI10.1016/j.camwa.2018.05.029, sections2/4 and equations29–30,
+provides the close P2 true-boundary trial/canonical polygon-test precedent.
+UW3 uses symmetric stress and a global flux projection instead of that exact
+formulation. Atallah et al. (2020), section4, and Burman et al. (2018),
+https://arxiv.org/abs/1801.07463, motivate shifted Dirichlet data through different
+weak formulations. None of these results is claimed as a proof of this strong
+numerical fixed point, especially for the delta case's piecewise regularity.
+Independent polynomial/flux/parallel tests pass; model acceptance remains pending
+in the benchmark investigation.
 
 ## Spatial circular reaction and topography
 

@@ -8673,8 +8673,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             ``pressure_jump``, ``regular_force`` (DG P2 MeshVariable),
             ``natural_datum``, ``pressure_jump_integral`` and ``checks``.
             Reconstruct physical pressure as :math:`p=q+p_J`. Assign the
-            force and register ``natural_datum`` on the outer boundary; the
-            latter is :math:`-p_J\Gamma` and does not vanish on outer chords.
+            force and register ``natural_datum`` on the natural outer-wall
+            components. This term is :math:`-p_J\Gamma` and does not vanish on
+            outer chords. Fully prescribed velocity has zero test trace, so
+            no outer natural datum is registered for zero-slip walls.
 
         Notes
         -----
@@ -8797,6 +8799,89 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         from underworld3.utilities._cylindrical_wall import _solve_with_wall_updates
         return _solve_with_wall_updates(self, walls, updates)
+
+    def add_cylindrical_zero_slip_transfer(self, *, boundary, radius, sign, quadrature):
+        r"""Register numerical full-velocity transfer to a zero-slip circle.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete circular wall label on the affine annulus mesh.
+        radius : float
+            Positive physical-circle radius through the wall vertices.
+        sign : int
+            Outward-domain normal sign: -1 at the inner wall, +1 at the outer.
+            It enters flux integration, not the radial geometric displacement.
+        quadrature : int
+            Gauss points per edge for numerical trace/flux audits.
+
+        Returns
+        -------
+        wall
+            Boundary-only handle with a distinct vector P2 auxiliary ``field``.
+            Its essential condition is registered once. Use both wall handles
+            with :meth:`solve_cylindrical_zero_slip_updates`.
+
+        Notes
+        -----
+        Supported scope is nondimensional affine 2D P2/continuous-P1 Stokes
+        with zero physical velocity at both circular walls. Numerical P2
+        polynomial continuation supplies both velocity components; no reference
+        Stokes field or prescribed harmonic enters the update. Global polygon
+        flux compatibility changes only normal edge-midpoint data and keeps
+        physical-circle vertex data zero. No rotational nullspace is removed.
+
+        References
+        ----------
+        Atallah, Canuto and Scovazzi (2020), "The second-generation Shifted
+        Boundary Method and its numerical analysis", CMAME 372, 113341,
+        https://doi.org/10.1016/j.cma.2020.113341, Section 4; Burman, Hansbo and
+        Larson (2018), "A cut finite element method with boundary value
+        correction for the incompressible Stokes equations",
+        https://arxiv.org/abs/1801.07463, equation (16).
+        These motivate geometric Taylor correction. Strong nodal data, a
+        lagged fixed point and midpoint flux projection are UW3 adaptations;
+        neither cited Nitsche/stabilized formulation proves this method stable.
+        Ruas (2019), "Accuracy enhancement for non-isoparametric finite-element
+        simulations in curved domains; application to fluid flow",
+        DOI10.1016/j.camwa.2018.05.029, Sections 2/4, equations (29)-(30), uses
+        closely related true-boundary P2 trials and canonical polygon tests.
+        Symmetric stress and the global flux projection remain adaptations.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _add_cylindrical_zero_slip_transfer
+        return _add_cylindrical_zero_slip_transfer(
+            self, boundary=boundary, radius=radius, sign=sign, quadrature=quadrature)
+
+    def solve_cylindrical_zero_slip_updates(self, *, walls, updates):
+        """Alternate standard Stokes solves and full-vector zero-slip updates.
+
+        Parameters
+        ----------
+        walls : dict
+            Both boundary labels mapped to handles returned by
+            :meth:`add_cylindrical_zero_slip_transfer`.
+        updates : int
+            Nonnegative number of data updates; the solve count is updates+1.
+
+        Returns
+        -------
+        list of dict
+            Standard-solver convergence, prescribed polygon flux, update
+            changes and true-circle nodal/full-trace velocity residuals.
+            Partial history remains in ``cylindrical_zero_slip_history`` on failure.
+
+        Notes
+        -----
+        Set ``petsc_use_pressure_nullspace=True`` before calling. The supported
+        homogeneous physical data require zero combined polygon flux; a joint
+        midpoint-bubble projection enforces this compatibility. Fixed iteration
+        counts do not guarantee wall convergence: inspect the returned residuals.
+        This is a strong numerical Taylor iteration, not the weak formulation
+        analysed by Atallah et al. (2020), DOI10.1016/j.cma.2020.113341.
+        No field files or analytical solutions are read by this method.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
+        return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
 
     def recover_cylindrical_topography(self, *, wall, field, buoyancy_scale):
         r"""Transfer CBF reaction moments to a circular spatial P2 topography.
