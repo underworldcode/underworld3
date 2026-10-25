@@ -8883,6 +8883,80 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
         return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
 
+    def recover_cylindrical_zero_slip_traction(self, *, wall, normal_field, shear_field,
+            recovered_normal_field, recovered_shear_field, viscosity, pressure_jump,
+            degree, halfwidth_edges, quadrature):
+        r"""Recover physical normal/shear stress at a fully prescribed circle.
+
+        Parameters
+        ----------
+        wall
+            Handle returned by :meth:`add_cylindrical_zero_slip_transfer`.
+            Its registered auxiliary datum must still describe the solved state.
+        normal_field, shear_field : MeshVariable
+            Distinct continuous scalar P2 targets for the circular CBF
+            :math:`\sigma_{nn}` and polar shear :math:`\sigma_{r\theta}`.
+        recovered_normal_field, recovered_shear_field : MeshVariable
+            Two further scalar P2 targets for spatially reconstructed traces.
+            The preceding circular CBF fields are retained unchanged.
+        viscosity : float
+            Positive constant viscosity matching the Stokes constitutive law.
+            Augmentation and DEVSS must be disabled.
+        pressure_jump : sympy expression
+            Prescribed source-pressure lift :math:`p_J`, with physical pressure
+            :math:`p=q+p_J`. Pass exact zero when the solved pressure is physical.
+            This is a source profile, never an analytical Stokes pressure.
+        degree : {4, 6, 8}
+            Weighted reconstruction-kernel degree; targets remain P2.
+        halfwidth_edges : float
+            Kernel support halfwidth in mean circular edge arc lengths.
+        quadrature : int
+            Gauss points per edge, at least three. Assess quadrature convergence.
+
+        Returns
+        -------
+        dict
+            Cartesian weak-moment, absolute pressure mean, resultant and reconstruction
+            checks. No wall mean is removed. Fine CBF moments change only in
+            the two reconstructed targets; mean/resultants are preserved.
+
+        Notes
+        -----
+        Call collectively after pressure calibration. Standard ``boundary_flux``
+        reassembles the current regular-pressure vector reaction. Numerical
+        one-sided P2/P1 stress moments transfer it from chords to true circles:
+        :math:`R_c=R_q+L_c(\sigma_{q+p_J})-L_h(\sigma_q)`.
+        Cartesian tests and rotating normal/tangent P2 trials preserve constant
+        normal pressure without nodal-normal contraction. Only boundary traces
+        are replicated; small sparse line systems are solved on each rank.
+
+        Supported scope is fixed nondimensional affine 2D continuous P2/P1
+        constant-viscosity, fully Dirichlet Stokes. No Stokes solve, analytical
+        reference, pressure gauge change or volume-stress projection is performed.
+        At an exact stationary incompressible zero-slip wall, :math:`p=-\sigma_{nn}`;
+        this derived boundary pressure estimate does not change the FE pressure.
+
+        References
+        ----------
+        Zhong, Gurnis and Hulbert (1993), PEPI 78, 1-8,
+        DOI10.1016/0031-9201(93)90078-N, provides the CBF principle.
+        Brunatova, Dokken, Valen-Sendstad and Hron (2025),
+        DOI10.1002/cnm.70086, Section 2.3.2, equations (9)-(10), describes
+        variational recovery for fully Dirichlet boundaries and tangential
+        decomposition. Its Stokes example uses pseudostress; our Stokes form
+        uses full symmetric stress. Circular transfer, rotating trials and
+        weighted reconstruction are UW3 adaptations, without an inherited
+        convergence theorem. Reconstruction context: Docampo-Sanchez et al.
+        (2020), DOI10.1016/j.compfluid.2020.104727.
+        """
+        from underworld3.utilities._cylindrical_dirichlet_traction import _recover_cylindrical_zero_slip_traction
+        return _recover_cylindrical_zero_slip_traction(self, wall=wall,
+            normal_field=normal_field, shear_field=shear_field,
+            recovered_normal_field=recovered_normal_field,
+            recovered_shear_field=recovered_shear_field, viscosity=viscosity,
+            pressure_jump=pressure_jump, degree=degree,
+            halfwidth_edges=halfwidth_edges, quadrature=quadrature)
+
     def recover_cylindrical_topography(self, *, wall, field, buoyancy_scale):
         r"""Transfer CBF reaction moments to a circular spatial P2 topography.
 

@@ -128,6 +128,63 @@ numerical fixed point, especially for the delta case's piecewise regularity.
 Independent polynomial/flux/parallel tests pass; model acceptance remains pending
 in the benchmark investigation.
 
+### Full Dirichlet traction recovery
+
+Standard Stokes can recover the full Cartesian traction from essential-boundary
+reactions with `boundary_flux(..., mass="consistent", remove_mean=False)`.
+Its fresh volume-residual assembly uses the current pressure gauge and registered
+essential data. For saved-state replay, restore both the solved velocity/pressure
+and the last `ZeroSlipShiftLower/Upper` auxiliary fields; replacing those data by
+zero or by another wall update changes the state being measured.
+
+`recover_cylindrical_zero_slip_traction` transfers the regular-pressure reaction
+to the physical circle using one-sided numerical stress:
+
+$$R_c=R_q+L_c(\sigma_{q+p_J})-L_h(\sigma_q).$$
+
+The polygon subtraction must use **regular** stress when the solved unknown is
+$q$. A prescribed lift can vanish on the true wall while remaining nonzero on
+the chords. Using physical stress in that subtraction without first converting
+the regular reaction leaves a spurious load. Circle continuation uses the complete
+affine-cell P2/P1 polynomial, rather than an analytical Stokes solution.
+
+The line system has Cartesian P2 test components and rotating trial vectors
+$[n,e_\theta]$ multiplying scalar P2 normal/tangential coefficients. Thus it
+preserves every transferred Cartesian weak moment and represents a constant
+normal pressure exactly. This avoids contracting reactions with nodal normals.
+The public shear target is $\sigma_{r\theta}$; the outward tangential traction
+has the additional inner/outer `sign`. No wall mean is removed.
+
+```python
+checks = stokes.recover_cylindrical_zero_slip_traction(
+    wall=walls["Upper"], normal_field=normal_circle, shear_field=shear_circle,
+    recovered_normal_field=normal_recovered, recovered_shear_field=shear_recovered,
+    viscosity=1.0, pressure_jump=pressure_jump, degree=6,
+    halfwidth_edges=5, quadrature=24,
+)
+```
+
+All four targets are distinct continuous scalar P2 fields on the Stokes mesh.
+Call after the global pressure calibration. The optional spatial reconstruction
+is applied separately to the two rotating scalar traces, preserving each mean
+and first angular moments and therefore their combined Cartesian resultant.
+It changes finer transferred moments; the circular CBF fields remain available.
+Returned checks distinguish the original polygon resultant, geometry-transfer
+change, transferred resultant, and subsequent reconstruction changes. The
+kernel's physical bandwidth limits described below still apply to shear.
+
+For an exact stationary incompressible zero-slip solution, $u=0$ along the
+circle implies $\partial_r u_r=0$, so $p=-\sigma_{nn}$. This gives a derived
+**boundary pressure estimate**, not an improved FE pressure field. Keep the
+original pressure trace and the defect $2\mu\partial_r u_r$ in verification;
+weak incompressibility does not make that identity exact for the discrete field.
+
+Brunátová et al. (2025), Section 2.3.2, equations (9)-(10), gives a direct
+variational precedent for full Dirichlet traction and its tangential decomposition.
+Its Stokes example uses gradient pseudostress, while UW3 uses symmetric stress.
+Neither it nor the CBF reference proves this circular-transfer/rotating-trial/
+weighted-reconstruction adaptation stable or superconvergent.
+
 ## Spatial circular reaction and topography
 
 The circular reaction moments are
@@ -240,6 +297,13 @@ independently for a scientific before/after comparison.
 
 ## References and attribution boundaries
 
+- Brunátová, J., Dokken, J. S., Valen-Sendstad, K., and Hron, J. (2025),
+  *On the Numerical Evaluation of Wall Shear Stress Using the Finite Element
+  Method*, International Journal for Numerical Methods in Biomedical Engineering
+  41(9), e70086, [doi:10.1002/cnm.70086](https://doi.org/10.1002/cnm.70086).
+  Section 2.3.2 supplies the full Dirichlet variational recovery class and
+  normal/tangential decomposition. UW3's circular moments, symmetric Stokes
+  form, rotating trial basis and spatial reconstruction are separate adaptations.
 - Chang, K. S., and Kwak, D. Y. (2009), *Extraction method for Stokes Flow with
   jumps in the pressure*, [arXiv:0911.4769](https://arxiv.org/abs/0911.4769).
   Section 2, equations (4)-(6), motivates regular/singular pressure splitting.
