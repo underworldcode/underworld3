@@ -105,3 +105,13 @@ force and datum registration visible to the caller.
 P2 target without changing the raw reaction cache or fitting harmonics. See the
 [circular geometry guide](../../advanced/cylindrical-geometry-correction.md)
 for equations, limitations and source/pressure conventions.
+
+For an explicitly selected reconstructed spatial trace, use
+`stokes.reconstruct_cylindrical_trace(wall=..., source=..., target=..., degree=6,
+halfwidth_edges=5)` with distinct P2 fields. This leaves Stokes and the original
+CBF trace intact, preserves the circular mean and Cartesian radial resultants,
+and changes fine-scale nodal moments. It uses no prescribed source harmonic.
+Circular recovery also synchronizes constant post-solve pressure calibration
+with the cached reaction gauge; nonconstant changes invalidate that cache.
+The [circular geometry guide](../../advanced/cylindrical-geometry-correction.md)
+states the reconstruction's mathematical contract and limitations.

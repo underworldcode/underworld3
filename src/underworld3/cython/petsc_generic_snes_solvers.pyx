@@ -8835,6 +8835,48 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from underworld3.utilities._cylindrical_reactions import _recover_circular_topography
         return _recover_circular_topography(self, wall, field, buoyancy_scale)
 
+    def reconstruct_cylindrical_trace(self, *, wall, source, target, degree, halfwidth_edges):
+        r"""Reconstruct a circular spatial trace into a distinct continuous P2 field.
+
+        Parameters
+        ----------
+        wall : wall
+            Handle returned by :meth:`add_cylindrical_wall_transfer`.
+        source, target : scalar continuous P2 MeshVariable
+            Existing circular trace and distinct reconstructed target on this mesh.
+            Only this wall's target values are written; source and CBF cache remain intact.
+        degree : int
+            Polynomial reproduction degree of the compact weighted local-L2
+            kernel, one of 4, 6 or 8. This does not change the P2 trace space.
+        halfwidth_edges : float
+            Support halfwidth in mean boundary arc lengths. The measured n=2
+            annulus choice is degree 6 and halfwidth 5; no source wavenumber is used.
+
+        Returns
+        -------
+        dict
+            Support, actual nodal-moment changes and physical-moment checks.
+
+        Notes
+        -----
+        Call collectively. This postprocessing changes fine-scale nodal CBF
+        moments while preserving the circular mean and Cartesian radial-force
+        moments. It is not an unchanged CBF trace or a Stokes solve. Compact
+        support can attenuate or amplify genuine rapid variations; retain
+        the source and assess the physical bandwidth. Inputs must be
+        nondimensional; only boundary data are replicated.
+
+        Accuracy-enhancing convolution is discussed by Docampo-Sanchez et al.
+        (2020), Computers & Fluids 213, 104727,
+        https://doi.org/10.1016/j.compfluid.2020.104727. This weighted polynomial,
+        circular projection and physical-moment correction are UW3 adaptations;
+        the spline/DG SIAC convergence theorems do not establish their accuracy.
+        """
+        from underworld3.utilities._cylindrical_reconstruction import _reconstruct_cylindrical_trace
+        return _reconstruct_cylindrical_trace(
+            self, wall=wall, source=source, target=target,
+            degree=degree, halfwidth_edges=halfwidth_edges)
+
     def cylindrical_boundary_coefficient(self, *, wall, field, wavenumber):
         r"""Integrate a spatial P2 wall field's cosine coefficient on the circle.
 

@@ -25,6 +25,7 @@ import underworld3 as uw
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 from scipy.spatial import cKDTree
+from petsc4py import PETSc
 
 from ._cylindrical_wall import _trace_rule, _numerical_trace
 
@@ -97,6 +98,39 @@ def _validate_spatial_target(wall, field):
         raise ValueError("Circular wall fields require a continuous scalar P2 target on the same mesh.")
 
 
+def _reaction_pressure_offset(stokes):
+    """Express current pressure in the gauge of the cached momentum reaction.
+
+    Subtracting a constant after a solve is a valid pressure calibration. The
+    cached reaction and the polygon/circle stress moments must nevertheless use
+    the same constant: nodal radial normals vary over each affine edge, so an
+    inconsistent constant becomes a nonconstant scalar reaction after mass
+    inversion. Distributed PETSc vectors detect the single global offset; no
+    pressure field is gathered or modified. Nonconstant changes require a new
+    solve and cannot be interpreted as a gauge.
+    """
+    pressure_is, pressure_dm = stokes._subdict["pressure"]
+    state = stokes._rotated_freeslip_info["U"]
+    cached = state.getSubVector(pressure_is)
+    current, difference = cached.duplicate(), cached.duplicate()
+    try:
+        current.set(0.)
+        pressure_dm.localToGlobal(stokes.p.vec, current)
+        cached.copy(difference)
+        difference.axpy(-1., current)
+        offset = float(difference.sum()/difference.getSize())
+        difference.shift(-offset)
+        infinity = PETSc.NormType.NORM_INFINITY
+        tolerance = 64*np.finfo(float).eps*(1+cached.norm(infinity)+current.norm(infinity))
+        if difference.norm(infinity) > tolerance:
+            raise ValueError("Pressure changed nonuniformly after the cached Stokes reaction; solve again before recovery.")
+    finally:
+        current.destroy()
+        difference.destroy()
+        state.restoreSubVector(pressure_is, cached)
+    return offset
+
+
 def _recover_circular_topography(stokes, wall, field, buoyancy_scale):
     r"""Write circular-wall topography from CBF reactions and numerical moments.
 
@@ -117,10 +151,13 @@ def _recover_circular_topography(stokes, wall, field, buoyancy_scale):
     if distance.max() > 1e-10:
         raise ValueError(f"CBF nodes do not cover circular wall {wall.name}.")
     velocity, pressure = wall.cell_values()
+    pressure_offset = _reaction_pressure_offset(stokes)
+    pressure = pressure+pressure_offset
     trace = _numerical_trace(wall.vertices, velocity, pressure, wall.rule["points"], *wall.physics)
     nodes, reaction, checks = _circular_reaction_field(
         wall.edges, trace, gathered_values[index], wall.radius, wall.sign, wall.quadrature
     )
+    checks["reaction_pressure_gauge_offset"] = pressure_offset
     np.testing.assert_array_equal(nodes, wall.nodes)
     distance, index = cKDTree(nodes).query(np.asarray(field.coords))
     boundary = distance < 1e-10

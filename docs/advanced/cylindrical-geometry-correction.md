@@ -108,6 +108,69 @@ coefficient = stokes.cylindrical_boundary_coefficient(
 Coefficient extraction removes the circle-weighted mean and uses the exact
 radial-projection line Jacobian. It is not part of spatial reaction recovery.
 
+## Spatial trace reconstruction
+
+Retain the circular CBF trace and reconstruct into a **distinct** continuous
+scalar P2 field created alongside the other mesh variables before solving:
+
+```python
+checks = stokes.reconstruct_cylindrical_trace(
+    wall=walls["Upper"], source=cbf_topography, target=reconstructed_topography,
+    degree=6, halfwidth_edges=5,
+)
+```
+
+This is an explicitly selected spatial postprocessor. It does not change the
+Stokes solution or the cached assembled reaction. The compact local-L2 kernel
+uses the endpoint weight $w(z)=(1-z^2)^2$ and reproduces evaluation at zero for
+polynomials through the requested even degree (4, 6 or 8). Degree 6 has the
+normalized kernel
+
+$$
+K_6(z)=\frac{(1-z^2)^2}{8192}
+(24255-315315z^2+945945z^4-765765z^6),\qquad |z|\leq1,
+$$
+
+and is zero outside its support. The physical support halfwidth is
+`halfwidth_edges` times the mean circular edge arc length, not a prescribed
+source wavelength. The currently measured $n=2$ annulus choice is degree 6 and
+halfwidth 5. The degree describes the kernel moments; the output remains P2.
+
+Convolution integrates the existing P2 trace using its radial projection onto
+the true circle. Integration is split at original and shifted source vertices,
+including on nonuniform walls, before projection onto the circular consistent
+P2 mass. A minimum circular-L2 correction preserves
+$\int f\,ds$, $\int f\cos\theta\,ds$ and $\int f\sin\theta\,ds$.
+The latter two are Cartesian components of the radial resultant, defined by
+geometry rather than a fitted benchmark wavenumber.
+
+The reconstructed field **changes fine-scale nodal CBF moments**. Keeping every
+such moment in the same P2 space would uniquely retain the original CBF trace.
+Keep both fields, record which is supplied to later calculations, and assess
+complete spatial errors as well as coefficients. Polynomial reproduction of the
+kernel is not a proof of superconvergence of the complete annular Stokes chain.
+The spline/DG SIAC results discussed by Docampo-Sanchez et al. (2020) do not
+establish this weighted polynomial operator's accuracy on circular or graded
+CBF traces.
+
+The finite support imposes a bandwidth limit: genuine rapid angular variations
+within that support can be attenuated or amplified. For example, the degree-6 kernel with
+halfwidth 5 has continuous response about 0.8213 for an eighth harmonic on a
+32-edge circle. No automatic tuning to a source wavenumber is performed. The
+caller must assess supported physical scales as well as unwanted spatial errors.
+Returned checks record actual fine-scale nodal-moment changes, circular-L2 change
+and physical-moment conservation, alongside the kernel degree and support.
+
+### Pressure calibration and the reaction cache
+
+Pressure calibration may change the solved pressure by a constant while the
+cached Cartesian reaction retains the solve's earlier gauge. Circular recovery
+checks that the difference is constant and evaluates its numerical Taylor trace
+in the cached-reaction gauge. It leaves the calibrated pressure unchanged.
+A nonconstant pressure change makes the cache stale and is rejected; solve
+Stokes again before recovery. No analytical pressure or wall
+reference is used for this synchronization.
+
 ## Parallel scope and reproducibility
 
 Call the methods collectively. Only owned boundary-cell traces and boundary
@@ -117,7 +180,7 @@ operator and volume solves remain distributed PETSc. Wall handles cache geometry
 and are valid only for their original mesh, fields and fixed parameters.
 
 Record pressure representation, quadrature, source amplitude, wall-update history,
-reaction checks and the target actually supplied to gravity. Keep complete spatial
+reaction checks, reconstruction degree/support and the target actually supplied to gravity. Keep complete spatial
 errors distinct from modal errors. A correction changes the numerical problem
 on an unchanged affine mesh; both baseline and corrected cases must be solved
 independently for a scientific before/after comparison.
@@ -146,3 +209,11 @@ independently for a scientific before/after comparison.
   This is the CBF stress-recovery reference. UW3's circular moment transfer,
   Taylor reaction correction and weighted coefficient integration extend the
   calculation and are not results established by that paper.
+
+- Docampo-Sanchez, J., Jacobs, G. B., Li, X., and Ryan, J. K. (2020),
+  *Enhancing accuracy with a convolution filter: What works and why!*,
+  Computers & Fluids 213, 104727,
+  [doi:10.1016/j.compfluid.2020.104727](https://doi.org/10.1016/j.compfluid.2020.104727).
+  This supplies the accuracy-enhancing convolution context. UW3's endpoint-weighted
+  polynomial kernel, circular P2 projection and physical-moment restoration are
+  distinct from its spline/DG operator; its convergence results are not inherited.
