@@ -76,6 +76,26 @@ def barrier():
     comm.Barrier()
 
 
+def _free_petsc_garbage(comm=None):
+    """Destroy the PETSc objects whose Python wrappers have been collected.
+
+    COLLECTIVE over ``comm`` (``COMM_WORLD`` when ``None``): every rank of
+    it must call it at the same point; a mesh on ``COMM_SELF`` passes that. In parallel
+    petsc4py does not destroy an object when Python collects its wrapper --
+    ranks collect in different orders and the destroy is collective -- but
+    puts it on a deferred list that only ``PETSc.garbage_cleanup`` empties.
+    Without a call, every DM, matrix and vector of a dropped mesh lives for
+    the rest of the process (measured: 52.7 MB per faulted-mesh rebuild at
+    np = 2 with every Python object freed). The local collection first puts
+    anything just dropped on the list.
+    """
+    import gc
+    from petsc4py import PETSc
+
+    gc.collect()
+    PETSc.garbage_cleanup(comm)
+
+
 def _selected_ranks(rank_selector, total_size):
     """The ranks of a ``total_size`` communicator that ``rank_selector`` selects.
 
