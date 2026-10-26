@@ -210,7 +210,7 @@ def test_manufactured_refinement_orders():
 def test_invalid_rank_local_samples_are_rejected_collectively():
     mesh = _cross_mesh()
     def jump(points):
-        return np.full(len(points), np.nan if uw.mpi.rank == 0 else 1)
+        return np.where(np.isclose(points[:, 1], 0.5), np.nan, 1)
     with pytest.raises(ValueError, match="must be finite"):
         _stokes(mesh).pressure_split(jumps={"Vertical": jump}, normals={"Vertical": (1, 0)})
 
