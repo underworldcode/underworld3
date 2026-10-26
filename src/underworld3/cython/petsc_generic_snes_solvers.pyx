@@ -8603,6 +8603,56 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         return
 
+    def cylindrical_pressure_lifting(self, *, interface_radius, outer_radius,
+                                     wavenumber, amplitude, quadrature_points):
+        r"""Construct an exact-circle pressure lift and moment-equivalent force.
+
+        Parameters
+        ----------
+        interface_radius, outer_radius : float
+            Prescribed circular sheet and outer wall radii, with outer > sheet.
+        wavenumber : int
+            Azimuthal cosine mode of the prescribed radial sheet load.
+        amplitude : float
+            Sheet amplitude in :math:`f=-A\cos(n\theta)e_r\delta(r-R)`.
+        quadrature_points : int
+            Points per direction in circular-cut quadrature.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump``, ``regular_force`` (DG P2 MeshVariable),
+            ``natural_datum``, ``pressure_jump_integral`` and ``checks``.
+            Reconstruct physical pressure as :math:`p=q+p_J`. Assign the
+            force and register ``natural_datum`` on the natural outer-wall
+            components. This term is :math:`-p_J\Gamma` and does not vanish on
+            outer chords. Fully prescribed velocity has zero test trace, so
+            no outer natural datum is registered for zero-slip walls.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Explicitly selected correction for affine 2D P2/continuous-P1 annuli,
+        constant viscosity and a fitted circular sheet. No analytical Stokes
+        solution enters construction. Call collectively on every rank.
+
+        References
+        ----------
+        K. S. Chang and D. Y. Kwak (2009), "Extraction method for Stokes
+        Flow with jumps in the pressure", arXiv:0911.4769,
+        https://arxiv.org/abs/0911.4769, Section 2, equations (4)-(6).
+        The pressure split motivates this method. The radial lift, circular-cut
+        load integration and outer-chord natural datum are UW3 adaptations,
+        not the paper's harmonic-extension/CR scheme.
+        """
+        from underworld3.utilities._cylindrical_pressure import _create_circular_pressure_lift
+        if self.u.degree != 2 or not self.u.continuous or self.p.degree != 1 or not self.p.continuous:
+            raise ValueError("Circular pressure lifting requires continuous P2/P1 fields.")
+        return _create_circular_pressure_lift(self.mesh, interface_radius, outer_radius,
+                                             wavenumber, amplitude, quadrature_points)
+
     def _residual_is_nonlinear(self, tol=1e-8):
         r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
         — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
