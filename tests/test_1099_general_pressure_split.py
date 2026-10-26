@@ -108,10 +108,14 @@ def test_analytic_jump_and_numerical_field():
     x, y = mesh.X
     samples = uw.discretisation.MeshVariable("JumpData", mesh, 1, degree=1)
     samples.array[:, 0, 0] = 1 + 2 * np.asarray(samples.coords)[:, 1]
-    for jump in (1 + 2 * y, samples):
+    snapshots = []
+    for jump, sign in ((1 + 2 * y, 1), (samples, 1), (-1 - 2 * y, -1)):
         split = stokes.pressure_split(jumps={"Vertical": jump}, normals={"Vertical": (1, 0)})
-        _check_lift(mesh, split, {"Vertical": (lambda points: 1 + 2 * points[:, 1], 0)})
+        _check_lift(mesh, split, {"Vertical": (lambda points: sign * (1 + 2 * points[:, 1]), 0)})
         assert split.checks["interface_facets"] == 8
+        for field, values in snapshots:
+            np.testing.assert_array_equal(field.array, values)
+        snapshots.append((split.pressure_jump_field, np.array(split.pressure_jump_field.array)))
 
 
 @pytest.mark.tier_b

@@ -158,6 +158,8 @@ def _create_pressure_split(stokes, jumps, normals, tolerance):
             raise ValueError(f"Unknown mesh interface {name!r}.")
         points = label_stratum_indices(dm.getLabel(name), mesh.boundaries[name].value)
         facets = [int(f) for f in points if fstart <= f < fend]
+        if not comm.allreduce(len(facets), op=MPI.SUM):
+            raise ValueError(f"No fitted facets found for pressure-jump interface {name!r}.")
         interface_facets[name] = facets
         for facet in facets:
             marked[vertices(facet)] = 1
@@ -199,6 +201,8 @@ def _create_pressure_split(stokes, jumps, normals, tolerance):
         cell_vertices = vertices(cell)
         if len(cell_vertices) != mesh.dim + 1:
             raise ValueError("Pressure splitting requires simplex cells.")
+        if not any(marked[v] for v in cell_vertices):
+            continue
         centre = np.mean([vertex_coords[v] for v in cell_vertices], axis=0)
         cid = int(cell_ids[cell - cstart])
         for vertex in cell_vertices:
@@ -250,21 +254,27 @@ def _create_pressure_split(stokes, jumps, normals, tolerance):
     local_values = {(vid, cid): value for records in comm.alltoall(replies)
                     for vid, cid, value in records}
 
-    lift = uw.discretisation.MeshVariable("PressureLift", mesh, 1, degree=1, continuous=False)
-    force = uw.discretisation.MeshVariable("PressureLiftForce", mesh, mesh.dim,
+    # Distinct extractions must not overwrite fields retained by another solve.
+    stokes._pressure_split_count = getattr(stokes, "_pressure_split_count", 0) + 1
+    suffix = f"{stokes.instance_number}_{stokes._pressure_split_count}"
+    lift = uw.discretisation.MeshVariable(f"PressureLift_{suffix}", mesh, 1, degree=1, continuous=False)
+    force = uw.discretisation.MeshVariable(f"PressureLiftForce_{suffix}", mesh, mesh.dim,
                                          degree=0, continuous=False)
     lift_rows = mesh._cell_node_indices(1, False).reshape(-1, mesh.dim + 1)
     force_rows = mesh._cell_node_indices(0, False).reshape(-1)
     lift_values, force_values = np.zeros_like(lift.array), np.zeros_like(force.array)
+    lift_coordinates = np.asarray(lift.coords)
     integral = 0.0
     for cell in range(cstart, cend):
         ci, cid = cell - cstart, int(cell_ids[cell - cstart])
         points = vertices(cell)
+        if not any(marked[v] for v in points):
+            continue
         xyz = np.array([vertex_coords[v] for v in points])
         values = np.array([local_values.get((vertex_id(v), cid), 0.0) for v in points])
         coefficients = np.linalg.solve(np.column_stack((np.ones(mesh.dim + 1), xyz)), values)
         rows = lift_rows[ci]
-        lift_values[rows, 0, 0] = coefficients[0] + np.asarray(lift.coords)[rows] @ coefficients[1:]
+        lift_values[rows, 0, 0] = coefficients[0] + lift_coordinates[rows] @ coefficients[1:]
         force_values[force_rows[ci], 0, :] = -coefficients[1:]
         if owned[ci]:
             volume = abs(np.linalg.det(xyz[1:] - xyz[0])) / factorial(mesh.dim)
