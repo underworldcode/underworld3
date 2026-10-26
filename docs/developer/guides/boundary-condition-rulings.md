@@ -59,6 +59,13 @@ PETSc's normal is orientation-ambiguous (#327). A parameter in a natural
 condition is differentiated by the adjoint as a facet part with nothing
 further from the user.
 
+For a prescribed circular pressure jump in a nondimensional P2/continuous-P1
+annulus, `Stokes.cylindrical_pressure_lifting` separates physical pressure into
+regular pressure and a known jump. Replace the sheet with its returned regular
+force and register its `natural_datum` on free outer-wall components. Fully
+prescribed zero-slip walls need no natural datum. The method docstring defines
+the load sign and pressure reconstruction.
+
 ## Essential data
 
 `add_essential_bc` and `add_dirichlet_bc` are the same call. Components
