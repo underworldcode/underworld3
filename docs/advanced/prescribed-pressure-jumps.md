@@ -78,3 +78,14 @@ pressure extraction and a numerical extension. UW3's vertex-star constraint
 lift is a separate construction, not their harmonic extension or
 Crouzeix--Raviart discretisation; their convergence claims do not establish a
 rate for this implementation.
+
+## Verification
+
+`tests/test_1099_general_pressure_split.py` checks prescribed analytic/numerical
+data, compatible and incompatible finite tips/intersections, tetrahedral traces,
+independence of repeated extractions and manufactured Stokes solutions with
+essential and natural boundaries. Alongside the circular extraction tests,
+14 tests pass at 1, 2 and 8 ranks in the Mac Linux ARM64 int32 container.
+The fitted-square manufactured refinement test gives velocity order 3 and
+pressure order 2 at h=1/8, 1/16 and 1/32; this establishes the tested problem's
+convergence, not a rate for arbitrary interfaces.
