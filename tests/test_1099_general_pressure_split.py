@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import sympy as sp
 import underworld3 as uw
+from mpi4py import MPI
 from petsc4py import PETSc
 
 pytestmark = pytest.mark.level_1
@@ -53,6 +54,8 @@ def _cross_mesh(n=8, finite=False):
         for name, selected in tests.items():
             if selected:
                 dm.getLabel(name).setValue(facet, _Boundaries[name].value)
+                for vertex in vertices:
+                    dm.getLabel(name).setValue(vertex, _Boundaries[name].value)
     return uw.discretisation.Mesh(dm, simplex=True, degree=1, qdegree=3,
                                   boundaries=_Boundaries, verbose=False)
 
@@ -93,7 +96,7 @@ def _check_lift(mesh, split, jumps):
                 expected = np.asarray(jump(coordinates)) * np.sign(right[axis] - left[axis])
         error = design @ (coefficients[support[1]] - coefficients[support[0]]) - expected
         maximum = max(maximum, float(np.max(abs(error))))
-    assert uw.mpi.comm.allreduce(maximum, op=__import__("mpi4py").MPI.MAX) < 1e-11
+    assert uw.mpi.comm.allreduce(maximum, op=MPI.MAX) < 1e-11
     native_integral = uw.maths.Integral(mesh, split.pressure_jump).evaluate()
     assert native_integral == pytest.approx(split.pressure_jump_integral, abs=1e-11)
 
@@ -147,33 +150,69 @@ def test_incompatible_junction_or_tip_is_rejected(finite):
         _stokes(mesh).pressure_split(jumps=jumps, normals=normals)
 
 
-@pytest.mark.tier_b
-def test_manufactured_stokes_with_two_pressure_jumps():
-    mesh = _cross_mesh()
+def _solve_manufactured(mesh, velocity, regular_pressure, regular_force, natural_top=False):
+    """Solve a known velocity/pressure field with two constant sheet jumps."""
     stokes = _stokes(mesh)
     x, y = mesh.X
     split = stokes.pressure_split(jumps={"Vertical": 2, "Horizontal": 3},
                                   normals={"Vertical": (1, 0), "Horizontal": (0, 1)})
-    velocity = sp.Matrix([y, 0])
-    pressure = x + 2 * y + sp.Piecewise((2, x > sp.Rational(1, 2)), (0, True)) \
+    pressure = regular_pressure + sp.Piecewise((2, x > sp.Rational(1, 2)), (0, True)) \
                + sp.Piecewise((3, y > sp.Rational(1, 2)), (0, True))
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.viscosity = 1
-    stokes.bodyforce = sp.Matrix([1, 2]) + split.regular_force.sym
-    for boundary in ("Left", "Right", "Top", "Bottom"):
+    stokes.bodyforce = regular_force + split.regular_force.sym.T
+    for boundary in ("Left", "Right", "Bottom") + (() if natural_top else ("Top",)):
         stokes.add_essential_bc(velocity, boundary)
+    if natural_top:
+        gradient = velocity.jacobian((x, y))
+        stress = gradient + gradient.T - pressure * sp.eye(2)
+        stokes.add_natural_bc(-mesh.Gamma * stress + split.natural_datum, "Top")
     stokes.tolerance = 1e-10
-    stokes.petsc_options["snes_type"] = "ksponly"
-    stokes.petsc_options["ksp_type"] = "preonly"
-    stokes.petsc_options["pc_type"] = "lu"
-    stokes.petsc_options["pc_factor_mat_solver_type"] = "mumps"
     stokes.solve(verbose=False, debug=False)
     error = split.physical_pressure - pressure
-    mean = uw.maths.Integral(mesh, error).evaluate()  # Unit-area domain.
+    mean = 0 if natural_top else uw.maths.Integral(mesh, error).evaluate()
     pressure_error = uw.maths.Integral(mesh, (error - mean) ** 2).evaluate()
-    velocity_error = uw.maths.Integral(mesh, (stokes.u.sym - velocity).dot(stokes.u.sym - velocity)).evaluate()
-    assert np.sqrt(abs(pressure_error)) < 1e-8
-    assert np.sqrt(abs(velocity_error)) < 1e-9
+    difference = stokes.u.sym.T - velocity
+    velocity_error = uw.maths.Integral(mesh, difference.dot(difference)).evaluate()
+    errors = np.sqrt(np.abs([velocity_error, pressure_error]))
+    if uw.mpi.rank == 0:
+        print("Manufactured RMS (velocity, pressure):", errors.tolist())
+    return errors
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("natural_top", [False, True])
+def test_manufactured_stokes_with_two_pressure_jumps(natural_top):
+    mesh = _cross_mesh()
+    x, y = mesh.X
+    velocity_error, pressure_error = _solve_manufactured(
+        mesh, sp.Matrix([y, 0]), x + 2 * y, sp.Matrix([1, 2]), natural_top)
+    assert pressure_error < 1e-8
+    assert velocity_error < 1e-9
+
+
+@pytest.mark.tier_b
+def test_manufactured_refinement_orders():
+    errors = []
+    for n in (8, 16, 32):
+        mesh = _cross_mesh(n)
+        x, y = mesh.X
+        errors.append(_solve_manufactured(mesh, sp.Matrix([y**3, x**3]),
+                                         x**2 + y**2, sp.Matrix([2*x - 6*y, 2*y - 6*x])))
+    orders = np.log2(np.array(errors[:-1]) / np.array(errors[1:]))
+    if uw.mpi.rank == 0:
+        print("Manufactured refinement orders (velocity, pressure):", orders.tolist())
+    assert np.all(orders[:, 0] > 2.5)
+    assert np.all(orders[:, 1] > 1.5)
+
+
+@pytest.mark.tier_b
+def test_invalid_rank_local_samples_are_rejected_collectively():
+    mesh = _cross_mesh()
+    def jump(points):
+        return np.full(len(points), np.nan if uw.mpi.rank == 0 else 1)
+    with pytest.raises(ValueError, match="must be finite"):
+        _stokes(mesh).pressure_split(jumps={"Vertical": jump}, normals={"Vertical": (1, 0)})
 
 
 @pytest.mark.tier_b

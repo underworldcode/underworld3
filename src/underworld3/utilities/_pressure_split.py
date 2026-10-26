@@ -44,8 +44,8 @@ def _sample(mesh, datum, coordinates, components):
     if callable(datum):
         values = datum(coordinates)
     else:
-        if hasattr(datum, "sym"):
-            if datum.mesh is not mesh or not datum.continuous:
+        if isinstance(datum, uw.discretisation.MeshVariable):
+            if datum.mesh is not mesh or not datum.continuous or datum.num_components != components:
                 raise ValueError("Jump fields must be continuous and belong to the Stokes mesh.")
             datum = datum.sym[0] if components == 1 else datum.sym
         expr = sp.sympify(datum) if components == 1 else sp.Matrix(datum)
@@ -121,7 +121,7 @@ def _create_pressure_split(stokes, jumps, normals, tolerance):
     comm = dm.comm.tompi4py()
     if not jumps or set(jumps) != set(normals):
         raise ValueError("Supply nonempty jump and normal mappings with identical interface names.")
-    if not stokes.p.continuous or stokes.p.degree != 1 or not mesh.isSimplex:
+    if not stokes.u.continuous or not stokes.p.continuous or stokes.p.degree != 1 or not mesh.isSimplex:
         raise ValueError("Pressure splitting requires continuous P1 pressure on affine simplices.")
     if mesh.degree != 1 or mesh.dim not in (2, 3) or mesh.cdim != mesh.dim:
         raise ValueError("Pressure splitting requires affine 2D triangles or 3D tetrahedra.")
@@ -174,11 +174,21 @@ def _create_pressure_split(stokes, jumps, normals, tolerance):
     for name, facets in interface_facets.items():
         points = sorted({v for f in facets for v in vertices(f)})
         xyz = np.array([vertex_coords[v] for v in points]).reshape(-1, mesh.dim)
-        jump_values = _sample(mesh, jumps[name], xyz, 1).ravel()
+        error = None
+        try:
+            jump_values = _sample(mesh, jumps[name], xyz, 1).ravel()
+        except (ValueError, TypeError) as exc:
+            error = str(exc)
+        _collective_error(comm, error)
         values = dict(zip(points, jump_values))
         centres = np.array([np.mean([vertex_coords[v] for v in vertices(f)], axis=0)
                             for f in facets]).reshape(-1, mesh.dim)
-        normal_values = _sample(mesh, normals[name], centres, mesh.dim)
+        error = None
+        try:
+            normal_values = _sample(mesh, normals[name], centres, mesh.dim)
+        except (ValueError, TypeError) as exc:
+            error = str(exc)
+        _collective_error(comm, error)
         for facet, centre, normal in zip(facets, centres, normal_values):
             face = tuple(sorted(vertex_id(v) for v in vertices(facet)))
             for vertex in vertices(facet):

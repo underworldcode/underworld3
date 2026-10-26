@@ -268,6 +268,8 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
       $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
+    $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+      tests/test_1099*py || status=1
 
     # A SECOND pass at four ranks, because two is a special case: the failure
     # this suite exists to catch is a collective entered by some ranks and not

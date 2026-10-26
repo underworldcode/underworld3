@@ -59,6 +59,14 @@ PETSc's normal is orientation-ambiguous (#327). A parameter in a natural
 condition is differentiated by the adjoint as a facet part with nothing
 further from the user.
 
+`Stokes.pressure_split` lifts prescribed scalar pressure jumps on named interior
+facets of affine triangle/tetrahedron meshes with continuous P1 pressure. It
+accepts analytical expressions or numerical jump data, including compatible
+finite and intersecting interfaces. Replace the normal sheet load with its
+regular force; reconstruct total pressure for diagnostics and apply its datum
+on exterior natural components. See
+[prescribed pressure jumps](../../advanced/prescribed-pressure-jumps.md).
+
 For a prescribed circular pressure jump in a nondimensional P2/continuous-P1
 annulus, `Stokes.cylindrical_pressure_lifting` separates physical pressure into
 regular pressure and a known jump. Replace the sheet with its returned regular

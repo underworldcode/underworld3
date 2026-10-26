@@ -8616,6 +8616,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         normals : mapping
             Matching names to vectors pointing from the minus to plus side.
             Expressions, constant vectors and coordinate callables are accepted.
+            These select the side orientation; the extracted sheet is normal
+            to the fitted facets, with no tangential sheet-force extraction.
         tolerance : float
             Relative tolerance for jump compatibility around vertex-star cycles.
 
@@ -8632,8 +8634,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         solving. Continuous P1 pressure represents :math:`q` in :math:`p=q+p_J`.
         Replace the prescribed normal sheet load :math:`[p]n\delta_\Gamma`
         by ``split.regular_force.sym`` added to any regular body force. Do not
-        retain that sheet load. Add ``split.natural_datum`` to the physical
-        traction on exterior natural components; fully prescribed velocity
+        retain that sheet load. Add ``split.natural_datum`` to the original
+        UW3 exterior natural datum on natural components; prescribed velocity
         needs no traction correction. Use ``split.physical_pressure`` for
         total-pressure diagnostics and include its lift integral in the gauge.
 
