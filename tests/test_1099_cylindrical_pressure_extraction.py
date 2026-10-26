@@ -117,4 +117,3 @@ def test_triangle_load_against_independent_polar_domain_integration():
     np.testing.assert_allclose(
         moments[0, :, 0] @ x_dofs, boundary_flux - pressure_divergence, rtol=1e-9, atol=1e-12
     )
-
