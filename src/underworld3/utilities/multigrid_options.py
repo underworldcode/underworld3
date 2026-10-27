@@ -81,7 +81,7 @@ def _user_owns(opts, name, owned):
 #: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
 #: is the default and is np-safe; ``"svd"`` is required whenever the coarse
 #: operator inherits a null space — see :func:`geometric_mg_bundle`.
-GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd")
+GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd", "mumps")
 
 #: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
@@ -305,6 +305,15 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # null-space robust and the coarse level is small. Same choice as the
         # native spherical FMG setups.
         settings["mg_coarse_pc_type"] = "svd"
+    elif coarse == "mumps":
+        # TODO(MEASURE): the coarse-solve benchmark's candidate for "svd": the
+        # gathered coarse system factored by MUMPS with null-pivot detection
+        # (ICNTL(24)), which factors the rotated block's singular coarse
+        # operator directly; no dense SVD.
+        settings["mg_coarse_pc_type"] = "redundant"
+        settings["mg_coarse_redundant_pc_type"] = "lu"
+        settings["mg_coarse_redundant_pc_factor_mat_solver_type"] = "mumps"
+        settings["mg_coarse_redundant_mat_mumps_icntl_24"] = "1"
     else:
         raise ValueError(
             f"coarse must be one of {GEOMETRIC_MG_COARSE_SOLVERS} (got {coarse!r})")

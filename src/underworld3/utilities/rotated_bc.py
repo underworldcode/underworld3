@@ -2079,6 +2079,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                            if getattr(solver, "_rotated_velocity_null_modes",
                                       1 if nsp is not None else 0)
                            else "redundant")
+                # TODO(MEASURE): coarse-solve benchmark switch (unset: no change)
+                import os as _os
+                if (_os.environ.get("UW_ROTATED_COARSE") in ("mumps", "mumps_nsp")
+                        and _coarse == "svd"):
+                    _coarse = "mumps"
                 # FAC patch smoothing (#629): the hierarchy that built custom_Pl
                 # recorded each level's patch/halo rows; row numbering is the
                 # velocity-block reduced numbering on both paths, and the split
@@ -2126,7 +2131,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # TODO(MEASURE): coarse-solve prototype, measurement only; after
                 # the bundle cleanup so no later setFromOptions restores SVD.
                 import os as _os
-                if _os.environ.get("UW_ROTATED_COARSE") and nsp is not None:
+                if (_os.environ.get("UW_ROTATED_COARSE") not in (None, "", "mumps")
+                        and nsp is not None):
                     _prototype_coarse_with_nullspace(
                         vel_pc, nsp, vel_is, _os.environ["UW_ROTATED_COARSE"])
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
@@ -2751,6 +2757,11 @@ def _prototype_coarse_with_nullspace(vel_pc, nsp, vel_is, variant):
                                 "redundant_mat_mumps_icntl_24": "1"},
             "lu_shift": {"pc_type": "redundant", "redundant_pc_type": "lu",
                          "redundant_pc_factor_shift_type": "nonzero"}}
+    if variant == "mumps_nsp":
+        # the bundle already installed MUMPS: attach the null space only
+        record["installed"] = pc_c.getType()
+        last_coarse_prototype = record
+        return
     if variant not in keys:
         raise ValueError(f"UW_ROTATED_COARSE={variant!r}")
     # left in the database on purpose (measurement): a later setFromOptions on

@@ -120,3 +120,36 @@ Read:
   cheaper from a null space, so the default path is doing extra work per apply
   (a re-setup, or a non-preonly coarse KSP); to be explained before any default
   changes.
+
+## Correction to sweep 2 (2026-10-27)
+
+Sweep 2's "linear solve" column is not a fair comparison. The default SVD
+factors its coarse matrix lazily, inside the first coarse solve, so its
+factorisation (110 s at 612 cells, np 8; `MGSetup Level 0`) lands in the
+per-cycle and linear-solve times. The prototype variants replaced the coarse PC
+AFTER `vel_pc.setUp()` had already built that SVD, so every variant paid the
+110 s and then discarded it, and their own factorisation sat in `PCSetUp`,
+outside the tabulated solve time. "SVD with the null space attached is 30x
+cheaper per cycle" was this accounting, not a property of the SVD: applying
+the factored SVD costs about 8 ms per cycle at 612 cells.
+
+Whole-solve wall times from sweep 2 (factorisation included):
+
+| coarse cells | np | svd | svd_nsp | mumps | redundant_mumps | lu_shift |
+|---|---|---|---|---|---|---|
+| 144 | 8 | 4.36 | 4.29 | 4.14 | 3.66 | (timed out) |
+| 144 | 16 | 3.59 | 3.61 | 3.29 | 2.76 | 2.73 |
+| 144 | 32 | 3.98 | 3.75 | 3.34 | 2.82 | 2.56 |
+| 612 | 8 | 231.1 | 232.3 | 118.2 | 118.7 | 118.4 |
+| 612 | 16 | 250.3 | 244.3 | 126.1 | 125.4 | 126.0 |
+| 612 | 32 | 346.9 | 347.9 | 173.6 | 174.1 | 172.2 |
+
+Two things follow. (1) The default SVD path factors the coarse SVD TWICE per
+solve (110 s in `MGSetup Level 0`, then again in the first coarse solve,
+`PCSetUp` count 2): a production inefficiency in its own right. (2) The sparse
+variants' totals are one wasted SVD (about 110 s) plus about 8 s of their own;
+without the wasted SVD the sparse coarse solve should be about 25-30x cheaper
+than the SVD at 612 cells. Sweep 3 measures that directly: the coarse solve is
+chosen BEFORE any setup (a `"mumps"` coarse option in the multigrid bundle:
+redundant MUMPS LU with null-pivot detection), with and without the restricted
+rotation null space attached.
