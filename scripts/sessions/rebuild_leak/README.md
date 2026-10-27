@@ -65,3 +65,56 @@ registry with the mesh finalizer replaced it.
 The driver's own references. If it keeps the previous child (for example in
 its warm-start transfer of V onto the new mesh) past the rebuild, that child
 stays alive by design; the library no longer adds an owner of its own.
+
+## Adversarial review (2026-10-27)
+
+Two independent read-only passes on 99259d35..547c2e54 (the collective
+cleanup in mesh construction; object lifetimes after the registry change),
+then fixes in 56df136b and ff782c4d.
+
+Found and fixed:
+- `Model._part_objects` (the step transcript's part -> object map) was a strong
+  dict keyed per instance: every solver that solved inside `model.step` was
+  kept with its mesh. test_0077 ran with transcripts off, so it could not see
+  it. Now weak; test_0077 gains a solve-in-a-step test with transcripts on.
+- My fix had made a variable stop keeping its mesh (a helper returning only a
+  variable lost the mesh). Ownership is now: a variable holds its mesh, a mesh
+  owns its variables (`mesh._vars` a plain dict; the cycle is collected with
+  the mesh), the model indexes meshes, variables and solvers weakly. Variable
+  symbols hold their variable weakly and coordinates their mesh weakly, so
+  sympy's caches pin nothing. This also removes the stale `stats()`
+  temporaries the registry purge missed (a RuntimeError after a rebuild).
+- `_primary_mesh_id` outlived its mesh and could be taken by a reused address,
+  differently per rank. The primary mesh is now a weak reference, a freed one
+  is replaced by the next mesh, and `set_primary_mesh` always sets it (it did
+  not for an unregistered mesh while a live primary existed).
+- A `.msh` read with `comm=` would clean up on COMM_WORLD; the cleanup now uses
+  the reader's communicator. Latent (no caller passes `comm=`).
+- test_1058 made its orphaned field by resetting the model, which no longer
+  releases a variable; it now orphans one the way the statistics helpers do
+  (taken off `mesh.vars`), with its assertions unchanged.
+
+New tests in test_0077 (a variable keeps its mesh; a solver that solved in a
+step is freed; the primary mesh is released and replaced) fail on 547c2e54
+and pass on ff782c4d.
+
+Attacks that failed: no `Mesh(` is built by a subset of ranks or on a
+sub-communicator in src (COMM_SELF readers return raw DMs, never a Mesh);
+`PETSc.garbage_cleanup` touches only the given communicator's garbage and
+destroys only what every rank queued; no CoordinateSystem is pickled or
+copied; nothing reads `_init_params` after `__init__`; snapshot capture and
+restore work off live meshes; no internal solver is reachable only through the
+model's `_solvers`.
+
+Not changed: the `gc.collect()` in every `Mesh(...)` costs time in deep
+hierarchy builds (kaiju: +0.3 s, 3%, per faulted build); `extract_meshes`
+reports a freed mesh's coordinates as a foreign mesh "None" (a wrong message,
+not a wrong result).
+
+Validation on ff782c4d:
+- memory probe, 15 rebuilds: 0.1 MB per rebuild serial and np 2 (meshes, DMs
+  and variables constant);
+- tier A level 1 serial: 1495 passed, 1 failed (test_0864, failing
+  identically on 99259d35);
+- tests/parallel/test_*.py: 163 passed, 16 skipped at np 2; 171 passed, 8
+  skipped at np 4; no failures, no hangs.
