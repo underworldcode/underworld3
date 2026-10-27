@@ -120,3 +120,45 @@ Validation on ff782c4d:
   passed, 1 failed (test_0864 only);
 - tests/parallel/test_*.py: 163 passed, 16 skipped at np 2; 171 passed, 8
   skipped at np 4; no failures, no hangs.
+
+## Review 3: the development-based branch (2026-10-27, after shutdown; NOT yet acted on)
+
+Independent read-only review of bugfix/faulted-rebuild-leak-dev (35244335)
+against development 7222caf3. Must be addressed before the PR.
+
+- should-fix, parallel hang: a dropped mesh with variables is in a reference
+  cycle (mesh._vars <-> var._mesh_owner), so it stays in the weak registries
+  until a gc pass, whose timing differs per rank. write_snapshot
+  (checkpoint/disk_snapshot.py:317) loops over model._meshes calling the
+  collective mesh.write_checkpoint: rebuild, drop, model.save_state at np 2
+  can mismatch the collective writes. Serial: snapshots may include the
+  dropped mesh (read_snapshot :507 "mesh not registered"; snapshot.py:206
+  "duplicate mesh name"). Fix: gc.collect() on every rank (or
+  _free_petsc_garbage) at the top of write_snapshot / snapshot() /
+  read_snapshot.
+- should-fix: Swarm.mesh (swarm.py:3782) resolves its mesh by id through the
+  weak registry, holding no reference: a swarm on a mesh nobody else holds
+  (no proxied variable yet) loses it at the next Mesh(...) (gc in __init__),
+  or silently gets an unrelated mesh at a reused address. Fix: the swarm holds
+  its mesh (strongly, or weakref with a clear error), not by id.
+- should-fix: "a mesh owns its variables" holds for the base variable only:
+  EnhancedMeshVariable (the user-facing MeshVariable) registers the wrapper in
+  model._variables while mesh._vars holds _base_var (enhanced_variables.py:
+  135-143). A dropped wrapper vanishes from the registry: get_variable returns
+  None, units extraction (units.py:375) and nondimensional scaling
+  (nondimensional.py:34, 467) skip it (silently unscaled), adjoint tokens
+  (adjoint.py:626-636) lose it. Related: the bare-name key points at the most
+  recent same-named variable only (model.py:658-695).
+- should-fix (latent): MeshVariable.__del__ destroys _gvec explicitly
+  (discretisation_mesh_variables.py:2452); it now runs from cyclic gc at
+  per-rank times, bypassing petsc4py's deferred list. Drop the explicit
+  destroys and let petsc4py defer them.
+- nit: checkpoint/snapshot.py:398-399 builds dicts from model._meshes.values()
+  without list(...).
+
+Failed attacks: no partial-rank or sub-communicator Mesh build in src
+(Mesh.__init__ already had a COMM_WORLD barrier and a dm.comm allgather, so
+the cleanup adds no new collectivity); _init_params read only in __init__; no
+Mesh / CoordinateSystem / UWCoordinate pickled or deep-copied; model.mesh
+deterministic (collection precedes registration); strong mesh._vars only stops
+variables vanishing.
