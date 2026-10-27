@@ -13,13 +13,14 @@ up by position:
 
 Measured before the fix: a cell-size (P0) field landing in a P2 slot as
 garbage, NaN residuals (`DIVERGED_FUNCTION_NANORINF`) in one run and a
-subtly wrong answer in the next, depending on when the collector ran. The
-default Model holds the only strong reference to a variable (the mesh
-outlives the model it was created under), so `uw.reset_default_model()`,
-which the test suite runs between tests, releases every variable a script
-no longer names; the variable-statistics
-helpers also delete temporaries from the registry on purpose. The orphan is
-an ordinary state, not a misuse.
+subtly wrong answer in the next, depending on when the collector ran.
+
+A mesh owns its variables (since 2026-10-27; before, the default Model held
+the only strong reference and a model reset released them), so a variable
+is orphaned when it is taken off the mesh: the variable-statistics helpers
+delete their temporaries from `mesh.vars` on purpose, and that leaves the
+field. The orphan is an ordinary state, not a misuse; ``_orphan`` makes one
+the same way.
 
 Run: pixi run python -m pytest tests/test_1058_dropped_meshvariable_aux_layout.py -v
 """
@@ -37,6 +38,14 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 def _mesh():
     return uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+
+
+def _orphan(mesh, name, components, degree):
+    """A variable taken off the mesh and collected: its DM field stays."""
+    variable = uw.discretisation.MeshVariable(name, mesh, components, degree=degree)
+    del mesh.vars[variable.clean_name]
+    del variable
+    gc.collect()
 
 
 def _poisson_with_field_coefficient(mesh, tag):
@@ -60,13 +69,7 @@ def test_dropped_variable_leaves_an_orphaned_field():
     """The premise: dropping a variable does not shrink the DM."""
     mesh = _mesh()
     n_fields = mesh.dm.getNumFields()
-    # The mesh keeps the model it was created under alive; a variable
-    # registers with the CURRENT default model, so a reset before and
-    # after creating it is what releases it (the suite's per-test reset).
-    uw.reset_default_model()
-    uw.discretisation.MeshVariable("temporary", mesh, 2, degree=2)
-    uw.reset_default_model()
-    gc.collect()
+    _orphan(mesh, "temporary", 2, 2)
     assert "temporary" not in mesh.vars
     assert mesh.dm.getNumFields() == n_fields + 1
 
@@ -75,11 +78,8 @@ def test_solve_after_a_dropped_variable_matches_a_clean_mesh():
     reference, _k, _u = _poisson_with_field_coefficient(_mesh(), "ref")
 
     mesh = _mesh()
-    uw.reset_default_model()
-    uw.discretisation.MeshVariable("dropped_vector", mesh, 2, degree=2)
-    uw.discretisation.MeshVariable("dropped_scalar", mesh, 1, degree=1)
-    uw.reset_default_model()
-    gc.collect()
+    _orphan(mesh, "dropped_vector", 2, 2)
+    _orphan(mesh, "dropped_scalar", 1, 1)
     assert mesh.dm.getNumFields() > len(mesh.vars)
 
     answer, _k, _u = _poisson_with_field_coefficient(mesh, "orphan")
@@ -88,10 +88,7 @@ def test_solve_after_a_dropped_variable_matches_a_clean_mesh():
 
 def test_packed_aux_vector_lands_in_the_named_fields():
     mesh = _mesh()
-    uw.reset_default_model()
-    uw.discretisation.MeshVariable("dropped", mesh, 2, degree=1)
-    uw.reset_default_model()
-    gc.collect()
+    _orphan(mesh, "dropped", 2, 1)
     assert "dropped" not in mesh.vars
     x, y = mesh.X
     a = uw.discretisation.MeshVariable("a_live", mesh, 1, degree=1)
