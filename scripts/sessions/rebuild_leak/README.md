@@ -114,7 +114,9 @@ not a wrong result).
 Validation on ff782c4d:
 - memory probe, 15 rebuilds: 0.1 MB per rebuild serial and np 2 (meshes, DMs
   and variables constant);
-- tier A level 1 serial: 1495 passed, 1 failed (test_0864, failing
-  identically on 99259d35);
+- tier A level 1 serial, on 56df136b: 1495 passed, 4 failed (test_0864,
+  failing identically on 99259d35, and the three test_1058 premise failures
+  fixed in ff782c4d; test_1058 passes there). A full rerun on ff782c4d is
+  recorded below when it completes;
 - tests/parallel/test_*.py: 163 passed, 16 skipped at np 2; 171 passed, 8
   skipped at np 4; no failures, no hangs.
