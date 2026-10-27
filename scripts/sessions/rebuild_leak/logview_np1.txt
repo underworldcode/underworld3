@@ -1,0 +1,543 @@
+****************************************************************************************************************************************************************
+***                                WIDEN YOUR WINDOW TO 160 CHARACTERS.  Use 'enscript -r -fCourier9' to print this document                                 ***
+****************************************************************************************************************************************************************
+
+------------------------------------------------------------------ PETSc Performance Summary: ------------------------------------------------------------------
+
+Unknown Name on a  named hyperion with 1 process, by lmoresi on Mon Oct 26 00:53:06 2026
+Using 1 OpenMP threads
+Using PETSc Release Version 3.25.3, Jun 29, 2026
+
+                         Max       Max/Min     Avg       Total
+Time (sec):           3.443e+01     1.000   3.443e+01
+Objects:              0.000e+00     0.000   0.000e+00
+Flops:                3.478e+10     1.000   3.478e+10  3.478e+10
+Flops/sec:            1.010e+09     1.000   1.010e+09  1.010e+09
+MPI Msg Count:        0.000e+00     0.000   0.000e+00  0.000e+00
+MPI Msg Len (bytes):  0.000e+00     0.000   0.000e+00  0.000e+00
+MPI Reductions:       0.000e+00     0.000
+
+Flop counting convention: 1 flop = 1 real number operation of type (multiply/divide/add/subtract)
+                            e.g., VecAXPY() for real vectors of length N --> 2N flops
+                            and VecAXPY() for complex vectors of length N --> 8N flops
+
+Summary of Stages:   ----- Time ------  ----- Flop ------  --- Messages ---  -- Message Lengths --  -- Reductions --
+                        Avg     %Total     Avg     %Total    Count   %Total     Avg         %Total    Count   %Total
+ 0:      Main Stage: 3.2516e+01  94.4%  3.4778e+10 100.0%  0.000e+00   0.0%  0.000e+00        0.0%  0.000e+00   0.0%
+
+------------------------------------------------------------------------------------------------------------------------
+See the 'Profiling' chapter of the users' manual for details on interpreting output.
+Phase summary info:
+   Count: number of times phase was executed
+   Time and Flop: Max - maximum over all processes
+                  Ratio - ratio of maximum to minimum over all processes
+   Mess: number of messages sent
+   AvgLen: average message length (bytes)
+   Reduct: number of global reductions
+   Global: entire computation
+   Stage: stages of a computation. Set stages with PetscLogStagePush() and PetscLogStagePop().
+      %T - percent time in this phase         %F - percent flop in this phase
+      %M - percent messages in this phase     %L - percent message lengths in this phase
+      %R - percent reductions in this phase
+   Total Mflop/s: 1e-6 * (sum of flop over all processes)/(max time over all processes)
+------------------------------------------------------------------------------------------------------------------------
+Event                Count      Time (sec)     Flop                              --- Global ---  --- Stage ----  Total
+                   Max Ratio  Max     Ratio   Max  Ratio  Mess   AvgLen  Reduct  %T %F %M %L %R  %T %F %M %L %R Mflop/s
+------------------------------------------------------------------------------------------------------------------------
+
+--- Event Stage 0: Main Stage
+
+BuildTwoSided        406 1.0 4.9608e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+BuildTwoSidedF       108 1.0 2.3580e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+ISView                14 1.0 1.0573e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+ISLoad                13 1.0 7.6660e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFSetGraph           403 1.0 1.2923e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFSetUp              298 1.0 1.4888e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFBcastBegin         227 1.0 9.9612e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFBcastEnd           227 1.0 1.2029e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFReduceBegin         24 1.0 2.0344e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFReduceEnd           24 1.0 1.9953e-05 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFPack               553 1.0 5.8042e-05 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFUnpack             553 1.0 5.3419e-05 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecView                1 1.0 1.1413e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecMDot            46747 1.0 2.3288e-01 1.0 1.23e+09 1.0 0.0e+00 0.0e+00 0.0e+00  1  4  0  0  0   1  4  0  0  0  5285
+VecNorm            58453 1.0 5.1028e-02 1.0 6.09e+08 1.0 0.0e+00 0.0e+00 0.0e+00  0  2  0  0  0   0  2  0  0  0 11927
+VecScale           58453 1.0 4.3644e-02 1.0 3.04e+08 1.0 0.0e+00 0.0e+00 0.0e+00  0  1  0  0  0   0  1  0  0  0  6960
+VecShift              15 1.0 5.6290e-06 1.0 1.79e+04 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0  3175
+VecCopy            11691 1.0 3.3894e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecSet             26356 1.0 3.5935e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecAXPY            19690 1.0 4.7614e-02 1.0 2.08e+08 1.0 0.0e+00 0.0e+00 0.0e+00  0  1  0  0  0   0  1  0  0  0  4364
+VecAYPX             5760 1.0 1.4473e-02 1.0 2.98e+07 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0  2057
+VecMAXPY           58363 1.0 1.8421e-01 1.0 1.72e+09 1.0 0.0e+00 0.0e+00 0.0e+00  1  5  0  0  0   1  5  0  0  0  9322
+VecAssemblyBegin      20 1.0 4.2000e-06 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecAssemblyEnd        20 1.0 2.1290e-06 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecReciprocal        108 1.0 3.6251e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecLoad                1 1.0 4.0103e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecScatterBegin      302 1.0 1.2337e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecScatterEnd        302 1.0 1.7380e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecNormalize       57605 1.0 1.1513e-01 1.0 8.93e+08 1.0 0.0e+00 0.0e+00 0.0e+00  0  3  0  0  0   0  3  0  0  0  7756
+MatMult             8379 1.0 1.6205e+01 1.0 3.27e+10 1.0 0.0e+00 0.0e+00 0.0e+00 47 94  0  0  0  50 94  0  0  0  2021
+MatMultAdd          5836 1.0 8.9711e-02 1.0 1.61e+08 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0  1790
+MatMultTranspose    8172 1.0 2.1429e-01 1.0 2.40e+08 1.0 0.0e+00 0.0e+00 0.0e+00  1  1  0  0  0   1  1  0  0  0  1121
+MatSolve            2956 1.0 2.5778e-01 1.0 3.20e+08 1.0 0.0e+00 0.0e+00 0.0e+00  1  1  0  0  0   1  1  0  0  0  1241
+MatSOR             57600 1.0 8.5704e+00 1.0 1.45e+10 1.0 0.0e+00 0.0e+00 0.0e+00 25 42  0  0  0  26 42  0  0  0  1697
+MatLUFactorSym         5 1.0 3.6260e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatLUFactorNum        10 1.0 5.3519e-03 1.0 1.13e+07 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0  2115
+MatILUFactorSym        5 1.0 3.9010e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatResidual         5760 1.0 6.8933e-01 1.0 1.45e+09 1.0 0.0e+00 0.0e+00 0.0e+00  2  4  0  0  0   2  4  0  0  0  2110
+MatAssemblyBegin    4018 1.0 1.3125e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatAssemblyEnd      4018 1.0 1.6218e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatGetRowIJ           10 1.0 3.6555e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatCreateSubMats      59 1.0 2.4014e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatGetOrdering        10 1.0 2.7498e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatZeroEntries       118 1.0 2.9672e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatTranspose          15 1.0 1.8892e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatMatMultSym         25 1.0 8.0654e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatMatMultNum         25 1.0 4.1961e-03 1.0 2.07e+06 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   492
+MatPtAPSymbolic       25 1.0 1.2787e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatPtAPNumeric        25 1.0 7.8233e-02 1.0 3.80e+07 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   486
+MatGetSymTransR       25 1.0 1.0834e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatSetPreallCOO     2282 1.0 3.2648e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatSetValuesCOO     2282 1.0 2.3344e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+PCSetUp               35 1.0 1.7340e-01 1.0 4.19e+07 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0   242
+PCSetUpOnBlocks       10 1.0 4.1873e-03 1.0 1.66e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0    40
+PCApply                5 1.0 1.7160e+01 1.0 3.46e+10 1.0 0.0e+00 0.0e+00 0.0e+00 50 99  0  0  0  53 99  0  0  0  2016
+KSPSolve_FS_0          5 1.0 8.0209e-01 1.0 1.62e+09 1.0 0.0e+00 0.0e+00 0.0e+00  2  5  0  0  0   2  5  0  0  0  2019
+KSPSolve_FS_Schu       5 1.0 1.5506e+01 1.0 3.13e+10 1.0 0.0e+00 0.0e+00 0.0e+00 45 90  0  0  0  48 90  0  0  0  2017
+KSPSolve_FS_Low        5 1.0 8.5051e-01 1.0 1.69e+09 1.0 0.0e+00 0.0e+00 0.0e+00  2  5  0  0  0   3  5  0  0  0  1988
+KSPSetUp              10 1.0 1.2340e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+KSPSolve               5 1.0 1.7164e+01 1.0 3.46e+10 1.0 0.0e+00 0.0e+00 0.0e+00 50 99  0  0  0  53 99  0  0  0  2016
+KSPGMRESOrthog     46737 1.0 3.9040e-01 1.0 2.46e+09 1.0 0.0e+00 0.0e+00 0.0e+00  1  7  0  0  0   1  7  0  0  0  6305
+DMRefine               1 1.0 1.5074e-02 1.0 1.04e+03 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMCreateInterp       108 1.0 9.4388e-01 1.0 6.34e+06 1.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0     7
+DMCreateMat           10 1.0 1.7605e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+DMView                 1 1.0 1.1994e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexCreateGmsh       1 1.0 1.2721e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexCrFromFile       1 1.0 1.5335e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexInterp        1808 1.0 2.0907e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexStratify      2256 1.0 3.3155e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexSymmetrize    2256 1.0 1.5273e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexPrealloc        10 1.0 1.7419e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+DMPlexResidualFE      15 1.0 2.3732e-01 1.0 4.28e+07 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0   180
+DMPlexJacobianFE       5 1.0 8.7584e-01 1.0 7.74e+07 1.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0    88
+DMPlexInterpFE       108 1.0 8.9872e-01 1.0 1.14e+04 1.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0     0
+DMPlexTopologyLoad       1 1.0 3.3984e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexLabelsLoad       1 1.0 7.7182e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexCoordinatesLoad       1 1.0 8.7330e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexTrSetUp        126 1.0 1.7252e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+DMPlexTrApply        126 1.0 1.7566e+00 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  5  0  0  0  0   5  0  0  0  0     0
+DMPlexTrSizes        126 1.0 2.9152e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+DMPlexTrCones        126 1.0 9.0655e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0     0
+DMPlexTrSF           126 1.0 3.2307e-05 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexTrLabels       126 1.0 3.1885e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+DMPlexTrCoords       126 1.0 2.3278e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+SNESSetUp              5 1.0 1.7640e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+SNESFunctionEval      15 1.0 4.1047e-01 1.0 4.33e+07 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0   105
+SNESJacobianEval       5 1.0 9.3570e-01 1.0 7.76e+07 1.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0    83
+DualSpaceSetUp       600 1.0 2.9663e-01 1.0 9.50e+03 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+FESetUp              600 1.0 2.8443e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+_gmsh_to_h5            1 1.0 1.2352e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+_from_gmsh             1 1.0 1.3682e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+_from_plexh5           1 1.0 1.3281e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Mesh.__init__         48 1.0 3.6557e+00 1.0 3.48e+06 1.0 0.0e+00 0.0e+00 0.0e+00 11  0  0  0  0  11  0  0  0  0     1
+Mesh.update_lvec      10 1.0 1.2298e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Mesh._wrap_coarse_level      12 1.0 7.0176e-01 1.0 7.00e+05 1.0 0.0e+00 0.0e+00 0.0e+00  2  0  0  0  0   2  0  0  0  0     1
+_BaseMeshVariable.__init__      10 1.0 1.6537e-01 1.0 1.60e+06 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   1  0  0  0  0    10
+UnstructuredSimplexBox       1 1.0 3.3867e-01 1.0 4.63e+04 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+getext                 5 1.0 1.1034e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+_aux_component_offsets       5 1.0 4.4430e-05 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SolverBaseClass._build       5 1.0 4.7081e-01 1.0 1.66e+05 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+SolverBaseClass.add_condition      20 1.0 3.4915e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SolverBaseClass.add_dirichlet_bc      20 1.0 3.5312e-03 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SNES_Stokes_SaddlePt.__init__       5 1.0 2.1048e-01 1.0 1.60e+06 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     8
+SNES_Stokes_SaddlePt._setup_pointwise_functions       5 1.0 2.5568e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+SNES_Stokes_SaddlePt._setup_discretisation       5 1.0 1.4543e-02 1.0 2.07e+04 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     1
+SNES_Stokes_SaddlePt._setup_solver       5 1.0 1.9991e-01 1.0 1.45e+05 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     1
+SNES_Stokes_SaddlePt.solve       5 1.0 2.1161e+01 1.0 3.48e+10 1.0 0.0e+00 0.0e+00 0.0e+00 61 100  0  0  0  65 100  0  0  0  1643
+SNES_Stokes.solve       5 1.0 2.1162e+01 1.0 3.48e+10 1.0 0.0e+00 0.0e+00 0.0e+00 61 100  0  0  0  65 100  0  0  0  1643
+KDTree.find_closest_point      48 1.0 6.1065e-04 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+------------------------------------------------------------------------------------------------------------------------
+
+Object Type          Creations   Destructions. Reports information only for process 0.
+
+--- Event Stage 0: Main Stage
+
+           Container  4720           4656
+              Viewer     5              4
+           Index Set 64528          64344
+   IS L to G Mapping 12629          12461
+             Section 18875          18599
+   Star Forest Graph 16390          16240
+              Vector  4516           4471
+              Matrix  8479           8430
+   Matrix Null Space    15             15
+      Preconditioner    65             65
+       Krylov Solver    65             65
+     DMKSP interface     5              5
+                SNES     5              5
+              DMSNES     5              5
+      SNESLineSearch     5              5
+    Distributed Mesh  6480           6382
+            DM Label 23728          23527
+          Quadrature 10750          10589
+      Mesh Transform   126            126
+    GraphPartitioner  2256           2219
+     Discrete System  9573           9479
+           Weak Form  9933           9839
+        Linear Space   895            881
+          Dual Space  3442           3400
+            FE Space   600            586
+       Field over DM    53             50
+========================================================================================================================
+Average time to get PetscTime(): 2.93e-08
+#PETSc Option Table entries:
+-coordinterp_petscdualspace_lagrange_continuity true # (source: code)
+-coordinterp_petscdualspace_lagrange_node_endpoints false # (source: code)
+-coordinterp_petscspace_degree 1 # (source: code)
+-dm_plex_hash_location # (source: code)
+-meshproj_10_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_10_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_10_petscspace_degree 1 # (source: code)
+-meshproj_11_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_11_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_11_petscspace_degree 1 # (source: code)
+-meshproj_12_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_12_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_12_petscspace_degree 1 # (source: code)
+-meshproj_13_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_13_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_13_petscspace_degree 1 # (source: code)
+-meshproj_14_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_14_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_14_petscspace_degree 1 # (source: code)
+-meshproj_15_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_15_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_15_petscspace_degree 1 # (source: code)
+-meshproj_16_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_16_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_16_petscspace_degree 1 # (source: code)
+-meshproj_17_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_17_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_17_petscspace_degree 1 # (source: code)
+-meshproj_18_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_18_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_18_petscspace_degree 1 # (source: code)
+-meshproj_19_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_19_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_19_petscspace_degree 1 # (source: code)
+-meshproj_1_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_1_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_1_petscspace_degree 1 # (source: code)
+-meshproj_20_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_20_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_20_petscspace_degree 1 # (source: code)
+-meshproj_21_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_21_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_21_petscspace_degree 1 # (source: code)
+-meshproj_22_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_22_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_22_petscspace_degree 1 # (source: code)
+-meshproj_23_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_23_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_23_petscspace_degree 1 # (source: code)
+-meshproj_24_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_24_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_24_petscspace_degree 1 # (source: code)
+-meshproj_25_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_25_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_25_petscspace_degree 1 # (source: code)
+-meshproj_26_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_26_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_26_petscspace_degree 1 # (source: code)
+-meshproj_27_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_27_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_27_petscspace_degree 1 # (source: code)
+-meshproj_28_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_28_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_28_petscspace_degree 1 # (source: code)
+-meshproj_29_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_29_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_29_petscspace_degree 1 # (source: code)
+-meshproj_2_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_2_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_2_petscspace_degree 1 # (source: code)
+-meshproj_30_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_30_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_30_petscspace_degree 1 # (source: code)
+-meshproj_31_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_31_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_31_petscspace_degree 1 # (source: code)
+-meshproj_32_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_32_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_32_petscspace_degree 1 # (source: code)
+-meshproj_33_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_33_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_33_petscspace_degree 1 # (source: code)
+-meshproj_34_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_34_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_34_petscspace_degree 1 # (source: code)
+-meshproj_35_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_35_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_35_petscspace_degree 1 # (source: code)
+-meshproj_36_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_36_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_36_petscspace_degree 1 # (source: code)
+-meshproj_37_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_37_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_37_petscspace_degree 1 # (source: code)
+-meshproj_38_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_38_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_38_petscspace_degree 1 # (source: code)
+-meshproj_39_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_39_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_39_petscspace_degree 1 # (source: code)
+-meshproj_3_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_3_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_3_petscspace_degree 1 # (source: code)
+-meshproj_40_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_40_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_40_petscspace_degree 1 # (source: code)
+-meshproj_41_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_41_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_41_petscspace_degree 1 # (source: code)
+-meshproj_42_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_42_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_42_petscspace_degree 1 # (source: code)
+-meshproj_43_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_43_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_43_petscspace_degree 1 # (source: code)
+-meshproj_44_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_44_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_44_petscspace_degree 1 # (source: code)
+-meshproj_45_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_45_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_45_petscspace_degree 1 # (source: code)
+-meshproj_46_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_46_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_46_petscspace_degree 1 # (source: code)
+-meshproj_47_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_47_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_47_petscspace_degree 1 # (source: code)
+-meshproj_48_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_48_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_48_petscspace_degree 1 # (source: code)
+-meshproj_4_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_4_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_4_petscspace_degree 1 # (source: code)
+-meshproj_5_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_5_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_5_petscspace_degree 1 # (source: code)
+-meshproj_6_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_6_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_6_petscspace_degree 1 # (source: code)
+-meshproj_7_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_7_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_7_petscspace_degree 1 # (source: code)
+-meshproj_8_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_8_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_8_petscspace_degree 1 # (source: code)
+-meshproj_9_petscdualspace_lagrange_continuity true # (source: code)
+-meshproj_9_petscdualspace_lagrange_node_endpoints false # (source: code)
+-meshproj_9_petscspace_degree 1 # (source: code)
+-options_left 0 # (source: code)
+-private_Solver_116__p_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_116__p_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_116__p_petscspace_degree 1 # (source: code)
+-private_Solver_116__u_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_116__u_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_116__u_petscspace_degree 2 # (source: code)
+-private_Solver_155__p_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_155__p_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_155__p_petscspace_degree 1 # (source: code)
+-private_Solver_155__u_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_155__u_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_155__u_petscspace_degree 2 # (source: code)
+-private_Solver_194__p_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_194__p_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_194__p_petscspace_degree 1 # (source: code)
+-private_Solver_194__u_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_194__u_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_194__u_petscspace_degree 2 # (source: code)
+-private_Solver_38__p_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_38__p_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_38__p_petscspace_degree 1 # (source: code)
+-private_Solver_38__u_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_38__u_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_38__u_petscspace_degree 2 # (source: code)
+-private_Solver_77__p_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_77__p_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_77__p_petscspace_degree 1 # (source: code)
+-private_Solver_77__u_petscdualspace_lagrange_continuity true # (source: code)
+-private_Solver_77__u_petscdualspace_lagrange_node_endpoints false # (source: code)
+-private_Solver_77__u_petscspace_degree 2 # (source: code)
+-Solver_116_fieldsplit_pressure_ksp_max_it 200 # (source: code)
+-Solver_116_fieldsplit_pressure_ksp_rtol 1e-07 # (source: code)
+-Solver_116_fieldsplit_pressure_ksp_type fgmres # (source: code)
+-Solver_116_fieldsplit_pressure_pc_type gasm # (source: code)
+-Solver_116_fieldsplit_velocity_ksp_gmres_restart 100 # (source: code)
+-Solver_116_fieldsplit_velocity_ksp_max_it 200 # (source: code)
+-Solver_116_fieldsplit_velocity_ksp_rtol 3.3e-08 # (source: code)
+-Solver_116_fieldsplit_velocity_ksp_type fgmres # (source: code)
+-Solver_116_fieldsplit_velocity_mat_block_size 2 # (source: code)
+-Solver_116_fieldsplit_velocity_mg_levels_ksp_converged_maxits # (source: code)
+-Solver_116_fieldsplit_velocity_mg_levels_ksp_max_it 3 # (source: code)
+-Solver_116_fieldsplit_velocity_pc_gamg_agg_nsmooths 2 # (source: code)
+-Solver_116_fieldsplit_velocity_pc_gamg_repartition true # (source: code)
+-Solver_116_fieldsplit_velocity_pc_gamg_type agg # (source: code)
+-Solver_116_fieldsplit_velocity_pc_mg_type multiplicative # (source: code)
+-Solver_116_fieldsplit_velocity_pc_type gamg # (source: code)
+-Solver_116_ksp_atol 1e-12 # (source: code)
+-Solver_116_ksp_gmres_restart 100 # (source: code)
+-Solver_116_ksp_type fgmres # (source: code)
+-Solver_116_pc_fieldsplit_diag_use_amat # (source: code)
+-Solver_116_pc_fieldsplit_off_diag_use_amat # (source: code)
+-Solver_116_pc_fieldsplit_schur_fact_type full # (source: code)
+-Solver_116_pc_fieldsplit_schur_precondition a11 # (source: code)
+-Solver_116_pc_fieldsplit_type schur # (source: code)
+-Solver_116_pc_type fieldsplit # (source: code)
+-Solver_116_snes_ksp_ew # (source: code)
+-Solver_116_snes_ksp_ew_version 3 # (source: code)
+-Solver_116_snes_rtol 1e-06 # (source: code)
+-Solver_155_fieldsplit_pressure_ksp_max_it 200 # (source: code)
+-Solver_155_fieldsplit_pressure_ksp_rtol 1e-07 # (source: code)
+-Solver_155_fieldsplit_pressure_ksp_type fgmres # (source: code)
+-Solver_155_fieldsplit_pressure_pc_type gasm # (source: code)
+-Solver_155_fieldsplit_velocity_ksp_gmres_restart 100 # (source: code)
+-Solver_155_fieldsplit_velocity_ksp_max_it 200 # (source: code)
+-Solver_155_fieldsplit_velocity_ksp_rtol 3.3e-08 # (source: code)
+-Solver_155_fieldsplit_velocity_ksp_type fgmres # (source: code)
+-Solver_155_fieldsplit_velocity_mat_block_size 2 # (source: code)
+-Solver_155_fieldsplit_velocity_mg_levels_ksp_converged_maxits # (source: code)
+-Solver_155_fieldsplit_velocity_mg_levels_ksp_max_it 3 # (source: code)
+-Solver_155_fieldsplit_velocity_pc_gamg_agg_nsmooths 2 # (source: code)
+-Solver_155_fieldsplit_velocity_pc_gamg_repartition true # (source: code)
+-Solver_155_fieldsplit_velocity_pc_gamg_type agg # (source: code)
+-Solver_155_fieldsplit_velocity_pc_mg_type multiplicative # (source: code)
+-Solver_155_fieldsplit_velocity_pc_type gamg # (source: code)
+-Solver_155_ksp_atol 1e-12 # (source: code)
+-Solver_155_ksp_gmres_restart 100 # (source: code)
+-Solver_155_ksp_type fgmres # (source: code)
+-Solver_155_pc_fieldsplit_diag_use_amat # (source: code)
+-Solver_155_pc_fieldsplit_off_diag_use_amat # (source: code)
+-Solver_155_pc_fieldsplit_schur_fact_type full # (source: code)
+-Solver_155_pc_fieldsplit_schur_precondition a11 # (source: code)
+-Solver_155_pc_fieldsplit_type schur # (source: code)
+-Solver_155_pc_type fieldsplit # (source: code)
+-Solver_155_snes_ksp_ew # (source: code)
+-Solver_155_snes_ksp_ew_version 3 # (source: code)
+-Solver_155_snes_rtol 1e-06 # (source: code)
+-Solver_194_fieldsplit_pressure_ksp_max_it 200 # (source: code)
+-Solver_194_fieldsplit_pressure_ksp_rtol 1e-07 # (source: code)
+-Solver_194_fieldsplit_pressure_ksp_type fgmres # (source: code)
+-Solver_194_fieldsplit_pressure_pc_type gasm # (source: code)
+-Solver_194_fieldsplit_velocity_ksp_gmres_restart 100 # (source: code)
+-Solver_194_fieldsplit_velocity_ksp_max_it 200 # (source: code)
+-Solver_194_fieldsplit_velocity_ksp_rtol 3.3e-08 # (source: code)
+-Solver_194_fieldsplit_velocity_ksp_type fgmres # (source: code)
+-Solver_194_fieldsplit_velocity_mat_block_size 2 # (source: code)
+-Solver_194_fieldsplit_velocity_mg_levels_ksp_converged_maxits # (source: code)
+-Solver_194_fieldsplit_velocity_mg_levels_ksp_max_it 3 # (source: code)
+-Solver_194_fieldsplit_velocity_pc_gamg_agg_nsmooths 2 # (source: code)
+-Solver_194_fieldsplit_velocity_pc_gamg_repartition true # (source: code)
+-Solver_194_fieldsplit_velocity_pc_gamg_type agg # (source: code)
+-Solver_194_fieldsplit_velocity_pc_mg_type multiplicative # (source: code)
+-Solver_194_fieldsplit_velocity_pc_type gamg # (source: code)
+-Solver_194_ksp_atol 1e-12 # (source: code)
+-Solver_194_ksp_gmres_restart 100 # (source: code)
+-Solver_194_ksp_type fgmres # (source: code)
+-Solver_194_pc_fieldsplit_diag_use_amat # (source: code)
+-Solver_194_pc_fieldsplit_off_diag_use_amat # (source: code)
+-Solver_194_pc_fieldsplit_schur_fact_type full # (source: code)
+-Solver_194_pc_fieldsplit_schur_precondition a11 # (source: code)
+-Solver_194_pc_fieldsplit_type schur # (source: code)
+-Solver_194_pc_type fieldsplit # (source: code)
+-Solver_194_snes_ksp_ew # (source: code)
+-Solver_194_snes_ksp_ew_version 3 # (source: code)
+-Solver_194_snes_rtol 1e-06 # (source: code)
+-Solver_38_fieldsplit_pressure_ksp_max_it 200 # (source: code)
+-Solver_38_fieldsplit_pressure_ksp_rtol 1e-07 # (source: code)
+-Solver_38_fieldsplit_pressure_ksp_type fgmres # (source: code)
+-Solver_38_fieldsplit_pressure_pc_type gasm # (source: code)
+-Solver_38_fieldsplit_velocity_ksp_gmres_restart 100 # (source: code)
+-Solver_38_fieldsplit_velocity_ksp_max_it 200 # (source: code)
+-Solver_38_fieldsplit_velocity_ksp_rtol 3.3e-08 # (source: code)
+-Solver_38_fieldsplit_velocity_ksp_type fgmres # (source: code)
+-Solver_38_fieldsplit_velocity_mat_block_size 2 # (source: code)
+-Solver_38_fieldsplit_velocity_mg_levels_ksp_converged_maxits # (source: code)
+-Solver_38_fieldsplit_velocity_mg_levels_ksp_max_it 3 # (source: code)
+-Solver_38_fieldsplit_velocity_pc_gamg_agg_nsmooths 2 # (source: code)
+-Solver_38_fieldsplit_velocity_pc_gamg_repartition true # (source: code)
+-Solver_38_fieldsplit_velocity_pc_gamg_type agg # (source: code)
+-Solver_38_fieldsplit_velocity_pc_mg_type multiplicative # (source: code)
+-Solver_38_fieldsplit_velocity_pc_type gamg # (source: code)
+-Solver_38_ksp_atol 1e-12 # (source: code)
+-Solver_38_ksp_gmres_restart 100 # (source: code)
+-Solver_38_ksp_type fgmres # (source: code)
+-Solver_38_pc_fieldsplit_diag_use_amat # (source: code)
+-Solver_38_pc_fieldsplit_off_diag_use_amat # (source: code)
+-Solver_38_pc_fieldsplit_schur_fact_type full # (source: code)
+-Solver_38_pc_fieldsplit_schur_precondition a11 # (source: code)
+-Solver_38_pc_fieldsplit_type schur # (source: code)
+-Solver_38_pc_type fieldsplit # (source: code)
+-Solver_38_snes_ksp_ew # (source: code)
+-Solver_38_snes_ksp_ew_version 3 # (source: code)
+-Solver_38_snes_rtol 1e-06 # (source: code)
+-Solver_77_fieldsplit_pressure_ksp_max_it 200 # (source: code)
+-Solver_77_fieldsplit_pressure_ksp_rtol 1e-07 # (source: code)
+-Solver_77_fieldsplit_pressure_ksp_type fgmres # (source: code)
+-Solver_77_fieldsplit_pressure_pc_type gasm # (source: code)
+-Solver_77_fieldsplit_velocity_ksp_gmres_restart 100 # (source: code)
+-Solver_77_fieldsplit_velocity_ksp_max_it 200 # (source: code)
+-Solver_77_fieldsplit_velocity_ksp_rtol 3.3e-08 # (source: code)
+-Solver_77_fieldsplit_velocity_ksp_type fgmres # (source: code)
+-Solver_77_fieldsplit_velocity_mat_block_size 2 # (source: code)
+-Solver_77_fieldsplit_velocity_mg_levels_ksp_converged_maxits # (source: code)
+-Solver_77_fieldsplit_velocity_mg_levels_ksp_max_it 3 # (source: code)
+-Solver_77_fieldsplit_velocity_pc_gamg_agg_nsmooths 2 # (source: code)
+-Solver_77_fieldsplit_velocity_pc_gamg_repartition true # (source: code)
+-Solver_77_fieldsplit_velocity_pc_gamg_type agg # (source: code)
+-Solver_77_fieldsplit_velocity_pc_mg_type multiplicative # (source: code)
+-Solver_77_fieldsplit_velocity_pc_type gamg # (source: code)
+-Solver_77_ksp_atol 1e-12 # (source: code)
+-Solver_77_ksp_gmres_restart 100 # (source: code)
+-Solver_77_ksp_type fgmres # (source: code)
+-Solver_77_pc_fieldsplit_diag_use_amat # (source: code)
+-Solver_77_pc_fieldsplit_off_diag_use_amat # (source: code)
+-Solver_77_pc_fieldsplit_schur_fact_type full # (source: code)
+-Solver_77_pc_fieldsplit_schur_precondition a11 # (source: code)
+-Solver_77_pc_fieldsplit_type schur # (source: code)
+-Solver_77_pc_type fieldsplit # (source: code)
+-Solver_77_snes_ksp_ew # (source: code)
+-Solver_77_snes_ksp_ew_version 3 # (source: code)
+-Solver_77_snes_rtol 1e-06 # (source: code)
+-uw_log lv_np1.jsonl # (source: code)
+-uw_logview logview_np1.txt # (source: code)
+-uw_rebuilds 5 # (source: code)
+-uw_steps 1 # (source: code)
+-VAR_petscdualspace_lagrange_continuity true # (source: code)
+-VAR_petscdualspace_lagrange_node_endpoints false # (source: code)
+-VAR_petscspace_degree 1 # (source: code)
+#End of PETSc Option Table entries
+Compiled without FORTRAN kernels
+Compiled with full precision matrices (default)
+sizeof(short) 2 sizeof(int) 4 sizeof(long) 8 sizeof(void*) 8 sizeof(PetscScalar) 8 sizeof(PetscInt) 4
+Configure options: AR=x86_64-conda-linux-gnu-ar CPP=${PREFIX}/bin/x86_64-conda-linux-gnu-cpp RANLIB=x86_64-conda-linux-gnu-ranlib CC=mpicc CXX=mpicxx FC=mpifort CPPFLAGS="-DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include" LDFLAGS="-Wl,-O2 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now -Wl,--disable-new-dtags -Wl,--gc-sections -Wl,--allow-shlib-undefined -Wl,-rpath,/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib -Wl,-rpath-link,/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib -L/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib" --COPTFLAGS="-march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -fno-merge-constants -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -fdebug-prefix-map=${PREFIX}=/usr/local/src/conda/petsc-3.25.3 -fdebug-prefix-map=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev=/usr/local/src/conda-prefix -O3" --CXXOPTFLAGS="-fvisibility-inlines-hidden -fmessage-length=0 -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -fno-merge-constants -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -fdebug-prefix-map=${PREFIX}=/usr/local/src/conda/petsc-3.25.3 -fdebug-prefix-map=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev=/usr/local/src/conda-prefix -O3" --FOPTFLAGS="-march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -fno-merge-constants -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -I${PREFIX}/include -fdebug-prefix-map=${PREFIX}=/usr/local/src/conda/petsc-3.25.3 -fdebug-prefix-map=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev=/usr/local/src/conda-prefix -O3" --CUDAOPTFLAGS=-O3 --with-clib-autodetect=0 --with-cxxlib-autodetect=0 --with-fortranlib-autodetect=0 --with-debugging=0 --with-blas-lib=libblas.so --with-lapack-lib=liblapack.so --with-yaml=1 --with-hdf5=1 --with-fftw=1 --with-hwloc=1 --with-openmp=1 --with-hypre=1 --with-metis=1 --with-mpi=1 --with-mumps=1 --with-parmetis=1 --with-pthread=1 --with-ptscotch=1 --with-shared-libraries --with-ssl=0 --with-scalapack=1 --with-superlu=1 --with-superlu_dist=1 --with-superlu_dist-include=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include/superlu-dist --with-superlu_dist-lib=-lsuperlu_dist --with-suitesparse=1 --with-suitesparse-dir=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev --with-x=0 --with-scalar-type=real   --with-cuda=0 --prefix=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev
+-----------------------------------------
+Libraries compiled on 2026-06-30 07:50:08 on reproducible
+Machine characteristics: Linux-6.17.0-1018-azure-x86_64-with-glibc2.34
+Using PETSc directory: /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev
+Using PETSc arch: 
+-----------------------------------------
+
+Using C compiler: mpicc  -fPIC -Wall -Wwrite-strings -Wno-unknown-pragmas -Wno-lto-type-mismatch -fstack-protector -fvisibility=hidden -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -fno-merge-constants -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -fdebug-prefix-map=${PREFIX}=/usr/local/src/conda/petsc-3.25.3 -fdebug-prefix-map=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev=/usr/local/src/conda-prefix -O3 -DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -fopenmp
+Using Fortran compiler: mpifort  -fPIC -Wall -ffree-line-length-none -ffree-line-length-0 -Wno-lto-type-mismatch -Wno-unused-dummy-argument -march=nocona -mtune=haswell -ftree-vectorize -fPIC -fstack-protector-strong -fno-plt -O2 -ffunction-sections -pipe -fno-merge-constants -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -I${PREFIX}/include -fdebug-prefix-map=${PREFIX}=/usr/local/src/conda/petsc-3.25.3 -fdebug-prefix-map=/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev=/usr/local/src/conda-prefix -O3   -fopenmp -DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -fopenmp
+-----------------------------------------
+
+Using include paths: -I/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include -I/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include/suitesparse -I/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/include/superlu-dist
+-----------------------------------------
+
+Using C linker: mpicc
+Using Fortran linker: mpifort
+Using libraries: -Wl,-rpath,/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib -L/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib -lpetsc -Wl,-rpath,/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib -L/mnt/data/lmoresi/underworld3/.claude/worktrees/rebuild-leak/.pixi/envs/dev/lib -lHYPRE -lspqr -lumfpack -lklu -lcholmod -lamd -lfftw3_mpi -lfftw3 -lsmumps -ldmumps -lcmumps -lzmumps -lmumps_common -lpord -lpthread -lscalapack -lsuperlu_dist -lsuperlu -llapack -lblas -lptesmumps -lptscotchparmetisv3 -lptscotch -lptscotcherr -lesmumps -lscotch -lscotcherr -lpthread -lhdf5_hl -lhdf5 -lparmetis -lmetis -lm -lyaml -lhwloc -lquadmath -ldl
+-----------------------------------------
+
