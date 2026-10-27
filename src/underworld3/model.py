@@ -422,6 +422,9 @@ class Model(PintNativeModelMixin, BaseModel):
     # by ~0.4 GB per rank per rebuild until it was killed (kaiju, 2026-10).
     _meshes: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _primary_mesh_id: Optional[int] = PrivateAttr(default=None)
+    # The primary mesh itself, held weakly: an id alone outlives its mesh and
+    # can be reused by an unrelated later mesh (differently on each rank).
+    _primary_mesh_ref: Any = PrivateAttr(default=None)
     # WeakValueDictionary so dropping the user's last reference to a swarm
     # actually lets it be garbage-collected. Without this, transient swarms
     # used inside functions (global expression evaluation, checkpoint reads,
@@ -433,12 +436,10 @@ class Model(PintNativeModelMixin, BaseModel):
     # traversal (summaries, snapshots) should iterate a copy such as
     # ``list(self._swarms.items())``.
     _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
-    # Variables are held strongly: the registry is their owner (a mesh holds
-    # its variables weakly, so a variable the caller did not keep lives here).
-    # A variable holds its mesh weakly and does not pin it; when a mesh dies,
-    # _register_mesh's finalizer drops the variables that belonged to it.
-    _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
-    # Solvers weakly: a solver holds its mesh, so a registered solver pinned it.
+    # Weak: the model indexes variables and solvers, it does not own them (a
+    # mesh owns its variables; a variable or solver holds its mesh), so a
+    # strong entry here pinned the mesh.
+    _variables: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _solvers: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
 
     # State-bearing objects (DDt instances, parameter-history holders,
@@ -488,7 +489,9 @@ class Model(PintNativeModelMixin, BaseModel):
     _parts: Dict[str, Any] = PrivateAttr(default_factory=dict)
     # part -> the live object behind it (solver, history manager), so a
     # pass over the transcript can call the operator a record names.
-    _part_objects: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # Weak: a record names its part's object while it lives; a strong entry
+    # kept every solver that ever solved in a step, and its mesh.
+    _part_objects: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     # Set while rewind() is doing its own restore, so load_state does not log a
     # second, less informative note for the same backtrack.
     _restoring: Any = PrivateAttr(default=False)
@@ -537,10 +540,9 @@ class Model(PintNativeModelMixin, BaseModel):
 
     @property
     def mesh(self):
-        """The primary mesh for this model"""
-        if self._primary_mesh_id is None:
-            return None
-        return self._meshes.get(self._primary_mesh_id)
+        """The primary mesh for this model (``None`` once it has been freed)."""
+        ref = self._primary_mesh_ref
+        return ref() if ref is not None else None
 
     def _register_mesh(self, mesh):
         """
@@ -554,27 +556,13 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         mesh_id = id(mesh)
         self._meshes[mesh_id] = mesh
-        # when the mesh is freed, its variables leave the registry with it
-        weakref.finalize(mesh, Model._forget_dead_mesh_variables,
-                         weakref.ref(self))
 
-        # Set as primary mesh if no primary mesh exists
-        if self._primary_mesh_id is None:
+        # Set as primary mesh if there is none, or it has been freed
+        if self.mesh is None:
             self._primary_mesh_id = mesh_id
+            self._primary_mesh_ref = weakref.ref(mesh)
 
         self.version += 1
-
-    @staticmethod
-    def _forget_dead_mesh_variables(model_ref):
-        """Drop the registered mesh variables whose mesh has been freed."""
-        model = model_ref()
-        if model is None:
-            return
-        from .discretisation import MeshVariable
-        for name, var in list(model._variables.items()):
-            ref = getattr(var, "_mesh_ref", None)
-            if isinstance(var, MeshVariable) and ref is not None and ref() is None:
-                del model._variables[name]
 
     def list_meshes(self) -> Dict[int, Any]:
         """List all meshes registered with this model"""
@@ -595,12 +583,11 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         mesh_id = id(mesh)
         if mesh_id not in self._meshes:
-            # Register the mesh first
             self._register_mesh(mesh)
-        else:
-            # Just update the primary mesh pointer
-            self._primary_mesh_id = mesh_id
-            self.version += 1
+        # always this mesh: registering alone keeps an existing live primary
+        self._primary_mesh_id = mesh_id
+        self._primary_mesh_ref = weakref.ref(mesh)
+        self.version += 1
 
     def _register_swarm(self, swarm):
         """
@@ -5757,14 +5744,14 @@ class Model(PintNativeModelMixin, BaseModel):
         facts["variables"] = len(self._variables)
         facts["swarms"] = len(self._swarms)
         facts["solvers"] = len(self._solvers) + sum(
-            1 for obj in getattr(self, "_part_objects", {}).values()
+            1 for obj in list(getattr(self, "_part_objects", {}).values())
             if not any(obj is s for s in list(self._solvers.values())))
         if self.materials:
             facts["materials"] = list(self.materials.keys())
         children = []
         if depth > 0:
             held = list(self._meshes.values()) + list(self._swarms.values()) + list(self._solvers.values())
-            for obj in getattr(self, "_part_objects", {}).values():
+            for obj in list(getattr(self, "_part_objects", {}).values()):
                 if not any(obj is h for h in held):
                     held.append(obj)
             for obj in held:
