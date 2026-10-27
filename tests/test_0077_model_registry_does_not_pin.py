@@ -79,3 +79,54 @@ def test_a_dropped_faulted_rebuild_is_freed():
 
     freed = _dropped(make)
     assert all(freed.values()), freed
+
+
+def test_a_variable_keeps_its_mesh():
+    """A helper may return only the variable: its mesh stays usable."""
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        return uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+
+    variable = make()
+    gc.collect()
+    variable.array[...] = 1.0
+    assert variable.mesh is not None
+    assert float(variable.array.max()) == 1.0
+
+
+def test_a_solver_that_solved_in_a_step_is_freed(monkeypatch, tmp_path):
+    """The step transcript names each part's object; it must not keep it."""
+    monkeypatch.setenv("UW_TRANSCRIPT", "on")
+    monkeypatch.chdir(tmp_path)
+    uw.reset_default_model()
+
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        poisson = uw.systems.Poisson(mesh)
+        poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+        poisson.constitutive_model.Parameters.diffusivity = 1.0
+        poisson.f = 1.0
+        poisson.add_dirichlet_bc(0.0, "Bottom")
+        with uw.get_default_model().step(0.1):
+            poisson.solve()
+        return {"mesh": mesh, "solver": poisson}
+
+    freed = _dropped(make)
+    assert all(freed.values()), freed
+
+
+def test_the_primary_mesh_is_released_and_replaced():
+    """A freed primary mesh is not reported, and the next mesh takes over."""
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        return {"mesh": mesh}
+
+    freed = _dropped(make)
+    assert freed["mesh"]
+    assert uw.get_default_model().mesh is None
+    replacement = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+    assert uw.get_default_model().mesh is replacement
