@@ -162,3 +162,11 @@ the cleanup adds no new collectivity); _init_params read only in __init__; no
 Mesh / CoordinateSystem / UWCoordinate pickled or deep-copied; model.mesh
 deterministic (collection precedes registration); strong mesh._vars only stops
 variables vanishing.
+
+## Suites on the development-based branch (35244335, completed 2026-10-27)
+
+- tier A level 1, serial: 1499 passed, 44 skipped, 1 xfailed, 0 failed;
+- tests/parallel/test_*.py at np 2: 159 passed, 16 skipped on both ranks;
+- at np 4: 167 passed, 8 skipped on every rank.
+No failures, no hangs. (test_0864's failure was the box-faults base's.)
+Review 3's findings above are still to be addressed.
