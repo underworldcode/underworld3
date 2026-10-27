@@ -153,3 +153,50 @@ than the SVD at 612 cells. Sweep 3 measures that directly: the coarse solve is
 chosen BEFORE any setup (a `"mumps"` coarse option in the multigrid bundle:
 redundant MUMPS LU with null-pivot detection), with and without the restricted
 rotation null space attached.
+
+## Sweep 3 (`sweep-3.txt`, 2026-10-27): the coarse solve chosen before setup
+
+The rotated path's switch now selects the coarse option before any setup, so
+nothing is factored and thrown away. `mumps`: redundant (gathered) MUMPS LU
+with null-pivot detection (ICNTL(24)); `mumps_nsp`: the same with the
+restricted rotation mode attached to the coarse operator. Whole-solve wall
+time (factorisation included), coarse factorisations and V-cycles:
+
+| coarse cells | np | svd | mumps | mumps_nsp | speed-up (mumps) | V-cycles svd / mumps |
+|---|---|---|---|---|---|---|
+| 144 | 8 | 4.33 | 2.74 | 2.85 | 1.6x | 435 / 435 |
+| 144 | 16 | 3.64 | 1.86 | 2.01 | 2.0x | 420 / 420 |
+| 144 | 32 | 3.77 | 1.75 | 1.59 | 2.2x | 450 / 450 |
+| 612 | 8 | 231.3 | 8.13 | 8.49 | 28x | 420 / 420 |
+| 612 | 16 | 245.3 | 5.07 | 5.13 | 48x | 435 / 435 |
+| 612 | 32 | 364.3 | 3.68 | 3.80 | 99x | 420 / 420 |
+
+Coarse factorisation: SVD 0.8-1.1 s at 144 cells and 110-178 s at 612 (one
+rank, dense, O(n^3), and slower with np); MUMPS under 0.01 s at both.
+
+Read:
+- MUMPS with null-pivot detection replaces the SVD at the same V-cycle count
+  everywhere, and its time FALLS with np where the SVD's rises: the coarse
+  level no longer needs sizing to the rank count.
+- The restricted null space is not needed for MUMPS: ICNTL(24) handles the
+  singular coarse operator, and attaching the mode changes nothing measurable.
+  (It would be needed for PETSc's own LU, which hits the zero pivot; the
+  shifted-LU variant timed out once in sweep 2, so it is not a candidate.)
+
+## Proposed design (for the hub and Louis)
+
+1. Coarse solve on the rotated path when the velocity block carries verified
+   rotation modes (where SVD is chosen today): `mumps`, i.e. redundant MUMPS LU
+   with ICNTL(24), when PETSc has MUMPS; otherwise SVD, recorded in
+   `solver.pc_fallbacks` as a degradation. A default change, so Louis decides
+   with this table.
+2. Keep the null-space restriction out of the library for now: measured
+   unnecessary with MUMPS. Reintroduce only if a coarse solve without null-pivot
+   handling is ever wanted.
+3. Build failures stay collective (no rank-local fallback in parallel: a
+   failure inside a collective stops with a clear message naming level, cells,
+   cells per rank and np), as proposed earlier; the empty-rank fixes stay.
+4. Agglomeration of small levels onto fewer ranks is no longer needed for the
+   coarse solve (the redundant gather already does it for the coarsest level).
+   It remains a candidate for the levels just above, if they show the
+   few-cells-per-rank failures again.
