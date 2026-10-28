@@ -121,8 +121,13 @@ fi
 #   ----------------------------------
 #   total                      91:19   (job wall-clock was 96 min with build)
 #
-# Giving: 33 / 19 / 18 / 22 minutes across the four shards, so the suite's
-# wall-clock becomes ~33 min of tests plus ~5 min of install and build.
+# Giving an ESTIMATED 33 / 19 / 18 / 22 minutes across the four shards.
+# MEASURED on the first sharded run (40638600008), including install and build:
+# 23.6 / 28.3 / 17.3 / 22.6, wall-clock 28.7 min against 96 before. The
+# estimates are conservative and do not rank the same way -- a batch costs less
+# in a job running only its own batches. Shard 2 is the long pole, not shard 1.
+# Re-measure over several runs before re-assigning: runner variance here is of
+# the same order as the imbalance left.
 #
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
 # 149 tests finish in the first 2 minutes, then the remainder takes 31. Since

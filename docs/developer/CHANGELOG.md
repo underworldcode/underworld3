@@ -20,8 +20,16 @@ differ by two orders of magnitude in cost and a round-robin assignment would
 group the three expensive ones together. The assignment and its measurements
 live in `scripts/test.sh` beside the batch definitions, and `--shard K/N`
 selects one; omitting it runs everything, which is what a local full run wants.
-The slowest shard carries about 33 minutes of tests, so the suite's wall-clock
-becomes roughly 38 minutes including install and build.
+
+Measured on the first sharded run (40638600008): shards of 23.6, 28.3, 17.3 and
+22.6 minutes including install and build, for a wall-clock of 28.7 minutes
+against 96 before. The estimates from the per-batch times did not transfer
+linearly -- shard 1 carried the 33-minute band and finished in 23.6, while
+shard 2 was estimated at 19 minutes of tests and became the long pole at 28.3.
+A batch costs less in a job that runs only its own batches than it did in
+sequence, by more than the assignment assumed. The split is worth revisiting,
+but on more than one sample: runner variance on a shared runner is of the same
+order as the imbalance that remains.
 
 Two parts of the workflow needed moving rather than copying. The tier C
 characterisation report, which costs about 42 minutes, became its own job: as a
