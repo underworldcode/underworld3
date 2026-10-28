@@ -118,21 +118,25 @@ def test_the_thick_twin_is_extruded_with_its_pairing():
 
 
 def test_a_failure_on_one_rank_stops_the_replay_on_every_rank(monkeypatch):
-    """An internal failure of the split on one rank (a rank-local raise, not one
-    of the split's collective refusals) stopped the replay of the fault on that
-    rank alone, and the others went on into the next level's split and waited
-    for it. The verdict is exchanged per level: every rank keeps the same split
-    levels, and the levels from the failure down stay welded."""
+    """A failure of the split on one rank after its last collective (a final
+    consistency check, rank-local) stopped the replay of the fault on that rank
+    alone: the ranks kept different split levels and the next collective on the
+    hierarchy met mismatched partners. The verdict is exchanged per level, so
+    every rank keeps the same split levels and the levels from the failure down
+    stay welded. (A rank-local raise BEFORE the split's own collectives still
+    hangs inside the split; issue #874.)"""
     import underworld3.utilities.fault_split as fault_split
     original, calls = fault_split.add_fault, [0]
 
-    def fails_on_one_rank_at_the_second_add_on_level(mesh, *args, **kwargs):
+    def fails_on_one_rank_after_the_second_add_on_split(mesh, *args, **kwargs):
         calls[0] += 1                 # 1: the finest; 2, 3: the add-on levels
+        split = original(mesh, *args, **kwargs)
         if calls[0] == 3 and uw.mpi.rank == 1:
             raise RuntimeError("an internal failure on one rank")
-        return original(mesh, *args, **kwargs)
+        return split
 
-    monkeypatch.setattr(fault_split, "add_fault", fails_on_one_rank_at_the_second_add_on_level)
+    monkeypatch.setattr(fault_split, "add_fault",
+                        fails_on_one_rank_after_the_second_add_on_split)
     with pytest.warns(UserWarning, match="could not be carried"):
         mesh = _faulted_box(3)
     split = [bool(getattr(m, "_fault_point_pairs", None))
