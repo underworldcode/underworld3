@@ -1229,11 +1229,20 @@ class _BaseMeshVariable(Stateful, uw_object):
         if uw.mpi.rank == 0:
             try:
                 with h5py.File(data_file, "r") as h5f:
-                    topologies = h5f.get("topologies")
-                    for topology in (topologies or {}):
-                        dms = topologies[topology].get("dms")
-                        if dms is not None and data_name in dms:
-                            found = data_name
+                    # The payload sat at the file root before #756 and under
+                    # /restart/petsc after it. Look in both: this is only an
+                    # existence check, and a file written by either version
+                    # has to stay readable. Checking one place is what
+                    # regressed #640 -- the writer still emits the per-field
+                    # section and its vector, just one group deeper.
+                    for group in ("topologies", "restart/petsc/topologies"):
+                        topologies = h5f.get(group)
+                        for topology in (topologies or {}):
+                            dms = topologies[topology].get("dms")
+                            if dms is not None and data_name in dms:
+                                found = data_name
+                                break
+                        if found is not None:
                             break
             except (OSError, KeyError):
                 found = None
@@ -1253,10 +1262,20 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
         live_rows = self._gvec.getSize() // self.num_components
-        payload = None if is_v1_1 else self._petsc_payload_name(
-            data_file, data_name)
+        # Look for the section in either format. `_petsc_payload_name` is a
+        # structural lookup (topologies/*/dms/<name>) and does not care which
+        # wrapper the file uses, and `read_timestep` calls
+        # `_read_native_payload` on a v1.1 file straight after this guard --
+        # so treating v1.1 as payload-free refused the very files the native
+        # path was about to read correctly (#640 regressed by #756).
+        payload = self._petsc_payload_name(data_file, data_name)
 
-        if payload is not None and saved_rows == live_rows:
+        # v1.1 shares one compact geometry across the fields (#756), so there
+        # is no per-field saved cloud to count and `saved_rows` is 0 above by
+        # construction; the row comparison only means something for a legacy
+        # file. The payload carries the section, which is what resolves the
+        # cut, so in v1.1 its presence is the whole test.
+        if payload is not None and (is_v1_1 or saved_rows == live_rows):
             return  # `_read_native_payload` will take it
 
         raise RuntimeError(

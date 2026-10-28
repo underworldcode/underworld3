@@ -7,6 +7,7 @@ the polygon overlap.
 """
 import numpy as np
 import pytest
+import sympy
 
 import underworld3 as uw
 from underworld3.meshing.fault_network_3d import (crossing_segment,
@@ -144,6 +145,7 @@ def test_network_3d_end_to_end():
     cm.yield_mode = "min"
     cm.Parameters.shear_viscosity_0 = 1.0
     cm.Parameters.yield_stress = net.damage_yield(v, dial=0.05)
+    cm.Parameters.yield_stress_min = -sympy.oo   # dial + rate term: positive by construction (#759)
     stokes.consistent_jacobian = True
     stokes.bodyforce = [0.0, 0.0, 0.0]
     for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):

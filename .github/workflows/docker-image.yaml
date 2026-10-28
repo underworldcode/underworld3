@@ -9,6 +9,10 @@ name: "GHCR: Command-Line Container"
 on:
   push:
     branches: [main, development]
+    # release.yml creates the Release with GITHUB_TOKEN, which raises no
+    # workflow events, so `release:` below never fires. This is the path
+    # that produces a version-tagged image.
+    tags: ['v*']
     paths:
       # Only rebuild when these files change
       - 'container/Containerfile'

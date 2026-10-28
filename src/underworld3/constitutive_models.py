@@ -49,6 +49,7 @@ from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
 from underworld3.systems.ddt import _bdf_coefficients, _as_float
+from underworld3.systems.ddt import _create_exp_coefficients, _update_exp_values
 from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
@@ -73,6 +74,72 @@ def _parameter_is_zero(par):
     except (TypeError, ValueError, AttributeError, sympy.SympifyError):
         # an expression we cannot reduce to a number is a stated (non-zero) term
         return False
+
+
+def _fields_read_by(par):
+    """The names of the mesh or swarm variables a parameter reads (the pressure, a
+    damage field, ...): a value not known until the solve, which can change sign."""
+    from underworld3.function.expressions import unwrap_expression
+    try:
+        value = unwrap_expression(par, mode="nondimensional")
+    except (TypeError, ValueError, AttributeError):
+        # Sanctioned: a parameter that cannot be unwrapped is not inspected, and the
+        # residual-strength check then trusts it (fails open, as before #759)
+        return []
+    names = set()
+    for f in sympy.sympify(value).atoms(sympy.Function):
+        if hasattr(f, "meshvar"):
+            variable = f.meshvar() if callable(f.meshvar) else f.meshvar
+            names.add(getattr(variable, "name", None) or str(f.func))
+    return sorted(names)
+
+
+def _numeric_value(par):
+    """A parameter's non-dimensional value as a float, or None when it is not a
+    number (an expression of a field)."""
+    from underworld3.function.expressions import unwrap_expression
+    try:
+        value = unwrap_expression(par, mode="nondimensional")
+        return float(getattr(value, "magnitude", value))
+    except (TypeError, ValueError, AttributeError):
+        # Sanctioned: an expression has no single value; None says so
+        return None
+
+
+def _floor_is_off(floor):
+    """True when the yield-stress floor is disabled: -oo, bare or wrapped in an
+    expression (a wrapped -oo applied as a floor evaluates to NaN)."""
+    if floor.sym == -sympy.oo:
+        return True
+    value = _numeric_value(floor)
+    return value is not None and value == -float("inf")
+
+
+def _require_residual_strength(constitutive_model, parameters):
+    """Refuse a yield stress that reads a field (Drucker-Prager through the pressure,
+    a cohesion that weakens with damage) with a floor that is not positive: where it
+    reaches the floor the plastic viscosity tau_y / (2 edot_II) is zero or negative
+    and the operator singular (#759). The residual strength must be stated, > 0 in
+    stress units; an explicit -oo removes the floor for a yield stress known to stay
+    positive. A floor that is itself a field expression is trusted as stated."""
+    floor = parameters.yield_stress_min
+    if _floor_is_off(floor):
+        return
+    value = _numeric_value(floor)
+    if value is not None and value > 0.0:
+        return
+    if value is None and not _parameter_is_zero(floor):
+        return                                     # a floor that is itself a field
+    fields = _fields_read_by(parameters.yield_stress)
+    if fields:
+        material = getattr(constitutive_model, "_material_name", None)
+        where = type(constitutive_model).__name__ + (f" ({material})" if material else "")
+        raise ValueError(
+            f"{where}: the yield stress reads {', '.join(fields)} and can fall to the "
+            f"floor yield_stress_min = {floor.sym}, where the plastic viscosity is zero or "
+            "negative and the operator singular. Set Parameters.yield_stress_min to the "
+            "residual strength (> 0, in stress units), or to -sympy.oo if the yield "
+            "stress is known to stay positive.")
 
 
 def _plastic_rate_strengthening_parameter():
@@ -1388,9 +1455,11 @@ class ViscousFlowModel(Constitutive_Model):
         Which SIDE of ``Min`` a family sits on is set by ``yield_anchor``, not by the
         family — see that property.
 
-        Selecting ``"powermean"`` bumps a zero ``yield_softness`` to ``1.0``
-        (``s≈1``, the parameter-free harmonic mean) since ``δ=0`` is the sharp
-        hard-``Min`` limit it only *approaches*.
+        Selecting a family never changes ``yield_softness``: the power mean runs
+        at the δ the model states, ``s = 1/(δ + 0.001)`` -- ``δ = 0`` is
+        ``s = 1000``, close to the exact ``Min``; ``δ = 1`` is the harmonic mean,
+        a distinct, strongly smoothed law (#782: selecting it used to bump a zero
+        δ to 1 silently).
         """
         return getattr(self, "_yield_smoother", "sqrt")
 
@@ -1401,10 +1470,6 @@ class ViscousFlowModel(Constitutive_Model):
                 f"yield_smoother must be 'sqrt' or 'powermean', got '{value}'"
             )
         self._yield_smoother = value
-        if value == "powermean" and getattr(self, "_yield_softness", 0.0) == 0.0:
-            # δ=0 ⇒ s=1/δ=∞ is the singular Min limit; default to the
-            # parameter-free harmonic mean (s=1) instead.
-            self.yield_softness = 1.0
         self._reset()
 
     # --- Smooth lower bounds (viscosity / yield floors) -----------------------------
@@ -1715,7 +1780,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
             lambda inner_self: 0,
-            "Yield stress (DP) minimum cutoff",
+            "Residual strength: the floor of the yield stress (stated, > 0, when the yield stress reads a field)",
             units="Pa",
         )
 
@@ -1760,8 +1825,10 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # than propagated into tau_y/(2 edot_II). (The ±oo defaults elsewhere in
         # Parameters exist so sympy can cancel an unused term away; that trick is
         # wrong here, so this one defaults to 0 — maintainer ruling 2026-07-26.)
-        # An explicit -oo still disables the floor.
-        if inner_self.yield_stress_min.sym != -sympy.oo:
+        # An explicit -oo still disables the floor. A yield stress that reads a field
+        # needs a stated, positive floor (_require_residual_strength).
+        _require_residual_strength(self, inner_self)
+        if not _floor_is_off(inner_self.yield_stress_min):
             yield_stress = self._apply_floor(
                 inner_self.yield_stress, inner_self.yield_stress_min
             )
@@ -1821,7 +1888,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # the viscosity above, so the ladder reads the law the solve runs.
         inner_self = self.Parameters
         tau = inner_self.yield_stress
-        if inner_self.yield_stress_min.sym != -sympy.oo:
+        if not _floor_is_off(inner_self.yield_stress_min):
             tau = self._apply_floor(tau, inner_self.yield_stress_min)
         edot = self._strainrate_inv_II
         if not _parameter_is_zero(inner_self.strainrate_inv_II_min):
@@ -1935,7 +2002,73 @@ def _logm_sym2(m):
                          [k * c, (l1 + l2) / 2 + k * (b - mean)]])
 
 
-class ViscoElasticPlasticFlowModel(ViscousFlowModel):
+def _nondimensional_float(par):
+    """A parameter's value as the kernels see it: scaled by the units system, as a
+    float. ``float(par.sym)`` would be the magnitude in the parameter's own units
+    (a viscosity in Pa s against a step in kyr). Raises TypeError or ValueError
+    when the parameter is not a number."""
+    from underworld3.function.expressions import unwrap_expression
+    value = unwrap_expression(par, mode="nondimensional")
+    return float(getattr(value, "magnitude", value))
+
+
+def _etd_maxwell_time(eta, mu):
+    """The Maxwell time tau = eta/mu the ETD coefficients are formed from: a plain
+    number when both parameters are numbers, otherwise the ratio of the parameters'
+    own expression atoms -- a field the kernels evaluate pointwise, scaled by the
+    units system like any other parameter."""
+    if mu.sym is sympy.oo:
+        return sympy.oo
+    try:
+        eta_val = _nondimensional_float(eta)
+        mu_val = _nondimensional_float(mu)
+    except (TypeError, ValueError):
+        # a vanishing modulus is the elastic limit (tau -> inf), as below
+        return eta / sympy.Max(mu, uw.maths.functions.vanishing)
+    return eta_val / mu_val if mu_val > 0 else sympy.oo
+
+
+def _etd_timestep(dt):
+    """The elastic timestep as a plain number, or None when it is unset (infinite)
+    or cannot be read as one."""
+    try:
+        return _nondimensional_float(dt) if dt.sym is not sympy.oo else None
+    except (TypeError, ValueError):
+        return None
+
+
+class _ExponentialCoefficients:
+    r"""The exponential (ETD) integrator's coefficients, owned by the model:
+    :math:`\alpha = e^{-\Delta t/\tau}` and :math:`\varphi = (1-\alpha)\,\tau/\Delta t`
+    with :math:`\tau` the model's own Maxwell time. Models that share one stress
+    history (the constituents of a multi-material model) each relax on theirs;
+    a single pair on the history would carry whichever Maxwell time was written
+    last."""
+
+    def _allocate_exp_coefficients(self):
+        """Allocate ``[alpha, phi]`` at the viscous limit (both zero); called once
+        the model has its instance number."""
+        self._exp_coeffs = _create_exp_coefficients(self._global_instance_number)
+        _update_exp_values(self._exp_coeffs, None, None)
+
+    @property
+    def _exp_alpha(self):
+        r"""The ETD :math:`\alpha` coefficient UWexpression."""
+        return self._exp_coeffs[0]
+
+    @property
+    def _exp_phi(self):
+        r"""The ETD :math:`\varphi` coefficient UWexpression."""
+        return self._exp_coeffs[1]
+
+    def _update_exp_coefficients(self, maxwell_time):
+        """Refresh ``[alpha, phi]`` for this step from ``maxwell_time``; the step
+        enters as the ``dt_elastic`` atom, so a field Maxwell time stays symbolic."""
+        dt = self.Parameters.dt_elastic
+        _update_exp_values(self._exp_coeffs, _etd_timestep(dt), maxwell_time, dt_symbol=dt)
+
+
+class ViscoElasticPlasticFlowModel(_ExponentialCoefficients, ViscousFlowModel):
     r"""
     Viscoelastic-plastic flow constitutive model.
 
@@ -2162,6 +2295,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         super().__init__(unknowns, material_name=material_name)
 
+        self._allocate_exp_coefficients()
+
         return
 
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
@@ -2232,7 +2367,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
             lambda inner_self: 0,
-            "Yield stress (DP) minimum cutoff",
+            "Residual strength: the floor of the yield stress (stated, > 0, when the yield stress reads a field)",
             units="Pa",
         )
 
@@ -2282,10 +2417,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         @property
         def ve_effective_viscosity(inner_self):
             r"""Visco-elastic effective viscosity: :math:`\eta_{\mathrm{eff}} = \frac{\eta G \Delta t}{\eta + G \Delta t}`."""
-            # the dt_elastic defaults to infinity, t_relax to zero,
-            # so this should be well behaved in the viscous limit
-
-            if inner_self.shear_modulus == sympy.oo:
+            # An infinite modulus or an infinite step (the default before the
+            # solver sets one) is the viscous limit; written out, either is
+            # inf/inf or 0*inf.
+            if inner_self.shear_modulus == sympy.oo or inner_self.dt_elastic.sym is sympy.oo:
                 return inner_self.shear_viscosity_0
 
             # BDF-k effective viscosity: eta_eff = eta*mu*dt / (c0*eta + mu*dt)
@@ -2419,38 +2554,20 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         Dispatches on ``(self._integrator, self._order)``:
         - ``"bdf"`` (order 1 or 2): updates BDF c-coefficients via
           :py:meth:`_update_bdf_coefficients`.
-        - ``"etd"`` order=2 (Phase B ETD-2): updates α, φ on the DDt
+        - ``"etd"`` order=2 (Phase B ETD-2): updates the model's own α, φ
           from ``τ_VE = η/μ``; forcing-history slot active.
         - ``"etd"`` order=1 (ETD-1): updates α, φ as for ETD-2 then
           forces ``φ = α`` so the ``(φ-α)·ε̇*`` term zeros out — fully
           L-stable single-step, no forcing-history slot needed.
         """
         if self._integrator == "etd":
-            if self.Unknowns.DFDt is None:
-                return
             params = self.Parameters
-            if params.shear_modulus.sym is sympy.oo:
-                tau_eff = sympy.oo
-            else:
-                try:
-                    eta_val = float(params.shear_viscosity_0.sym)
-                    mu_val = float(params.shear_modulus.sym)
-                    tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-                except (TypeError, ValueError):
-                    tau_eff = None
-            try:
-                dt_val = (
-                    float(params.dt_elastic.sym)
-                    if params.dt_elastic.sym is not sympy.oo
-                    else None
-                )
-            except (TypeError, ValueError):
-                dt_val = None
-            self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+            self._update_exp_coefficients(
+                _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus))
             if self._order == 1:
                 # ETD-1 reduction: φ = α makes the (φ-α)·ε̇* term zero
                 # AND turns (1-φ)·ε̇ into (1-α)·ε̇.
-                self.Unknowns.DFDt._exp_phi.sym = self.Unknowns.DFDt._exp_alpha.sym
+                self._exp_phi.sym = self._exp_alpha.sym
         else:
             self._update_bdf_coefficients()
 
@@ -2565,8 +2682,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             # ETD-1 (order=1): φ = α (set in _update_history_coefficients),
             # so the (φ-α)·ε̇* term zeros out and (1-φ)·ε̇ → (1-α)·ε̇ — same
             # expression tree, no separate code path needed.
-            alpha = DDt._exp_alpha
-            phi = DDt._exp_phi
+            alpha = self._exp_alpha
+            phi = self._exp_phi
             sigma_star = self._carried_stress_sym(0)
             if DDt.forcing_star is not None:
                 edot_star = DDt.forcing_star.sym
@@ -2990,8 +3107,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # Guard on the DISABLING sentinel, not on zero: zero is the default and a
         # physically meaningful floor (the yield stress is compared against the second
         # invariant of the stress, so a negative tau_y is meaningless). Only an
-        # explicit -oo turns the floor off.
-        if parameters.yield_stress_min.sym != -sympy.oo:
+        # explicit -oo turns the floor off. A yield stress that reads a field needs a
+        # stated, positive floor (_require_residual_strength).
+        _require_residual_strength(self, parameters)
+        if not _floor_is_off(parameters.yield_stress_min):
             # Literal 0 for the default floor, not the parameter atom: sympy cannot
             # fuzzy-compare an opaque UWexpression and Max canonicalisation recurses.
             # smooth_max keeps both operands symbolic (the JIT routes the floor
@@ -3839,7 +3958,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
 
 
-class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
+class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotropicFlowModel):
     r"""Transversely isotropic viscoelastic-plastic flow model for fault mechanics.
 
     Combines the anisotropic viscosity tensor from :class:`TransverseIsotropicFlowModel`
@@ -4005,6 +4124,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         super().__init__(unknowns, material_name=material_name)
 
+        self._allocate_exp_coefficients()
+
         return
 
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
@@ -4045,10 +4166,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         @dt_elastic.setter
         def dt_elastic(inner_self, value):
+            model = inner_self._owning_model
+            was_viscous = model._dt.sym is sympy.oo
             if hasattr(value, 'sym'):
-                inner_self._owning_model._dt.sym = value.sym
+                model._dt.sym = value.sym
             else:
-                inner_self._owning_model._dt.sym = value
+                model._dt.sym = value
+            # The tensor is cached, and built from the raw viscosities while the
+            # step is infinite (the viscous limit) but from the step's atom once
+            # it is finite: crossing between the two is a different tensor.
+            if was_viscous != (model._dt.sym is sympy.oo):
+                model._reset()
 
         # Viscosity limits
         shear_viscosity_min = api_tools.Parameter(
@@ -4065,7 +4193,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
             lambda inner_self: 0,
-            "Yield stress minimum cutoff", units="Pa",
+            "Residual strength: the floor of the yield stress (stated, > 0, when the yield stress reads a field)", units="Pa",
         )
         strainrate_inv_II_min = api_tools.Parameter(
             R"{\dot\varepsilon_{II,\mathrm{min}}}",
@@ -4090,7 +4218,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         def ve_effective_viscosity(inner_self):
             r"""VE effective viscosity using η₁ (fault-plane viscosity)."""
             mu_val = inner_self.shear_modulus.sym if hasattr(inner_self.shear_modulus, 'sym') else inner_self.shear_modulus
-            if mu_val is sympy.oo:
+            # infinite modulus or infinite step: the viscous limit (see the
+            # isotropic model)
+            if mu_val is sympy.oo or inner_self.dt_elastic.sym is sympy.oo:
                 return inner_self.shear_viscosity_1
 
             eta = inner_self.shear_viscosity_1
@@ -4157,34 +4287,16 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         return self._order
 
     def _update_etd_coefficients(self):
-        """Refresh DDt's (α, φ) UWexpressions from τ_eff = η_1/μ."""
-        if self.Unknowns.DFDt is None:
-            return
+        """Refresh the model's (α, φ) UWexpressions from τ_eff = η_1/μ."""
         params = self.Parameters
-        if params.shear_modulus.sym is sympy.oo:
-            tau_eff = sympy.oo
-        else:
-            try:
-                eta_val = float(params.shear_viscosity_1.sym)
-                mu_val = float(params.shear_modulus.sym)
-                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-            except (TypeError, ValueError):
-                tau_eff = None
-        try:
-            dt_val = (
-                float(params.dt_elastic.sym)
-                if params.dt_elastic.sym is not sympy.oo
-                else None
-            )
-        except (TypeError, ValueError):
-            dt_val = None
-        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+        self._update_exp_coefficients(
+            _etd_maxwell_time(params.shear_viscosity_1, params.shear_modulus))
 
     def _update_history_coefficients(self):
         r"""Pre-solve hook — dispatches BDF, ETD (order 1/2), or hybrid.
 
-        BDF: refresh ``_bdf_c0..c3``. ETD-2 (order=2): refresh ``α, φ``
-        on the DDt from ``η_1/μ``. ETD-1 (order=1): same plus force
+        BDF: refresh ``_bdf_c0..c3``. ETD-2 (order=2): refresh the model's
+        ``α, φ`` from ``η_1/μ``. ETD-1 (order=1): same plus force
         ``φ = α`` so the ``(φ-α)·ε̇*`` history term vanishes. Hybrid:
         refresh both BDF and ETD-2 — flux uses both per-spatial weight.
         """
@@ -4193,9 +4305,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             if self._order == 1:
                 # ETD-1 reduction: φ = α zeros (φ-α)·ε̇* and turns
                 # (1-φ)·ε̇ into (1-α)·ε̇.
-                DDt = self.Unknowns.DFDt
-                if DDt is not None:
-                    DDt._exp_phi.sym = DDt._exp_alpha.sym
+                self._exp_phi.sym = self._exp_alpha.sym
         elif self._integrator == "hybrid":
             # Hybrid uses BOTH integrators with spatial blend; update
             # both coefficient sets each step.
@@ -4320,8 +4430,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         DDt = self.Unknowns.DFDt
 
         if integrator_mode == "etd":
-            alpha = DDt._exp_alpha
-            phi = DDt._exp_phi
+            alpha = self._exp_alpha
+            phi = self._exp_phi
             sigma_star = DDt.psi_star[0].sym
             if DDt.forcing_star is not None:
                 edot_star = DDt.forcing_star.sym
@@ -4425,7 +4535,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         tau_y = parameters.yield_stress
         # Guard on the DISABLING sentinel, not on zero — zero is the default and a
         # real floor (a negative yield stress is meaningless against an invariant).
-        if parameters.yield_stress_min.sym != -sympy.oo:
+        # A yield stress that reads a field needs a stated, positive floor.
+        _require_residual_strength(self, parameters)
+        if not _floor_is_off(parameters.yield_stress_min):
             # Literal 0 for the default floor (sympy fuzzy-compare recursion on atoms).
             # smooth_max: keeps the floor symbolic, no ordering test (see the note
             # in Constitutive_Model._apply_floor). eps = 0 is exactly Max.
@@ -4469,7 +4581,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             dt_e = self.Parameters.dt_elastic
             c0 = self._bdf_c0
             mu_val = mu.sym if hasattr(mu, 'sym') else mu
-            if mu_val is sympy.oo:
+            if mu_val is sympy.oo or dt_e.sym is sympy.oo:
                 eta_0 = eta_0_raw
             else:
                 eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
@@ -4808,8 +4920,8 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
     relaxes each channel on its proper timescale; the analytical floor
     on ``σ_∥`` is then ``≲ τ_y`` by construction.
 
-    Implementation choice: ``α_⊥, φ_⊥`` come from the DDt's existing
-    scalar ``_exp_coeffs`` (matrix viscosity is fixed and spatially
+    Implementation choice: ``α_⊥, φ_⊥`` are the model's own scalar
+    ``_exp_coeffs`` (matrix viscosity is fixed and spatially
     uniform — a single per-step scalar is right). ``α_∥, φ_∥`` are
     inlined as sympy expressions of the yield-clipped ``η_∥_eff`` so
     the JIT evaluates them per quadrature point (spatial heterogeneity
@@ -4859,27 +4971,11 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         ``(α_∥, φ_∥)`` are inlined per-quadrature in :py:meth:`stress`.
         Picks ``τ_⊥ = η_0/μ`` (raw matrix viscosity).
         """
-        if self._integrator != "etd" or self.Unknowns.DFDt is None:
+        if self._integrator != "etd":
             return super()._update_history_coefficients()
         params = self.Parameters
-        if params.shear_modulus.sym is sympy.oo:
-            tau_perp = sympy.oo
-        else:
-            try:
-                eta_val = float(params.shear_viscosity_0.sym)
-                mu_val = float(params.shear_modulus.sym)
-                tau_perp = eta_val / mu_val if mu_val > 0 else sympy.oo
-            except (TypeError, ValueError):
-                tau_perp = None
-        try:
-            dt_val = (
-                float(params.dt_elastic.sym)
-                if params.dt_elastic.sym is not sympy.oo
-                else None
-            )
-        except (TypeError, ValueError):
-            dt_val = None
-        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_perp)
+        self._update_exp_coefficients(
+            _etd_maxwell_time(params.shear_viscosity_0, params.shear_modulus))
 
     def _eta_par_eff(self):
         """Yield-clipped ``η_∥_eff`` — same softmin/min/harmonic as parent.
@@ -4949,6 +5045,8 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             except (TypeError, ValueError):
                 edot_min_val = 1.0e-6
 
+        # TODO(BUG): the lagged estimate uses the unfloored yield stress, so it ignores
+        # yield_stress_min and the residual-strength rule (#759); see _require_residual_strength.
         tau_y_sym = params.yield_stress.sym
         vp_eff_lag = tau_y_sym / (
             2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))
@@ -5041,9 +5139,9 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         DDt = self.Unknowns.DFDt
         E = self.Unknowns.E
 
-        # Matrix branch: scalar (α_⊥, φ_⊥) from DDt
-        alpha_perp = DDt._exp_alpha
-        phi_perp = DDt._exp_phi
+        # Matrix branch: the model's scalar (α_⊥, φ_⊥)
+        alpha_perp = self._exp_alpha
+        phi_perp = self._exp_phi
         eta_perp = params.shear_viscosity_0
         eta_perp_sym = eta_perp.sym
 
@@ -5139,6 +5237,24 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
     - Solver owns Unknowns (including :math:`D\mathbf{F}/Dt` stress history)
     - All constituent models share solver's Unknowns
     - Composite flux becomes stress history for all materials
+
+    Viscoelastic constituents
+    -------------------------
+    The stress history stores the composite stress
+    :math:`\sigma^* = \sum_i \phi_i \sigma_i^*`, which inside material :math:`i`
+    is that material's own stress. Each constituent advances it with its own
+    law, its own integrator and its own coefficients (the BDF weights, or the
+    exponential :math:`\alpha, \varphi` from its own Maxwell time), so any mix of
+    viscous, viscoelastic(-plastic) and transversely isotropic constituents,
+    BDF or exponential, first or second order, is the same set of Maxwell laws
+    each integrated where it applies. The composite forwards the elastic
+    timestep and the history hooks to every constituent; the history is
+    allocated at the highest order any constituent asks for, with every slot
+    (a forcing history) any of them asks for. Refused: a constituent that
+    stores something other than the stress (``stress_history='log_conformation'``)
+    and constituents whose history requests contradict each other.
+    Across the interface the history is the projection of a stress that jumps,
+    so it is smeared over about a cell there.
     """
 
     def __init__(
@@ -5169,10 +5285,6 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         # utilities/_jitextension.py and tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
-        if any(getattr(m, "_stress_history", "stress") != "stress" for m in constitutive_models):
-            raise NotImplementedError(
-                "the multi-material model stores its averaged flux as a stress; a constituent "
-                "with stress_history='log_conformation' cannot share that history")
 
         self._material_var = material_swarmVariable
         self._constitutive_models = constitutive_models
@@ -5190,6 +5302,39 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
 
         # Composite model doesn't have its own material_name - constituents do
         super().__init__(unknowns, material_name=None)
+
+    class _Parameters(_ParameterBase):
+        """The composite has no material parameters: each constituent carries its
+        own. It exposes the elastic timestep, which the solver sets once per step
+        and every viscoelastic constituent integrates over, and passes the
+        solver reference on to every constituent, so that a change to any
+        constituent's parameters rebuilds the solver's functions."""
+
+        def __init__(inner_self, _owning_model):
+            inner_self._owning_model = _owning_model
+
+        @property
+        def dt_elastic(inner_self):
+            """The elastic timestep the viscoelastic constituents share."""
+            constituents = inner_self._owning_model._viscoelastic_constituents()
+            if not constituents:
+                raise AttributeError("no constituent of this multi-material model is viscoelastic")
+            return constituents[0].Parameters.dt_elastic
+
+        @dt_elastic.setter
+        def dt_elastic(inner_self, value):
+            for constituent in inner_self._owning_model._viscoelastic_constituents():
+                constituent.Parameters.dt_elastic = value
+
+        @property
+        def _solver(inner_self):
+            return inner_self._solver_reference
+
+        @_solver.setter
+        def _solver(inner_self, solver):
+            inner_self._solver_reference = solver
+            for constituent in inner_self._owning_model._constitutive_models:
+                constituent.Parameters._solver = solver
 
     def _setup_shared_unknowns(self, constitutive_models, unknowns):
         """
@@ -5218,6 +5363,11 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         - Same spatial dimension (2D/3D consistency)
         - Compatible flux tensor shapes
         - All models properly initialized
+        - A stress history, if any, stores the stress: the averaged flux is a
+          stress, so a constituent that stores another quantity (the
+          log-conformation) cannot share it. Mixed integrators and orders are
+          allowed (see the class docstring); contradictory history requests are
+          refused when the history is created (:attr:`stress_history_ddt_kwargs`).
         """
         if not models:
             raise ValueError("At least one constitutive model required")
@@ -5235,7 +5385,104 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             if not hasattr(model, "Unknowns"):
                 raise ValueError(f"Model {i} is not properly initialized")
 
+        if any(getattr(m, "_stress_history", "stress") != "stress" for m in models):
+            raise NotImplementedError(
+                "the multi-material model stores its averaged flux as a stress; a constituent "
+                "with stress_history='log_conformation' cannot share that history")
+
         return True
+
+    # ----- the stress-history interface, forwarded to the constituents -----
+
+    def _viscoelastic_constituents(self):
+        """The constituents that integrate a stress history."""
+        return [m for m in self._constitutive_models if m.requires_stress_history]
+
+    @property
+    def requires_stress_history(self):
+        """True when any constituent integrates a stress history."""
+        return bool(self._viscoelastic_constituents())
+
+    @property
+    def order(self):
+        """The history order: the highest any constituent asks for (0 when none
+        integrates a history)."""
+        return max((m.order for m in self._viscoelastic_constituents()), default=0)
+
+    @order.setter
+    def order(self, value):
+        """The solver passes the order of a history it already holds. Each
+        constituent keeps its own order: a history of at least the highest of
+        them serves every one (a lower-order constituent reads its extra levels
+        with zero weight), and one of lower order cannot serve them all."""
+        if value < self.order:
+            raise ValueError(
+                f"the stress history has order {value}, but a constituent of the "
+                f"multi-material model integrates at order {self.order}; create the "
+                f"history at that order or lower the constituent's order")
+
+    @property
+    def effective_order(self):
+        """The highest order any constituent is integrating at this step. The
+        solver rebuilds its functions when this changes, so it must follow the
+        start-up ramp of the highest-order constituent; the lowest would hide
+        it behind a first-order one."""
+        return max((m.effective_order for m in self._viscoelastic_constituents()), default=0)
+
+    @property
+    def stress_history_ddt_kwargs(self):
+        """Every history slot any constituent asks for; contradictory requests
+        (one constituent asking for a slot another refuses) are an error."""
+        kwargs = {}
+        for constituent in self._constitutive_models:
+            for key, value in constituent.stress_history_ddt_kwargs.items():
+                if key in kwargs and kwargs[key] != value:
+                    raise ValueError(
+                        f"constituents of the multi-material model ask the stress history for "
+                        f"{key}={kwargs[key]!r} and {key}={value!r}; one history cannot be both")
+                kwargs[key] = value
+        return kwargs
+
+    def _update_history_coefficients(self):
+        """Pre-solve: each constituent refreshes its own integrator coefficients."""
+        for constituent in self._constitutive_models:
+            constituent._update_history_coefficients()
+
+    def _update_history_post_solve(self):
+        """Post-solve: each constituent stores its own integrator state. The
+        forcing history (ETD-2) is the strain rate, the same for every
+        constituent, so a second second-order constituent rewrites the same
+        values."""
+        for constituent in self._constitutive_models:
+            constituent._update_history_post_solve()
+
+    @property
+    def _solver_is_setup(self):
+        """Set up only while every constituent is: a change to any constituent's
+        parameters must rebuild what the solver compiled from the composite."""
+        return self._composite_is_setup and all(
+            m._solver_is_setup for m in self._constitutive_models)
+
+    @_solver_is_setup.setter
+    def _solver_is_setup(self, value):
+        self._composite_is_setup = value
+        for constituent in self._constitutive_models:
+            constituent._solver_is_setup = value
+
+    def _level_set_weighted(self, constituent_flux):
+        r""":math:`\sum_i \phi_i\, f_i` over the constituents, with
+        :math:`f_i` = ``constituent_flux(model_i)`` and the level sets
+        normalised to a partition of unity when asked for."""
+        weights = [self._material_var.sym[i] for i in range(self._material_var.indices)]
+        if self._normalize_levelsets:
+            total_levelset = sum(weights)
+            weights = [w / total_levelset for w in weights]
+
+        fluxes = [constituent_flux(m) for m in self._constitutive_models]
+        combined_flux = sympy.Matrix.zeros(*fluxes[0].shape)
+        for weight, flux in zip(weights, fluxes):
+            combined_flux += weight * flux
+        return combined_flux
 
     @property
     def flux(self):
@@ -5246,36 +5493,19 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         all constituent models (including elastic ones) will read via
         ``DFDt.psi_star[0]`` in the next time step.
         """
-        # Get reference flux shape from first model
-        reference_flux = self._constitutive_models[0].flux
-        combined_flux = sympy.Matrix.zeros(*reference_flux.shape)
+        return self._level_set_weighted(lambda m: m.flux)
 
-        if self._normalize_levelsets:
-            # Compute normalization factor to ensure partition of unity
-            total_levelset = sum(
-                self._material_var.sym[i] for i in range(self._material_var.indices)
-            )
+    @property
+    def history_flux(self):
+        r"""The stress the history carries: the level-set average of each
+        constituent's own history stress (its flux without any solvent part,
+        see :attr:`ViscoElasticPlasticFlowModel.history_flux`), or its flux
+        when it has none."""
+        def history_part(constituent):
+            part = getattr(constituent, "history_flux", None)
+            return constituent.flux if part is None else part
 
-            for i in range(self._material_var.indices):
-                # Get normalized level-set function for material i
-                material_fraction = self._material_var.sym[i] / total_levelset
-
-                # Get flux contribution from constituent model i
-                model_flux = self._constitutive_models[i].flux
-
-                # Add weighted contribution to composite flux
-                combined_flux += material_fraction * model_flux
-        else:
-            # Use level-sets directly (assuming they already maintain partition of unity)
-            for i in range(self._material_var.indices):
-                # Get flux contribution from constituent model i
-                model_flux = self._constitutive_models[i].flux
-
-                # Add weighted contribution using level-set directly
-                combined_flux += self._material_var.sym[i] * model_flux
-
-        # This combined_flux will become the stress history for ALL materials
-        return combined_flux
+        return self._level_set_weighted(history_part)
 
     @property
     def K(self):

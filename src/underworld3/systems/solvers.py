@@ -63,6 +63,7 @@ from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities import memprobe
+from underworld3.utilities._petsc_tools import _fieldsplit_sub_ksps
 from underworld3.utilities._api_tools import (
     uw_object,
     SymbolicProperty,
@@ -606,10 +607,9 @@ class _StressHistoryMixin:
 
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
                                    store_result=False)
-        # Uniform pre-solve coefficient hook: VEP delegates to
-        # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
-        # α, φ on the DDt via _update_exp_coefficients(). No isinstance
-        # checks at the solver layer.
+        # Uniform pre-solve coefficient hook: each model refreshes its own BDF
+        # or exponential (α, φ) coefficients. No isinstance checks at the
+        # solver layer.
         self.constitutive_model._update_history_coefficients()
 
     def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
@@ -702,9 +702,8 @@ class _StressHistoryMixin:
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
                     "not provide; use stress_transport='semi_lagrangian' for it.")
-            # Order 1 BDF only for now: the particle flavour has no exponential
-            # coefficients (it is built with_exp=False), and order 2 is not yet
-            # validated. Refuse cleanly rather than crash inside the first solve.
+            # Order 1 BDF only for now: the exponential integrator is not
+            # validated on the particle flavour, and neither is order 2. Refuse cleanly rather than crash inside the first solve.
             if getattr(cm, "_integrator", "bdf") != "bdf":
                 raise NotImplementedError(
                     "the particle Lagrangian stress history supports the BDF "
@@ -2122,7 +2121,6 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                 self._setup_pointwise_functions(verbose)
                 self._setup_discretisation(verbose)
                 self._setup_solver(verbose)
-                self._check_velocity_preconditioner()
 
             self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
 
@@ -2144,6 +2142,9 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                 print(f"Stokes solver - store stress and shift history", flush=True)
 
             self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
+            # After the solve, as on the plain path: before it the split is not set
+            # up and has no velocity block to inspect (#827).
+            self._check_velocity_preconditioner()
 
         else:
             # Plain Stokes — no stress history
@@ -2777,20 +2778,16 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         if getattr(self, "_pc_user_override", False):
             return                            # the user owns this block's pc_type
         # The rotated free-slip path builds its OWN fieldsplit KSP and leaves
-        # this one un-set-up, so asking it for sub-KSPs raises -- and PETSc
-        # prints a full error banner before the exception can be caught, which
-        # makes a healthy solve look broken. Skip it by the path rather than by
-        # catching. (Suppressing with pushErrorHandler was tried: it is global
-        # state and broke 23 unrelated tests.)
+        # this one un-set-up: there is nothing here to inspect.
         if getattr(self, "_rotated_freeslip_bcs", None):
             return
-        pc = self.snes.getKSP().getPC()
-        if pc.getType() != "fieldsplit":
-            return
-        try:
-            installed = pc.getFieldSplitSubKSP()[0].getPC().getType()
-        except Exception:
-            return                            # not set up: nothing to inspect
+        # A split that is not set up has no blocks -- after a rebuild, or a warm
+        # solve that converged before any linear solve -- and asking for them
+        # prints a PETSc banner even when caught (#827); the helper asks quietly.
+        blocks = _fieldsplit_sub_ksps(self.snes.getKSP().getPC())
+        if not blocks:
+            return                            # not a split, or not set up
+        installed = blocks[0].getPC().getType()
         if installed == "mg":
             return
 
@@ -5445,6 +5442,11 @@ class SNES_Diffusion(SNES_Scalar):
             self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
+
+        # Symbolic slots are embedded in F1 at compilation, unlike nodal
+        # histories. Populate them before building, not in the later hook.
+        if isinstance(self.DFDt, Symbolic_DDt) and not self.DFDt._history_initialised:
+            self.DFDt.initialise_history()
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)

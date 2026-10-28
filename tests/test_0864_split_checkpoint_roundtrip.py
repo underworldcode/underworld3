@@ -149,3 +149,45 @@ def test_unsplit_mesh_still_uses_the_coordinate_remap(tmp_path):
     coords = np.asarray(loaded.coords_nd)
     assert np.allclose(loaded.data[:, 0],
                        100.0 * coords[:, 0] + 10.0 * coords[:, 1], atol=1e-8)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_payload_is_found_wherever_the_writer_put_it(tmp_path):
+    """The existence check must not be tied to one file layout.
+
+    #756 moved the reload payload from the file root into /restart/petsc.
+    The writer still emitted the per-field section and its vector, one
+    group deeper, but `_petsc_payload_name` looked only at the root, so it
+    reported "no PETSc-native payload" for a file written WITH
+    petsc_reload=True and the #640 guard refused the good path as well as
+    the bad. The round-trip test above catches the symptom; this pins the
+    cause, so a future relocation fails here with the reason rather than
+    as a confusing refusal.
+    """
+    import h5py
+
+    mesh = _split_mesh()
+    var = _stamped_variable(mesh)
+    _write(tmp_path, mesh, var, petsc_reload=True)
+    written = tmp_path / f"rt.mesh.{var.clean_name}.00000.h5"
+
+    # The section and its global vector are both on disk, somewhere.
+    with h5py.File(written, "r") as h5f:
+        groups = []
+        h5f.visititems(
+            lambda name, obj: groups.append(name)
+            if isinstance(obj, h5py.Group) else None)
+    assert any(g.endswith(f"dms/{var.clean_name}/section") for g in groups), groups
+    assert any(g.endswith(f"dms/{var.clean_name}/vecs/{var.clean_name}")
+               for g in groups), groups
+
+    # ... and the guard's existence check finds it there. The method lives on
+    # _BaseMeshVariable; EnhancedMeshVariable is a proxy and does not inherit
+    # from it, so reach for the defining class rather than type(var).
+    from underworld3.discretisation.discretisation_mesh_variables import (
+        _BaseMeshVariable,
+    )
+
+    assert _BaseMeshVariable._petsc_payload_name(
+        str(written), var.clean_name) == var.clean_name

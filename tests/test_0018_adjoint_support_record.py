@@ -9,8 +9,11 @@ whether a driver exists yet. What they encode:
 
   * an implicit step is a residual: Jacobian transpose for the state,
     symbolic derivative for a parameter — supported;
-  * a rotated constraint solves on a rotated operator in its own Krylov loop
-    with no transpose path — refused;
+  * a rotated free-slip constraint solves on a rotated operator in its own
+    Krylov loop, so the adjoint is the transpose of THAT operator — supported,
+    and the verdict has to say which operator it means;
+  * a fault contact adds an interface tangent to that rotated operator whose
+    transpose is not routed into the adjoint — refused;
   * a solve that did not converge is linearised about a state it never
     reached — refused, after the fact;
   * a semi-Lagrangian history's interpolation at the departure points is not
@@ -92,10 +95,11 @@ def test_a_plain_implicit_solve_is_supported(mesh):
     assert "Jacobian transpose" in verdict["reason"]
 
 
-def test_a_rotated_constraint_refuses_and_says_why(mesh):
-    """The rotated solve runs its own Krylov loop on a rotated operator; there
-    is no transpose path through it. The transcript must say so rather than
-    let the solve pass as an ordinary residual."""
+def test_a_rotated_constraint_is_supported_on_the_rotated_operator(mesh):
+    """The rotated solve runs its own Krylov loop on a rotated operator, and the
+    adjoint is the transpose of that one rather than of K. A verdict that said
+    only "supported" would be describing the wrong solve, so the reason has to
+    name the rotation AND the null space the multiplier is returned modulo."""
     uw, model = _fresh_model()
     stokes, _ = _stokes(uw, mesh, "rot")
     stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
@@ -108,8 +112,9 @@ def test_a_rotated_constraint_refuses_and_says_why(mesh):
         with model.step(0.1):
             stokes.solve()
     verdict = _adjoint_of(model, "solve")
-    assert verdict["supported"] is False
-    assert "rotated" in verdict["reason"]
+    assert verdict["supported"] is True
+    assert "rotated free-slip" in verdict["reason"]
+    assert "null space" in verdict["reason"]
 
 
 def test_an_unconverged_solve_is_refused_after_the_fact(mesh):

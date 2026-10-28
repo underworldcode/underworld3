@@ -21,9 +21,9 @@ on:
       - 'pyproject.toml'
       - 'setup.py'
       - 'src/**'
-  # Releases are the guaranteed path for a tagged image: the `tags:` filter above
-  # is combined with `paths:`, so a tag whose diff touches nothing in that list
-  # would not build on its own.
+  # Never fires in practice: release.yml creates the Release with
+  # GITHUB_TOKEN, which raises no workflow events. The `tags:` filter
+  # above is what builds the tagged image. Kept for a hand-published Release.
   release:
     types: [published]
   workflow_dispatch:

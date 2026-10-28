@@ -1,0 +1,159 @@
+"""Conservative level set under rigid rotation, on both transport solvers.
+
+A circle carried once round the box centre must come back: the enclosed
+volume is held throughout (by the scheme itself for the Eulerian transport,
+by the mass correction for the semi-Lagrangian one), the 0.5 contour returns
+to its initial position, and the reinitialisation keeps the profile at its
+thickness rather than letting it smear.
+
+Run: pixi run python -m pytest tests/test_1100_levelset_rotation.py -v
+"""
+import numpy as np
+import pytest
+import sympy
+
+import underworld3 as uw
+from underworld3.systems import level_set
+
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+
+RADIUS = 0.15
+CENTRE = (0.5, 0.75)
+
+
+def _setup(tag, advection):
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32, qdegree=3)
+    x, y = mesh.X
+    psi = uw.discretisation.MeshVariable(f"psi_{tag}", mesh, 1, degree=2)
+    # a band of two to three cells; the g-adopt default 0.35 is under one
+    # cell and a continuous-Galerkin transport rings at it
+    eps = level_set.interface_thickness(mesh, psi, scale=2.0)
+    distance = RADIUS - np.sqrt((psi.coords[:, 0] - CENTRE[0]) ** 2 + (psi.coords[:, 1] - CENTRE[1]) ** 2)
+    level_set.initialise_psi(psi, eps, signed_distance=distance)
+    psi0 = np.array(psi.array)
+    # rigid rotation about the box centre, one revolution in 2 pi
+    velocity = sympy.Matrix([[-(y - 0.5), x - 0.5]])
+    # the rotating flow crosses the walls: impose the far-field value there
+    solver = uw.systems.LevelSetSolver(psi, velocity=velocity, epsilon=eps, advection=advection,
+                                       far_field=0.0, reini_steps=1, reini_frequency=5)
+    return mesh, psi, psi0, solver
+
+
+@pytest.mark.parametrize("advection", ["supg", "slcn"])
+def test_circle_returns_after_one_revolution(advection):
+    mesh, psi, psi0, solver = _setup(advection, advection)
+    area0 = solver.interface_volume()
+    # int psi exceeds pi r^2 by O(eps^2 / r^2) for a curved band: 12% here
+    assert area0 == pytest.approx(np.pi * RADIUS ** 2, rel=0.15)
+
+    # the corrector is on by default for SLCN only; the Eulerian transport
+    # holds the volume by itself to solver tolerance, and what remains is
+    # the clip of residual ringing and the reinitialisation's curvature
+    # error, 0.18% per revolution at this band thickness
+    assert solver.conserve_mass == (advection == "slcn")
+    volume_tol = 1e-6 if advection == "slcn" else 5e-3
+    n_steps = 200
+    dt = 2.0 * np.pi / n_steps
+    for _ in range(n_steps):
+        solver.solve(dt)
+        assert abs(solver.volume_drift) < volume_tol, solver.volume_drift
+
+    data = np.asarray(psi.array).reshape(-1)
+    assert data.min() >= 0.0 and data.max() <= 1.0
+    # profile stays sharp: the transition band holds a small share of nodes
+    in_band = np.mean((data > 0.05) & (data < 0.95))
+    assert in_band < 0.2, in_band
+    # the 0.5 contour is back: nodal mismatch of the indicator is small
+    mismatch = np.mean(np.abs((data > 0.5).astype(float) - (psi0.reshape(-1) > 0.5).astype(float)))
+    assert mismatch < 0.01, mismatch
+
+
+def test_the_geometry_helpers_refuse_clearly_without_shapely(monkeypatch):
+    """shapely is deliberately NOT a dependency of underworld3, so for most
+    installs this refusal is what the polygon route actually does. The import
+    is forced to fail so the message is asserted on every machine, with or
+    without shapely present; the signed_distance= route it points at is the
+    one exercised by test_circle_returns_after_one_revolution above."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_shapely(name, *args, **kwargs):
+        if name == "shapely" or name.startswith("shapely."):
+            raise ImportError("no shapely")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_shapely)
+    with pytest.raises(ImportError, match="signed_distance"):
+        level_set._shapely()
+
+
+def test_initialise_from_polygon():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
+    psi = uw.discretisation.MeshVariable("psi_poly", mesh, 1, degree=1)
+    eps = level_set.interface_thickness(mesh, psi)
+    pytest.importorskip("shapely")
+    angles = np.linspace(0.0, 2.0 * np.pi, 33)
+    circle = np.column_stack((CENTRE[0] + RADIUS * np.cos(angles), CENTRE[1] + RADIUS * np.sin(angles)))
+    level_set.initialise_psi(psi, eps, interface_geometry="polygon", interface_coordinates=circle)
+    data = np.asarray(psi.array).reshape(-1)
+    assert 0.0 <= data.min() and data.max() <= 1.0 and 0.0 < data.mean() < 0.2
+
+
+def test_material_property_field_blends():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
+    psi = uw.discretisation.MeshVariable("psi_mat", mesh, 1, degree=1)
+    field = level_set.material_property_field(psi.sym[0], [1.0, 100.0], "arithmetic")
+    assert field.subs(psi.sym[0], 1) == 100.0 and field.subs(psi.sym[0], 0) == 1.0
+    with pytest.raises(ValueError, match="interface must be one of"):
+        level_set.material_property_field(psi.sym[0], [1.0, 100.0], "cubic")
+
+
+def test_sync_velocity_from_reaches_the_solve_time_vector():
+    """``sync_velocity_from`` must update what PETSc reads, not just numpy.
+
+    The method's whole purpose is to change the advecting velocity's VALUES
+    in place so that already-built solvers -- which hold the variable's
+    symbol, not its data -- pick the new values up at the next solve. That
+    only works if the write lands in the variable's global vector, which is
+    what FreeSurface relies on every step (free_surface.py calls this with
+    its own consistent surface velocity). Comparing the global norms is the
+    assertion with teeth: a write that stopped at a detached numpy copy
+    would leave them apart while the array view still looked right.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
+    v_adv = uw.discretisation.MeshVariable("v_adv_sync", mesh, 2, degree=2)
+    v_src = uw.discretisation.MeshVariable("v_src_sync", mesh, 2, degree=2)
+
+    x, y = mesh.X
+    materials = uw.level_set.MaterialCLS(mesh, velocity=v_adv)
+    materials.add("blob", 0.2 - sympy.sqrt((x - 0.5) ** 2 + (y - 0.5) ** 2))
+    materials.build()
+
+    coords = np.asarray(v_src.coords)
+    v_src.array[:, 0, 0] = 3.0 * coords[:, 0] + 1.0
+    v_src.array[:, 0, 1] = -2.0 * coords[:, 1] - 0.5
+
+    before = np.array(v_adv.array[...])
+    materials.sync_velocity_from(v_src)
+
+    after = np.array(v_adv.array[...])
+    assert not np.allclose(before, after)
+    assert np.allclose(after, np.array(v_src.array[...]))
+    assert v_adv._gvec.norm() == pytest.approx(v_src._gvec.norm(), rel=1e-12)
+
+
+def test_sync_velocity_from_refuses_a_bare_expression():
+    """No fixed-identity field to write into, so it says so rather than
+    silently doing nothing -- the failure mode documented on
+    ``FreeSurface``'s ``composition`` parameter."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=2)
+    v = uw.discretisation.MeshVariable("v_sync_sym", mesh, 2, degree=2)
+    materials = uw.level_set.MaterialCLS(mesh, velocity=v.sym)
+    with pytest.raises(RuntimeError, match="genuine MeshVariable"):
+        materials.sync_velocity_from(v)
