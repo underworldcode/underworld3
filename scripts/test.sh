@@ -37,6 +37,7 @@ FULL_PARALLEL=0
 # 0/0 means "no sharding": every batch runs. CI passes --shard K/N.
 SHARD=0
 SHARD_COUNT=0
+PRINT_SHARDS=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         --p)
@@ -51,6 +52,16 @@ while [[ $# -gt 0 ]]; do
             SHARD="${2%/*}"
             SHARD_COUNT="${2#*/}"
             shift 2
+            ;;
+        --print-shards)
+            # The shard count, read out of the batch assignment below, as a JSON
+            # array. The CI matrix is built from THIS rather than from a second
+            # copy of the number: a matrix of [1,2,3] against an assignment that
+            # uses 4 would run green while shard 4's batches -- the largest group
+            # -- never ran at all. That is the #721 failure, files going dark
+            # with nothing to say so, and the only safe fix is one definition.
+            PRINT_SHARDS=1
+            shift
             ;;
         --full-parallel)
             FULL_PARALLEL=1
@@ -119,15 +130,40 @@ fi
 # batch cannot finish before its slowest FILE does. Splitting that band further
 # is the next step and wants the per-file numbers, not a guess.
 #
-# Keep the count in agreement with SHARDS in build_uw3_and_test.yaml.
+# How many shards the assignment below actually uses, read from the `batch`
+# call sites in this file. Nothing else states the number, so nothing else can
+# disagree with it: add a `batch 5 ...` line and CI grows a fifth shard on the
+# next run. The CI matrix comes from --print-shards.
+SHARDS_ASSIGNED=$(
+    grep -oE '^[[:space:]]*batch[[:space:]]+[0-9]+' "$0" \
+        | grep -oE '[0-9]+' | sort -n | tail -1
+)
+if [ -z "$SHARDS_ASSIGNED" ]; then
+    echo "Error: no 'batch <shard> ...' call sites found in $0."
+    echo "       Either the assignment was removed or the grep no longer matches it."
+    exit 1
+fi
+
+if [ "$PRINT_SHARDS" -eq 1 ]; then
+    # A JSON array for the CI matrix: 4 -> [1,2,3,4]
+    printf '['
+    for ((i = 1; i <= SHARDS_ASSIGNED; i++)); do
+        [ "$i" -gt 1 ] && printf ','
+        printf '%d' "$i"
+    done
+    printf ']\n'
+    exit 0
+fi
+
 if [ "$SHARD_COUNT" -gt 0 ]; then
     if [ "$SHARD" -lt 1 ] || [ "$SHARD" -gt "$SHARD_COUNT" ]; then
         echo "Error: shard $SHARD is outside 1..$SHARD_COUNT"
         exit 1
     fi
-    if [ "$SHARD_COUNT" -ne 4 ]; then
-        echo "Error: the batches below are assigned to 4 shards, not $SHARD_COUNT."
-        echo "       Re-measure and re-assign them before changing the count."
+    if [ "$SHARD_COUNT" -ne "$SHARDS_ASSIGNED" ]; then
+        echo "Error: asked for shard $SHARD of $SHARD_COUNT, but the batches below"
+        echo "       are assigned to $SHARDS_ASSIGNED shards. Running anyway would"
+        echo "       leave whole batches unrun with nothing to say so."
         exit 1
     fi
     echo "Shard $SHARD of $SHARD_COUNT"
