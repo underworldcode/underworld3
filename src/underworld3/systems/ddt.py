@@ -3906,6 +3906,7 @@ class SemiLagrangian(_DDtBase):
     # unchanged by a 1e-11 solver tolerance) and patchy stress along the trace,
     # both gone with the grid (Eulerian SUPG) history. A Stokes viscoelastic
     # model with a split fault uses this history by default and is exposed too.
+    # See issue #871.
     def update_pre_solve(
         self,
         dt: float,

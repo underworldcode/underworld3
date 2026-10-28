@@ -10111,7 +10111,7 @@ def checkpoint_xdmf(
         # TODO(BUG): a manifold mesh (triangles in three-space, e.g.
         # SphericalManifold) lands here with numCorners == 3 and is written as
         # Hexahedron; it should be Triangle with XYZ geometry. Found 2026-10-09
-        # (thin-sheet work), not fixed — out of that scope.
+        # (thin-sheet work), not fixed — out of that scope. See issue #869.
         if numCorners == 4:
             topology_type = "Tetrahedron"
         elif numCorners == 8:
