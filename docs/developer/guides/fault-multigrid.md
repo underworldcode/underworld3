@@ -81,6 +81,17 @@ How to get it:
   must be registered by hand (see
   [Adapt-on-top faults](adapt-on-top-faults.md)).
 
+**What production runs do today.** The campaign drivers (the zg95 annulus and slab
+drivers, the box-fault driver) place the fault as a structured ladder band into a copy
+of the base's finest level with `place_fault_ribbon_2d(..., mesher="ladder",
+split=True)`, build the split chain by hand (the same ladder at `2^k S` placed into
+the base level `k` steps below the finest, so the rung sets nest), and hand every
+level to `set_custom_fmg`. No bisection is involved. That chain is driver code because
+the library replays a cut, not a placed band, onto the add-on levels; the ribbon
+replay is the next library item. The adapt-and-cut route is the automated one and the
+one the hierarchy strategies were compared on; it is not what production runs.
+(Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`.)
+
 **Which key for which model.** The zone key is for volumetric fault
 representations only: a weak, TI or damage zone whose width is physics. A
 split-node fault runs the structural patch alone, which is installed
