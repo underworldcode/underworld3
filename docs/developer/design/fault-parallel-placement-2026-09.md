@@ -1,5 +1,9 @@
 # Fault networks in parallel: what moves, why, and the decision (September 2026)
 
+**Status:** implemented on `development` (#669, #672). The rulings it records
+(the base is never rebalanced; the fault's cell star is gathered onto one rank)
+are restated for users in [`guides/fault-multigrid.md`](../guides/fault-multigrid.md).
+
 This note records how the fault-network machinery behaves in parallel,
 the measurements that established it, the design decision taken with
 Louis on 2 September 2026, and the test that keeps the numbers honest.
