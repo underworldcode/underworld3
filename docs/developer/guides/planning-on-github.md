@@ -12,7 +12,7 @@ the two-paragraph summary a session reads at start.
 | **Project** [Underworld roadmap](https://github.com/orgs/underworldcode/projects/10) (org `underworldcode`, number 10) | Every planning item: decisions, design directions, tasks, ideas as *draft items*; bugs as *issues*. Fields: Status, Kind, Area, Added, Target. | One board for the whole plan. Drafts need no issue, so ideas do not flood the tracker; a draft converts to an issue the day it becomes work. |
 | **Issues** | Work: bugs and tasks that will produce a PR. | Linked to PRs and commits; closing an issue moves its Project item to Done. |
 | **Discussions** (repo) | Design threads and decisions with their reasons, in categories Design and Decisions. | Threaded, so an argument reads as one; a resolved thread links from the Project item that records the decision. |
-| **Journal** [underworldcode/journal](https://github.com/underworldcode/journal) | What we have learned: dated entries written once and never edited (finding, dead end, measurement, decision), topic pages that state the current understanding over the list of entries behind it, and a weekly digest. | An ordinary repository, so every session, cloud ones included, can write it and open a pull request; the wiki could not be written from the cloud and rewrote its record in place, so it is frozen with a pointer. `docs/` documents the code at a version and goes through review; a finding graduates to it, or to a capability guide, when it has stopped moving, and its entry stays as the provenance. |
+| **Journal** [underworldcode/underworld3-journal](https://github.com/underworldcode/underworld3-journal) | What we have learned: dated entries written once and never edited (finding, dead end, measurement, decision), topic pages that state the current understanding over the list of entries behind it, and a weekly digest. | An ordinary repository, so every session, cloud ones included, can write it and open a pull request; the wiki could not be written from the cloud and rewrote its record in place, so it is frozen with a pointer. `docs/` documents the code at a version and goes through review; a finding graduates to it, or to a capability guide, when it has stopped moving, and its entry stays as the provenance. |
 | **Milestones** | The quarterly releases. | Group the issues each release needs; the Project filters on them. |
 
 Personal and cross-project planning (teaching, institute matters, funding, who does what
@@ -152,7 +152,7 @@ not reorganise.
 ```bash
 gh auth login -h github.com -s project,read:project     # once; the project scope is per machine
 gh project view 10 --owner underworldcode               # confirms access
-git clone https://github.com/underworldcode/journal.git             # the journal, optional
+git clone https://github.com/underworldcode/underworld3-journal.git             # the journal, optional
 ```
 
 Nothing else is needed: the Project, Discussions and journal are reachable from any machine
@@ -169,7 +169,7 @@ frozen. The hub keeps the cross-project material that does not belong on GitHub.
 `fixed-in-development` once the PR merges, and is closed when the fix is released to
 `main` (Louis).
 
-2026-10-28: the wiki is replaced by the journal (`underworldcode/journal`), an ordinary
+2026-10-28: the wiki is replaced by the journal (`underworldcode/underworld3-journal`), an ordinary
 repository of dated, immutable entries with topic pages over them; the wiki's nineteen
 pages were migrated and the wiki frozen. The reasoning is in
 `INFORMATION-FLOW-PROPOSAL.md` in lmoresi/uw3-campaigns.

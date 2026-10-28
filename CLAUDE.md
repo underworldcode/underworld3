@@ -38,8 +38,8 @@ when a session has it, still arrives through `UW_AI_TOOLS_PATH` (colon-separated
 directories of `.md` files; set via `./uw setup`).
 
 **The journal.** What we have learned lives in the Underworld journal,
-[underworldcode/journal](https://github.com/underworldcode/journal) (site:
-<https://underworldcode.github.io/journal/>): dated entries that are written once and
+[underworldcode/underworld3-journal](https://github.com/underworldcode/underworld3-journal) (site:
+<https://underworldcode.github.io/underworld3-journal/>): dated entries that are written once and
 never edited, topic pages that state the current understanding over the list of entries
 behind it, and a weekly digest. Read the latest digest at conversation start for what
 others are doing. A session that learned something ends by writing an entry
