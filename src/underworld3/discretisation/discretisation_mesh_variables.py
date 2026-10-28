@@ -2449,11 +2449,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         self._data_cache = None
         self._array_cache = None
 
-    def __del__(self):
-        if self._lvec:
-            self._lvec.destroy()
-        if self._gvec:
-            self._gvec.destroy()
+    # No __del__ destroying the vectors: a variable is in a reference cycle
+    # with its mesh, so it is freed by the cyclic collector, at a different
+    # moment on each rank. An explicit destroy of the parallel vector there
+    # would be a collective call made by one rank. petsc4py frees both vectors
+    # when the variable goes, deferring the parallel one to the collective
+    # cleanup that the next mesh construction runs (mpi._free_petsc_garbage).
 
     @property
     def mesh(self):

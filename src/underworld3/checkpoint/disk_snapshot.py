@@ -85,7 +85,7 @@ def _collect_metadata(model) -> dict:
     )
 
     # Mesh-derived info (gracefully absent if no mesh registered).
-    meshes = list(model._meshes.values())
+    meshes = model._live_meshes()
     first_mesh = meshes[0] if meshes else None
     mesh_names = [m.name for m in meshes]
     if first_mesh is not None:
@@ -314,7 +314,7 @@ def write_snapshot(model, path: str) -> str:
     # bulk directory. write_checkpoint is collective (PETSc HDF5
     # viewer), so all ranks must participate.
     mesh_records: list[dict] = []
-    for mesh_index, mesh in enumerate(list(model._meshes.values())):
+    for mesh_index, mesh in enumerate(model._live_meshes()):
         # Loaded meshes commonly use their complete source path as ``name``.
         # Embedding that path in every PETSc-HDF5 bulk filename can exceed
         # practical MPI-I/O pathname limits even when the wrapper path itself
@@ -499,7 +499,7 @@ def read_snapshot(model, path: str) -> None:
         )
 
     # Build {original_name -> registered Mesh} for lookup
-    meshes_by_name = {m.name: m for m in list(model._meshes.values())}
+    meshes_by_name = {m.name: m for m in model._live_meshes()}
 
     with h5py.File(path, "r") as f:
         meshes_group = f[_GROUP_MESHES]

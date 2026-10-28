@@ -203,7 +203,7 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
         )
 
     snap = Snapshot(backend=InMemoryBackend())
-    for mesh in list(model._meshes.values()):
+    for mesh in model._live_meshes():
         _capture_mesh(snap, mesh)
     for swarm in list(model._swarms.values()):
         _capture_swarm(snap, swarm)
@@ -217,7 +217,7 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
 
 def _solvers_of(model):
     """Every solver built on the model's meshes."""
-    return [solver for mesh in list(model._meshes.values())
+    return [solver for mesh in model._live_meshes()
             for solver in mesh._equation_systems_register]
 
 
@@ -395,7 +395,7 @@ def restore(model, snap: Snapshot) -> None:
             f"current {SNAPSHOT_SCHEMA_VERSION}; on-disk migration is v1.1"
         )
 
-    meshes_by_name = {m.name: m for m in model._meshes.values()}
+    meshes_by_name = {m.name: m for m in model._live_meshes()}
     swarms_by_name = {_swarm_stable_name(s): s for s in model._swarms.values()}
 
     for mesh_name in snap.mesh_names:

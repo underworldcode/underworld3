@@ -3360,8 +3360,11 @@ class Swarm(Stateful, uw_object):
         # Register mesh with model if not already present
         model._register_mesh(mesh)
 
-        # Store reference to this swarm's specific mesh for proxy operations
-        self._mesh_id = id(mesh)
+        # The swarm holds its mesh. Found by id in the model's weak registry,
+        # a mesh nobody else held was freed under the swarm at the next
+        # collection, and an unrelated later mesh at a reused address could
+        # answer for it.
+        self._mesh = mesh
 
         self._model_ref = weakref.ref(model)
         self.dim = mesh.dim
@@ -3776,10 +3779,7 @@ class Swarm(Stateful, uw_object):
     @property
     def mesh(self):
         """The mesh this swarm operates on"""
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("Model has been garbage collected")
-        return model.get_mesh(self._mesh_id)
+        return self._mesh
 
     @mesh.setter
     def mesh(self, new_mesh):
@@ -3803,7 +3803,7 @@ class Swarm(Stateful, uw_object):
         # Register new mesh with model
         model._register_mesh(new_mesh)
 
-        if id(new_mesh) == self._mesh_id:
+        if new_mesh is self._mesh:
             # Check if swarm is already compatible with target mesh
             if self.dim == new_mesh.dim and self.cdim == new_mesh.cdim:
                 # Dimensions match, check if proxy variables need updating
@@ -3843,7 +3843,7 @@ class Swarm(Stateful, uw_object):
         model._update_mesh_for_swarm(self, new_mesh)
 
         # Update swarm's mesh reference
-        self._mesh_id = id(new_mesh)
+        self._mesh = new_mesh
 
         # Update swarm's cached dimensions
         self.dim = new_mesh.dim

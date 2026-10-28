@@ -130,3 +130,59 @@ def test_the_primary_mesh_is_released_and_replaced():
     replacement = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
     assert uw.get_default_model().mesh is replacement
+
+
+def test_a_snapshot_does_not_visit_a_dropped_mesh():
+    """A dropped mesh with a variable is a reference cycle (the mesh owns its
+    variables, each variable holds its mesh), so it stays in the weak registry
+    until the cyclic collector runs, and that runs at a different moment on
+    each rank. A snapshot makes a collective write per registered mesh, so it
+    collects first: every rank then visits the same meshes. Here the collector
+    is held off, as it may be on one rank and not another."""
+    kept = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+
+    gc.disable()
+    try:
+        make()
+        state = uw.get_default_model().save_state()
+    finally:
+        gc.enable()
+    assert state.mesh_names == [kept.name]
+
+
+def test_a_swarm_keeps_its_mesh():
+    """A swarm on a mesh nobody else holds keeps that mesh; it found it by id
+    in the weak registry, so the mesh was freed under it."""
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        return uw.swarm.Swarm(mesh)
+
+    swarm = make()
+    gc.collect()
+    assert swarm.mesh is not None
+    swarm.populate(fill_param=1)
+    assert swarm.mesh.dim == 2
+
+
+def test_a_variable_the_caller_did_not_keep_stays_registered():
+    """The mesh owns the user-facing variable, not only its base: the model
+    indexes the user-facing one, and units, scaling and the adjoint find
+    variables there."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+
+    def make():
+        uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+
+    make()
+    gc.collect()
+    variable = uw.get_default_model().get_variable("T")
+    assert variable is not None
+    assert variable._base_var is mesh.vars[variable.clean_name]
