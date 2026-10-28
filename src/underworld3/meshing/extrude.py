@@ -194,6 +194,8 @@ def _extrude_dm(dm2, boundaries, pairs2, thickness, layers, base, surface,
 
     taken = set(members.values())
     for name in (base, surface):
+        # the next value above the ordinary boundaries, below the sentinels
+        # Null_Boundary (666) and All_Boundaries (1001), as fault_split numbers them
         value = max([v for v in taken if v < 666] + [0]) + 1
         while value in taken:
             value += 1
