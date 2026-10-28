@@ -242,6 +242,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # surface mesh the velocity has mesh.cdim components; the same sizing was
         # fixed in EulerianSUPG and the Eulerian AdvDiffusion (2026-10-09,
         # thin-sheet work). Not fixed here: not used on a surface mesh yet.
+        # See issue #872.
         self._a_var = uw.discretisation.MeshVariable(
             f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
             continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")

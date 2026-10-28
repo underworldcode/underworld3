@@ -32,7 +32,7 @@ def _sheet_mesh(faulted):
     return mesh
 
 
-def model(mesh, Solver):
+def _solver_on(mesh, Solver):
     """The model, written once: a viscous plate dragged by a base moving in
     simple shear, free at its edges, optionally cut by a frictionless fault."""
     solver = Solver(mesh)
@@ -50,10 +50,10 @@ def model(mesh, Solver):
 
 def _run(faulted):
     sheet_mesh = _sheet_mesh(faulted)
-    sheet = model(sheet_mesh, uw.systems.ThinSheet)
+    sheet = _solver_on(sheet_mesh, uw.systems.ThinSheet)
     sheet.thickness = L
     sheet.solve()
-    layer = model(sheet_mesh.extrude(L, layers=2), uw.systems.Stokes)
+    layer = _solver_on(sheet_mesh.extrude(L, layers=2), uw.systems.Stokes)
     layer.solve()
     return sheet, layer
 
@@ -99,7 +99,9 @@ def test_extruded_layer_geometry_and_pairing():
     assert round(-L / 2, 12) in paired_vertex_z and round(L / 2, 12) in paired_vertex_z
 
 
-@pytest.mark.tier_b
+# tier C: one model against another at one thickness, a characterisation;
+# the contract is agreement to first order in L
+@pytest.mark.tier_c
 def test_dragged_plate_thin_and_thick_agree():
     sheet, layer = _run(faulted=False)
     xy = sheet.u.coords
@@ -109,7 +111,9 @@ def test_dragged_plate_thin_and_thick_agree():
     assert error < 2.0e-2, f"relative difference {error:.3e}"
 
 
-@pytest.mark.tier_b
+# tier C: one model against another at one thickness, a characterisation;
+# the contract is agreement to first order in L
+@pytest.mark.tier_c
 def test_faulted_plate_thin_and_thick_agree():
     """The same plate cut by a frictionless fault: on the layer the fault is the
     sheet's, extruded through the thickness (open at the surface and base,
@@ -153,7 +157,9 @@ def test_faulted_plate_thin_and_thick_agree():
         f"slip thick {slip_l} thin {slip_s}")
 
 
-@pytest.mark.tier_b
+# tier C: one model against another at one thickness, a characterisation;
+# the contract is agreement to first order in L
+@pytest.mark.tier_c
 def test_dragged_shell_thin_and_thick_agree_on_the_sphere():
     """The same model on the sphere: a sheet on the unit-sphere manifold and the
     shell extruded radially from it, dragged by a base in the toroidal flow
@@ -163,7 +169,7 @@ def test_dragged_shell_thin_and_thick_agree_on_the_sphere():
     (h = 0.15, two layers): 3.32 % at L = 0.04, 1.35 % at L = 0.02."""
     sphere = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.15, degree=1, qdegree=3)
 
-    def shell_model(mesh, Solver):
+    def _shell_solver_on(mesh, Solver):
         solver = Solver(mesh)
         solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
         solver.constitutive_model.Parameters.shear_viscosity_0 = 1
@@ -173,10 +179,10 @@ def test_dragged_shell_thin_and_thick_agree_on_the_sphere():
         return solver
 
     thickness = 0.02
-    sheet = shell_model(sphere, uw.systems.ThinSheet)
+    sheet = _shell_solver_on(sphere, uw.systems.ThinSheet)
     sheet.thickness = thickness
     sheet.solve()
-    shell = shell_model(sphere.extrude(thickness, layers=2), uw.systems.Stokes)
+    shell = _shell_solver_on(sphere.extrude(thickness, layers=2), uw.systems.Stokes)
     shell.solve()
     pts = sheet.u.coords
     u_sheet = np.asarray(sheet.u.array).reshape(-1, 3)

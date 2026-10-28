@@ -63,6 +63,7 @@ from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities import memprobe
+from underworld3.utilities._petsc_tools import _fieldsplit_sub_ksps
 from underworld3.utilities._api_tools import (
     uw_object,
     SymbolicProperty,
@@ -83,6 +84,24 @@ def expression(*args, **kwargs):
     (see docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md).
     """
     return public_expression(*args, _unique_name_generation=True, **kwargs)
+
+
+def _nondimensional_row(value, cdim):
+    """A ``(1, cdim)`` sympy row from a sequence whose entries may be
+    dimensional ``UWQuantity`` values (converted to the solver's non-dimensional
+    scale) or plain numbers / expressions."""
+    # TODO(DESIGN): SNES_Stokes.bodyforce repeats this conversion inline; share it.
+    row = []
+    for item in value:
+        if isinstance(item, uw.function.quantities.UWQuantity):
+            nd = uw.non_dimensionalise(item)
+            nd = nd.magnitude if hasattr(nd, "magnitude") else nd
+            if hasattr(nd, "shape") and tuple(nd.shape) == (1, 1):
+                nd = nd[0, 0]
+            row.append(nd)
+        else:
+            row.append(item)
+    return sympy.Matrix(row).reshape(1, cdim)
 
 
 def _history_record(constitutive_model):
@@ -611,10 +630,9 @@ class _StressHistoryMixin:
 
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
                                    store_result=False)
-        # Uniform pre-solve coefficient hook: VEP delegates to
-        # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
-        # α, φ on the DDt via _update_exp_coefficients(). No isinstance
-        # checks at the solver layer.
+        # Uniform pre-solve coefficient hook: each model refreshes its own BDF
+        # or exponential (α, φ) coefficients. No isinstance checks at the
+        # solver layer.
         self.constitutive_model._update_history_coefficients()
 
     def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
@@ -707,9 +725,8 @@ class _StressHistoryMixin:
                     f"{type(cm).__name__} asks its stress history for "
                     f"{sorted(ddt_kwargs)}, which the particle Lagrangian flavour does "
                     "not provide; use stress_transport='semi_lagrangian' for it.")
-            # Order 1 BDF only for now: the particle flavour has no exponential
-            # coefficients (it is built with_exp=False), and order 2 is not yet
-            # validated. Refuse cleanly rather than crash inside the first solve.
+            # Order 1 BDF only for now: the exponential integrator is not
+            # validated on the particle flavour, and neither is order 2. Refuse cleanly rather than crash inside the first solve.
             if getattr(cm, "_integrator", "bdf") != "bdf":
                 raise NotImplementedError(
                     "the particle Lagrangian stress history supports the BDF "
@@ -1866,7 +1883,7 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         if F1_source is not None and linesearch is not None:
             self.petsc_options["snes_linesearch_type"] = linesearch
 
-    def add_basal_drag(self, coefficient, boundary, reference_velocity=None):
+    def add_basal_drag(self, conds, boundary, reference_velocity=None):
         r"""Couple the model to what lies beneath ``boundary`` by a drag
         :math:`-c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})` per unit area: a
         natural condition :math:`c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})`.
@@ -1876,7 +1893,8 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         velocity of the substrate (``None``: a fixed base); for a viscous
         substrate of viscosity :math:`\eta_a` and thickness :math:`h_a`,
         :math:`c = \eta_a / h_a`. The drag acts on every component, so the base
-        also resists normal motion, which the sheet never has."""
+        also resists normal motion, which the sheet never has. ``conds`` is the
+        drag coefficient :math:`c`."""
         u = self.Unknowns.u.sym
         dim = self.mesh.dim
         if reference_velocity is None:
@@ -1884,18 +1902,18 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         elif isinstance(reference_velocity, uw.discretisation.MeshVariable):
             reference = sympy.Matrix(reference_velocity.sym).reshape(1, dim)
         else:
-            reference = sympy.Matrix(list(reference_velocity)).reshape(1, dim)
-        self.add_natural_bc(coefficient * (u - reference), boundary)
+            reference = _nondimensional_row(reference_velocity, dim)
+        self.add_natural_bc(conds * (u - reference), boundary)
 
-    def add_basal_traction(self, traction, boundary):
-        r"""Apply a traction :math:`\mathbf{t}` (force per unit area, exerted on
-        the model) on ``boundary``; the thick form of
+    def add_basal_traction(self, conds, boundary):
+        r"""Apply a traction :math:`\mathbf{t}` (``conds``, force per unit area,
+        exerted on the model) on ``boundary``; the thick form of
         ``ThinSheet.add_basal_traction``."""
         dim = self.mesh.dim
-        if isinstance(traction, uw.discretisation.MeshVariable):
-            row = sympy.Matrix(traction.sym).reshape(1, dim)
+        if isinstance(conds, uw.discretisation.MeshVariable):
+            row = sympy.Matrix(conds.sym).reshape(1, dim)
         else:
-            row = sympy.Matrix(list(traction)).reshape(1, dim)
+            row = _nondimensional_row(conds, dim)
         self.add_natural_bc(-row, boundary)
 
     # ----- DEVSS: stabilising a discontinuous elastic stress -----
@@ -2128,7 +2146,6 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                 self._setup_pointwise_functions(verbose)
                 self._setup_discretisation(verbose)
                 self._setup_solver(verbose)
-                self._check_velocity_preconditioner()
 
             self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
 
@@ -2150,6 +2167,9 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                 print(f"Stokes solver - store stress and shift history", flush=True)
 
             self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
+            # After the solve, as on the plain path: before it the split is not set
+            # up and has no velocity block to inspect (#827).
+            self._check_velocity_preconditioner()
 
         else:
             # Plain Stokes — no stress history
@@ -2783,24 +2803,19 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         if getattr(self, "_pc_user_override", False):
             return                            # the user owns this block's pc_type
         # The rotated free-slip path builds its OWN fieldsplit KSP and leaves
-        # this one un-set-up, so asking it for sub-KSPs raises -- and PETSc
-        # prints a full error banner before the exception can be caught, which
-        # makes a healthy solve look broken. Skip it by the path rather than by
-        # catching. (Suppressing with pushErrorHandler was tried: it is global
-        # state and broke 23 unrelated tests.)
-        # A fault contact (split-node pairs) takes the same manual rotated loop
-        # with no free-slip wall registered, so it is skipped by its own marker
-        # (measured: the banner on every step of a faulted box with no walls).
+        # this one un-set-up: there is nothing here to inspect. A fault contact
+        # (split-node pairs) takes the same rotated loop with no free-slip wall
+        # registered, so it is skipped by its own marker.
         if (getattr(self, "_rotated_freeslip_bcs", None)
                 or getattr(self, "_fault_contact_faults", None)):
             return
-        pc = self.snes.getKSP().getPC()
-        if pc.getType() != "fieldsplit":
-            return
-        try:
-            installed = pc.getFieldSplitSubKSP()[0].getPC().getType()
-        except Exception:
-            return                            # not set up: nothing to inspect
+        # A split that is not set up has no blocks -- after a rebuild, or a warm
+        # solve that converged before any linear solve -- and asking for them
+        # prints a PETSc banner even when caught (#827); the helper asks quietly.
+        blocks = _fieldsplit_sub_ksps(self.snes.getKSP().getPC())
+        if not blocks:
+            return                            # not a split, or not set up
+        installed = blocks[0].getPC().getType()
         if installed == "mg":
             return
 

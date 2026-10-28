@@ -3,6 +3,8 @@
 A vertically averaged (plane-stress) sheet solver for the lithosphere, on a flat
 mesh or on the surface of a sphere, with any deviatoric constitutive model —
 Newtonian, Maxwell viscoelastic, or yielding — and the split-node fault machinery.
+A transversely isotropic model is refused on the sphere (its strain rate is not
+projected onto the surface).
 
 Design record: `docs/developer/design/THIN_SHEET_VISCOELASTIC_DESIGN.md`.
 Tests: `tests/test_1075`–`test_1084`. Session drivers: `scripts/sessions/thin_sheet_*.py`.
@@ -82,10 +84,13 @@ composed with each solver's own closure (`_flux_closure`).
 
 Measured (`test_1083`, $L = 0.04$, $cL/\eta = 0.04$): the layer's mid-plane
 velocity matches the sheet's to 0.7 % unfaulted and 0.5 % faulted, the slip to
-1.6 %. Limits: serial only. The layer's multigrid tail coarsens through the
-thickness first, then laterally through the sheet's own levels, and every coarse
-level is fault-free (taken from the split sheet's ancestors: a coarse level with a
-slit has coincident nodes, which the transfer builders cannot place). On the sphere (radial extrusion) the
+1.6 %. In parallel the sheet is gathered onto one rank, extruded there, and
+the layer distributed with its fault pairing, every fault's cell star
+rank-interior; the one-rank build bounds the layer by one rank's memory. The
+layer's multigrid tail coarsens through the thickness first, then laterally
+through the sheet's own levels; a split level of the sheet's tail is extruded
+split, so the layer carries the split-level multigrid of the sheet one dimension
+up, and the background levels stay welded. On the sphere (radial extrusion) the
 difference is first order in $L$ — the curvature the sheet neglects and the
 drag-driven shear: 3.3 % at $L = 0.04$, 1.35 % at $L = 0.02$.
 

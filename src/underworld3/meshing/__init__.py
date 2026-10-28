@@ -134,4 +134,6 @@ __all__ = [
     "register_radial_surfaces",
     "register_plane_surfaces",
     "register_box_face_surfaces",
+    # A thin sheet extruded into a layer (faults carried through)
+    "extrude_sheet",
 ]

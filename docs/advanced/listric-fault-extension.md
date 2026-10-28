@@ -69,6 +69,7 @@ net.prepare(h=CELL, ligament=1.0)
 net.mesh = base_mesh().add_fault(net.prepared)   # same base as the ribbons
 ...
 stokes.constitutive_model.Parameters.yield_stress = net.damage_yield(v, dial=0.05)
+stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo  # dial*(1 + 2 edot_II) > 0 by construction
 net.apply_contact(stokes, conds=ETA_F)
 ```
 

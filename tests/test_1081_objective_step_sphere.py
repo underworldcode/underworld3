@@ -16,7 +16,9 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_3]
 
 
-@pytest.mark.tier_b
+# tier C for its cost (about 13 min): reported, not gated, as test_1061 and
+# test_1064 are; it was shown to fail on its bug and would be tier B otherwise
+@pytest.mark.tier_c
 def test_a_rigid_rotation_of_the_sphere_carries_the_stress_rigidly():
     """A quarter turn about x in 20 steps, h = 0.15. Measured 2026-10-12:
     relative error 9.4e-3 (8.4e-3 at 40 steps, 8.5e-3 at 80: the error is

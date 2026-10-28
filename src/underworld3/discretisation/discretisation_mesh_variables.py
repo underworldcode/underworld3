@@ -1981,6 +1981,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         # reconstructed from its checkpoint — is untested on a manifold: the h5
         # mesh round-trip drops the coordinate dimension first (see the
         # SphericalManifold factory). Found 2026-10-09 (thin-sheet work), not fixed.
+        # See issue #870.
         import h5py
 
         if uw.mpi.rank == 0:

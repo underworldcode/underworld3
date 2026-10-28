@@ -46,6 +46,7 @@ import numpy as np
 from petsc4py import PETSc
 
 from underworld3.utilities import multigrid_options
+from underworld3.utilities._petsc_tools import _fieldsplit_sub_ksps
 
 __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
            "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
@@ -1824,12 +1825,18 @@ class CustomMGHierarchy:
         Ps = self.transfers
         patch_rows = getattr(self, "level_patch_rows", None)
         if self.drop_orphans:
-            # the restriction renumbers the COARSE levels, so their recorded
-            # FAC patch rows no longer apply; the finest's rows are unchanged
+            # a coarse level the restriction renumbered (it dropped unreached
+            # columns) loses its recorded FAC patch rows; a level it left whole,
+            # and the finest, keep theirs
             from underworld3.utilities.fault_mg import restrict_unreached
-            Ps = restrict_unreached(Ps, solver.dm.comm)
+            restricted = restrict_unreached(Ps, solver.dm.comm)
             if patch_rows is not None:
-                patch_rows = [None] * (len(patch_rows) - 1) + [patch_rows[-1]]
+                patch_rows = [
+                    None if level < len(Ps)
+                    and restricted[level].getSize()[1] != Ps[level].getSize()[1]
+                    else rows
+                    for level, rows in enumerate(patch_rows)]
+            Ps = restricted
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
@@ -2205,10 +2212,12 @@ def _pcmg_still_installed(solver, h):
         if pfx == "":
             pc = solver.snes.getKSP().getPC()
         elif pfx == "fieldsplit_velocity_":
-            outer = solver.snes.getKSP().getPC()
-            if outer.getType() != "fieldsplit":
+            # quietly: an un-set-up split has no blocks, and asking prints a
+            # PETSc banner even when caught (#827)
+            blocks = _fieldsplit_sub_ksps(solver.snes.getKSP().getPC())
+            if not blocks:
                 return False
-            pc = outer.getFieldSplitSubKSP()[0].getPC()
+            pc = blocks[0].getPC()
         else:
             return False
         return (pc.getType() == "mg"
