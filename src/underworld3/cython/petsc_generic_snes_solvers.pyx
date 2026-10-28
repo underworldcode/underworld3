@@ -4904,13 +4904,14 @@ class SolverBaseClass(uw_object):
 
         ### checking if it's an instance - it will need to be reset
         if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
+            # Only override the constitutive model's order if the solver has
+            # an explicit VE order (> 0). Otherwise preserve the model's default.
+            # Done first: a model that refuses the order is never assigned.
+            if self._order > 0:
+                model_or_class.order = self._order
             self._constitutive_model = model_or_class
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
-            # Only override the constitutive model's order if the solver has
-            # an explicit VE order (> 0). Otherwise preserve the model's default.
-            if self._order > 0:
-                self._constitutive_model.order = self._order
             # Establish bidirectional reference so parameter changes can propagate to solver
             self._constitutive_model.Parameters._solver = self
 
