@@ -142,8 +142,8 @@ vertices back to the sphere.
 On the sphere a divergence-free toroidal drag thins a corotational Maxwell sheet at
 second order (the Weissenberg effect): $-\nabla_s\cdot\mathbf u/A^2 =
 (24/91)P_2 - (24/287)P_4$ in steady state, scaled by ETD-1's effective relaxation
-time $\alpha\Delta t/(1-\alpha)$. `test_1084`; the closed form is derived by
-`scripts/sessions/thin_sheet_quadratic_closed_form.py`.
+time $\alpha\Delta t/(1-\alpha)$. `test_1084`; the closed form is derived with
+sympy (the derivation is kept with the campaign, outside this repository).
 
 ## Round 2 (not yet)
 

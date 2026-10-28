@@ -3,8 +3,9 @@
 Technical note, 2026-10-13. The exploration that chose the hierarchy; the library
 implementation (C, below) is governed by
 [subsystems/fault-split-multigrid.md](../subsystems/fault-split-multigrid.md).
-Exploration drivers: `scripts/sessions/fault_mg/` (`stage*.py` monkey-patch the
-solver; `library_c*.py` and `thick_parallel.py` go through the library).
+The exploration drivers are kept with the campaign, outside this repository
+(`stage*.py` monkey-patch the solver; `library_c*.py` and `thick_parallel.py` go
+through the library).
 
 ## The question
 

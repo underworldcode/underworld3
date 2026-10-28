@@ -182,8 +182,8 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
 ## Not yet done
 
 - A regression test for the coarse-level wall rotation itself (a rotated free-slip
-  annulus with a placed band and the custom tail), beyond the example scripts
-  (`scripts/sessions/fault_mg/zg95_probe.py`, `zg95_annulus.py`).
+  annulus with a placed band and the custom tail), beyond the campaign's annulus
+  drivers.
 - The 3-D sheet placement on an NVB-refined child needs `clearance` of about 0.9 at
   one add-on level (its volume guard fires at the default 0.6) and refuses the
   two-level child at every clearance and sheet size tried (volume change 4e-6 to

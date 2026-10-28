@@ -29,10 +29,20 @@ def _model(rate, order=None, history_order=1, convected_step=None):
 
 @pytest.mark.tier_b
 def test_the_objective_order_defaults_and_refusals():
-    """Cayley for the Jaumann rate, first order otherwise; Cayley needs the
-    Jaumann rate; the deformation step takes no order; an order above one needs
-    a first-order history."""
-    assert _model("jaumann")._objective_order == "cayley"
+    """First order by default for every rate, so a Stokes model is as it was
+    (Louis, 2026-10-28); a thin sheet takes the Cayley step for a first-order
+    Jaumann history given no order; Cayley needs the Jaumann rate; the
+    deformation step takes no order; an order above one needs a first-order
+    history."""
+    assert _model("jaumann")._objective_order == 1
+    sheet = uw.systems.ThinSheet(_box())
+    sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        sheet.Unknowns, order=1, integrator="etd", objective_rate="jaumann")
+    assert sheet.constitutive_model._objective_order == "cayley"
+    sheet.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        sheet.Unknowns, order=1, integrator="etd", objective_rate="jaumann",
+        objective_order=1)
+    assert sheet.constitutive_model._objective_order == 1
     assert _model("upper_convected")._objective_order == 1
     assert _model("none")._objective_order == 1
     with pytest.raises(ValueError, match="cayley"):
@@ -50,7 +60,7 @@ def test_the_cayley_step_is_the_orthogonal_rotation_of_the_stress():
     """At a spin W = [[0, -w], [w, 0]] the Cayley step carries sigma to
     R sigma R^T with R = (I - dt W/2)^{-1}(I + dt W/2), an exact rotation."""
     from underworld3.function.expressions import unwrap
-    model = _model("jaumann")
+    model = _model("jaumann", order="cayley")
     model.Parameters.dt_elastic = 0.1
     sigma = sympy.Matrix([[1, 2], [2, -3]])
     carried = model._carried_through_step(sigma)

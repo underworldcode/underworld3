@@ -363,6 +363,10 @@ class SolverBaseClass(uw_object):
     This class is not intended to be used directly
     """
 
+    # whether adjoint_solve takes the transpose of a rotated operator
+    _adjoint_routes_rotated_constraints = False
+
+
     def __init__(self, mesh):
 
         super().__init__()
@@ -2061,9 +2065,16 @@ class SolverBaseClass(uw_object):
                     f"{len(contact)} fault contact(s): the rotated operator "
                     f"carries an additive interface tangent, reassembled at every "
                     f"iterate, whose transpose is not routed into the adjoint")
-        # Rotated FREE-SLIP does admit one — the transpose of the rotated
-        # operator, taken in the boundary frame. The solver that owns that path
-        # says so in its own verdict; nothing is refused here.
+        # Rotated FREE-SLIP admits one — the transpose of the rotated operator,
+        # taken in the boundary frame — where the solver routes its adjoint
+        # through it (the Stokes saddle point, rotated_bc.solve_rotated_adjoint).
+        # Elsewhere adjoint_solve would transpose the unrotated operator.
+        rotated = mechanisms["rotated_freeslip"]
+        if rotated and not self._adjoint_routes_rotated_constraints:
+            return (False,
+                    f"{len(rotated)} rotated constraint(s): this solver's "
+                    f"adjoint_solve transposes the unrotated operator, and the "
+                    f"rotated transpose is routed only for the Stokes saddle point")
         if not self.consistent_jacobian and not self._residual_is_linear_in_unknown():
             return (True,
                     "implicit residual: Jacobian transpose for the state, symbolic "
@@ -8618,6 +8629,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     SNES_Scalar : For scalar-valued equations.
     SNES_Vector : For vector-valued equations without constraints.
     """
+
+    # adjoint_solve routes a rotated solve through solve_rotated_adjoint
+    _adjoint_routes_rotated_constraints = True
+
 
     class _Unknowns(SolverBaseClass._Unknowns):
         '''Extend the unknowns with the constraint parameter'''

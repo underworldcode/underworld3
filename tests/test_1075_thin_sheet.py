@@ -195,7 +195,9 @@ def test_plastic_sheet_yields_at_the_von_mises_stress():
     sheet.u.array[:, 0, 1] = -float(edot) * (sheet.u.coords[:, 1] - 0.5) / 2
     sheet.solve(zero_init_guess=False)
 
-    sigma = uw.function.evaluate(sheet.stress, _probe_points()).reshape(-1, 2, 2)
+    # magnitudes: in a model without units the yield stress's declared unit
+    # still tags the evaluated stress (issue #881)
+    sigma = np.asarray(uw.function.evaluate(sheet.stress, _probe_points())).reshape(-1, 2, 2)
     assert np.abs(sigma[:, 0, 0] - np.sqrt(3.0) * tau_y).max() < 1.0e-3
     assert np.abs(sigma[:, 1, 1]).max() < 1.0e-3
 

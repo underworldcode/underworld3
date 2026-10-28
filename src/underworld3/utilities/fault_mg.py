@@ -614,9 +614,10 @@ def split_tail_levels(levels, fault_specs, verbose=False):
                               **kwargs)
         except (ValueError, RuntimeError, NotImplementedError) as exc:
             problem = str(exc)
-        # the split's refusals are collective, its internal failures may not
-        # be: every rank stops at the same level, or the ranks that went on
-        # wait in the next level's split for the one that stopped
+        # the split's refusals are collective; a failure on one rank after its
+        # last collective is not, and every rank must stop at the same level or
+        # the ranks hold different hierarchies (a rank-local raise inside the
+        # split, before its own collectives, still hangs there: issue #874)
         try:
             _collective_raise(problem)
         except RuntimeError as exc:

@@ -62,6 +62,16 @@ from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 
 
+def _is_transversely_isotropic(model_or_class):
+    """Whether a constitutive model (a class, an instance, or a composite's
+    constituents) is transversely isotropic."""
+    ti = uw.constitutive_models.TransverseIsotropicFlowModel
+    if isinstance(model_or_class, type):
+        return issubclass(model_or_class, ti)
+    parts = getattr(model_or_class, "_constitutive_models", None) or [model_or_class]
+    return any(isinstance(part, ti) for part in parts)
+
+
 def _sheet_normal(mesh):
     r"""Unit normal :math:`\hat{\mathbf{n}}` of the sheet as a ``(1, cdim)``
     row, or ``None`` on a flat (volume) mesh."""
@@ -368,15 +378,15 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
 
     @constitutive_model.setter
     def constitutive_model(self, model_or_class):
-        SNES_Vector.constitutive_model.fset(self, model_or_class)
-        cm = self._constitutive_model
-        if (self.mesh.dim < self.mesh.cdim
-                and isinstance(cm, uw.constitutive_models.TransverseIsotropicFlowModel)):
-            # its strain rate is the full symmetric gradient, not the sheet's
-            # projected one: a rigid rotation of the sphere would strain it
+        # refused before it is installed: its strain rate is the full symmetric
+        # gradient, not the sheet's projected one, so a rigid rotation of the
+        # sphere would strain it
+        if self.mesh.dim < self.mesh.cdim and _is_transversely_isotropic(model_or_class):
             raise NotImplementedError(
                 "a transversely isotropic model on a manifold sheet: its strain "
                 "rate is not projected onto the surface; use it on a flat sheet")
+        SNES_Vector.constitutive_model.fset(self, model_or_class)
+        cm = self._constitutive_model
         if (getattr(cm, "_objective_rate", "none") == "jaumann"
                 and not cm._objective_order_given and cm.order == 1):
             cm._objective_order = "cayley"
@@ -528,10 +538,18 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         if self._p_projection is None:
             self._p_projection = uw.systems.Projection(self.mesh, self._p_field)
             self._p_projection.smoothing = 0.0
-        # After a viscoelastic solve the newest history level is the stress just
-        # committed; the flux reads the history and so, by now, the shifted one.
-        stress = (self.tau.sym if self.Unknowns.DFDt is not None
-                  else self.stress_deviator)
+        # After a viscoelastic solve the newest history level is the Maxwell
+        # stress just committed (the flux reads the history and so, by now, the
+        # shifted one); the solvent's Newtonian part, which the history does not
+        # carry, is the flux less the history flux (the history terms cancel).
+        if self.Unknowns.DFDt is not None:
+            cm = self.constitutive_model
+            stress = sympy.Matrix(self.tau.sym)
+            history_flux = getattr(cm, "history_flux", None)
+            if history_flux is not None:
+                stress = stress + sympy.Matrix(cm.flux) - sympy.Matrix(history_flux)
+        else:
+            stress = self.stress_deviator
         self._p_projection.uw_function = -sympy.Matrix(stress).trace()
         self._p_projection.solve(verbose=verbose)
 
