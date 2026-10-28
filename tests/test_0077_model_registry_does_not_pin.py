@@ -20,7 +20,8 @@ import pytest
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# level 2: two of the tests solve; tier B: proven on their bugs, not yet hardened
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
 @pytest.fixture(autouse=True)
@@ -186,3 +187,24 @@ def test_a_variable_the_caller_did_not_keep_stays_registered():
     variable = uw.get_default_model().get_variable("T")
     assert variable is not None
     assert variable._base_var is mesh.vars[variable.clean_name]
+
+
+def test_a_proxy_on_a_kept_mesh_does_not_keep_the_swarm_variable():
+    """A proxied swarm variable puts its proxy on the swarm's mesh, which owns
+    the proxy. The proxy's remesh callback held the variable strongly, so a
+    swarm moved off a long-lived mesh left that mesh keeping the variable and,
+    through it, the swarm's new mesh."""
+    origin = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+
+    def make():
+        moved_to = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2)
+        swarm = uw.swarm.Swarm(origin)
+        variable = uw.swarm.SwarmVariable("S", swarm, 1, proxy_degree=1)
+        swarm.mesh = moved_to
+        return {"moved_to": moved_to, "variable": variable, "swarm": swarm}
+
+    freed = _dropped(make)
+    assert origin.dim == 2
+    assert all(freed.values()), freed

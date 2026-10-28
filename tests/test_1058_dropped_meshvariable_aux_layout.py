@@ -1,8 +1,7 @@
 """A dropped MeshVariable must not corrupt the auxiliary data of later solves.
 
-`mesh.vars` holds variables weakly, but a DMPlex cannot shed a field: a
-variable that is dropped and garbage-collected leaves its PETSc field in
-the DM. Two places used to assume the registry and the DM field list line
+A DMPlex cannot shed a field: a variable taken off `mesh.vars` and
+garbage-collected leaves its PETSc field in the DM. Two places used to assume the registry and the DM field list line
 up by position:
 
 - `Mesh.update_lvec` zipped `mesh.vars.values()` against the DM's field

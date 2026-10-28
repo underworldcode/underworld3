@@ -3796,6 +3796,19 @@ class _BaseMeshVariable(Stateful, uw_object):
             "rms": vrms,
         }
 
+    def _discard_temporary(self, temporary):
+        """Take a statistics temporary off the mesh and destroy its vectors.
+
+        Every rank reaches this at the same point, the end of a collective
+        statistics call, so the parallel vector is destroyed collectively here.
+        Left to the collector, it waits on petsc4py's deferred list until the
+        next mesh is built, one vector per call on a fixed mesh."""
+        if temporary.name in self.mesh.vars:
+            del self.mesh.vars[temporary.name]
+        for vector in (temporary._lvec, temporary._gvec):
+            if vector is not None:
+                vector.destroy()
+
     def _vector_stats(self):
         """Statistics for vector variables using magnitude."""
         import numpy as np
@@ -3842,9 +3855,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             return mag_stats
 
         finally:
-            # Cleanup temporary variable
-            if magnitude_var.name in self.mesh.vars:
-                del self.mesh.vars[magnitude_var.name]
+            self._discard_temporary(magnitude_var)
 
     def _tensor_stats(self):
         """Statistics for tensor variables using Frobenius norm."""
@@ -3902,9 +3913,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             return frob_stats
 
         finally:
-            # Cleanup temporary variable
-            if frobenius_var.name in self.mesh.vars:
-                del self.mesh.vars[frobenius_var.name]
+            self._discard_temporary(frobenius_var)
 
     @property
     def coords(self) -> numpy.ndarray:

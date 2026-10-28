@@ -12,7 +12,7 @@ The Model object serves as a central orchestrator for Underworld3 simulations, p
 
 The Model object addresses three fundamental needs in geodynamic simulation workflows:
 
-1. **Component Lifecycle Management**: Meshes, swarms, and variables form complex dependency networks. The Model acts as a central authority that owns these relationships, breaking circular references that would otherwise complicate memory management and serialization.
+1. **Component Lifecycle Management**: Meshes, swarms, and variables form complex dependency networks. The Model indexes them, weakly, so they can be found, listed and serialised; it does not own them (see [Weak References and Ownership](#weak-references-and-ownership)).
 
 2. **Mesh Swapping Support**: Simulations often require adaptive remeshing or mesh refinement. By mediating the relationship between swarms and meshes, the Model enables mesh replacement with automatic notification to all dependent objects.
 
@@ -96,10 +96,13 @@ runs at a different moment on each rank. Two rules follow:
 - a traversal that makes a collective call per registered mesh (the snapshot
   writers) takes its list from `Model._live_meshes()`, which collects first,
   so every rank visits the same meshes;
-- nothing destroys a parallel PETSc object from `__del__`. petsc4py defers the
-  destroy of a collected object to a list that `PETSc.garbage_cleanup`
-  empties, and building a mesh (collective over its DM's communicator) calls
-  it.
+- nothing in a mesh's cycle destroys a parallel PETSc object from `__del__`.
+  petsc4py defers the destroy of a collected object to a list that
+  `PETSc.garbage_cleanup` empties, and building a mesh (collective over its
+  DM's communicator) calls it. A temporary discarded at a collective point
+  destroys its vectors there (the variable statistics do). `Swarm.__del__`
+  destroys its DMSwarm: a swarm is in no cycle, so it is freed by reference
+  count where the program drops it, the same point on every rank.
 
 A driver's own references are its own: a driver that keeps the previous mesh
 past a rebuild (for a warm-start transfer, say) keeps that mesh alive.
