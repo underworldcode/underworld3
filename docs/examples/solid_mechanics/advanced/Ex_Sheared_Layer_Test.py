@@ -427,6 +427,7 @@ Cinf = 500
 C = 2 * (y * 2) ** 2 + (C0 - Cinf) * (1 - sympy.tanh((strain.sym[0] / eps_ref - 1) * scale)) / 2 + Cinf
 
 stokes.constitutive_model.Parameters.yield_stress = C + mu * p_soln.sym[0]
+stokes.constitutive_model.Parameters.yield_stress_min = 0.1 * Cinf  # residual strength: 10% of the softened cohesion (yield reads p and strain)
 stokes.constitutive_model.Parameters.edot_II_fn = stokes.Unknowns.Einv2
 stokes.constitutive_model.Parameters.min_viscosity = 0.1
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.viscosity

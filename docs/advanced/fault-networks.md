@@ -91,6 +91,7 @@ yield. Read the next paragraph before using it as glue.
 ```python
 stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
 stokes.constitutive_model.Parameters.yield_stress = net.band_yield(4.0)
+stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo  # a field, but tau_y or tau_far: positive by construction
 stokes.consistent_jacobian = True
 ```
 
