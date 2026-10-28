@@ -1933,8 +1933,9 @@ class Mesh(Stateful, uw_object):
         Returns
         -------
         dict
-            The subset of ``candidates`` present on ``subdm`` with a
-            non-empty stratum, preserving candidate order.
+            Candidates with a non-empty stratum anywhere on the DM communicator,
+            preserving candidate order. Empty ranks retain the same names and
+            empty labels, so solver boundary registration is rank independent.
         """
         present = set()
         for i in range(subdm.getNumLabels()):
@@ -1961,6 +1962,14 @@ class Mesh(Stateful, uw_object):
             lsis = lab.getStratumIS(value)
             if lsis is not None and lsis.getSize() > 0:
                 present.add(name)
+        # A boundary may be absent from this rank while present on its peers.
+        # Its enum and label must nevertheless exist everywhere: natural BC
+        # registration and solver setup use the same named boundaries on all ranks.
+        present = set().union(*subdm.comm.tompi4py().allgather(present))
+        local_names = {subdm.getLabelName(i) for i in range(subdm.getNumLabels())}
+        for name in candidates:
+            if name in present and name not in local_names:
+                subdm.createLabel(name)
         return {name: v for name, v in candidates.items() if name in present}
 
     def extract_region(self, label_name, label_value=None):
