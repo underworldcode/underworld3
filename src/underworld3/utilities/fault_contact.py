@@ -156,7 +156,7 @@ def _compile_normal_spec(spec, mesh, boundary):
     result need not be unit length — the caller normalises — but must be
     nonzero at every fault node.
     """
-    dim = mesh.dim
+    dim = mesh.cdim
     if isinstance(spec, str):
         if spec == "trace":
             if dim != 2:
@@ -358,9 +358,15 @@ def ViscousFaultLaw(eta_f):
     return SymbolicFaultLaw(float(eta_f) * slip_rate)
 
 
-def CoulombFaultLaw(mu, sigma_n, V0):
+def CoulombFaultLaw(mu, sigma_n, V0, background=0.0):
     r"""Regularised Coulomb friction,
     :math:`\tau = \mu\sigma_n\,\tfrac{2}{\pi}\arctan(V/V_0)`.
+
+    ``background`` adds a constant effective normal stress (compression
+    positive) to the reaction-fed one: the overburden less the pore pressure
+    of a fault that stays clamped while a tide modulates its strength
+    (Berne et al. 2024 on the tiger stripes: an overburden of about 50 kPa
+    against tidal normal tractions of about 25 kPa).
 
     Smooth, bounded by the strength :math:`\mu\sigma_n`, monotone. Below
     the regularisation velocity :math:`V_0` the fault sticks (residual
@@ -372,16 +378,16 @@ def CoulombFaultLaw(mu, sigma_n, V0):
     """
     if sigma_n == "reaction":
         # the strength clamp is the law's own: bare friction loses all
-        # strength the moment the normal stress turns tensile
-        strength = float(mu) * sympy.Max(normal_stress, 0)
+        # strength the moment the (effective) normal stress turns tensile
+        strength = float(mu) * sympy.Max(normal_stress + float(background), 0)
     else:
-        strength = float(mu) * float(sigma_n)
+        strength = float(mu) * (float(sigma_n) + float(background))
     return SymbolicFaultLaw(
         strength * (2 / sympy.pi) * sympy.atan(slip_rate / float(V0)))
 
 
 def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5,
-                         normal=None):
+                         normal=None, background=0.0):
     """Regularised Coulomb friction on the split fault ``boundary``
     (value-first: ``conds`` is the friction coefficient mu).
 
@@ -401,8 +407,10 @@ def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5,
     if mu <= 0.0 or float(V0) <= 0.0 or (
             sigma_n != "reaction" and float(sigma_n) <= 0.0):
         raise ValueError("mu, sigma_n and V0 must all be positive.")
+    if float(background) < 0.0:
+        raise ValueError("background (the constant effective normal stress, compression positive) must be >= 0.")
     add_frictionless_fault_bc(solver, boundary, normal=normal)
-    _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0))
+    _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0, background))
 
 
 def RateStateFaultLaw(a, b, V0, f0, Dc, sigma_n="reaction"):
@@ -513,7 +521,99 @@ def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
     return info
 
 
+def _manifold_edge_conormal(dm, f):
+    """Length and unit conormal of a fault edge of a surface mesh: in the
+    tangent plane of the edge's single support cell, perpendicular to the
+    edge, pointing away from that cell (the Plus side's cell after the
+    split, so Plus -> Minus like the volume-mesh facet normal). PETSc's FVM
+    facet normal is not defined for an edge in three dimensions."""
+    cdim = dm.getCoordinateDim()
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    v0, v1 = dm.getDepthStratum(0)
+    P, Q = (cvec[csec.getOffset(int(v)) // cdim] for v in dm.getCone(f))
+    cell = int(dm.getSupport(f)[0])
+    verts = [int(p) for p in dm.getTransitiveClosure(cell)[0] if v0 <= p < v1]
+    Xc = np.array([cvec[csec.getOffset(v) // cdim] for v in verts])
+    n_cell = np.cross(Xc[1] - Xc[0], Xc[2] - Xc[0])
+    nu = np.cross(n_cell, Q - P)
+    nu = nu / (np.linalg.norm(nu) + 1e-30)
+    if (Xc.mean(axis=0) - 0.5 * (P + Q)) @ nu > 0.0:
+        nu = -nu
+    return float(np.linalg.norm(Q - P)), nu
+
+
+def _radial_fn(mesh):
+    """A numpy callable of the mesh coordinates giving the surface normal of a
+    manifold mesh — its radial unit vector ``unit_e_0``, unwrapped to mesh
+    coordinates exactly as ``rotated_bc._normal_source`` does for an analytic
+    normal. Build it once per mesh, not per pair."""
+    from underworld3.function.expressions import unwrap
+    normal = mesh.CoordinateSystem.unit_e_0
+    comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
+                                  return_self=False))
+             for k in range(mesh.cdim)]
+    return sympy.lambdify(list(mesh.X), comps, "numpy")
+
+
+def _pair_frame(solver, q, nrm, radial=None):
+    """The rotation frame of a coincident pair at point ``q`` of the SOLVER's
+    mesh — see :func:`_pair_frame_on`, the mesh-level form a coarse level of
+    the split-level multigrid uses too."""
+    mesh = solver.mesh
+    if mesh.dim < mesh.cdim and radial is None:
+        radial = _radial_fn(mesh)
+    return _pair_frame_on(mesh, solver.dm, q, nrm, radial)
+
+
+def _pair_frame_on(mesh, dm, q, nrm, radial=None):
+    """The rotation frame of a coincident pair at point ``q``: the fault
+    normal first, then the slip direction(s). On a volume mesh that is
+    ``[n] + _tangent_frame(n)``; on a surface mesh the fault normal is the
+    in-surface conormal, the slip direction is the trace tangent and the
+    third vector is the surface normal, whose jump AND mean rows the
+    tangency constraint pins (see ``rotated_bc.build_rotation``). The SINGLE
+    authority for the pair frame: the rotated pair blocks, the interface
+    assembler's slip rows and the coarse levels' pair blocks must agree row
+    for row. ``radial`` is :func:`_radial_fn` of the mesh (surface meshes)."""
+    if mesh.dim == mesh.cdim:
+        return [np.asarray(nrm, dtype=float)] + _tangent_frame(nrm)
+    from underworld3.utilities.rotated_bc import _point_coord
+    cdim = mesh.cdim
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    v0, v1 = dm.getDepthStratum(0)
+    if radial is None:
+        radial = _radial_fn(mesh)
+    X = _point_coord(dm, cdim, cvec, csec, v0, v1, int(q))
+    r = np.asarray(radial(*X), dtype=float).ravel()
+    r = r / (np.linalg.norm(r) + 1e-30)
+    # The conormal is perpendicular to the FACET normal, the surface normal is
+    # the analytic one at the node: they differ by O(h), and a frame that is
+    # not orthonormal makes the pair rotation non-orthogonal — the pinned row
+    # along r then leaks into the free row along nu and releases a normal
+    # mode the sheet has no stiffness against (measured: a Killing field
+    # returned 5e-2 off near the fault, the same from LU). Orthogonalise.
+    nu = np.asarray(nrm, dtype=float)
+    nu = nu - (nu @ r) * r
+    nu = nu / (np.linalg.norm(nu) + 1e-30)
+    t = np.cross(r, nu)
+    t = t / (np.linalg.norm(t) + 1e-30)
+    return [nu, t, r]
+
+
 def _fault_pair_nodes(solver, boundary):
+    """The velocity-carrying coincident pairs of a split fault of the
+    SOLVER's mesh, with normals — :func:`_fault_pair_nodes_on` with the
+    solver's analytic-normal override for this fault, if one is registered."""
+    return _fault_pair_nodes_on(solver.mesh, solver.dm,
+                                solver.dm.getLocalSection(), boundary,
+                                field=_VELOCITY_FIELD,
+                                override=_compiled_normal_override(solver, boundary))
+
+
+def _fault_pair_nodes_on(mesh, dm, lsec, boundary, field=_VELOCITY_FIELD,
+                         override=None):
     """The velocity-carrying coincident pairs of a split fault, with normals.
 
     Returns ``[(q_plus, q_minus, n_hat), ...]`` over this rank's pairs, where
@@ -533,11 +633,13 @@ def _fault_pair_nodes(solver, boundary):
     rotated pair blocks, the interface-law rows, and every diagnostic
     (slip, leak, normal traction) all read the frame from here, so the
     override is consistent everywhere by construction.
+
+    ``mesh`` is any mesh carrying the pairing (the solver's, or a coarse
+    level of the split-level multigrid), ``dm`` a DM over it that carries the
+    velocity field ``field`` in its local section ``lsec``, and ``override``
+    the compiled analytic normal (``None`` for the facet-derived one).
     """
-    mesh = solver.mesh
-    dm = solver.dm
-    dim = mesh.dim
-    lsec = dm.getLocalSection()
+    dim = mesh.cdim
     fS, fE = dm.getHeightStratum(1)
 
     pairs = mesh._fault_point_pairs[boundary]
@@ -573,10 +675,14 @@ def _fault_pair_nodes(solver, boundary):
     # verbatim copy of those six lines, and copies of them drifting apart is what
     # produced #560 and then #564.
     nacc = {}
+    manifold = mesh.dim < mesh.cdim
     for f in facets:
-        vol, ne, _exterior = facet_measure_and_normal(dm, f, orient="support0")
+        if manifold:
+            vol, ne = _manifold_edge_conormal(dm, f)
+        else:
+            vol, ne, _exterior = facet_measure_and_normal(dm, f, orient="support0")
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-            if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
+            if lsec.getFieldDof(q, field) > 0:
                 nacc[q] = nacc.get(q, np.zeros(dim)) + float(vol) * ne
     # A pair node ON the partition seam (the split through the seam,
     # fault_split.split_fault(across_seams=True)) has one of its two
@@ -588,7 +694,6 @@ def _fault_pair_nodes(solver, boundary):
         if int(q) in nacc:
             nacc[int(q)] = np.asarray(whole, dtype=float)
 
-    override = _compiled_normal_override(solver, boundary)
     if override is not None:
         from underworld3.utilities.rotated_bc import _point_coord
         csec = dm.getCoordinateSection()
@@ -597,7 +702,7 @@ def _fault_pair_nodes(solver, boundary):
 
     out = []
     for q_minus, q_plus in pairs.items():
-        if lsec.getFieldDof(int(q_plus), _VELOCITY_FIELD) <= 0:
+        if lsec.getFieldDof(int(q_plus), field) <= 0:
             continue
         acc = nacc.get(int(q_plus))
         if acc is None:
@@ -670,6 +775,91 @@ _NQ3 = np.column_stack(
        for i, j in ((0, 1), (1, 2), (2, 0))])
 
 
+def _linear_trace_fit(facets, facet_verts, n_rows):
+    r"""Operators that recover a traction on a P2-triangle fault trace as a
+    linear field on the facet vertices.
+
+    For a traction :math:`\sigma = \sum_v \sigma_v \lambda_v` linear on a
+    facet of area :math:`A`, the consistent P2 load is exact and closed-form:
+
+    .. math::
+
+        \int \phi_{v_i} \sigma = \tfrac{A}{30}\sigma_i
+            - \tfrac{A}{60}(\sigma_j + \sigma_k), \qquad
+        \int \phi_{e_{ij}} \sigma = \tfrac{A}{15}(2\sigma_i + 2\sigma_j
+            + \sigma_k).
+
+    Assembled over the facets this gives ``G``, pair-node load from vertex
+    values: about three times as many rows as columns, so the vertex values
+    are a least-squares fit. Rim vertices are ordinary columns — they have
+    no pair row of their own, but the midpoints beside them pin them.
+
+    Returns ``(G, ends)``: ``G`` a rank-local AIJ Mat ``(n_rows, n_vertices)``
+    and ``ends`` an ``(n_rows, 2)`` array of the vertex columns whose mean
+    is each pair node's value (a vertex node lists its own column twice).
+    """
+    column = {}
+    entries = {}
+    ends = np.full((n_rows, 2), -1, dtype=np.int64)
+    for (idx, area, _law_id), verts in zip(facets, facet_verts):
+        cols = [column.setdefault(v, len(column)) for v in verts]
+        for i in range(3):
+            k = idx[i]
+            if k < 0:
+                continue
+            ends[k] = (cols[i], cols[i])
+            for j in range(3):
+                w = area / 30.0 if i == j else -area / 60.0
+                entries[(k, cols[j])] = entries.get((k, cols[j]), 0.0) + w
+        for e, (i, j) in enumerate(((0, 1), (1, 2), (2, 0))):
+            k = idx[3 + e]
+            if k < 0:
+                continue
+            ends[k] = (cols[i], cols[j])
+            for m in range(3):
+                w = (2.0 if m in (i, j) else 1.0) * area / 15.0
+                entries[(k, cols[m])] = entries.get((k, cols[m]), 0.0) + w
+
+    G = PETSc.Mat().createAIJ(size=(n_rows, max(len(column), 1)),
+                              comm=PETSc.COMM_SELF)
+    G.setPreallocationNNZ(9)
+    for (k, c), w in entries.items():
+        G.setValue(int(k), int(c), w, addv=True)
+    G.assemble()
+    return G, ends
+
+
+def _fitted_normal_traction(fit, load):
+    """Pair-node traction from the nodal load through the linear trace fit.
+
+    Solved by LSQR on this rank: the fault is rank-interior after the
+    redistribution every parallel split performs. A failed fit is reported
+    to every rank, since the callers run collectively.
+    """
+    G, ends = fit
+    if not len(ends):
+        _collective_raise(None)
+        return np.zeros(0)
+    n_rows, n_cols = G.getSize()
+    rhs = PETSc.Vec().createSeq(n_rows)
+    rhs.setArray(np.asarray(load, dtype=float))
+    vertex_values = PETSc.Vec().createSeq(n_cols)
+    ksp = PETSc.KSP().create(comm=PETSc.COMM_SELF)
+    ksp.setOperators(G)
+    ksp.setType("lsqr")
+    ksp.getPC().setType("none")
+    ksp.setTolerances(rtol=1e-12, atol=0.0, max_it=20 * n_cols)
+    ksp.solve(rhs, vertex_values)
+    reason = ksp.getConvergedReason()
+    values = vertex_values.getArray().copy()
+    for obj in (ksp, rhs, vertex_values):
+        obj.destroy()
+    _collective_raise(None if reason > 0 else
+                      f"the linear trace fit of the fault normal traction "
+                      f"did not converge (KSP reason {reason}).")
+    return 0.5 * (values[ends[:, 0]] + values[ends[:, 1]])
+
+
 class _InterfaceAssembler:
     r"""Residual and consistent tangent of the interface laws, per iterate.
 
@@ -691,8 +881,11 @@ class _InterfaceAssembler:
 
     def __init__(self, solver, include=()):
         dm = solver.dm
-        dim = solver.mesh.dim
-        ncomp = dim - 1                       # slip components per node
+        dim = solver.mesh.cdim
+        # slip components per node: one along the trace on a surface mesh
+        # (the third frame vector is the pinned surface normal), dim - 1 on
+        # a volume mesh
+        ncomp = 1 if solver.mesh.dim < dim else dim - 1
         lsec = dm.getLocalSection()
         l2g = dm.getLGMap()
         csec = dm.getCoordinateSection()
@@ -701,6 +894,9 @@ class _InterfaceAssembler:
 
         rows, lo_p, lo_m, tans, nrms, laws_of, facets = \
             [], [], [], [], [], [], []
+        # 3-D only: each facet's vertex points (rim vertices included),
+        # for the linear fit that recovers the normal traction
+        facet_verts = []
         index_of = {}
         fault_of = []
         current = [None]                      # the fault being walked
@@ -749,7 +945,7 @@ class _InterfaceAssembler:
                              for a in range(ncomp)])
                 lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
                 lo_m.append(lo)
-                tans.append(_tangent_frame(nrm))
+                tans.append(_pair_frame(solver, q, nrm)[1:1 + ncomp])
                 nrms.append(nrm)
                 return index_of[q]
 
@@ -765,7 +961,7 @@ class _InterfaceAssembler:
                       .getStratumIS(value).getIndices()):
                 if not (fS <= f < fE):
                     continue
-                if dim == 2:
+                if solver.mesh.dim == 2:
                     va, vb = (int(q) for q in dm.getCone(f))
                     L = float(np.linalg.norm(
                         cvec[csec.getOffset(va) // dim]
@@ -790,6 +986,7 @@ class _InterfaceAssembler:
                             (verts[i], verts[j]))])
                         for i, j in ((0, 1), (1, 2), (2, 0)))
                     facets.append((idx, area, law_id))
+                    facet_verts.append(verts)
         _collective_raise(problem)
 
         # petsc4py refuses to narrow index arrays — Vec/Mat setValues need
@@ -800,34 +997,48 @@ class _InterfaceAssembler:
         self._lo_m = np.asarray(lo_m, dtype=np.int64)
         self._tan = np.asarray(tans, dtype=float).reshape(-1, ncomp, dim)
         self._nrm = np.asarray(nrms, dtype=float).reshape(-1, dim)
-        self._NQ = _NQ if dim == 2 else _NQ3
-        self._WQ = _WQ if dim == 2 else _WQ3
+        # the trace quadrature follows the facet TOPOLOGY (an edge on a 2-D
+        # or surface mesh, a triangle in 3-D); the strides above follow the
+        # component count
+        self._NQ = _NQ if solver.mesh.dim == 2 else _NQ3
+        self._WQ = _WQ if solver.mesh.dim == 2 else _WQ3
         self._laws = laws_of
         self._facets = facets
         self._dim = dim
         self._points = {q: k for q, k in index_of.items()}
 
-        # Positive trace mass per pair node, for de-smearing the constraint
-        # reaction into a pointwise normal traction. On the P2 LINE the
-        # lumped (row-sum) mass is positive (L/6, 2L/3, L/6) and is used
-        # directly. On the P2 TRIANGLE the lumped VERTEX rows vanish (the
-        # known trap: row sums are 0, 0, 0, A/3, A/3, A/3), so the triangle
-        # uses the P1 SUB-LUMPING instead — each straight P2 triangle is
-        # four P1 sub-triangles of area A/4, whose lumped masses give every
-        # node a positive weight (A/12 per vertex, A/4 per midpoint).
+        # Recovering a pointwise normal traction from the constraint
+        # reaction. On the P2 LINE the lumped (row-sum) trace mass is
+        # positive (L/6, 2L/3, L/6) and dividing the nodal load by it is
+        # exact for a uniform traction. On the P2 TRIANGLE the consistent
+        # load of ANY traction vanishes at the vertex nodes (row sums 0, 0,
+        # 0, A/3, A/3, A/3), so no nodal division can be pointwise right —
+        # the former P1 sub-lumping read 0 at every vertex and 4/3 of the
+        # traction at every midpoint. A consistent-mass solve does not
+        # rescue it either: the unsplit rim nodes carry no load, and leaving
+        # them out polluted the whole patch (measured error ~50%). The
+        # triangle instead fits the traction as a LINEAR field on the facet
+        # vertices, rim vertices included, whose consistent load matches the
+        # nodal load in least squares — exact for uniform and linear
+        # traction (see _linear_trace_fit).
         # The star-forest completion below is defensive: after the
         # redistribution that precedes every parallel split the fault is
         # rank-interior and the exchange is a no-op on the fault rows.
+        self._traction_fit = (_linear_trace_fit(facets, facet_verts, len(rows))
+                              if solver.mesh.dim == 3 else None)
         mass = np.zeros(len(rows))
-        for idx, measure, _law_id in facets:
-            if dim == 2:
-                weights = (measure / 6.0, 2.0 * measure / 3.0,
-                           measure / 6.0)
-            else:
-                weights = (measure / 12.0,) * 3 + (measure / 4.0,) * 3
-            for k, w in zip(idx, weights):
-                if k >= 0:
-                    mass[k] += w
+        # the branch follows the facet TOPOLOGY (mesh.dim), as the quadrature
+        # above does, not the component count: a fault on a surface mesh is an
+        # edge carried by a 3-vector, and the triangle weights gave its mid-edge
+        # nodes an eighth of their mass (measured: the breathing sphere's fault
+        # read 5 to 8 times its membrane resultant). The triangle (mesh.dim 3)
+        # takes no lumped mass at all: its recovery is the linear fit above.
+        if solver.mesh.dim == 2:
+            for idx, measure, _law_id in facets:
+                weights = (measure / 6.0, 2.0 * measure / 3.0, measure / 6.0)
+                for k, w in zip(idx, weights):
+                    if k >= 0:
+                        mass[k] += w
         if mpi.size > 1:
             pStart, pEnd = dm.getChart()
             chart_mass = np.zeros(pEnd - pStart, dtype=np.float64)
@@ -931,20 +1142,24 @@ class _InterfaceAssembler:
         reaction (negative in compression): the jump-normal constraint's
         nodal load l_i = (n.r+ - n.r-)/2, de-smeared by the lumped trace
         mass. The reaction must be the PURE bulk residual — the loop
-        stashes it before the interface force is added."""
+        stashes it before the interface force is added. On a thin sheet the
+        residual carries the thickness, so this is the membrane RESULTANT
+        (L sigma_nn): the interface laws' effective normal stress and any
+        background they add are in the same units."""
         dm = solver.dm
         dim = self._nrm.shape[1]
         lvec = dm.getLocalVec()
         dm.globalToLocal(reaction, lvec)
         a = np.asarray(lvec.getArray())
-        sig = np.zeros(len(self._rows))
+        load = np.zeros(len(self._rows))
         for k in range(len(self._rows)):
             rp = a[self._lo_p[k]:self._lo_p[k] + dim]
             rm = a[self._lo_m[k]:self._lo_m[k] + dim]
-            load = 0.5 * float(self._nrm[k] @ (rp - rm))
-            sig[k] = load / max(self._mass[k], 1e-300)
+            load[k] = 0.5 * float(self._nrm[k] @ (rp - rm))
         dm.restoreLocalVec(lvec)
-        return sig
+        if self._traction_fit is not None:
+            return _fitted_normal_traction(self._traction_fit, load)
+        return load / np.maximum(self._mass, 1e-300)
 
     def update_normal_stress(self, solver, reaction):
         """Picard-lag the SIGNED effective normal stress into the laws:
@@ -1048,7 +1263,7 @@ def fault_normal_traction(solver, boundary, solve_result):
     sig = assembler.nodal_normal_traction(solver, solve_result["reaction"])
 
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
@@ -1092,7 +1307,7 @@ def fault_pair_jumps(solver, boundary, solve_result, gather=False):
     comm = solver.mesh.dm.comm.tompi4py()
     if comm.size == 1:
         return coords, jumps, normals
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     parts = comm.allgather((np.asarray(coords, dtype=float).reshape(-1, dim),
                             np.asarray(jumps, dtype=float).reshape(-1, dim),
                             np.asarray(normals, dtype=float).reshape(-1, dim)))
@@ -1102,7 +1317,7 @@ def fault_pair_jumps(solver, boundary, solve_result, gather=False):
 def _fault_pair_jumps_local(solver, boundary, solve_result):
     """The rank-local half of :func:`fault_pair_jumps`."""
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     lsec = dm.getLocalSection()
     l2g = dm.getLGMap()
     U = solve_result["U"]
@@ -1153,7 +1368,14 @@ def fault_slip(solver, boundary, solve_result):
         raise NotImplementedError(
             "fault_slip's arc-length profile is 2-D; use fault_pair_jumps "
             "for a 3-D patch.")
-    tangents = np.column_stack([-normals[:, 1], normals[:, 0]])
+    if coords.shape[1] == 3:
+        # a surface mesh: the trace tangent is the surface normal (radial on
+        # the sphere) crossed with the in-surface conormal
+        rhat = coords / np.linalg.norm(coords, axis=1)[:, None]
+        tangents = np.cross(rhat, normals)
+        tangents /= np.linalg.norm(tangents, axis=1)[:, None]
+    else:
+        tangents = np.column_stack([-normals[:, 1], normals[:, 0]])
     # Along-fault coordinate from the mean tangent, origin at the trailing end.
     tbar = tangents.mean(axis=0)
     tbar /= np.linalg.norm(tbar) + 1e-30

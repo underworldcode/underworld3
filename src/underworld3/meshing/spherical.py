@@ -427,10 +427,16 @@ def SphericalManifold(
     # h5 round-trip, which currently loses the explicit coordinate
     # dimension), then hand the DM to Mesh() which accepts either a
     # filename or a DMPlex object.
+    # The option is global: left in place it would load every LATER gmsh
+    # mesh in this process with three coordinates (a 2-D box after a sphere
+    # failed on a 3:2 vector-length mismatch), so it is cleared once consumed.
     PETSc.Options().setValue("dm_plex_gmsh_spacedim", 3)
-    surface_dm = PETSc.DMPlex().createFromFile(
-        uw_filename, interpolate=True, comm=PETSc.COMM_WORLD,
-    )
+    try:
+        surface_dm = PETSc.DMPlex().createFromFile(
+            uw_filename, interpolate=True, comm=PETSc.COMM_WORLD,
+        )
+    finally:
+        PETSc.Options().delValue("dm_plex_gmsh_spacedim")
     surface_dm.setName("uw_mesh")
     surface_dm.markBoundaryFaces("All_Boundaries", 1001)
     assert surface_dm.getCoordinateDim() == 3, (

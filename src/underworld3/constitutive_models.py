@@ -479,6 +479,19 @@ class Constitutive_Model(uw_object):
         self._solver_is_setup = False
         return
 
+    def _second_invariant(self, M):
+        r"""Second invariant of a deviatoric tensor of this model (a strain
+        rate, a stress), as the solver's kinematics define it.
+
+        The solver supplies it (``Unknowns.second_invariant``) because only the
+        solver knows what its tensors leave out: the thin sheet's in-plane
+        tensors stand for 3-D ones with :math:`M_{nn} = -\operatorname{tr}M`.
+        Otherwise the plain contraction :math:`\sqrt{M_{ij}M_{ij}/2}`."""
+        invariant = getattr(self.Unknowns, "second_invariant", None)
+        if invariant is None:
+            return sympy.sqrt((M**2).trace() / 2)
+        return invariant(M)
+
     @property
     def K(self):
         r"""Primary constitutive property (viscosity, diffusivity, etc.).
@@ -1008,13 +1021,9 @@ class ViscousFlowModel(Constitutive_Model):
             \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
             + \frac{\partial u_j}{\partial x_i}\right)
         """
-        mesh = self.Unknowns.u.mesh
-
-        return mesh.vector.strain_tensor(self.Unknowns.u.sym)
-
-        # ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
-        # edot = (ddu + ddu.T) / 2
-        # return edot
+        # The solver owns the kinematics: Unknowns.E is sym(grad u) on a volume
+        # mesh and the in-plane (projected) strain rate on a thin sheet.
+        return sympy.Matrix(self.Unknowns.E)
 
     @property
     def plastic_fraction(self):
@@ -1638,7 +1647,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         self._strainrate_inv_II = expression(
             r"\dot\varepsilon_{II}",
-            sympy.sqrt((self.grad_u**2).trace() / 2),
+            self._second_invariant(self.grad_u),
             "Strain rate 2nd Invariant",
         )
 
@@ -1883,7 +1892,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
 
-        stress_II = sympy.sqrt((stress**2).trace() / 2)
+        stress_II = self._second_invariant(stress)
 
         correction = parameters.yield_stress / stress_II
 
@@ -1950,7 +1959,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     def __init__(self, unknowns, order=1, integrator: str = "bdf",
                  material_name: str = None, objective_rate: str = "none",
-                 stress_history: str = "stress", convected_step: str = None):
+                 stress_history: str = "stress", convected_step: str = None,
+                 objective_order=None):
         """Construct a viscoelastic-plastic flow model.
 
         Parameters
@@ -2007,6 +2017,27 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             stretching of the relaxation target is completed the same way).
             Default ``"linear"``, or ``"deformation"`` with the
             log-conformation history, which requires it.
+        objective_order : int or "cayley", optional
+            How much of the step that carries the stress is taken, with
+            ``convected_step="linear"``. Over one step the convected stress is
+            :math:`M\sigma^*M^T` with :math:`M = e^{\Delta t K}` (:math:`K = W`
+            for the Jaumann rate, :math:`L` for the upper-convected); order
+            :math:`q` keeps the terms of total order up to :math:`q` in
+            :math:`\Delta t`,
+
+            .. math::
+                \sum_{i+j \le q} \frac{\Delta t^{i+j}}{i!\,j!}\,
+                K^i\sigma^*(K^T)^j ,
+
+            so ``1`` is :math:`\sigma^* + \Delta t\,(K\sigma^* + \sigma^*K^T)`,
+            the explicit source, and each order adds the next terms.
+            ``"cayley"`` (Jaumann only) rotates by
+            :math:`R = (I - \Delta tW/2)^{-1}(I + \Delta tW/2)`: exactly
+            orthogonal, so a rigid rotation carries the stress rigidly at any
+            step, with an angle :math:`2\arctan(\omega\Delta t/2)` against
+            :math:`\omega\Delta t`. The step acts on the newest history level:
+            orders above one, and ``"cayley"``, need a first-order history.
+            Default ``"cayley"`` with the Jaumann rate, ``1`` otherwise.
         """
         if integrator not in ("bdf", "etd"):
             raise ValueError(
@@ -2036,6 +2067,17 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             convected_step = "deformation" if stress_history == "log_conformation" else "linear"
         if convected_step not in ("linear", "deformation"):
             raise ValueError(f"convected_step must be 'linear' or 'deformation', got {convected_step!r}")
+        if objective_order is None:
+            objective_order = "cayley" if objective_rate == "jaumann" else 1
+        if objective_order != "cayley" and not (isinstance(objective_order, int) and objective_order >= 1):
+            raise ValueError("objective_order must be a positive integer (the order in dt of the "
+                             f"step that carries the stress) or 'cayley', got {objective_order!r}")
+        if objective_order == "cayley" and objective_rate != "jaumann":
+            raise ValueError("objective_order='cayley' is the orthogonal rotation by the spin: it "
+                             "needs objective_rate='jaumann'")
+        if convected_step == "deformation" and objective_order != 1:
+            raise ValueError("convected_step='deformation' takes its own positive-definite step; "
+                             "objective_order applies to convected_step='linear'")
         if stress_history == "log_conformation" and convected_step != "deformation":
             raise ValueError("the log-conformation history needs convected_step='deformation': the "
                              "linear step can hand it an indefinite conformation, which has no logarithm")
@@ -2048,6 +2090,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                                           "logarithm and exponential; 3-D is not implemented")
         self._stress_history = stress_history
         self._convected_step = convected_step
+        self._objective_order = objective_order
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -2394,7 +2437,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                     mu_val = float(params.shear_modulus.sym)
                     tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
                 except (TypeError, ValueError):
-                    tau_eff = None
+                    # a viscosity (or modulus) that varies in space: the Maxwell
+                    # time is a field and the ETD coefficients are formed
+                    # symbolically (ddt._update_exp_values); None here meant the
+                    # viscous limit and lost the elastic response silently
+                    tau_eff = sympy.sympify(params.shear_viscosity_0.sym) / sympy.sympify(params.shear_modulus.sym)
             try:
                 dt_val = (
                     float(params.dt_elastic.sym)
@@ -2440,6 +2487,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if order != 1 and self._convected_step == "deformation":
             raise NotImplementedError("convected_step='deformation' and the log-conformation history "
                                       "are first order only")
+        if order != 1 and self._objective_rate != "none" and self._objective_order != 1:
+            raise NotImplementedError(f"objective_order={self._objective_order!r} carries the newest "
+                                      "history level only: it needs a first-order history (use "
+                                      "objective_order=1 with order 2)")
 
     def _carried_stress_sym(self, level=0):
         r"""The carried stress :math:`\sigma^*` of history level ``level``: the
@@ -2526,13 +2577,22 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             else:
                 edot_star = sympy.zeros(*E.shape)
             eta_raw = self.Parameters.shear_viscosity_0
-            E_eff = (
-                (1 - phi) * E
-                + (alpha / (2 * eta_raw)) * sigma_star
-                + (phi - alpha) * edot_star
-                # objective rate: the flux gains alpha * dt * S(sigma*)
-                + alpha * self.Parameters.dt_elastic * self._objective_term(sigma_star) / (2 * eta_raw)
-            )
+            if self._objective_rate != "none" and self._objective_order != 1:
+                # the stress carried through the step at the chosen order
+                # replaces sigma* + dt S(sigma*)
+                E_eff = (
+                    (1 - phi) * E
+                    + (alpha / (2 * eta_raw)) * self._carried_through_step(sigma_star)
+                    + (phi - alpha) * edot_star
+                )
+            else:
+                E_eff = (
+                    (1 - phi) * E
+                    + (alpha / (2 * eta_raw)) * sigma_star
+                    + (phi - alpha) * edot_star
+                    # objective rate: the flux gains alpha * dt * S(sigma*)
+                    + alpha * self.Parameters.dt_elastic * self._objective_term(sigma_star) / (2 * eta_raw)
+                )
             if self._convected_step == "deformation":
                 # The relaxation target is stretched during the step too. The
                 # exponential step carries that as (1-a) I + b (L + L^T) with
@@ -2553,6 +2613,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # BDF default
         mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
         bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
+        if self._objective_rate != "none" and self._objective_order != 1:
+            # first-order history (checked): the newest level carried through
+            # the step at the chosen order replaces sigma* + dt S(sigma*)
+            E += -bdf_cs[0] * self._carried_through_step(self._carried_stress_sym(0)) / (2 * mu_dt)
+            self._E_eff.sym = E
+            return self._E_eff
         for i in range(DDt.order):
             E += -bdf_cs[i] * self._carried_stress_sym(i) / (2 * mu_dt)
         # objective rate on the newest level, explicit and first order: the
@@ -2564,14 +2630,102 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._E_eff.sym = E
         return self._E_eff
 
+    def _carried_through_step(self, sigma):
+        r"""The stress carried through one step at ``objective_order``:
+        :math:`\sum_{i+j\le q} \Delta t^{i+j} K^i\sigma(K^T)^j/(i!\,j!)`, the
+        expansion of :math:`e^{\Delta tK}\sigma\,e^{\Delta tK^T}` to total order
+        :math:`q` (:math:`K = W` Jaumann, :math:`L` upper-convected), or for
+        ``"cayley"`` :math:`R\sigma R^T` with
+        :math:`R = (I - A)^{-1}(I + A) = I + 2(A + A^2)/(1 + \theta^2)`,
+        :math:`A = \Delta t\,W/2`, :math:`\theta^2 = -\mathrm{tr}(A^2)/2`
+        (closed form for a skew :math:`A`, in 2-D and 3-D)."""
+        dim = self.Unknowns.u.mesh.cdim
+        dt = self.Parameters.dt_elastic
+        sigma = sympy.Matrix(sigma)
+        if self._objective_rate == "jaumann":
+            K = sympy.Matrix(self.Unknowns.W)
+        else:
+            K = sympy.Matrix(self.Unknowns.u.sym).jacobian(self.Unknowns.u.mesh.X)
+        # the first-order step, kept as the Newton tangent's stand-in for the
+        # frozen carried stress (see _tangent_surrogates)
+        self._carried_step_linear = sigma + dt * (K * sigma + sigma * K.T)
+        if self._objective_order == "cayley":
+            A = dt * K / 2
+            A2 = A * A
+            theta2 = -A2.trace() / 2
+            R = sympy.eye(dim) + 2 * (A + A2) / (1 + theta2)
+            carried = R * sigma * R.T
+        else:
+            q = self._objective_order
+            powers = [sympy.eye(dim)]
+            for _ in range(q):
+                powers.append(powers[-1] * dt * K)
+            carried = sympy.zeros(dim, dim)
+            for i in range(q + 1):
+                for j in range(q + 1 - i):
+                    carried += powers[i] * sigma * powers[j].T / (sympy.factorial(i) * sympy.factorial(j))
+        return self._frozen_carried_stress(carried)
+
+    @property
+    def _tangent_surrogates(self):
+        r"""Frozen atoms of this model's flux and the differentiable stand-in
+        the Newton tangent uses for each, ``{atom: expression}``; empty when
+        nothing is frozen.
+
+        The carried stress after an objective step above first order is frozen
+        (see :meth:`_frozen_carried_stress`): differentiating the Cayley rotation
+        or a long series directly is prohibitively expensive. Its first-order
+        form :math:`\sigma^* + \Delta t\,(K\sigma^* + \sigma^*K^T)` carries the
+        same leading dependence on the velocity gradient and is cheap to
+        differentiate, so the Newton tangent (``consistent_jacobian``) uses it in
+        place of each frozen entry. The residual keeps the exact step; the solver
+        applies the substitution to its own flux, so a solver's closure (the
+        thin sheet's plane-stress trace term) stays in the tangent."""
+        atoms = getattr(self, "_carried_step_atoms", None)
+        linear = getattr(self, "_carried_step_linear", None)
+        if atoms is None or linear is None or self._objective_order == 1:
+            return {}
+        dim = atoms.shape[0]
+        return {atoms[i, j]: (linear[i, j] + linear[j, i]) / 2
+                for i in range(dim) for j in range(i, dim)}
+
+    def _frozen_carried_stress(self, carried):
+        r"""The carried stress as one wrapped atom per independent entry.
+
+        The same freezing contract as the effective viscosity: the residual
+        compiles the exact entries, while the default (Picard) tangent sees each
+        atom as a constant, and only the Newton tangent (``consistent_jacobian``)
+        differentiates through it. Differentiating the Cayley rotation or a
+        high-order series directly — a rational function of all the velocity
+        gradients, in every entry — took tens of minutes per setup on a sphere
+        (measured 2026-10-11); its velocity dependence is O(dt), which the frozen
+        tangent omits at no cost to the converged answer."""
+        dim = carried.shape[0]
+        atoms = getattr(self, "_carried_step_atoms", None)
+        if atoms is None or atoms.shape != (dim, dim):
+            atoms = sympy.zeros(dim, dim)
+            for i in range(dim):
+                for j in range(i, dim):
+                    atoms[i, j] = expression(
+                        rf"{{\sigma^{{\circ}}_{{{i}{j}}}}}", 0,
+                        "carried stress after the objective step (frozen in the Picard tangent)")
+                    atoms[j, i] = atoms[i, j]
+            self._carried_step_atoms = atoms
+        for i in range(dim):
+            for j in range(i, dim):
+                atoms[i, j].sym = (carried[i, j] + carried[j, i]) / 2
+        return atoms
+
     def _objective_term(self, sigma):
         r"""The stretching / rotation source of the chosen objective rate,
         :math:`S(\sigma)`, on the carried stress with the current velocity
         gradient :math:`L_{ij} = \partial u_i / \partial x_j`: zero for
         ``"none"``, :math:`L\sigma + \sigma L^T` for ``"upper_convected"``,
-        :math:`W\sigma - \sigma W` with :math:`W = (L - L^T)/2` for
-        ``"jaumann"``. Symmetric whenever ``sigma`` is."""
-        dim = self.Unknowns.u.mesh.dim
+        :math:`W\sigma - \sigma W` with the solver's spin :math:`W`
+        (:math:`(L - L^T)/2` on a volume mesh) for ``"jaumann"``. Symmetric
+        whenever ``sigma`` is."""
+        # the carried stress has one component per embedding dimension
+        dim = self.Unknowns.u.mesh.cdim
         if self._objective_rate == "none":
             return sympy.zeros(dim, dim)
         sigma = sympy.Matrix(sigma)
@@ -2585,7 +2739,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 G = self.Parameters.shear_modulus
                 return L * sigma + sigma * L.T + dt * (L * sigma * L.T + G * L * L.T)
             return L * sigma + sigma * L.T
-        W = (L - L.T) / 2
+        # The spin is the solver's: on a volume mesh it is (L - L^T)/2 of the
+        # gradient above, identically; a sheet on a curved surface supplies the
+        # spin of a material element including the turning of its normal, which
+        # the surface gradient alone does not carry.
+        W = sympy.Matrix(self.Unknowns.W)
         return W * sigma - sigma * W
 
     # ----- Health of the carried stress (#768) -----
@@ -2638,7 +2796,8 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         for any timestep, so this limit does not apply) or with no flow; a
         velocity that is not finite raises rather than returning a silent ``nan``.
         """
-        if self._objective_rate == "none" or self._convected_step == "deformation":
+        if (self._objective_rate == "none" or self._convected_step == "deformation"
+                or self._objective_order == "cayley"):
             return float("inf")
         E = sympy.Matrix(self.Unknowns.E)
         rate = sympy.sqrt(2 * (E.T * E).trace())
@@ -2712,7 +2871,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def E_eff_inv_II(self):
         r"""Second invariant of effective strain rate: :math:`\dot{\varepsilon}_{II} = \sqrt{\frac{1}{2}\dot{\varepsilon}_{ij}\dot{\varepsilon}_{ij}}`."""
         E_eff = self.E_eff.sym
-        self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
+        self._E_eff_inv_II.sym = self._second_invariant(E_eff)
 
         return self._E_eff_inv_II
 
@@ -2828,7 +2987,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         strainrate_inv_II = expression(
             R"{\dot\varepsilon_{II}'}",
-            sympy.sqrt((Edot**2).trace() / 2),
+            self._second_invariant(Edot),
             "Strain rate 2nd Invariant including elastic strain rate term",
         )
 
@@ -2868,7 +3027,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         stress = self.stress_projection()
 
         # The yield criterion in this case is assumed to be a bound on the second invariant of the stress
-        stress_inv_II = sympy.sqrt((stress**2).trace() / 2)
+        stress_inv_II = self._second_invariant(stress)
         correction = parameters.yield_stress / stress_inv_II
 
         return correction
@@ -4014,7 +4173,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
                 mu_val = float(params.shear_modulus.sym)
                 tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
             except (TypeError, ValueError):
-                tau_eff = None
+                # spatially varying: symbolic coefficients (see the isotropic model)
+                tau_eff = sympy.sympify(params.shear_viscosity_1.sym) / sympy.sympify(params.shear_modulus.sym)
         try:
             dt_val = (
                 float(params.dt_elastic.sym)
@@ -4205,7 +4365,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def E_eff_inv_II(self):
         r"""Second invariant of effective strain rate."""
         E_eff = self.E_eff.sym
-        self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
+        self._E_eff_inv_II.sym = self._second_invariant(E_eff)
         return self._E_eff_inv_II
 
     @property

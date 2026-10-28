@@ -1223,6 +1223,13 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         ``None`` when the file was written without ``petsc_reload=True``.
         """
+        # TODO(BUG): the writer puts the native payload under
+        # /restart/petsc/topologies (Mesh._write_petsc_reload_file, since
+        # 36c01399) while this looks for a top-level "topologies" group, so a
+        # payload written with petsc_reload=True is never found and a split
+        # mesh's read_timestep refuses (tests/test_0864_split_checkpoint_
+        # roundtrip.py::test_roundtrip_keeps_the_two_sides_distinct fails on
+        # feature/tidal-shell too). Found 2026-10-18; not fixed on this branch.
         import h5py
 
         found = None
@@ -1959,6 +1966,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
+        # TODO(BUG): on a manifold mesh (dim < cdim, e.g. SphericalManifold) the
+        # default (reconstructed-mesh, migration-SF) path below segfaults inside
+        # PETSc when called on the mesh object that wrote the file; the same
+        # call on a volume mesh round-trips exactly, and same_layout=True
+        # round-trips exactly on the manifold. The path's intended use — a mesh
+        # reconstructed from its checkpoint — is untested on a manifold: the h5
+        # mesh round-trip drops the coordinate dimension first (see the
+        # SphericalManifold factory). Found 2026-10-09 (thin-sheet work), not fixed.
         import h5py
 
         if uw.mpi.rank == 0:
@@ -2158,7 +2173,8 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self.vtype != uw.VarType.SYM_TENSOR:
             return self._sym.reshape(1, len(self._sym))
         else:
-            if self.mesh.dim == 2:
+            # Voigt order of a tensor with one index per EMBEDDING dimension
+            if self.mesh.cdim == 2:
                 return sympy.Matrix(
                     [
                         self._sym[0, 0],
@@ -2179,22 +2195,23 @@ class _BaseMeshVariable(Stateful, uw_object):
                 ).T
 
     def _data_layout(self, i, j=None):
-        # mapping
+        # mapping; vectors and tensors carry one component per EMBEDDING
+        # dimension (cdim), which is what sizes the layout on a manifold mesh
 
         if self.vtype == uw.VarType.SCALAR:
             return 0
         if self.vtype == uw.VarType.VECTOR:
             if i < 0 or j < 0:
-                return self.mesh.dim
+                return self.mesh.cdim
             else:
                 if j is None:
                     return i
                 elif i == 0:
                     return j
                 else:
-                    raise IndexError(f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} ")
+                    raise IndexError(f"Vectors have shape {self.mesh.cdim} or {(1, self.mesh.cdim)} ")
         if self.vtype == uw.VarType.TENSOR:
-            if self.mesh.dim == 2:
+            if self.mesh.cdim == 2:
                 if i < 0 or j < 0:
                     return 4
                 else:
@@ -2206,7 +2223,7 @@ class _BaseMeshVariable(Stateful, uw_object):
                     return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
 
         if self.vtype == uw.VarType.SYM_TENSOR:
-            if self.mesh.dim == 2:
+            if self.mesh.cdim == 2:
                 if i < 0 or j < 0:
                     return 3
                 else:

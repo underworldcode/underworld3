@@ -78,6 +78,7 @@ from .bounding_surface import (
     register_plane_surfaces,
     register_box_face_surfaces,
 )
+from .extrude import extrude_sheet
 
 # Make all functions available at module level for backward compatibility
 __all__ = [

@@ -273,6 +273,17 @@ extensions = [
         extra_compile_args=extra_compile_args,
         **conf,
     ),
+    # Bulk DMPlex topology tables (closures by depth, supports, per-cell
+    # sections) in one C loop per stratum, for the fault and add-on machinery.
+    Extension(
+        "underworld3.utilities._plex_topology",
+        sources=[
+            "src/underworld3/utilities/_plex_topology.pyx",
+        ],
+        extra_compile_args=extra_compile_args,
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        **conf,
+    ),
     Extension(
         "underworld3.function._dmfield_wrapper",
         sources=[
