@@ -8,7 +8,7 @@ sheet neither thins nor thickens. At second order the corotational (Jaumann)
 rate turns the shear stress into normal stress differences — the Weissenberg
 effect of a Maxwell fluid — whose divergence drives a poloidal flow, and the
 sheet thins. The steady second-order perturbation (sympy, derived 2026-10-12;
-scripts/sessions/thin_sheet_quadratic_closed_form.py) gives
+the derivation is kept with the campaign, outside this repository) gives
 
     -div_s u / A^2 = -3 (65 z^4 - 126 z^2 + 29) / 533
                    = (24/91) P_2(z) - (24/287) P_4(z),
