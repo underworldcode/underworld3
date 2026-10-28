@@ -8,7 +8,8 @@ follows the September ruling in
 never rebalanced; load fixes go on the child; every transfer to the child must be
 partition-agnostic) and the hierarchy of
 [FAULT_MULTIGRID_HIERARCHIES](FAULT_MULTIGRID_HIERARCHIES.md). Implementation:
-`utilities/addon_partition.py`; tests `tests/parallel/test_1096_*`.
+`utilities/addon_partition.py`; tests `tests/parallel/test_1096_*`. The probes
+named below are kept with the campaign, outside this repository.
 
 ## The problem
 
@@ -39,7 +40,7 @@ each carry their own partition handling.
 ## Measured (hyperion, f21f3d85, under a 16-rank study)
 
 Refined patch box, split (`BoxInternalPatch(refinement=2)` then `split_fault`,
-19072 cells, P2 velocity, tolerance 1e-4; `scripts/sessions/parallel_addon/probe_scaling.py`):
+19072 cells, P2 velocity, tolerance 1e-4; `probe_scaling.py`):
 
 | np | velocity iterations | finest P2 nodes per rank (max / mean) |
 |---|---|---|
@@ -53,7 +54,7 @@ eight ranks, and 3026 of its 7500 nodes lie outside its local coarse hull, so th
 finest transfer on that rank is built from remote answers.
 
 Adapt-on-top fault, 2-D, two add-on levels, np = 4
-(`scripts/sessions/fault_mg/parallel_load.py 2`): finest cells per rank
+(`parallel_load.py 2`): finest cells per rank
 240 / 292 / 243 / 695 (max / mean 1.89); the base-to-first-add-on transfer misses
 265 of 2528 owned nodes (10 %) and asks the other ranks for them; the add-on pair
 misses 14 of 2992 after the levels are co-located. Six velocity iterations.
@@ -67,7 +68,7 @@ for riding it.
 
 ## Measured after (same fixtures, the partition in place)
 
-Refined patch box, split (`scripts/sessions/parallel_addon/probe_load_3d.py`):
+Refined patch box, split (`probe_load_3d.py`):
 
 | np | finest P2 nodes per rank (max / mean) | before | velocity iterations | wall |
 |---|---|---|---|---|
@@ -170,7 +171,7 @@ cell's dof rows. The loops above them are now array operations. The node-cloud
 transfer builders set one matrix row per Python call; they now assemble once
 (`custom_mg._assemble_node_transfer`). Every converted function was checked against
 its previous version, entry for entry, serially and on four ranks
-(`scripts/sessions/parallel_addon/check_topology_equivalence.py`,
+(`check_topology_equivalence.py`,
 `check_transfer_assembly.py`); `tests/test_1098` pins the tables to DMPlex's own
 point-by-point answers.
 

@@ -15,7 +15,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import _plex_topology as pt
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]   # proven, not yet hardened
 
 
 @pytest.fixture(scope="module", params=[2, 3], ids=["2d", "3d"])

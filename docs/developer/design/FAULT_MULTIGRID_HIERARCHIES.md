@@ -206,7 +206,7 @@ cell-located transfer (serial and parallel) and the per-level frames in
 layer with every level split, extruded in parallel; 3-D sheet faults on add-on meshes.
 Not yet: fault networks through the levels (a network is replayed on every level, but
 a one-cell junction ligament closes at the coarser spacing and the replay then stops
-there, leaving that level and those beneath welded), faults near a boundary,
-co-locating the levels with the finest as an optimisation, and the ribbon replay that
+there, leaving that level and those beneath welded), faults near a boundary, and the
+ribbon replay that
 would give a placed ladder its split levels automatically (a driver builds them by hand:
 `guides/faults-in-convection.md`).

@@ -77,18 +77,21 @@ hierarchy: 114-150 velocity iterations per increment against 91-162 without.
 block-constraint multipliers do not. A closed box needs
 `petsc_use_pressure_nullspace = True`.
 
-- Picard steps on this path need `stokes.consistent_jacobian = "continuation"`;
-  `solve(picard=N)` with the default tangent raises.
+- `solve(picard=N)` with the default (consistent Newton) tangent takes at least N
+  Picard iterations on a blended Jacobian, then Newton;
+  `stokes.consistent_jacobian = "continuation"` switches from Picard to Newton by
+  itself.
 - The first solve on a faulted mesh starts from rest. A warm start from a velocity
   computed without the fault stalls the Picard line search (measured 8e-2 of the
   reference residual after 2 iterations); from rest the solve converges in 18-34 Picard
   and 5-8 Newton iterations on the states measured.
 - The loop switches from Picard to Newton when the residual has fallen by
-  `newton_switch_rtol` from THIS solve's starting residual, while its convergence test
-  is relative to the cold reference. A warm start already near convergence therefore
-  stays in Picard to the end (measured 13-27 iterations at ~0.85 per iteration). After
-  the first solve set `stokes.newton_switch_rtol = 1.0`: warm steps then take 2 Newton
-  iterations.
+  `newton_switch_rtol` relative to the same reference as its convergence test (the
+  larger of this solve's starting residual and the rest-state residual), so a warm
+  start near convergence reaches Newton without first shrinking its own residual a
+  hundredfold under Picard. (Before 2026-10-23 the switch was measured from the warm
+  start's own residual, warm steps stayed in Picard to the end, and the advice was
+  `newton_switch_rtol = 1.0`; that is no longer needed.)
 
 ## A moving trench
 

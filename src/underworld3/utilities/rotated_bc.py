@@ -1406,6 +1406,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     rnull_gauge = [0.0]
 
     def _collect_rotation_modes(nullspace):
+        for m in rot_modes:
+            m.destroy()
         rot_modes.clear()
         if nullspace is None:
             return
@@ -1714,6 +1716,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # above would report convergence while mass conservation is violated.
     # Surface the component: readable state always, loud when it dominates.
     solver._rotated_rotation_gauge_residual = rnull_gauge[0] if rot_modes else 0.0
+    if rot_modes and converged and rnull_gauge[0] > 10.0 * max(rnorm, atol):
+        mpi.pprint(f"[rotated_bc] WARNING: converged in the rotation-gauge QUOTIENT "
+                   f"space, but the projected-out rigid-rotation component "
+                   f"({rnull_gauge[0]:.2e}) dominates the residual ({rnorm:.2e}): the "
+                   f"forcing has a net torque, which free-slip walls cannot balance.")
+    for m in rot_modes:
+        m.destroy()
+    rot_modes.clear()
     if use_pnull:
         solver._rotated_pressure_gauge_residual = pnull_gauge[0]
         if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):

@@ -19,7 +19,7 @@ import pytest
 import underworld3 as uw
 from underworld3.utilities._plex_topology import closure_points
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]   # proven, not yet hardened
 
 
 def _annulus_surface():
