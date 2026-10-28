@@ -455,8 +455,17 @@ def build_rotation(solver, boundaries, datum_specs=None):
     pair_nodes_by_fault = {}
     if fault_names and manifold:
         from underworld3.utilities import fault_contact
+        # the pairing fails rank-locally (a label mismatch, a vanishing analytic
+        # normal); the verdict is exchanged before any rank goes on to the
+        # collective Q assembly, as in the pair-block assembly below
+        problem = None
+        try:
+            for fname in fault_names:
+                pair_nodes_by_fault[fname] = fault_contact._fault_pair_nodes(solver, fname)
+        except (RuntimeError, ValueError) as err:
+            problem = str(err)
+        fault_contact._collective_raise(problem)
         for fname in fault_names:
-            pair_nodes_by_fault[fname] = fault_contact._fault_pair_nodes(solver, fname)
             for q_plus, q_minus, _nrm in pair_nodes_by_fault[fname]:
                 for q in (q_plus, q_minus):
                     if q in node_normals and node_specs[q] <= {SHEET_TANGENCY}:
@@ -579,8 +588,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
         problem = None
         try:
             for fname in fault_names:
-                for q_plus, q_minus, nrm in (pair_nodes_by_fault.get(fname)
-                                              or fault_contact._fault_pair_nodes(solver, fname)):
+                pairs = (pair_nodes_by_fault[fname] if fname in pair_nodes_by_fault
+                         else fault_contact._fault_pair_nodes(solver, fname))
+                for q_plus, q_minus, nrm in pairs:
                     if q_plus in node_normals or q_minus in node_normals:
                         raise ValueError(
                             f"fault {fname!r} shares a node with a rotated "

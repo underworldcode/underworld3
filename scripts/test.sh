@@ -194,8 +194,10 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # and it is excluded by WHAT IT IS (tier_c) below, not by its number.
   "${PYTEST[@]}" tests/test_106*py tests/test_107*py || status=1
   # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
-  # thick, the quadratic benchmark); the slow ones are level_3 and marked so.
-  "${PYTEST[@]}" tests/test_108*py || status=1
+  # thick, the quadratic benchmark); the two slow sphere tests (1081, 1084) are
+  # tier C, so the "not tier_c" filter leaves them out. test_109*: the fault
+  # placement and split-level multigrid tests that follow.
+  "${PYTEST[@]}" tests/test_108*py tests/test_109*py || status=1
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign

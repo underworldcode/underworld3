@@ -2170,7 +2170,8 @@ class ViscoElasticPlasticFlowModel(_ExponentialCoefficients, ViscousFlowModel):
             step, with an angle :math:`2\arctan(\omega\Delta t/2)` against
             :math:`\omega\Delta t`. The step acts on the newest history level:
             orders above one, and ``"cayley"``, need a first-order history.
-            Default ``"cayley"`` with the Jaumann rate, ``1`` otherwise.
+            Default ``1``; a thin sheet takes ``"cayley"`` with the Jaumann
+            rate and a first-order history unless an order is given here.
         """
         if integrator not in ("bdf", "etd"):
             raise ValueError(
@@ -2200,8 +2201,11 @@ class ViscoElasticPlasticFlowModel(_ExponentialCoefficients, ViscousFlowModel):
             convected_step = "deformation" if stress_history == "log_conformation" else "linear"
         if convected_step not in ("linear", "deformation"):
             raise ValueError(f"convected_step must be 'linear' or 'deformation', got {convected_step!r}")
+        # left to the solver when not given: 1, the explicit source, unless the
+        # solver selects otherwise (a thin sheet takes "cayley")
+        self._objective_order_given = objective_order is not None
         if objective_order is None:
-            objective_order = "cayley" if objective_rate == "jaumann" else 1
+            objective_order = 1
         if objective_order != "cayley" and not (isinstance(objective_order, int) and objective_order >= 1):
             raise ValueError("objective_order must be a positive integer (the order in dt of the "
                              f"step that carries the stress) or 'cayley', got {objective_order!r}")

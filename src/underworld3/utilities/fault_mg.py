@@ -30,9 +30,9 @@ Three pieces make a split level usable as a multigrid level:
 
 Parallel: each split level is redistributed so its fault star is rank-interior
 (the split's own rule), so pair blocks are rank-local on every level. The transfer
-locates each owned fine node in the LOCAL coarse mesh (owned plus ghost cells);
-the few nodes whose coarse cell lives elsewhere are gathered as query points and
-answered by the rank that holds the cell, with global column indices.
+locates each owned fine node in the rank's own coarse cells (the solver DMs carry
+no overlap); the nodes whose coarse cell lives elsewhere are gathered as query
+points and answered by the rank that holds the cell, with global column indices.
 """
 
 import itertools
@@ -418,6 +418,7 @@ def split_tail_levels(levels, fault_specs, verbose=False):
     """
     import warnings
 
+    from underworld3.utilities.fault_contact import _collective_raise
     from underworld3.utilities.fault_split import add_fault
 
     entries = [tuple(spec[1:4]) for spec in fault_specs]
@@ -430,9 +431,17 @@ def split_tail_levels(levels, fault_specs, verbose=False):
         return out
     for k in range(len(levels) - 1, -1, -1):
         level = levels[k]
+        problem = None
         try:
             split = add_fault(level, entries, verbose=verbose, **kwargs)
         except (ValueError, RuntimeError, NotImplementedError) as exc:
+            problem = str(exc)
+        # the split's refusals are collective, its internal failures may not
+        # be: every rank stops at the same level, or the ranks that went on
+        # wait in the next level's split for the one that stopped
+        try:
+            _collective_raise(problem)
+        except RuntimeError as exc:
             warnings.warn(
                 f"fault_mg: the fault(s) could not be carried onto add-on "
                 f"level {k} of {len(levels)} ({exc}); that level and the "

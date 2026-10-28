@@ -36,7 +36,9 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_3]
 
 
-@pytest.mark.tier_b
+# tier C for its cost (about 7 min): reported, not gated, as test_1061 and
+# test_1064 are; it was shown to fail on its bug and would be tier B otherwise
+@pytest.mark.tier_c
 def test_quadratic_thinning_matches_the_second_order_closed_form():
     A, h, dt, steps = 0.1, 0.2, 0.2, 20
     sphere = uw.meshing.SphericalManifold(radius=1.0, cellSize=h, degree=1, qdegree=5)

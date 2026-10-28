@@ -181,6 +181,9 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
   welded. A network whose junction ligament is one fine cell wide closes at the next
   coarser spacing (the two labels meet), so such a network gets split levels only where
   the ligament survives — on `test_0866`'s kissing Y with one add-on level, none.
-- Co-locating the add-on levels with the finest in parallel is an optimisation the
-  query path makes unnecessary for correctness; not measured at scale.
+- In parallel each split level's fault star is moved onto the rank holding the
+  finest level's star (`fault_mg.colocate_split_level`), so a transfer between
+  levels locates most fault-band nodes locally (without it, 48 % of the finest
+  nodes were located remotely at np = 2, 58 % at np = 8); the remote queries
+  that remain are the band's rim. Not measured at scale.
 - The one-rank build of `extrude_sheet` bounds the layer size by one rank's memory.

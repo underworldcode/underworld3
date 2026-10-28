@@ -15,7 +15,8 @@ in-plane stress is
     \qquad \mathbf{P} = \mathbf{I} - \hat{\mathbf{n}}\hat{\mathbf{n}}^T,
 
 (England & McKenzie 1982). Any deviatoric constitutive law applies unchanged,
-a Maxwell viscoelastic one included; for a Newtonian sheet
+a Maxwell viscoelastic one included (a transversely isotropic one on a flat
+sheet only); for a Newtonian sheet
 :math:`\boldsymbol{\sigma} = 2\eta\,(\dot{\boldsymbol\varepsilon}_s
 + \operatorname{tr}\dot{\boldsymbol\varepsilon}_s\,\mathbf{P})`, whose uniaxial
 limit is the Trouton viscosity :math:`3\eta`. The momentum balance solved is
@@ -50,31 +51,15 @@ import sympy
 import underworld3 as uw
 import underworld3.timing as timing
 from underworld3.coordinates import CoordinateSystemType
-from underworld3.function import expression
 from underworld3.systems import SNES_Vector
 from underworld3.utilities._api_tools import Template
 
-from .solvers import _ConstitutiveModelStateMixin, _StressHistoryMixin
+# the solvers' factory: a sheet's L and c_b are its own, never a user's
+# same-named expression and never another sheet's
+from .solvers import (_ConstitutiveModelStateMixin, _StressHistoryMixin, _nondimensional_row,
+                      expression)
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
-
-
-def _nondimensional_row(value, cdim):
-    """A ``(1, cdim)`` sympy row from a sequence whose entries may be
-    dimensional ``UWQuantity`` values (converted to the solver's non-dimensional
-    scale) or plain numbers / expressions."""
-    # TODO(DESIGN): SNES_Stokes.bodyforce repeats this conversion inline; share it.
-    row = []
-    for item in value:
-        if isinstance(item, uw.function.quantities.UWQuantity):
-            nd = uw.non_dimensionalise(item)
-            nd = nd.magnitude if hasattr(nd, "magnitude") else nd
-            if hasattr(nd, "shape") and tuple(nd.shape) == (1, 1):
-                nd = nd[0, 0]
-            row.append(nd)
-        else:
-            row.append(item)
-    return sympy.Matrix(row).reshape(1, cdim)
 
 
 def _sheet_normal(mesh):
@@ -373,6 +358,30 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             level.array[...] = 0.5 * (projected + projected.transpose(0, 2, 1))
 
     @property
+    def constitutive_model(self):
+        """Constitutive model of the sheet (see
+        :attr:`SNES_Stokes.constitutive_model`). A Jaumann stress history with a
+        first-order step is carried by the Cayley rotation unless the model was
+        given an ``objective_order``: exactly orthogonal, so a rigid rotation of
+        the sheet carries its stress rigidly at any step."""
+        return SNES_Vector.constitutive_model.fget(self)
+
+    @constitutive_model.setter
+    def constitutive_model(self, model_or_class):
+        SNES_Vector.constitutive_model.fset(self, model_or_class)
+        cm = self._constitutive_model
+        if (self.mesh.dim < self.mesh.cdim
+                and isinstance(cm, uw.constitutive_models.TransverseIsotropicFlowModel)):
+            # its strain rate is the full symmetric gradient, not the sheet's
+            # projected one: a rigid rotation of the sphere would strain it
+            raise NotImplementedError(
+                "a transversely isotropic model on a manifold sheet: its strain "
+                "rate is not projected onto the surface; use it on a flat sheet")
+        if (getattr(cm, "_objective_rate", "none") == "jaumann"
+                and not cm._objective_order_given and cm.order == 1):
+            cm._objective_order = "cayley"
+
+    @property
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried (see
         :attr:`SNES_Stokes.stress_transport`). The default is the grid
@@ -429,7 +438,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._needs_function_rewire = True
         self._basal_drag.sym = value
 
-    def add_basal_drag(self, coefficient, boundary=None, reference_velocity=None):
+    def add_basal_drag(self, conds, boundary=None, reference_velocity=None):
         r"""Couple the sheet to its base by a drag
         :math:`-c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})` per unit area.
 
@@ -437,7 +446,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         substrate's flow, a mantle convection model's surface velocity, plate
         motions); ``None`` drags against a fixed base. For a viscous substrate
         of viscosity :math:`\eta_a` and thickness :math:`h_a`,
-        :math:`c = \eta_a / h_a`. Calls accumulate.
+        :math:`c = \eta_a / h_a`; ``conds`` is :math:`c`. Calls accumulate.
 
         ``boundary`` names the base of a thick sheet (``Stokes`` on a thin 3-D
         mesh applies the same drag there as a natural condition). The thin sheet
@@ -451,18 +460,18 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             reference = sympy.Matrix(reference_velocity.sym).reshape(1, self.mesh.cdim)
         else:
             reference = _nondimensional_row(reference_velocity, self.mesh.cdim)
-        self._basal_terms.append(coefficient * (u - reference))
+        self._basal_terms.append(conds * (u - reference))
 
-    def add_basal_traction(self, traction, boundary=None):
-        r"""Apply a traction :math:`\mathbf{t}` (force per unit area, exerted
-        on the sheet) at its base — the shear stress of a convection model
+    def add_basal_traction(self, conds, boundary=None):
+        r"""Apply a traction :math:`\mathbf{t}` (``conds``, force per unit area,
+        exerted on the sheet) at its base — the shear stress of a convection model
         resolved at the base of the lithosphere, say. Calls accumulate.
         ``boundary`` as in :meth:`add_basal_drag`."""
         self._needs_function_rewire = True
-        if isinstance(traction, uw.discretisation.MeshVariable):
-            row = sympy.Matrix(traction.sym).reshape(1, self.mesh.cdim)
+        if isinstance(conds, uw.discretisation.MeshVariable):
+            row = sympy.Matrix(conds.sym).reshape(1, self.mesh.cdim)
         else:
-            row = _nondimensional_row(traction, self.mesh.cdim)
+            row = _nondimensional_row(conds, self.mesh.cdim)
         self._basal_terms.append(-row)
 
     def _basal_residual(self):
@@ -480,6 +489,10 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             self._p_field = uw.discretisation.MeshVariable(
                 f"p_sheet_{self.instance_number}", self.mesh, 1,
                 degree=self._p_degree, continuous=self._p_continuous)
+            # asked for after a solve: filled from that solve, not left at zero
+            # until the next one
+            if self.is_setup:
+                self._refresh_pressure()
         return self._p_field
 
     def _refresh_pressure(self, verbose=False):
@@ -488,7 +501,11 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         if self._p_projection is None:
             self._p_projection = uw.systems.Projection(self.mesh, self._p_field)
             self._p_projection.smoothing = 0.0
-        self._p_projection.uw_function = -sympy.Matrix(self.stress_deviator).trace()
+        # After a viscoelastic solve the newest history level is the stress just
+        # committed; the flux reads the history and so, by now, the shifted one.
+        stress = (self.tau.sym if self.Unknowns.DFDt is not None
+                  else self.stress_deviator)
+        self._p_projection.uw_function = -sympy.Matrix(stress).trace()
         self._p_projection.solve(verbose=verbose)
 
     @property

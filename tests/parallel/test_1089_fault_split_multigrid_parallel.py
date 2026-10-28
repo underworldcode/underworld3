@@ -115,3 +115,28 @@ def test_the_thick_twin_is_extruded_with_its_pairing():
     tangential = jumps - np.einsum("ij,ij->i", jumps, normals)[:, None] * normals
     assert np.linalg.norm(tangential, axis=1).max() > 1.0e-2
     assert np.abs(np.einsum("ij,ij->i", jumps, normals)).max() < 1.0e-8
+
+
+def test_a_failure_on_one_rank_stops_the_replay_on_every_rank(monkeypatch):
+    """An internal failure of the split on one rank (a rank-local raise, not one
+    of the split's collective refusals) stopped the replay of the fault on that
+    rank alone, and the others went on into the next level's split and waited
+    for it. The verdict is exchanged per level: every rank keeps the same split
+    levels, and the levels from the failure down stay welded."""
+    import underworld3.utilities.fault_split as fault_split
+    original, calls = fault_split.add_fault, [0]
+
+    def fails_on_one_rank_at_the_second_add_on_level(mesh, *args, **kwargs):
+        calls[0] += 1                 # 1: the finest; 2, 3: the add-on levels
+        if calls[0] == 3 and uw.mpi.rank == 1:
+            raise RuntimeError("an internal failure on one rank")
+        return original(mesh, *args, **kwargs)
+
+    monkeypatch.setattr(fault_split, "add_fault", fails_on_one_rank_at_the_second_add_on_level)
+    with pytest.warns(UserWarning, match="could not be carried"):
+        mesh = _faulted_box(3)
+    split = [bool(getattr(m, "_fault_point_pairs", None))
+             for m in mesh._custom_mg_coarse_meshes]
+    everywhere = uw.mpi.comm.allgather(split)
+    assert all(s == everywhere[0] for s in everywhere), everywhere
+    assert sum(split) == 1, split

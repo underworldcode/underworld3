@@ -86,6 +86,24 @@ def expression(*args, **kwargs):
     return public_expression(*args, _unique_name_generation=True, **kwargs)
 
 
+def _nondimensional_row(value, cdim):
+    """A ``(1, cdim)`` sympy row from a sequence whose entries may be
+    dimensional ``UWQuantity`` values (converted to the solver's non-dimensional
+    scale) or plain numbers / expressions."""
+    # TODO(DESIGN): SNES_Stokes.bodyforce repeats this conversion inline; share it.
+    row = []
+    for item in value:
+        if isinstance(item, uw.function.quantities.UWQuantity):
+            nd = uw.non_dimensionalise(item)
+            nd = nd.magnitude if hasattr(nd, "magnitude") else nd
+            if hasattr(nd, "shape") and tuple(nd.shape) == (1, 1):
+                nd = nd[0, 0]
+            row.append(nd)
+        else:
+            row.append(item)
+    return sympy.Matrix(row).reshape(1, cdim)
+
+
 def _history_record(constitutive_model):
     """What a stress history stores: the model's memory part of the flux when
     it separates one out (a solvent viscosity is rebuilt each step), else the
@@ -1859,7 +1877,7 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         if F1_source is not None and linesearch is not None:
             self.petsc_options["snes_linesearch_type"] = linesearch
 
-    def add_basal_drag(self, coefficient, boundary, reference_velocity=None):
+    def add_basal_drag(self, conds, boundary, reference_velocity=None):
         r"""Couple the model to what lies beneath ``boundary`` by a drag
         :math:`-c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})` per unit area: a
         natural condition :math:`c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})`.
@@ -1869,7 +1887,8 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         velocity of the substrate (``None``: a fixed base); for a viscous
         substrate of viscosity :math:`\eta_a` and thickness :math:`h_a`,
         :math:`c = \eta_a / h_a`. The drag acts on every component, so the base
-        also resists normal motion, which the sheet never has."""
+        also resists normal motion, which the sheet never has. ``conds`` is the
+        drag coefficient :math:`c`."""
         u = self.Unknowns.u.sym
         dim = self.mesh.dim
         if reference_velocity is None:
@@ -1877,18 +1896,18 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         elif isinstance(reference_velocity, uw.discretisation.MeshVariable):
             reference = sympy.Matrix(reference_velocity.sym).reshape(1, dim)
         else:
-            reference = sympy.Matrix(list(reference_velocity)).reshape(1, dim)
-        self.add_natural_bc(coefficient * (u - reference), boundary)
+            reference = _nondimensional_row(reference_velocity, dim)
+        self.add_natural_bc(conds * (u - reference), boundary)
 
-    def add_basal_traction(self, traction, boundary):
-        r"""Apply a traction :math:`\mathbf{t}` (force per unit area, exerted on
-        the model) on ``boundary``; the thick form of
+    def add_basal_traction(self, conds, boundary):
+        r"""Apply a traction :math:`\mathbf{t}` (``conds``, force per unit area,
+        exerted on the model) on ``boundary``; the thick form of
         ``ThinSheet.add_basal_traction``."""
         dim = self.mesh.dim
-        if isinstance(traction, uw.discretisation.MeshVariable):
-            row = sympy.Matrix(traction.sym).reshape(1, dim)
+        if isinstance(conds, uw.discretisation.MeshVariable):
+            row = sympy.Matrix(conds.sym).reshape(1, dim)
         else:
-            row = sympy.Matrix(list(traction)).reshape(1, dim)
+            row = _nondimensional_row(conds, dim)
         self.add_natural_bc(-row, boundary)
 
     # ----- DEVSS: stabilising a discontinuous elastic stress -----
