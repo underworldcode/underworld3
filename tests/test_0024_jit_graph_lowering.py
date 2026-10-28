@@ -14,6 +14,7 @@ from sympy.core.function import AppliedUndef
 from sympy.vector.scalar import BaseScalar
 
 import underworld3 as uw
+from underworld3.function.expressions import reset_expression_registry
 import underworld3.function.expressions as ex
 from underworld3.function import diff_wrt_field
 from underworld3.utilities import _jit_graph as jg
@@ -268,6 +269,15 @@ def test_the_emitted_source_does_not_depend_on_what_came_before(monkeypatch):
     uw.discretisation.MeshVariable("J0024f", other, 1, degree=1)
     mesh2 = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+    # A second, independent problem that happens to reuse the names: _poisson
+    # declares k_{0024f} and g_{0024f} against whichever mesh it is given, and
+    # g's contents name that mesh's variable, so on mesh2 they are genuinely
+    # different contents under the same name. Freeing the names says that
+    # outright, rather than leaning on a re-declaration quietly overwriting
+    # them. Only LOOKUP resets -- _expr_count keeps counting, so the counter
+    # shift this test turns on is untouched, and the first problem's live
+    # objects hold their containers directly and are unaffected.
+    reset_expression_registry()
     second = _header(_poisson("0024f", mesh2), monkeypatch)
     assert first == second
     assert "uwt_0" in first, "the kernel has no temporaries: nothing was lowered"

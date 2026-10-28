@@ -683,6 +683,49 @@ def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
 # UWexpression Class - Simplified (no UWQuantity inheritance)
 # ============================================================================
 
+def reset_expression_registry():
+    """Drop the named expression containers, so a new model starts clean.
+
+    ``_expr_names`` is a CLASS attribute: it belongs to the process, not to a
+    Model. Without this, containers outlive the model that made them, and the
+    next model looking up a familiar name — ``\\eta``, ``t``, ``x`` — silently
+    inherits the previous one's contents. In a test session that is every
+    unrelated test sharing one ``\\eta``; in an interactive session it is the
+    previous run's viscosity turning up in the next.
+
+    Live objects are unaffected: a solver or a formula holds the container
+    itself, not its name, and keeps working. What resets is LOOKUP — the next
+    ``uw.expression(r"\\eta", ...)`` builds a fresh container instead of finding
+    the old one, which is what "a new model" should mean.
+
+    Called by :func:`~underworld3.model.reset_default_model`.
+    """
+    UWexpression._expr_names.clear()
+    UWexpression._ephemeral_expr_names.clear()
+
+
+def _wrap_with_units(sym, units):
+    """Wrap a plain number in a UWQuantity, leaving anything symbolic alone.
+
+    One definition, because two callers need it: construction, and
+    :func:`template_expression` refreshing a container that already exists. A
+    second copy of this is how a refresh ends up dropping the units that
+    construction applied.
+    """
+    if units is None or isinstance(sym, UWQuantity):
+        return sym
+    if isinstance(sym, (int, float, np.integer, np.floating)):
+        return UWQuantity(sym, units)
+    if sym is not None and not isinstance(sym, (sympy.Basic, UWexpression)):
+        # numeric-like, e.g. a numpy scalar; anything that will not convert
+        # keeps the units parameter unapplied rather than failing the call
+        try:
+            return UWQuantity(float(sym), units)
+        except (TypeError, ValueError):
+            pass
+    return sym
+
+
 def live_expressions():
     """The persistent expression containers, in a stable order.
 
@@ -791,9 +834,19 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         instance_no = UWexpression._expr_count
 
-        # If the expression already exists, return it
+        # If the expression already exists, return it — that IS the container
+        # contract: identity is the name, so the same name reaches the same
+        # object and a formula written against it keeps seeing later edits.
+        #
+        # Flagged so __init__ knows it is running on an object that already has
+        # contents. Construction must not silently overwrite them: changing what
+        # a container holds is what `.sym =` is for, and a second construction
+        # that quietly replaced the value would reach every formula already
+        # written against the name, from a line that reads like a declaration.
         if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
-            return UWexpression._expr_names[name]
+            existing = UWexpression._expr_names[name]
+            existing._reused_construction = True
+            return existing
 
         # Check both dicts for name collisions
         name_exists_persistent = name in UWexpression._expr_names
@@ -942,6 +995,27 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         """
         return self._display_name
 
+    def _holds_same_value(self, incoming) -> bool:
+        """Is a re-declaration asking for what this container already holds?
+
+        Declaring the same thing twice changes nothing and no formula written
+        against the name can tell — a factory that rebuilds an unmutated problem
+        in one process is doing exactly that, and refusing it would be noise.
+        Declaring something DIFFERENT is the case that must not pass silently.
+
+        Anything that cannot be compared counts as different, so the loud path
+        is the default: a container whose contents we cannot reason about is the
+        last one to overwrite quietly.
+        """
+        try:
+            if isinstance(incoming, UWexpression):
+                incoming = incoming._sym
+            if isinstance(incoming, (sympy.Basic, sympy.matrices.MatrixBase)):
+                return bool(incoming == self._sym)
+            return bool(sympy.sympify(incoming) == self._sym)
+        except Exception:
+            return False
+
     def __init__(
         self,
         name,
@@ -951,6 +1025,27 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         units=None,  # Units for wrapping the value
         **kwargs,
     ):
+        # Running on a container that already exists (see __new__): its contents
+        # belong to whoever set them, so leave them alone and say so. Anything
+        # that wants to change them has `.sym =`.
+        if getattr(self, "_reused_construction", False):
+            self._reused_construction = False
+            incoming = sym if sym is not None else value
+            if incoming is not None and not self._holds_same_value(incoming):
+                raise ValueError(
+                    f"expression {name!r} already exists and holds "
+                    f"{self._sym!r}. A UW expression is a persistent container "
+                    f"whose identity is its NAME, so this call returns the "
+                    f"existing object rather than making a new one — and "
+                    f"overwriting its contents here would silently change every "
+                    f"formula already written against {name!r}, from a line "
+                    f"that reads like a declaration.\n"
+                    f"  to change what it holds:   {name}.sym = <value>\n"
+                    f"  to fetch it:               uw.expression({name!r})\n"
+                    f"  for an independent symbol: choose another name"
+                )
+            return
+
         # Handle legacy 'value' parameter
         if value is not None and sym is None:
             import warnings
@@ -962,19 +1057,7 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         if value is not None and sym is not None:
             raise ValueError("Both 'sym' and 'value' provided - use only one")
 
-        # If units are provided and sym is a plain numeric value, wrap it in UWQuantity
-        # Don't wrap if sym is already a UWQuantity, UWexpression, or SymPy expression
-        if units is not None and not isinstance(sym, UWQuantity):
-            # Only wrap plain numeric values - not expressions or other complex types
-            if isinstance(sym, (int, float, np.integer, np.floating)):
-                sym = UWQuantity(sym, units)
-            elif sym is not None and not isinstance(sym, (sympy.Basic, UWexpression)):
-                # Try to wrap other numeric-like things (e.g., numpy scalars)
-                try:
-                    sym = UWQuantity(float(sym), units)
-                except (TypeError, ValueError):
-                    # Can't convert to float - ignore units parameter
-                    pass
+        sym = _wrap_with_units(sym, units)
 
         # TRANSPARENT CONTAINER PRINCIPLE (2025-11-27):
         # Store the wrapped object directly - don't extract or decompose it.
@@ -1936,6 +2019,40 @@ def mesh_vars_in_expression(expr):
                 )
 
     return mesh, varfns, derivfns
+
+
+def template_expression(name, sym, description="No description provided", units=None):
+    """Declare a derived quantity, or refresh what it already holds.
+
+    A solver's ``F0``/``F1`` are templates: each access re-derives them from the
+    parameters as they stand now, so the second access within a step carries a
+    different ``\\Delta t`` and different Adams-Moulton coefficients from the
+    first. Construction is the wrong verb for that. A plain
+    ``expression(name, ...)`` call reads as a declaration, and a declaration
+    that silently replaced the contents is exactly what the re-declaration
+    guard refuses -- rightly, because for any other caller a repeated name is
+    an accident.
+
+    So the owner says what it means: write through ``.sym``, the sanctioned
+    path for changing what a container holds, and declare only when the
+    container does not exist yet. Formulae already written against the name go
+    on seeing the refreshed contents, which is the container contract and the
+    behaviour these properties have always relied on.
+
+    The name must be unique to the owner. This function does deliberately what
+    the guard refuses, so a name two owners both reach is silently rebound by
+    it, which is the bug the guard exists to catch -- tag the name with the
+    owner (``self.instance_number``) and it cannot happen.
+    """
+    existing = UWexpression._expr_names.get(name)
+    if existing is None:
+        return UWexpression(name, sym, description, units=units)
+
+    # Through the same wrapping construction uses: a refresh that skipped it
+    # would quietly strip the units the container was declared with.
+    existing.sym = _wrap_with_units(sym, units)
+    existing._description = description
+    return existing
 
 
 # ============================================================================
