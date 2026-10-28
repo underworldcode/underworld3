@@ -5,7 +5,7 @@ registries held them by strong reference, so a mesh the caller had dropped
 -- with its DM hierarchy, its variables' vectors and its solver's matrices --
 lived for the rest of the process. A driver that rebuilds a faulted mesh
 each time a fault moves therefore kept every mesh it ever built: measured on
-the moving-fault fixture (scripts/sessions/rebuild_leak), 9 meshes, 21 DMs,
+a box whose straight fault moves at each rebuild, 9 meshes, 21 DMs,
 12 matrices, one KSP and one SNES more after each rebuild, 53 MB per rebuild
 at k = 3 in serial, and about 0.4 GB per rank per rebuild in the kaiju
 production runs (an out-of-memory kill after 24 rebuilds). The swarms and

@@ -79,18 +79,30 @@ variables and solvers (a faulted-mesh rebuild loop grew by a full mesh per
 rebuild until it ran out of memory). Ownership is:
 
 - a mesh owns its variables (`mesh.vars`), so a variable created and not kept
-  lives as long as its mesh;
+  lives as long as its mesh; `mesh.vars` holds the base variable, and the base
+  holds the user-facing `MeshVariable` wrapper, so the object the model indexes
+  lives as long as the mesh too;
 - a variable holds its mesh, so code holding only a variable keeps the mesh;
-- a solver holds its mesh;
+- a solver holds its mesh, and a swarm holds its mesh;
 - coordinate symbols (`mesh.X`) and variable symbols hold the mesh and the
   variable weakly, so sympy's caches of those symbols pin nothing;
 - the primary mesh is a weak reference: once it is freed, `model.mesh` is
   `None` and the next mesh built becomes primary.
 
-A dropped mesh is freed when nothing outside it refers to it. In parallel its
-PETSc objects are destroyed collectively: petsc4py defers the destroy of a
-collected object to a list that `PETSc.garbage_cleanup` empties, and building a
-mesh (collective over its DM's communicator) calls it.
+A dropped mesh is freed when nothing outside it refers to it. A mesh and its
+variables form a reference cycle, so the cyclic collector frees them, and it
+runs at a different moment on each rank. Two rules follow:
+
+- a traversal that makes a collective call per registered mesh (the snapshot
+  writers) takes its list from `Model._live_meshes()`, which collects first,
+  so every rank visits the same meshes;
+- nothing destroys a parallel PETSc object from `__del__`. petsc4py defers the
+  destroy of a collected object to a list that `PETSc.garbage_cleanup`
+  empties, and building a mesh (collective over its DM's communicator) calls
+  it.
+
+A driver's own references are its own: a driver that keeps the previous mesh
+past a rebuild (for a warm-start transfer, say) keeps that mesh alive.
 
 ### Materials as Dictionaries
 
