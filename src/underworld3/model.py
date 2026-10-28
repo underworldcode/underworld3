@@ -17,6 +17,7 @@ Design Philosophy:
 - Materials are just dictionaries of expressions/values
 """
 
+import gc
 import weakref
 import json
 from typing import Optional, Dict, Any, List
@@ -571,6 +572,19 @@ class Model(PintNativeModelMixin, BaseModel):
     def get_mesh(self, mesh_id: int):
         """Get a mesh by ID from the model registry"""
         return self._meshes.get(mesh_id)
+
+    def _live_meshes(self):
+        """The registered meshes, after a collection pass.
+
+        A dropped mesh with variables is a reference cycle (the mesh owns its
+        variables, each variable holds its mesh), so it stays in the weak
+        registry until the cyclic collector runs, and that runs at a different
+        moment on each rank. A traversal that makes a collective call per mesh
+        (a snapshot's checkpoint writes) takes its list from here, so every
+        rank visits the same meshes.
+        """
+        gc.collect()
+        return list(self._meshes.values())
 
     def set_primary_mesh(self, mesh):
         """

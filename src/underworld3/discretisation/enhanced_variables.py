@@ -145,6 +145,11 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
             units_backend=units_backend,
             **kwargs,
         )
+        # The mesh owns its variables through ``mesh.vars``, which holds the
+        # base; the base holds this wrapper back, so the variable users see
+        # lives as long as its mesh. The model indexes the wrapper weakly, and
+        # units, scaling and the adjoint find variables there.
+        self._base_var._wrapper = self
 
         # STRICT UNITS MODE CHECK
         # Enforce units-scales contract: variables with units require reference quantities

@@ -5,7 +5,7 @@ registries held them by strong reference, so a mesh the caller had dropped
 -- with its DM hierarchy, its variables' vectors and its solver's matrices --
 lived for the rest of the process. A driver that rebuilds a faulted mesh
 each time a fault moves therefore kept every mesh it ever built: measured on
-the moving-fault fixture (scripts/sessions/rebuild_leak), 9 meshes, 21 DMs,
+a box whose straight fault moves at each rebuild, 9 meshes, 21 DMs,
 12 matrices, one KSP and one SNES more after each rebuild, 53 MB per rebuild
 at k = 3 in serial, and about 0.4 GB per rank per rebuild in the kaiju
 production runs (an out-of-memory kill after 24 rebuilds). The swarms and
@@ -20,7 +20,8 @@ import pytest
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# level 2: two of the tests solve; tier B: proven on their bugs, not yet hardened
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
 @pytest.fixture(autouse=True)
@@ -130,3 +131,80 @@ def test_the_primary_mesh_is_released_and_replaced():
     replacement = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
     assert uw.get_default_model().mesh is replacement
+
+
+def test_a_snapshot_does_not_visit_a_dropped_mesh():
+    """A dropped mesh with a variable is a reference cycle (the mesh owns its
+    variables, each variable holds its mesh), so it stays in the weak registry
+    until the cyclic collector runs, and that runs at a different moment on
+    each rank. A snapshot makes a collective write per registered mesh, so it
+    collects first: every rank then visits the same meshes. Here the collector
+    is held off, as it may be on one rank and not another."""
+    kept = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+
+    gc.disable()
+    try:
+        make()
+        state = uw.get_default_model().save_state()
+    finally:
+        gc.enable()
+    assert state.mesh_names == [kept.name]
+
+
+def test_a_swarm_keeps_its_mesh():
+    """A swarm on a mesh nobody else holds keeps that mesh; it found it by id
+    in the weak registry, so the mesh was freed under it."""
+    def make():
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+        return uw.swarm.Swarm(mesh)
+
+    swarm = make()
+    gc.collect()
+    assert swarm.mesh is not None
+    swarm.populate(fill_param=1)
+    assert swarm.mesh.dim == 2
+
+
+def test_a_variable_the_caller_did_not_keep_stays_registered():
+    """The mesh owns the user-facing variable, not only its base: the model
+    indexes the user-facing one, and units, scaling and the adjoint find
+    variables there."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+
+    def make():
+        uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+
+    make()
+    gc.collect()
+    variable = uw.get_default_model().get_variable("T")
+    assert variable is not None
+    assert variable._base_var is mesh.vars[variable.clean_name]
+
+
+def test_a_proxy_on_a_kept_mesh_does_not_keep_the_swarm_variable():
+    """A proxied swarm variable puts its proxy on the swarm's mesh, which owns
+    the proxy. The proxy's remesh callback held the variable strongly, so a
+    swarm moved off a long-lived mesh left that mesh keeping the variable and,
+    through it, the swarm's new mesh."""
+    origin = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+
+    def make():
+        moved_to = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2)
+        swarm = uw.swarm.Swarm(origin)
+        variable = uw.swarm.SwarmVariable("S", swarm, 1, proxy_degree=1)
+        swarm.mesh = moved_to
+        return {"moved_to": moved_to, "variable": variable, "swarm": swarm}
+
+    freed = _dropped(make)
+    assert origin.dim == 2
+    assert all(freed.values()), freed

@@ -13,25 +13,30 @@ serial). A new mesh now empties the list (``Mesh.__init__`` is collective).
 Run with at least two ranks.
 """
 import gc
-import os
+import sys
 
 import numpy as np
 import pytest
 from mpi4py import MPI
 
 import underworld3 as uw
+from underworld3.utilities import memprobe
 
+# The resident set measures the leak only where freed memory leaves it. On
+# macOS it does not: with the fix, PETSc's object table is the same after 4
+# and after 8 rebuilds (284 DMs, 221 Mats, 298 Vecs on rank 0 at np 2) while
+# the resident set still rises 14-26 MB per rebuild (2026-10-28).
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
-              pytest.mark.timeout(900)]
+              pytest.mark.timeout(900),
+              pytest.mark.skipif(sys.platform != "linux",
+                                 reason="the resident set tracks freed memory on Linux only")]
 
 WARMUP, MEASURED = 2, 5
 BOUND_MB = 10.0              # per rebuild; the leak was ~50 at this size
 
 
 def _resident_mb():
-    with open("/proc/self/statm") as f:
-        pages = int(f.read().split()[1])
-    return pages * os.sysconf("SC_PAGE_SIZE") / 2 ** 20
+    return memprobe.snapshot()["rss_mb"]
 
 
 def _rebuild_and_drop(base, k, centre):
