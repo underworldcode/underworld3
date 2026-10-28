@@ -4,6 +4,52 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ---
 
+## 2026 Q4 (October – December)
+
+### CI test batches sharded across parallel jobs (October 2026, #730)
+
+The test workflow ran as a single job whose wall-clock tracked the total cost
+of the suite. Measured on 2026-10-28, that was 91 minutes of tests in 16 serial
+batches plus the MPI phase, giving 96-minute jobs against a 120-minute cap, and
+PR #689 was cancelled at 2h00m52s having recorded no failures. The cap was
+deciding outcomes rather than bounding runaway runs.
+
+The serial batches now run as a four-way shard matrix. Each batch is assigned
+to a shard by hand from the measured per-batch times, because the batches
+differ by two orders of magnitude in cost and a round-robin assignment would
+group the three expensive ones together. The assignment and its measurements
+live in `scripts/test.sh` beside the batch definitions, and `--shard K/N`
+selects one; omitting it runs everything, which is what a local full run wants.
+The slowest shard carries about 33 minutes of tests, so the suite's wall-clock
+becomes roughly 38 minutes including install and build.
+
+Two parts of the workflow needed moving rather than copying. The tier C
+characterisation report, which costs about 42 minutes, became its own job: as a
+step on a matrix job it would have run once per shard to produce one report.
+The MPI phase belongs to a single shard for the same reason, and because it is
+the only part of the suite holding several ranks at once. A new aggregate check
+named `test` reports the combined result, so a single conclusion still answers
+whether the suite passed.
+
+Each shard rebuilds Underworld3 rather than downloading a shared artefact. The
+shards run concurrently, so the repeated build costs wall-clock once, and the
+repository is public, so the extra runner minutes are free. Sharing the
+artefact would add a transfer round trip and a second definition of what
+"built" means.
+
+`scripts/check_test_coverage.py` reads the batch globs out of `scripts/test.sh`
+to prove every test file is reachable, and it now recognises the sharded call
+site as well. Without that it reported all 355 files as unreachable, which is
+the right direction for the check to fail in.
+
+The remaining cost is concentrated rather than spread. The `test_106*` /
+`test_107*` band takes 33 minutes, and 48% of its 149 tests finish in the first
+two. Because the distribution is `--dist loadfile`, a file is atomic on a
+worker and the band cannot finish before its slowest file does, so splitting it
+further needs the per-file measurements and is left open on #730.
+
+---
+
 ## 2026 Q3 (July – September)
 
 ### Legacy Diffusion Restart Consistency (September 2026, #708)

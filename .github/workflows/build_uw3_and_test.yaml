@@ -7,6 +7,10 @@ name: test_uw3
 # 60+ minutes on conda-forge solves and timing the runner out before tests
 # could start. The pixi.lock matches what local development uses, so CI now
 # runs against the same dependency state developers see.
+#
+# The serial batches run SHARDED across parallel jobs (#730). Wall-clock no
+# longer tracks total test time: it tracks the slowest shard. See
+# scripts/test.sh for the shard assignment and the measurements behind it.
 
 on:
   push:
@@ -42,20 +46,35 @@ env:
   # their own mpirun.
   WORKERS: 4
 
+  # How many shards the serial batches are split across. Changing this ONE
+  # number is not enough: scripts/test.sh assigns each batch to a shard by
+  # hand, from measurements, because the batches differ by two orders of
+  # magnitude in cost and round-robin would put the three expensive ones
+  # together. Change both, together, and say what you measured.
+  SHARDS: 4
+
 jobs:
-  test:
+  shards:
+    strategy:
+      # Every shard reports. Without this, the first shard to fail cancels the
+      # others and the log shows one failure where there may be four — which is
+      # the opposite of what a sharded run is for.
+      fail-fast: false
+      matrix:
+        # Must agree with SHARDS above. A matrix cannot read the env context,
+        # so this list is written out; scripts/test.sh refuses a shard number
+        # outside its own assignment, which is what catches the two drifting.
+        shard: [1, 2, 3, 4]
+
+    name: shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
-    # Raised past 60 minutes on a 2026-08-15 measurement (serial phase ~55 min).
-    # xdist has since cut that: the five successful runs before 2026-09-12 spent
-    # 34, 35, 43, 44 and 48 minutes in "Run tests", well inside this budget. The
-    # headroom is why the previously-deferred bands could simply be switched on
-    # (#721 follow-up) rather than traded against something else.
-    #
-    # Sharding the batches across parallel jobs remains the durable fix if this
-    # tightens again; it was referenced here as "the CI-runtime issue" but never
-    # actually filed, so the numbers above are recorded in the issue that this
-    # change opens.
-    timeout-minutes: 120
+
+    # Per SHARD, not per suite. The unsharded job ran 96 minutes against a
+    # 120-minute cap and #689 was cancelled at 2h00m52s with zero failures, so
+    # the cap was deciding outcomes. The slowest shard is ~33 min of tests plus
+    # ~5 min of install and build; 60 leaves room for a slow runner while still
+    # being a real signal when a shard doubles.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +94,13 @@ jobs:
         # `pixi run -e dev build` invokes the build task from pixi.toml,
         # which is `pip install . --no-build-isolation` (non-editable —
         # editable installs are project policy violation, see CLAUDE.md).
+        #
+        # Each shard pays this (~2.5 min) rather than downloading a shared
+        # build artefact. That is deliberate: the shards run concurrently, so
+        # the repeated build costs wall-clock ONCE, and the repo is public, so
+        # the extra runner minutes are free. Sharing the artefact would add a
+        # pack/upload/download round trip and a second definition of what
+        # "built" means, to save nothing on the clock.
         run: pixi run -e dev build
 
       # Import smoke test: a hard crash during `import underworld3` (segfault
@@ -89,13 +115,52 @@ jobs:
         run: pixi run -e dev python -u -X faulthandler -c "import faulthandler; faulthandler.enable(); import underworld3; print('import OK', underworld3.__version__)"
 
       - name: Run tests
-        run: pixi run -e dev ./scripts/test.sh --p 2
+        run: pixi run -e dev ./scripts/test.sh --p 2 --shard ${{ matrix.shard }}/${{ env.SHARDS }}
 
-      # The tier C characterisations are a REPORT, not a gate, so they run on a
-      # push to development rather than on every pull request. They include the
-      # slow level_3 cases and add ~42 min, which a PR should not pay to learn
-      # something that cannot block it. Failures here are expected to be read
-      # and answered, not reverted.
+  # One check that says whether the suite passed, so a reader (and anything
+  # querying statusCheckRollup for "test") gets a single answer rather than
+  # having to AND four shard results together. It is named `test` because that
+  # is what the check was called before sharding.
+  test:
+    name: test
+    needs: shards
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the shard results
+        run: |
+          echo "shards: ${{ needs.shards.result }}"
+          if [ "${{ needs.shards.result }}" != "success" ]; then
+            echo "At least one shard did not pass — open the shard jobs above."
+            exit 1
+          fi
+
+  # The tier C characterisations are a REPORT, not a gate, so they run on a
+  # push to development rather than on every pull request. They include the
+  # slow level_3 cases and add ~42 min, which a PR should not pay to learn
+  # something that cannot block it. Failures here are expected to be read
+  # and answered, not reverted.
+  #
+  # Its own job, not a step on the sharded one: as a step it would run once per
+  # shard and cost its ~42 minutes four times over for one report.
+  tier-c:
+    name: Tier C characterisations (report only)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pixi from lockfile
+        uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: dev
+          frozen: true
+          cache: true
+
+      - name: Build UW3
+        run: pixi run -e dev build
+
       - name: Tier C characterisations (report only)
-        if: github.event_name == 'push'
         run: pixi run -e dev ./scripts/test.sh --tier-c-report
