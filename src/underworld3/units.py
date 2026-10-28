@@ -372,7 +372,7 @@ def _extract_units_from_sympy_expression(expr):
                 continue
 
             # Find which variable this symbol belongs to
-            for var_name, variable in model._variables.items():
+            for var_name, variable in list(model._variables.items()):
                 if hasattr(variable, "sym") and hasattr(variable, "has_units"):
                     # Check if this symbol matches any component of the variable
                     if hasattr(variable, "num_components"):

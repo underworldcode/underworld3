@@ -437,6 +437,15 @@ class Mesh(Stateful, uw_object):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
+        # Building a mesh is collective over its DM's communicator, so it is
+        # where the PETSc objects of meshes dropped since the last one are
+        # destroyed in parallel. A file is read on the communicator the
+        # reader below takes (``comm=``, else COMM_WORLD).
+        from underworld3.mpi import _free_petsc_garbage
+        _free_petsc_garbage(plex_or_meshfile.getComm()
+                            if isinstance(plex_or_meshfile, PETSc.DM)
+                            else kwargs.get("comm", PETSc.COMM_WORLD))
+
         # Coordinate units come from the model (not a user parameter):
         # the model owns the unit system so all meshes and variables agree.
         import underworld3 as uw
@@ -606,8 +615,10 @@ class Mesh(Stateful, uw_object):
         populated_families = [family for family in cell_families if family is not None]
         self.isSimplex = all(populated_families) if populated_families else simplex
 
-        # Using WeakValueDictionary to prevent circular references
-        self._vars = weakref.WeakValueDictionary()
+        # The mesh owns its variables (a variable created and not kept lives as
+        # long as its mesh). Each variable holds its mesh back; the cycle is
+        # collected with the mesh once nothing else holds either.
+        self._vars = {}
         self._block_vars = {}
 
         # a list of equation systems that will

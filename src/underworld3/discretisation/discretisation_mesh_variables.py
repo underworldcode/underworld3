@@ -223,6 +223,9 @@ class _BaseMeshVariable(Stateful, uw_object):
             units = params["units"]
             units_backend = params["units_backend"]
             remesh_policy = params.get("remesh_policy", remesh_policy)
+            # consumed: kept, its strong "mesh" entry pinned the mesh for as
+            # long as the variable lived (the variable holds its mesh weakly)
+            del self._init_params
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
@@ -294,6 +297,10 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.vtype = vtype
         self._mesh_ref = weakref.ref(mesh)
+        # A variable keeps its mesh alive: a helper may return only the
+        # variable. The variable's symbols hold the variable weakly, so caches
+        # of those symbols do not pin it, or the mesh.
+        self._mesh_owner = mesh
         self.shape = num_components
         self.degree = degree
         self.continuous = continuous

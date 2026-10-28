@@ -55,11 +55,12 @@ class Model:
         self.name = name or f"Model_{id(self)}"
         self.state = ModelState.CONFIGURED
         
-        # Component tracking
-        self._mesh = None
+        # Component tracking: an index, never an owner (all weak)
+        self._meshes = weakref.WeakValueDictionary()     # id -> mesh
+        self._primary_mesh_ref = None                    # weakref to the primary mesh
         self._swarms = weakref.WeakValueDictionary()
-        self._variables = {}  # name -> variable mapping
-        self._solvers = {}    # name -> solver mapping
+        self._variables = weakref.WeakValueDictionary()  # name -> variable
+        self._solvers = weakref.WeakValueDictionary()    # name -> solver
         
         # Simple configuration
         self.materials = {}   # material_name -> {property: value/expression}
@@ -69,9 +70,27 @@ class Model:
         self._version = 0  # Incremented when model structure changes
 ```
 
-### Weak References
+### Weak References and Ownership
 
-Swarms use `WeakValueDictionary` to prevent circular references. When a swarm is garbage collected, it automatically disappears from the model's registry without requiring explicit cleanup.
+The model indexes meshes, variables, swarms, solvers and the step transcript's
+part objects by weak reference: it finds them, it does not keep them. A
+strong registry kept every mesh a process ever built, with its DM hierarchy,
+variables and solvers (a faulted-mesh rebuild loop grew by a full mesh per
+rebuild until it ran out of memory). Ownership is:
+
+- a mesh owns its variables (`mesh.vars`), so a variable created and not kept
+  lives as long as its mesh;
+- a variable holds its mesh, so code holding only a variable keeps the mesh;
+- a solver holds its mesh;
+- coordinate symbols (`mesh.X`) and variable symbols hold the mesh and the
+  variable weakly, so sympy's caches of those symbols pin nothing;
+- the primary mesh is a weak reference: once it is freed, `model.mesh` is
+  `None` and the next mesh built becomes primary.
+
+A dropped mesh is freed when nothing outside it refers to it. In parallel its
+PETSc objects are destroyed collectively: petsc4py defers the destroy of a
+collected object to a list that `PETSc.garbage_cleanup` empties, and building a
+mesh (collective over its DM's communicator) calls it.
 
 ### Materials as Dictionaries
 
