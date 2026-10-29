@@ -7370,21 +7370,26 @@ class Mesh(Stateful, uw_object):
 
     @property
     def multigrid_levels(self):
-        """The meshes of this mesh's refinement hierarchy, coarsest first, with this
-        mesh itself last.
+        """The levels of this mesh's multigrid hierarchy, coarsest first, with
+        this mesh itself last.
 
-        A mesh built with ``refinement=n`` (or ``coarsening=n``) carries ``n + 1``
-        levels; a mesh built without either is its own single level. The coarse
-        levels are meshes in their own right, carrying this mesh's boundary
-        labels, and they are built once and reused, so every access returns the
-        same objects. Consecutive levels are native refinements of each other,
-        which the custom multigrid transfers between exactly.
+        When this mesh owns a coarse tail, as an ``adapt()`` child does (the
+        levels of the mesh it was made from, which its solvers pick up without a
+        ``set_custom_fmg`` call), the levels are that tail followed by this mesh.
+        Otherwise they are the mesh's own hierarchy: ``n + 1`` levels for
+        ``refinement=n`` or ``coarsening=n``, and the mesh alone when it was
+        built with neither.
 
-        This is the coarse tail a geometric multigrid hierarchy is built from: a
-        solver on this mesh takes every level but the last (the solver's own
-        mesh is the finest level), and a solver on a mesh placed on this one,
-        such as a fault ribbon, takes them all with any intermediate levels
-        added after them.
+        The coarse levels of a refinement hierarchy are meshes in their own
+        right, carrying this mesh's boundary labels; those of a coarsening
+        hierarchy do not carry them. They are built on the first access, which
+        is collective (every rank must make it), and reused: every access
+        returns the same objects, and they are not rebuilt when this mesh is
+        later deformed or remeshed.
+
+        A solver on this mesh takes every level but the last, its own mesh being
+        the finest level. A solver on a mesh placed on this one takes them all,
+        followed by any intermediate levels of its own.
 
         Returns
         -------
@@ -7398,10 +7403,24 @@ class Mesh(Stateful, uw_object):
         3
         >>> poisson = uw.systems.Poisson(base)
         >>> poisson.set_custom_fmg(base.multigrid_levels[:-1])
+
+        A fault ribbon placed in a 3-D base, with its unsplit intermediate level:
+
+        >>> from underworld3.utilities.place_surface import place_fault_ribbon
+        >>> base = uw.meshing.UnstructuredSimplexBox(
+        ...     minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=1 / 4, refinement=1)
         >>> mesh, mid, info = place_fault_ribbon(base, sheet_grid, width=0.06)
         >>> stokes = uw.systems.Stokes(mesh)
         >>> stokes.set_custom_fmg(base.multigrid_levels + (mid,), field_id=0)
         """
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        if own_tail is not None:
+            return tuple(own_tail) + (self,)
+        # a single-level mesh is its own hierarchy: wrapping it would build a
+        # duplicate mesh and re-tag one that may already be a level of another
+        # hierarchy, which loses that pair its exact nested transfer
+        if len(self.dm_hierarchy) < 2:
+            return (self,)
         return tuple(self._coarse_level_meshes()[:-1]) + (self,)
 
     def redistribute_nodes(self, metric, *, verbose=False, **kwargs):
