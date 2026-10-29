@@ -10,6 +10,19 @@
    :show-inheritance:
 ```
 
+### Affine-annulus circular geometry correction
+
+The Stokes methods `cylindrical_pressure_lifting`,
+`add_cylindrical_wall_transfer`, `solve_cylindrical_wall_updates`,
+`recover_cylindrical_topography` and `cylindrical_boundary_coefficient`
+provide explicitly selected source, wall and reaction corrections for
+constant-viscosity affine 2D P2/continuous-P1 annuli. They lazily load private
+implementations; no benchmark package is required. The
+[circular geometry guide](../advanced/cylindrical-geometry-correction.md)
+contains the mathematical contracts and examples. Four wall updates mean five
+accepted solves. Spatial topography recovery is independent of the optional
+spectral coefficient calculation.
+
 ### SNES_VE_Stokes
 
 Viscoelastic extension of the Stokes solver.
