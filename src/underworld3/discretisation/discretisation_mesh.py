@@ -6869,8 +6869,12 @@ class Mesh(Stateful, uw_object):
         actual containing cell, including near an internal density sheet.
 
         Approximate warped faces and embedded manifolds retain their previous
-        tolerance (``_EVAL_APPROX_FACE_TOL``); this change does not extend the
-        cell-wall estimator's geometric authority. The exact-cell locator returns
+        tolerance (``_EVAL_APPROX_FACE_TOL``). A manifold's ``"exact"`` location
+        capability means its intrinsic cell-wall classifier is trusted instead
+        of PETSc's in-cell test; it does not imply roundoff-level agreement of
+        ambient query points with the embedded surface. Tightening that ambient
+        tolerance would require a separate off-surface projection contract.
+        This change does not extend the cell-wall estimator's geometric authority. The exact-cell locator returns
         the containing cell for
         interior points and a valid sharing cell for genuinely-on-face points,
         and ``-1`` for points that lie inside a *different* cell or outside the
