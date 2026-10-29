@@ -432,6 +432,7 @@ class Mesh(Stateful, uw_object):
         units=None,
         verbose=False,
         *args,
+        _preserve_partition=False,
         **kwargs,
     ):
         self.instance = Mesh.mesh_instances
@@ -546,7 +547,9 @@ class Mesh(Stateful, uw_object):
             self._build_coarsened_hierarchy(coarsening)
 
         else:
-            if not self.dm.isDistributed():
+            # An extracted region can occupy one rank without needing a new
+            # partition. Redistributing it breaks its rank-local parent maps.
+            if not _preserve_partition and not self.dm.isDistributed():
                 self.sf1 = self.dm.distribute()
 
             # On manifold meshes (dim != cdim — e.g. SphericalManifold
@@ -2042,6 +2045,7 @@ class Mesh(Stateful, uw_object):
             boundaries=sub_boundaries,
             coordinate_system_type=self.CoordinateSystemType,
             verbose=False,
+            _preserve_partition=True,
         )
 
         # Store lineage
@@ -2096,6 +2100,12 @@ class Mesh(Stateful, uw_object):
             Stratum value within the label. If ``None``, resolved from
             ``self.boundaries[label_name].value``.
 
+        Notes
+        -----
+        Collective on the parent communicator: every rank must call this method,
+        including ranks with no local marked faces. Empty labels created there
+        remain on the parent mesh after extraction.
+
         Returns
         -------
         Mesh
@@ -2129,33 +2139,26 @@ class Mesh(Stateful, uw_object):
                     f"Available: {[b.name for b in self.boundaries]}"
                 )
 
-        # --- loud-fail if the parent has no faces marked with this label ---
+        # Reject globally empty surfaces, not ranks outside the surface.
         # NB: never call getStratumIS(v) for a value not in the live value set
         # — that hard-aborts PETSc on some labels (cf. the "Centre" pseudo-
         # label). Probe getValueIS() first.
         label = self.dm.getLabel(label_name)
-        if label is None:
-            raise ValueError(
-                f"Parent DM has no label '{label_name}'. "
-                f"Cannot extract a surface submesh from it."
-            )
-        vals_is = label.getValueIS()
+        vals_is = label.getValueIS() if label is not None else None
         live_values = (
             set(int(v) for v in vals_is.getIndices())
             if vals_is is not None else set()
         )
-        if int(label_value) not in live_values:
+        sis = label.getStratumIS(label_value) if int(label_value) in live_values else None
+        local_faces = sis.getSize() if sis is not None else 0
+        if uw.mpi.comm.allreduce(local_faces) == 0:
             raise ValueError(
-                f"Label '{label_name}' has no stratum with value {label_value} "
-                f"on the parent (live values: {sorted(live_values)}). "
-                f"There is no surface to extract."
+                f"Label '{label_name}' (value {label_value}) has a globally empty "
+                f"face stratum. There is no surface to extract."
             )
-        sis = label.getStratumIS(label_value)
-        if sis is None or sis.getSize() == 0:
-            raise ValueError(
-                f"Label '{label_name}' (value {label_value}) has an empty face "
-                f"stratum on the parent. There is no surface to extract."
-            )
+        # Extraction is collective: empty labels intentionally persist on the parent
+        # ranks that lacked this globally present boundary.
+        self.dm.createLabel(label_name)
 
         # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
         sub_with_phantoms = petsc_dm_create_submesh_from_label(
@@ -2198,6 +2201,7 @@ class Mesh(Stateful, uw_object):
             boundaries=sub_boundaries,
             coordinate_system_type=self.CoordinateSystemType,
             verbose=verbose,
+            _preserve_partition=True,
         )
 
         # Submesh lineage — same shape as extract_region
@@ -2540,6 +2544,18 @@ class Mesh(Stateful, uw_object):
             ``"replace"`` overwrites parent values at submesh DOFs.
             ``"add"`` adds submesh values into parent.
 
+        Notes
+        -----
+        A parent DOF owner need not retain any extracted-region cells. Local
+        coordinate matches can therefore exist only on another rank's parent
+        ghosts. Reduce matching contributions and their multiplicities through
+        the parent field DM before writing owner values. Shared copies must
+        agree within ``1e-14 + 1e-12 * abs(value)``; inconsistent values raise
+        collectively before modifying the target. Averaging agreeing copies
+        preserves injection, including ``add`` semantics; unmatched
+        parent DOFs keep their original values. No global coordinate gather or
+        interpolation is used.
+
         Raises
         ------
         ValueError
@@ -2554,15 +2570,74 @@ class Mesh(Stateful, uw_object):
 
         sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
 
-        new_data = numpy.array(parent_var.data)
-
-        if mode == "replace":
-            new_data[parent_rows] = sub_var.data[sub_rows]
-        elif mode == "add":
-            new_data[parent_rows] += sub_var.data[sub_rows]
-        else:
+        if mode not in ("replace", "add"):
             raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
 
+        new_data = numpy.array(parent_var.data)
+        indexset, field_dm = self.parent.dm.createSubDM(parent_var.field_id)
+        values = parent_var.vec.duplicate()
+        counts = parent_var.vec.duplicate()
+        global_values = parent_var._gvec.duplicate()
+        global_counts = parent_var._gvec.duplicate()
+        try:
+            values.set(0.0)
+            counts.set(0.0)
+            # Variable-to-variable injection copies the stored nondimensional values.
+            source = numpy.asarray(sub_var.data)[sub_rows]
+            values.array.reshape(new_data.shape)[parent_rows] = source
+            # Reconcile every coincident copy through the DOF overlap, including
+            # owners with no local child match. Neutral entries do not contribute.
+            minimum = numpy.full(values.getLocalSize(), numpy.inf)
+            maximum = numpy.full(values.getLocalSize(), -numpy.inf)
+            minimum.reshape(new_data.shape)[parent_rows] = source
+            maximum.reshape(new_data.shape)[parent_rows] = source
+            if uw.mpi.size > 1:
+                from mpi4py import MPI
+
+                overlap = field_dm.getSectionSF()
+                datatype = MPI._typedict[minimum.dtype.char]
+                owned_minimum = numpy.full(global_values.getLocalSize(), numpy.inf)
+                owned_maximum = numpy.full(global_values.getLocalSize(), -numpy.inf)
+                # Section-SF roots use the owned global-vector layout; leaves
+                # use the local vector, which also includes ghost entries.
+                for leaves, roots, operation in (
+                    (minimum, owned_minimum, MPI.MIN),
+                    (maximum, owned_maximum, MPI.MAX),
+                ):
+                    overlap.reduceBegin(datatype, leaves, roots, operation)
+                    overlap.reduceEnd(datatype, leaves, roots, operation)
+                minimum, maximum = owned_minimum, owned_maximum
+            present = minimum <= maximum
+            disagree = not numpy.all(numpy.isclose(
+                minimum[present], maximum[present], rtol=1e-12, atol=1e-14,
+            ))
+            invalid = disagree or not numpy.all(numpy.isfinite(source))
+            if uw.mpi.comm.allreduce(int(invalid)):
+                raise ValueError(
+                    "prolongate received inconsistent or nonfinite shared submesh values; "
+                    "synchronize the source field before injection"
+                )
+            counts.array.reshape(new_data.shape)[parent_rows] = 1.0
+            global_values.set(0.0)
+            global_counts.set(0.0)
+            field_dm.localToGlobal(values, global_values, addv=PETSc.InsertMode.ADD_VALUES)
+            field_dm.localToGlobal(counts, global_counts, addv=PETSc.InsertMode.ADD_VALUES)
+            field_dm.globalToLocal(global_values, values, addv=False)
+            field_dm.globalToLocal(global_counts, counts, addv=False)
+            multiplicity = counts.array.reshape(new_data.shape)
+            matched = multiplicity > 0
+            injected = values.array.reshape(new_data.shape)[matched] / multiplicity[matched]
+            if mode == "replace":
+                new_data[matched] = injected
+            else:
+                new_data[matched] += injected
+        finally:
+            values.destroy()
+            counts.destroy()
+            global_values.destroy()
+            global_counts.destroy()
+            field_dm.destroy()
+            indexset.destroy()
         parent_var.pack_raw_data_to_petsc(new_data, sync=True)
 
         parent_var._data_is_dirty = True
