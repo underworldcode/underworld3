@@ -84,9 +84,10 @@ How to get it:
 **What production runs do today.** The campaign drivers (the zg95 annulus and slab
 drivers, the box-fault driver) place the fault as a structured ladder band into a copy
 of the base's finest level with `place_fault_ribbon_2d(..., mesher="ladder",
-split=True)`, build the split chain by hand (the same ladder at `2^k S` placed into
-the base level `k` steps below the finest, the band widening with the level, so the
-levels nest along the spine), and hand every level to `set_custom_fmg`. No bisection is involved. That chain is driver code because
+split=True)`, build the split chain by hand (the same ladder at `2S` placed into the
+base's finest level beside the `S` ladder and at `4S` into the level below, the band
+widening with the level, so the chain replaces the base's top two levels and nests
+along the spine), and hand every level to `set_custom_fmg`. No bisection is involved. That chain is driver code because
 the library replays a cut, not a placed band, onto the add-on levels; the ribbon
 replay is the next library item. The adapt-and-cut route is the automated one and the
 one the hierarchy strategies were compared on; it is not what production runs.
