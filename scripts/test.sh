@@ -269,6 +269,10 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
+    # Three ranks exercise a process owning no prescribed-wall groups.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1084_rotated_datum_collectives.py || status=1
+
     # A SECOND pass at four ranks, because two is a special case: the failure
     # this suite exists to catch is a collective entered by some ranks and not
     # others, and with two ranks the mismatched pair often still meets. Both
