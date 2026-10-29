@@ -578,6 +578,23 @@ def build_rotation(solver, boundaries, datum_specs=None):
     if fault_names:
         from underworld3.utilities import fault_contact
         s2 = 1.0 / np.sqrt(2.0)
+        # A sheet moving along its normal (the datum of SHEET_TANGENCY): a pair
+        # node takes the tangency through its pair block, so the MEAN row along
+        # the surface normal carries the datum there, (v+ + v-)/sqrt2 . e = sqrt2 w
+        # with e the frame's surface-normal vector (sign against the analytic
+        # normal); the jump row stays at 0. Without this the fault nodes stood
+        # still while the sheet breathed (measured: a datum error of 0.018 against
+        # an amplitude of 0.1, and spurious stress along the trace).
+        sheet_dspec = None if datum_specs is None else datum_specs.get(SHEET_TANGENCY)
+        sheet_normal_fn = None
+        if manifold and sheet_dspec is not None:
+            for spec in boundaries:
+                name_s, normal_s = _boundary_spec(spec)
+                if name_s == SHEET_TANGENCY:
+                    sheet_normal_fn, sheet_normal_const = _normal_source(solver, normal_s, SHEET_TANGENCY)
+            pcsec = dm.getCoordinateSection()
+            pcvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+            pv0, pv1 = dm.getDepthStratum(0)
         # Rank-local failures in this block (a pairing/label mismatch or a
         # vanishing analytic normal inside _fault_pair_nodes, a fault node
         # shared with a wall boundary, a pair straddling ranks) must not
@@ -637,6 +654,16 @@ def build_rotation(solver, boundaries, datum_specs=None):
                         # vector) are pinned; the slip row stays free
                         normal_rows.append(gm[2])
                         normal_rows.append(gp[2])
+                        if sheet_dspec is not None:
+                            xq = _point_coord(dm, dim, pcvec, pcsec, pv0, pv1, q_plus)
+                            if sheet_normal_fn is not None:
+                                ne = np.asarray(sheet_normal_fn(*xq), dtype=float).ravel()
+                            else:
+                                ne = np.asarray(sheet_normal_const, dtype=float).ravel()
+                            ne = ne / (np.linalg.norm(ne) + 1e-30)
+                            sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
+                            # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
+                            datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
         except (RuntimeError, ValueError) as err:
             problem = str(err)
         fault_contact._collective_raise(problem)
@@ -995,7 +1022,8 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
     and replaced by the accepted iterate. Returns ``(u, improved)``; ``improved``
     is False when no step reduced the residual below ``rnorm`` — the iteration has
     stalled (typically because it is already at the solution) and the caller should
-    stop rather than accept a non-decreasing step."""
+    stop rather than accept a non-decreasing step. Also returns the accepted step
+    length ``alpha`` (0.0 on a stall), which the loop records per increment."""
     alpha = 1.0
     for _ls in range(max_halvings):
         utry = u.copy()
@@ -1006,10 +1034,10 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
         Ftry.destroy()
         if fnorm < rnorm:
             u.destroy()
-            return utry, True
+            return utry, True, alpha
         utry.destroy()
         alpha *= 0.5
-    return u, False
+    return u, False, 0.0
 
 
 def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
@@ -1103,6 +1131,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
           (feed the solve report);
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
+        * ``"continuation_switch_iteration"`` — the iteration it fired at (``None``
+          if it did not);
         * ``"rotation_reused"`` — the GEOMETRY tier (Q/Qt/constrained rows/
           prolongation) came from the cross-solve cache;
         * ``"workspace_reused"`` — the iteration-0 operator fast path fired
@@ -1340,6 +1370,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Mp = ctx["Mp"] if ctx is not None else None
     diag_scale = cache["diag_scale"] if cache is not None else None
     lin_its = []
+    # per-iteration records for campaign diagnostics: |F̂| at each iteration start,
+    # and the step accepted for each increment (0.0: not applied)
+    rnorm_history = []
+    line_search_alpha = []
     # velocity / pressure sub-KSP LAST-APPLICATION counts, one per Newton increment
     # (iterative path only — the direct-LU path has no sub-KSPs and records None)
     vel_its_last = []
@@ -1361,6 +1395,40 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
     # behind the projection (see the guard after the Newton loop).
     pnull_gauge = [0.0]
+    # The rigid-rotation gauge likewise: when rotation modes are a genuine null
+    # space of the operator (a drag-free sheet on a sphere, a free-slip shell),
+    # the inner KSP cannot reduce the residual's component along them, so the
+    # outer norm is measured in that quotient space too. A viscous forcing has no
+    # such component by construction; a viscoelastic stress history on the
+    # faceted surface does (measured: the Newton loop floored at rel 1e-4 on a
+    # tidally flexed Maxwell sheet, with the linear solves converged).
+    rot_modes = []                           # orthonormal, velocity-only, rotated frame
+    rnull_gauge = [0.0]
+
+    def _collect_rotation_modes(nullspace):
+        for m in rot_modes:
+            m.destroy()
+        rot_modes.clear()
+        if nullspace is None:
+            return
+        for v in nullspace.getVecs():
+            if has_pressure:
+                sp = v.getSubVector(pres_is)
+                is_pressure = sp.norm() > 0.0
+                v.restoreSubVector(pres_is, sp)
+                if is_pressure:
+                    continue
+            m = v.copy()
+            for q in rot_modes:                      # Gram-Schmidt
+                m.axpy(-m.dot(q), q)
+            nm = m.norm()
+            if nm > 0.0:
+                m.scale(1.0 / nm)
+                rot_modes.append(m)
+            else:
+                m.destroy()
+
+    _collect_rotation_modes(nsp)
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -1395,6 +1463,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
             pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if rot_modes:
+            removed = 0.0
+            for m in rot_modes:              # project out the rotation-gauge modes
+                c = Fh.dot(m)
+                Fh.axpy(-c, m)
+                removed += c * c
+            rnull_gauge[0] = removed ** 0.5
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
@@ -1427,10 +1502,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # rotated solve as unconverged — including ones that converged at rel 1e-8.
     exit_reason = _SNES_DIVERGED_MAX_IT
     phase = "picard" if continuation else "newton"
+    switch_iteration = None
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
-        if r0 is None:
+        rnorm_history.append(float(rnorm))
+        if r0 is None or (lift_datum and iters == 1 and r0 == 0.0):
+            # A cold start whose only forcing is the prescribed datum (a sheet
+            # breathing with the tide, say) has a zero residual at u = 0, before
+            # the lift; the reference scale is then the lifted iterate's.
             r0 = rnorm
             ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
         if verbose:
@@ -1438,7 +1518,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"rel={rnorm/(ref+1e-300):.3e}  [{phase}]")
         # residual convergence (relative to the reference scale, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
-        if rnorm <= rtol * ref + atol:
+        if rnorm <= rtol * ref + atol and not (lift_datum and iters == 0):
+            # (the lift of a cold-start datum rides the first increment, so a
+            # zero residual at u = 0 is not convergence until it has been applied)
             converged = True
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
             Fhat.destroy()
@@ -1446,12 +1528,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
         # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
         # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
-        if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
+        # Measured against the convergence reference, not r0: a warm start is already
+        # in the basin, and against its own residual it had to shrink that a
+        # hundredfold under Picard first (12 of 13 iterations on the power-law box).
+        if continuation and phase == "picard" and rnorm <= switch_rtol * ref and iters >= picard:
             solver._set_newton_alpha(1.0)
             phase = "newton"
+            switch_iteration = iters
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
-                           f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
+                           f"(rel |F̂| {rnorm/(ref+1e-300):.2e})")
         # Iteration 0 may ride the cross-solve fast path: the cached Ahat still
         # holds the rotated, constraint-eliminated operator and the cached
         # KSP/PC is set up on it. Every LATER iteration always reassembles —
@@ -1494,6 +1580,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
+                _collect_rotation_modes(nsp)
             elif assemble and Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
@@ -1578,9 +1665,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
             step_converged = False
             improved = True
+            line_search_alpha.append(1.0)
         elif not step_converged:
-            u, improved = _backtracking_line_search(
+            u, improved, alpha = _backtracking_line_search(
                 u, d, rnorm, rotated_residual, Q, Qt, normal_rows, datum_map)
+            line_search_alpha.append(alpha)
+        else:
+            line_search_alpha.append(0.0)    # step-norm exit: the increment is not applied
         # every per-iteration temporary dies HERE, on all exit paths
         dhat.destroy()
         d.destroy()
@@ -1624,6 +1715,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # incompressible domain) parks an O(forcing) constant there — and the loop
     # above would report convergence while mass conservation is violated.
     # Surface the component: readable state always, loud when it dominates.
+    solver._rotated_rotation_gauge_residual = rnull_gauge[0] if rot_modes else 0.0
+    if rot_modes and converged and rnull_gauge[0] > 10.0 * max(rnorm, atol):
+        mpi.pprint(f"[rotated_bc] WARNING: converged in the rotation-gauge QUOTIENT "
+                   f"space, but the projected-out rigid-rotation component "
+                   f"({rnull_gauge[0]:.2e}) dominates the residual ({rnorm:.2e}): the "
+                   f"forcing has a net torque, which free-slip walls cannot balance.")
+    for m in rot_modes:
+        m.destroy()
+    rot_modes.clear()
     if use_pnull:
         solver._rotated_pressure_gauge_residual = pnull_gauge[0]
         if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):
@@ -1684,6 +1784,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
+            # the rest-state residual ‖F̂(0)‖ (warm starts only; None cold) and the
+            # reference the convergence and switch tests compare against
+            "fnorm_rest": fnorm_rest, "ref": ref,
+            "rnorm_history": rnorm_history, "line_search_alpha": line_search_alpha,
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
             # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
             # with ctx unset when a warm start is already converged at increment 0.
@@ -1691,6 +1795,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "continuation_switched": continuation and phase == "newton",
+            "continuation_switch_iteration": switch_iteration,
             "rotation_reused": rotation_reused,
             "workspace_reused": workspace_reused}
 
@@ -1900,6 +2005,18 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     resolved = custom_mg.build_transfers(solver, field_id=0)
     h, Ps = resolved if resolved is not None else (None, None)
     if h is None or Ps is None:
+        # Loud, not silent: a GAMG velocity block on a fault or free-slip mesh is
+        # a symptom of a mesh built without its multigrid tail (a gmsh mesh with a
+        # conforming patch, a split that dropped the tail), not a configuration
+        # anyone chooses — it crawls against the sub-solve cap on 3-D fault
+        # meshes. Ruling 2026-10-17: flag the fallback every time it happens.
+        if not getattr(solver, "_rotated_gamg_fallback_warned", False):
+            mpi.pprint("[rotated_bc] WARNING: no multigrid hierarchy on this mesh "
+                       "(no adapt tail, no set_custom_fmg registration); the "
+                       "velocity block falls back to GAMG. Build the mesh through "
+                       "adapt() so the tail rides through, or register a coarse "
+                       "tail with set_custom_fmg.")
+            solver._rotated_gamg_fallback_warned = True
         return None
     walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
     if getattr(h, "has_split_levels", False) or \

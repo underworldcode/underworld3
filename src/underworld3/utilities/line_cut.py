@@ -108,7 +108,9 @@ def _edge_vertices(dm):
     """(n_edges, 2) local vertex indices of every edge, in cone order."""
     vS, _vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
-    return np.array([dm.getCone(e) for e in range(eS, eE)], dtype=np.int64) - vS
+    # (0, 2) on a rank that holds no edge, so the edge arithmetic still applies
+    return np.array([dm.getCone(e) for e in range(eS, eE)],
+                    dtype=np.int64).reshape(-1, 2) - vS
 
 
 def _coords(dm):

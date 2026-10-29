@@ -56,7 +56,13 @@ __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
 # --------------------------------------------------------------------------- #
 #  Prolongation builders (return scipy CSR matrices)
 # --------------------------------------------------------------------------- #
-def barycentric_prolongation(coarse_coords, fine_coords):
+#: What the last barycentric build saw: fine nodes outside the coarse hull
+#: (snapped to the nearest coarse node — a wrong row, not an empty one) and the
+#: orphan columns it repaired. Read by the parallel builders right after a call.
+last_builder_stats = {"outside_hull": 0, "orphans_repaired": 0}
+
+
+def barycentric_prolongation(coarse_coords, fine_coords, repair_orphans=True):
     """Prolongation by linear interpolation over a Delaunay triangulation of the
     coarse DOF cloud. Partition of unity (row sums = 1) and linear fields are
     reproduced exactly; fine points outside the coarse hull fall back to the
@@ -99,6 +105,8 @@ def barycentric_prolongation(coarse_coords, fine_coords):
     tri = Delaunay(coarse_coords)
     simp = tri.find_simplex(fine_coords)
     tree = cKDTree(coarse_coords)
+    last_builder_stats["outside_hull"] = int((simp < 0).sum())
+    last_builder_stats["orphans_repaired"] = 0
     dim = coarse_coords.shape[1]
     rows, cols, vals = [], [], []
     for i in range(fine_coords.shape[0]):
@@ -134,7 +142,17 @@ def barycentric_prolongation(coarse_coords, fine_coords):
     # The alternative — switching to the global-support RBF builder — removes
     # the singularity but returns a DENSE transfer (nnz/row == n_coarse), which
     # makes PᵀAP dense and is unusable at production sizes.
-    orphans = np.nonzero(np.asarray((P != 0).sum(axis=0)).ravel() == 0)[0]
+    # In PARALLEL the repair is wrong by construction and is switched off by
+    # the parallel builders: a rank sees only its own fine nodes, so a coarse
+    # column reached from another rank (a ghost at a partition boundary, or
+    # most of an all-gathered coarse cloud) looks orphaned here and the repair
+    # overwrote a local fine row with a weight-one injection onto a coarse node
+    # far away (measured: thousands of rows at distance 0.6-0.9 on a box of
+    # length 3, and a velocity multigrid that needed 55 iterations on 8 ranks
+    # against 4 in serial). Genuine orphans are dropped at install instead.
+    orphans = (np.nonzero(np.asarray((P != 0).sum(axis=0)).ravel() == 0)[0]
+               if repair_orphans else np.zeros(0, dtype=np.int64))
+    last_builder_stats["orphans_repaired"] = int(orphans.size)
     if orphans.size:
         k = int(min(orphans.size + 8, fine_coords.shape[0]))
         _, cand = cKDTree(fine_coords).query(coarse_coords[orphans], k=k)
@@ -809,7 +827,11 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     ref = np.asarray([c for c in ref_cnodes if c >= 0], dtype=np.int64)
     if ref.size:
         csel[ref] = True
-    halo_rows = (~row_is_patch) & (bg_cnode >= 0) & csel[np.clip(bg_cnode, 0, None)]
+    # Index csel only where a row has a background coarse node: a rank can
+    # hold fine rows and no coarse node at all, and then csel is empty.
+    halo_rows = np.zeros(n, dtype=bool)
+    with_bg = (~row_is_patch) & (bg_cnode >= 0)
+    halo_rows[with_bg] = csel[bg_cnode[with_bg]]
     node_in_sub = node_is_patch.copy()
     if n:
         node_in_sub[node_of_row[halo_rows]] = True
@@ -864,6 +886,65 @@ def _coarse_dof_layout(solver, coarse_mesh, field_id=None):
     return _level_dof_layout(cdm, field_id)
 
 
+def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
+    """The node-level transfer for a parallel build: the barycentric builder
+    with its serial orphan repair switched off (see the note in
+    :func:`barycentric_prolongation`); any other builder as it is.
+
+    A rank can hold none of a small level. With no fine node it has no rows.
+    With too few coarse nodes to span a simplex it cannot place its fine nodes
+    locally: they count as outside the local hull, which is what sends the
+    "auto" build across partitions, where the coarse cloud is the whole level."""
+    import scipy.sparse as sp
+    n_fine, n_coarse = fine_coords.shape[0], coarse_coords.shape[0]
+    if n_fine == 0 or n_coarse <= coarse_coords.shape[1]:
+        last_builder_stats["outside_hull"] = n_fine
+        last_builder_stats["orphans_repaired"] = 0
+        return sp.csr_matrix((n_fine, n_coarse))
+    if builder is barycentric_prolongation:
+        return builder(coarse_coords, fine_coords, repair_orphans=False)
+    return builder(coarse_coords, fine_coords)
+
+
+def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
+                            comm):
+    """A node-level transfer ``Pn`` (scipy CSR, fine local nodes by coarse
+    nodes) as the reduced->reduced MPIAIJ prolongation, assembled in one call.
+
+    Component ``c`` of fine node ``i`` is row ``fine_layout.l2g[i*ncomp + c]``
+    and takes, for each weight ``w`` on coarse node ``j``, the column
+    ``coarse_cols[j, c]``. Only this rank's OWNED rows are set (ghost nodes
+    are another rank's); constrained coarse DOFs (column ``-1``) drop out, so
+    the map is reduced->reduced."""
+    import scipy.sparse as sp
+    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64)
+    fstart, fend = fine_layout.rstart, fine_layout.rend
+    nloc_f = fend - fstart
+    nloc_c = coarse_layout.rend - coarse_layout.rstart
+    Pn = Pn.tocsr()
+    node = np.repeat(np.arange(Pn.shape[0]), np.diff(Pn.indptr))
+    rows, cols, vals = [], [], []
+    for c in range(ncomp):
+        grow = l2g_f[node * ncomp + c]
+        gcol = coarse_cols[Pn.indices, c]
+        keep = (grow >= fstart) & (grow < fend) & (gcol >= 0)
+        rows.append(grow[keep] - fstart)
+        cols.append(gcol[keep])
+        vals.append(Pn.data[keep])
+    rows, cols, vals = (np.concatenate(rows), np.concatenate(cols),
+                        np.concatenate(vals))
+    n_cols = int(comm.tompi4py().allreduce(nloc_c))
+    loc = sp.csr_matrix((vals, (rows, cols)), shape=(nloc_f, n_cols))
+    loc.sum_duplicates()
+    loc.sort_indices()
+    P = PETSc.Mat().createAIJ(
+        size=((nloc_f, None), (nloc_c, None)),
+        csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
+             loc.data), comm=comm)
+    P.assemble()
+    return P
+
+
 def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
                              fine_layout, ncomp, builder, comm):
     """One reduced->reduced prolongation as an MPIAIJ matrix.
@@ -874,33 +955,11 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
     l2g_c = coarse_layout.l2g
-    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
     Pn = _drop_structural_zeros(
-        builder(coarse_coords, fine_coords))           # (n_f_nodes, n_c_nodes), local
-    nloc_f = fend - fstart
-    nloc_c = coarse_layout.rend - coarse_layout.rstart
-
-    P = PETSc.Mat().create(comm=comm)
-    P.setSizes(((nloc_f, None), (nloc_c, None)))
-    P.setType("aij")
-    P.setUp()
-    for i in range(Pn.shape[0]):                 # fine local node
-        js = Pn.indices[Pn.indptr[i]:Pn.indptr[i + 1]]
-        ws = Pn.data[Pn.indptr[i]:Pn.indptr[i + 1]]
-        for c in range(ncomp):
-            grow = int(l2g_f[i * ncomp + c])
-            if grow < fstart or grow >= fend:    # set OWNED rows only
-                continue
-            gcols, vals = [], []
-            for jj, w in zip(js.tolist(), ws.tolist()):
-                gcol = int(l2g_c[jj * ncomp + c])
-                if gcol >= 0:                    # skip constrained coarse DOFs
-                    gcols.append(gcol)
-                    vals.append(w)
-            if gcols:
-                P.setValues([grow], gcols, vals, addv=PETSc.InsertMode.INSERT_VALUES)
-    P.assemble()
-    return P
+        _node_transfer_no_repair(builder, coarse_coords, fine_coords))  # (n_f_nodes, n_c_nodes), local
+    return _assemble_node_transfer(
+        Pn, np.asarray(l2g_c, dtype=np.int64).reshape(-1, ncomp), fine_layout,
+        coarse_layout, ncomp, comm)
 
 
 def _gather_coarse_cloud(coarse_coords, coarse_layout, ncomp, comm):
@@ -936,35 +995,13 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     small — that is what makes a coarse MG level coarse), so point location spans
     partitions. Columns are the coarse GLOBAL reduced indices (off-rank columns are
     fine for MPIAIJ); constrained coarse DOFs (col < 0) drop out."""
-    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
-    Pn = _drop_structural_zeros(builder(coords_u, fine_coords))  # (n_f_local, Nu)
-    nloc_f = fend - fstart
-    nloc_c = coarse_layout.rend - coarse_layout.rstart
-
-    P = PETSc.Mat().create(comm=comm)
-    P.setSizes(((nloc_f, None), (nloc_c, None)))
-    P.setType("aij")
-    P.setUp()
-    for i in range(Pn.shape[0]):                 # fine local node
-        js = Pn.indices[Pn.indptr[i]:Pn.indptr[i + 1]]
-        ws = Pn.data[Pn.indptr[i]:Pn.indptr[i + 1]]
-        for c in range(ncomp):
-            grow = int(l2g_f[i * ncomp + c])
-            if grow < fstart or grow >= fend:    # set OWNED rows only
-                continue
-            gcols, vals = [], []
-            for jj, w in zip(js.tolist(), ws.tolist()):
-                gcol = int(cols_u[jj, c])
-                if gcol >= 0:                    # skip constrained coarse DOFs
-                    gcols.append(gcol)
-                    vals.append(w)
-            if gcols:
-                P.setValues([grow], gcols, vals, addv=PETSc.InsertMode.INSERT_VALUES)
-    P.assemble()
-    return P
+    Pn = _drop_structural_zeros(
+        _node_transfer_no_repair(builder, coords_u, fine_coords))   # (n_f_local, Nu)
+    return _assemble_node_transfer(Pn, np.asarray(cols_u, dtype=np.int64),
+                                   fine_layout, coarse_layout, ncomp, comm)
 
 
 def _count_zero_columns_parallel(P, comm):
@@ -1451,10 +1488,16 @@ class CustomMGHierarchy:
                 rmap, nfull = (_reduced_map(solver.dm, self.field_id) if finest
                                else _coarse_reduced_map(solver, mesh, self.field_id))
                 maps.append(rmap)
-            nc = nfull // c.shape[0]
-            if nfull % c.shape[0] != 0:
+            # The component count is the field's: take it over the whole level,
+            # since a rank can hold no node of a small one.
+            nodes, dofs = c.shape[0], nfull
+            if parallel:
+                level_comm = solver.dm.comm.tompi4py()
+                nodes, dofs = level_comm.allreduce(nodes), level_comm.allreduce(dofs)
+            nc = dofs // nodes
+            if dofs % nodes != 0:
                 raise RuntimeError(
-                    f"level {k}: full DOFs {nfull} not divisible by nodes {c.shape[0]}")
+                    f"level {k}: full DOFs {dofs} not divisible by nodes {nodes}")
             coords.append(c)
             ncomp.append(nc)
 
@@ -1480,6 +1523,24 @@ class CustomMGHierarchy:
         comm = solver.dm.comm
         from underworld3.utilities import fault_mg
         for l in range(1, nlev):
+            # A pair the add-on partition recorded (the base's finest static
+            # level against the first add-on level, which the partition moved
+            # apart, and any unsplit pair of moved add-on levels) carries the
+            # exact parent relation: each fine cell's parent is fetched from
+            # its rank through a star forest, and nothing is located across
+            # partitions. Split coarse levels are never recorded against, so
+            # their pairs keep the side-aware cell-located transfer.
+            pre = (fault_mg.provenance_source(self.level_meshes[l - 1],
+                                              self.level_meshes[l])
+                   if parallel else None)
+
+            def provenance_transfer():
+                P = fault_mg.provenance_transfer_parallel(
+                    self.level_meshes[l - 1], self.level_meshes[l], pre, degree,
+                    continuous, coords[l - 1], coords[l], maps[l - 1], maps[l],
+                    nc, comm)
+                self.level_transfer_stats[l] = fault_mg.last_transfer_stats
+                return P
             # Split-level multigrid: every pair touching a split level takes
             # the cell-located transfer. A split COARSE level defeats the
             # node-cloud builders (they triangulate the coarse nodes, and
@@ -1495,7 +1556,9 @@ class CustomMGHierarchy:
             if self.has_split_levels and (
                     fault_mg.is_split_level(self.level_meshes[l - 1])
                     or fault_mg.is_split_level(self.level_meshes[l])):
-                if parallel:
+                if pre is not None:
+                    P = provenance_transfer()
+                elif parallel:
                     P = fault_mg.cell_located_transfer_parallel(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
                         continuous, coords[l - 1], coords[l], maps[l - 1],
@@ -1513,7 +1576,9 @@ class CustomMGHierarchy:
             if parallel:
                 args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
-                if self.cross_partition is True:
+                if pre is not None:
+                    P = provenance_transfer()
+                elif self.cross_partition is True:
                     P = _build_crosspart_transfer(*args)
                 else:
                     P = _build_parallel_transfer(*args)
@@ -1528,10 +1593,19 @@ class CustomMGHierarchy:
                     # nonsense (KSP reason -11 at the first iteration). The
                     # few genuine orphans are the repair's job below.
                     n_zero = _count_zero_columns_parallel(P, comm)
-                    if self.cross_partition == "auto" and n_zero > 0:
+                    # A fine node outside its rank's LOCAL coarse hull is snapped
+                    # to the nearest local coarse node: a WRONG row, which no
+                    # zero-column count can see. It happens whenever the fine
+                    # partition is not the coarse one — a split finest whose
+                    # fault star was moved to one rank (measured: 3026 of 7500
+                    # nodes on that rank, 2192 wrong rows). Such a level is
+                    # rebuilt across partitions whatever its column count.
+                    n_out = comm.tompi4py().allreduce(
+                        int(last_builder_stats.get("outside_hull", 0)))
+                    if self.cross_partition == "auto" and (n_zero > 0 or n_out > 0):
                         P_x = _build_crosspart_transfer(*args)
                         n_x = _count_zero_columns_parallel(P_x, comm)
-                        if n_x < n_zero:
+                        if n_out > 0 or n_x < n_zero:
                             P.destroy()
                             P = P_x
                         else:
@@ -2217,7 +2291,11 @@ def _colocate_level(coarse_mesh, fine_mesh):
     if comm.size == 1:
         return coarse_mesh
     cS, cE = dm.getHeightStratum(0)
-    cen_c = np.array([dm.computeCellGeometryFVM(c)[1] for c in range(cS, cE)])
+    # Shaped from the coordinate dimension, not from the cells found: a coarse
+    # level is small, and on a large run most ranks own none of it.
+    cdim = dm.getCoordinateDim()
+    cen_c = np.array([dm.computeCellGeometryFVM(c)[1] for c in range(cS, cE)],
+                     dtype=float).reshape(-1, cdim)
     fdm = fine_mesh.dm
     fS, fE = fdm.getHeightStratum(0)
     # OWNED fine cells only: a ghost cell belongs to another rank
@@ -2228,8 +2306,8 @@ def _colocate_level(coarse_mesh, fine_mesh):
     except (ValueError, TypeError):
         ghost = set()
     owned_f = [c for c in range(fS, fE) if c not in ghost]
-    cen_f = (np.array([fdm.computeCellGeometryFVM(c)[1] for c in owned_f])
-             if owned_f else np.zeros((0, cen_c.shape[1])))
+    cen_f = np.array([fdm.computeCellGeometryFVM(c)[1] for c in owned_f],
+                     dtype=float).reshape(-1, cdim)
     # every rank offers its nearest owned fine cell to EVERY coarse centroid
     # in the mesh (all-gathered: the coarse levels are small)
     cen_all = np.vstack(comm.allgather(cen_c))
@@ -2280,11 +2358,16 @@ def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):
     own = getattr(base_mesh, "_custom_mg_coarse_meshes", None)
     tail = (list(own) + [base_mesh] if own is not None
             else list(base_mesh._coarse_level_meshes()))
-    # In parallel the placed mesh is gathered onto its surgery rank while
-    # the tail is load-balanced: co-locate every level with the finest so
-    # the transfers pair rank-locally (the coarse levels are small; the
-    # fine mesh and its FAC patch never move).
-    if mesh.dm.getComm().getSize() > 1:
+    # A base the add-on partition produced (addon_partition.partition_addon,
+    # called by the placement routes before they place) is aligned with its
+    # tail already: the placement moved nothing, the pair it separated is
+    # read from the recorded provenance, and nothing is co-located.
+    # Otherwise the placed mesh was gathered onto its surgery rank while the
+    # tail is load-balanced: co-locate every level with the finest so the
+    # transfers pair rank-locally (the coarse levels are small; the fine
+    # mesh and its FAC patch never move).
+    if (mesh.dm.getComm().getSize() > 1
+            and getattr(base_mesh, "_addon_partition", None) is None):
         tail = [_colocate_level(level, mesh) for level in tail]
     mesh._custom_mg_coarse_meshes = tail
     mesh._custom_mg_builder = (builder if builder is not None

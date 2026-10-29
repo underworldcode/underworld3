@@ -40,6 +40,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Thin sheet (plane stress, sphere, faults) | [subsystems/thin-sheet.md](subsystems/thin-sheet.md) |
 | Fault multigrid (split-level hierarchy, parallel pairing) | [subsystems/fault-split-multigrid.md](subsystems/fault-split-multigrid.md) |
 | Fault networks in parallel (placement, split, tail) | [design/fault-parallel-placement-2026-09.md](design/fault-parallel-placement-2026-09.md) (subsystem reference: [conforming-surfaces-and-fault-zones.md](subsystems/conforming-surfaces-and-fault-zones.md)) |
+| The add-on's partition in parallel (one partition for the add-on hierarchy) | [design/parallel-addon-distribution-2026-10.md](design/parallel-addon-distribution-2026-10.md) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
@@ -65,6 +66,7 @@ pages, never copies. A change to a family is reviewed against its guides.
 | [Plasticity solvers](guides/plasticity-solvers.md) | viscoplastic and VEP Stokes |
 | [Adaptive meshing](guides/adaptive-meshing.md) | moving-mesh convection |
 | [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
+| [Faults in convection](guides/faults-in-convection.md) | split-node faults in time-dependent Stokes |
 | [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
 | [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
 | [Line diagrams](guides/uw-line-diagrams.md) | drawn figures |

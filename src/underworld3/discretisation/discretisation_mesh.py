@@ -663,8 +663,11 @@ class Mesh(Stateful, uw_object):
         self.qdegree = qdegree
 
         # Populate the element information for this mesh. This is intended to be
-        # human readable because the mesh is quite simple: either quads / tris in 2D
-        # tetrahedra / hexahedra in 3D
+        # human readable because the mesh is quite simple: lines in 1D (a surface
+        # submesh of a 2-D domain), quads / tris in 2D, tetrahedra / hexahedra
+        # in 3D. ``entities[k]`` counts a cell's points of codimension k
+        # (entities[1] its faces, entities[dim] its vertices); face_entities[dim]
+        # counts a face's vertices.
 
         from dataclasses import dataclass
 
@@ -674,7 +677,12 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
-        if self.isSimplex:
+        if self.dim == 1:
+            # A line cell, simplex or not: two faces, which are its two
+            # vertices. Without this a 1-D mesh fell through to the
+            # tetrahedron entry and read 4 faces and 4 vertices per cell.
+            self._element = ElementInfo("line", (1, 2), (0, 1))
+        elif self.isSimplex:
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
             else:
@@ -5696,35 +5704,28 @@ class Mesh(Stateful, uw_object):
         if key in self._cell_node_array:
             return self._cell_node_array[key]
 
-        dmnew = self._basis_coordinate_dm(degree, continuous)
-        section = dmnew.getLocalSection()
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        cdim = self.cdim
+        from underworld3.utilities._plex_topology import closure_dof_rows
 
-        rows = []
-        for cell in range(cStart, cEnd):
-            cell_rows = []
-            for point in dmnew.getTransitiveClosure(cell)[0]:
-                ndof = section.getDof(point) // cdim
-                if ndof:
-                    offset = section.getOffset(point) // cdim
-                    cell_rows.extend(range(offset, offset + ndof))
-            rows.append(cell_rows)
+        dmnew = self._basis_coordinate_dm(degree, continuous)
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        rows = closure_dof_rows(dmnew, dmnew.getLocalSection(),
+                                numpy.arange(cStart, cEnd), self.cdim)
         dmnew.destroy()
 
         expected = comb(degree + self.dim, self.dim)
-        if not self.isSimplex or any(len(r) != expected for r in rows):
+        counts = (rows >= 0).sum(axis=1)
+        if not self.isSimplex or (counts != expected).any():
             # A tensor-product Q_k cell carries (k+1)^dim nodes, so the monomial
             # basis of total degree <= k would not be square against them and
             # the dual-basis construction does not apply. Say so here rather
             # than return a ragged array the caller has to second-guess.
-            got = sorted({len(r) for r in rows})
+            got = sorted(set(counts.tolist()))
             raise NotImplementedError(
                 f"_cell_node_indices needs a simplex mesh: expected "
                 f"{expected} nodes per cell for degree {degree} in {self.dim}D, "
                 f"got {got}")
 
-        self._cell_node_array[key] = numpy.asarray(rows, dtype=numpy.int64)
+        self._cell_node_array[key] = rows.reshape(cEnd - cStart, expected)
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
@@ -5773,13 +5774,10 @@ class Mesh(Stateful, uw_object):
         so the rows returned here are bit-identical to the previous affine
         indexing (verified) and serial navigation is unchanged.
         """
-        coord_section = nav_dm.getCoordinateSection()
-        cdim = self.cdim
-        return numpy.fromiter(
-            (coord_section.getOffset(p) // cdim for p in points),
-            dtype=numpy.int64,
-            count=len(points),
-        )
+        from underworld3.utilities._plex_topology import section_offsets
+
+        return section_offsets(nav_dm.getCoordinateSection(),
+                               numpy.asarray(points, dtype=numpy.int64)) // self.cdim
 
     def _navigation_coords_from_dm(self, nav_dm):
         """Section-consistent LOCAL coordinate rows for a navigation DM.
@@ -5817,84 +5815,45 @@ class Mesh(Stateful, uw_object):
         nav_coords = self._nav_coords
 
         cStart, cEnd = nav_dm.getHeightStratum(0)
-        fStart, fEnd = nav_dm.getHeightStratum(1)
-        pStart, pEnd = nav_dm.getDepthStratum(0)
-        cell_num_faces = self.element.entities[1]
-        cell_num_points = self.element.entities[self.dim]
-        face_num_points = self.element.face_entities[self.dim]
 
-        control_points_list = []
-        control_points_cell_list = []
-        centroids_list = []
+        from underworld3.utilities._plex_topology import closure_points
+
+        # Each cell's vertices in closure order, read as one table. The count
+        # is the closure's own: the element table's vertex count does not
+        # describe a 1-D surface mesh (it gave 4 for a line cell, and the
+        # earlier per-cell slice then took the edge point itself as a vertex).
+        cells = numpy.arange(cStart, cEnd)
+        verts = closure_points(nav_dm, cells, 0)
+        if (verts < 0).any():
+            raise RuntimeError(
+                "_build_kd_tree_index: the cells do not all have the same "
+                "number of vertices")
+        cell_num_points = verts.shape[1]
+        n_cells = cEnd - cStart
+        # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
+        P = nav_coords[self._coord_rows_for_points(nav_dm, verts.ravel())].reshape(
+            n_cells, cell_num_points, self.cdim)
+        centroids = P.mean(axis=1)
         # Largest distance from a cell centroid to one of that cell's own
         # vertices, maximised over local cells. A convex cell is the convex
         # hull of its vertices, so every point of it lies within this distance
         # of its centroid — which makes it the rejection radius the locator
         # needs (see _get_closest_local_cells_internal).
-        cell_reach = 0.0
-
-        for cell, cell_id in enumerate(range(cStart, cEnd)):
-
-            cell_faces = nav_dm.getCone(cell_id)
-            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
-            # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
-            cell_centroid = cell_point_coords.mean(axis=0)
-            centroids_list.append(cell_centroid)
-            cell_reach = max(cell_reach, float(numpy.linalg.norm(
-                cell_point_coords - cell_centroid, axis=1).max()))
-
-            # for face in range(cell_num_faces):
-
-            #     points = self.dm.getTransitiveClosure(cell_faces[face])[0][
-            #         -face_num_points:
-            #     ]
-            #     point_coords = self.data[points - pStart]
-
-            #     face_centroid = point_coords.mean(axis=0)
-            #     cell_centroid = cell_point_coords.mean(axis=0)
-
-            #     # 2D case
-            #     if self.dim == 2:
-            #         vector = point_coords[1] - point_coords[0]
-            #         normal = numpy.array((-vector[1], vector[0]))
-
-            #     # 3D simplex case (probably also OK for hexes)
-            #     else:
-            #         normal = numpy.cross(
-            #             (point_coords[1] - point_coords[0]),
-            #             (point_coords[2] - point_coords[0]),
-            #         )
-
-            #     inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
-            #     normal *= inward_outward / numpy.sqrt(normal.dot(normal))
-
-            #     inside_control_point = -1e-3 * normal + face_centroid
-
-            #     control_points_list.append(inside_control_point)
-            #     control_points_cell_list.append(cell_id)
-            #     control_points_list.append(cell_centroid)
-            #     control_points_cell_list.append(cell_id)
-
-            # Add points near the cell vertices
-
-            for i in range(cell_point_coords.shape[0]):
-                control_points_list.append(0.99 * cell_point_coords[i] + 0.01 * cell_centroid)
-                control_points_cell_list.append(cell_id)
-
-            # Add centroid
-            control_points_list.append(cell_centroid)
-            control_points_cell_list.append(cell_id)
+        cell_reach = (float(numpy.linalg.norm(P - centroids[:, None, :],
+                                              axis=2).max())
+                      if n_cells else 0.0)
+        # Control points: each cell's vertices pulled 1% toward its centroid,
+        # then the centroid itself, cell by cell.
+        control = numpy.concatenate(
+            [0.99 * P + 0.01 * centroids[:, None, :], centroids[:, None, :]], axis=1)
 
         # A rank can own zero cells (small mesh / imbalanced partition):
-        # shape the point arrays explicitly so an empty list becomes a
-        # well-formed (0, cdim) array rather than a 1-D numpy.array([]),
-        # which crashed the KDTree construction (issue #399).
-        self._indexCoords = numpy.array(
-            control_points_list, dtype=numpy.float64).reshape(-1, self.cdim)
+        # shape the point arrays explicitly so an empty table is a
+        # well-formed (0, cdim) array, which the KDTree accepts (issue #399).
+        self._indexCoords = numpy.ascontiguousarray(
+            control, dtype=numpy.float64).reshape(-1, self.cdim)
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        # self._index.build_index()
-        self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
+        self._indexMap = numpy.repeat(cells, cell_num_points + 1).astype(numpy.int64)
 
         # Cell-centroid kdtree, built from the nav-DM cells in the
         # same enumeration order as _indexMap, so the indices it
@@ -5902,8 +5861,8 @@ class Mesh(Stateful, uw_object):
         # We keep _nav_centroids separate from _centroids (which is
         # the main-DM cell centroids set in __init__) so the FE-side
         # ``_centroids`` semantics are unchanged on manifold meshes.
-        self._nav_centroids = numpy.array(
-            centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
+        self._nav_centroids = numpy.ascontiguousarray(
+            centroids, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
@@ -7971,6 +7930,10 @@ class Mesh(Stateful, uw_object):
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
         child._surface_info = info
+        if getattr(self, "_embedded_surfaces", None):
+            child._embedded_surfaces = set(self._embedded_surfaces)
+        from underworld3.utilities.addon_partition import inherit_provenance
+        inherit_provenance(child, self)
 
         # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
         # mesh, so this mesh plus everything below it is a valid coarse tail and
@@ -8299,13 +8262,30 @@ class Mesh(Stateful, uw_object):
                 "add_conforming_sheet is 3-D; in 2-D use "
                 "add_conforming_surface.")
 
-        boundaries = self._boundaries_with(name)
+        # In parallel the add-on is partitioned for the sheet first — the
+        # placement's own mask with two growth layers, on this level and on
+        # every add-on level below it — so the carve and the fill run on a
+        # rank-interior region and the placement gathers nothing; a split of
+        # the sheet later moves nothing either.
+        host = self
+        if self.dm.getComm().getSize() > 1:
+            from underworld3.utilities.addon_partition import (mark_sheets,
+                                                               partition_addon)
+            host = partition_addon(
+                self, mark_sheets([(points, triangles)], clearance), layers=2,
+                verbose=verbose)
+        boundaries = host._boundaries_with(name)
         cut_dm, info = place_sheet(
-            self.dm, points, triangles, label=name,
+            host.dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
             verbose=verbose, setback=setback, size=size)
-        return self._adopt_cut_child(cut_dm, boundaries, info,
-                                     mg_coarsening_ratio, verbose)
+        child = host._adopt_cut_child(cut_dm, boundaries, info,
+                                      mg_coarsening_ratio, verbose)
+        # a placed sheet is a fault surface to be: every later partition
+        # keeps it whole (addon_partition.embedded_surface_names)
+        child._embedded_surfaces = (
+            set(getattr(host, "_embedded_surfaces", ()) or ()) | {name})
+        return child
 
     def extrude(self, thickness, layers=2, base="Base", surface="Surface",
                 qdegree=None, verbose=False):
@@ -8343,11 +8323,10 @@ class Mesh(Stateful, uw_object):
         crossings are represented as OFFSET segments (a one-to-two-cell
         ligament). The result inherits a MESH-OWNED geometric-MG tail (the
         parent's coarse levels, the cut mesh finest — a cut is the same
-        grid re-represented); a parent without one yields a standalone
-        mesh — no tail, since
-        the coarse levels do not carry the fault (see
-        :meth:`add_conforming_surface`); solvers take their
-        algebraic-multigrid defaults.
+        grid re-represented): the parent's registered tail, or the coarse
+        levels of a parent built with ``refinement >= 1``. In parallel the
+        add-on is partitioned once for the faults before the cut
+        (``utilities.addon_partition``), so nothing moves afterwards.
 
         ``cut=False`` labels the mesh edges already on each polyline (the
         embedded spines of a placed band); ``across_seams=True`` then
@@ -8382,40 +8361,27 @@ class Mesh(Stateful, uw_object):
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve
-        # with the cut mesh as the finest level. The static background
-        # levels serve unchanged; the add-on levels are split too (above).
-        # Without this every solver on a split mesh fell to GAMG unless it
-        # called set_custom_fmg by hand. The FAC zone is NOT inherited: a
+        # with the cut mesh as the finest level (fault_split.add_fault hands
+        # them to the cut child — partitioned with it in parallel). The static
+        # background levels serve unchanged; the add-on levels are split too,
+        # each on its own partition, which the add-on partition made the
+        # finest's: nothing is moved here. The FAC zone is NOT inherited: a
         # split fault needs no patch (the keying ruling).
-        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        if (own_tail is not None
-                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
-            tail = list(own_tail)
-            # a placed band's spines (cut=False) have no counterpart on the
-            # levels, which were never placed: only a CUT fault is replayed
-            if split_levels and cut:
-                from underworld3.utilities.fault_mg import (
-                    addon_level_indices, split_tail_levels)
-                idx = addon_level_indices(tail)
-                if idx:
-                    split = split_tail_levels([tail[k] for k in idx],
-                                              child._fault_specs,
-                                              verbose=verbose)
-                    if self.dm.getComm().getSize() > 1:
-                        # each level's star onto the rank holding the finest's,
-                        # so the transfers locate the band rank-locally
-                        from underworld3.utilities.fault_mg import (
-                            colocate_split_level, fault_star_owner)
-                        target = fault_star_owner(child)
-                        split = [colocate_split_level(m, target)
-                                 if getattr(m, "_fault_point_pairs", None) else m
-                                 for m in split]
-                    for k, m in zip(idx, split):
-                        tail[k] = m
+        tail = getattr(child, "_custom_mg_coarse_meshes", None)
+        # a placed band's spines (cut=False) have no counterpart on the
+        # levels, which were never placed: only a CUT fault is replayed
+        if tail is not None and split_levels and cut:
+            from underworld3.utilities.fault_mg import (
+                addon_level_indices, split_tail_levels)
+            tail = list(tail)
+            idx = addon_level_indices(tail)
+            if idx:
+                split = split_tail_levels([tail[k] for k in idx],
+                                          child._fault_specs,
+                                          verbose=verbose)
+                for k, m in zip(idx, split):
+                    tail[k] = m
             child._custom_mg_coarse_meshes = tail
-            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
-                                               "barycentric")
-            child._custom_mg_fac_zone = None
         return child
 
 

@@ -62,32 +62,32 @@ def _register_transform():
     from underworld3.utilities import _nvb_transform  # noqa: F401  (registers on import)
 
 
+def _edge_ends(dm):
+    """The two vertex points of every edge, ``(n_edges, 2)``, in cone order,
+    read as one table."""
+    from underworld3.utilities._plex_topology import closure_points
+    eS, eE = dm.getDepthStratum(1)
+    return closure_points(dm, np.arange(eS, eE), 0).reshape(eE - eS, 2)
+
+
 def _edge_lengths(dm):
     """Length of every edge, indexed by ``edge_point - edge_start``."""
     cdim = dm.getCoordinateDim()
     vS, _vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
     X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
-    ends = np.array([dm.getCone(e) for e in range(eS, eE)], dtype=np.int64) - vS
+    ends = _edge_ends(dm) - vS
     d = X[ends[:, 0]] - X[ends[:, 1]]
     return np.sqrt(np.einsum("ij,ij->i", d, d))
 
 
 def _cell_edges(dm):
-    """Edge points of each cell, as a list indexed by ``cell - cell_start``.
-
-    In 2-D a cell's cone is already its edges; in 3-D the cone holds faces, so
-    the edges come from the transitive closure filtered to the edge stratum.
-    """
-    eS, eE = dm.getDepthStratum(1)
+    """Edge points of each cell, as a list indexed by ``cell - cell_start``:
+    the edge stratum of the cell's closure, in closure order (in 2-D that is
+    the cone), read as one table."""
+    from underworld3.utilities._plex_topology import closure_points
     cS, cE = dm.getHeightStratum(0)
-    if dm.getDimension() == 2:
-        return [np.asarray(dm.getCone(c), dtype=np.int64) for c in range(cS, cE)]
-    out = []
-    for c in range(cS, cE):
-        closure = dm.getTransitiveClosure(c)[0]
-        out.append(np.array([p for p in closure if eS <= p < eE], dtype=np.int64))
-    return out
+    return list(closure_points(dm, np.arange(cS, cE), 1))
 
 
 def cell_diameters(dm, return_tables=False):
@@ -177,7 +177,7 @@ def _edge_strength(dm):
     vS, _vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
     X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
-    ends = np.array([dm.getCone(e) for e in range(eS, eE)], dtype=np.int64) - vS
+    ends = _edge_ends(dm) - vS
     d = X[ends[:, 0]] - X[ends[:, 1]]
     length = np.sqrt(np.einsum("ij,ij->i", d, d))
     mid = 0.5 * (X[ends[:, 0]] + X[ends[:, 1]])
