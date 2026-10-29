@@ -1366,10 +1366,17 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     units=self._units,
                 )
             # The remesh helper calls this on REINIT vars after an
-            # adapt. Bound here so the closure captures ``self`` (the
-            # SwarmVariable) rather than the proxy MeshVariable.
-            self._meshVar._remesh_reinit_callback = (
-                lambda _self=self: setattr(_self, "_proxy_stale", True))
+            # adapt. It holds the SwarmVariable weakly: the proxy's mesh
+            # owns the proxy, and a strong capture made that mesh keep the
+            # variable, its swarm's next mesh, and that mesh's solvers.
+            variable_ref = weakref.ref(self)
+
+            def _mark_proxy_stale():
+                variable = variable_ref()
+                if variable is not None:
+                    variable._proxy_stale = True
+
+            self._meshVar._remesh_reinit_callback = _mark_proxy_stale
 
     def _update(self):
         """
@@ -3351,8 +3358,6 @@ class Swarm(Stateful, uw_object):
         self.verbose = verbose
         self._clip_to_mesh = clip_to_mesh
 
-        # Store reference to model instead of direct mesh reference
-        # This enables dynamic mesh handover while maintaining access to mesh services
         import underworld3 as uw
 
         model = uw.get_default_model()
@@ -3360,8 +3365,11 @@ class Swarm(Stateful, uw_object):
         # Register mesh with model if not already present
         model._register_mesh(mesh)
 
-        # Store reference to this swarm's specific mesh for proxy operations
-        self._mesh_id = id(mesh)
+        # The swarm holds its mesh. Found by id in the model's weak registry,
+        # a mesh nobody else held was freed under the swarm at the next
+        # collection, and an unrelated later mesh at a reused address could
+        # answer for it.
+        self._mesh = mesh
 
         self._model_ref = weakref.ref(model)
         self.dim = mesh.dim
@@ -3776,10 +3784,7 @@ class Swarm(Stateful, uw_object):
     @property
     def mesh(self):
         """The mesh this swarm operates on"""
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("Model has been garbage collected")
-        return model.get_mesh(self._mesh_id)
+        return self._mesh
 
     @mesh.setter
     def mesh(self, new_mesh):
@@ -3803,7 +3808,7 @@ class Swarm(Stateful, uw_object):
         # Register new mesh with model
         model._register_mesh(new_mesh)
 
-        if id(new_mesh) == self._mesh_id:
+        if new_mesh is self._mesh:
             # Check if swarm is already compatible with target mesh
             if self.dim == new_mesh.dim and self.cdim == new_mesh.cdim:
                 # Dimensions match, check if proxy variables need updating
@@ -3843,7 +3848,7 @@ class Swarm(Stateful, uw_object):
         model._update_mesh_for_swarm(self, new_mesh)
 
         # Update swarm's mesh reference
-        self._mesh_id = id(new_mesh)
+        self._mesh = new_mesh
 
         # Update swarm's cached dimensions
         self.dim = new_mesh.dim
