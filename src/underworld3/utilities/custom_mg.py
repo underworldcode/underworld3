@@ -1057,7 +1057,8 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     smoothing cost follows the patch sizes' geometric series instead of
     levels-times-whole-mesh. Residual and transfer work stay global. The
     per-level ``mg_levels_<l>_pc_type`` keys written here are returned so a
-    per-solve caller (the rotated path) can drop them from the DB."""
+    per-solve caller (the rotated path) can drop them from the DB, once
+    :func:`_set_up_fac_smoothers` has set the FAC levels up from them."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
     opts = PETSc.Options()
@@ -1169,11 +1170,17 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # Extra operator-sparsity overlap layers on top of the transfer
             # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
             spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "1")))
-            # Subdomain solver: SOR, the patch-restricted twin of the
-            # whole-level smoother — no factorization, so no pivot to hit.
-            # PCASM's default sub-solve (ILU-0) takes a NUMERIC_ZEROPIVOT on
+            # Subdomain solver: FAC blocks are LU (with the nonzero shift
+            # below); ILU there is a regression (#892). PCASM's default
+            # sub-solve is unshifted ILU(0): it takes a NUMERIC_ZEROPIVOT on
             # the rotated Galerkin patch block (measured: min |diag| 8e-5 near
-            # the constraint; PC_FAILED -11 before the first iteration).
+            # the constraint; PC_FAILED -11 before the first iteration), and
+            # where it survives it is no band solve (UWTN 2026-022's linear
+            # fault fixture at band ratio 24: 344 velocity iterations
+            # against 67).
+            # The block KSPs read these keys when the ASM sets up, which in
+            # the composite form is its first application: a caller that
+            # drops the keys after set-up calls _set_up_fac_smoothers first.
             _sub_key = (f"mg_levels_{l}_sub_1_sub_pc_type" if _composite
                         else f"mg_levels_{l}_sub_pc_type")
             opts[prefix + _sub_key] = _sub_pc or "sor"
@@ -1189,6 +1196,48 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             for _is in is_subs + is_owns:   # the PC holds its own references
                 _is.destroy()
     return fac_keys
+
+
+def _set_up_fac_smoothers(pc, fac_keys):
+    """Set up every FAC level's smoother of the PCMG ``pc`` now, its ASM blocks
+    included, and put the configured block solver on the live block KSPs.
+
+    Call it after ``pc.setUp()``, with ``fac_keys`` as :func:`_configure_pcmg`
+    returned them and before anything drops those keys from the options
+    database. PCASM creates its block KSPs at its own set-up, and they read
+    ``..._sub_pc_type`` and the factor shift from the database then. In the
+    composite form the ASM is the composite's second member, and the composite's
+    set-up only hands its members their operators, so the ASM sets up at its
+    first application. The rotated path drops its per-solve keys straight after
+    set-up, so its blocks ran PCASM's default, unshifted ILU(0) where LU was
+    configured (#892).
+
+    The block solver read from the database is also set on each block's PC, so
+    it no longer depends on when the database is read or cleaned. FAC blocks are
+    LU: ILU there is a regression."""
+    if not fac_keys:
+        return
+    opts = PETSc.Options()
+    for l in range(1, pc.getMGLevels()):
+        if not any(k.startswith(f"mg_levels_{l}_") for k in fac_keys):
+            continue
+        smoother = pc.getMGSmoother(l)
+        smoother.setUp()
+        level_pc = smoother.getPC()
+        asm = (level_pc.getCompositePC(1) if level_pc.getType() == "composite"
+               else level_pc)
+        if asm.getType() != "asm":
+            continue
+        asm.setUp()
+        for block in asm.getASMSubKSP():
+            prefix = block.getOptionsPrefix() or ""
+            block_pc = block.getPC()
+            # a level with no block keys (the UW_FAC_WHOLE knob) keeps PCASM's own
+            if opts.hasName(prefix + "pc_type"):
+                block_pc.setType(opts.getString(prefix + "pc_type"))
+            if opts.hasName(prefix + "pc_factor_shift_type"):
+                block_pc.setFactorShift(
+                    shift_type=opts.getString(prefix + "pc_factor_shift_type"))
 
 
 def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
@@ -1288,9 +1337,11 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False,
     vel_ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
     vel_pc.reset()
     vel_pc.setOperators(A_vv, P_vv)
-    _configure_pcmg(vel_pc, Ps, smoother=solver._mg_smoother_variant,
-                    owned=solver._managed_pc_options, patch_rows=patch_rows)
+    fac_keys = _configure_pcmg(vel_pc, Ps, smoother=solver._mg_smoother_variant,
+                               owned=solver._managed_pc_options,
+                               patch_rows=patch_rows)
     vel_pc.setUp()
+    _set_up_fac_smoothers(vel_pc, fac_keys)
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
     solver._attach_stokes_nullspace()
