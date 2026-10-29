@@ -29,14 +29,24 @@ DEFERRED = {
 
 
 def globs_run_by(script):
-    """Every tests/... pattern passed to $PYTEST on a line that is not commented."""
+    """Every tests/... pattern the script hands to pytest, on an uncommented line.
+
+    Three spellings reach pytest, and missing one of them makes this check
+    report the whole suite dark — loudly, which is the right direction, but it
+    still has to be kept in step with the script:
+
+    * ``batch <shard> tests/...`` — the sharded call site (#730). The shard
+      number decides WHICH CI job runs it, not whether it runs, so coverage
+      does not care which one it is.
+    * ``"${PYTEST[@]}" tests/...`` — the runner is a bash array.
+    * ``$PYTEST tests/...`` — in case a plain one is left behind.
+    """
     text = script.read_text().replace("\\\n", " ")
     patterns = set()
     for line in text.splitlines():
-        # Both spellings: the runner is a bash ARRAY, so call sites read
-        # "${PYTEST[@]}", but a plain $PYTEST is still worth matching in case
-        # one is left behind or reintroduced.
-        if re.search(r"\$\{?PYTEST", line) and not line.lstrip().startswith("#"):
+        if line.lstrip().startswith("#"):
+            continue
+        if re.search(r"\$\{?PYTEST", line) or re.match(r"\s*batch\s+\d+\s", line):
             patterns.update(re.findall(r"tests/[A-Za-z0-9_\[\]*.\-]+", line))
     return patterns
 
