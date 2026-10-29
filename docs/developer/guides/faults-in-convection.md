@@ -25,9 +25,10 @@ WELDED hierarchy (A in `design/FAULT_MULTIGRID_HIERARCHIES.md`): only the finest
 carries the fault. Its coarse spaces cannot represent the slip, the weak bridge or the
 ladder cells, and the velocity sub-solve caps at 200 iterations once Newton starts on a
 mobilising lid. A placed ladder is not replayed onto the levels by `add_fault`, so the
-split levels have to be built by hand: the same ladder at twice and four times the rung
-spacing, placed on the base levels one and two steps below the finest and split along
-their own rungs, as the mid levels.
+split levels have to be built by hand as the mid levels: the same ladder at twice the
+rung spacing placed on the finest base level (beside the faulted mesh's own ladder),
+and at four times the rung spacing on the base level one step below, each split along
+its own rungs. The coarser base levels stay welded.
 
 ```python
 from underworld3.utilities.custom_mg import set_custom_fmg
