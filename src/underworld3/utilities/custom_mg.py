@@ -983,127 +983,6 @@ def _count_zero_columns_parallel(P, comm):
     return nzero
 
 
-def _repair_zero_columns_parallel(P, coords_f, fine_layout, coords_u, cols_u,
-                                  ncomp, comm):
-    """Give each unreached coarse DOF a nearest-fine-DOF entry (parallel).
-
-    The counterpart of :func:`_repair_zero_columns_serial` for the
-    cross-partition build: a coarse DOF no fine node reaches (the fine
-    mesh gathered onto a surgery rank, a placed band, a relaxed child)
-    leaves an empty column and a singular Galerkin coarse operator. Each
-    rank reads the empty columns it OWNS off P^T.1, the orphan list is
-    all-gathered (small), every rank offers its nearest OWNED fine DOF
-    of the same component, and the rank holding the nearest one sets the
-    injection entry. Returns ``(P, n_repaired)``; ``P`` is re-assembled.
-    """
-    m4 = comm.tompi4py()
-    ones_f = P.createVecLeft()
-    ones_f.set(1.0)
-    colsum = P.createVecRight()
-    P.multTranspose(ones_f, colsum)
-    cstart, _cend = colsum.getOwnershipRange()
-    zero_local = np.flatnonzero(colsum.array == 0.0) + cstart
-    ones_f.destroy()
-    colsum.destroy()
-    zero = np.concatenate(m4.allgather(zero_local.astype(np.int64)))
-    if zero.size == 0:
-        return P, 0
-    # global column -> (coarse node coordinate, component) via the gathered cloud
-    where = {int(cols_u[n, c]): (n, c)
-             for n in range(cols_u.shape[0]) for c in range(ncomp)
-             if cols_u[n, c] >= 0}
-    from scipy.spatial import cKDTree
-    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
-    tree = cKDTree(coords_f) if coords_f.shape[0] else None
-    offers = []                                   # (distance, global fine row)
-    for col in zero.tolist():
-        node_c, comp = where[int(col)]
-        best = (np.inf, -1)
-        if tree is not None:
-            k = min(8, coords_f.shape[0])
-            d, idx = tree.query(coords_u[node_c], k=k)
-            for dd, i in zip(np.atleast_1d(d), np.atleast_1d(idx)):
-                grow = int(l2g_f[int(i) * ncomp + comp])
-                if fstart <= grow < fend:          # an OWNED fine row
-                    best = (float(dd), grow)
-                    break
-        offers.append(best)
-    # the nearest offer across ranks wins each orphan
-    dist = np.array([o[0] for o in offers])
-    rows = np.array([o[1] for o in offers], dtype=np.int64)
-    all_dist = np.vstack(m4.allgather(dist))
-    all_rows = np.vstack(m4.allgather(rows))
-    winner = np.argmin(all_dist, axis=0)
-    for j, col in enumerate(zero.tolist()):
-        if winner[j] == m4.rank and np.isfinite(all_dist[winner[j], j]):
-            P.setValues([int(all_rows[winner[j], j])], [int(col)], [1.0],
-                        addv=PETSc.InsertMode.INSERT_VALUES)
-    P.assemble()
-    return P, int(zero.size)
-
-
-def _assert_no_zero_columns_parallel(P, comm):
-    """Parallel zero-column guard: a coarse DOF with no fine image -> singular
-    Galerkin coarse operator."""
-    nzero = _count_zero_columns_parallel(P, comm)
-    if nzero:
-        raise RuntimeError(
-            f"parallel transfer has {nzero} zero columns (coarse DOFs with no fine "
-            f"image) — BC-per-level reduction failed; coarse operator would be singular.")
-
-
-def _assert_no_zero_columns_serial(P_csr, level):
-    """Serial zero-column guard — same physics as the parallel guard above: a
-    coarse DOF with no fine image makes the Galerkin coarse operator singular."""
-    nzero = int((np.asarray((P_csr != 0).sum(axis=0)).ravel() == 0).sum())
-    if nzero:
-        raise RuntimeError(
-            f"transfer {level - 1}->{level} has {nzero} zero columns (coarse DOFs "
-            f"with no fine image) — BC-per-level reduction failed; coarse "
-            f"operator would be singular.")
-
-
-def _repair_zero_columns_serial(P_csr, coords_c, coords_f, map_c, map_f,
-                                nc, level):
-    """Give each unreached coarse DOF a nearest-fine-DOF entry (serial).
-
-    The barycentric builder has LOCAL support, so on NON-NESTED level pairs
-    — two independently PLACED meshes (#626), a relaxed child (#424) — a
-    coarse DOF can lose every fine image and its Galerkin column goes
-    singular. The dense-RBF rescue fixes that globally at a performance
-    cliff; when only a handful of columns are empty, a surgical injection
-    entry (weight 1 at the nearest fine DOF of the same component) makes
-    the RAP nonsingular at zero cost. These are preconditioner transfers,
-    not the discretisation — a few injected rows cost iterations at worst,
-    never correctness. Returns the (possibly repaired) matrix and the
-    repair count; a column it cannot repair is left empty for the guard
-    to refuse loudly.
-    """
-    colsum = np.asarray((P_csr != 0).sum(axis=0)).ravel()
-    zero = np.flatnonzero(colsum == 0)
-    if not len(zero):
-        return P_csr, 0
-    from scipy.spatial import cKDTree
-
-    n_full_f = coords_f.shape[0] * nc
-    inv_f = -np.ones(n_full_f, dtype=np.int64)
-    inv_f[np.asarray(map_f, dtype=np.int64)] = np.arange(len(map_f))
-    tree = cKDTree(coords_f)
-    P = P_csr.tolil()
-    repaired = 0
-    for j in zero:
-        full_c = int(map_c[j])
-        node_c, comp = divmod(full_c, nc)
-        k = min(8, coords_f.shape[0])
-        for i in np.atleast_1d(tree.query(coords_c[node_c], k=k)[1]):
-            full_f = int(i) * nc + comp
-            if inv_f[full_f] >= 0:
-                P[int(inv_f[full_f]), int(j)] = 1.0
-                repaired += 1
-                break
-    return P.tocsr(), repaired
-
-
 def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
                     ksp=None, patch_rows=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
@@ -1441,6 +1320,20 @@ class CustomMGHierarchy:
         # cost is bounded by the cap however long the band grows.
         self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
+        # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
+        # split-node fault takes the side-aware cell-located transfer, and its
+        # unreached unknowns are dropped at install rather than repaired.
+        from underworld3.utilities.fault_mg import is_split_level
+        self.has_split_levels = any(is_split_level(m) for m in self.level_meshes[:-1])
+        # A coarse unknown no fine unknown reaches (a non-nested level: a
+        # cut, a placed band, a relaxed child) is DROPPED at install, never
+        # repaired by nearest-node injection. The injection put a weight-1
+        # entry on a fine row that already carried one, two identical
+        # columns, a singular Galerkin coarse operator: NaN on a two-mid
+        # ladder chain (serial, 4 orphans, split and unsplit finest alike)
+        # and 512 duplicated columns at np = 2. Kept as an attribute so the
+        # install paths read one rule.
+        self.drop_orphans = True
 
     def _validated_fac_zone(self, fac_zone):
         """Normalise ``fac_zone`` to None or a list of boolean cell masks.
@@ -1582,8 +1475,41 @@ class CustomMGHierarchy:
         # patch is read off its own transfer ``Ps[l-1]``, in the level
         # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
+        # per level, the parallel cell-located transfer's hit-rate record
+        self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
+        from underworld3.utilities import fault_mg
         for l in range(1, nlev):
+            # Split-level multigrid: every pair touching a split level takes
+            # the cell-located transfer. A split COARSE level defeats the
+            # node-cloud builders (they triangulate the coarse nodes, and
+            # coincident slit nodes make that degenerate); the transfer reads
+            # the coarse CELLS instead and keeps each side's nodes on their
+            # own side. Its unreached coarse unknowns (a few near the tips)
+            # are dropped at install time — never repaired by injection, which
+            # duplicated columns and made the Galerkin operators singular in
+            # parallel. A hierarchy whose ONLY split level is the finest (a
+            # welded tail under a split fault, the placed ribbon of #670)
+            # keeps the builders, the orphan repair and the FAC patch it
+            # always had.
+            if self.has_split_levels and (
+                    fault_mg.is_split_level(self.level_meshes[l - 1])
+                    or fault_mg.is_split_level(self.level_meshes[l])):
+                if parallel:
+                    P = fault_mg.cell_located_transfer_parallel(
+                        self.level_meshes[l - 1], self.level_meshes[l], degree,
+                        continuous, coords[l - 1], coords[l], maps[l - 1],
+                        maps[l], nc, comm)
+                    self.level_transfer_stats[l] = fault_mg.last_transfer_stats
+                else:
+                    Pn = fault_mg.cell_located_prolongation(
+                        self.level_meshes[l - 1], self.level_meshes[l], degree,
+                        continuous, coarse_coords=coords[l - 1],
+                        fine_coords=coords[l])
+                    P = _to_petsc_aij(
+                        _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc))
+                Ps.append(P)
+                continue
             if parallel:
                 args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
@@ -1618,21 +1544,8 @@ class CustomMGHierarchy:
                                     f"without a fine image where the "
                                     f"co-partitioned one left {n_zero}; kept "
                                     f"the co-partitioned transfer (#671).")
-                # the same orphan repair the serial path has: a coarse DOF no
-                # fine node reaches gets its nearest fine DOF as an injection
-                if _count_zero_columns_parallel(P, comm) > 0:
-                    coords_u, cols_u = _gather_coarse_cloud(
-                        coords[l - 1], maps[l - 1], nc, comm)
-                    P, n_rep = _repair_zero_columns_parallel(
-                        P, coords[l], maps[l], coords_u, cols_u, nc, comm)
-                    if n_rep:
-                        import warnings
-                        warnings.warn(
-                            f"custom_mg: parallel transfer {l - 1}->{l} had "
-                            f"{n_rep} coarse DOF(s) with no fine image "
-                            f"(non-nested levels); repaired by "
-                            f"nearest-fine-DOF injection.")
-                _assert_no_zero_columns_parallel(P, comm)
+                # an orphan coarse DOF (no fine image) is dropped at install
+                # (restrict_unreached), never injected — see drop_orphans
                 # FAC in parallel (#670): the same blocks as the serial branch
                 # below, in GLOBAL row numbering — the layout's ghost-resolved
                 # l2g puts a masked cell's off-rank nodes into this rank's
@@ -1724,17 +1637,8 @@ class CustomMGHierarchy:
                 else:
                     Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
                                            maps[l], nc, self.builder)
-                Pr, n_rep = _repair_zero_columns_serial(
-                    Pr, coords[l - 1], coords[l], maps[l - 1], maps[l],
-                    nc, l)
-                if n_rep:
-                    import warnings
-                    warnings.warn(
-                        f"custom_mg: transfer {l - 1}->{l} had {n_rep} coarse "
-                        f"DOF(s) with no fine image (non-nested levels); "
-                        f"repaired by nearest-fine-DOF injection. Costs "
-                        f"iterations at worst, never correctness.")
-                _assert_no_zero_columns_serial(Pr, l)
+                # an orphan coarse DOF (no fine image) is dropped at install
+                # (restrict_unreached), never injected — see drop_orphans
                 # TODO(MEASURE): A/B affordance for the #629 campaign, like
                 # the nested-native flag above; remove when settled.
                 if not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC"):
@@ -1844,8 +1748,22 @@ class CustomMGHierarchy:
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
-        _install_transfers(solver, self.transfers, verbose=verbose,
-                           patch_rows=getattr(self, "level_patch_rows", None))
+        Ps = self.transfers
+        patch_rows = getattr(self, "level_patch_rows", None)
+        if self.drop_orphans:
+            # a coarse level the restriction renumbered (it dropped unreached
+            # columns) loses its recorded FAC patch rows; a level it left whole,
+            # and the finest, keep theirs
+            from underworld3.utilities.fault_mg import restrict_unreached
+            restricted = restrict_unreached(Ps, solver.dm.comm)
+            if patch_rows is not None:
+                patch_rows = [
+                    None if level < len(Ps)
+                    and restricted[level].getSize()[1] != Ps[level].getSize()[1]
+                    else rows
+                    for level, rows in enumerate(patch_rows)]
+            Ps = restricted
+        _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
         solver._custom_mg_live = {"h": id(self),
@@ -2332,10 +2250,12 @@ def _colocate_level(coarse_mesh, fine_mesh):
     sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
     part.setShellPartition(comm.size, sizes=sizes, points=order)
     work.distribute()
-    return uw.discretisation.Mesh(
+    moved = uw.discretisation.Mesh(
         work, simplex=coarse_mesh.dm.isSimplex(), qdegree=coarse_mesh.qdegree,
         coordinate_system_type=coarse_mesh.CoordinateSystem.coordinate_type,
         boundaries=coarse_mesh.boundaries, verbose=False)
+    moved._mg_static = getattr(coarse_mesh, "_mg_static", False)
+    return moved
 
 
 def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):

@@ -326,6 +326,12 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # hardened, fast, and exactly what CI exists to run. test_1064 is the slow one
   # and it is excluded by WHAT IT IS (tier_c) below, not by its number.
   batch 1 tests/test_106*py tests/test_107*py
+  # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
+  # thick, the quadratic benchmark); the two slow sphere tests (1081, 1084) are
+  # tier C, so the "not tier_c" filter leaves them out. test_109*: the fault
+  # placement and split-level multigrid tests that follow. Shard 3: the lightest
+  # measured (17.3 min on run 40638600008); not yet timed in a sharded run.
+  batch 3 tests/test_108*py tests/test_109*py
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign

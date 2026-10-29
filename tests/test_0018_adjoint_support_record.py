@@ -117,6 +117,31 @@ def test_a_rotated_constraint_is_supported_on_the_rotated_operator(mesh):
     assert "null space" in verdict["reason"]
 
 
+@pytest.mark.tier_b
+def test_a_rotated_constraint_without_a_rotated_adjoint_is_refused():
+    """A manifold sheet carries its tangency as a rotated constraint, and its
+    adjoint_solve (the vector solvers') transposes the unrotated operator: the
+    answer would ignore the constraint. Only the Stokes saddle point routes a
+    rotated adjoint, so this solve is refused, naming the rotated constraint."""
+    uw, model = _fresh_model()
+    sphere = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.4, degree=1, qdegree=3)
+    x, y, z = sphere.X
+    sheet = uw.systems.ThinSheet(sphere)
+    sheet.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    sheet.constitutive_model.Parameters.shear_viscosity_0 = 1
+    sheet.add_basal_drag(1, reference_velocity=[2 * y * z, -2 * x * z, 0])
+    model.tracker.time, model.tracker.step = 0.0, 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with model.step(0.1):
+            sheet.solve()
+    verdict = _adjoint_of(model, "solve")
+    assert verdict["supported"] is False
+    assert "rotated constraint" in verdict["reason"]
+    with pytest.raises(RuntimeError, match="refuses an adjoint"):
+        sheet.adjoint_solve(sheet.dm.getGlobalVec())
+
+
 def test_an_unconverged_solve_is_refused_after_the_fact(mesh):
     """The structural verdict is written before the solve. A solve that then
     diverged is linearised about a state it never reached — the outcome must

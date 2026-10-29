@@ -437,6 +437,27 @@ Refusals, stated: one flat wall per object (box-edge outcrops and
 multi-wall contact refuse); curved or deformed tops refuse (the cap's
 manifold-prep slot); removal of an outcropping object is not yet wired.
 
+### The ladder through the wall
+
+The structured ladder (`mesher="ladder"`: rungs on the spine's samples, one element
+either side, nothing snapped) used to be refused wherever it protruded past the
+domain, in either realisation. It now outcrops: the ladder runs on the sample rows
+inside the domain to one rung short of the wall, and a small unstructured cap,
+clipped against the domain polygon exactly as the default band is, closes it to
+the outcrop (`_ladder_outcrop_assembly_2d`). The spine keeps its rung vertices up
+to the last rung, so a split walks them; the cap's cells are where a weak layer
+bridges a split that must stop blind of the surface. On the ribbon placer give the
+polyline that reaches past the wall as the `spines` entry and the samples at least
+three spacings inside as the trace (a trace nearer the wall meets a wall vertex in
+the end-vertex pull). Two defects on curved walls were fixed with it: the domain
+tool now winds every boundary loop counter-clockwise (a hole loop wound against the
+exterior was added as area, so an annulus at some cell sizes met nothing), and the
+2-D outcrop frame groups the wall's chords into smooth walls as the 3-D rule does,
+keeping the curve's own vertices through the splice (a dipping band's clearance
+cavity spans a few chords beside the one it crosses, and chording across the kept
+vertices lost the sagitta the area guard refuses).
+`tests/test_1091_place_outcrop_curved_wall.py`.
+
 ## Limitations
 * **An essential boundary condition on the surface is not sound** under the
   geometric multigrid hierarchy. The coarse levels do not carry the surface, so
