@@ -757,6 +757,26 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
+def _segmented_structural_patch(split, node_of_row, coords, max_rows):
+    """The structural patch ``split = (owned, subdomain)`` as ASM blocks.
+
+    By default it stays one block. TODO(MEASURE): with the
+    ``UW_FAC_SEGMENT_STRUCTURAL`` knob set, the subdomain is cut along strike
+    into pieces of at most ``max_rows`` rows, as a zone mask's block is
+    (:func:`_segment_block`), so the exact sub-solve of a split fault's patch
+    stays bounded as the fault grows; the overlap layer joins the pieces.
+    ``node_of_row`` gives the node of each subdomain row. Returns the pair
+    unchanged, or a list of ``(piece, piece)`` blocks."""
+    _owned, sub = split
+    if not os.environ.get("UW_FAC_SEGMENT_STRUCTURAL"):
+        return split
+    pieces = [p for p in _segment_block(sub, node_of_row, coords, max_rows)
+              if p.size]
+    if len(pieces) <= 1:
+        return split
+    return [(p, p) for p in pieces]
+
+
 def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
                               w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
     """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
@@ -1724,8 +1744,25 @@ class CustomMGHierarchy:
                             if extra.size:
                                 blocks.append((extra, extra))
                         else:
-                            blocks.append((np.asarray(_own, dtype=np.int64),
-                                           np.asarray(sub, dtype=np.int64)))
+                            # the subdomain is this rank's owned rows: their
+                            # nodes come from the owned part of the layout
+                            sub = np.asarray(sub, dtype=np.int64)
+                            l2g_f = np.asarray(lay.l2g)
+                            owned_local = np.flatnonzero(
+                                (l2g_f >= lay.rstart) & (l2g_f < lay.rend))
+                            local_of_row = np.full(lay.rend - lay.rstart, -1,
+                                                   dtype=np.int64)
+                            local_of_row[l2g_f[owned_local] - lay.rstart] = \
+                                owned_local
+                            structural = _segmented_structural_patch(
+                                (np.asarray(_own, dtype=np.int64), sub),
+                                local_of_row[sub - lay.rstart] // nc,
+                                coords[l],
+                                int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                   self.fac_block_rows)))
+                            blocks.extend(structural
+                                          if isinstance(structural, list)
+                                          else [structural])
                     # every rank installs the patch, or none does: a rank with
                     # no rows of its own still sets the smoother type
                     n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
@@ -1825,9 +1862,16 @@ class CustomMGHierarchy:
                             None if not blocks
                             else blocks[0] if len(blocks) == 1 else blocks)
                     else:
-                        self.level_patch_rows[l] = _fac_patch_split(
+                        split = _fac_patch_split(
                             Pr, coords[l - 1], coords[l], maps[l - 1],
                             maps[l], nc)
+                        self.level_patch_rows[l] = (
+                            None if split is None
+                            else _segmented_structural_patch(
+                                split, np.asarray(maps[l])[split[1]] // nc,
+                                coords[l],
+                                int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                   self.fac_block_rows))))
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
