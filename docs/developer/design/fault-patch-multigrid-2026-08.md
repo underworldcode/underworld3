@@ -196,6 +196,8 @@ no-interior-vertex refusal — a half-cell nick).
    option.** On the near-singular split-contact patch the LU is what
    buys contrast constancy. On an unsplit painted band the two are
    indistinguishable at rig scale.
+   *Superseded 2026-09-03 (891c9bb0, #670): LU with the nonzero shift is
+   the default block solve, and ILU there is a regression (#892).*
 4. **Patch keying.** Split meshes: coincident fine pairs — the split's
    plus/minus nodes at bit-identical coordinates. (Not transfer identity
    rows onto coarse nodes: a cut inserts *new* vertices at edge

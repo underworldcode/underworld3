@@ -32,9 +32,9 @@ block ``preonly`` + LU with the nonzero shift.
 
 The fixture is a fault split in place over a welded base hierarchy (1/8, 1/16),
 so the finest level is the split mesh and the structural patch puts the FAC
-smoother on it in serial and in parallel. A second, serial test pins which levels
-carry a patch on test_1022's composed stack, where a coarse level has one and the
-rotated and standard installs disagree on keeping it. This file carries no
+smoother on it in serial and in parallel. A second, serial test (tier C) records
+which levels carry a patch on test_1022's composed stack, where a coarse level has
+one and the rotated and standard installs disagree on keeping it. This file carries no
 ``mpi(min_size=2)`` mark: it runs in the serial suite and in the parallel batches.
 
     python -m pytest tests/parallel/test_1090_mg_live_configuration_parallel.py
@@ -51,7 +51,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import custom_mg
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = pytest.mark.level_2
 
 TRACE = np.array([[0.3, 0.45], [0.7, 0.55]])
 PATHS = ("stokes_rotated", "sheet_rotated", "stokes_plain", "poisson")
@@ -173,6 +173,7 @@ def _checked_fac_levels(mg, path, mode):
     return fac_levels
 
 
+@pytest.mark.tier_b
 @pytest.mark.parametrize("mode", ["composite", "asm"])
 @pytest.mark.parametrize("path", PATHS)
 def test_every_level_runs_its_configured_smoother(base, path, mode, monkeypatch):
@@ -205,6 +206,7 @@ def _ribbon(base, size):
     raise RuntimeError(f"ribbon placement failed at size {size}")
 
 
+@pytest.mark.tier_c
 @pytest.mark.skipif(uw.mpi.size > 1, reason="the composed placement is serial")
 @pytest.mark.parametrize("path,expected", [("stokes_rotated", [3]),
                                            ("stokes_plain", [2, 3])])
@@ -213,14 +215,21 @@ def test_which_levels_carry_a_fac_patch(path, expected, monkeypatch):
     ribbon cut and split) gives a coarse level a patch: the mid ribbon is not a
     refinement of the base, so its transfer has rows a SOR level cannot smooth.
 
-    The two installs disagree on keeping it, and this pins both. The standard
-    install keeps the patch rows of every level the orphan restriction leaves
-    whole (``CustomMGHierarchy.install``); the rotated path clears every coarse
-    level's rows after the restriction and keeps only the finest's
-    (``rotated_bc``, the ``drop_orphans`` block), so the contact solve smooths the
-    mid ribbon by whole-level SOR. Measured 2026-10-30 at 799ef021 and with the
-    #892 fix; the rule is B's (#889) and not yet ruled on. A change to either
-    install must change this test deliberately."""
+    The two installs disagree on keeping it, and this records both. The
+    standard install keeps the patch rows of every level the orphan restriction
+    leaves whole (``CustomMGHierarchy.install``); the rotated path clears every
+    coarse level's rows after the restriction and keeps only the finest's
+    (``rotated_bc``, the ``drop_orphans`` block), so the contact solve smooths
+    the mid ribbon by whole-level SOR.
+
+    A characterisation (tier C), not a contract: the rule is B's (#889). With LU
+    blocks, keeping the coarse patch (its rows remapped through the restriction)
+    left the iterations unchanged on this stack at S 0.010 and 0.005 (57 and 55
+    velocity iterations over 18 applications either way), so the rule stands on
+    that evidence. The FAC levels were measured 2026-10-30 on 799ef021 and with
+    the #892 fix; whether the restriction leaves the mid ribbon whole is a
+    property of the placed mesh. If this fails, explain which install changed
+    rather than reverting it."""
     monkeypatch.setenv("UW_FAC_MODE", "composite")
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0), maxCoords=(1, 1), cellSize=H_BASE, regular=False,

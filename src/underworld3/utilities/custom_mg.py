@@ -1212,9 +1212,10 @@ def _set_up_fac_smoothers(pc, fac_keys):
     set-up, so its blocks ran PCASM's default, unshifted ILU(0) where LU was
     configured (#892).
 
-    The block solver read from the database is also set on each block's PC, so
-    it no longer depends on when the database is read or cleaned. FAC blocks are
-    LU: ILU there is a regression."""
+    The block solver is also set on each block's PC from the database, so the
+    blocks run it even where the ASM had already set up before this call; the
+    keys must still be in the database when it runs. FAC blocks are LU: ILU
+    there is a regression."""
     if not fac_keys:
         return
     opts = PETSc.Options()
@@ -1226,8 +1227,6 @@ def _set_up_fac_smoothers(pc, fac_keys):
         level_pc = smoother.getPC()
         asm = (level_pc.getCompositePC(1) if level_pc.getType() == "composite"
                else level_pc)
-        if asm.getType() != "asm":
-            continue
         asm.setUp()
         for block in asm.getASMSubKSP():
             prefix = block.getOptionsPrefix() or ""
