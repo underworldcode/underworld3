@@ -441,7 +441,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
         Q.setValue(i, i, 1.0)                    # identity default (owned rows)
 
     normal_rows = []
-    datum_nodes = []                             # (grows[0], q, dspec) for simple nodes
+    datum_nodes = []                             # (global row, point, boundary name, normal sign)
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
