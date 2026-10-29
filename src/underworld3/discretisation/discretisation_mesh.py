@@ -2100,6 +2100,12 @@ class Mesh(Stateful, uw_object):
             Stratum value within the label. If ``None``, resolved from
             ``self.boundaries[label_name].value``.
 
+        Notes
+        -----
+        Collective on the parent communicator: every rank must call this method,
+        including ranks with no local marked faces. Empty labels created there
+        remain on the parent mesh after extraction.
+
         Returns
         -------
         Mesh
@@ -2150,7 +2156,8 @@ class Mesh(Stateful, uw_object):
                 f"Label '{label_name}' (value {label_value}) has a globally empty "
                 f"face stratum. There is no surface to extract."
             )
-        # The PETSc extraction is collective and needs a label on empty ranks too.
+        # Extraction is collective: empty labels intentionally persist on the parent
+        # ranks that lacked this globally present boundary.
         self.dm.createLabel(label_name)
 
         # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
@@ -2542,8 +2549,10 @@ class Mesh(Stateful, uw_object):
         A parent DOF owner need not retain any extracted-region cells. Local
         coordinate matches can therefore exist only on another rank's parent
         ghosts. Reduce matching contributions and their multiplicities through
-        the parent field DM before writing owner values. Averaging duplicate
-        shared copies preserves injection, including ``add`` semantics; unmatched
+        the parent field DM before writing owner values. Shared copies must
+        agree within ``1e-14 + 1e-12 * abs(value)``; inconsistent values raise
+        collectively before modifying the target. Averaging agreeing copies
+        preserves injection, including ``add`` semantics; unmatched
         parent DOFs keep their original values. No global coordinate gather or
         interpolation is used.
 
@@ -2573,7 +2582,41 @@ class Mesh(Stateful, uw_object):
         try:
             values.set(0.0)
             counts.set(0.0)
-            values.array.reshape(new_data.shape)[parent_rows] = sub_var.data[sub_rows]
+            # Variable-to-variable injection copies the stored nondimensional values.
+            source = numpy.asarray(sub_var.data)[sub_rows]
+            values.array.reshape(new_data.shape)[parent_rows] = source
+            # Reconcile every coincident copy through the DOF overlap, including
+            # owners with no local child match. Neutral entries do not contribute.
+            minimum = numpy.full(values.getLocalSize(), numpy.inf)
+            maximum = numpy.full(values.getLocalSize(), -numpy.inf)
+            minimum.reshape(new_data.shape)[parent_rows] = source
+            maximum.reshape(new_data.shape)[parent_rows] = source
+            if uw.mpi.size > 1:
+                from mpi4py import MPI
+
+                overlap = field_dm.getSectionSF()
+                datatype = MPI._typedict[minimum.dtype.char]
+                owned_minimum = numpy.full(global_values.getLocalSize(), numpy.inf)
+                owned_maximum = numpy.full(global_values.getLocalSize(), -numpy.inf)
+                # Section-SF roots use the owned global-vector layout; leaves
+                # use the local vector, which also includes ghost entries.
+                for leaves, roots, operation in (
+                    (minimum, owned_minimum, MPI.MIN),
+                    (maximum, owned_maximum, MPI.MAX),
+                ):
+                    overlap.reduceBegin(datatype, leaves, roots, operation)
+                    overlap.reduceEnd(datatype, leaves, roots, operation)
+                minimum, maximum = owned_minimum, owned_maximum
+            present = minimum <= maximum
+            disagree = not numpy.all(numpy.isclose(
+                minimum[present], maximum[present], rtol=1e-12, atol=1e-14,
+            ))
+            invalid = disagree or not numpy.all(numpy.isfinite(source))
+            if uw.mpi.comm.allreduce(int(invalid)):
+                raise ValueError(
+                    "prolongate received inconsistent or nonfinite shared submesh values; "
+                    "synchronize the source field before injection"
+                )
             counts.array.reshape(new_data.shape)[parent_rows] = 1.0
             global_values.set(0.0)
             global_counts.set(0.0)

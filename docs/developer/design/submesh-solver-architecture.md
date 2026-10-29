@@ -55,6 +55,12 @@ whether multiple ranks own points; a false result does not require redistributin
 an extracted child. Implicit redistribution would invalidate rank-local parent
 maps and the saved subpoint mapping. Shared field values are still reduced through
 the parent field DM, since a parent DOF owner need not own an extracted cell.
+Prolongation requires shared child values to agree within an absolute tolerance
+of `1e-14` and relative tolerance of `1e-12`. The parent DOF star forest reduces
+per-component minima and maxima before any target update; disagreement raises
+on every rank rather than silently averaging incompatible values. Surface
+extraction is collective, including ranks with no local faces, and intentionally
+retains empty boundary labels on those parent ranks.
 Independent child repartitioning requires migrating the parent--child mapping;
 it is not provided by coordinate-coincidence injection.
 

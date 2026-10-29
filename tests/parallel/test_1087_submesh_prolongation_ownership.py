@@ -101,3 +101,29 @@ def test_surface_extraction_keeps_empty_ranks():
     assert surface.dim == 1 and surface.cdim == 2
     with pytest.raises(ValueError):
         parent.extract_surface("Top", label_value=99999)
+
+
+@pytest.mark.parametrize("mode", ("replace", "add"))
+@pytest.mark.parametrize("component", (0, 1))
+def test_inconsistent_shared_child_values_are_rejected_collectively(mode, component):
+    if uw.mpi.size < 2:
+        pytest.skip("requires shared submesh DOFs on multiple ranks")
+    parent = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, qdegree=2,
+    )
+    parent.dm.createLabel("WholeDomain")
+    start, end = parent.dm.getHeightStratum(0)
+    for cell in range(start, end):
+        parent.dm.setLabelValue("WholeDomain", cell, 1)
+    child = parent.extract_region("WholeDomain", label_value=1)
+    source = uw.discretisation.MeshVariable("InconsistentChild", child, 2, degree=1)
+    target = uw.discretisation.MeshVariable("UnchangedParent", parent, 2, degree=1)
+    coordinates = np.concatenate(uw.mpi.comm.allgather(np.asarray(source.coords)))
+    assert len(np.unique(coordinates.round(12), axis=0)) < len(coordinates)
+    source.array[:, 0, :] = 2.0
+    target.array[:, 0, :] = 7.0
+    # Deliberately corrupt local copies without the public array writer's sync.
+    source.vec.array.reshape(-1, 2)[:, component] += uw.mpi.rank
+    with pytest.raises(ValueError, match="inconsistent.*shared"):
+        child.prolongate(source, target, mode=mode)
+    np.testing.assert_array_equal(target.array[:, 0, :], 7.0)
