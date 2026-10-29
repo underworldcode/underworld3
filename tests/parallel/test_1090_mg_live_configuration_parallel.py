@@ -32,7 +32,9 @@ block ``preonly`` + LU with the nonzero shift.
 
 The fixture is a fault split in place over a welded base hierarchy (1/8, 1/16),
 so the finest level is the split mesh and the structural patch puts the FAC
-smoother on it in serial and in parallel. This file carries no
+smoother on it in serial and in parallel. A second, serial test pins which levels
+carry a patch on test_1022's composed stack, where a coarse level has one and the
+rotated and standard installs disagree on keeping it. This file carries no
 ``mpi(min_size=2)`` mark: it runs in the serial suite and in the parallel batches.
 
     python -m pytest tests/parallel/test_1090_mg_live_configuration_parallel.py
@@ -128,15 +130,11 @@ def _view(obj):
     return comm.bcast(text)
 
 
-@pytest.mark.parametrize("mode", ["composite", "asm"])
-@pytest.mark.parametrize("path", PATHS)
-def test_every_level_runs_its_configured_smoother(base, path, mode, monkeypatch):
-    monkeypatch.setenv("UW_FAC_MODE", mode)
-    mg = _solved_mg_pc(base, path)
+def _checked_fac_levels(mg, path, mode):
+    """Check every level of the live PCMG ``mg`` against its configuration and
+    return the levels that carry a FAC patch."""
     assert mg.getType() == "mg", f"{path}: custom multigrid not installed"
     nlev = mg.getMGLevels()
-    assert nlev == 3
-
     coarse = mg.getMGSmoother(0)
     assert coarse.getType() == "preonly"
     assert coarse.getPC().getType() == "redundant"
@@ -172,6 +170,88 @@ def test_every_level_runs_its_configured_smoother(base, path, mode, monkeypatch)
                 f"{k.getPC().getType()!r}, configured 'lu' (#892)")
             assert "[NONZERO]" in _view(k.getPC()), (
                 f"{path} ({mode}) level {l}: FAC block LU without the nonzero shift")
-    # the split mesh is the finest level, so the structural patch is always there:
-    # without it this test would pass on any solver that never installs FAC
-    assert fac_levels == [nlev - 1], f"{path}: FAC patch on levels {fac_levels}"
+    return fac_levels
+
+
+@pytest.mark.parametrize("mode", ["composite", "asm"])
+@pytest.mark.parametrize("path", PATHS)
+def test_every_level_runs_its_configured_smoother(base, path, mode, monkeypatch):
+    monkeypatch.setenv("UW_FAC_MODE", mode)
+    mg = _solved_mg_pc(base, path)
+    assert mg.getMGLevels() == 3
+    # the split mesh is the finest level, so the structural patch is always there
+    # (the coarse pair is a native refinement and takes none): without it this
+    # test would pass on any solver that never installs FAC
+    assert _checked_fac_levels(mg, path, mode) == [2], f"{path}: FAC levels"
+
+
+H_BASE, WIDTH, S_MID, S_FINE = 1 / 8, 0.06, 0.020, 0.010
+RIBBON = np.array([[0.15, 0.42], [0.85, 0.58]])
+
+
+def _ribbon(base, size):
+    """test_1022's placed transfinite ribbon at band spacing ``size``."""
+    from underworld3.utilities.place_surface import place_thin_volume
+    for clearance in (0.55, 0.7, 0.9):
+        try:
+            dm, _info = place_thin_volume(
+                base.dm, [RIBBON], width=WIDTH, label="Zone", label_value=31,
+                size=size, clearance=clearance, assembly="fuse", mesher="ladder")
+        except RuntimeError:
+            continue
+        return uw.discretisation.Mesh(
+            dm, simplex=True, qdegree=2, boundaries=base.boundaries,
+            coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    raise RuntimeError(f"ribbon placement failed at size {size}")
+
+
+@pytest.mark.skipif(uw.mpi.size > 1, reason="the composed placement is serial")
+@pytest.mark.parametrize("path,expected", [("stokes_rotated", [3]),
+                                           ("stokes_plain", [2, 3])])
+def test_which_levels_carry_a_fac_patch(path, expected, monkeypatch):
+    """test_1022's composed stack (base L0 + L1, an unsplit mid ribbon, the finest
+    ribbon cut and split) gives a coarse level a patch: the mid ribbon is not a
+    refinement of the base, so its transfer has rows a SOR level cannot smooth.
+
+    The two installs disagree on keeping it, and this pins both. The standard
+    install keeps the patch rows of every level the orphan restriction leaves
+    whole (``CustomMGHierarchy.install``); the rotated path clears every coarse
+    level's rows after the restriction and keeps only the finest's
+    (``rotated_bc``, the ``drop_orphans`` block), so the contact solve smooths the
+    mid ribbon by whole-level SOR. Measured 2026-10-30 at 799ef021 and with the
+    #892 fix; the rule is B's (#889) and not yet ruled on. A change to either
+    install must change this test deliberately."""
+    monkeypatch.setenv("UW_FAC_MODE", "composite")
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=H_BASE, regular=False,
+        qdegree=2, refinement=1)
+    mid = _ribbon(base, S_MID)
+    a, b = RIBBON
+    length = float(np.linalg.norm(b - a))
+    n_along = int(round(length / S_FINE))
+    spine = a + (np.arange(3, n_along - 2) * (length / n_along))[:, None] * (b - a) / length
+    mesh = _ribbon(base, S_FINE).add_fault(("Flt", spine))
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        stokes.add_dirichlet_bc((y - sympy.Rational(1, 2), 0), wall)
+    if path == "stokes_rotated":
+        stokes.add_fault_bc(0, "Flt")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1e-6
+    custom_mg.set_custom_fmg(stokes, base._coarse_level_meshes()[:-1] + [base, mid],
+                             field_id=0)
+    stokes.solve()
+    if path == "stokes_rotated":
+        assert stokes._rotated_freeslip_info["converged"]
+        mg = (stokes._rotated_linear_cache["ctx"]["ksp"].getPC()
+              .getFieldSplitSubKSP()[0].getPC())
+    else:
+        assert stokes.snes.getConvergedReason() > 0
+        mg = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC()
+    assert mg.getMGLevels() == 4
+    assert _checked_fac_levels(mg, path, "composite") == expected
