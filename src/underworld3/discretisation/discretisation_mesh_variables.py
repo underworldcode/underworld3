@@ -223,6 +223,9 @@ class _BaseMeshVariable(Stateful, uw_object):
             units = params["units"]
             units_backend = params["units_backend"]
             remesh_policy = params.get("remesh_policy", remesh_policy)
+            # consumed: kept, its strong "mesh" entry pinned the mesh for as
+            # long as the variable lived (the variable holds its mesh weakly)
+            del self._init_params
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
@@ -294,6 +297,10 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.vtype = vtype
         self._mesh_ref = weakref.ref(mesh)
+        # A variable keeps its mesh alive: a helper may return only the
+        # variable. The variable's symbols hold the variable weakly, so caches
+        # of those symbols do not pin it, or the mesh.
+        self._mesh_owner = mesh
         self.shape = num_components
         self.degree = degree
         self.continuous = continuous
@@ -2453,11 +2460,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         self._data_cache = None
         self._array_cache = None
 
-    def __del__(self):
-        if self._lvec:
-            self._lvec.destroy()
-        if self._gvec:
-            self._gvec.destroy()
+    # No __del__ destroying the vectors: a variable is in a reference cycle
+    # with its mesh, so it is freed by the cyclic collector, at a different
+    # moment on each rank. An explicit destroy of the parallel vector there
+    # would be a collective call made by one rank. petsc4py frees both vectors
+    # when the variable goes, deferring the parallel one to the collective
+    # cleanup that the next mesh construction runs (mpi._free_petsc_garbage).
 
     @property
     def mesh(self):
@@ -3799,6 +3807,19 @@ class _BaseMeshVariable(Stateful, uw_object):
             "rms": vrms,
         }
 
+    def _discard_temporary(self, temporary):
+        """Take a statistics temporary off the mesh and destroy its vectors.
+
+        Every rank reaches this at the same point, the end of a collective
+        statistics call, so the parallel vector is destroyed collectively here.
+        Left to the collector, it waits on petsc4py's deferred list until the
+        next mesh is built, one vector per call on a fixed mesh."""
+        if temporary.name in self.mesh.vars:
+            del self.mesh.vars[temporary.name]
+        for vector in (temporary._lvec, temporary._gvec):
+            if vector is not None:
+                vector.destroy()
+
     def _vector_stats(self):
         """Statistics for vector variables using magnitude."""
         import numpy as np
@@ -3845,9 +3866,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             return mag_stats
 
         finally:
-            # Cleanup temporary variable
-            if magnitude_var.name in self.mesh.vars:
-                del self.mesh.vars[magnitude_var.name]
+            self._discard_temporary(magnitude_var)
 
     def _tensor_stats(self):
         """Statistics for tensor variables using Frobenius norm."""
@@ -3905,9 +3924,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             return frob_stats
 
         finally:
-            # Cleanup temporary variable
-            if frobenius_var.name in self.mesh.vars:
-                del self.mesh.vars[frobenius_var.name]
+            self._discard_temporary(frobenius_var)
 
     @property
     def coords(self) -> numpy.ndarray:
