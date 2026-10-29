@@ -6,6 +6,9 @@
 #   --p N            Run parallel tests with N MPI ranks (default: skip parallel tests)
 #   --full-parallel  Add a second parallel pass at 4 ranks (see below; slow on CI)
 #   --parallel-only  Run ONLY parallel tests (skip all serial tests)
+#   --shard K/N      Run only the batches assigned to shard K of N (see
+#                    "Shard assignment" below). Omit it and everything runs,
+#                    which is what a local full run wants.
 #   --tier-c-report  Run ONLY the tier C characterisations and report them.
 #                    Never gates: it always exits 0. CI asks for this on a
 #                    push to development, not on every pull request.
@@ -15,6 +18,7 @@
 #   ./test.sh --p 2               # All serial + parallel (2 ranks)
 #   ./test.sh --p 2 --full-parallel   # ... and again at 4 ranks
 #   ./test.sh --parallel-only --p 2   # Only parallel tests (debugging)
+#   ./test.sh --p 2 --shard 1/4   # One CI shard's worth
 #
 # We do not run one monolithic pytest because tests produce a large number of
 # PETSc objects which we cannot always guarantee that PETSc / petsc4py will free
@@ -30,11 +34,34 @@ TIER_C_REPORT=0
 # np=4 is oversubscribed and the pass costs far more than the ~3 minutes it
 # takes on a workstation — enough to exceed the 120-minute job cap (#573).
 FULL_PARALLEL=0
+# 0/0 means "no sharding": every batch runs. CI passes --shard K/N.
+SHARD=0
+SHARD_COUNT=0
+PRINT_SHARDS=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         --p)
             PARALLEL_RANKS="$2"
             shift 2
+            ;;
+        --shard)
+            if [[ ! "$2" =~ ^[0-9]+/[0-9]+$ ]]; then
+                echo "Error: --shard wants K/N, got '$2'"
+                exit 1
+            fi
+            SHARD="${2%/*}"
+            SHARD_COUNT="${2#*/}"
+            shift 2
+            ;;
+        --print-shards)
+            # The shard count, read out of the batch assignment below, as a JSON
+            # array. The CI matrix is built from THIS rather than from a second
+            # copy of the number: a matrix of [1,2,3] against an assignment that
+            # uses 4 would run green while shard 4's batches -- the largest group
+            # -- never ran at all. That is the #721 failure, files going dark
+            # with nothing to say so, and the only safe fix is one definition.
+            PRINT_SHARDS=1
+            shift
             ;;
         --full-parallel)
             FULL_PARALLEL=1
@@ -50,7 +77,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--p N] [--full-parallel] [--parallel-only] [--tier-c-report]"
+            echo "Usage: $0 [--p N] [--full-parallel] [--parallel-only] [--shard K/N] [--tier-c-report]"
             exit 1
             ;;
     esac
@@ -62,6 +89,108 @@ if [ $PARALLEL_ONLY -eq 1 ] && [ $PARALLEL_RANKS -eq 0 ]; then
     echo "Usage: $0 --parallel-only --p N"
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Shard assignment
+#
+# The batches below differ by two orders of magnitude in cost, so they are
+# assigned to shards BY HAND from measurements. Round-robin would be worse than
+# useless here: it would put test_106*/test_107* (33 min), test_105* (12 min)
+# and test_110* (10 min) in whatever order the list happens to be in.
+#
+# Measured on run 40623403571 (development, 2026-10-28, SUCCESS, 4 xdist
+# workers), per serial batch:
+#
+#   test_106*,test_107*        33:00     <- sets the floor; see the note below
+#   test_105*                  11:42
+#   test_110*                  10:23
+#   test_08*                    7:14
+#   test_101*,test_102*         7:05
+#   test_00[0-4]*               5:14
+#   test_05*,test_06*,test_07*  3:44
+#   test_005[1-9],test_00[6-7]* 3:29
+#   test_02*,test_03*           1:13
+#   test_01*                    0:56
+#   test_100[0-9]*,test_103*    0:54
+#   docstring/jit_cache/...     0:48
+#   test_1110*,test_1120*       0:25
+#   parallel/test_1069          0:14
+#   test_0050*                  0:08
+#   test_1450*                  0:07
+#   the --p N mpirun phase       4:38
+#   ----------------------------------
+#   total                      91:19   (job wall-clock was 96 min with build)
+#
+# Giving an ESTIMATED 33 / 19 / 18 / 22 minutes across the four shards.
+# MEASURED on the first sharded run (40638600008), including install and build:
+# 23.6 / 28.3 / 17.3 / 22.6, wall-clock 28.7 min against 96 before. The
+# estimates are conservative and do not rank the same way -- a batch costs less
+# in a job running only its own batches. Shard 2 is the long pole, not shard 1.
+# Re-measure over several runs before re-assigning: runner variance here is of
+# the same order as the imbalance left.
+#
+# The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
+# 149 tests finish in the first 2 minutes, then the remainder takes 31. Since
+# the distribution is --dist loadfile, a file is atomic on a worker, so the
+# batch cannot finish before its slowest FILE does. Splitting that band further
+# is the next step and wants the per-file numbers, not a guess.
+#
+# How many shards the assignment below actually uses, read from the `batch`
+# call sites in this file. Nothing else states the number, so nothing else can
+# disagree with it: add a `batch 5 ...` line and CI grows a fifth shard on the
+# next run. The CI matrix comes from --print-shards.
+SHARDS_ASSIGNED=$(
+    grep -oE '^[[:space:]]*batch[[:space:]]+[0-9]+' "$0" \
+        | grep -oE '[0-9]+' | sort -n | tail -1
+)
+if [ -z "$SHARDS_ASSIGNED" ]; then
+    echo "Error: no 'batch <shard> ...' call sites found in $0."
+    echo "       Either the assignment was removed or the grep no longer matches it."
+    exit 1
+fi
+
+if [ "$PRINT_SHARDS" -eq 1 ]; then
+    # A JSON array for the CI matrix: 4 -> [1,2,3,4]
+    printf '['
+    for ((i = 1; i <= SHARDS_ASSIGNED; i++)); do
+        [ "$i" -gt 1 ] && printf ','
+        printf '%d' "$i"
+    done
+    printf ']\n'
+    exit 0
+fi
+
+if [ "$SHARD_COUNT" -gt 0 ]; then
+    if [ "$SHARD" -lt 1 ] || [ "$SHARD" -gt "$SHARD_COUNT" ]; then
+        echo "Error: shard $SHARD is outside 1..$SHARD_COUNT"
+        exit 1
+    fi
+    if [ "$SHARD_COUNT" -ne "$SHARDS_ASSIGNED" ]; then
+        echo "Error: asked for shard $SHARD of $SHARD_COUNT, but the batches below"
+        echo "       are assigned to $SHARDS_ASSIGNED shards. Running anyway would"
+        echo "       leave whole batches unrun with nothing to say so."
+        exit 1
+    fi
+    echo "Shard $SHARD of $SHARD_COUNT"
+fi
+
+# batch <shard> <pytest args...> — run a batch if this shard owns it.
+#
+# Call sites pass globs unquoted, so bash expands them before we see them and
+# "$@" carries the file list intact.
+batch() {
+    local owner=$1
+    shift
+    if [ "$SHARD_COUNT" -gt 0 ] && [ "$owner" -ne "$SHARD" ]; then
+        return 0
+    fi
+    "${PYTEST[@]}" "$@" || status=1
+}
+
+# shard_owns <shard> — for the phases that are not a single pytest call.
+shard_owns() {
+    [ "$SHARD_COUNT" -eq 0 ] || [ "$1" -eq "$SHARD" ]
+}
 
 export UW_NO_USAGE_METRICS=0
 # A hard crash must print a Python stack, not just "Segmentation fault".
@@ -100,6 +229,10 @@ PYTEST=(pytest --config-file=tests/pytest.ini)
 # the job from ~45 to ~100 minutes against a 120-minute cap. Dropping the slow
 # ones would re-hide test_1064, whose two-month absence concealed #734, so the
 # COST moves off the pull-request path rather than the COVERAGE being cut.
+#
+# Since #730 it also runs in its own CI job rather than as a step on the test
+# job: the test job is now a shard matrix, and a step on it would pay those
+# ~42 minutes once per shard to produce one report.
 if [ $TIER_C_REPORT -eq 1 ]; then
   echo "=========================================="
   echo "Tier C characterisations (reported, not gating)"
@@ -148,37 +281,37 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   python3 "$(dirname "$0")/check_test_coverage.py" || status=1
 
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
-  "${PYTEST[@]}" tests/test_00[0-4]*py || status=1
-  "${PYTEST[@]}" tests/test_0050*py || status=1
+  batch 4 tests/test_00[0-4]*py
+  batch 4 tests/test_0050*py
   # test_006[2-9] and test_007x matched NO batch glob and so never ran in CI:
   # the whole integration-point suite (0064-0067), swarm repopulation,
   # mid-time velocity and the VE stress history. They are not covered by the
   # disabled test_06*py line below either - that one is 0600-0699. The band is
   # taken whole (00[6-7]) rather than enumerated, so a test added next to its
   # siblings is not dark again. Verified passing (103 tests) before wiring in.
-  "${PYTEST[@]}" tests/test_005[1-9]*py tests/test_00[6-7]*py || status=1
-  "${PYTEST[@]}" tests/test_01*py || status=1
-  "${PYTEST[@]}" tests/test_02*py tests/test_03*py || status=1
+  batch 4 tests/test_005[1-9]*py tests/test_00[6-7]*py
+  batch 4 tests/test_01*py
+  batch 4 tests/test_02*py tests/test_03*py
 
   # Intermediate tests (0500-0799: data structures, transformations, enhanced interfaces)
   # test_06*py was disabled as "potentially problematic" and stayed that way. The
   # whole band was measured 2026-09-12 and passes; a band is not a unit of trust,
   # and holding one back for a suspicion nobody recorded meant its level_1 files
   # never ran at all.
-  "${PYTEST[@]}" tests/test_05*py tests/test_06*py tests/test_07*py || status=1
+  batch 4 tests/test_05*py tests/test_06*py tests/test_07*py
 
   # Units system tests (0800-0899: unit-aware functions, arrays, and conversions)
-  "${PYTEST[@]}" tests/test_08*py || status=1
+  batch 3 tests/test_08*py
 
   # Poisson solvers (including Darcy flow)
-  "${PYTEST[@]}" tests/test_100[0-9]*py tests/test_103*py || status=1
+  batch 4 tests/test_100[0-9]*py tests/test_103*py
 
   # Solver / system tests (advanced solver problems)
   # test_101* / test_102* include the rotated free-slip suite (test_1018,
   # issue #504) and the MG / boundary-flux suites, which previously matched
   # no batch glob and never ran in CI.
-  "${PYTEST[@]}" tests/test_101*py tests/test_102*py || status=1
-  "${PYTEST[@]}" tests/test_105*py || status=1
+  batch 2 tests/test_101*py tests/test_102*py
+  batch 2 tests/test_105*py
 
   # The boundary-normal guard lives under tests/parallel/ but carries NO
   # mpi(min_size=2) mark, because the defect it guards is present in SERIAL in
@@ -186,21 +319,22 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # spherical shell at np=1). Run it here so the serial job covers that path —
   # every other serial test of the default boundary normal is on a box, where
   # flat walls make the question vacuous. It also runs in the --p N batch below.
-  "${PYTEST[@]}" tests/parallel/test_1069_boundary_normal_parallel.py || status=1
+  batch 4 tests/parallel/test_1069_boundary_normal_parallel.py
   # The live multigrid configuration (#892) is the same check in serial and in
   # parallel, so it is one file under tests/parallel/ with no min_size mark too.
-  "${PYTEST[@]}" tests/parallel/test_1090_mg_live_configuration_parallel.py || status=1
+  batch 4 tests/parallel/test_1090_mg_live_configuration_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
   # hardened, fast, and exactly what CI exists to run. test_1064 is the slow one
   # and it is excluded by WHAT IT IS (tier_c) below, not by its number.
-  "${PYTEST[@]}" tests/test_106*py tests/test_107*py || status=1
+  batch 1 tests/test_106*py tests/test_107*py
   # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
   # thick, the quadratic benchmark); the two slow sphere tests (1081, 1084) are
   # tier C, so the "not tier_c" filter leaves them out. test_109*: the fault
-  # placement and split-level multigrid tests that follow.
-  "${PYTEST[@]}" tests/test_108*py tests/test_109*py || status=1
+  # placement and split-level multigrid tests that follow. Shard 3: the lightest
+  # measured (17.3 min on run 40638600008); not yet timed in a sharded run.
+  batch 3 tests/test_108*py tests/test_109*py
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign
@@ -209,23 +343,28 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # running it twice.
 
   # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
-  "${PYTEST[@]}" tests/test_110*py || status=1
-  "${PYTEST[@]}" tests/test_1110*py tests/test_1120*py || status=1  # Annulus + vector SL
-  "${PYTEST[@]}" tests/test_1450*py || status=1
+  batch 3 tests/test_110*py
+  batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
+  batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
-  "${PYTEST[@]}" tests/test_docstring_utils.py tests/test_jit_cache.py \
+  batch 4 tests/test_docstring_utils.py tests/test_jit_cache.py \
           tests/test_jit_deterministic_ordering.py \
           tests/test_multicomponent_projection.py \
           tests/test_snes_vector_asymmetric_jacobian.py \
-          tests/test_symbol_disambiguation_prototype.py || status=1
+          tests/test_symbol_disambiguation_prototype.py
 else
   echo "Skipping serial tests (--parallel-only specified)"
   echo ""
 fi
 
 # Parallel tests (run if --p N specified)
-if [ $PARALLEL_RANKS -gt 0 ]; then
+#
+# The whole mpirun phase belongs to ONE shard (4), not to each of them. It
+# costs ~4:38 and is the shard's smallest component, but running it four times
+# would quadruple the only part of the suite that holds several MPI ranks at
+# once, which is also the part most likely to contend on a shared runner.
+if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
   if command -v mpirun &> /dev/null; then
     echo ""
     echo "=========================================="
@@ -305,6 +444,12 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     echo "⚠️  Warning: --p $PARALLEL_RANKS specified but mpirun not available"
     echo "⚠️  Skipping parallel tests"
   fi
+elif [ $PARALLEL_RANKS -gt 0 ]; then
+  # --p N was given, but this shard does not own the mpirun phase. Say which
+  # one does, so a reader of one shard's log does not conclude the parallel
+  # tests were skipped for the whole run.
+  echo ""
+  echo "Parallel tests belong to shard 4; this is shard $SHARD."
 else
   echo ""
   echo "⚠️  Skipping parallel tests (use --p N to enable)"
