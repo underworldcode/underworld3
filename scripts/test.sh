@@ -193,7 +193,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # hardened, fast, and exactly what CI exists to run. test_1064 is the slow one
   # and it is excluded by WHAT IT IS (tier_c) below, not by its number.
   "${PYTEST[@]}" tests/test_106*py tests/test_107*py || status=1
-  "${PYTEST[@]}" tests/test_1089_cylindrical_*.py || status=1
+  "${PYTEST[@]}" tests/test_1089_cylindrical_*.py tests/test_190[1-4]_cylindrical_*.py || status=1
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign
