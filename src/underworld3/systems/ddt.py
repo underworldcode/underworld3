@@ -2533,7 +2533,17 @@ class EulerianSUPG(Eulerian):
 
 
 class EulerianSUPGPC(_EulerianSUPGPCMethods, _DDtBase):
-    r"""Scalar P1 Eulerian SUPG with persistent rate history.
+    r"""Scalar P1 SUPG predictor-multicorrector for CitcomS compatibility.
+
+    ``method="citcoms"`` reproduces the fixed-correction CitcomS settings;
+    it is a compatibility choice, not the general-purpose transport default.
+    For general advection-diffusion, use :class:`AdvDiffusion` with its default
+    :class:`EulerianSUPG` manager. ``method="pc_converged"`` is a separate
+    residual-converged reference and can require many corrections.
+
+    The predictor-multicorrector follows Brooks' thesis and the SUPG method
+    of Brooks and Hughes (1982), subsequently used in ConMan and CitcomS.
+    The preset name identifies the CitcomS settings, not the method's origin.
 
     Parameters
     ----------

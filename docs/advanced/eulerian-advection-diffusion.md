@@ -196,6 +196,14 @@ Navier-Stokes solver and a transported stress use it.
 
 ## Predictor-corrector transport
 
+**The recommended general-purpose choice is `uw.systems.AdvDiffusion` with
+its default `EulerianSUPG` manager.** The `method="citcoms"` preset below is
+an explicit compatibility choice for reproducing CitcomS behavior. It is not
+an accuracy or performance recommendation over the default implicit manager.
+The predictor-multicorrector originates in Brooks' thesis and Brooks and
+Hughes' 1982 SUPG work, and was subsequently used in ConMan and CitcomS;
+the preset name identifies CitcomS settings rather than sole attribution.
+
 For continuous-P1 scalar transport, select the predictor-corrector manager
 explicitly and pass it to the same `uw.systems.AdvDiffusion` solver:
 
