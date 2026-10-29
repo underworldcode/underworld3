@@ -7368,6 +7368,42 @@ class Mesh(Stateful, uw_object):
             self._coarse_level_meshes_cache = cached
         return cached
 
+    @property
+    def multigrid_levels(self):
+        """The meshes of this mesh's refinement hierarchy, coarsest first, with this
+        mesh itself last.
+
+        A mesh built with ``refinement=n`` (or ``coarsening=n``) carries ``n + 1``
+        levels; a mesh built without either is its own single level. The coarse
+        levels are meshes in their own right, carrying this mesh's boundary
+        labels, and they are built once and reused, so every access returns the
+        same objects. Consecutive levels are native refinements of each other,
+        which the custom multigrid transfers between exactly.
+
+        This is the coarse tail a geometric multigrid hierarchy is built from: a
+        solver on this mesh takes every level but the last (the solver's own
+        mesh is the finest level), and a solver on a mesh placed on this one,
+        such as a fault ribbon, takes them all with any intermediate levels
+        added after them.
+
+        Returns
+        -------
+        tuple of Mesh
+            The levels, coarsest first; the last entry is this mesh.
+
+        Examples
+        --------
+        >>> base = uw.meshing.UnstructuredSimplexBox(cellSize=1 / 8, refinement=2)
+        >>> len(base.multigrid_levels)          # cell sizes 1/8, 1/16, 1/32
+        3
+        >>> poisson = uw.systems.Poisson(base)
+        >>> poisson.set_custom_fmg(base.multigrid_levels[:-1])
+        >>> mesh, mid, info = place_fault_ribbon(base, sheet_grid, width=0.06)
+        >>> stokes = uw.systems.Stokes(mesh)
+        >>> stokes.set_custom_fmg(base.multigrid_levels + (mid,), field_id=0)
+        """
+        return tuple(self._coarse_level_meshes()[:-1]) + (self,)
+
     def redistribute_nodes(self, metric, *, verbose=False, **kwargs):
         r"""Move this mesh's nodes so cell sizes follow ``metric``, with
         the topology fixed.
