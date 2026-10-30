@@ -74,9 +74,22 @@ The rank boundaries need nothing of their own, because they are cuts of the same
 kind. A fault network contributes the pieces of every segment, and the segments
 are coupled through $A_c$ where they meet. A junction is not a special case.
 
-$A_c$ is small and sparse: one column per piece and slip component, with
-neighbouring pieces coupled. Its size is the fault's length (2-D) or area (3-D)
-divided by the piece size. Every rank holds a copy and factors it.
+$A_c$ is small and sparse: one column per piece, with neighbouring pieces
+coupled. Its size is the fault's length divided by the piece size. Every rank
+holds a copy and factors it.
+
+In the parallel split as it stands, the add-on partition gathers each fault onto
+one rank. A single fault's columns therefore sit on one rank, at any length: a
+fault across 90% of the box, and one from corner to corner, were both gathered at
+np 2 and np 4. Columns span ranks in two cases, and both converge to the answer
+without the correction:
+
+- a network whose faults land on different ranks: two separated faults put their
+  columns on ranks [2, 3] at np 2 and [2, 0, 0, 3] at np 4;
+- a fault split through the partition seams (`FaultNetwork.build(seams="conform",
+  realisation="split")`, ptest_0865's long fault): [1, 1] at np 2 with one block
+  per rank, [7, 4] at np 2 and [5, 6, 0] at np 3 with 300-row pieces, peak slip
+  0.5094, the gathered answer.
 
 ## The partition of unity, and how far each column extends
 
@@ -119,8 +132,8 @@ $$
 \phi_q(x) = \max\!\left(0,\, 1 - \frac{|x - c_q|}{2 R_q}\right)^2 .
 $$
 
-They need only the centres and radii, so the same construction serves a 3-D fault
-surface and a network. The reach ($2R_q$ against $1.5R_q$) did not move the
+They need only the centres and radii, so the same weights serve a network and a
+3-D fault surface, although a 3-D column needs more than weights (see Open). The reach ($2R_q$ against $1.5R_q$) did not move the
 iteration count (79/83/104 against 78/84/105 with the touched-pieces domain).
 Adding a second column per piece, slip varying linearly along strike, bought
 3–5 iterations with the whole-patch extension and was not carried forward.
@@ -150,19 +163,51 @@ Adding a second column per piece, slip varying linearly along strike, bought
   against piece), and the operator blocks through `MatCreateSubMatrices`.
 - $A_c = Z^T A Z$ is a PETSc `PtAP`. Each rank holds a redundant copy and factors
   it with LU.
-- $Z$ takes the membership matrix's pattern by `MatDuplicate` before the
-  transpose. In PETSc 3.25, duplicating a matrix whose transpose has been
-  destroyed is a segfault, and duplicating it while the transpose is alive loses
-  the pattern.
-- The library reproduces the probe exactly on the linear fixture in serial: 79,
-  81 and 85 iterations at 8, 16 and 32 pieces, with extension domains of at most
-  7.8k, 6.1k and 5.2k rows (`~/+Simulations/fac_892/slip_coarse_lib`).
+- The membership matrix's transpose is taken into a new matrix,
+  `M.transpose(PETSc.Mat())`: petsc4py's `transpose()` with no argument
+  transposes in place.
+- The slip rows are those the rotation carries: the registered contact faults'
+  pairs, without the pairs that have a constrained DOF
+  (`fault_contact._fault_slip_rows`, which shares the slip-DOF rule with the
+  interface assembler).
+- 2-D only. The standard solve path and the rotated vector solve refuse the
+  flag; they have no slip rows.
+
+## Measured with the library (`~/+Simulations/fac_892/slip_coarse_lib`)
+
+| case | one block per rank | cut, no correction | cut + slip correction |
+|---|---|---|---|
+| linear, $h_b/S = 24$, serial, 8 / 16 / 32 pieces, all applications | 67 | 110 / 148 / 180 | 79 / 82 / 87 |
+| linear, np 4, 8 / 16 / 32 columns | 70 | 125 / 158 / (not run) | 84 / 84 / 92 |
+| yielding-lid box, np 4, $h_b/S = 15.5$, cap 2000: per Newton increment, total | 7, 192 | 11–12, 278 | 9, 239 |
+
+The extension domains are at most 7.4k, 5.7k and 4.5k rows in serial and 10.2k,
+8.3k and 7.4k at np 4. On the linear fixture the correction removes the growth
+with the piece count and leaves an offset of 12–14 iterations over one block. On
+the box it recovers about two thirds of the cut's cost per increment. With one
+block per rank and the correction (one column, the fault on one rank) the box
+takes 188 iterations, 7 per increment.
 
 ## Open
 
-- 3-D: the cost of a band-wide extension per piece against one LU per rank, and
-  whether `_segment_block`, which cuts along the leading principal direction only,
+- 3-D needs one column per slip direction, and the direction must be smooth
+  along the fault. The node-by-node tangent frame (`fault_contact._tangent_frame`
+  picks its first axis from the smallest normal component) switches axis on a
+  curved fault, so a column per frame component would prescribe a slip
+  direction that jumps. A candidate is a Cartesian slip direction projected onto
+  each node's tangent plane. The library refuses 3-D until this is built.
+- 3-D cost: a band-wide extension per piece against one LU per rank, and whether
+  `_segment_block`, which cuts along the leading principal direction only,
   should cut a fault surface into patches rather than strips.
+- The residual offset over one block (12–14 iterations on the linear fixture, 2
+  per increment on the box). A linear-in-strike column per piece bought 3–5 with
+  the whole-patch extension.
+- A test with a single fault crossing ranks under load: the seam-conforming
+  fixture converges in 4–5 iterations with or without the correction, too easy to
+  separate them.
+- #896: at np 2 the parallel cover gate declines the structural patch on the
+  linear fixture at $h_b/S = 24$ (640 iterations instead of 68), and the flag
+  then refuses.
 - Whether the correction should become the default once the 3-D numbers are in.
   In 2-D one uncut block per rank is still the faster solve (`segment_sweep/README.md`).
 - #894 (an interface law's Newton loop leaves the finest smoother on the iterate-0

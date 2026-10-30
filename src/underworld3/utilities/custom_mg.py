@@ -797,10 +797,7 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     n = fend - fstart
     indptr, cols, data = P.getValuesCSR()
     # owned global row -> local full DOF (for its node and coordinates)
-    l2g_f = np.asarray(lay_f.l2g)
-    owned_local = np.flatnonzero((l2g_f >= fstart) & (l2g_f < fend))
-    local_of_row = np.full(n, -1, dtype=np.int64)
-    local_of_row[l2g_f[owned_local] - fstart] = owned_local
+    local_of_row = lay_f.local_of_owned_rows()
     l2g_c = np.asarray(lay_c.l2g)
     held_c = np.flatnonzero(l2g_c >= 0)
     c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
@@ -879,6 +876,15 @@ class LevelLayout(NamedTuple):
     rstart: int
     rend: int
     n_full: int
+
+    def local_of_owned_rows(self):
+        """For each owned global row ``rstart + k``, its local full DOF (whose
+        node gives the row's coordinates)."""
+        l2g = np.asarray(self.l2g)
+        owned_local = np.flatnonzero((l2g >= self.rstart) & (l2g < self.rend))
+        local_of_row = np.full(self.rend - self.rstart, -1, dtype=np.int64)
+        local_of_row[l2g[owned_local] - self.rstart] = owned_local
+        return local_of_row
 
 
 def _level_dof_layout(dm, field_id=None):
@@ -1765,13 +1771,7 @@ class CustomMGHierarchy:
                             # the subdomain is this rank's owned rows: their
                             # nodes come from the owned part of the layout
                             sub = np.asarray(sub, dtype=np.int64)
-                            l2g_f = np.asarray(lay.l2g)
-                            owned_local = np.flatnonzero(
-                                (l2g_f >= lay.rstart) & (l2g_f < lay.rend))
-                            local_of_row = np.full(lay.rend - lay.rstart, -1,
-                                                   dtype=np.int64)
-                            local_of_row[l2g_f[owned_local] - lay.rstart] = \
-                                owned_local
+                            local_of_row = lay.local_of_owned_rows()
                             structural = _segmented_structural_patch(
                                 (np.asarray(_own, dtype=np.int64), sub),
                                 local_of_row[sub - lay.rstart] // nc,

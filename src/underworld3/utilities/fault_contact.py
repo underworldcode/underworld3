@@ -618,17 +618,28 @@ def _slip_dof_offsets(lsec, q_minus, ncomp):
 
 
 def _fault_slip_rows(solver):
-    """Global rows (the DM's numbering) of the slip DOFs of every split fault of
-    the solver's mesh, over this rank's pairs, ghost pairs included."""
+    """Global rows (the DM's numbering) of the slip DOFs that the rotation
+    carries: the registered contact faults' pairs over this rank, ghost pairs
+    included, without the pairs that have a constrained DOF (the rotation
+    gives those no pair block). Collective: a rank-local pairing failure is
+    raised on every rank."""
     lsec = solver.dm.getLocalSection()
+    l2g = solver.dm.getLGMap()
+    dim = solver.mesh.cdim
     ncomp = _slip_components(solver)
-    offsets = [d for name in solver.mesh._fault_point_pairs
-               for _q_plus, q_minus, _n in _fault_pair_nodes(solver, name)
-               for d in _slip_dof_offsets(lsec, q_minus, ncomp)]
-    if not offsets:
-        return np.zeros(0, dtype=np.int64)
-    return np.unique(np.asarray(solver.dm.getLGMap().apply(offsets),
-                                dtype=np.int64))
+    rows, problem = [], None
+    try:
+        for name in getattr(solver, "_fault_contact_faults", []):
+            for q_plus, q_minus, _n in _fault_pair_nodes(solver, name):
+                pair = l2g.apply([lsec.getFieldOffset(q, _VELOCITY_FIELD) + c
+                                  for q in (q_plus, q_minus) for c in range(dim)])
+                if np.min(pair) < 0:
+                    continue
+                rows.extend(l2g.apply(_slip_dof_offsets(lsec, q_minus, ncomp)))
+    except (RuntimeError, ValueError) as err:
+        problem = str(err)
+    _collective_raise(problem)
+    return np.unique(np.asarray(rows, dtype=np.int64))
 
 
 def _fault_pair_nodes(solver, boundary):

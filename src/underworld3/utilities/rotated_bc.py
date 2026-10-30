@@ -2332,10 +2332,6 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # The FAC blocks read their solver from the keys dropped below:
                 # set them up while the keys are there (#892).
                 custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
-                if getattr(_hier, "slip_coarse_space", False):
-                    from underworld3.utilities import fault_slip_coarse
-                    fault_slip_coarse.add_slip_coarse_correction(
-                        vel_pc, solver, _hier, _fac_keys)
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
                 # this solve — drop it again now it is consumed, as the `finally`
@@ -2348,6 +2344,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     vopts.delValue(vpfx + key)
                 for key in _fac_keys or ():
                     vopts.delValue(vpfx + key)
+                if getattr(_hier, "slip_coarse_space", False):
+                    from underworld3.utilities import fault_slip_coarse
+                    fault_slip_coarse.add_slip_coarse_correction(
+                        vel_pc, solver, _hier, _fac_keys)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -2480,16 +2480,16 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                 _coarse = ("svd" if getattr(solver, "_rotated_velocity_null_modes", 0)
                            else "redundant")
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                if getattr(_hier, "slip_coarse_space", False):
+                    raise NotImplementedError(
+                        "slip_coarse_space needs the rotated saddle-point solve; "
+                        "this is a rotated vector solve")
                 _fac_keys = custom_mg._configure_pcmg(
                     pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
                     patch_rows=getattr(_hier, "level_patch_rows", None))
                 pc.setUp()
                 custom_mg._set_up_fac_smoothers(pc, _fac_keys)
-                if getattr(_hier, "slip_coarse_space", False):
-                    raise NotImplementedError(
-                        "slip_coarse_space needs the rotated saddle-point solve; "
-                        "this is a rotated vector solve")
                 vpfx = pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
                         coarse=_coarse,

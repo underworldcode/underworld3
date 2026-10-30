@@ -48,7 +48,14 @@ def add_slip_coarse_correction(pc, solver, hierarchy, fac_keys):
     (``fac_keys`` from :func:`custom_mg._configure_pcmg`). Collective.
 
     The finest level must carry the FAC patch in the composite form (whole-level
-    SOR, then the ASM pieces), and the patch must hold slip rows."""
+    SOR, then the ASM pieces), and the patch must hold slip rows. 2-D only."""
+    if solver.mesh.cdim != 2:
+        # one column per piece would prescribe slip along t1 + t2, a direction
+        # that jumps wherever the node-by-node tangent frame switches axis; a
+        # 3-D column needs a slip direction that is smooth along the fault
+        raise NotImplementedError(
+            "slip_coarse_space is built for 2-D faults only; 3-D needs one "
+            "column per slip direction in a frame smooth along the fault")
     nlev = pc.getMGLevels()
     if not any(k.startswith(f"mg_levels_{nlev - 1}_") for k in fac_keys or ()):
         raise ValueError(
@@ -111,8 +118,9 @@ class SlipCoarseCorrection:
             or [np.zeros((0, band_xy.shape[1]))])
         slip_tree = kdtree.KDTree(all_slip_xy) if all_slip_xy.shape[0] else None
         # this rank's pieces that carry slip: the centre and radius of their
-        # slip nodes, the radius at least one slip-node spacing (a piece can
-        # hold a single slip node where a rank boundary clips the fault), and
+        # slip nodes, the radius at least the distance to the nearest other
+        # slip node (a piece can hold a single slip node where a rank boundary
+        # clips the fault, and slip nodes can coincide at a junction), and
         # the piece's band half-width, its farthest row from the fault. A
         # global half-width would take the structural rows a rank holds far
         # from any fault, and every extension would cover the whole band.
@@ -124,8 +132,11 @@ class SlipCoarseCorrection:
             c = slip_xy[own_slip].mean(axis=0)
             R = float(np.linalg.norm(slip_xy[own_slip] - c, axis=1).max())
             if all_slip_xy.shape[0] > 1:
-                R = max(R, float(slip_tree.query(c[None, :], k=2,
-                                                 sqr_dists=False)[0][0, 1]))
+                near = np.ravel(slip_tree.query(
+                    c[None, :], k=min(4, all_slip_xy.shape[0]),
+                    sqr_dists=False)[0])
+                if np.any(near > 0):
+                    R = max(R, float(near[near > 0].min()))
             centres.append(c)
             radii.append(R)
             widths.append(float(slip_tree.query(xy_of(owned(piece)), k=1,
@@ -145,9 +156,10 @@ class SlipCoarseCorrection:
         phi = np.zeros((self.n_columns, slip.size))
         for q in range(self.n_columns):
             d = np.linalg.norm(slip_xy - C[q], axis=1)
-            # R is zero only for a fault of one slip node, whose weight is one
-            ratio = np.divide(d, _REACH * R[q], out=np.zeros_like(d),
-                              where=R[q] > 0)
+            # R stays zero only when every slip node sits on the centre, and
+            # the weight is then one there
+            ratio = (d / (_REACH * R[q]) if R[q] > 0
+                     else np.where(d > 0, np.inf, 0.0))
             phi[q] = np.clip(1.0 - ratio, 0.0, None) ** 2
         total = phi.sum(axis=0)
         chi = np.divide(phi, total, out=np.zeros_like(phi), where=total > 0)
@@ -182,11 +194,9 @@ class SlipCoarseCorrection:
         for rows, q, values in entries:
             M.setValues(rows.astype(PETSc.IntType), [q], values.reshape(-1, 1))
         M.assemble()
-        # Z takes M's pattern BEFORE the transpose: duplicating M after its
-        # transpose was destroyed is a segfault in PETSc 3.25, and before the
-        # destroy the duplicate loses the pattern
         self.Z = M.duplicate(copy=False)
-        Mt = M.transpose()
+        # a new matrix: petsc4py's transpose() without one transposes in place
+        Mt = M.transpose(PETSc.Mat())
         # each owned column: its extension rows I_q and slip rows with weights
         self._columns = []
         for q in mine:
@@ -197,7 +207,6 @@ class SlipCoarseCorrection:
                                   np.asarray(values[~interior])))
         Mt.destroy()
         M.destroy()
-        self.half_widths = W
         self.Ac = None
         self._ksp = None
         self._c = self.Z.createVecRight()
@@ -227,15 +236,12 @@ class SlipCoarseCorrection:
         var = solver.Unknowns.u
         X = np.asarray(solver.mesh._get_coords_for_basis(
             var.degree, getattr(var, "continuous", True)))
-        lay = custom_mg._level_dof_layout(solver.dm, field_id)
-        nc = lay.n_full // X.shape[0]
-        l2g = np.asarray(lay.l2g)
-        owned_local = np.flatnonzero((l2g >= rstart) & (l2g < rend))
-        local_of_row = np.full(rend - rstart, -1, dtype=np.int64)
-        local_of_row[l2g[owned_local] - rstart] = owned_local
+        local_of_row = custom_mg._level_dof_layout(
+            solver.dm, field_id).local_of_owned_rows()
 
         def xy_of(rows):
-            return X[local_of_row[np.asarray(rows, dtype=np.int64) - rstart] // nc]
+            local = local_of_row[np.asarray(rows, dtype=np.int64) - rstart]
+            return X[local // var.num_components]
 
         return xy_of
 
