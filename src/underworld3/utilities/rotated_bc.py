@@ -1568,9 +1568,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # fieldsplit hands over a new velocity block for a new pattern (#894).
         # The tangent's pattern is fixed by the fault facets, and Ahat's by
         # the ptap, so both stay inside the pattern of the first copy.
+        # The direct-LU path still takes a fresh sum each iterate: its pressure
+        # pin (zeroRows) drops the pinned row's entries from the pattern, and
+        # it has no multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
-            if Atot is None:
+            if Atot is None or use_lu:
+                if Atot is not None:
+                    Atot.destroy()
                 Atot = Ahat.copy()
                 Atot.axpy(1.0, Khat,
                           structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)

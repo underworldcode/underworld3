@@ -129,3 +129,50 @@ def test_the_finest_smoother_follows_every_iterate(base, path, law, monkeypatch)
     assert max(its) <= 5, (
         f"{path}, law {law}: velocity iterations per increment {its} (2-3 measured; "
         f"20-32 with the stale smoother of #894)")
+
+
+def _viscous_fault_slip(base, use_lu):
+    """Peak slip of the viscous-fault saddle-point solve, by the direct-LU rotated
+    path or by the multigrid one, solved tight enough to compare."""
+    from underworld3.utilities.fault_contact import fault_slip
+    levels = base._coarse_level_meshes()[:-1] + [base]
+    mesh = base.add_fault(("Flt", TRACE))
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        stokes.add_dirichlet_bc((y - sympy.Rational(1, 2), 0), wall)
+    stokes.add_fault_bc(1.0, "Flt")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = (
+        1 + 50 * (v.sym[0] ** 2 + v.sym[1] ** 2))
+    stokes.tolerance = 1e-8
+    if use_lu:
+        stokes._rotated_use_lu = True
+    else:
+        custom_mg.set_custom_fmg(stokes, levels, field_id=0)
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"], f"use_lu={use_lu}: did not converge"
+    assert info["nonlinear_iterations"] >= 3, info["nonlinear_iterations"]
+    _s, slip, _leak = fault_slip(stokes, "Flt", info)
+    return uw.mpi.comm.allreduce(float(np.abs(slip).max()) if len(slip) else 0.0, op=max)
+
+
+@pytest.mark.xfail(raises=AssertionError, strict=True,
+                   reason="#899: the direct-LU path does not converge on a fault contact")
+def test_the_direct_lu_path_takes_an_interface_law(base):
+    """The direct-LU path keeps a fresh operator at every iterate: its pressure pin
+    (``zeroRows``) drops the pinned row's entries, so the in-place refresh of the
+    multigrid paths would not fit it. An in-place refresh there raised PETSc's
+    "new nonzero caused a malloc" at iterate 1.
+
+    The path does not converge on a fault contact at all (#899, on development
+    too), so this is a strict expected failure on the convergence ASSERTION
+    only: a PETSc error fails it, and so does a fix to #899, which should then
+    remove the mark."""
+    lu = _viscous_fault_slip(base, use_lu=True)
+    mg = _viscous_fault_slip(base, use_lu=False)
+    assert abs(lu - mg) < 1e-6 * mg, (lu, mg)
