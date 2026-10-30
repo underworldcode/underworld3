@@ -602,6 +602,35 @@ def _pair_frame_on(mesh, dm, q, nrm, radial=None):
     return [nu, t, r]
 
 
+def _slip_components(solver):
+    """Slip components per split pair: one along the trace on a surface mesh
+    (the third frame vector is the pinned surface normal), dim - 1 on a volume
+    mesh."""
+    return 1 if solver.mesh.dim < solver.mesh.cdim else solver.mesh.cdim - 1
+
+
+def _slip_dof_offsets(lsec, q_minus, ncomp):
+    """Local offsets of a pair's slip DOFs: in the rotated frame, the
+    jump-tangent rows of the pair block, on the Minus point's rotated rows
+    (the rows the interface laws act on)."""
+    lo = lsec.getFieldOffset(q_minus, _VELOCITY_FIELD)
+    return [lo + 1 + a for a in range(ncomp)]
+
+
+def _fault_slip_rows(solver):
+    """Global rows (the DM's numbering) of the slip DOFs of every split fault of
+    the solver's mesh, over this rank's pairs, ghost pairs included."""
+    lsec = solver.dm.getLocalSection()
+    ncomp = _slip_components(solver)
+    offsets = [d for name in solver.mesh._fault_point_pairs
+               for _q_plus, q_minus, _n in _fault_pair_nodes(solver, name)
+               for d in _slip_dof_offsets(lsec, q_minus, ncomp)]
+    if not offsets:
+        return np.zeros(0, dtype=np.int64)
+    return np.unique(np.asarray(solver.dm.getLGMap().apply(offsets),
+                                dtype=np.int64))
+
+
 def _fault_pair_nodes(solver, boundary):
     """The velocity-carrying coincident pairs of a split fault of the
     SOLVER's mesh, with normals — :func:`_fault_pair_nodes_on` with the
@@ -882,10 +911,7 @@ class _InterfaceAssembler:
     def __init__(self, solver, include=()):
         dm = solver.dm
         dim = solver.mesh.cdim
-        # slip components per node: one along the trace on a surface mesh
-        # (the third frame vector is the pinned surface normal), dim - 1 on
-        # a volume mesh
-        ncomp = 1 if solver.mesh.dim < dim else dim - 1
+        ncomp = _slip_components(solver)
         lsec = dm.getLocalSection()
         l2g = dm.getLGMap()
         csec = dm.getCoordinateSection()
@@ -939,10 +965,8 @@ class _InterfaceAssembler:
                 nrm = normals[q]
                 index_of[q] = len(rows)
                 fault_of.append(current[0])
-                # one global row per slip component, on the Minus point's
-                # rotated rows — the jump-tangent rows of the pair block
-                rows.append([int(l2g.apply([lo + 1 + a])[0])
-                             for a in range(ncomp)])
+                rows.append([int(l2g.apply([d])[0])
+                             for d in _slip_dof_offsets(lsec, qm, ncomp)])
                 lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
                 lo_m.append(lo)
                 tans.append(_pair_frame(solver, q, nrm)[1:1 + ncomp])

@@ -323,6 +323,10 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # The live multigrid configuration (#892) is the same check in serial and in
   # parallel, so it is one file under tests/parallel/ with no min_size mark too.
   batch 4 tests/parallel/test_1090_mg_live_configuration_parallel.py
+  # The slip coarse space of the fault band smoother: the same checks in serial
+  # and in parallel, where a rank without slip rows must still make every
+  # collective call.
+  batch 4 tests/parallel/test_1091_fault_slip_coarse_space_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —

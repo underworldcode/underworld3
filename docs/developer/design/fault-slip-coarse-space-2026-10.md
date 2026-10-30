@@ -102,9 +102,12 @@ smooth partition of unity removes the step: weights $\chi_q$ on the slip rows th
 sum to one, each falling to zero over the next piece. The coarse space is then a
 coarse finite-element discretisation of slip on the fault, lifted into the band.
 Its support must still be extended over the distance on which the field of a slip
-decays, which is the band's half-width $w$, measured as the largest distance from
-a band row to the nearest slip node. With a margin of $w$ the iterations are those
-of the whole-patch extension at every piece count. The extension domain is
+decays, which is the band's half-width $w$. With a margin of $w$ the iterations are
+those of the whole-patch extension at every piece count. The library measures $w_q$
+per piece, as the largest distance from the piece's rows to the nearest slip node.
+A single global value is wrong in parallel: a rank can hold structural rows far
+from any fault, and at np 4 the global value made every extension cover the whole
+band (17.5k rows where serial needs 7.8k). The extension domain is
 bounded by the band width rather than by the fault's length, so the cost per
 piece does not grow with the fault.
 

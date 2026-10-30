@@ -757,18 +757,20 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
-def _segmented_structural_patch(split, node_of_row, coords, max_rows):
+def _segmented_structural_patch(split, node_of_row, coords, max_rows, cut):
     """The structural patch ``split = (owned, subdomain)`` as ASM blocks.
 
-    By default it stays one block. TODO(MEASURE): with the
-    ``UW_FAC_SEGMENT_STRUCTURAL`` knob set, the subdomain is cut along strike
-    into pieces of at most ``max_rows`` rows, as a zone mask's block is
-    (:func:`_segment_block`), so the exact sub-solve of a split fault's patch
-    stays bounded as the fault grows; the overlap layer joins the pieces.
+    With ``cut`` (the hierarchy's ``slip_coarse_space``) the subdomain is cut
+    along strike into pieces of at most ``max_rows`` rows, as a zone mask's
+    block is (:func:`_segment_block`), so the exact sub-solve of a split fault's
+    patch stays bounded as the fault grows; the overlap layer joins the pieces,
+    and the slip correction (:mod:`~underworld3.utilities.fault_slip_coarse`)
+    couples them. Otherwise it stays one block. TODO(MEASURE): the
+    ``UW_FAC_SEGMENT_STRUCTURAL`` knob cuts it without the slip correction.
     ``node_of_row`` gives the node of each subdomain row. Returns the pair
     unchanged, or a list of ``(piece, piece)`` blocks."""
     _owned, sub = split
-    if not os.environ.get("UW_FAC_SEGMENT_STRUCTURAL"):
+    if not (cut or os.environ.get("UW_FAC_SEGMENT_STRUCTURAL")):
         return split
     pieces = [p for p in _segment_block(sub, node_of_row, coords, max_rows)
               if p.size]
@@ -1411,10 +1413,18 @@ class CustomMGHierarchy:
         in two masks sits inside both blocks). The structural patch (the
         cut/split-inserted rows the transfer cannot represent) is unioned in
         automatically. ``None`` keys the patch on the structural rows alone.
+    slip_coarse_space : bool
+        Cut a split fault's structural patch at ``fac_block_rows`` like the zone
+        blocks, and add a coarse space for slip to the finest smoother
+        (:mod:`~underworld3.utilities.fault_slip_coarse`), which couples the
+        pieces, the rank boundaries and the segments of a network. Rotated
+        saddle-point solves only. Default ``False``: one structural block per
+        rank.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
-                 cross_partition="auto", fac_zone=None, fac_block_rows=2000):
+                 cross_partition="auto", fac_zone=None, fac_block_rows=2000,
+                 slip_coarse_space=False):
         if builder not in _BUILDERS:
             raise ValueError("builder must be 'barycentric' or 'rbf'")
         if len(level_meshes) < 2:
@@ -1433,6 +1443,7 @@ class CustomMGHierarchy:
         # rows 15 in serial and 30 at np=2 — and the exact sub-solve's
         # cost is bounded by the cap however long the band grows.
         self.fac_block_rows = int(fac_block_rows)
+        self.slip_coarse_space = bool(slip_coarse_space)
         self.transfers = None
         # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
         # split-node fault takes the side-aware cell-located transfer, and its
@@ -1766,7 +1777,8 @@ class CustomMGHierarchy:
                                 local_of_row[sub - lay.rstart] // nc,
                                 coords[l],
                                 int(os.environ.get("UW_FAC_BLOCK_ROWS",
-                                                   self.fac_block_rows)))
+                                                   self.fac_block_rows)),
+                                self.slip_coarse_space)
                             blocks.extend(structural
                                           if isinstance(structural, list)
                                           else [structural])
@@ -1878,7 +1890,8 @@ class CustomMGHierarchy:
                                 split, np.asarray(maps[l])[split[1]] // nc,
                                 coords[l],
                                 int(os.environ.get("UW_FAC_BLOCK_ROWS",
-                                                   self.fac_block_rows))))
+                                                   self.fac_block_rows)),
+                                self.slip_coarse_space))
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
@@ -1923,6 +1936,13 @@ class CustomMGHierarchy:
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
+        if self.slip_coarse_space:
+            # the slip rows exist only in the rotated frame; cutting the band
+            # here without the slip correction costs iterations in proportion
+            # to the cuts
+            raise NotImplementedError(
+                "slip_coarse_space needs the rotated saddle-point solve (a split "
+                "fault with a fault BC); this solve takes the standard path")
         Ps = self.transfers
         patch_rows = getattr(self, "level_patch_rows", None)
         if self.drop_orphans:
@@ -2009,7 +2029,7 @@ class _DMLevelView:
 # --------------------------------------------------------------------------- #
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
                    field_id=None, cross_partition="auto", fac_zone=None,
-                   fac_block_rows=2000,
+                   fac_block_rows=2000, slip_coarse_space=False,
                    verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
@@ -2033,14 +2053,21 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
     list of masks for per-segment ASM blocks. The structural (cut/split)
     rows are unioned in automatically; the patch is solved strongly once
-    per smoother application (basic ASM, shifted factorization)."""
+    per smoother application (basic ASM, shifted factorization).
+
+    ``slip_coarse_space=True`` cuts a split fault's band at ``fac_block_rows``
+    too, and adds a coarse space for slip that couples the pieces (and the
+    ranks) through the fault; it keeps the iteration count of one uncut block
+    as the fault grows (rotated saddle-point solves; see
+    :class:`CustomMGHierarchy`)."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
                                        builder=builder, field_id=field_id,
                                        cross_partition=cross_partition,
                                        fac_zone=fac_zone,
-                                       fac_block_rows=fac_block_rows),
+                                       fac_block_rows=fac_block_rows,
+                                       slip_coarse_space=slip_coarse_space),
         "verbose": verbose,
     }
     solver.is_setup = False
