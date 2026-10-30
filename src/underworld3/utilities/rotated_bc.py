@@ -1563,9 +1563,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # The copy is made once and refreshed IN PLACE after that, so the KSP
         # is handed the same Mat with the same nonzero pattern at every
         # iterate, as on the contact path. A new Mat each iterate left the
-        # multigrid smoothing with iterate 0's operator: PCSetUp_MG keeps the
-        # finest smoother's operator unless it is the PC's own, and the
-        # fieldsplit hands over a new velocity block for a new pattern (#894).
+        # multigrid smoothing with iterate 0's operator (#894), even with an
+        # identical pattern: a new Pmat object resets the PC's nonzero state,
+        # so the fieldsplit builds a new velocity block, and PCSetUp_MG keeps
+        # the finest smoother's operator unless it is the PC's own.
         # The tangent's pattern is fixed by the fault facets, and Ahat's by
         # the ptap, so both stay inside the pattern of the first copy.
         # The direct-LU path still takes a fresh sum each iterate: its pressure
