@@ -7,15 +7,23 @@ operator once it is set unless the new operator is the same Mat object (the
 ``opsset`` check in PETSc's ``PCSetUp_MG``), so the finest smoother, and the
 Galerkin coarse operators built from it, stayed at iterate 0. The answer was
 unaffected; the cost was iterations. Measured on this fixture with a viscous
-fault: 2, 32, 31, 26, 27 velocity iterations per increment, against 3 for the
-frictionless contact, whose operator is refreshed in place.
+fault, velocity iterations per Newton increment:
+
+| path | viscous fault, before | viscous fault, after | frictionless |
+|---|---|---|---|
+| saddle point | 2, 32, 31, 26, 27 | 2, 2, 2, 3, 3 | 3 at every increment |
+| thin sheet | 2, 27, 21, 21, 21, 20 | 2 at every increment | 2 at every increment |
+
+The frictionless contact refreshes its operator in place, and the fix makes the
+interface-law branch do the same.
 
 The test records, after every linear solve of the rotated loop, the operator the
 multigrid was handed (the velocity block on the saddle-point path, the whole
 rotated operator on the thin-sheet path) and the finest smoother's operator, and
-checks that they agree at every iterate. A viscosity that depends on the
-velocity gives the loop several iterates. The frictionless contact is the
-control: it takes the other branch of the loop, and agreed before the fix.
+checks that they agree at every iterate, then bounds the velocity iterations of
+every increment at 5. A viscosity that depends on the velocity gives the loop
+several iterates. The frictionless contact is the control: it takes the other
+branch of the loop, and agreed before the fix.
 
 The fixture is test_1090's: a fault split in place over a welded base hierarchy
 (1/8, 1/16), so the finest level is the split mesh and carries the FAC patch.
@@ -117,3 +125,7 @@ def test_the_finest_smoother_follows_every_iterate(base, path, law, monkeypatch)
     assert max(gaps) < 1e-12, (
         f"{path}, law {law}: the finest smoother's operator differs from the "
         f"operator the multigrid was handed, by {gaps} (relative, per increment; #894)")
+    its = [its for _gap, its in records]
+    assert max(its) <= 5, (
+        f"{path}, law {law}: velocity iterations per increment {its} (2-3 measured; "
+        f"20-32 with the stale smoother of #894)")
