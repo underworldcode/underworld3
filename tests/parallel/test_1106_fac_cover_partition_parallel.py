@@ -10,12 +10,14 @@ the coarse levels keep the base partition, so most other ranks' rows point at
 coarse nodes held elsewhere. Measured on UWTN 2026-022's linear fixture at 320
 rungs: 4474 background rows of rank 1's 9410 counted as patch at np 2, a cover of
 0.797 against the 0.75 gate, so the patch was declined and the solve took 640
-velocity iterations instead of 68. At np 4 the same error added 2742 rows and
+velocity iterations instead of the serial 67. At np 4 the same error added 2742 rows and
 the gate passed at 0.721.
 
 The band does not depend on the partition, so this test asserts that the global
 count of patch rows on the finest level equals the serial count, and that the
-patch is installed. It runs the same fixture at 80 rungs.
+patch is installed. It runs the same fixture at 80 rungs, on a structured base
+(``regular=True``) so the count does not depend on the mesher's platform. The
+count is what catches #896 here: at 80 rungs the cover stays under the gate.
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 baseline, in the parallel batches the partition.
@@ -25,6 +27,7 @@ baseline, in the parallel batches the partition.
 """
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 import underworld3 as uw
 from underworld3.utilities.custom_mg import set_custom_fmg
@@ -35,8 +38,8 @@ pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
 # Patch rows of the finest level in serial (the band), measured on the fixture
-# below; the parallel split must find the same rows. Before the fix: 5798 at np 2.
-SERIAL_PATCH_ROWS = 4248
+# below; the parallel split must find the same rows. Before the fix: 6890 at np 2.
+SERIAL_PATCH_ROWS = 4780
 
 
 def _finest_patch_rows():
@@ -47,7 +50,7 @@ def _finest_patch_rows():
     spacing = length / N_RUNGS
     trace = A + (np.arange(N_RUNGS + 1) * spacing)[:, None] * (B - A) / length
     base = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 8, regular=False,
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 8, regular=True,
         qdegree=2, refinement=2)
     levels = base._coarse_level_meshes()[:-1] + [base]
     mesh = place_fault_ribbon_2d(base, [("Fault", trace)], 2 * spacing, margin_rings=1,
@@ -67,7 +70,7 @@ def _finest_patch_rows():
     stokes.solve()
     assert stokes._rotated_freeslip_info["converged"]
     patch = stokes._custom_mg["hierarchy"].level_patch_rows[-1]
-    installed = uw.mpi.comm.allreduce(patch is not None, op=__import__("mpi4py").MPI.LAND)
+    installed = uw.mpi.comm.allreduce(patch is not None, op=MPI.LAND)
     if not installed:
         return None
     owned = patch[0] if isinstance(patch, tuple) else np.concatenate([b[0] for b in patch])

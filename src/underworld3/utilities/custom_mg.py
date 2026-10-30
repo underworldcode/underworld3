@@ -757,7 +757,7 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
-def _with_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
+def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
     """Append the coarse nodes of the global rows ``remote``, held on other
     ranks, to this rank's node table. COLLECTIVE: one scatter from the rows'
     owners, each row carrying its node's coordinates, its component and a key
@@ -800,8 +800,12 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     This rank's owned rows of ``P`` are classified as in the serial split
     (an identity row onto a coincident coarse node is background, anything
     else is patch, split duplicates are patch); a coarse node this rank does
-    not hold is fetched from its owner first (#896). The halo is the background rows
-    whose coarse node some patch row of THIS rank references. The cover
+    not hold is fetched from its owner first, so the patch is the same rows
+    at any rank count (#896). The duplicate test is rank-local: both copies
+    of a split pair are owned by one rank (ptest_0865 pins that for a split
+    through a seam). The halo is the background rows whose coarse node some
+    patch row of THIS rank references, so it can differ from the serial halo
+    where a partition boundary runs along the band. The cover
     gate is decided on the global counts, so every rank returns the same
     verdict. Returns ``(owned_global_rows, subdomain_global_rows)`` or
     ``None``.
@@ -818,14 +822,13 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     l2g_c = np.asarray(lay_c.l2g)
     held_c = np.flatnonzero(l2g_c >= 0)
     c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
-    # A placed fault level is partitioned by the add-on partition and the coarse
-    # levels by the base, so many of this rank's rows reference coarse nodes it
-    # does not hold. Counting those rows as patch put 4474 background rows of
-    # 9410 into rank 1's patch at np 2 and the gate declined it (#896): fetch
-    # those nodes instead, so each row is classified wherever its node lives.
+    # The fine and coarse levels need not share a partition (a placed fault
+    # level takes the add-on partition, the coarse levels the base's), so a
+    # row's coarse node may be held elsewhere. Every column is classified
+    # against its node all the same: those nodes are fetched from their owners.
     remote = np.unique(cols[~np.isin(cols, l2g_c[held_c])])
-    coords_c, fetched = _with_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc,
-                                                  P.getComm())
+    coords_c, fetched = _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc,
+                                                    P.getComm())
     c_local_of_global.update(fetched)
 
     bg_cnode = np.full(n, -1, dtype=np.int64)
@@ -842,14 +845,9 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
         j = int(np.argmax(aw))
         if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
             patch_row[r] = True
-            ref_cnodes += [c_local_of_global.get(int(g), -1) // nc
-                           for g in cols[sl]]
+            ref_cnodes += [c_local_of_global[int(g)] // nc for g in cols[sl]]
             continue
-        cl = c_local_of_global.get(int(cols[sl][j]), -1)
-        if cl < 0:
-            patch_row[r] = True
-            continue
-        cnode = cl // nc
+        cnode = c_local_of_global[int(cols[sl][j])] // nc
         if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
             patch_row[r] = True
             ref_cnodes.append(cnode)
@@ -869,7 +867,7 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
             node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
     row_is_patch = node_is_patch[node_of_row] if n else np.zeros(0, dtype=bool)
     csel = np.zeros(coords_c.shape[0], dtype=bool)
-    ref = np.asarray([c for c in ref_cnodes if c >= 0], dtype=np.int64)
+    ref = np.asarray(ref_cnodes, dtype=np.int64)
     if ref.size:
         csel[ref] = True
     # Index csel only where a row has a background coarse node: a rank can
