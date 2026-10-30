@@ -1190,6 +1190,13 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # Extra operator-sparsity overlap layers on top of the transfer
             # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
             spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "1")))
+            # TODO(MEASURE): UW_FAC_ASM_LOCAL_TYPE=multiplicative applies a
+            # rank's blocks in turn (block Gauss-Seidel along the band) instead
+            # of together (block Jacobi with overlap); petsc4py has no setter
+            _local = os.environ.get("UW_FAC_ASM_LOCAL_TYPE")
+            if _local:
+                opts[(spc.getOptionsPrefix() or "") + "pc_asm_local_type"] = _local
+                spc.setFromOptions()
             # Subdomain solver: FAC blocks are LU (with the nonzero shift
             # below); ILU there is a regression (#892). PCASM's default
             # sub-solve is unshifted ILU(0): it takes a NUMERIC_ZEROPIVOT on
