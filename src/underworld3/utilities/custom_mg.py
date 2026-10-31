@@ -224,6 +224,11 @@ def _drop_structural_zeros(P_csr, tol=1e-12):
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 
 
+class TransferBuildError(RuntimeError):
+    """A node-transfer builder failed on at least one rank; raised on every rank,
+    so the ranks can retry or degrade together (#886)."""
+
+
 def _require_serial(where):
     """Custom-P transfers are serial-only (experimental). The reduced maps use
     rank-local DOF indices and the prolongations assemble as serial AIJ; at np>1
@@ -906,6 +911,25 @@ def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
     return builder(coarse_coords, fine_coords)
 
 
+def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
+    """The rank-local node transfer of a parallel build, with one verdict for
+    every rank: if the builder raised on any rank, :class:`TransferBuildError`
+    is raised on all of them. The builders do no communication, so every rank
+    reaches the verdict; a rank that kept its own error would go on to retry
+    while the others assemble the transfer, and the two would meet in different
+    collectives (#886)."""
+    problem = None
+    try:
+        Pn = _drop_structural_zeros(
+            _node_transfer_no_repair(builder, coarse_coords, fine_coords))
+    except Exception as exc:    # sanctioned: the verdict below raises it on every rank
+        Pn, problem = None, f"rank {comm.getRank()}: {exc}"
+    problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
+    if problems:
+        raise TransferBuildError("; ".join(problems))
+    return Pn
+
+
 def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
                             comm):
     """A node-level transfer ``Pn`` (scipy CSR, fine local nodes by coarse
@@ -955,8 +979,7 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
     l2g_c = coarse_layout.l2g
-    Pn = _drop_structural_zeros(
-        _node_transfer_no_repair(builder, coarse_coords, fine_coords))  # (n_f_nodes, n_c_nodes), local
+    Pn = _agreed_node_transfer(builder, coarse_coords, fine_coords, comm)  # (n_f_nodes, n_c_nodes), local
     return _assemble_node_transfer(
         Pn, np.asarray(l2g_c, dtype=np.int64).reshape(-1, ncomp), fine_layout,
         coarse_layout, ncomp, comm)
@@ -998,8 +1021,7 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
-    Pn = _drop_structural_zeros(
-        _node_transfer_no_repair(builder, coords_u, fine_coords))   # (n_f_local, Nu)
+    Pn = _agreed_node_transfer(builder, coords_u, fine_coords, comm)   # (n_f_local, Nu)
     return _assemble_node_transfer(Pn, np.asarray(cols_u, dtype=np.int64),
                                    fine_layout, coarse_layout, ncomp, comm)
 
@@ -1961,7 +1983,9 @@ def build_transfers(solver, field_id=None):
     is a DEMAND (build errors raise — the user registered it explicitly); the
     other two are PREFERENCES, built through the same opportunistic arm
     (barycentric, RBF retry, degrade to the solver's default preconditioner —
-    every step recorded in ``solver.pc_fallbacks``).
+    every step recorded in ``solver.pc_fallbacks``). In parallel only a builder
+    failure, which every rank sees (:class:`TransferBuildError`), is retried
+    or degraded; any other failure is raised where it happens (#886).
 
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
     coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
@@ -2072,6 +2096,12 @@ def build_transfers(solver, field_id=None):
     # barycentric fell back to GAMG at 23 its while RBF kept pc=mg at 2.
     # Falling back to GAMG loses the hierarchy entirely, so try the cheaper
     # degradation first. See #424.
+    # In parallel the retry and the degrade are collective decisions, so they
+    # are taken only on a verdict every rank holds: a builder failure, which
+    # is raised on every rank. Any other exception is one rank's: the others
+    # are inside the build's collectives, and a rank that caught it and
+    # retried would meet them in different ones (#886). It is raised.
+    _retryable = TransferBuildError if solver.dm.comm.getSize() > 1 else Exception
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
@@ -2084,7 +2114,7 @@ def build_transfers(solver, field_id=None):
         try:
             Ps = h.build(solver)
             break
-        except Exception as exc:            # pragma: no cover - defensive
+        except _retryable as exc:   # sanctioned: retried or degraded, and recorded
             import warnings
             if _i + 1 < len(_attempts):
                 solver._record_pc_fallback(
