@@ -122,8 +122,9 @@ Then:
 
 ### How vertex data is obtained
 
-The compatibility group writer uses PETSc's `createInterpolation` to project
-data to mesh vertices:
+The compatibility group writer projects data to mesh vertices with the
+interpolation matrix PETSc's `createInterpolation` builds (UW3 assembles its own
+copy of it, which also works on a rank that owns none of its cells' nodes):
 
 - **P1 continuous variables**: DOFs match mesh vertices exactly, so the owned
   global-vector data is written directly to `/vertex_fields/` — no interpolation needed.

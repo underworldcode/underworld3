@@ -1,8 +1,9 @@
 """Project or prolong MeshVariable data to a different polynomial degree.
 
-Uses a scratch PETSc DM with ``createInterpolation`` — no MeshVariable
-is created, the mesh DM is never modified, and all scratch objects are
-destroyed before returning.
+Uses a scratch PETSc DM and the interpolation matrix between it and the
+variable's sub-DM (UW3's copy of PETSc's ``createInterpolation``, #902) — no
+MeshVariable is created, the mesh DM is never modified, and all scratch
+objects are destroyed before returning.
 
 Typical use cases
 -----------------

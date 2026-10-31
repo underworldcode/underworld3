@@ -1895,12 +1895,12 @@ class _DMLevelView:
         self.qdegree = fine_mesh.qdegree
 
         # The gmsh-imported BASE level carries section-only coordinates (its
-        # coordinate field is a PetscContainer, no PetscFE), and
-        # DMCreateInterpolation from such a source silently returns a ZERO
-        # matrix (measured) — _get_coords_for_basis would then hand every
-        # level-0 node the coordinate (0,0) and the transfer build collapses.
-        # refine() gives the child levels an FE coordinate space; give the
-        # clone's base the same: P1 Lagrange on the identical vertex layout.
+        # coordinate field is a PetscContainer, no PetscFE). PETSc's
+        # DMCreateInterpolation from such a source silently returned a ZERO
+        # matrix (measured), and UW3's copy, which _get_coords_for_basis now
+        # uses (#902), refuses a field that is not a PetscFE. refine() gives
+        # the child levels an FE coordinate space; give the clone's base the
+        # same: P1 Lagrange on the identical vertex layout.
         cdm = self.dm.getCoordinateDM()
         field = cdm.getField(0)
         fobj = field[0] if isinstance(field, tuple) else field
