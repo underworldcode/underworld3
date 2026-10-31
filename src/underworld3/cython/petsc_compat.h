@@ -370,8 +370,35 @@ PetscErrorCode UW_DMCreateBdIntegralSandbox(DM src, DM *sandbox)
 // Interpolation between two DMs on ONE plex (a coordinate DM and a basis DM
 // cloned from it, a variable's sub-DM and a scratch clone of the mesh): the
 // matrix DMCreateInterpolation builds through DMPlexComputeInterpolatorNested
-// (isRefined = PETSC_FALSE), copied from PETSc v3.25.0 (BSD-2-Clause) with one
-// change (#902). PETSc runs its preallocation loop only on a rank with local
+// (isRefined = PETSC_FALSE), copied from PETSc v3.25.0 with one change (#902),
+// under PETSc's licence:
+//
+//   Copyright (c) 1991-2025, UChicago Argonne, LLC and the PETSc Developers and
+//   Contributors
+//   All rights reserved.
+//
+//   Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+//   * Redistributions of source code must retain the above copyright notice,
+//     this list of conditions and the following disclaimer.
+//   * Redistributions in binary form must reproduce the above copyright notice,
+//     this list of conditions and the following disclaimer in the documentation
+//     and/or other materials provided with the distribution.
+//
+//   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+//   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+//   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+//   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+//   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+//   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+//   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+//   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+//   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+//   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+//   POSSIBILITY OF SUCH DAMAGE.
+//
+// The change: PETSc runs its preallocation loop only on a rank with local
 // rows or columns (`if (locRows || locCols)`, since b4ec2976050, v3.24.0) but
 // its fill loop on every rank that holds cells. A shared point belongs to the
 // highest rank holding it, so a rank whose cells lie inside higher ranks'
@@ -379,8 +406,10 @@ PetscErrorCode UW_DMCreateBdIntegralSandbox(DM src, DM *sandbox)
 // that never preallocated them ("New nonzero caused a malloc" in
 // MatAssemblyEnd) and the ranks that did not raise wait in the assembly's
 // collective. Here both loops run over the same cells. Finite-element fields
-// only, which are the only ones UW3 interpolates this way. Drop this for
-// DMCreateInterpolation once PETSc runs the two loops alike.
+// only, which are the only ones UW3 interpolates this way, and one plex only:
+// PETSc dispatches here on the two DMs sharing their plex, and a pair on two
+// plexes is refused on every rank. Drop this for DMCreateInterpolation once
+// PETSc runs the two loops alike.
 PetscErrorCode UW_DMCreateInterpolationWithinPlex(DM dmc, DM dmf, Mat *In)
 {
     PetscSection fsection, fglobalSection, csection, cglobalSection;
@@ -393,6 +422,18 @@ PetscErrorCode UW_DMCreateInterpolationWithinPlex(DM dmc, DM dmf, Mat *In)
     Mat          preallocator;
 
     PetscFunctionBeginUser;
+    {
+        // clones share their plex, cone array included; the verdict is
+        // agreed, since a rank holding no points cannot tell two plexes apart
+        PetscInt *conesC, *conesF, other;
+
+        PetscCall(DMPlexGetCones(dmc, &conesC));
+        PetscCall(DMPlexGetCones(dmf, &conesF));
+        other = conesC != conesF;
+        PetscCallMPI(MPI_Allreduce(MPI_IN_PLACE, &other, 1, MPIU_INT, MPI_MAX, PetscObjectComm((PetscObject)dmc)));
+        PetscCheck(!other, PetscObjectComm((PetscObject)dmc), PETSC_ERR_ARG_INCOMP,
+                   "UW_DMCreateInterpolationWithinPlex: the two DMs are not on one plex");
+    }
     PetscCall(DMGetGlobalSection(dmf, &fglobalSection));
     PetscCall(PetscSectionGetConstrainedStorageSize(fglobalSection, &m));
     PetscCall(DMGetGlobalSection(dmc, &cglobalSection));
@@ -505,5 +546,64 @@ PetscErrorCode UW_DMCreateInterpolationWithinPlex(DM dmc, DM dmf, Mat *In)
     PetscCall(MatAssemblyBegin(*In, MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyEnd(*In, MAT_FINAL_ASSEMBLY));
     PetscCall(MatViewFromOptions(*In, NULL, "-interp_mat_view"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// The coordinate space of a plex at `degree`, as
+// DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_TRUE) builds it,
+// with the coordinates carried across by UW_DMCreateInterpolationWithinPlex.
+// PETSc's projection (DMSetCoordinateDisc) interpolates through
+// DMCreateInterpolation between the old and the new coordinate DM, two DMs on
+// this plex, so a degree >= 2 space could not be built on a rank that holds
+// cells but owns none of their nodes (#902). As in PETSc: the same space is a
+// copy; coordinates injected into a higher coordinate dimension are not
+// projected; periodic coordinates keep PETSc's own projection, which projects
+// isoperiodic ones locally, without the matrix.
+PetscErrorCode UW_DMPlexCreateCoordinateSpaceWithinPlex(DM dm, PetscInt degree)
+{
+    const PetscReal *maxCell, *Lstart, *L;
+    PetscInt         nfaceSF = 0;
+    DM               cdmOld, cdmNew;
+    Vec              xOld, xNew, x;
+    PetscFE          discOld, disc;
+    PetscDualSpace   dsOld, ds;
+    PetscBool        same;
+
+    PetscFunctionBeginUser;
+    PetscCall(DMGetPeriodicity(dm, &maxCell, &Lstart, &L));
+    PetscCall(DMPlexGetIsoperiodicFaceSF(dm, &nfaceSF, NULL));
+    if (maxCell || L || nfaceSF) {
+        PetscCall(DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_TRUE));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+    PetscCall(DMGetCoordinateDM(dm, &cdmOld));
+    PetscCall(PetscObjectReference((PetscObject)cdmOld));
+    PetscCall(DMGetCoordinates(dm, &xOld));
+    PetscCall(PetscObjectReference((PetscObject)xOld));
+    // installs the new coordinate DM and leaves the coordinates to us
+    PetscCall(DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_FALSE));
+    PetscCall(DMGetCoordinates(dm, &x));
+    if (x == xOld) {
+        PetscCall(DMGetCoordinateDM(dm, &cdmNew));
+        PetscCall(DMGetField(cdmOld, 0, NULL, (PetscObject *)&discOld));
+        PetscCall(DMGetField(cdmNew, 0, NULL, (PetscObject *)&disc));
+        PetscCall(PetscFEGetDualSpace(discOld, &dsOld));
+        PetscCall(PetscFEGetDualSpace(disc, &ds));
+        PetscCall(PetscDualSpaceEqual(dsOld, ds, &same));
+        PetscCall(DMCreateGlobalVector(cdmNew, &xNew));
+        if (same) {
+            PetscCall(VecCopy(xOld, xNew));
+        } else {
+            Mat In;
+
+            PetscCall(UW_DMCreateInterpolationWithinPlex(cdmOld, cdmNew, &In));
+            PetscCall(MatMult(In, xOld, xNew));
+            PetscCall(MatDestroy(&In));
+        }
+        PetscCall(DMSetCoordinates(dm, xNew));
+        PetscCall(VecDestroy(&xNew));
+    }
+    PetscCall(VecDestroy(&xOld));
+    PetscCall(DMDestroy(&cdmOld));
     PetscFunctionReturn(PETSC_SUCCESS);
 }

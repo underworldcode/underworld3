@@ -2754,12 +2754,14 @@ class Mesh(Stateful, uw_object):
             # dual space without proper point subspaces, causing
             # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
             # createCoordinateSpace builds the FE internally with correct
-            # subspace initialisation.
-            # TODO(BUG): #902 — for a degree >= 2 coordinate field PETSc projects
-            # the coordinates through an interpolation matrix between two DMs on
-            # this plex, which cannot be assembled on a rank that holds cells but
-            # owns none of their nodes (the job hangs). Degree 1 is a copy.
-            self.dm.createCoordinateSpace(self.degree, False, True)
+            # subspace initialisation. The coordinates are carried across by
+            # UW3's copy of PETSc's interpolator: PETSc's own projection of a
+            # degree >= 2 space cannot be assembled on a rank that holds cells
+            # but owns none of their nodes (#902).
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            petsc_dm_create_coordinate_space_within_plex(self.dm, self.degree)
 
             # Issue #96 fix: Force coordinate field creation and strip
             # boundary labels from the coordinate DM. createCoordinateSpace

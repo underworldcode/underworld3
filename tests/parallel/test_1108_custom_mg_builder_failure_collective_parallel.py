@@ -11,8 +11,10 @@ after it: a failure on any rank is raised on every rank, and the retry is taken
 together. Here the builder raises on rank 1 only. Contract: every rank records
 the RBF rescue, geometric multigrid is installed, and the solve converges. A
 check on allreduced sizes fails on every rank at once; it degrades every rank
-to the default preconditioner together, as in serial. A thread timeout turns
-the old hang into a failure.
+to the default preconditioner together, as in serial. Before the fix the
+ranks hung in the transfer's assembly. The thread timeout stops a rank waiting
+in Python; a rank held inside a PETSc collective keeps the GIL, so a hang
+there is ended by the MPI supervisor's silence limit instead.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1108_custom_mg_builder_failure_collective_parallel.py
 """
