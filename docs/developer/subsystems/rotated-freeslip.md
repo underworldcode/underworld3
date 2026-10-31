@@ -200,6 +200,14 @@ Galerkin-coarsened rotated block inherits the rigid-rotation null space where
 `redundant`/LU hits a zero pivot. See
 [the solvers subsystem doc](solvers.md) for the bundle itself.
 
+The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
+2026-10-14): each takes the per-node wall frame on its own nodes and loses its
+normal rows, so the coarse space is exactly the constrained motion. A Cartesian
+coarse level under a rotated finest keeps wall-normal unknowns the fine operator
+reaches only through vanishing sines, and the smoother's nodal block inversion
+meets a zero pivot there. Details in
+[the split-level multigrid doc](fault-split-multigrid.md).
+
 ### The velocity sub-KSP must converge, not just apply
 
 The velocity block is preconditioned by multigrid, but the KSP *around* that

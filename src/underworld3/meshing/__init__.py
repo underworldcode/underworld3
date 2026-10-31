@@ -78,6 +78,7 @@ from .bounding_surface import (
     register_plane_surfaces,
     register_box_face_surfaces,
 )
+from .extrude import extrude_sheet
 
 # Make all functions available at module level for backward compatibility
 __all__ = [
@@ -133,4 +134,6 @@ __all__ = [
     "register_radial_surfaces",
     "register_plane_surfaces",
     "register_box_face_surfaces",
+    # A thin sheet extruded into a layer (faults carried through)
+    "extrude_sheet",
 ]

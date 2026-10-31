@@ -1868,7 +1868,9 @@ class Eulerian(_DDtBase):
                     self.mesh, self.psi_star[0], verbose=False
                 )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
-            dim = self.mesh.dim
+            # a tensor history has one index per EMBEDDING dimension (a 3x3
+            # stress on a sheet in three-space)
+            dim = self.mesh.cdim
             if self.vtype == uw.VarType.SYM_TENSOR:
                 Nc = math.comb(dim + 1, 2)  # 3 in 2D, 6 in 3D
                 self._psi_star_indep_indices = [
@@ -2249,7 +2251,7 @@ class EulerianSUPG(Eulerian):
 
     @V_fn.setter
     def V_fn(self, value):
-        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.dim)
+        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.cdim)
 
     @property
     def integrator(self) -> str:
@@ -2259,7 +2261,7 @@ class EulerianSUPG(Eulerian):
         """The velocity carrying the unknown at ``states()[level]``."""
         if level == 0 or not self.V_fn_history:
             return self.V_fn
-        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.dim)
+        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.cdim)
 
     @property
     def tau_shape(self) -> str:
@@ -2292,7 +2294,8 @@ class EulerianSUPG(Eulerian):
 
     def _convective(self, a, psi):
         r"""``(a . grad) psi`` entry by entry, a matrix of ``psi``'s shape."""
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         grad = self.mesh.vector.gradient
 
         def entry(r, c):
@@ -2312,7 +2315,8 @@ class EulerianSUPG(Eulerian):
 
     def tau(self):
         r"""The stabilisation parameter :math:`\tau` (times the weights)."""
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         a = self.advecting_velocity(0)
         a_mag2 = sum(a[0, i] ** 2 for i in range(dim))
         h = self.mesh.cell_size()
@@ -2405,7 +2409,8 @@ class EulerianSUPG(Eulerian):
 
         The theta rule at :attr:`transport_theta`, Crank-Nicolson by default.
         """
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         S, S_old = solver.u.sym, self._transport_old.sym
         gradient = self.mesh.vector.gradient
         a = self.advecting_velocity(0)
@@ -2591,7 +2596,7 @@ class CharacteristicTrace:
 
     def _new_level(self, k):
         snap = uw.discretisation.MeshVariable(
-            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.dim,
+            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.cdim,
             degree=self.velocity_degree(), continuous=True,
             varsymbol=rf"{{ V^{{ (n-{k}) }}_{{ [{self.instance_number}] }} }}",
             units=self.velocity_units(),
@@ -2617,7 +2622,7 @@ class CharacteristicTrace:
     def _evaluate_into(self, level):
         vals = uw.function.evaluate(self.V_matrix(), np.asarray(level["var"].coords_nd))
         vals = _to_nondim_ndarray(vals, units=self.velocity_units())
-        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.cdim)
 
     def initialise_levels(self, n):
         """Every cached level ``1 .. n-1`` <- ``V_fn`` now (a history starting
@@ -2678,7 +2683,7 @@ class CharacteristicTrace:
             v_at_pts = np.asarray(v_result)
             v_at_pts = v_at_pts[:, 0, :] if v_at_pts.ndim == 3 else v_at_pts
         out = _to_nondim_ndarray(v_at_pts, units=uw.get_units(self.V_fn))
-        return np.asarray(out).reshape(coords.shape[0], self.mesh.dim)
+        return np.asarray(out).reshape(coords.shape[0], self.mesh.cdim)
 
     # -- the steps and the trace -----------------------------------------------
 
@@ -3893,6 +3898,15 @@ class SemiLagrangian(_DDtBase):
         # here as dead code — see git history for the sketch if the
         # `preserve_moments` option is ever implemented.
 
+    # TODO(BUG): on a mesh with a split-node fault the trace-back samples the
+    # history with a point evaluation, which is unreliable within about h/2 of
+    # the slit and can read the other side of the fault. Measured 2026-10-09 on
+    # a Maxwell thin sheet with a sliding Coulomb fault: a period-2-step
+    # oscillation of the near-tip slip rate (amplitude doubling at half dt,
+    # unchanged by a 1e-11 solver tolerance) and patchy stress along the trace,
+    # both gone with the grid (Eulerian SUPG) history. A Stokes viscoelastic
+    # model with a split fault uses this history by default and is exposed too.
+    # See issue #871.
     def update_pre_solve(
         self,
         dt: float,
