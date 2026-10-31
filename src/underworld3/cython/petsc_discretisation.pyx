@@ -181,6 +181,24 @@ def petsc_dm_set_regular_refinement(dm, regular=True):
         return
 
 
+def petsc_dm_create_interpolation_within_plex(dmc, dmf):
+        """The interpolation matrix from the field of ``dmc`` to the field of
+        ``dmf``, two DMs on ONE plex (clones or sub-DMs of one mesh DM).
+
+        It is the matrix ``dmc.createInterpolation(dmf)`` returns, assembled
+        also on a rank that holds cells but owns none of their degrees of
+        freedom, where PETSc's own preallocation skips the rank and the
+        assembly fails on some ranks and hangs the others (#902; see
+        ``UW_DMCreateInterpolationWithinPlex`` in ``petsc_compat.h``).
+        Collective.
+        """
+        cdef DM c_dmc = dmc
+        cdef DM c_dmf = dmf
+        cdef Mat interp = PETSc.Mat()
+        CHKERRQ( UW_DMCreateInterpolationWithinPlex(c_dmc.dm, c_dmf.dm, &interp.mat) )
+        return interp
+
+
 
 # This is not cython, does it need to be here or in discretisation.py ?
 

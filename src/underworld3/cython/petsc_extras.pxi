@@ -58,6 +58,7 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode UW_DMForceCoordinateField(PetscDM)
     PetscErrorCode UW_DMPlexComputeBdIntegral( PetscDM, PetscVec, PetscDMLabel, PetscInt, const PetscInt*, void*, PetscScalar*, void*)
     PetscErrorCode UW_DMCreateBdIntegralSandbox(PetscDM, PetscDM*)
+    PetscErrorCode UW_DMCreateInterpolationWithinPlex(PetscDM, PetscDM, PetscMat*)
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetConstants(PetscDS, PetscInt, const PetscScalar[])

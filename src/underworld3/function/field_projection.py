@@ -1,8 +1,8 @@
 """Project or prolong MeshVariable data to a different polynomial degree.
 
-Interpolates onto a scratch PETSc DM, cell by cell
-(``utilities.closure_interpolation``) — no MeshVariable is created, the mesh
-DM is never modified, and all scratch objects are destroyed before returning.
+Uses a scratch PETSc DM with ``createInterpolation`` — no MeshVariable
+is created, the mesh DM is never modified, and all scratch objects are
+destroyed before returning.
 
 Typical use cases
 -----------------
@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from petsc4py import PETSc
-
-from underworld3.utilities.closure_interpolation import interpolate_within_plex
 
 if TYPE_CHECKING:
     from underworld3.discretisation import MeshVariable
@@ -53,12 +51,12 @@ def project_to_degree(
 
     Notes
     -----
-    This creates a transient scratch DM, applies PETSc's element
-    interpolation matrix to each cell, and destroys everything.  The mesh DM
-    and all existing MeshVariables are completely untouched.
+    This creates a transient scratch DM, builds the PETSc interpolation
+    matrix, applies it, and destroys everything.  The mesh DM and all
+    existing MeshVariables are completely untouched.
 
-    For ``target_degree == mesh_var.degree`` the element matrix is the
-    identity and the result matches the source data exactly.
+    For ``target_degree == mesh_var.degree`` the interpolation matrix is
+    the identity and the result matches the source data exactly.
     """
 
     mesh = mesh_var.mesh
@@ -82,13 +80,32 @@ def project_to_degree(
     # --- source sub-DM for this variable's field ---
     iset, subdm_src = mesh.dm.createSubDM(mesh_var.field_id)
 
-    # Cell by cell rather than through PETSc's interpolation matrix, which
-    # cannot be assembled on a rank that holds cells but owns none of their
-    # degrees of freedom (#902).
-    result = interpolate_within_plex(
-        mesh.dm, subdm_src, mesh_var._lvec.array, dm_scratch, nc, ghosts=include_ghosts)
+    # --- interpolation matrix ---
+    # Its mult() maps source global vec → target global vec. UW3's copy of
+    # PETSc's nested interpolator: PETSc's own (createInterpolation) cannot be
+    # assembled on a rank that holds cells but owns none of their DOFs (#902).
+    from underworld3.cython.petsc_discretisation import (
+        petsc_dm_create_interpolation_within_plex,
+    )
+    interp = petsc_dm_create_interpolation_within_plex(subdm_src, dm_scratch)
 
-    for obj in (dm_scratch, fe_target, subdm_src, iset):
+    # --- apply ---
+    g_src = subdm_src.createGlobalVec()
+    subdm_src.localToGlobal(mesh_var._lvec, g_src)
+
+    g_dst = dm_scratch.createGlobalVec()
+    interp.mult(g_src, g_dst)
+
+    if include_ghosts:
+        l_dst = dm_scratch.createLocalVec()
+        dm_scratch.globalToLocal(g_dst, l_dst)
+        result = l_dst.array.reshape(-1, nc).copy()
+        l_dst.destroy()
+    else:
+        result = g_dst.array.reshape(-1, nc).copy()
+
+    # --- cleanup ---
+    for obj in (interp, g_src, g_dst, dm_scratch, fe_target, subdm_src, iset):
         obj.destroy()
 
     return result

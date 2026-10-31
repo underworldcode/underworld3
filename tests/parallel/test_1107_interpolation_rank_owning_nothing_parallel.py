@@ -2,8 +2,9 @@
 
 PETSc's ``DMPlexComputeInterpolatorNested`` builds the matrix between two DMs on
 one plex (a coordinate DM and a basis DM, a variable's sub-DM and a scratch
-clone). It skips its preallocation pass on a rank with no local rows and no
-local columns, but runs its fill pass over that rank's cells all the same. A
+clone). Since v3.24.0 it skips its preallocation pass on a rank with no local
+rows and no local columns, but runs its fill pass over that rank's cells all
+the same. A
 shared point belongs to the highest rank that holds it, so a rank whose cells
 sit wholly inside higher ranks' regions owns nothing. Its entries then reach
 owners that never preallocated them: the owner raises "New nonzero caused a
@@ -14,8 +15,10 @@ each level's node coordinates (#902), and on a 3-D notch mesh at np 16.
 
 A shell partition gives rank 0 one interior cell of a 4 x 4 grid of triangles
 and the other ranks the rest, so rank 0 owns none of its cell's vertices and
-edges. The test checks that case is set up, then that the node coordinates and
-the projection between degrees come back right on every rank. Before the fix
+edges. The test checks that case is set up, then that the node coordinates
+(degree 1 to 3, the third with two nodes on each edge) and the projection
+between degrees come back right on every rank, through UW3's copy of the
+interpolator (``petsc_dm_create_interpolation_within_plex``). Before the fix
 the degree-2 coordinates hung, so each test carries a thread timeout, which
 fails the run instead of stalling it.
 
@@ -107,23 +110,45 @@ def test_rank_zero_holds_a_cell_and_owns_nothing(mesh):
         sec = mesh.dm.getPointSF()
         leaves = set(np.asarray(sec.getGraph()[1]).tolist())
         owned += sum(1 for p in range(pS, pE) if p not in leaves)
-    if uw.mpi.rank == 0:
-        assert cE - cS == 1 and owned == 0, (cE - cS, owned)
-    assert _all(True)
+    # one verdict for every rank: a rank-0-only assert would leave the others
+    # waiting in the next collective until the timeout
+    assert _all(uw.mpi.rank != 0 or (cE - cS == 1 and owned == 0))
 
 
-@pytest.mark.parametrize("degree", [1, 2])
+def _expected_nodes(verts, degree, t=None):
+    """A triangle's Lagrange nodes: its vertices, then (degree 2) its edge
+    midpoints, or (degree 3) two points on each edge, at ``t`` and ``1 - t``
+    from either end, and the centroid."""
+    a, b = verts[[0, 1, 2]], verts[[1, 2, 0]]
+    if degree == 1:
+        return verts
+    if degree == 2:
+        return np.vstack([verts, 0.5 * (a + b)])
+    return np.vstack([verts, (1 - t) * a + t * b, t * a + (1 - t) * b,
+                      verts.mean(axis=0, keepdims=True)])
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3])
 def test_node_coordinates_on_every_rank(mesh, degree):
-    """Each cell's nodes are its vertices (degree 1), and its vertices and edge
-    midpoints (degree 2)."""
+    """Each cell's nodes are its vertices and, by degree, its edge midpoints,
+    or two points per edge and its centroid. Degree 3 places its edge points by
+    PETSc's node rule (``node_endpoints`` False), so ``t`` is read from the
+    first cell and must then hold on every edge of every cell, on every rank."""
     coords = mesh._get_coords_for_basis(degree, True)
     rows = mesh._cell_node_indices(degree, True)
-    ok = True
-    for k, verts in enumerate(_cell_vertex_coords(mesh)):
-        expected = verts if degree == 1 else np.vstack(
-            [verts, 0.5 * (verts[[0, 1, 2]] + verts[[1, 2, 0]])])
+    cells = _cell_vertex_coords(mesh)
+    t = None
+    if degree == 3 and cells:
+        v, nodes = cells[0], coords[rows[0]]
+        on_edge = [np.dot(x - v[0], v[1] - v[0]) / np.dot(v[1] - v[0], v[1] - v[0])
+                   for x in nodes if abs(np.cross(v[1] - v[0], x - v[0])) < 1e-12]
+        t = min(s for s in on_edge if s > 1e-12)
+    t_all = uw.mpi.comm.allgather(t)
+    ok = all(abs(s - t_all[0]) < 1e-12 for s in t_all if s is not None) if degree == 3 else True
+    for k, verts in enumerate(cells):
         got = coords[rows[k]]
-        ok &= np.allclose(_sorted_rows(got), _sorted_rows(expected), atol=1e-12)
+        ok &= np.allclose(_sorted_rows(got), _sorted_rows(_expected_nodes(verts, degree, t)),
+                          atol=1e-12)
     assert _all(ok)
 
 

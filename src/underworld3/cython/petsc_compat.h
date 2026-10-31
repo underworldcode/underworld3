@@ -366,3 +366,144 @@ PetscErrorCode UW_DMCreateBdIntegralSandbox(DM src, DM *sandbox)
     *sandbox = sdm;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+// Interpolation between two DMs on ONE plex (a coordinate DM and a basis DM
+// cloned from it, a variable's sub-DM and a scratch clone of the mesh): the
+// matrix DMCreateInterpolation builds through DMPlexComputeInterpolatorNested
+// (isRefined = PETSC_FALSE), copied from PETSc v3.25.0 (BSD-2-Clause) with one
+// change (#902). PETSc runs its preallocation loop only on a rank with local
+// rows or columns (`if (locRows || locCols)`, since b4ec2976050, v3.24.0) but
+// its fill loop on every rank that holds cells. A shared point belongs to the
+// highest rank holding it, so a rank whose cells lie inside higher ranks'
+// regions owns no rows and no columns; its cells' entries then reach owners
+// that never preallocated them ("New nonzero caused a malloc" in
+// MatAssemblyEnd) and the ranks that did not raise wait in the assembly's
+// collective. Here both loops run over the same cells. Finite-element fields
+// only, which are the only ones UW3 interpolates this way. Drop this for
+// DMCreateInterpolation once PETSc runs the two loops alike.
+PetscErrorCode UW_DMCreateInterpolationWithinPlex(DM dmc, DM dmf, Mat *In)
+{
+    PetscSection fsection, fglobalSection, csection, cglobalSection;
+    PetscScalar *elemMat, *vals;
+    PetscFE     *fe;
+    PetscInt     dim, Nf, f, fieldI, fieldJ, offsetI, offsetJ, cStart, cEnd, c;
+    PetscInt     cTotDim = 0, rTotDim = 0, m, n, locRows, locCols;
+    MatType      mtype;
+    PetscBool    ismatis;
+    Mat          preallocator;
+
+    PetscFunctionBeginUser;
+    PetscCall(DMGetGlobalSection(dmf, &fglobalSection));
+    PetscCall(PetscSectionGetConstrainedStorageSize(fglobalSection, &m));
+    PetscCall(DMGetGlobalSection(dmc, &cglobalSection));
+    PetscCall(PetscSectionGetConstrainedStorageSize(cglobalSection, &n));
+    PetscCall(DMGetMatType(dmc, &mtype));
+    PetscCall(PetscStrcmp(mtype, MATIS, &ismatis));
+    PetscCall(MatCreate(PetscObjectComm((PetscObject)dmc), In));
+    PetscCall(MatSetSizes(*In, m, n, PETSC_DETERMINE, PETSC_DETERMINE));
+    PetscCall(MatSetType(*In, ismatis ? MATAIJ : mtype));
+
+    PetscCall(DMGetDimension(dmf, &dim));
+    PetscCall(DMGetLocalSection(dmf, &fsection));
+    PetscCall(DMGetLocalSection(dmc, &csection));
+    PetscCall(PetscSectionGetNumFields(fsection, &Nf));
+    PetscCall(DMPlexGetSimplexOrBoxCells(dmc, 0, &cStart, &cEnd));
+    PetscCall(PetscCalloc1(Nf, &fe));
+    for (f = 0; f < Nf; ++f) {
+        PetscObject  obj, objc;
+        PetscClassId id, idc;
+        PetscInt     rNb, cNb;
+
+        PetscCall(DMGetField(dmf, f, NULL, &obj));
+        PetscCall(PetscObjectGetClassId(obj, &id));
+        PetscCall(DMGetField(dmc, f, NULL, &objc));
+        PetscCall(PetscObjectGetClassId(objc, &idc));
+        PetscCheck(id == PETSCFE_CLASSID && idc == PETSCFE_CLASSID, PetscObjectComm((PetscObject)dmc),
+                   PETSC_ERR_SUP, "UW_DMCreateInterpolationWithinPlex: field %" PetscInt_FMT " is not a PetscFE", f);
+        fe[f] = (PetscFE)obj;
+        PetscCall(PetscFEGetDimension(fe[f], &rNb));
+        PetscCall(PetscFEGetDimension((PetscFE)objc, &cNb));
+        rTotDim += rNb;
+        cTotDim += cNb;
+    }
+    PetscCall(PetscCalloc1(rTotDim * cTotDim, &elemMat));
+    for (fieldI = 0, offsetI = 0; fieldI < Nf; ++fieldI) {
+        PetscDualSpace   Qref;
+        PetscQuadrature  quad;
+        const PetscReal *qpoints, *qweights;
+        PetscReal       *points;
+        PetscInt         npoints = 0, Nc, Np, fpdim, i, k, p, d;
+
+        // the fine field's dual basis: every functional's quadrature points
+        PetscCall(PetscFEGetDualSpace(fe[fieldI], &Qref));
+        PetscCall(PetscFEGetNumComponents(fe[fieldI], &Nc));
+        PetscCall(PetscDualSpaceGetDimension(Qref, &fpdim));
+        for (i = 0; i < fpdim; ++i) {
+            PetscCall(PetscDualSpaceGetFunctional(Qref, i, &quad));
+            PetscCall(PetscQuadratureGetData(quad, NULL, NULL, &Np, NULL, NULL));
+            npoints += Np;
+        }
+        PetscCall(PetscMalloc1(npoints * dim, &points));
+        for (i = 0, k = 0; i < fpdim; ++i) {
+            PetscCall(PetscDualSpaceGetFunctional(Qref, i, &quad));
+            PetscCall(PetscQuadratureGetData(quad, NULL, NULL, &Np, &qpoints, NULL));
+            for (p = 0; p < Np; ++p, ++k)
+                for (d = 0; d < dim; ++d) points[k * dim + d] = qpoints[p * dim + d];
+        }
+        for (fieldJ = 0, offsetJ = 0; fieldJ < Nf; ++fieldJ) {
+            PetscObject     obj;
+            PetscFE         fec;
+            PetscTabulation T = NULL;
+            PetscInt        NcJ, cpdim, j, qNc;
+
+            PetscCall(DMGetField(dmc, fieldJ, NULL, &obj));
+            fec = (PetscFE)obj;
+            PetscCall(PetscFEGetNumComponents(fec, &NcJ));
+            PetscCall(PetscFEGetDimension(fec, &cpdim));
+            // fields only interpolate themselves: the coarse basis evaluated at
+            // the fine functionals' points, weighted by the functionals
+            if (fieldI == fieldJ) {
+                PetscCheck(Nc == NcJ, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Number of components in fine space field %" PetscInt_FMT " does not match coarse field %" PetscInt_FMT, Nc, NcJ);
+                PetscCall(PetscFECreateTabulation(fec, 1, npoints, points, 0, &T));
+                for (i = 0, k = 0; i < fpdim; ++i) {
+                    PetscCall(PetscDualSpaceGetFunctional(Qref, i, &quad));
+                    PetscCall(PetscQuadratureGetData(quad, NULL, &qNc, &Np, NULL, &qweights));
+                    PetscCheck(qNc == NcJ, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Number of components in quadrature %" PetscInt_FMT " does not match coarse field %" PetscInt_FMT, qNc, NcJ);
+                    for (p = 0; p < Np; ++p, ++k)
+                        for (j = 0; j < cpdim; ++j)
+                            for (c = 0; c < Nc; ++c) elemMat[(offsetI + i) * cTotDim + offsetJ + j] += T->T[0][k * cpdim * NcJ + j * Nc + c] * qweights[p * qNc + c];
+                }
+                PetscCall(PetscTabulationDestroy(&T));
+            }
+            offsetJ += cpdim;
+        }
+        offsetI += fpdim;
+        PetscCall(PetscFree(points));
+    }
+
+    // Preallocate from every cell this rank holds, as the fill below does,
+    // whether or not the rank owns any rows or columns (the one change).
+    PetscCall(MatGetLocalSize(*In, &locRows, &locCols));
+    PetscCall(MatCreate(PetscObjectComm((PetscObject)*In), &preallocator));
+    PetscCall(MatSetType(preallocator, MATPREALLOCATOR));
+    PetscCall(MatSetSizes(preallocator, locRows, locCols, PETSC_DETERMINE, PETSC_DETERMINE));
+    PetscCall(MatSetUp(preallocator));
+    PetscCall(PetscCalloc1(rTotDim * cTotDim, &vals));
+    for (c = cStart; c < cEnd; ++c)
+        PetscCall(DMPlexMatSetClosureGeneral(dmf, fsection, fglobalSection, PETSC_FALSE, dmc, csection, cglobalSection, PETSC_FALSE, preallocator, c, vals, INSERT_VALUES));
+    PetscCall(PetscFree(vals));
+    PetscCall(MatAssemblyBegin(preallocator, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(preallocator, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatPreallocatorPreallocate(preallocator, PETSC_TRUE, *In));
+    PetscCall(MatDestroy(&preallocator));
+
+    PetscCall(MatZeroEntries(*In));
+    for (c = cStart; c < cEnd; ++c)
+        PetscCall(DMPlexMatSetClosureGeneral(dmf, fsection, fglobalSection, PETSC_FALSE, dmc, csection, cglobalSection, PETSC_FALSE, *In, c, elemMat, INSERT_VALUES));
+    PetscCall(PetscFree(fe));
+    PetscCall(PetscFree(elemMat));
+    PetscCall(MatAssemblyBegin(*In, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(*In, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatViewFromOptions(*In, NULL, "-interp_mat_view"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}

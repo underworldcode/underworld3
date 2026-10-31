@@ -5737,19 +5737,35 @@ class Mesh(Stateful, uw_object):
         ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
         (ghost nodes included).
 
-        The mesh's coordinate field is interpolated cell by cell, not through
-        PETSc's interpolation matrix, which cannot be assembled on a rank that
-        holds cells but owns none of their nodes (#902): see
-        ``utilities.closure_interpolation``.
+        The interpolation matrix comes from UW3's copy of PETSc's nested
+        interpolator, which assembles also on a rank that holds cells but owns
+        none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
         """
-        from underworld3.utilities.closure_interpolation import interpolate_within_plex
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_interpolation_within_plex,
+        )
 
         dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
-        coords = interpolate_within_plex(
-            self.dm, dmold, self.dm.getCoordinatesLocal().array, dmnew, self.cdim)
+
+        matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
+        coordsOld = self.dm.getCoordinates()
+        coordsNewL = dmnew.getLocalVec()
+        coordsNewG = dmnew.getGlobalVec()
+        matInterp.mult(coordsOld, coordsNewG)
+        dmnew.globalToLocal(coordsNewG, coordsNewL)
+
+        arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
+
+        dmnew.restoreGlobalVec(coordsNewG)
+        dmnew.restoreLocalVec(coordsNewL)
+        # Clean up the PETSc interpolation objects built above. Without this
+        # they accumulate until Python GC runs — noticeable in long adapt
+        # loops that re-fill the coord cache per variable.
+        matInterp.destroy()
         dmnew.destroy()
-        return coords
+
+        return arrcopy
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
