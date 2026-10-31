@@ -16,8 +16,15 @@ the gate passed at 0.721.
 The band does not depend on the partition, so this test asserts that the global
 count of patch rows on the finest level equals the serial count, and that the
 patch is installed. It runs the same fixture at 80 rungs, on a structured base
-(``regular=True``) so the count does not depend on the mesher's platform. The
-count is what catches #896 here: at 80 rungs the cover stays under the gate.
+(``regular=True``). The count is what catches #896 here: at 80 rungs the cover
+stays under the gate.
+
+The serial count still depends on the host by a few rows, through the placed
+fault's cavity fill: 4780 on macOS arm64 (custom PETSc 3.25.0), 4772 on CI's
+Linux x86_64 (conda-forge PETSc 3.25.3), with the same gmsh 4.15.2. On each host
+the parallel count equals that host's serial count (CI: 4772 at np 1 and 2).
+The test accepts exactly the recorded counts; #896's error added 2110 rows. A
+new host records its serial count here.
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 baseline, in the parallel batches the partition.
@@ -38,8 +45,10 @@ pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
 # Patch rows of the finest level in serial (the band), measured on the fixture
-# below; the parallel split must find the same rows. Before the fix: 6890 at np 2.
-SERIAL_PATCH_ROWS = 4780
+# below, per host; the parallel split must find the same rows. Before the fix:
+# 6890 at np 2 on macOS.
+SERIAL_PATCH_ROWS = {"macOS arm64, custom PETSc 3.25.0": 4780,
+                     "CI Linux x86_64, conda-forge PETSc 3.25.3": 4772}
 
 
 def _finest_patch_rows():
@@ -80,6 +89,7 @@ def _finest_patch_rows():
 def test_the_band_patch_is_the_same_rows_at_any_rank_count():
     rows = _finest_patch_rows()
     assert rows is not None, f"np {uw.mpi.size}: the finest level has no band patch (#896)"
-    assert rows == SERIAL_PATCH_ROWS, (
-        f"np {uw.mpi.size}: {rows} patch rows on the finest level, {SERIAL_PATCH_ROWS} "
-        f"in serial (#896: background rows whose coarse node is on another rank)")
+    assert rows in SERIAL_PATCH_ROWS.values(), (
+        f"np {uw.mpi.size}: {rows} patch rows on the finest level; serial counts "
+        f"{SERIAL_PATCH_ROWS} (#896: background rows whose coarse node is on another "
+        f"rank; a new host records its serial count)")
