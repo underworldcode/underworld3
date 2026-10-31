@@ -402,6 +402,11 @@ class SolverBaseClass(uw_object):
         # Switch threshold of the rotated-free-slip two-phase path (rotated_bc.py):
         # Picard until the relative residual falls below this, then Newton.
         self.newton_switch_rtol = 1.0e-2
+        # The rotated-free-slip path (rotated_bc.py): a hard failure of the first
+        # linear solve of a cold start raises, because it leaves no solution
+        # (#907). True warns and continues instead, as before. The standard SNES
+        # path only warns on divergence.
+        self.tolerate_linear_failure = False
         # consistent_jacobian = "continuation" (#791): alpha is keyed on the residual,
         #     alpha = clip(log10(F_ref / F) - log10(1 / start)) / (log10(1 / newton_at)
         #             - log10(1 / start)), never decreasing,
@@ -5536,6 +5541,10 @@ class SolverBaseClass(uw_object):
         # The warm-start flag must follow the rotated solve's own verdict — the SNES
         # was never run, so the generic reader would latch a stale reason.
         self._record_convergence_status(converged=_rotated_report.converged)
+        # raised after the result and the convergence status are recorded, so a
+        # caller that catches it reads a failed solve (#907)
+        if self._rotated_freeslip_info.get("linear_failure"):
+            raise RuntimeError(self._rotated_freeslip_info["linear_failure"])
         return True
 
     def _reject_mixed_constraint_mechanisms(self, adding):
