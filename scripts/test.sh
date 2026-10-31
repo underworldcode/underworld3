@@ -320,6 +320,11 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # every other serial test of the default boundary normal is on a box, where
   # flat walls make the question vacuous. It also runs in the --p N batch below.
   batch 4 tests/parallel/test_1069_boundary_normal_parallel.py
+  # The live multigrid configuration (#892) is the same check in serial and in
+  # parallel, so it is one file under tests/parallel/ with no min_size mark too.
+  batch 4 tests/parallel/test_1090_mg_live_configuration_parallel.py
+  # So is the live finest-smoother operator of the rotated Newton loop (#894).
+  batch 4 tests/parallel/test_1088_rotated_interface_operator_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
