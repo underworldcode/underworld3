@@ -291,6 +291,22 @@ and an unverified tiny step goes back through the line search (a slow crawl
 continues; a genuine stall ends the loop with an explicit warning). An
 unconverged exit always warns; the fields hold the last iterate.
 
+A failed **linear** solve before any Newton step is accepted raises on every rank
+(#907). The outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can
+fail hard: a preconditioner that failed (`KSP_DIVERGED_PC_FAILED`), a breakdown, a
+NaN, a residual that grew. On the first step, that leaves the fields at the
+initial guess. With a preconditioner that failed at iteration 0, the velocity is
+left at zero. The exception names the reason. Set
+`solver.tolerate_linear_failure = True` to warn and keep the guess instead, as the
+route used to.
+
+After an accepted step the fields hold that iterate. A hard failure then only
+warns: the line search rejects the failed increment, and the loop's convergence
+verdict stands. A solve driven past round-off can fail its last linear solve
+that way, with Newton already at 2e-10 of the reference residual. An iteration
+cap (`KSP_DIVERGED_ITS`) only warns. The velocity sub-solve's own reason only
+warns too, because the outer FGMRES absorbs an inexact inner solve.
+
 ### Null-space handling
 
 Rigid-rotation candidates (one mode on a closed circle, three on a spherical

@@ -8,11 +8,14 @@ took the zeros for a solution. Found with a singular multigrid coarse level
 under plain LU (#901).
 
 The failure is forced here by a coarse-level python PC that reports a failure
-at every application, which fails the same way on any build. Contract: the
+at every application, which fails the same way on any build. It fails the
+first Newton step, so the fields would hold the initial guess. Contract: the
 solve raises, naming the KSP reason; with ``solver.tolerate_linear_failure =
-True`` it warns and keeps the last iterate, as before. An iteration cap
-(``KSP_DIVERGED_ITS``) leaves a usable iterate the Newton loop can still
-improve, so it only warns.
+True`` it warns and keeps that guess, as before. A hard failure after an
+accepted step leaves the fields at that iterate, the line search rejects the
+failed increment, and the loop's convergence warning stands (test_0022's
+fixture fails at round-off on its sixth step). An iteration cap
+(``KSP_DIVERGED_ITS``) only warns.
 """
 import pytest
 import sympy

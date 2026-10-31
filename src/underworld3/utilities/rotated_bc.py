@@ -76,6 +76,50 @@ def _warn_if_ksp_diverged(ksp, kind):
                f"proceeding with the last iterate.")
 
 
+def _ksp_reason_name(reason):
+    """PETSc's name for a KSP converged reason. petsc4py keeps only the
+    deprecated alias DIVERGED_PCSETUP_FAILED for -11, KSP_DIVERGED_PC_FAILED."""
+    if reason == -11:
+        return "DIVERGED_PC_FAILED"
+    for name in dir(PETSc.KSP.ConvergedReason):
+        if not name.startswith("_") and int(getattr(PETSc.KSP.ConvergedReason, name)) == reason:
+            return name
+    return str(reason)
+
+
+def _hard_linear_failure(ksp, kind):
+    """Warn on an outer rotated linear solve that did not converge, and return
+    True for a hard failure: a preconditioner that failed (DIVERGED_PC_FAILED),
+    a breakdown, a NaN, a residual that grew. An iteration cap (DIVERGED_ITS)
+    leaves an increment the line search can still use, so it is not one."""
+    _warn_if_ksp_diverged(ksp, kind)
+    reason = int(ksp.getConvergedReason())
+    # -3 is KSP_DIVERGED_ITS (petsc4py: DIVERGED_MAX_IT), the iteration cap
+    return reason < 0 and reason != -3
+
+
+def _raise_unless_a_step_was_taken(solver, ksp, kind, line_search_alpha):
+    """The verdict on a hard linear failure in the rotated Newton loop (#907).
+
+    Before any Newton step was accepted, the fields still hold the initial
+    guess, which is zero on a cold start: the solve has produced nothing. That
+    raises, naming the reason, unless the caller set
+    ``solver.tolerate_linear_failure = True``. After an accepted step the fields
+    hold that iterate; the line search rejects a failed increment, and the
+    loop's own convergence verdict (a warning when it stops short) stands, as
+    before. The KSP's reason and the line-search record are the same on every
+    rank, so every rank raises together."""
+    if any(a > 0 for a in line_search_alpha) or getattr(solver, "tolerate_linear_failure", False):
+        return
+    reason = int(ksp.getConvergedReason())
+    raise RuntimeError(
+        f"[rotated_bc] the {kind} linear solve failed on the first Newton step: "
+        f"KSP_{_ksp_reason_name(reason)} (reason {reason}) after "
+        f"{int(ksp.getIterationNumber())} iterations, so the fields still hold the "
+        f"initial guess. Set solver.tolerate_linear_failure = True to warn and keep "
+        f"it instead.")
+
+
 # --------------------------------------------------------------------------- #
 #  Rotation construction
 # --------------------------------------------------------------------------- #
@@ -1618,7 +1662,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             dhat.set(0.0)
             ctx["ksp"].solve(bhat, dhat)
             last_reason = ctx["ksp"].getConvergedReason()
-            _warn_if_ksp_diverged(ctx["ksp"], kind="rotated direct-LU")
+            if _hard_linear_failure(ctx["ksp"], kind="rotated direct-LU"):
+                _raise_unless_a_step_was_taken(solver, ctx["ksp"], "rotated direct-LU",
+                                               line_search_alpha)
             # parity with the iterative path's exact v_n cleanup (LU is exact only
             # to factorisation round-off at the decoupled constraint rows)
             _zero_rows_local(dhat, normal_rows)
@@ -1627,10 +1673,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
                 refresh_operator=assemble)
+            if ctx["hard_failure"]:
+                _raise_unless_a_step_was_taken(solver, ctx["ksp"], "rotated fieldsplit-Schur",
+                                               line_search_alpha)
         else:
             dhat, last_reason, ctx = _solve_rotated_vector(
                 solver, Aop, bhat, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, ctx=ctx, refresh_operator=assemble)
+            if ctx["hard_failure"]:
+                _raise_unless_a_step_was_taken(solver, ctx["ksp"], "rotated vector",
+                                               line_search_alpha)
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
@@ -2410,7 +2462,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
-    _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
+    ctx["hard_failure"] = _hard_linear_failure(ksp, kind="rotated fieldsplit-Schur")
     # An identity constraint row in an ITERATIVE solve only drives its residual
     # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
@@ -2529,7 +2581,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
-    _warn_if_ksp_diverged(ksp, kind="rotated vector")
+    ctx["hard_failure"] = _hard_linear_failure(ksp, kind="rotated vector")
     # exact at the decoupled constraint rows, independent of the iterative tolerance
     _zero_rows_local(Uhat, normal_rows)
     ctx["velocity_pc_type"] = ksp.getPC().getType()
