@@ -176,6 +176,7 @@ guides/plasticity-solvers
 guides/adaptive-meshing
 guides/adapt-on-top-faults
 guides/fault-multigrid
+guides/faults-in-convection
 guides/free-surface-convection
 guides/uw-visualisation
 guides/cetz-figures

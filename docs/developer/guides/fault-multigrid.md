@@ -1,6 +1,6 @@
 ---
 name: fault-multigrid
-description: Which multigrid hierarchy a faulted Stokes solve gets in Underworld3 and why — the base mesh is never cut or rebalanced, the fault is carried on an ephemeral add-on, the finest level takes a strong patch keyed on the fault physics, and the coarse levels must carry the fault the way the fine operator does. The three rulings, what ships on development, the iteration counts to expect, where parallel imbalance comes from, and what is measured but still on a branch.
+description: Which multigrid hierarchy a faulted Stokes solve gets in Underworld3 and why — the base mesh is never cut or rebalanced, the fault is carried on an ephemeral add-on, the finest level takes a strong patch keyed on the fault physics, and the coarse levels must carry the fault the way the fine operator does. The three rulings, the production tail ruled on 2026-11-01 (the welded base, the split finest level, the FAC LU patch), what ships on development, the iteration counts to expect, where parallel imbalance comes from, and the split-level hierarchy as the measured alternative.
 families: [Stokes, Stokes_Constrained]
 kind: guide
 ---
@@ -13,7 +13,7 @@ transversely isotropic band. Ordinary multigrid handles everything smooth,
 refined regions and layered viscosity jumps included, and fails on the band,
 because a coarse space that cannot represent slip corrects nothing there.
 This page says what the solver does about it on `development`, what is settled
-by measurement, and what is measured but not yet merged. The construction of
+by measurement and ruling, and what is kept as the measured alternative. The construction of
 the faulted mesh itself is on [Fault networks](../../advanced/fault-networks.md)
 and [Split-node faults](../../advanced/split-node-faults.md); the general
 multigrid controls are on
@@ -51,7 +51,10 @@ ladder from the base mesh smooths every level; the finest level's smoother
 gains one additive-Schwarz component whose subdomains are the fault zone, each
 block solved directly once per smoother application. The patch is keyed on the
 fault, never on the refinement structure: in a plate-scale mesh the refined
-region is most of the node budget while the fault zone scales as the trace.
+region is most of the node budget while the fault zone scales as the trace. The
+blocks are solved by LU with a nonzero shift; on the rotated free-slip path,
+which every fault model uses, they ran as unshifted ILU(0) from 2026-09-03 until
+#912 (2026-10-31), see the configuration rules below.
 
 With it, the velocity block converges in 4 to 9 iterations on the 2-D rig,
 independent of viscosity contrast from 1 to $10^{6}$, of how many along-strike
@@ -68,6 +71,10 @@ How to get it:
   base's refinement hierarchy onto the final mesh (so build the base with
   `refinement >= 1`), and sets the patch key itself: none for `"split"`, the
   band's cells for `"ti"`. Nothing more is needed for the finest patch.
+- `base.multigrid_levels` (#915) returns a mesh's levels coarsest first with the
+  mesh itself last, so a solver on a mesh placed on `base` takes
+  `set_custom_fmg(solver, base.multigrid_levels, field_id=0)` and nothing else;
+  a solver on `base` itself takes every level but the last.
 - A hand-built hierarchy registers with
   `set_custom_fmg(solver, coarse_meshes, field_id=0, fac_zone=mask)`, where
   `field_id=0` is the velocity block of a saddle-point solver and `fac_zone`
@@ -81,19 +88,26 @@ How to get it:
   must be registered by hand (see
   [Adapt-on-top faults](adapt-on-top-faults.md)).
 
-**What production runs do today.** The campaign drivers (the zg95 annulus and slab
+**What production runs do.** The campaign drivers (the zg95 annulus and slab
 drivers, the box-fault driver) place the fault as a structured ladder band into a copy
 of the base's finest level with `place_fault_ribbon_2d(..., mesher="ladder",
-split=True)`, build the split chain by hand (the same ladder at `2S` placed into a
-copy of the base's finest level, as the `S` ladder is, and at `4S` into a copy of the
-level below, the band widening with the level so the chain nests along the spine), and
-hand `set_custom_fmg` the base's coarser levels followed by those copies. The base and
-its levels are never modified: every ladder lives in a copy, and the two base levels
-whose copies carry ladders are left out of the solver's list, not changed. No bisection is involved. That chain is driver code because
-the library replays a cut, not a placed band, onto the add-on levels; the ribbon
-replay is the next library item. The adapt-and-cut route is the automated one and the
+split=True)`, rung spacing $S$ and band $2S$; the base and its levels are never
+modified, and no bisection is involved. The tail under it is ruled (Louis,
+2026-11-01, on #892): **the welded base with the split $S$ level on top and the FAC
+LU patch on that finest level**, `set_custom_fmg(stokes, base.multigrid_levels,
+field_id=0)`. On UWTN 2026-022's fixtures with the LU blocks running it takes 66
+velocity iterations over a linear solve at band ratios 6, 12 and 24, and 7 per Newton
+increment on the yielding-lid box at ratios 8, 16 and 25, with the Newton path and
+the slip unchanged. The chain of split ladders (the same ladder at $2S$ placed into a
+copy of the base's finest level and at $4S$ into a copy of the level below, each split
+along its rungs, the band widening with the level) is the measured alternative and
+not the production tail: its levels never carry the patch, and on the same states it
+takes 83 to 166 and 28 to 76. It stays driver code (`uw_chain`) until the drivers'
+default changes after kaiju's np 16 annulus run; whether split coarse levels remain a
+library option is not decided. The adapt-and-cut route is the automated one and the
 one the hierarchy strategies were compared on; it is not what production runs.
-(Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`.)
+(Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`, the sweep
+of 2026-10-31, and the decision and finding entries of 2026-11-01.)
 
 **Which key for which model.** The zone key is for volumetric fault
 representations only: a weak, TI or damage zone whose width is physics. A
@@ -123,8 +137,14 @@ one campaign and is the error to recognise.
   (`sub_pc_factor_shift_type nonzero`): the rotated Galerkin block carries
   near-zero pivots from the constraint-zeroed transfer rows, and an unshifted
   LU dies at zero iterations with `PC_FAILED`.
-- SOR subdomain solves are the safe default; LU is what buys contrast
-  constancy on the near-singular split patch.
+- The FAC blocks are LU with the nonzero shift; ILU there is a regression. From
+  2026-09-03 (891c9bb0, which made composite mode and LU the defaults in one
+  commit) until #912 (2026-10-31) the rotated path ran them as unshifted ILU(0):
+  the block options were written to the database, the rotated path deleted them
+  after forcing the smoother's set-up, and the composite's ASM child read the
+  database only at its first apply (#892). `test_1090_mg_live_configuration_parallel`
+  now reads back every level's live smoother against what was configured. Any
+  faulted rotated solve measured between those dates was measured on ILU blocks.
 - The robust (GMRES) smoother under contrast: the fast Richardson variant
   degrades already at $10^{2}$.
 - Check the subdomain probe, not only the iteration count: a patch that
@@ -169,12 +189,18 @@ is set by the add-on's inherited partition. Partitioning the add-on levels for
 themselves, star-weighted, is the planned fix; rebalancing the base has been
 proposed twice and ruled out twice.
 
-## Measured, not yet merged: the split-level hierarchy
+## The split-level hierarchy: merged, and now the alternative
 
-On `feature/fault-split-multigrid` every add-on level is cut and split like the
-finest (strategy C), with a side-aware transfer that locates each fine node
-through its own cell's centroid, a per-level pair frame, and unreached coarse
-unknowns dropped rather than repaired. The measurements that motivate it:
+`fault_mg.py`, `add_fault(split_levels=True)`, the side-aware transfer that
+locates each fine node through its own cell's centroid, the per-level pair frame
+(unreached coarse unknowns dropped rather than repaired) and the thin-sheet
+solver merged to `development` on 2026-10-31 (#889, #890). On an adapt-and-cut
+child every add-on level is cut and split like the finest (strategy C); the
+ribbon replay of a placed band onto the add-on levels is not in the library,
+and since the ruling above it is not a production need. The measurements that
+motivated the split levels were all made before #912, on the rotated path with
+the welded hierarchy's patch running ILU(0) blocks and the split levels carrying
+no patch at all:
 
 - On the cut, iterations *fall* with refinement (6, 5, 4 at two, three and
   four add-on levels) where the welded hierarchy's counts rise (13, 18, 23); a
@@ -189,9 +215,13 @@ unknowns dropped rather than repaired. The measurements that motivate it:
   analogue), 10 velocity iterations against GAMG's 119, with one rank and two
   agreeing in slip to four figures.
 
-None of this is on `development`: `fault_mg.py`, the ribbon replay onto the
-add-on levels and the per-level frames are branch work, and `FaultNetwork.build`
-still gives the finest band only. The record, with the dead ends (TI bands
+With the LU blocks the welded base with the split finest takes 3 velocity
+iterations per linear solve at every band ratio from 6 to 25 on the yielding-lid
+box, so the chain's case in 2-D is gone. It remains the measured alternative
+where the LU patch is unavailable or its block too large (the block grows with
+the band's rows; 3-D is not measured), and whether split coarse levels stay a
+library option is not decided. `FaultNetwork.build` gives the finest band only,
+which is now the production tail. The record, with the dead ends (TI bands
 under a split finest, node-cloud transfers to a split level, extrapolated
 weights, nearest-node injection) is the journal topic
 [Fault multigrid](https://github.com/underworldcode/underworld3-journal/blob/main/topics/fault-multigrid.md).
@@ -203,4 +233,8 @@ weights, nearest-node injection) is the journal topic
 - [Fault networks in parallel](../design/fault-parallel-placement-2026-09.md),
   the gathered star and the seam rules (#672).
 - The journal topic page above, for the split-level work and the measurements
-  behind the rulings.
+  behind the rulings; its entries of 2026-10-31 (the tail sweep) and 2026-11-01
+  (the tail ruling; the history of #892) for the production tail.
+- Louis's ruling on the tail, on
+  [#892](https://github.com/underworldcode/underworld3/issues/892#issuecomment-6550186134),
+  and the fix, [#912](https://github.com/underworldcode/underworld3/pull/912).

@@ -1,6 +1,6 @@
 ---
 name: faults-in-convection
-description: Recipe for a split-node fault in a TIME-DEPENDENT convection model (yielding lid, fault placed as the structured ladder by place_fault_ribbon_2d on a copy of the base's finest level, Stokes on the faulted mesh, temperature on the unfaulted base). Covers the multigrid hierarchy that keeps the faulted velocity solve bounded (the lean split-ladder chain, "C on the ladder"), the warm-start rules of the rotated nonlinear loop, rebuilding the faulted mesh for a moving trench, and the traps measured on the 4 x 1 box. Reach for THIS before writing or tuning a fault-in-convection driver; for the fault mechanics on an adapted mesh see `adapt-on-top-faults`, for the yield-law solver see `nonlinear-solver`.
+description: Recipe for a split-node fault in a TIME-DEPENDENT convection model (yielding lid, fault placed as the structured ladder by place_fault_ribbon_2d on a copy of the base's finest level, Stokes on the faulted mesh, temperature on the unfaulted base). Covers the multigrid hierarchy that keeps the faulted velocity solve bounded (the welded base with the FAC LU patch on the split finest level, ruled 2026-11-01; the split-ladder chain is the measured alternative), the warm-start rules of the rotated nonlinear loop, rebuilding the faulted mesh for a moving trench, and the traps measured on the 4 x 1 box. Reach for THIS before writing or tuning a fault-in-convection driver; for the fault mechanics on an adapted mesh see `adapt-on-top-faults`, for the yield-law solver see `nonlinear-solver`.
 families: [Stokes, AdvDiffusion]
 kind: recipe
 ---
@@ -8,8 +8,8 @@ kind: recipe
 # Faults in convection
 
 A split-node fault in a convecting, yielding lid. The pattern measured on a 4 x 1 box
-(2026-10, branch `feature/box-faults`), with the fault-multigrid library of
-`feature/fault-split-multigrid`:
+(2026-10, on `feature/box-faults`), with the fault-multigrid library that has been on
+`development` since 2026-10-31 (#889, #890, #912):
 
 - the base mesh carries the temperature and its transport and is never cut;
 - the faulted mesh is a copy of the base's finest level with the fault placed as the
@@ -18,61 +18,58 @@ A split-node fault in a convecting, yielding lid. The pattern measured on a 4 x 
 - Stokes is solved on the faulted mesh, and the velocity is evaluated back onto the
   base for the transport step.
 
-## The multigrid hierarchy: split the coarse levels
+## The multigrid hierarchy: the welded base, the split finest level, the LU patch
 
-`set_custom_fmg(stokes, base_levels, field_id=0)` with the base's own levels gives the
-WELDED hierarchy (A in `design/FAULT_MULTIGRID_HIERARCHIES.md`): only the finest level
-carries the fault. Its coarse spaces cannot represent the slip, the weak bridge or the
-ladder cells, and the velocity sub-solve caps at 200 iterations once Newton starts on a
-mobilising lid. A placed ladder is not replayed onto the levels by `add_fault`, so the
-split levels have to be built by hand as the mid levels: the same ladder at twice the
-rung spacing placed on the finest base level (beside the faulted mesh's own ladder),
-and at four times the rung spacing on the base level one step below, each split along
-its own rungs. The coarser base levels stay welded.
+The production tail (Louis, 2026-11-01, on #892) is the base's own levels under the
+faulted mesh: `set_custom_fmg(stokes, base.multigrid_levels, field_id=0)`, where
+`Mesh.multigrid_levels` returns the levels coarsest first with the base last, and the
+faulted mesh, a placement on the base, is the finest level above them. Only that
+finest level carries the fault. What makes the welded coarse spaces enough is the
+patch on the finest level: an additive-Schwarz component over the split's coincident
+pairs, installed without being asked for when the sole split level is the finest, its
+blocks solved by LU with a nonzero shift (#912).
 
 ```python
 from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
-base_levels = base._coarse_level_meshes()[:-1] + [base]   # coarsest .. finest
-
-def placed_ladder(host, coarsening):
-    # the spine and trace sampled at coarsening x the rung spacing S; the finest
-    # sample count is a multiple of 2**chain, so every coarser sampling is a subset
-    spine, trace = fault_trace(coarsening)
-    width = 2 * S * coarsening                 # two of the level's own rungs
-    mesh, info = place_fault_ribbon_2d(host, [("Fault", trace)], width,
-                                       spines=[("Fault", spine)], margin_rings=1,
-                                       clearance=0.7, split=True, mesher="ladder")
-    return mesh, info
-
-chain = 2
-mids = [placed_ladder(base_levels[len(base_levels) - k], 2 ** k)[0]
-        for k in range(chain, 0, -1)]
-faulted, info = placed_ladder(base, 1)
+spine, trace = fault_trace()
+faulted, info = place_fault_ribbon_2d(base, [("Fault", trace)], 2 * S,
+                                      spines=[("Fault", spine)], margin_rings=1,
+                                      clearance=0.7, split=True, mesher="ladder")
 stokes = uw.systems.Stokes(faulted, ...)
-set_custom_fmg(stokes, base_levels[:len(base_levels) - chain] + mids, field_id=0)
+set_custom_fmg(stokes, base.multigrid_levels, field_id=0)   # coarsest .. base; faulted on top
 ```
 
-Measured on one hard state (a mobilising lid, slip ~270, one solve from rest, 4 ranks;
-velocity iterations as the rotated loop reports them per Newton increment):
+Measured on UWTN 2026-022's fixtures in the tail sweep and reproduced on #912's build
+(velocity iterations as the rotated loop reports them; the band ratio is the base's
+finest cell size over the rung spacing $S$):
 
-| Hierarchy | Levels (cells) | Newton increments | Velocity its, total | Velocity its per increment, Newton phase | Caps (200) |
-|---|---|---|---|---|---|
-| A, welded | 642, 2568, 10272, 11604 | 39 | 1849 | 71-200 | 2 |
-| ladder chain all on the finest | 642, 2568, 10272, 10573, 10966, 11612 | 42 | 636 | 26-29 | 0 |
-| **lean chain** (above) | 642, 2924, 10950, 11612 | 42 | 695 | 29-38 | 0 |
+| | band ratio | welded base + LU patch | lean split chain |
+|---|---|---|---|
+| linear fault, np 1, over all applications | 6, 12, 24 | 66, 65, 67 | 83, 118, 166 |
+| box with a fault, np 4, per Newton increment | 8, 16, 25 | 7, 7, 7 | 28-40, 45-53, 67-76 |
 
-A cycle of the chain placed entirely on the finest level visits three levels of ~11k
-cells, about twice the work of a lean or welded cycle, so the lean chain is the cheapest
-per solve. In the time-stepping run every velocity sub-solve capped under A once the lid
-mobilised; under the lean chain none did, at 4-5 Newton increments per step and the same
-slip. A band of constant width (two finest rungs) on every level gave the same counts as
-the widened bands. The band patch smoother (`fac_zone=band`) did not help the welded
-hierarchy: 114-150 velocity iterations per increment against 91-162 without.
+The Newton path and the peak slip are the same under both tails, and the welded tail's
+counts do not move with the ratio.
 
-These counts were measured while the patch smoother's blocks ran ILU(0) rather than the
-configured LU (#892). They are re-measured with LU blocks as step 5 of #892's plan.
+**The split chain, the alternative.** Until 2026-11-01 this guide recommended the lean
+chain: the same ladder at $2S$ placed into a copy of the base's finest level and at
+$4S$ into a copy of the level below, each split along its rungs, under the faulted
+mesh, with the coarser base levels welded (`uw_chain = 2` in the drivers). That rested
+on counts measured while the finest patch's blocks ran unshifted ILU(0) instead of the
+configured LU (#892): under those the welded tail capped at 200 velocity iterations
+once the lid mobilised and the chain did not. The chain's levels never carry the patch
+(a pair touching a split coarse level skips FAC detection), so its counts did not
+change with the fix, and with the LU blocks it costs 3 to 16 times the welded tail's
+iterations on the same states. It stays in the drivers as the measured alternative,
+for the case where the LU patch is unavailable or its block too large (the block grows
+with the band's rows; 3-D is not measured), and the drivers' default changes once
+kaiju's np 16 annulus run confirms the welded tail on `development`. Whether split
+coarse levels stay a library option is not decided. The record, with the superseded
+table, is the journal topic
+[Fault multigrid](https://github.com/underworldcode/underworld3-journal/blob/main/topics/fault-multigrid.md)
+(entries 2026-10-29, 2026-10-31 and 2026-11-01).
 
 ## The rotated nonlinear loop
 
