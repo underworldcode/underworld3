@@ -219,8 +219,8 @@ mode. It projects the modes out of the right-hand side and the solution, and
 factors the pinned system with PETSc's redundant LU. This gives the answer a
 dense SVD gives, at the same iteration counts, without the SVD's O(n^3) cost on
 every rank. That cost grew with the rank count: on a 614-cell shell bottom level,
-the SVD took 64 s to factor at np 1 and 102 s at np 4. The whole pinned-LU solve
-took 7 s at np 4 (#901).
+the SVD took 64 s to factor at np 1 and 102 s at np 4. With the pinned LU, the
+whole Stokes solve took 7 s at np 4, 1.2 s of it on the coarse level (#901).
 
 It is deliberately **not** a blanket choice for every rotated problem. It keys
 on the count of *verified rotation* modes, because a rotated problem with

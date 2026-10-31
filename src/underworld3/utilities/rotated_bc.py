@@ -2338,8 +2338,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     # ranks on the Zhong & Gurnis annulus, 2026-10-14) with
                     # every scalar diagonal healthy; without the inode
                     # grouping the same solve converged in 9 iterations to
-                    # the two-rank answer. The finest operator is untouched.
-                    for _l in range(vel_pc.getMGLevels() - 1):
+                    # the two-rank answer. The finest operator is untouched,
+                    # and so is level 0: it is not smoothed by SOR, its direct
+                    # solve factors its own gathered copy, and re-assembling it
+                    # here moved its state, so the coarse PC was set up and
+                    # factored a second time at its first application (#901).
+                    for _l in range(1, vel_pc.getMGLevels() - 1):
                         _A = vel_pc.getMGSmoother(_l).getOperators()[0]
                         _A.setOption(PETSc.Mat.Option.USE_INODES, False)
                         _A.assemble()

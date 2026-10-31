@@ -312,7 +312,9 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # modes to the bottom level, pins one unknown per mode and factors the
         # pinned system by PETSc's redundant LU. The SVD's answer at its
         # iteration counts, without its O(n^3) cost on every rank: 614-cell
-        # shell bottom level at np 4, 1.2 s of coarse work against 207 s.
+        # shell bottom level at np 4, 1.2 s of coarse work against ~105 s for
+        # one SVD factorisation (207 s as measured, with the coarse level set
+        # up twice per solve, which this branch also fixes).
         settings["mg_coarse_pc_type"] = "python"
     else:
         raise ValueError(

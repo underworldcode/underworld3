@@ -203,8 +203,10 @@ bottom level, pins one unknown per mode, projects the modes out, and factors the
 pinned system by PETSc's redundant LU (#901). It replaced a dense SVD of the
 gathered matrix. The SVD gave the same answer at the same iteration counts but
 cost O(n^3) on every rank, so it got slower with more ranks: on a 614-cell shell
-bottom level at np 4, the SVD's coarse work took 207 s, against 1.2 s for the
-pinned LU. See [the solvers subsystem doc](solvers.md) for the bundle itself.
+bottom level at np 4, one SVD factorisation took 102 s, against 1.2 s of coarse
+work for the pinned LU. The 207 s first measured included a second
+factorisation: the rotated route set the coarse level up twice per solve,
+which is fixed (#901). See [the solvers subsystem doc](solvers.md) for the bundle itself.
 
 The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
 2026-10-14): each takes the per-node wall frame on its own nodes and loses its
