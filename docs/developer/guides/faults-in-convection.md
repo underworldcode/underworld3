@@ -71,6 +71,9 @@ slip. A band of constant width (two finest rungs) on every level gave the same c
 the widened bands. The band patch smoother (`fac_zone=band`) did not help the welded
 hierarchy: 114-150 velocity iterations per increment against 91-162 without.
 
+These counts were measured while the patch smoother's blocks ran ILU(0) rather than the
+configured LU (#892). They are re-measured with LU blocks as step 5 of #892's plan.
+
 ## The rotated nonlinear loop
 
 `add_fault_bc` sends the solve through the rotated strong-constraint loop
