@@ -227,7 +227,14 @@ _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 class CollectiveBuildError(RuntimeError):
     """A hierarchy-build failure raised on every rank together, from a verdict
     every rank holds (a builder that failed on any rank, a check on allreduced
-    sizes), so the ranks can retry or degrade together (#886)."""
+    sizes), so the ranks can retry or degrade together (#886).
+    ``builder_failure`` says the transfer builder itself failed, the one case
+    a different builder can change; any other check failing again under
+    another builder, the build degrades at once."""
+
+    def __init__(self, message, builder_failure=False):
+        super().__init__(message)
+        self.builder_failure = builder_failure
 
 
 def _require_serial(where):
@@ -927,7 +934,7 @@ def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
         Pn, problem = None, f"rank {comm.getRank()}: {exc}"
     problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
     if problems:
-        raise CollectiveBuildError("; ".join(problems))
+        raise CollectiveBuildError("; ".join(problems), builder_failure=True)
     return Pn
 
 
@@ -2119,7 +2126,12 @@ def build_transfers(solver, field_id=None):
             break
         except _retryable as exc:   # sanctioned: retried or degraded, and recorded
             import warnings
-            if _i + 1 < len(_attempts):
+            # another builder can only rescue a failure of the builder: an
+            # agreed check elsewhere (the provenance transfer, the operator
+            # sizes) would fail again after a full rebuild
+            retry = (exc.builder_failure if isinstance(exc, CollectiveBuildError)
+                     else True)
+            if retry and _i + 1 < len(_attempts):
                 solver._record_pc_fallback(
                     "custom_mg.transfer_builder",
                     requested=_b,
@@ -2139,7 +2151,7 @@ def build_transfers(solver, field_id=None):
                 continue
             solver._record_pc_fallback(
                 "custom_mg.build",
-                requested=f"custom-P geometric MG ({' -> '.join(_attempts)})",
+                requested=f"custom-P geometric MG ({' -> '.join(_attempts[:_i + 1])})",
                 installed="default preconditioner",
                 reason="build_failed",
                 detail=str(exc))

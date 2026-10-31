@@ -620,9 +620,11 @@ def split_tail_levels(levels, fault_specs, verbose=False):
         # the split's refusals are collective; a failure on one rank after its
         # last collective is not, and every rank must stop at the same level or
         # the ranks hold different hierarchies. Any exception is caught, so an
-        # IndexError on one rank meets the same verdict (#886); a rank-local
-        # raise inside the split, before its own collectives, still hangs
-        # there (issue #874)
+        # IndexError on one rank meets the same verdict (#886). A rank-local
+        # raise inside the split, before its own collectives, still hangs: the
+        # raising rank waits in the verdict, which has its own communicator so
+        # it cannot pair with the split's collectives, and the others wait in
+        # the split (issue #874)
         try:
             _collective_raise(problem)
         except RuntimeError as exc:

@@ -45,6 +45,46 @@ def test_split_levels_converge_like_serial():
     assert abs(slip - SERIAL_PEAK_SLIP) < 1.0e-4 * SERIAL_PEAK_SLIP, slip
 
 
+def test_an_agreed_provenance_failure_degrades_every_rank(monkeypatch):
+    """The provenance transfer checks allreduced counts ("a fine node belongs
+    to no cell"), so every rank raises CollectiveBuildError together and the
+    multigrid build degrades on every rank, not on one (#886). A different
+    transfer builder cannot help, since the provenance transfer uses none, so
+    there is no retry with the RBF builder (which repeated the same failure
+    after a full rebuild). Here one fine node on rank 1 is made to belong to no
+    cell; the solve then runs on the default preconditioner, to the same slip."""
+    from underworld3.utilities import fault_mg
+    original_owner = fault_mg._fine_cell_of_node
+    original_provenance = fault_mg.provenance_transfer_parallel
+    inside, calls = [False], [0]
+
+    def counted(*args, **kwargs):
+        calls[0] += 1
+        inside[0] = True
+        try:
+            return original_provenance(*args, **kwargs)
+        finally:
+            inside[0] = False
+
+    def one_orphan_on_rank_one(fn, n_f):
+        owner = original_owner(fn, n_f)
+        if inside[0] and uw.mpi.rank == 1 and owner.size:
+            owner = owner.copy()
+            owner[0] = -1
+        return owner
+
+    monkeypatch.setattr(fault_mg, "_fine_cell_of_node", one_orphan_on_rank_one)
+    monkeypatch.setattr(fault_mg, "provenance_transfer_parallel", counted)
+    mesh = _faulted_box(2)
+    with pytest.warns(UserWarning, match="custom-P FMG build failed"):
+        stokes, info, slip = shear_fault_solve(mesh)
+    assert info["converged"] and info["velocity_pc"] == "GAMG", info
+    assert uw.mpi.comm.allgather(calls[0]) == [1] * uw.mpi.size
+    assert "custom_mg.build" in stokes.pc_fallbacks
+    assert "custom_mg.transfer_builder" not in stokes.pc_fallbacks
+    assert abs(slip - SERIAL_PEAK_SLIP) < 1.0e-4 * SERIAL_PEAK_SLIP, slip
+
+
 def test_the_welded_tail_runs_in_parallel_too():
     info, slip = _solve(_faulted_box(2, split_levels=False))
     assert info["velocity_pc"] == "custom-FMG" and info["converged"], info
@@ -103,8 +143,8 @@ def test_a_failure_on_one_rank_stops_the_replay_on_every_rank(monkeypatch, error
     every rank keeps the same split levels and the levels from the failure down
     stay welded. Any exception meets the verdict, not only the split's own
     refusal types: an IndexError escaped it on one rank (#886). (A rank-local
-    raise BEFORE the split's own collectives still hangs inside the split;
-    issue #874.)"""
+    raise BEFORE the split's own collectives still hangs, the raising rank in
+    the verdict and the others in the split; issue #874.)"""
     import underworld3.utilities.fault_split as fault_split
     original, calls = fault_split.add_fault, [0]
 
