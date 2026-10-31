@@ -557,11 +557,12 @@ PetscErrorCode UW_DMCreateInterpolationWithinPlex(DM dmc, DM dmf, Mat *In)
 // this plex, so a degree >= 2 space could not be built on a rank that holds
 // cells but owns none of their nodes (#902). As in PETSc: the same space is a
 // copy; coordinates injected into a higher coordinate dimension are not
-// projected; periodic coordinates keep PETSc's own projection, which projects
-// isoperiodic ones locally, without the matrix.
+// projected; a cell type PETSc builds no Lagrange space for (tensor prisms)
+// keeps its coordinates. Isoperiodic coordinates keep PETSc's own projection,
+// which is local there, without the matrix; maxCell/L periodicity projects
+// the non-localized coordinates through the matrix, as here.
 PetscErrorCode UW_DMPlexCreateCoordinateSpaceWithinPlex(DM dm, PetscInt degree)
 {
-    const PetscReal *maxCell, *Lstart, *L;
     PetscInt         nfaceSF = 0;
     DM               cdmOld, cdmNew;
     Vec              xOld, xNew, x;
@@ -570,9 +571,8 @@ PetscErrorCode UW_DMPlexCreateCoordinateSpaceWithinPlex(DM dm, PetscInt degree)
     PetscBool        same;
 
     PetscFunctionBeginUser;
-    PetscCall(DMGetPeriodicity(dm, &maxCell, &Lstart, &L));
     PetscCall(DMPlexGetIsoperiodicFaceSF(dm, &nfaceSF, NULL));
-    if (maxCell || L || nfaceSF) {
+    if (nfaceSF) {
         PetscCall(DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_TRUE));
         PetscFunctionReturn(PETSC_SUCCESS);
     }
@@ -583,8 +583,9 @@ PetscErrorCode UW_DMPlexCreateCoordinateSpaceWithinPlex(DM dm, PetscInt degree)
     // installs the new coordinate DM and leaves the coordinates to us
     PetscCall(DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_FALSE));
     PetscCall(DMGetCoordinates(dm, &x));
-    if (x == xOld) {
-        PetscCall(DMGetCoordinateDM(dm, &cdmNew));
+    PetscCall(DMGetCoordinateDM(dm, &cdmNew));
+    // no new coordinate DM: PETSc installed no space for this cell type
+    if (x == xOld && cdmNew != cdmOld) {
         PetscCall(DMGetField(cdmOld, 0, NULL, (PetscObject *)&discOld));
         PetscCall(DMGetField(cdmNew, 0, NULL, (PetscObject *)&disc));
         PetscCall(PetscFEGetDualSpace(discOld, &dsOld));

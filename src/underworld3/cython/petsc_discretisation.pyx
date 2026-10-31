@@ -208,7 +208,8 @@ def petsc_dm_create_coordinate_space_within_plex(dm, degree):
         degree >= 2 space is also built on a rank that holds cells but owns
         none of their nodes (#902; see
         ``UW_DMPlexCreateCoordinateSpaceWithinPlex`` in ``petsc_compat.h``).
-        Collective.
+        Isoperiodic coordinates are the exception: PETSc projects them
+        locally, with no matrix, and they keep its route. Collective.
         """
         cdef DM c_dm = dm
         cdef PetscInt c_degree = degree
