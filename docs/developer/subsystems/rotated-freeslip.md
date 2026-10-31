@@ -289,7 +289,45 @@ Newton step) is *verified* against the same reference before it may report
 convergence — a stiff tangent also produces tiny steps far from the solution,
 and an unverified tiny step goes back through the line search (a slow crawl
 continues; a genuine stall ends the loop with an explicit warning). An
-unconverged exit always warns; the fields hold the last iterate.
+unconverged exit warns and leaves the last iterate in the fields, except for the
+one case that raises, below.
+
+A **cold start whose first linear solve fails** raises on every rank (#907). The
+outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can fail hard:
+a preconditioner that failed (reason −11), a breakdown, a NaN, or a residual that
+grew. On the first step of a solve from a zero guess (a warm request on zero fields
+counts, with or without a datum), nothing has been produced.
+With a preconditioner failing at iteration 0, the route used to write the zero
+guess into the fields as if it were a solution.
+
+The exception names the reason. `Stokes.solve` and `fault_contact.solve_with_fault`
+(and so `FaultNetwork.solve`) raise it after the result is recorded: a caller
+that catches it reads `converged = False`, the KSP reason in
+`_rotated_freeslip_info`, and a negative SNES reason. The fields are not written.
+Set `solver.tolerate_linear_failure = True` to warn and continue instead, as the
+route used to; the fields then hold the zero guess. A cold datum lift whose solve
+failed is not applied.
+
+Elsewhere a hard failure only warns, and the line search rejects the failed
+increment:
+- on a warm start, the fields keep the caller's state;
+- after an accepted step, they keep that iterate, and the loop's convergence
+  verdict stands. A solve driven past round-off can fail its last linear solve
+  this way with Newton already at 2e-10 of the reference residual, and a warm
+  re-solve of such a state fails its first one.
+
+**A workspace whose KSP failed hard is never cached**, whether the failure raised
+or warned. PCMG and PCREDUNDANT do not reset a failed preconditioner's reason at
+set-up, so a cached workspace fails every later solve at iteration 0, even after
+the cause is gone. The next solve builds its workspace afresh, which costs one
+full KSP set-up. On a 39k-dof FMG fixture that doubles the solve, 38.7 s to
+76.5 s. A time loop driven past round-off fails its last increment every step,
+so it pays that set-up every step.
+
+An iteration cap (reason −3, petsc4py's `DIVERGED_MAX_IT`) only warns. So does
+the velocity sub-solve's own reason, because the outer FGMRES absorbs an inexact
+inner solve; when the outer solve failed hard, only the outer failure is
+reported. The standard SNES path only warns on divergence.
 
 ### Null-space handling
 
