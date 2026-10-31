@@ -706,6 +706,17 @@ def live_expressions():
     return [UWexpression._expr_names[k] for k in sorted(UWexpression._expr_names)]
 
 
+def _quantity_as_expression(quantity):
+    """Wrap a bare UWQuantity as its own UWexpression atom, so that a sum or
+    difference with a symbolic operand keeps it in the tree and unwrap
+    non-dimensionalises it by its own units rather than by its magnitude."""
+    if quantity._pint_qty is not None:
+        latex_name = f"{quantity._pint_qty:~L}"
+    else:
+        latex_name = str(quantity.value)
+    return UWexpression(latex_name, quantity, _unique_name_generation=True)
+
+
 class UWexpression(MathematicalMixin, uw_object, Symbol):
     """
     A SymPy Symbol that wraps a value for lazy evaluation.
@@ -1483,33 +1494,12 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
                     result_qty,  # Pass full UWQuantity - Transparent Container stores it
                     _unique_name_generation=True,
                 )
-            elif isinstance(self._sym, UWQuantity):
-                # self has units, other doesn't - convert other to UWQuantity
-                other_qty = UWQuantity(other.value, self.units) if self.units else other.value
-                if isinstance(other_qty, UWQuantity):
-                    result_qty = self._sym + other_qty
-                    return UWexpression(
-                        f"({self.name}+{other.name})",
-                        result_qty,
-                        _unique_name_generation=True,
-                    )
-                else:
-                    result_value = self.value + other.value
-                    return UWexpression(
-                        f"({self.name}+{other.name})",
-                        result_value,
-                        _unique_name_generation=True,
-                        units=self.units
-                    )
-            else:
-                # Neither has UWQuantity in _sym - use simple value arithmetic
-                result_value = self.value + other.value
-                return UWexpression(
-                    f"({self.name}+{other.name})",
-                    result_value,
-                    _unique_name_generation=True,
-                    units=self.units or other.units
-                )
+            # Otherwise keep both symbols in the tree, as __sub__ does, so that
+            # unwrap non-dimensionalises each operand by its own units. Adding the
+            # operands' .value eagerly mixed systems: a quantity's .value is its
+            # dimensional magnitude (0.35 for 0.35 MPa), which then entered a
+            # non-dimensional sum unscaled (#758).
+            return Symbol.__add__(self, other)
 
         # Handle UWexpression + UWQuantity
         if isinstance(other, UWQuantity):
@@ -1522,25 +1512,8 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
                     result_qty,
                     _unique_name_generation=True,
                 )
-            else:
-                # self.sym is not UWQuantity - convert and add
-                if self.units is not None:
-                    self_qty = UWQuantity(self.value, self.units)
-                    result_qty = self_qty + other
-                    return UWexpression(
-                        f"({self.name}+qty)",
-                        result_qty,
-                        _unique_name_generation=True,
-                    )
-                else:
-                    # No units on self - just add values
-                    result_value = self.value + other.value
-                    return UWexpression(
-                        f"({self.name}+qty)",
-                        result_value,
-                        _unique_name_generation=True,
-                        units=other.units
-                    )
+            # self is symbolic: keep the quantity as its own atom (#758), as above
+            return Symbol.__add__(self, _quantity_as_expression(other))
         return Symbol.__add__(self, other)
 
     def __radd__(self, other):
@@ -1575,18 +1548,7 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         # Handle UWexpression - UWQuantity: Wrap in UWexpression first (LAZY)
         if isinstance(other, UWQuantity):
-            # Wrap the UWQuantity in a UWexpression to preserve it as a symbol
-            # This allows unwrap_for_evaluate to find and nondimensionalize it
-            if other._pint_qty is not None:
-                latex_name = f"{other._pint_qty:~L}"
-            else:
-                latex_name = str(other.value)
-            wrapped_other = UWexpression(
-                latex_name,
-                other,  # Store the full UWQuantity - Transparent Container
-                _unique_name_generation=True
-            )
-            return Symbol.__sub__(self, wrapped_other)
+            return Symbol.__sub__(self, _quantity_as_expression(other))
 
         return Symbol.__sub__(self, other)
 
@@ -1594,32 +1556,16 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         """Right subtraction - handle UWQuantity specially."""
         from .quantities import UWQuantity
         if isinstance(other, UWQuantity):
-            # UWQuantity - UWexpression → UWexpression
-            # Convert self to other's units (other is the "base" unit here)
-            self_units = self.units
-            other_units = other.units
-
-            if self_units is not None and other_units is not None:
-                # Convert self's value to other's units for correct subtraction
-                # other - self: result is in other's units
-                try:
-                    from ..scaling import units as ureg
-                    self_in_other_units = (self.value * self_units).to(other_units).magnitude
-                except Exception:
-                    self_in_other_units = self.value
-                result_value = other.value - self_in_other_units
-                result_units = other_units
-            else:
-                # Use self.value (not self.sym) for arithmetic
-                result_value = other.value - self.value
-                result_units = self_units or other_units
-
-            return UWexpression(
-                f"(qty-{self.name})",
-                result_value,
-                _unique_name_generation=True,
-                units=result_units
-            )
+            # Both are quantities: Pint handles the unit conversion
+            if isinstance(self._sym, UWQuantity):
+                return UWexpression(
+                    f"(qty-{self.name})",
+                    other - self._sym,
+                    _unique_name_generation=True,
+                )
+            # self is symbolic: keep the quantity as its own atom (#758), as in
+            # __add__ — converting self.value by Pint scaled a symbolic magnitude
+            return Symbol.__sub__(_quantity_as_expression(other), self)
         return Symbol.__rsub__(self, other)
 
     def __pow__(self, other):

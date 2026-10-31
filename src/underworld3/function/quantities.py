@@ -385,31 +385,11 @@ class UWQuantity:
             else:
                 return UWQuantity(self._value - other._value, self._pint_unit or other._pint_unit)
 
-        # Handle UWexpression: UWQuantity - UWexpression → UWexpression
+        # Handle UWexpression: delegate to UWexpression.__rsub__, as __add__ does,
+        # which keeps a symbolic operand lazy so each side is scaled by its own
+        # units (#758)
         if isinstance(other, UWexpression):
-            from ..units import get_units
-            other_units = other.units
-
-            # For subtraction, units must be compatible - convert other to self's units
-            if self._pint_unit is not None and other_units is not None:
-                try:
-                    from ..scaling import units as ureg
-                    # Convert other's value to self's units
-                    other_converted = (other.value * other_units).to(self._pint_unit).magnitude
-                except Exception:
-                    # Units incompatible - use raw value (will be wrong but won't crash)
-                    other_converted = other.value
-            else:
-                other_converted = other.value
-
-            result_sym = self._value - other_converted
-            combined_units = self._pint_unit  # Result in self's units
-            return UWexpression(
-                f"(qty-{other.name})",
-                result_sym,
-                _unique_name_generation=True,
-                units=combined_units
-            )
+            return NotImplemented
 
         # Handle SymPy expressions - use LAZY EVALUATION like __add__
         if isinstance(other, sympy.Basic):

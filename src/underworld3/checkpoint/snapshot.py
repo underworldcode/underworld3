@@ -203,21 +203,22 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
         )
 
     snap = Snapshot(backend=InMemoryBackend())
-    for mesh in list(model._meshes.values()):
+    meshes = model._live_meshes()
+    for mesh in meshes:
         _capture_mesh(snap, mesh)
     for swarm in list(model._swarms.values()):
         _capture_swarm(snap, swarm)
     for obj in list(model._state_bearers):
         _capture_state_bearer(snap, obj)
     _capture_expressions(snap)
-    for solver in _solvers_of(model):
+    for solver in _solvers_of(meshes):
         snap.solver_states[solver.name] = copy.deepcopy(solver.state)
     return snap
 
 
-def _solvers_of(model):
-    """Every solver built on the model's meshes."""
-    return [solver for mesh in list(model._meshes.values())
+def _solvers_of(meshes):
+    """Every solver built on ``meshes`` (a list from ``Model._live_meshes``)."""
+    return [solver for mesh in meshes
             for solver in mesh._equation_systems_register]
 
 
@@ -395,8 +396,9 @@ def restore(model, snap: Snapshot) -> None:
             f"current {SNAPSHOT_SCHEMA_VERSION}; on-disk migration is v1.1"
         )
 
-    meshes_by_name = {m.name: m for m in model._meshes.values()}
-    swarms_by_name = {_swarm_stable_name(s): s for s in model._swarms.values()}
+    meshes = model._live_meshes()
+    meshes_by_name = {m.name: m for m in meshes}
+    swarms_by_name = {_swarm_stable_name(s): s for s in list(model._swarms.values())}
 
     for mesh_name in snap.mesh_names:
         mesh = meshes_by_name.get(mesh_name)
@@ -447,7 +449,7 @@ def restore(model, snap: Snapshot) -> None:
     # with it the preconditioner is rebuilt on the next solve. A solver built
     # since the capture (some are built on first use) had not solved at the
     # captured point, so it goes back to the state of one that never has.
-    for solver in _solvers_of(model):
+    for solver in _solvers_of(meshes):
         captured = snap.solver_states.get(solver.name)
         solver.state = (copy.deepcopy(captured) if captured is not None
                         else type(solver.state)())

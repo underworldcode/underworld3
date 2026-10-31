@@ -30,6 +30,7 @@ def _box(tag, closed, pressure_dependent, nullspace):
     s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     if pressure_dependent:
         s.constitutive_model.Parameters.yield_stress = 0.3 + 0.3 * sympy.sqrt(p.sym[0] ** 2 + 1.0e-2)
+        s.constitutive_model.Parameters.yield_stress_min = -sympy.oo   # positive by construction: no floor needed (#759)
         # a stated regularisation, so the only warning these tests can see is the gauge one
         s.constitutive_model.Parameters.plastic_rate_strengthening = 0.05
     else:
@@ -176,6 +177,7 @@ def test_switching_on_a_pressure_dependent_yield_is_seen_by_the_record():
     assert s.solve_report.config["gauge"]["pressure_in_rheology"] is False
     cm = s.constitutive_model
     cm.Parameters.yield_stress = 0.3 + 0.3 * sympy.sqrt(s.p.sym[0] ** 2 + 1.0e-2)
+    cm.Parameters.yield_stress_min = -sympy.oo   # positive by construction: no floor needed (#759)
     cm.Parameters.plastic_rate_strengthening = 0.05
     with pytest.warns(RuntimeWarning, match="GAUGE-fixed pressure"):
         s.solve(zero_init_guess=False)

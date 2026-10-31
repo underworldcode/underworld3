@@ -44,11 +44,14 @@ domain boundary; and in parallel the fault's cell fans must not touch the
 partition seam — the replicas are then rank-local and the star-forest carries
 over by renumbering alone, exactly as the deletion pass argues for its own
 seam freeze. A fault that DOES touch the seam is not the user's problem:
-:func:`split_fault` (and :func:`add_fault`) REDISTRIBUTE first — the fault's
-cell star plus one growth layer moves to the rank that already owns most of
-it (:func:`_redistribute_fault_interior`), the chain or patch becomes
-rank-interior, and the split runs with serial topology. Only a direct call
-to the low-level splitters on a seam-touching fault is refused. The 2-D
+:func:`split_fault` (and :func:`add_fault`) PARTITION the add-on first — one
+assignment for the finest level and every add-on level below it, each fault's
+cell star plus a growth layer glued and sent to the rank that already owns
+most of it, the load balanced
+(:func:`~underworld3.utilities.addon_partition.partition_addon`) — so the
+chain or patch is rank-interior and the split runs with serial topology,
+moving nothing itself. Only a direct call to the low-level splitters on a
+seam-touching fault is refused. The 2-D
 split can instead run THROUGH the seam (``across_seams=True``, the path of
 a band meshed through it by ``place_thin_volume(seams="conform")``): the
 chain is assembled globally from the star-forest identities of its
@@ -189,7 +192,7 @@ def _fault_chain(dm, fault_edges, X, vS, shared, pStart, orientation=None):
     # side is the LEFT of the directed line the USER drew, not of the
     # coordinate-order tip rule.
     if orientation is not None and len(chain) >= 2:
-        d = np.asarray(orientation, dtype=float).ravel()[:2]
+        d = np.asarray(orientation, dtype=float).ravel()[:X.shape[1]]
         if float((X[chain[-1] - vS] - X[chain[0] - vS]) @ d) < 0.0:
             chain.reverse()
     return None, chain
@@ -1598,7 +1601,7 @@ def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False,
 
 
 def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
-              blind=1, across_seams=False):
+              blind=1, across_seams=False, partition=True, **place_kwargs):
     """Cut AND split one or more faults into a mesh; return the split Mesh.
 
     The one-call form of the split-node pipeline: for each fault, the tips
@@ -1648,6 +1651,17 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
         split through it — a chain end on the seam is a crossing, not a
         clipped end, so it is neither blinded nor pinned; nothing is
         redistributed. See :func:`split_fault`.
+    partition : bool, optional
+        In parallel, partition the add-on hierarchy for these faults BEFORE
+        the cut (``addon_partition.partition_addon``: every fault's cell star
+        rank-interior on every add-on level, the load balanced, nothing moved
+        by the cut or the split afterwards). ``False`` for a level that is
+        already partitioned — the replay of the faults on the add-on levels.
+    **place_kwargs
+        3-D only: options of :func:`place_surface.place_sheet` (``clearance``,
+        ``size``, ``setback``). A bisection-refined mesh needs ``clearance``
+        of about 0.9 (the default 0.6 leaves a cavity the fill cannot close
+        on it; the placement's volume guard refuses).
 
     Returns
     -------
@@ -1663,8 +1677,15 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
                                                 pull_vertex_onto)
 
     if isinstance(faults, (Surface, tuple)) or (
-            hasattr(faults, "name") and hasattr(faults, "control_points")):
+            hasattr(faults, "name") and hasattr(faults, "control_points")) or (
+            hasattr(faults, "name") and hasattr(faults, "triangles")):
         faults = [faults]
+
+    if mesh.dim == 3:
+        return _add_fault_sheets(mesh, faults, verbose=verbose,
+                                 partition=partition, **place_kwargs)
+    if place_kwargs:
+        raise TypeError(f"add_fault: {sorted(place_kwargs)} apply to 3-D sheets only")
 
     segments = []
     for entry in faults:
@@ -1698,6 +1719,18 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
             candidate += 1
         members[name] = values[name] = candidate
 
+    # The add-on is partitioned ONCE for the whole network, before the cut:
+    # each fault's cell star rank-interior on this level and on every add-on
+    # level below it (the replay needs its own star), the load balanced. The
+    # cut and the splits then move nothing. A level of the replay arrives
+    # partitioned (partition=False); the band meshed through the seams
+    # (across_seams) is split in place by design.
+    if uw.mpi.size > 1 and cut and partition and not across_seams:
+        from underworld3.utilities.addon_partition import (mark_polylines,
+                                                           partition_addon)
+        mesh = partition_addon(mesh, mark_polylines([poly for _n, poly in segments]),
+                               layers=1, verbose=verbose)
+
     dm = mesh.dm
     if cut:
         for name, poly in segments:
@@ -1716,17 +1749,11 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
                                    verbose=verbose, blind=blind,
                                    across_seams=across_seams)
 
-    # In parallel the balanced partition's cuts are attracted to the refined
-    # fault band, so a cut chain generally touches the seam. Redistribute
-    # ONCE, keyed on EVERY fault's facets together, BEFORE any split: each
-    # fault's cell star (plus one growth layer) moves to the rank that
-    # already owns most of the union, the chains become rank-interior, and
-    # the splits below run with serial topology. Doing it here rather than
-    # per split also keeps a network's prior pairings valid — a pairing
-    # cannot yet migrate through a redistribution, so split_fault refuses
-    # exactly the per-split case this pre-pass avoids. Label-only faults
-    # never touch the seam (the placement clipped the band there); one
-    # that does is a placement defect and is refused, collectively.
+    # The split needs every chain rank-interior. The add-on partition above
+    # made it so (and made it so on every add-on level), so a chain touching
+    # the seam here is a defect of the marking, not a case to redistribute.
+    # Label-only faults never touch the seam (the placement clipped the band
+    # there); one that does is a placement defect. Both refusals collective.
     if uw.mpi.size > 1 and dm.getDimension() == 2 and not across_seams:
         labels = [(name, values[name]) for name, _poly in segments]
         if _fault_labels_touch_seam(dm, labels):
@@ -1735,7 +1762,10 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
                     "add_fault(cut=False): a fault edge touches the "
                     "partition seam. The embedded spines are rank-interior "
                     "only when the band was placed with seams='ligament'.")
-            dm = _redistribute_fault_interior(dm, labels, verbose=verbose)
+            raise RuntimeError(
+                "add_fault: a cut chain touches the partition seam after the "
+                "add-on partition; the marking under-reached "
+                "(addon_partition.mark_polylines).")
 
     cut = Mesh(dm, simplex=mesh.dm.isSimplex(),
                coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
@@ -1747,6 +1777,27 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     cut.regions = mesh.regions
     cut._parent_mesh_version = mesh._mesh_version
     mesh._registered_children.add(cut)
+    from underworld3.utilities.addon_partition import inherit_provenance
+    inherit_provenance(cut, mesh)
+    # A cut re-represents the parent's finest grid with the fault conformed,
+    # so the coarse levels of a base built with refinement >= 1 serve the cut
+    # mesh as its tail, the cut mesh being the finest level (the rule
+    # split_fault and Mesh._adopt_cut_child apply). A parent that owns an
+    # add-on tail hands it over in Mesh.add_fault, where the add-on levels are
+    # split too. Without this every solver on an add_fault child of a refined
+    # base fell back to algebraic multigrid (measured 2026-10-17: 2-D box,
+    # refinement=2, velocity KSP at its 200-iteration cap).
+    own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is not None:
+        cut._custom_mg_coarse_meshes = list(own_tail)
+        cut._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                         "barycentric")
+        cut._custom_mg_fac_zone = None
+    elif len(getattr(mesh, "dm_hierarchy", []) or []) > 1:
+        cut._custom_mg_coarse_meshes = list(mesh._coarse_level_meshes()[:-1])
+        cut._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                         "barycentric")
+        cut._custom_mg_fac_zone = None
 
     out = cut
     for name, poly in segments:
@@ -1758,11 +1809,92 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     # same thing in 2-D as it does for a 3-D FaultSurface
     out._fault_traces = {name: np.array(poly, dtype=float)
                          for name, poly in segments}
+    # the recipe, for replaying the same faults on the add-on multigrid
+    # levels (utilities.fault_mg.split_tail_levels)
+    out._fault_specs = [("line", name, np.array(poly, dtype=float))
+                        for name, poly in segments]
     surfaces = {entry.name: entry for entry in faults
                 if hasattr(entry, "control_points")
                 and hasattr(entry, "name")}
     if surfaces:
         out._fault_surfaces = surfaces
+    return out
+
+
+def _add_fault_sheets(mesh, faults, verbose=False, partition=True,
+                      **place_kwargs):
+    """The 3-D form of :func:`add_fault`: each fault is a triangulated sheet
+    (a ``FaultSurface`` or a ``(name, points, triangles)`` triple), placed into
+    the mesh with :func:`place_surface.place_sheet` so its triangles become
+    interior faces, then every sheet is split (:func:`split_faults`). In
+    parallel the add-on is partitioned for the sheets first (the placement's
+    own mask with two growth layers, on every add-on level), so the placement
+    gathers nothing and the split moves nothing. The placed mesh takes the
+    parent's multigrid tail; the caller (``Mesh.add_fault``) splits its add-on
+    levels the same way."""
+    from underworld3.discretisation import Mesh
+    from underworld3.utilities.place_surface import place_sheet
+
+    sheets = []
+    for entry in faults:
+        if isinstance(entry, tuple) and len(entry) == 3 \
+                and isinstance(entry[0], str):
+            name, points, triangles = entry
+        else:
+            name = entry.name
+            if not getattr(entry, "is_triangulated", True):
+                entry.triangulate()
+            points, triangles = entry.points, entry.triangles
+        sheets.append((name, np.asarray(points, dtype=float),
+                       np.asarray(triangles, dtype=np.int64)))
+
+    if uw.mpi.size > 1 and partition:
+        from underworld3.utilities.addon_partition import (mark_sheets,
+                                                           partition_addon)
+        import inspect
+        clearance = place_kwargs.get(
+            "clearance",
+            inspect.signature(place_sheet).parameters["clearance"].default)
+        mesh = partition_addon(
+            mesh, mark_sheets([(p, t) for _n, p, t in sheets], clearance),
+            layers=2, verbose=verbose)
+    cut = mesh
+    for name, points, triangles in sheets:
+        boundaries = cut._boundaries_with(name)
+        cut_dm, info = place_sheet(cut.dm, points, triangles, label=name,
+                                   label_value=boundaries[name].value,
+                                   verbose=verbose, **place_kwargs)
+        child = Mesh(cut_dm, simplex=cut.dm.isSimplex(),
+                     coordinate_system_type=cut.CoordinateSystem.coordinate_type,
+                     qdegree=cut.qdegree, boundaries=boundaries, verbose=False)
+        child.parent = cut
+        child._relationship_kind = "refinement"
+        child._refine_dofs_coincide = False
+        child.regions = cut.regions
+        child._parent_mesh_version = cut._mesh_version
+        child._surface_info = info
+        child._embedded_surfaces = (
+            set(getattr(cut, "_embedded_surfaces", ()) or ()) | {name})
+        from underworld3.utilities.addon_partition import inherit_provenance
+        inherit_provenance(child, cut)
+        own_tail = getattr(cut, "_custom_mg_coarse_meshes", None)
+        if own_tail is None and len(getattr(cut, "dm_hierarchy", []) or []) > 1:
+            # a mesh built with refinement >= 1: its coarse levels are the
+            # tail, the placed mesh re-representing its finest grid (the 2-D
+            # add_fault rule), in serial as in parallel
+            own_tail = list(cut._coarse_level_meshes()[:-1])
+        if own_tail is not None:
+            child._custom_mg_coarse_meshes = list(own_tail)
+            child._custom_mg_builder = getattr(cut, "_custom_mg_builder",
+                                               "barycentric")
+            child._custom_mg_fac_zone = None
+        cut._registered_children.add(child)
+        cut = child
+    out = split_faults(cut, [name for name, _p, _t in sheets], verbose=verbose)
+    out._fault_specs = [("sheet", name, points, triangles, dict(place_kwargs))
+                        for name, points, triangles in sheets]
+    out._fault_surfaces = {entry.name: entry for entry in faults
+                           if hasattr(entry, "name") and hasattr(entry, "triangles")}
     return out
 
 
@@ -1801,12 +1933,14 @@ def _fault_labels_touch_seam(dm, labels):
     ``labels`` is a sequence of ``(name, value)`` pairs. The test matches
     the 2-D split's refusal exactly: a fault facet that is itself shared,
     or has a shared cone vertex, would put a chain vertex on the seam —
-    the configuration :func:`_redistribute_fault_interior` exists to
-    dissolve. Every rank returns the same verdict (allreduce), so the
-    caller's redistribute-or-not decision is collective by construction.
+    the configuration the add-on partition
+    (:func:`~underworld3.utilities.addon_partition.partition_addon`)
+    dissolves. Every rank returns the same verdict (allreduce), so the
+    caller's partition-or-not decision is collective by construction.
     """
     if uw.mpi.size == 1:
         return False
+    from underworld3.utilities._plex_topology import closure_points
     shared = _shared_points(dm)
     pStart, _pEnd = dm.getChart()
     fS, fE = dm.getHeightStratum(1)
@@ -1817,19 +1951,19 @@ def _fault_labels_touch_seam(dm, labels):
         if not (dm.hasLabel(name)
                 and dm.getLabel(name).getStratumSize(int(value)) > 0):
             continue
-        for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
-            f = int(f)
-            if not (fS <= f < fE):
-                continue
-            if shared[f - pStart] or any(
-                    shared[int(q) - pStart]
-                    for q in dm.getTransitiveClosure(f)[0]):
-                touch = True
-                break
+        f = np.asarray(dm.getLabel(name).getStratumIS(int(value)).getIndices(),
+                       dtype=np.int64)
+        f = f[(f >= fS) & (f < fE)]
+        if not f.size:
+            continue
+        # the facet itself and every point below it in its closure
+        below = [closure_points(dm, f, d) for d in range(dm.getDimension() - 1)]
+        pts = np.concatenate([f] + [b[b >= 0] for b in below])
+        touch = bool(shared[pts - pStart].any())
     return bool(uw.mpi.comm.allreduce(touch, op=MPI.LOR))
 
 
-def _redistribute_fault_interior(dm, labels, verbose=False, groups=None):
+def _redistribute_fault_interior(dm, labels, verbose=False):
     """Redistribute a cut mesh so each fault's cell star is rank-interior.
 
     The default partition's balance cuts are ATTRACTED to the locally
@@ -1845,40 +1979,21 @@ def _redistribute_fault_interior(dm, labels, verbose=False, groups=None):
     construction. The coincident pair blocks of the contact solve are
     rank-local for the same reason. ``labels`` is a sequence of
     ``(name, value)`` pairs — a NETWORK is redistributed in one move,
-    keyed on the union of its faults, which is what lets every split
-    that follows run without migrating any prior pairing. Returns a
-    NEW dm; the input is untouched.
+    keyed on the union of its faults. Returns a NEW dm; the input is
+    untouched.
 
-    ``groups`` partitions ``labels`` into the faults that must share a
-    rank (a junction-connected cluster); each group is one region of
-    :func:`place_surface._gather_regions`, moved to its own rank — or not
-    moved at all when its star is already interior to one — so two
-    faults a domain apart are never gathered together (#670). Without
-    ``groups`` the whole network is one region, as before.
+    The add-on pipelines (cut, placement, split) partition the whole add-on
+    hierarchy instead (``addon_partition.partition_addon``); this per-mesh
+    move remains for the extruded layer, which is built on one rank and
+    distributed afresh (``meshing.extrude.extrude_sheet``).
     """
     from underworld3.utilities.place_surface import _gather_regions
 
     comm = dm.getComm().tompi4py()
     if comm.size == 1:
         return dm
-    if groups is None:
-        groups = [list(labels)]
-
-    fS, fE = dm.getHeightStratum(1)
-    vS, vE = dm.getDepthStratum(0)
-    pStart, pEnd = dm.getChart()
-    ids = np.zeros(pEnd - pStart, dtype=np.int32)
-    for g, group in enumerate(groups, start=1):
-        for name, value in group:
-            if not (dm.hasLabel(name)
-                    and dm.getLabel(name).getStratumSize(int(value)) > 0):
-                continue
-            for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
-                if fS <= int(f) < fE:
-                    for q in dm.getTransitiveClosure(int(f))[0]:
-                        if vS <= int(q) < vE:
-                            i = int(q) - pStart
-                            ids[i] = max(ids[i], g)
+    from underworld3.utilities.addon_partition import mark_labels
+    ids = (mark_labels(list(labels), [list(labels)])(dm) > 0).astype(np.int32)
     if comm.allreduce(int(ids.max()) if ids.size else 0, op=MPI.MAX) == 0:
         names = sorted(name for name, _value in labels)
         raise RuntimeError(
@@ -1895,24 +2010,148 @@ def _redistribute_fault_interior(dm, labels, verbose=False, groups=None):
     return work
 
 
+def _pair_label_names(name):
+    return f"_pair_minus_{name}", f"_pair_plus_{name}"
+
+
+def stamp_point_pairs(dm, pairs_by_fault):
+    """Write a coincident-point pairing into two labels per fault (one value
+    per pair, on its Minus point and on its Plus point) so a redistribution
+    carries it: labels ride every point migration, with no reading of the
+    migration star forest's point map (per-cell values ride the same move
+    through ``distributeField`` in :func:`redistribute_by_assignment`). The
+    ids are globally unique (each rank's pairs offset by the
+    ranks before it). Returns the fault names, for :func:`collect_point_pairs`.
+    Collective."""
+    comm = dm.getComm().tompi4py()
+    names = sorted(set().union(*comm.allgather(set(pairs_by_fault))))
+    for name in names:
+        pairs = pairs_by_fault.get(name, {})
+        counts = comm.allgather(len(pairs))
+        offset = int(sum(counts[:comm.rank]))
+        minus, plus = _pair_label_names(name)
+        for lab in (minus, plus):
+            if dm.hasLabel(lab):
+                dm.removeLabel(lab)
+            dm.createLabel(lab)
+        for k, (qm, qp) in enumerate(pairs.items()):
+            dm.setLabelValue(minus, int(qm), offset + k + 1)
+            dm.setLabelValue(plus, int(qp), offset + k + 1)
+    return names
+
+
+def collect_point_pairs(dm, names, remove=True):
+    """Read back a pairing :func:`stamp_point_pairs` wrote, after a
+    redistribution: ``(pairs_by_fault, n_dropped)``. A rank keeps every pair
+    whose two points it holds; ``n_dropped`` counts, over all ranks, the pairs
+    no single rank holds both sides of — zero once the fault stars are
+    rank-interior (the split's rule). The labels are removed unless asked
+    otherwise. Collective."""
+    comm = dm.getComm().tompi4py()
+    out = {}
+    n_dropped = 0
+    for name in names:
+        minus, plus = _pair_label_names(name)
+
+        def points_by_value(lab_name):
+            table = {}
+            if not dm.hasLabel(lab_name):
+                return table
+            lab = dm.getLabel(lab_name)
+            vis = lab.getValueIS()
+            values = vis.getIndices() if vis is not None else []
+            for v in values:
+                v = int(v)
+                if lab.getStratumSize(v) > 0:
+                    table[v] = int(lab.getStratumIS(v).getIndices()[0])
+            return table
+
+        tm, tp = points_by_value(minus), points_by_value(plus)
+        common = set(tm) & set(tp)
+        out[name] = {tm[v]: tp[v] for v in common}
+        seen = set(tm) | set(tp)
+        all_seen = set().union(*comm.allgather(seen))
+        all_common = set().union(*comm.allgather(common))
+        n_dropped += len(all_seen - all_common)
+        if remove:
+            for lab in (minus, plus):
+                if dm.hasLabel(lab):
+                    dm.removeLabel(lab)
+    return out, n_dropped
+
+
+def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
+    """Redistribute ``dm`` so local cell ``k`` goes to rank ``assign[k]``.
+    Returns ``(new_dm, new_pairs, n_dropped, new_fields)``: the pairing
+    ``pairs`` (a mesh's ``_fault_point_pairs``, or None) carried through the
+    move with :func:`stamp_point_pairs` / :func:`collect_point_pairs`, and the
+    per-cell integer ``fields`` (a list of arrays over the local cells, or
+    None) carried through ``distributeField`` on the migration star forest,
+    each returned over the new local cells. Nothing moves when every cell is
+    already where it is asked to be (the input comes back). The
+    shell-partitioner idiom of the fault-interior move and the add-on
+    partition."""
+    comm = dm.getComm().tompi4py()
+    assign = np.asarray(assign, dtype=np.int32)
+    if comm.size == 1 or not comm.allreduce(int((assign != comm.rank).sum())):
+        return dm, pairs, 0, fields
+    work = dm.clone()
+    names = stamp_point_pairs(work, pairs) if pairs else []
+    cS, cE = work.getHeightStratum(0)
+    sec = vec = None
+    if fields:
+        # one cell-wise section, the fields interleaved; integers travel as
+        # doubles, exact below 2**53
+        from underworld3.utilities._plex_topology import (fill_section,
+                                                           section_offsets)
+        nf = len(fields)
+        cells = np.arange(cS, cE)
+        sec = PETSc.Section().create(comm=work.getComm())
+        fill_section(sec, work, cells, nf)
+        vec = PETSc.Vec().createSeq(sec.getStorageSize(), comm=PETSc.COMM_SELF)
+        arr = vec.getArray()
+        offs = section_offsets(sec, cells)
+        for j, f in enumerate(fields):
+            arr[offs + j] = np.asarray(f, dtype=float)
+        vec.setArray(arr)
+    part = work.getPartitioner()
+    part.setType(PETSc.Partitioner.Type.SHELL)
+    order = np.argsort(assign, kind="stable").astype(np.int32)
+    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
+    part.setShellPartition(comm.size, sizes=sizes, points=order)
+    sf = work.distribute()
+    new_fields = None
+    if fields:
+        newsec, newvec = work.distributeField(sf, sec, vec)
+        ncS, ncE = work.getHeightStratum(0)
+        narr = newvec.getArray()
+        offs = section_offsets(newsec, np.arange(ncS, ncE))
+        new_fields = [np.rint(narr[offs + j]).astype(np.int64) if offs.size
+                      else np.zeros(0, dtype=np.int64) for j in range(nf)]
+    new_pairs, dropped = (collect_point_pairs(work, names) if pairs
+                          else (None, 0))
+    for lab in [l for n in names for l in _pair_label_names(n)]:
+        if dm.hasLabel(lab):
+            dm.removeLabel(lab)
+    return work, new_pairs, dropped, new_fields
+
+
 def split_faults(mesh, names, verbose=False, groups=None,
                  across_seams=False):
     """Split a NETWORK of already-labelled faults, any dimension, any np.
 
-    The parallel obstruction to sequential :func:`split_fault` calls is
-    the redistribution each one performs: a prior fault's pairing holds
-    point ids of the current distribution and cannot yet migrate. So the
-    network redistributes ONCE, keyed on the union of every fault's
-    facets (each star moves to the rank already owning most of it), and
-    every split that follows runs with serial topology — the same
-    pre-pass the 2-D ``add_fault`` performs for freshly cut chains, made
+    In parallel the add-on is partitioned ONCE for the whole network
+    (``addon_partition.partition_addon``: every fault's star rank-interior
+    on every add-on level, the load balanced), and every split that
+    follows runs with serial topology and moves nothing — the same
+    partition the 2-D ``add_fault`` performs before its cut, made
     available for faults that already carry labels (the 3-D embedded
     patches, a reloaded mesh).
 
     ``groups``, a list of lists of names, says which faults must share a
-    rank (a junction-connected cluster); each group is redistributed to
-    its own rank, and one whose star is already interior to a rank is
-    not moved (#670). Faults not named in any group form one more.
+    rank (a junction-connected cluster); each group is one region of the
+    partition, sent to the rank already holding most of it. Faults not
+    named in any group form one more.
 
     ``across_seams`` splits THROUGH the seams instead (2-D, the band
     meshed through them): nothing is redistributed, see
@@ -1932,20 +2171,13 @@ def split_faults(mesh, names, verbose=False, groups=None,
             if rest:
                 label_groups.append([(n, value[n]) for n in rest])
         if _fault_labels_touch_seam(mesh.dm, labels):
-            dm = _redistribute_fault_interior(mesh.dm, labels,
-                                              verbose=verbose,
-                                              groups=label_groups)
-            out = Mesh(dm, simplex=mesh.dm.isSimplex(),
-                       coordinate_system_type=(
-                           mesh.CoordinateSystem.coordinate_type),
-                       qdegree=mesh.qdegree, boundaries=mesh.boundaries,
-                       verbose=False)
-            out.parent = mesh
-            out._relationship_kind = "refinement"
-            out._refine_dofs_coincide = False
-            out.regions = mesh.regions
-            out._parent_mesh_version = mesh._mesh_version
-            mesh._registered_children.add(out)
+            # the add-on partition: every star rank-interior on every level,
+            # the pairing of any prior fault carried through the move
+            from underworld3.utilities.addon_partition import (mark_labels,
+                                                               partition_addon)
+            out = partition_addon(mesh, mark_labels(labels, label_groups),
+                                  layers=1, verbose=verbose)
+            mesh = out
     for n in names:
         out = split_fault(out, n, verbose=verbose, across_seams=across_seams)
     # The network's child INHERITS a mesh-owned geometric-MG tail — the
@@ -1956,6 +2188,8 @@ def split_faults(mesh, names, verbose=False, groups=None,
     # NOT inherited (a split fault needs no patch — the keying ruling);
     # callers that key a zone re-adopt on the child explicitly.
     own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is None and len(getattr(mesh, "dm_hierarchy", []) or []) > 1:
+        own_tail = mesh._coarse_level_meshes()[:-1]        # as in split_fault
     if (own_tail is not None
             and getattr(out, "_custom_mg_coarse_meshes", None) is None):
         out._custom_mg_coarse_meshes = list(own_tail)
@@ -2026,11 +2260,11 @@ def split_fault(mesh, name, orientation=None, verbose=False,
     fault moves, re-cut the base mesh at the new position and split again —
     the same non-cumulative pattern as :meth:`Mesh.adapt`.
 
-    The split mesh carries NO geometric-multigrid tail. The coarse levels do
-    not carry the fault, so an essential condition on it would constrain zero
-    coarse DOFs and leave the custom-P coarse operator singular (see the
-    warning on :meth:`Mesh.add_conforming_surface`); solvers on this mesh get
-    their algebraic-multigrid defaults instead.
+    The split mesh takes the multigrid tail of ``mesh``: its own registered
+    levels, or the coarse levels of a mesh built with ``refinement >= 1``.
+    ``Mesh.add_fault`` splits the add-on levels of that tail as well; a tail
+    left welded under a split finest level is solved through the rotated
+    fault frame (see ``utilities.fault_mg``).
 
     Parameters
     ----------
@@ -2069,28 +2303,18 @@ def split_fault(mesh, name, orientation=None, verbose=False,
     if uw.mpi.size > 1 and not across:
         labels = [(name, int(mesh.boundaries[name].value))]
         # The split requires the fault's cell star rank-interior, and
-        # balance cuts are attracted to the refined fault region — gather
-        # the (thin) star onto one rank first. 3-D always redistributes
-        # (the patch star essentially always straddles the seam on a
-        # graded mesh); 2-D redistributes only when the chain actually
-        # touches the seam, which is what lets add_fault's one-shot
-        # union redistribution make every subsequent per-fault split a
-        # no-move here. Both branches of the decision are collective.
+        # balance cuts are attracted to the refined fault region. A mesh
+        # that add_fault or add_conforming_sheet partitioned is already so
+        # and nothing moves here; otherwise the add-on is partitioned for
+        # this fault. The decision is collective.
         if _fault_labels_touch_seam(source_dm, labels):
-            if getattr(mesh, "_fault_point_pairs", {}):
-                # a prior fault's pairing holds point ids of the CURRENT
-                # distribution; redistribution renumbers every point, so
-                # carrying it through needs pairing migration along the
-                # migration SF — not built yet. Refuse loudly (and
-                # identically on every rank: the pairing dict and the
-                # seam verdict agree across ranks by construction).
-                raise NotImplementedError(
-                    "fault_split: multi-fault networks in parallel need "
-                    "pairing migration through the redistribution — pass "
-                    "the whole network to ONE add_fault call (2-D), or "
-                    "split the network in serial.")
-            source_dm = _redistribute_fault_interior(
-                source_dm, labels, verbose=verbose)
+            # the add-on partition: the star rank-interior on every level,
+            # a prior fault's pairing carried through the move as labels
+            from underworld3.utilities.addon_partition import (mark_labels,
+                                                               partition_addon)
+            mesh = partition_addon(mesh, mark_labels(labels), layers=1,
+                                   verbose=verbose)
+            source_dm = mesh.dm
     splitter = (split_along_label if source_dm.getDimension() == 2
                 else split_along_label_3d)
     value = int(mesh.boundaries[name].value)
@@ -2236,12 +2460,38 @@ def split_fault(mesh, name, orientation=None, verbose=False,
         child._fault_traces = dict(mesh._fault_traces)
     if getattr(mesh, "_fault_surfaces", None):
         child._fault_surfaces = dict(mesh._fault_surfaces)
+    if getattr(mesh, "_fault_specs", None):
+        child._fault_specs = list(mesh._fault_specs)
     child.regions = mesh.regions
     child._parent_mesh_version = mesh._mesh_version
     child._fault_point_pairs = dict(prior)
     child._fault_point_pairs[name] = pairs
+    if getattr(mesh, "_embedded_surfaces", None):
+        child._embedded_surfaces = set(mesh._embedded_surfaces)
+    from underworld3.utilities.addon_partition import inherit_provenance
+    inherit_provenance(child, mesh)
     if prior_normals or seam_normals:
         child._fault_seam_normals = dict(prior_normals)
         child._fault_seam_normals[name] = seam_normals
+    # The split re-represents the same grid (only the fault vertices are
+    # duplicated), so a mesh-owned geometric-MG tail serves it unchanged —
+    # the rule add_fault and split_faults already applied to their results.
+    # Here too, or the direct 3-D pipeline (adapt -> add_conforming_sheet ->
+    # split_fault) silently solved on GAMG. The FAC zone is not inherited:
+    # a split fault needs no patch.
+    own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if own_tail is None and len(getattr(mesh, "dm_hierarchy", []) or []) > 1:
+        # A mesh built with refinement >= 1 (a refined box, a refined box with
+        # a conforming patch) carries its coarse levels natively; the cut child
+        # takes them through _coarse_level_meshes, and so does the split. The
+        # finest level is this mesh itself, which the split re-represents, so
+        # it is not a level of its own (a refined cuboid needs no second mesh
+        # to get geometric multigrid — ruling 2026-10-17).
+        own_tail = mesh._coarse_level_meshes()[:-1]
+    if own_tail is not None:
+        child._custom_mg_coarse_meshes = list(own_tail)
+        child._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                           "barycentric")
+        child._custom_mg_fac_zone = None
     mesh._registered_children.add(child)
     return child

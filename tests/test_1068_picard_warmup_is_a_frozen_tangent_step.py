@@ -319,6 +319,7 @@ def _pressure_yield_box(tag, pressure_coupling):
     s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     # positive for every p, with a non-zero derivative in p (a smoothed |p|)
     s.constitutive_model.Parameters.yield_stress = 0.3 + 0.3 * sympy.sqrt(p.sym[0] ** 2 + 1.0e-2)
+    s.constitutive_model.Parameters.yield_stress_min = -sympy.oo   # positive by construction: no floor needed (#759)
     s.add_essential_bc((1.0, 0.0), "Top")
     s.add_essential_bc((0.0, 0.0), "Bottom")
     s.petsc_options.delValue("ksp_monitor")

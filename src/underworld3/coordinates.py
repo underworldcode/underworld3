@@ -29,6 +29,7 @@ from typing import Optional, Tuple
 from enum import Enum
 
 import tempfile
+import weakref
 import numpy as np
 from petsc4py import PETSc
 
@@ -112,8 +113,11 @@ class UWCoordinate(BaseScalar):
         return obj
 
     def __init__(self, index, system, pretty_str=None, latex_str=None, mesh=None, axis_index=None):
-        # Store UW3-specific attributes
-        self._mesh = mesh
+        # Store UW3-specific attributes. The mesh owns its coordinates, so the
+        # coordinate holds it weakly: a coordinate symbol outlives its mesh in
+        # sympy's function caches, and a strong link there pinned the mesh,
+        # its DM hierarchy and its solvers for the rest of the process.
+        self._mesh_ref = weakref.ref(mesh) if mesh is not None else None
         self._axis_index = axis_index if axis_index is not None else index
         self._coord_name = pretty_str or f"x_{index}"
 
@@ -206,14 +210,14 @@ class UWCoordinate(BaseScalar):
         numpy.ndarray
             Coordinate values for this axis at all mesh nodes
         """
-        if self._mesh is None:
+        if self.mesh is None:
             raise ValueError("UWCoordinate not attached to a mesh")
-        return self._mesh.X.coords[:, self._axis_index]
+        return self.mesh.X.coords[:, self._axis_index]
 
     @property
     def mesh(self):
-        """Parent mesh."""
-        return self._mesh
+        """Parent mesh (``None`` once the mesh has been freed)."""
+        return self._mesh_ref() if self._mesh_ref is not None else None
 
     @property
     def axis(self):
@@ -520,6 +524,11 @@ class GeographicCoordinateAccessor:
     approximately 10-11 arcminutes, which matters for regional models.
     """
 
+    @property
+    def mesh(self):
+        """The mesh, read through the coordinate system (held weakly there)."""
+        return self.cs.mesh
+
     def __init__(self, coordinate_system):
         """
         Initialize geographic coordinate accessor.
@@ -530,7 +539,6 @@ class GeographicCoordinateAccessor:
             The coordinate system object with GEOGRAPHIC type
         """
         self.cs = coordinate_system
-        self.mesh = coordinate_system.mesh
 
         # Cache for coordinate arrays
         self._lon_cache = None
@@ -975,6 +983,11 @@ class SphericalCoordinateAccessor:
     use a GEOGRAPHIC mesh with ``mesh.X.geo`` instead.
     """
 
+    @property
+    def mesh(self):
+        """The mesh, read through the coordinate system (held weakly there)."""
+        return self.cs.mesh
+
     def __init__(self, coordinate_system):
         """
         Initialize spherical/polar coordinate accessor.
@@ -985,7 +998,6 @@ class SphericalCoordinateAccessor:
             The coordinate system object with SPHERICAL or CYLINDRICAL2D type
         """
         self.cs = coordinate_system
-        self.mesh = coordinate_system.mesh
         # 2 for polar (cdim=2 mesh), 3 for spherical (cdim=3 mesh —
         # either a 3-D volume mesh or a 2-manifold in 3-space).
         # Always branch on cdim, not dim: spherical coords are a
@@ -1370,6 +1382,11 @@ class CoordinateSystem:
 
     """
 
+    @property
+    def mesh(self):
+        """The mesh this system belongs to (``None`` once it has been freed)."""
+        return self._mesh_ref()
+
     def __init__(
         self,
         mesh,
@@ -1383,7 +1400,9 @@ class CoordinateSystem:
                 "This object is not meant to be reconstructed by SymPy."
             )
 
-        self.mesh = mesh
+        # Held weakly: the mesh owns its coordinate system, and the system's
+        # symbols live on in sympy's caches after the mesh is dropped.
+        self._mesh_ref = weakref.ref(mesh)
         self.coordinate_type = system
 
         # are the mesh coordinates XYZ or have they been replaced by

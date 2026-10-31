@@ -200,6 +200,14 @@ Galerkin-coarsened rotated block inherits the rigid-rotation null space where
 `redundant`/LU hits a zero pivot. See
 [the solvers subsystem doc](solvers.md) for the bundle itself.
 
+The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
+2026-10-14): each takes the per-node wall frame on its own nodes and loses its
+normal rows, so the coarse space is exactly the constrained motion. A Cartesian
+coarse level under a rotated finest keeps wall-normal unknowns the fine operator
+reaches only through vanishing sines, and the smoother's nodal block inversion
+meets a zero pivot there. Details in
+[the split-level multigrid doc](fault-split-multigrid.md).
+
 ### The velocity sub-KSP must converge, not just apply
 
 The velocity block is preconditioned by multigrid, but the KSP *around* that
@@ -281,7 +289,45 @@ Newton step) is *verified* against the same reference before it may report
 convergence — a stiff tangent also produces tiny steps far from the solution,
 and an unverified tiny step goes back through the line search (a slow crawl
 continues; a genuine stall ends the loop with an explicit warning). An
-unconverged exit always warns; the fields hold the last iterate.
+unconverged exit warns and leaves the last iterate in the fields, except for the
+one case that raises, below.
+
+A **cold start whose first linear solve fails** raises on every rank (#907). The
+outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can fail hard:
+a preconditioner that failed (reason −11), a breakdown, a NaN, or a residual that
+grew. On the first step of a solve from a zero guess (a warm request on zero fields
+counts, with or without a datum), nothing has been produced.
+With a preconditioner failing at iteration 0, the route used to write the zero
+guess into the fields as if it were a solution.
+
+The exception names the reason. `Stokes.solve` and `fault_contact.solve_with_fault`
+(and so `FaultNetwork.solve`) raise it after the result is recorded: a caller
+that catches it reads `converged = False`, the KSP reason in
+`_rotated_freeslip_info`, and a negative SNES reason. The fields are not written.
+Set `solver.tolerate_linear_failure = True` to warn and continue instead, as the
+route used to; the fields then hold the zero guess. A cold datum lift whose solve
+failed is not applied.
+
+Elsewhere a hard failure only warns, and the line search rejects the failed
+increment:
+- on a warm start, the fields keep the caller's state;
+- after an accepted step, they keep that iterate, and the loop's convergence
+  verdict stands. A solve driven past round-off can fail its last linear solve
+  this way with Newton already at 2e-10 of the reference residual, and a warm
+  re-solve of such a state fails its first one.
+
+**A workspace whose KSP failed hard is never cached**, whether the failure raised
+or warned. PCMG and PCREDUNDANT do not reset a failed preconditioner's reason at
+set-up, so a cached workspace fails every later solve at iteration 0, even after
+the cause is gone. The next solve builds its workspace afresh, which costs one
+full KSP set-up. On a 39k-dof FMG fixture that doubles the solve, 38.7 s to
+76.5 s. A time loop driven past round-off fails its last increment every step,
+so it pays that set-up every step.
+
+An iteration cap (reason −3, petsc4py's `DIVERGED_MAX_IT`) only warns. So does
+the velocity sub-solve's own reason, because the outer FGMRES absorbs an inexact
+inner solve; when the outer solve failed hard, only the outer failure is
+reported. The standard SNES path only warns on divergence.
 
 ### Null-space handling
 
@@ -345,9 +391,111 @@ vertex error does not. **If you sample only midpoints, pass
 `mass="consistent"`.** See also #404 (the vertex-integral checkerboard) and
 #637 (only P1/P2 triangular traces are supported in 3-D at all).
 
+## The adjoint transposes the rotated operator, not the Jacobian
+
+`solver.adjoint_solve(b)` under rotated free-slip does not transpose `K`. The
+forward solve never inverted `K` — it inverted `Â = Q K Qᵀ` with the wall-normal
+rows struck out — so the adjoint is the transpose of that, taken in the same
+frame and rotated back. `rotated_bc.solve_rotated_adjoint` owns the sequence,
+and the solver dispatches to it whenever `_rotated_freeslip_bcs` is non-empty.
+
+Everything follows from `Q` being orthogonal. Writing `μ̂ = Q μ` and `b̂ = Q b`,
+
+```
+⟨μ̂, Â δ̂⟩ = ⟨Qμ, Q K Qᵀ Q δ⟩ = ⟨μ, K δ⟩        ⟨b̂, δ̂⟩ = ⟨Q b, Q δ⟩ = ⟨b, δ⟩
+```
+
+so the rotated adjoint system is the physical one written in the boundary
+frame, and `μ = Qᵀ μ̂` takes the answer back. Three consequences worth stating
+because each one is a place the wiring could be wrong and still look plausible:
+
+* **The constraint is part of the adjoint.** `zeroRowsColumns` zeroes the row
+  *and* the column and puts a scalar on the diagonal, so it commutes with
+  transposition: eliminating the constrained rows from `Âᵀ` gives exactly the
+  transpose of the operator the forward solve ran on. The multiplier's
+  wall-normal component is *set* to zero, not iterated towards it — the dual of
+  a strong constraint is a strong homogeneous constraint on the same degrees of
+  freedom.
+* **The block structure survives.** UW3 assembles the velocity flux as `τ − pI`
+  against `+div u`, so the operator is `[[A, −Bᵀ], [B, 0]]` and its transpose is
+  `[[Aᵀ, Bᵀ], [−B, 0]]` — the off-diagonal **signs swap**, the blocks do not
+  move, and the two swapped signs cancel in `B A⁻ᵀ Bᵀ` so the Schur complement
+  keeps its sign as well as its sparsity. The fieldsplit-Schur setup, the 1/μ
+  pressure-mass block and the custom-FMG prolongation all apply to `Âᵀ`
+  unchanged. (That `−Bᵀ` is also why a symmetry check on the COMPOSITE matrix
+  says nothing: it reads ~2.5e-2 for constant isotropic viscosity. The velocity
+  block is the one to measure — 5.3e-17 there, against 5.7e-2 for a power-law
+  TI tangent.)
+* **The null space is shared.** A rigid rotation has zero strain rate, so
+  `∫C:ε(·):ε(·)` annihilates it read from either side whatever the symmetry of
+  `C`; the constant-pressure mode couples only through `Bᵀ`, which both
+  operators carry in the same block. `_rotated_nullspace` therefore serves the
+  adjoint as it does the forward — measured, not argued: on a free-slip annulus
+  with a power-law TI tangent the admitted modes give `‖Â v‖` = 4.8e-17 / 2.3e-10
+  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10.
+
+**Where there is a null space, the multiplier is returned modulo it.** Pinning
+one boundary with an essential condition removes it — `_rotated_nullspace` then
+returns `None`, and the gradient is unambiguous. That is the configuration to
+prefer when a sensitivity is the point, and it is what
+`test_0022_rotated_adjoint`'s gradient fixture uses. An enclosed free-slip
+domain has an undetermined pressure level and, on an annulus or shell, an
+undetermined rigid rotation. The forward fixes the gauge after the fact; the
+adjoint has no rest state to fix it against, so the component of `b` along
+those modes is projected out (`nsp.remove`). A misfit that is itself invariant
+under rigid rotation loses nothing to this. One that is not is asking for the
+sensitivity of a quantity the forward problem does not determine, and the
+projection is what says so — so pin the gauge in the forward problem (a
+Dirichlet boundary) rather than reading a rotation-sensitive gradient.
+
+### What the test cannot see, and why `Qt` is still built
+
+In 2-D with one normal per node **`Q` is exactly symmetric**: the frame
+`numpy.linalg.svd` returns for a single normal is the Householder reflection
+`[[nx, ny], [ny, -nx]]`, and `‖Q - Qᵀ‖` measures **zero** on an annulus. So
+swapping `Q` for `Qᵀ` anywhere in either the forward or the adjoint path is
+numerically invisible there — substituting one for the other in the adjoint's
+dual rotation moves the gradient in the eighth digit (measured). That is an
+accident of the 2-D single-normal case, not a licence to alias the two: a 3-D
+boundary frame is a 3×3 orthogonal matrix whose two tangent rows are not pinned,
+and a multi-normal corner block is not a reflection either. `build_rotation`
+assembles `Qt` explicitly for that reason, and the adjoint uses `Q` for the dual
+and `Qᵀ` for the answer because that is what the duality says, not because a 2-D
+test forced it. **A 3-D rotated adjoint test would be the one that pins this
+axis down; there isn't one.**
+
+### Cost, and what is not cached
+
+The adjoint builds a fresh KSP/PC every call (`ctx=None`), so each one pays a
+full fieldsplit plus GAMG/FMG `PCSetUp` — the cost the #417 cross-solve cache
+exists to avoid, on the one path an inversion calls in a loop. The prolongation
+IS reused from that cache when the forward built one (it depends only on `Q` and
+the hierarchy), which matters for more than speed: `_build_rotated_custom_Pl`
+leaks the velocity submatrix and the rotated fine prolongation on every call —
+nothing owns them, and `_destroy_rotated_linear_cache` only dereferences the
+list. An adjoint workspace cache keyed the same way as the forward's would fix
+both; it is not built.
+
+`tests/test_0022_rotated_adjoint.py` is serial: at np>1 it trips the JIT
+rank-divergence guard about half the time (#752), in the forward solve rather
+than the adjoint.
+
+`J` must be assembled with the **consistent** tangent. A forward that ran
+Picard leaves the frozen-viscosity operator on the SNES, which is not `∂R/∂u`;
+`adjoint_solve` rebuilds it, and `adjoint_support()` says so in its reason.
+
+**Fault contact still refuses.** Its rotated operator carries an additive
+interface tangent, reassembled at every iterate, and that term's transpose is
+not routed into the adjoint.
+
+
 ## Tests
 
 `tests/test_1018_rotated_freeslip.py` (serial: essential-equivalence, FMG,
 tangent policies, datum linear + nonlinear),
 `tests/parallel/test_1066_rotated_datum_parallel.py` (np≥2: partition
-independence of the linear datum and the nonlinear Newton datum path).
+independence of the linear datum and the nonlinear Newton datum path),
+`tests/test_0022_rotated_adjoint.py` (the adjoint gradient against a central
+finite difference on an annulus with a transversely isotropic viscosity — a
+curved boundary so the rotation is a real per-node frame, and a tangent with no
+major symmetry so a wrong transpose cannot hide behind a symmetric operator).

@@ -73,7 +73,7 @@ _TOP_LEVEL_GROUPS = (
 )
 
 
-def _collect_metadata(model) -> dict:
+def _collect_metadata(model, meshes) -> dict:
     """Build the metadata dict that gets written into ``/metadata`` attrs.
 
     Stable, h5-friendly types only: strings, ints, floats, lists of
@@ -85,7 +85,6 @@ def _collect_metadata(model) -> dict:
     )
 
     # Mesh-derived info (gracefully absent if no mesh registered).
-    meshes = list(model._meshes.values())
     first_mesh = meshes[0] if meshes else None
     mesh_names = [m.name for m in meshes]
     if first_mesh is not None:
@@ -175,6 +174,13 @@ def write_snapshot_skeleton(model, path: str) -> str:
     respectively. Writing is rank-0-only at this phase since no
     collective PETSc operations are involved yet.
     """
+    return _write_skeleton(model, path, model._live_meshes())
+
+
+def _write_skeleton(model, path, meshes):
+    """:func:`write_snapshot_skeleton` for the meshes ``meshes``, listed by the
+    caller on every rank (the collection behind the list is never made on
+    rank 0 alone)."""
     import h5py
 
     with uw.selective_ranks(0) as should_execute:
@@ -182,7 +188,7 @@ def write_snapshot_skeleton(model, path: str) -> str:
             uw.mpi.barrier()
             return path
 
-        metadata = _collect_metadata(model)
+        metadata = _collect_metadata(model, meshes)
 
         with h5py.File(path, "w") as f:
             md_group = f.create_group(_GROUP_METADATA)
@@ -297,8 +303,12 @@ def write_snapshot(model, path: str) -> str:
     """
     import h5py
 
+    # Every rank lists the meshes after one collection, so every rank makes
+    # the same collective writes below (see Model._live_meshes).
+    meshes = model._live_meshes()
+
     # Phase-1 layer: metadata + skeleton groups.
-    write_snapshot_skeleton(model, path)
+    _write_skeleton(model, path, meshes)
     bulk_dir = _bulk_dir_for(path)
 
     # rank-0 creates the bulk directory; collective ops below need it
@@ -314,7 +324,7 @@ def write_snapshot(model, path: str) -> str:
     # bulk directory. write_checkpoint is collective (PETSc HDF5
     # viewer), so all ranks must participate.
     mesh_records: list[dict] = []
-    for mesh_index, mesh in enumerate(list(model._meshes.values())):
+    for mesh_index, mesh in enumerate(meshes):
         # Loaded meshes commonly use their complete source path as ``name``.
         # Embedding that path in every PETSc-HDF5 bulk filename can exceed
         # practical MPI-I/O pathname limits even when the wrapper path itself
@@ -397,7 +407,7 @@ def write_snapshot(model, path: str) -> str:
 
                 # Phase 3c: solver step state.
                 solver_group = f.require_group(_GROUP_SOLVER_STATES)
-                for solver in _solvers_of(model):
+                for solver in _solvers_of(meshes):
                     if solver.name not in solver_group:
                         _write_state_bearer_to_group(
                             solver_group.create_group(solver.name), solver)
@@ -499,7 +509,8 @@ def read_snapshot(model, path: str) -> None:
         )
 
     # Build {original_name -> registered Mesh} for lookup
-    meshes_by_name = {m.name: m for m in model._meshes.values()}
+    meshes = model._live_meshes()
+    meshes_by_name = {m.name: m for m in meshes}
 
     with h5py.File(path, "r") as f:
         meshes_group = f[_GROUP_MESHES]
@@ -555,7 +566,7 @@ def read_snapshot(model, path: str) -> None:
         # (built since, or a file written before solver states were kept) goes
         # back to the state of one that has never solved, as in a new run.
         stored = f[_GROUP_SOLVER_STATES] if _GROUP_SOLVER_STATES in f else {}
-        for solver in _solvers_of(model):
+        for solver in _solvers_of(meshes):
             if solver.name in stored:
                 _read_state_bearer_into(stored[solver.name], solver)
             else:

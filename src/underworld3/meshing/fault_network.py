@@ -55,6 +55,8 @@ Example
 >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 >>> stokes.constitutive_model.Parameters.yield_stress = \\
 ...     net.damage_yield(v, dial=0.05)
+>>> # positive by construction (dial + rate term): no floor needed
+>>> stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo
 >>> stokes.consistent_jacobian = True
 >>> net.apply(stokes)
 >>> # ... boundary conditions ...
@@ -567,8 +569,18 @@ class FaultNetwork:
                     "embedded mid-surface. Keep the network interior, "
                     "or place the zone with place_thin_volume directly "
                     "(no embed).")
+        # In parallel the add-on is partitioned for the band first, so the
+        # placement gathers nothing, the split moves nothing, and the tail
+        # is not co-located behind it (utilities.addon_partition).
+        host = base
+        if base.dm.getComm().getSize() > 1:
+            from underworld3.utilities.addon_partition import (mark_band,
+                                                               partition_addon)
+            host = partition_addon(
+                base, mark_band(expanded, self.width, carve_clearance),
+                layers=2)
         dm, info = place_thin_volume(
-            base.dm, expanded, self.width, label="Band", label_value=71,
+            host.dm, expanded, self.width, label="Band", label_value=71,
             clearance=carve_clearance, size=h, mesher="network",
             embed=[np.asarray(P, dtype=float) for _n, P in self.prepared])
         values = {}
@@ -586,6 +598,8 @@ class FaultNetwork:
             dm, simplex=True, qdegree=qdegree,
             coordinate_system_type=base.CoordinateSystem.coordinate_type,
             boundaries=Enum("boundaries", members), verbose=False)
+        from underworld3.utilities.addon_partition import inherit_provenance
+        inherit_provenance(mesh, host)
         band = mesh.cells_labelled("Band", 71)
         if realisation == "split":
             # the pieces the placement kept apart stay apart in the split's
@@ -620,7 +634,7 @@ class FaultNetwork:
         # tail — every solver fell back to GAMG. The keying ruling
         # stands: the split needs no FAC patch; the weak plane's patch
         # is its band.
-        adopt_hierarchy(mesh, base,
+        adopt_hierarchy(mesh, host,
                         fac_zone=None if realisation == "split" else band)
         # honoured footprints: band cells within the USER patch's own
         # in-plane outline and half a width of its plane — planar patches
@@ -1171,6 +1185,8 @@ class FaultNetwork:
 
             stokes.constitutive_model.Parameters.yield_stress = \
                 net.band_yield(tau_y=4.0)
+            # tau_y or tau_far everywhere: positive, no floor needed
+            stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo
 
         This is the damage the SPLIT realisation wants. A released fault
         flank sits far below ``tau_y`` and is untouched; the places that
@@ -1403,7 +1419,8 @@ class FaultNetwork:
     # ------------------------------------------------------------------
     def solve(self, solver, **kwargs):
         """Solve with the fault contact imposed (thin convenience
-        wrapper over ``fault_contact.solve_with_fault``). The velocity
+        wrapper over ``fault_contact.solve_with_fault``, and raises as
+        it does when a cold start's first linear solve fails). The velocity
         preconditioner is reported when it falls back to algebraic
         multigrid: a lost geometric tail must never decline quietly."""
         import underworld3 as uw

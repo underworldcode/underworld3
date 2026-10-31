@@ -11,7 +11,9 @@ import underworld3 as uw
 from underworld3 import analytic as A
 from underworld3.utilities import custom_mg
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# level on the module, tier on each test: the two newest are tier B (proven,
+# not yet hardened)
+pytestmark = [pytest.mark.level_1]
 
 _EPS = np.finfo(float).eps
 
@@ -42,6 +44,7 @@ def _solcx_essential(mesh, sol):
     return v
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_box_reproduces_essential():
     """Box: rotated free-slip on all 4 axis-aligned walls == native essential free-slip."""
     mesh = uw.meshing.StructuredQuadBox(
@@ -69,6 +72,7 @@ def test_rotated_freeslip_box_reproduces_essential():
     assert sol.velocity_error(v) < 1e-3
 
 
+@pytest.mark.tier_a
 def test_rotated_linear_workspace_reuses_unchanged_operator():
     """Repeated linear solves reuse the rotated workspace across solves.
 
@@ -329,6 +333,7 @@ def _rampable_rotated_stokes(mesh, k_expr, tag, forcing=None):
     return s, v
 
 
+@pytest.mark.tier_a
 def test_rotated_workspace_constant_ramp_invalidates():
     """THE blind-spot regression (PR #418 review, unresolved finding): a
     rampable UWexpression constant changes value with NO state-counter bump
@@ -382,6 +387,7 @@ def test_rotated_workspace_constant_ramp_invalidates():
     assert half < 1e-6, f"ramped solve is not the halved velocity ({half:.2e})"
 
 
+@pytest.mark.tier_a
 def test_rotated_workspace_deform_invalidates():
     """mesh.deform between solves: the geometry changed, so the whole workspace
     must be rebuilt and the answer must match a fresh solver on the deformed
@@ -558,6 +564,7 @@ def test_rotated_workspace_deform_invalidates():
         f"survived the deform.")
 
 
+@pytest.mark.tier_a
 @pytest.mark.level_2
 def test_rotated_freeslip_spherical_shell_3d():
     """3D spherical shell, free-slip inner+outer (the Zhong #248 configuration):
@@ -689,6 +696,7 @@ def _spherical3d_reaction_topography(cell_size=0.13):
     )
 
 
+@pytest.mark.tier_a
 def test_p2_triangle_mass_has_zero_vertex_row_sums():
     """WHY mass='auto' is P1-projected on a 3D P2 trace, and not the consistent solve.
 
@@ -714,6 +722,7 @@ def test_p2_triangle_mass_has_zero_vertex_row_sums():
     assert np.all(row_sums[3:] > 0.0), "P2 triangle midpoint rows should be positive"
 
 
+@pytest.mark.tier_a
 @pytest.mark.level_2
 def test_rotated_freeslip_spherical3d_reaction_topography():
     """3D reaction loads must be divided by boundary mass to recover pointwise stress.
@@ -749,6 +758,7 @@ def test_rotated_freeslip_spherical3d_reaction_topography():
     assert np.isclose(cmb_midpoints, 0.77060, rtol=0.05)
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_annulus_zero_leakage():
     """Annulus: per-node radial free-slip on both arcs → machine-zero v_r leakage,
     with the analytic radial normal."""
@@ -785,6 +795,7 @@ def test_rotated_freeslip_annulus_zero_leakage():
     assert rotfrac < 1e-8, f"rotation gauge {rotfrac:.2e} not removed"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_geometric_fmg_velocity_block():
     """The rotated free-slip velocity block is driven by GEOMETRIC FMG on a custom
     prolongation (set_custom_fmg) — no direct solve — and still reproduces the
@@ -838,6 +849,7 @@ def test_rotated_freeslip_geometric_fmg_velocity_block():
         f"(inexact Schur application — is the velocity sub-KSP `preonly` again?)")
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_boundary_normal_traction_solcx():
     """sigma_nn recovered by boundary_normal_traction on the top boundary reproduces
     the exact SolCx analytic sigma_yy (mean-removed) to a few percent. Exercises the
@@ -876,6 +888,7 @@ def test_rotated_freeslip_boundary_normal_traction_solcx():
     assert relL2 < 0.10, f"sigma_nn relL2 vs analytic sigma_yy {relL2:.3f} too large"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
     """The default (lumped) sigma_nn de-smear is MONOTONE at the SolCx viscosity jump:
     its total variation matches the analytic (no Gibbs overshoot), whereas the
@@ -962,6 +975,7 @@ def plaw_box_ref():
     return mesh, np.copy(vE.data), its
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
     """Frozen (Picard) tangent through the rotated path: genuinely iterates and
     converges to the native essential nonlinear free-slip answer (both impose v_n=0 —
@@ -989,6 +1003,7 @@ def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
         assert leak < 1e-10, f"{lab} wall-normal velocity {leak:.2e} not machine-zero"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_newton_tangent(plaw_box_ref):
     """consistent_jacobian=True is genuine Newton through the rotated path: it
     converges in about the same small iteration count as the native essential Newton
@@ -1007,6 +1022,7 @@ def test_rotated_freeslip_newton_tangent(plaw_box_ref):
     assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
     """consistent_jacobian='continuation' works through the rotated path: a staged
     Picard→Newton solve (α=0 to the loose newton_switch_rtol, then α=1) that switches
@@ -1031,6 +1047,72 @@ def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
         "picard did not extend the continuation Picard phase")
 
 
+@pytest.mark.tier_b
+def test_rotated_continuation_warm_start_switches_to_newton_at_once(plaw_box_ref):
+    """A warm re-solve under consistent_jacobian='continuation' is already in
+    Newton's basin, and must switch at once. The switch is measured against the
+    same reference scale as convergence (the larger of the start's residual and
+    the rest-state residual), not against the warm start's own residual: against
+    that, a good start must still shrink its residual a hundredfold under Picard
+    before Newton is allowed. Measured 2026-10-23 on this box, the body force
+    changed by 1% from a converged state: the switch at iteration 12 and 13
+    iterations in all, against 17 for the cold solve."""
+    mesh, _, _ = plaw_box_ref
+    s, _, _ = _powerlaw_stokes(mesh, "wsR", cj="continuation")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.solve()
+    assert s._rotated_freeslip_info["continuation_switched"]
+
+    x, _y = mesh.X
+    s.bodyforce = sympy.Matrix([[0.0, -2.02 * sympy.cos(sympy.pi * x)]])
+    s.solve(zero_init_guess=False)
+    info = s._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["continuation_switch_iteration"] in (0, 1), info["continuation_switch_iteration"]
+    assert info["nonlinear_iterations"] <= 4, info["nonlinear_iterations"]
+
+
+@pytest.mark.tier_b
+def test_rotated_solve_records_its_diagnostics(plaw_box_ref):
+    """The rotated solve reports what it measured, so a campaign can record it per
+    step without scraping verbose logs: the rest-state residual ‖F̂(0)‖ and the
+    reference the convergence and switch tests use, the residual at every iteration
+    start, and the accepted line-search step of every increment (0.0 when the
+    increment was not applied)."""
+    mesh, _, _ = plaw_box_ref
+    s, _, _ = _powerlaw_stokes(mesh, "dgR", cj="continuation")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+
+    def check(info):
+        its = info["nonlinear_iterations"]
+        hist, alpha = info["rnorm_history"], info["line_search_alpha"]
+        assert len(hist) in (its, its + 1), (len(hist), its)
+        assert hist[0] == info["rnorm0"] and hist[-1] == info["rnorm"], (hist[0], hist[-1])
+        assert len(alpha) == its, (len(alpha), its)
+        assert all(a == 0.0 or 0.0 < a <= 1.0 for a in alpha), alpha
+        return its, alpha
+
+    s.solve()
+    cold = s._rotated_freeslip_info
+    assert cold["converged"], cold
+    check(cold)
+    assert cold["fnorm_rest"] is None                 # a cold start's r0 IS the rest scale
+    assert cold["ref"] == cold["rnorm0"]
+
+    x, _y = mesh.X
+    s.bodyforce = sympy.Matrix([[0.0, -2.02 * sympy.cos(sympy.pi * x)]])
+    s.solve(zero_init_guess=False)
+    warm = s._rotated_freeslip_info
+    assert warm["converged"], warm
+    _its, alpha = check(warm)
+    assert warm["fnorm_rest"] > 0.0
+    assert warm["ref"] == max(warm["rnorm0"], warm["fnorm_rest"])
+    assert alpha[-1] == 1.0, alpha                    # a full step is accepted at the solution
+
+
+@pytest.mark.tier_a
 def test_rotated_freeslip_picard_under_newton_stages_picard_then_newton(plaw_box_ref):
     """picard>0 under the consistent-Newton tangent (the default since 2026-10-05) stages
     at least N Picard iterations, then Newton, on the blended Jacobian solve() compiles
@@ -1050,6 +1132,7 @@ def test_rotated_freeslip_picard_under_newton_stages_picard_then_newton(plaw_box
     assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_nonlinear_warm_start(plaw_box_ref):
     """Warm-start (zero_init_guess=False) through the nonlinear rotated path: a 2-step
     'time loop' re-solving from the previous converged state stays correct and
@@ -1065,6 +1148,7 @@ def test_rotated_freeslip_nonlinear_warm_start(plaw_box_ref):
     assert s._rotated_freeslip_info["nonlinear_iterations"] <= 3
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_nonlinear_geometric_fmg():
     """The NONLINEAR rotated free-slip velocity block is driven by geometric FMG on
     the custom prolongation (set_custom_fmg) — the rotated prolongation is built once
@@ -1091,6 +1175,7 @@ def test_rotated_freeslip_nonlinear_geometric_fmg():
     assert rel < 5e-3, f"nonlinear FMG rotated free-slip differs from essential by {rel:.2e}"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_nonlinear_annulus_zero_leakage():
     """Genuinely-rotated frame under nonlinear iteration: a power-law annulus with
     per-node radial free-slip on both arcs genuinely iterates, gives machine-zero
@@ -1132,6 +1217,7 @@ def test_rotated_freeslip_nonlinear_annulus_zero_leakage():
         assert leak < 1e-10, f"{lab} radial leakage {leak:.2e} not machine-zero"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_dynamic_topography_field():
     """dynamic_topography writes h = -(sigma_nn - mean)/(rho g) onto a scalar surface
     MeshVariable (the free-surface hand-off): the field at the top vertices reproduces
@@ -1203,6 +1289,7 @@ def _annulus_datum_solve(mode, tag):
     return mesh, v
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_datum_zero_matches_freeslip():
     """datum={'Upper': 0} (the prescribed-datum path with a zero datum) reproduces plain
     rotated free-slip to iterative round-off — the held / free-slip case is untouched.
@@ -1214,6 +1301,7 @@ def test_rotated_freeslip_datum_zero_matches_freeslip():
     assert d < 1e-10, f"zero datum perturbs the free-slip solution by {d:.2e} (> round-off)"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_prescribed_normal_datum():
     """A prescribed non-zero wall-normal datum u.n = cos(theta) is imposed to the SAME
     (machine) precision as u.n = 0 at the constrained surface nodes."""
@@ -1230,6 +1318,7 @@ def test_rotated_freeslip_prescribed_normal_datum():
     assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"
 
 
+@pytest.mark.tier_a
 def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
     """The prescribed wall-normal datum u.n = cos(theta) through the NONLINEAR rotated
     path (power-law annulus): the loop genuinely iterates and every iterate is kept
@@ -1273,6 +1362,7 @@ def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
     assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"
 
 
+@pytest.mark.tier_a
 def test_rotated_solve_fields_carry_inhomogeneous_dirichlet_walls():
     """The copy-back gap: essential DOFs are absent from the global vector, so
     the rotated path's field scatter left them at ZERO wherever the Dirichlet
@@ -1314,6 +1404,7 @@ def test_rotated_solve_fields_carry_inhomogeneous_dirichlet_walls():
         assert np.abs(vd[mask, 1]).max() < 1e-10
 
 
+@pytest.mark.tier_a
 @pytest.mark.parametrize("use_lu", [False, True])
 def test_the_rotated_solve_reports_its_own_convergence(use_lu):
     """The converged reason must describe the ROTATED solve, not a linear step.
