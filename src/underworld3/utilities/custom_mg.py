@@ -224,9 +224,10 @@ def _drop_structural_zeros(P_csr, tol=1e-12):
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 
 
-class TransferBuildError(RuntimeError):
-    """A node-transfer builder failed on at least one rank; raised on every rank,
-    so the ranks can retry or degrade together (#886)."""
+class CollectiveBuildError(RuntimeError):
+    """A hierarchy-build failure raised on every rank together, from a verdict
+    every rank holds (a builder that failed on any rank, a check on allreduced
+    sizes), so the ranks can retry or degrade together (#886)."""
 
 
 def _require_serial(where):
@@ -913,7 +914,7 @@ def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
 
 def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
     """The rank-local node transfer of a parallel build, with one verdict for
-    every rank: if the builder raised on any rank, :class:`TransferBuildError`
+    every rank: if the builder raised on any rank, :class:`CollectiveBuildError`
     is raised on all of them. The builders do no communication, so every rank
     reaches the verdict; a rank that kept its own error would go on to retry
     while the others assemble the transfer, and the two would meet in different
@@ -926,7 +927,7 @@ def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
         Pn, problem = None, f"rank {comm.getRank()}: {exc}"
     problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
     if problems:
-        raise TransferBuildError("; ".join(problems))
+        raise CollectiveBuildError("; ".join(problems))
     return Pn
 
 
@@ -1517,14 +1518,15 @@ class CustomMGHierarchy:
                 level_comm = solver.dm.comm.tompi4py()
                 nodes, dofs = level_comm.allreduce(nodes), level_comm.allreduce(dofs)
             nc = dofs // nodes
-            if dofs % nodes != 0:
-                raise RuntimeError(
+            if dofs % nodes != 0:      # allreduced: every rank raises
+                raise CollectiveBuildError(
                     f"level {k}: full DOFs {dofs} not divisible by nodes {nodes}")
             coords.append(c)
             ncomp.append(nc)
 
-        if len(set(ncomp)) != 1:
-            raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
+        if len(set(ncomp)) != 1:       # from allreduced counts: every rank raises
+            raise CollectiveBuildError(
+                f"inconsistent component counts across levels: {ncomp}")
         nc = ncomp[0]
 
         # Operator-faithful check: the finest reduced map must span exactly the
@@ -1832,8 +1834,8 @@ class CustomMGHierarchy:
                 int(finest_map.rend - finest_map.rstart)))
         else:
             red_n = int(len(finest_map))             # r2f length = reduced global size
-        if red_n != op_n:
-            raise RuntimeError(
+        if red_n != op_n:               # allreduced: every rank raises
+            raise CollectiveBuildError(
                 f"custom_mg: finest reduced-map size {red_n} != assembled operator "
                 f"size {op_n}. The DM global section disagrees with the operator "
                 f"(an adapt-child section inconsistency); the finest transfer would "
@@ -1984,8 +1986,8 @@ def build_transfers(solver, field_id=None):
     other two are PREFERENCES, built through the same opportunistic arm
     (barycentric, RBF retry, degrade to the solver's default preconditioner —
     every step recorded in ``solver.pc_fallbacks``). In parallel only a builder
-    failure, which every rank sees (:class:`TransferBuildError`), is retried
-    or degraded; any other failure is raised where it happens (#886).
+    failure every rank raises together (:class:`CollectiveBuildError`) is
+    retried or degraded; any other failure is raised where it happens (#886).
 
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
     coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
@@ -2097,11 +2099,12 @@ def build_transfers(solver, field_id=None):
     # Falling back to GAMG loses the hierarchy entirely, so try the cheaper
     # degradation first. See #424.
     # In parallel the retry and the degrade are collective decisions, so they
-    # are taken only on a verdict every rank holds: a builder failure, which
-    # is raised on every rank. Any other exception is one rank's: the others
-    # are inside the build's collectives, and a rank that caught it and
-    # retried would meet them in different ones (#886). It is raised.
-    _retryable = TransferBuildError if solver.dm.comm.getSize() > 1 else Exception
+    # are taken only on a verdict every rank holds (CollectiveBuildError: a
+    # builder failure, a check on allreduced sizes). Any other exception is
+    # one rank's: the others are inside the build's collectives, and a rank
+    # that caught it and retried would meet them in different ones (#886).
+    # It is raised.
+    _retryable = CollectiveBuildError if solver.dm.comm.getSize() > 1 else Exception
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
