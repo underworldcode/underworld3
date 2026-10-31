@@ -12,11 +12,10 @@ on the standard path, PETSc's own default of 2 on the rotated path).
 These tests read the configuration back off the LIVE PETSc objects after setup,
 not out of the options database, so they check what actually runs.
 
-The one legitimate per-route difference is the coarse solve: the
-Galerkin-coarsened *rotated* velocity block inherits the rigid-rotation null
-space, so redundant/LU hits a zero pivot there and it uses SVD (the #306 fix).
-That difference is asserted, not tolerated — if it disappears, the rotated coarse
-solve has silently reverted.
+The coarse solve is the same redundant LU on every route. The rotated route
+adds a nonzero factor shift for a coarse level that is singular (#901), where
+it used SVD (#306): the Galerkin-coarsened rotated block inherits the
+rigid-rotation modes only nearly, and plain LU gives the SVD's answer.
 
 Also here: the rotated path must pick up a MESH-OWNED hierarchy (the coarse tail
 an ``adapt()`` child carries), which it previously ignored, silently solving on
@@ -253,26 +252,23 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     assert native["smoother_max_it"] == 4
 
     # The rotated coarse solve is GATED (#629 revision of the #306 rule):
-    # the null-mode coarse solve ONLY when the rotated problem carries a
-    # VERIFIED rigid-rotation null mode (it was a blanket svd, measured as
-    # most of ~0.8 s per V-cycle, #622; then svd under the gate, #901). This
-    # fixture PINS the inner boundary, so no rotation mode survives and all
-    # three routes legitimately share the redundant/LU coarse solve. The
-    # other arm of the gate is asserted by
-    # test_rotated_coarse_handles_a_verified_rotation_mode.
+    # it was a blanket svd (measured as most of ~0.8 s per V-cycle, #622),
+    # then svd only with a VERIFIED rigid-rotation null mode; it is redundant
+    # LU now, the rotated route adding a zero-pivot shift (#901). This
+    # fixture PINS the inner boundary, so no rotation mode survives; the case
+    # with one is test_rotated_coarse_is_redundant_lu_with_a_rotation_mode.
     assert native["coarse_pc"] == "redundant"
     assert standard["coarse_pc"] == "redundant"
     assert rotated["coarse_pc"] == "redundant"
 
 
-def test_rotated_coarse_handles_a_verified_rotation_mode(monkeypatch):
-    """The null-mode arm of the coarse-solve gate (#306, as revised by #629
-    and #901): rotated free-slip on BOTH annulus boundaries leaves the rigid
-    rotation as a genuine null mode, the null-space builder must verify and
-    record it, and only then is the coarse solve the one that handles it —
-    redundant/LU would hit its zero pivot exactly here. The mode is pinned
-    and projected out (custom_mg.NullModeCoarseSolve), where it was a dense
-    SVD."""
+def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch):
+    """Rotated free-slip on BOTH annulus boundaries leaves the rigid rotation
+    as a genuine null mode, and the null-space builder must verify and record
+    it. The coarse solve stays redundant LU (#901): the inherited rotation
+    leaves the coarse operator near-singular, not singular, and LU gives the
+    SVD's answer; the rotated route adds a zero-pivot shift for a coarse level
+    that is singular (test_1111). It was a dense SVD here (#306)."""
     mesh = _annulus(RES)
     x, y = mesh.X
     r = sympy.sqrt(x**2 + y**2)
@@ -306,8 +302,8 @@ def test_rotated_coarse_handles_a_verified_rotation_mode(monkeypatch):
     assert s._rotated_velocity_null_modes == 1, (
         "the free-slip annulus rotation mode was not verified/recorded — "
         "the gate would silently choose the zero-pivot coarse solve")
-    assert captured["config"]["coarse_pc"] == "python"
-    assert s._rotated_freeslip_info["coarse_solve"] == "null_modes"
+    assert captured["config"]["coarse_pc"] == "redundant"
+    assert s._rotated_freeslip_info["coarse_solve"] == "redundant"
 
 
 def test_rotated_picks_up_a_mesh_owned_hierarchy():

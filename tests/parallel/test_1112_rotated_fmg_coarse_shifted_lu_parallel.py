@@ -1,12 +1,11 @@
-"""The null-mode coarse solve of the rotated custom-P FMG in parallel (#901).
+"""The rotated custom-P FMG's shifted-LU coarse solve in parallel (#901).
 
-The same contract as test_1111: the rotated annulus records the null-mode coarse
-solve, and its answer is the SVD path's. The SVD gathered the coarse matrix to
-every rank and factored it there, so its cost rose with the rank count. Here the
-modes are restricted across the partition, the pins are chosen from the
-gathered modes, and the pinned system is factored by PETSc's redundant LU.
+The same contract as test_1111: the rotated annulus records the redundant
+coarse solve, and its answer is the SVD path's. The SVD factored the gathered
+coarse matrix on every rank, so its cost rose with the rank count. The
+redundant LU, with a zero-pivot shift, gathers it too but factors sparsely.
 
-    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1112_rotated_fmg_coarse_null_modes_parallel.py
+    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1112_rotated_fmg_coarse_shifted_lu_parallel.py
 """
 import numpy as np
 import pytest
@@ -24,7 +23,7 @@ VRMS = 4.7900648436
 RTOL = 1.0e-8
 
 
-def test_the_coarse_solve_handles_the_null_mode_in_parallel():
+def test_the_coarse_solve_is_shifted_lu_in_parallel():
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.4,
                               refinement=2, qdegree=3)
     v = uw.discretisation.MeshVariable("V1112", mesh, 2, degree=2)
@@ -47,7 +46,7 @@ def test_the_coarse_solve_handles_the_null_mode_in_parallel():
     info = stokes._rotated_freeslip_info
     assert info["converged"] and info["velocity_pc"] == "custom-FMG", info
     assert stokes._rotated_velocity_null_modes == 1
-    assert info["coarse_solve"] == "null_modes", info.get("coarse_solve")
+    assert info["coarse_solve"] == "redundant", info.get("coarse_solve")
     vol = float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate())
     vrms = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate() / vol))
     assert abs(vrms - VRMS) <= RTOL * VRMS, vrms

@@ -23,8 +23,8 @@ from underworld3.utilities import custom_mg
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(600)]
 
-# The gathered-LU answer at np 2 (redundant LU; on the rotated route the
-# null-mode and SVD coarse solves give it too).
+# The gathered-LU answer at np 2 (redundant LU; on the rotated route the SVD
+# coarse solve gave it too).
 VRMS = {"rotated": 4.7900648436, "standard": 1.597852740266e-01}
 
 

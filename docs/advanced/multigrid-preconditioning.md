@@ -204,28 +204,21 @@ treat five figures as a bug in the hierarchy rather than a tuning question. If
 you are near the line, estimate it rather than guessing: the factor grows faster
 than the DOF count, and you pay it on every rank at once.
 
-### When the coarse operator has a null space: the modes handled explicitly
+### When the domain leaves rigid rotations free
 
-One case does require a different bottom solve, and the solver handles it for
-you. A **rotated** velocity block whose domain leaves rigid rotations free — a
-closed circle (one mode), a spherical shell with the radial normal (three) —
-hands those modes to the Galerkin-coarsened coarse operator, because the
-rotations survive the constraint. `redundant`/LU hits a zero pivot on a singular
-coarse operator and fails with `SUBPC_ERROR` (outer reason `-11`).
+A **rotated** velocity block whose domain leaves rigid rotations free — a closed
+circle (one mode), a spherical shell with the radial normal (three) — hands those
+modes to the Galerkin-coarsened coarse operator. They arrive nearly, not exactly:
+on every hierarchy measured, the coarse operator is near-singular
+(lambda_min/lambda_max 2e-5 to 2e-8), and the same redundant LU as everywhere
+else gives a dense SVD's answer at the same iteration counts. The rotated path
+adds a nonzero factor shift, which acts only on an exact zero pivot: a coarse
+level that is singular, such as one that is the fine mesh itself (#901).
 
-The solver knows the modes, since it verified them to build the null space. So
-the rotated path carries them down to the bottom level and pins one unknown per
-mode. It projects the modes out of the right-hand side and the solution, and
-factors the pinned system with PETSc's redundant LU. This gives the answer a
-dense SVD gives, at the same iteration counts, without the SVD's O(n^3) cost on
-every rank. That cost grew with the rank count: on a 614-cell shell bottom level,
-the SVD took 64 s to factor at np 1 and 102 s at np 4. With the pinned LU, the
-whole Stokes solve took 7 s at np 4, 1.2 s of it on the coarse level (#901).
-
-It is deliberately **not** a blanket choice for every rotated problem. It keys
-on the count of *verified rotation* modes, because a rotated problem with
-Dirichlet walls, or a split-fault contact box, has none, and there plain
-`redundant`/LU is right.
+The coarse level used to be a dense SVD here, O(n^3) on every rank and slower
+with every rank added: on a 614-cell shell bottom level, the SVD took 64 s to
+factor at np 1 and 102 s at np 4. With the LU, the whole Stokes solve takes 7 s
+at np 4.
 
 ```{warning}
 There is no `petsc_options` override for the coarse solve **on the rotated
@@ -235,8 +228,8 @@ prefix, applies it, and deletes the keys again; anything you set through
 reaches it. The override below works on the standard path only.
 ```
 
-The pinned system is factored like any other coarse level, gathered onto every
-rank, so the sizing guidance above applies here as everywhere.
+The coarse system is factored gathered onto every rank, so the sizing guidance
+above applies here as everywhere.
 
 ### A bottom level too large to gather: GAMG as the coarse solve
 

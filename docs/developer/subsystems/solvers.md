@@ -596,20 +596,22 @@ comment warning against changing it, while never once taking effect (measured: t
 live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
 ```
 
-### The one legitimate per-route difference
+### The one per-route difference
 
-The coarse solve. The Galerkin-coarsened **rotated** velocity block inherits the
-rigid-rotation null space of the constrained problem (a closed circle: one mode;
-a spherical shell: three), and `redundant`/LU hits a zero pivot there —
-`SUBPC_ERROR`, outer reason −11. The modes are known (the rotated null space), so
-the rotated route asks for `geometric_mg_bundle(coarse="null_modes")` and installs
-`custom_mg.NullModeCoarseSolve` on the coarse level. It restricts the modes there,
-pins one unknown per mode, projects the modes out of the right-hand side and the
-solution, and factors with PETSc's redundant LU (#901). `coarse="svd"` remains as
-a variant for a null space nobody has supplied. It is O(n^3) on every rank: 64 s
-at np 1 and 102 s at np 4 to factor a 614-cell shell bottom level. Both are named
-variants of the shared bundle, not call-site overrides, so they are visible in
-the same place as everything else.
+The coarse solve, and only slightly. The Galerkin-coarsened **rotated** velocity
+block inherits the rigid rotations the constraint leaves (a closed circle: one
+mode; a spherical shell: three), but only nearly: it is near-singular, not
+singular, on every hierarchy measured, and the shared redundant LU solves it at
+the SVD's iteration counts and answer. The rotated route adds a nonzero factor
+shift (`mg_coarse_redundant_pc_factor_shift_type nonzero`, set while the
+multigrid is set up), which acts only on an exact zero pivot (#901).
+
+The route used `geometric_mg_bundle(coarse="svd")` until then (#306). That
+variant remains, O(n^3) on every rank: 64 s at np 1 and 102 s at np 4 to factor
+a 614-cell shell bottom level. No route selects it. `coarse="gamg"` is a
+distributed coarse solve, only when asked for. All are named variants of the
+shared bundle, not call-site overrides, so they are visible in the same place as
+everything else.
 
 The other native/custom-P asymmetry — that native FMG is unusable for
 single-field solvers because `DMCreateInjection` cannot reliably be built on a

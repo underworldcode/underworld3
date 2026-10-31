@@ -195,18 +195,23 @@ it composes with transverse isotropy.
 The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
-single deliberate difference is the coarse solve. When the constraint leaves
-verified rigid rotations, the Galerkin-coarsened rotated block inherits them, and
-`redundant`/LU alone hits a zero pivot. The route then asks for
-`coarse="null_modes"`: `custom_mg.NullModeCoarseSolve` restricts the modes to the
-bottom level, pins one unknown per mode, projects the modes out, and factors the
-pinned system by PETSc's redundant LU (#901). It replaced a dense SVD of the
-gathered matrix. The SVD gave the same answer at the same iteration counts but
-cost O(n^3) on every rank, so it got slower with more ranks: on a 614-cell shell
-bottom level at np 4, one SVD factorisation took 102 s, against 1.2 s of coarse
-work for the pinned LU. The 207 s first measured included a second
-factorisation: the rotated route set the coarse level up twice per solve,
-which is fixed (#901). See [the solvers subsystem doc](solvers.md) for the bundle itself.
+coarse solve is the same redundant LU, with one addition: a nonzero factor
+shift, which acts only on an exact zero pivot (#901).
+
+When the constraint leaves verified rigid rotations, the Galerkin-coarsened
+rotated block inherits them, but only nearly. On every hierarchy measured (the
+annulus at 40 to 600 bottom cells, the spherical shell, a faulted annulus with
+rotated coarse levels), the coarse operator is near-singular, not singular:
+lambda_min/lambda_max is 2e-5 to 2e-8. Plain LU gives the SVD's answer at its
+iteration counts there. The shift is for the singular case, a coarse level that
+is the fine operator itself (#306's situation, test_1111), where it gives the
+SVD's answer too.
+
+This replaced a dense SVD of the gathered matrix, which cost O(n^3) on every
+rank and got slower with more ranks: one factorisation of a 614-cell shell
+bottom level took 64 s at np 1 and 102 s at np 4. The rotated route also used to
+set the coarse level up twice per solve, which doubled the SVD; that is fixed
+(#901). See [the solvers subsystem doc](solvers.md) for the bundle itself.
 
 The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
 2026-10-14): each takes the per-node wall frame on its own nodes and loses its
