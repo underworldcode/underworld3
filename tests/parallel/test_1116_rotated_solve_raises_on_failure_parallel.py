@@ -1,11 +1,11 @@
-"""A failed rotated free-slip solve raises on every rank (#907).
+"""A failed cold rotated free-slip solve raises on every rank (#907).
 
-test_1115's forced failure (a coarse-level PC that reports a failure at every
-application) at np >= 2. The outer KSP's converged reason is a global quantity,
-so every rank reaches the same verdict and raises together; a rank that raised
-alone would leave the others in the next collective. The thread timeout stops
-a rank waiting in Python; a rank held inside a PETSc collective is ended by
-the MPI supervisor's silence limit.
+test_1115's forced failure at np >= 2, reported on RANK 0 ONLY: PETSc reduces a
+PC's failed reason over the communicator, so the outer KSP's reason is global,
+and every rank must reach the same verdict and raise together. A rank that
+raised alone would leave the others in the next collective. The thread timeout
+fires on a rank waiting in Python (the allgather below), and the MPI launcher
+then ends the others.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1116_rotated_solve_raises_on_failure_parallel.py
 """
@@ -21,14 +21,15 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier
 
 
 class _FailingCoarse:
-    """A coarse-level PC that reports a failure at every application."""
+    """A coarse-level PC that reports a failure at every application, on rank 0."""
 
     def setUp(self, pc):
         pass
 
     def apply(self, pc, b, x):
         x.set(0.0)
-        pc.setFailedReason(PETSc.PC.FailedReason.SUBPC_ERROR)
+        if uw.mpi.rank == 0:
+            pc.setFailedReason(PETSc.PC.FailedReason.SUBPC_ERROR)
 
 
 def test_a_failed_rotated_solve_raises_on_every_rank(monkeypatch):
@@ -65,5 +66,5 @@ def test_a_failed_rotated_solve_raises_on_every_rank(monkeypatch):
     try:
         stokes.solve(zero_init_guess=True)
     except RuntimeError as exc:
-        raised = int("DIVERGED_PC_FAILED" in str(exc))
+        raised = int("reason -11" in str(exc))
     assert uw.mpi.comm.allgather(raised) == [1] * uw.mpi.size
