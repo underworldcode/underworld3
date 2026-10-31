@@ -18,12 +18,16 @@ and the other ranks the rest, so rank 0 owns none of its cell's vertices and
 edges. The test checks that case is set up, then that the node coordinates
 (degree 1 to 3, the third with two nodes on each edge) and the projection
 between degrees come back right on every rank, through UW3's copy of the
-interpolator (``petsc_dm_create_interpolation_within_plex``). Before the fix
-the degree-2 coordinates hung, so each test carries a thread timeout, which
-fails the run instead of stalling it.
+interpolator (``petsc_dm_create_interpolation_within_plex``). A custom-P FMG
+solve whose coarse level is that grid, under its refinement, pins the same
+case inside a real multigrid build. Before the fix the degree-2 coordinates
+hung, so each test carries a thread timeout, which fails the run instead of
+stalling it.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1107_interpolation_rank_owning_nothing_parallel.py
 """
+from enum import Enum
+
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -31,16 +35,19 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.function import project_to_degree
+from underworld3.utilities import custom_mg
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(120, method="thread")]
 
 N = 4
+_WALLS = Enum("Boundaries", {"Walls": 1})
 
 
-def _owned_nothing_mesh():
+def _owned_nothing_dm():
     """The 4 x 4 grid of triangles, all on rank 0, partitioned so rank 0 keeps one
-    interior cell (every edge shared with a cell of another rank)."""
+    interior cell (every edge shared with a cell of another rank). Its outer
+    edges carry the label ``Walls``."""
     comm = PETSc.COMM_WORLD
     rank, size = comm.getRank(), comm.getSize()
     if rank == 0:
@@ -56,6 +63,9 @@ def _owned_nothing_mesh():
         coords = np.zeros((0, 2))
         cells = np.zeros((0, 3), dtype=PETSc.IntType)
     dm = PETSc.DMPlex().createFromCellList(2, cells, coords, interpolate=True, comm=comm)
+    dm.createLabel("Walls")
+    dm.markBoundaryFaces("Walls", 1)
+    dm.labelComplete(dm.getLabel("Walls"))
     part = dm.getPartitioner()
     part.setType(PETSc.Partitioner.Type.SHELL)
     if rank == 0:
@@ -69,12 +79,12 @@ def _owned_nothing_mesh():
     else:
         part.setShellPartition(size, [0] * size, [])
     dm.distribute()
-    return uw.discretisation.Mesh(dm, degree=1, qdegree=2)
+    return dm
 
 
 @pytest.fixture(scope="module")
 def mesh():
-    return _owned_nothing_mesh()
+    return uw.discretisation.Mesh(_owned_nothing_dm(), degree=1, qdegree=2)
 
 
 def _all(flag):
@@ -101,18 +111,22 @@ def _sorted_rows(a):
     return a[np.lexsort(a.T[::-1])]
 
 
-def test_rank_zero_holds_a_cell_and_owns_nothing(mesh):
-    """The case under test: rank 0 holds one cell and owns no vertex or edge."""
+def _rank_zero_owns_nothing(mesh):
+    """Rank 0 holds one cell and owns no vertex or edge, as one verdict for every
+    rank: a rank-0-only assert would leave the others waiting in the next
+    collective until the timeout."""
     cS, cE = mesh.dm.getHeightStratum(0)
+    leaves = set(np.asarray(mesh.dm.getPointSF().getGraph()[1]).tolist())
     owned = 0
     for d in (0, 1):
         pS, pE = mesh.dm.getDepthStratum(d)
-        sec = mesh.dm.getPointSF()
-        leaves = set(np.asarray(sec.getGraph()[1]).tolist())
         owned += sum(1 for p in range(pS, pE) if p not in leaves)
-    # one verdict for every rank: a rank-0-only assert would leave the others
-    # waiting in the next collective until the timeout
-    assert _all(uw.mpi.rank != 0 or (cE - cS == 1 and owned == 0))
+    return _all(uw.mpi.rank != 0 or (cE - cS == 1 and owned == 0))
+
+
+def test_rank_zero_holds_a_cell_and_owns_nothing(mesh):
+    """The case under test."""
+    assert _rank_zero_owns_nothing(mesh)
 
 
 def _expected_nodes(verts, degree, t=None):
@@ -169,3 +183,42 @@ def test_projection_between_degrees_on_every_rank(mesh):
     ok = (np.allclose(up[:, 0], n2[:, 0] + 2.0 * n2[:, 1], atol=1e-12)
           and np.allclose(down[:, 0], n1[:, 0] ** 2, atol=1e-12))
     assert _all(ok)
+
+
+def _poisson_on(dm, name):
+    """A degree-2 Poisson problem, zero on the walls with a unit source."""
+    mesh = uw.discretisation.Mesh(dm.clone(), degree=1, qdegree=3, boundaries=_WALLS)
+    T = uw.discretisation.MeshVariable(name, mesh, 1, degree=2)
+    p = uw.systems.Poisson(mesh, T)
+    p.constitutive_model = uw.constitutive_models.DiffusionModel
+    p.constitutive_model.Parameters.diffusivity = 1.0
+    p.f = 1.0
+    p.add_dirichlet_bc(0.0, "Walls")
+    p.petsc_options["ksp_rtol"] = 1.0e-10
+    return p
+
+
+def test_custom_fmg_over_a_level_where_a_rank_owns_nothing():
+    """Custom-P FMG reads every level's node coordinates. Its coarse level is the
+    grid on which rank 0 owns nothing, under the grid's refinement. The build
+    installs multigrid, and the solve agrees with GAMG's."""
+    base = _owned_nothing_dm()
+    fine = base.refine()
+    coarse = uw.discretisation.Mesh(base.clone(), degree=1, qdegree=3, boundaries=_WALLS)
+    assert _rank_zero_owns_nothing(coarse)                      # the case under test
+
+    reference = _poisson_on(fine, "Tg_1107")
+    reference.preconditioner = "gamg"
+    reference.solve()
+
+    solver = _poisson_on(fine, "Tm_1107")
+    custom_mg.set_custom_fmg(solver, [coarse], builder="barycentric")
+    solver.solve()
+
+    assert solver.snes.getKSP().getPC().getType() == "mg"
+    assert solver.snes.getConvergedReason() > 0
+    assert "custom_mg.build" not in solver.pc_fallbacks
+    u, r = np.asarray(solver.Unknowns.u.data), np.asarray(reference.Unknowns.u.data)
+    num = uw.mpi.comm.allreduce(float(np.sum((u - r) ** 2)))
+    den = uw.mpi.comm.allreduce(float(np.sum(r ** 2)))
+    assert (num / den) ** 0.5 < 1.0e-6
