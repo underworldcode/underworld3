@@ -94,14 +94,17 @@ def test_the_thick_twin_is_extruded_with_its_pairing():
     assert np.abs(np.einsum("ij,ij->i", jumps, normals)).max() < 1.0e-8
 
 
-def test_a_failure_on_one_rank_stops_the_replay_on_every_rank(monkeypatch):
+@pytest.mark.parametrize("error", [RuntimeError, IndexError])
+def test_a_failure_on_one_rank_stops_the_replay_on_every_rank(monkeypatch, error):
     """A failure of the split on one rank after its last collective (a final
     consistency check, rank-local) stopped the replay of the fault on that rank
     alone: the ranks kept different split levels and the next collective on the
     hierarchy met mismatched partners. The verdict is exchanged per level, so
     every rank keeps the same split levels and the levels from the failure down
-    stay welded. (A rank-local raise BEFORE the split's own collectives still
-    hangs inside the split; issue #874.)"""
+    stay welded. Any exception meets the verdict, not only the split's own
+    refusal types: an IndexError escaped it on one rank (#886). (A rank-local
+    raise BEFORE the split's own collectives still hangs inside the split;
+    issue #874.)"""
     import underworld3.utilities.fault_split as fault_split
     original, calls = fault_split.add_fault, [0]
 
@@ -109,7 +112,7 @@ def test_a_failure_on_one_rank_stops_the_replay_on_every_rank(monkeypatch):
         calls[0] += 1                 # 1: the finest; 2, 3: the add-on levels
         split = original(mesh, *args, **kwargs)
         if calls[0] == 3 and uw.mpi.rank == 1:
-            raise RuntimeError("an internal failure on one rank")
+            raise error("an internal failure on one rank")
         return split
 
     monkeypatch.setattr(fault_split, "add_fault",

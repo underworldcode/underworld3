@@ -461,9 +461,12 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     nv = cv_c.shape[1]
     dim = Xc.shape[1]
 
+    # both checks below are on allreduced counts, so every rank raises
+    # together: build_transfers may retry or degrade on them (#886)
+    from underworld3.utilities.custom_mg import CollectiveBuildError
     owner = _fine_cell_of_node(fn, n_f)
     if m4.allreduce(int((owner < 0).sum())):
-        raise RuntimeError("fault_mg: a fine node belongs to no cell")
+        raise CollectiveBuildError("fault_mg: a fine node belongs to no cell")
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
     fcent = vxy_f[cv_f].mean(axis=1)
     if pre is fine:
@@ -478,7 +481,7 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     n_out = int(m4.allreduce(int((plam.min(axis=1) < -_INSIDE_TOL).sum())
                              if mine.size else 0))
     if n_out:
-        raise RuntimeError(
+        raise CollectiveBuildError(
             f"fault_mg: {n_out} fine node(s) lie in no cell of the level as the "
             f"add-on partition left it; the surgery was not rank-local.")
     parent = np.asarray(pre._addon_parent, dtype=np.int32)[pcell]   # (nm, 2)
@@ -612,12 +615,14 @@ def split_tail_levels(levels, fault_specs, verbose=False):
             # partition ran once, for every level): no second partition
             split = add_fault(level, entries, verbose=verbose, partition=False,
                               **kwargs)
-        except (ValueError, RuntimeError, NotImplementedError) as exc:
-            problem = str(exc)
+        except Exception as exc:   # sanctioned: agreed below, the level stays welded
+            problem = f"{type(exc).__name__}: {exc}"
         # the split's refusals are collective; a failure on one rank after its
         # last collective is not, and every rank must stop at the same level or
-        # the ranks hold different hierarchies (a rank-local raise inside the
-        # split, before its own collectives, still hangs there: issue #874)
+        # the ranks hold different hierarchies. Any exception is caught, so an
+        # IndexError on one rank meets the same verdict (#886); a rank-local
+        # raise inside the split, before its own collectives, still hangs
+        # there (issue #874)
         try:
             _collective_raise(problem)
         except RuntimeError as exc:
