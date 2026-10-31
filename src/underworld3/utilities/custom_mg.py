@@ -1020,16 +1020,166 @@ def _count_zero_columns_parallel(P, comm):
     return nzero
 
 
+def _restrict_null_modes(mg_pc, modes):
+    """The finest operator's null vectors ``modes`` carried to the coarsest
+    level of ``mg_pc`` by least squares, level by level: (P^T P) m_c = P^T m_f.
+    A geometric P reproduces a rigid rotation closely, so the result is a near
+    null vector of each Galerkin operator (measured ||A q|| / ||A||_F on the
+    bottom level: 8e-7 to 1.4e-5 on an annulus, 1.7e-4 on a shell).
+    Orthonormalised. Collective."""
+    def orthonormal(vs):
+        out = []
+        for v in vs:
+            q = v.copy()
+            for r in out:
+                q.axpy(-q.dot(r), r)
+            q.normalize()
+            out.append(q)
+        return out
+
+    level = orthonormal(modes)
+    for lev in range(mg_pc.getMGLevels() - 1, 0, -1):
+        P = mg_pc.getMGInterpolation(lev)
+        PtP = P.transposeMatMult(P)
+        ksp = PETSc.KSP().create(comm=P.getComm())
+        ksp.setOperators(PtP)
+        ksp.setType("cg")
+        ksp.getPC().setType("jacobi")
+        ksp.setTolerances(rtol=1.0e-13, max_it=5000)
+        coarser = []
+        for m in level:
+            rhs = P.createVecRight()
+            P.multTranspose(m, rhs)
+            x = rhs.duplicate()
+            ksp.solve(rhs, x)
+            rhs.destroy()
+            coarser.append(x)
+        ksp.destroy()
+        PtP.destroy()
+        level = orthonormal(coarser)
+    return level
+
+
+class NullModeCoarseSolve:
+    """The coarse solve of a multigrid whose operator has known null vectors.
+
+    A python PC for the coarsest level (#901). Rotated free slip on a closed
+    wall admits rigid rotations, and the Galerkin coarse operator inherits them,
+    so a plain LU meets a zero pivot (#306). A dense SVD of the gathered matrix
+    tolerates the null space but costs O(n^3) on every rank: 64 s at np 1 and
+    102 s at np 4 for a 614-cell shell bottom level. Here, instead:
+
+    1. The finest null vectors are restricted to this level
+       (:func:`_restrict_null_modes`), giving orthonormal ``q``.
+    2. ``k = len(q)`` unknowns, chosen by a pivoted QR of the gathered modes,
+       are pinned: their rows and columns are replaced by the identity.
+    3. To apply, ``b`` is projected off span(q) and zeroed at the pins, the
+       pinned system is solved by PETSc's redundant LU, and ``x`` is projected
+       off span(q).
+
+    For a singular A with null space span(q) this is the minimum-norm
+    solution: the pins fix the gauge, and a pinned row is a combination of the
+    others. The projection of ``b`` needs q to be a LEFT null vector too. A
+    rigid rotation is one for any rheology, Newton tangents included: F(u)·q is
+    the work of the stress on a motion with zero strain rate, which is zero
+    for every u. On the annulus and the shell, the answer is the SVD's to the
+    solver tolerance, at the SVD's iteration counts.
+
+    ``mg_pc`` is the multigrid preconditioner whose interpolations carry the
+    modes down, and ``modes`` are vectors of its finest operator. The modes
+    and pins are computed at the first setup and kept, since they depend on
+    the hierarchy and not on the operator, so a refreshed operator only
+    refactors.
+    """
+
+    def __init__(self, mg_pc, modes):
+        self._mg_pc = mg_pc
+        self._fine_modes = [m.copy() for m in modes]
+        self.q = None
+        self.pins = None
+        self.op = None
+        self.inner = None
+        self.record = {}
+
+    def setUp(self, pc):
+        import scipy.linalg
+
+        A = pc.getOperators()[0]
+        if self.q is None:
+            self.q = _restrict_null_modes(self._mg_pc, self._fine_modes)
+            self._mg_pc = None                     # no reference cycle through the PC
+            for m in self._fine_modes:
+                m.destroy()
+            self._fine_modes = []
+            k = len(self.q)
+            columns = []
+            for q in self.q:
+                scatter, full = PETSc.Scatter.toAll(q)
+                scatter.scatter(q, full, addv=PETSc.InsertMode.INSERT_VALUES)
+                columns.append(full.getArray().copy())
+                scatter.destroy()
+                full.destroy()
+            M = np.column_stack(columns)
+            # every rank holds the same M, so every rank picks the same pins
+            _, _, piv = scipy.linalg.qr(M.T, pivoting=True)
+            self.pins = np.sort(piv[:k]).astype(PETSc.IntType)
+            nf = A.norm(PETSc.NormType.FROBENIUS)
+            y = A.createVecLeft()
+            residual = []
+            for q in self.q:
+                A.mult(q, y)
+                residual.append(float(y.norm() / nf) if nf else 0.0)
+            y.destroy()
+            self.record = {"modes": k, "rows": A.getSize()[0],
+                           "null_residual": residual,
+                           "pin_condition": float(np.linalg.cond(M[self.pins, :]))}
+        if self.op is not None:
+            self.op.destroy()
+        self.op = A.duplicate(copy=True)
+        r0, r1 = self.op.getOwnershipRange()
+        self.op.zeroRowsColumns(self.pins[(self.pins >= r0) & (self.pins < r1)], diag=1.0)
+        if self.inner is None:
+            self.inner = PETSc.KSP().create(comm=A.getComm())
+            self.inner.setOptionsPrefix((pc.getOptionsPrefix() or "") + "null_modes_")
+            self.inner.setType("preonly")
+            self.inner.getPC().setType("redundant")        # LU on the gathered system
+        self.inner.setOperators(self.op)
+        self.inner.setUp()
+
+    def apply(self, pc, b, x):
+        rhs = b.copy()
+        for q in self.q:
+            rhs.axpy(-q.dot(rhs), q)
+        r0, r1 = rhs.getOwnershipRange()
+        mine = self.pins[(self.pins >= r0) & (self.pins < r1)]
+        rhs.setValues(mine, np.zeros(mine.size), addv=PETSc.InsertMode.INSERT_VALUES)
+        rhs.assemblyBegin()                       # collective: every rank, pins or not
+        rhs.assemblyEnd()
+        self.inner.solve(rhs, x)
+        for q in self.q:
+            x.axpy(-q.dot(x), q)
+        rhs.destroy()
+
+    def destroy(self, pc):
+        for obj in [self.inner, self.op] + list(self.q or []):
+            if obj is not None:
+                obj.destroy()
+        self.inner = self.op = None
+        self.q = None
+
+
 def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
-                    ksp=None, patch_rows=None):
+                    ksp=None, patch_rows=None, null_modes=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
     The option VALUES come from :func:`multigrid_options.geometric_mg_bundle` —
     the same bundle the native (DMPlex-refinement) route applies — so custom-P
     and native multigrid cannot be configured differently (#468). ``coarse``
-    selects the coarse-solve variant: ``"svd"`` on the rotated path, whose
-    Galerkin-coarsened operator inherits the rigid-rotation null space. ``smoother``
+    selects the coarse-solve variant: ``"null_modes"`` on the rotated path when
+    its Galerkin-coarsened operator inherits rigid-rotation null modes, given
+    as ``null_modes`` (vectors of the finest operator), which installs
+    :class:`NullModeCoarseSolve`; ``"redundant"`` otherwise. ``smoother``
     is the variant ``solver.strategy`` asks for — pass
     ``solver._mg_smoother_variant``, or the strategy is honoured on the native route
     and silently ignored here, which is the drift this module exists to prevent.
@@ -1109,6 +1259,15 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     for l in range(1, nlev):
         pc.setMGInterpolation(l, Ps[l - 1])
     pc.setFromOptions()
+    if coarse == "null_modes":
+        # before any setup, so nothing else is ever factored; the bundle's
+        # mg_coarse_pc_type=python keeps a later setFromOptions on this type,
+        # and a python PC keeps its context when no python type is given
+        if not null_modes:
+            raise ValueError("coarse='null_modes' needs the finest null vectors")
+        coarse_pc = pc.getMGCoarseSolve().getPC()
+        coarse_pc.setType("python")
+        coarse_pc.setPythonContext(NullModeCoarseSolve(pc, null_modes))
     # FAC subdomains go on the LIVE smoother PCs — an IS cannot ride the
     # options DB. setFromOptions above has already pushed the bundle (and the
     # per-level asm keys) into the level KSPs, so the objects are stable now.

@@ -93,11 +93,11 @@ zero). Two further rules came out of the same case:
   2.6 against a maximum of 3e4); without the grouping the same solve converged
   in 9 iterations to the two-rank answer. Which rows the grouping pairs there is
   not yet identified (a row-level inspection is in the driver's history);
-- the free-slip gauge mode must verify for the SVD coarse solve to be selected,
-  which on a faceted circle needs the exact radial normal
-  (`normal=mesh.CoordinateSystem.unit_e_0`); and that SVD needs a small coarsest
-  level (14k unknowns took over 30 minutes, 900 is instant), so a base with three
-  halvings rather than one.
+- the free-slip gauge mode must verify for the null-mode coarse solve to be
+  selected, which on a faceted circle needs the exact radial normal
+  (`normal=mesh.CoordinateSystem.unit_e_0`). That solve replaced a dense SVD,
+  which needed a small coarsest level (14k unknowns took over 30 minutes, 900
+  was instant). The pinned LU that replaced it factors sparsely (#901).
 
 ## Parallel
 

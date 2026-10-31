@@ -253,23 +253,26 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     assert native["smoother_max_it"] == 4
 
     # The rotated coarse solve is GATED (#629 revision of the #306 rule):
-    # svd ONLY when the rotated problem carries a VERIFIED rigid-rotation
-    # null mode — blanket svd was measured as most of ~0.8 s per V-cycle
-    # (#622). This fixture PINS the inner boundary, so no rotation mode
-    # survives and all three routes legitimately share the redundant/LU
-    # coarse solve. The svd arm of the gate is asserted by
-    # test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode.
+    # the null-mode coarse solve ONLY when the rotated problem carries a
+    # VERIFIED rigid-rotation null mode (it was a blanket svd, measured as
+    # most of ~0.8 s per V-cycle, #622; then svd under the gate, #901). This
+    # fixture PINS the inner boundary, so no rotation mode survives and all
+    # three routes legitimately share the redundant/LU coarse solve. The
+    # other arm of the gate is asserted by
+    # test_rotated_coarse_handles_a_verified_rotation_mode.
     assert native["coarse_pc"] == "redundant"
     assert standard["coarse_pc"] == "redundant"
     assert rotated["coarse_pc"] == "redundant"
 
 
-def test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode(monkeypatch):
-    """The svd arm of the coarse-solve gate (#306, as revised by #629):
-    rotated free-slip on BOTH annulus boundaries leaves the rigid rotation
-    as a genuine null mode, the null-space builder must verify and record
-    it, and only then is the svd coarse solve required — redundant/LU
-    would hit its zero pivot exactly here."""
+def test_rotated_coarse_handles_a_verified_rotation_mode(monkeypatch):
+    """The null-mode arm of the coarse-solve gate (#306, as revised by #629
+    and #901): rotated free-slip on BOTH annulus boundaries leaves the rigid
+    rotation as a genuine null mode, the null-space builder must verify and
+    record it, and only then is the coarse solve the one that handles it —
+    redundant/LU would hit its zero pivot exactly here. The mode is pinned
+    and projected out (custom_mg.NullModeCoarseSolve), where it was a dense
+    SVD."""
     mesh = _annulus(RES)
     x, y = mesh.X
     r = sympy.sqrt(x**2 + y**2)
@@ -303,7 +306,8 @@ def test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode(monkeypatch):
     assert s._rotated_velocity_null_modes == 1, (
         "the free-slip annulus rotation mode was not verified/recorded — "
         "the gate would silently choose the zero-pivot coarse solve")
-    assert captured["config"]["coarse_pc"] == "svd"
+    assert captured["config"]["coarse_pc"] == "python"
+    assert s._rotated_freeslip_info["coarse_solve"] == "null_modes"
 
 
 def test_rotated_picks_up_a_mesh_owned_hierarchy():
@@ -433,7 +437,7 @@ def test_strategy_reaches_every_route(monkeypatch):
         assert config[:2] == ("richardson", 3), (
             f"strategy='fast' not honoured on the {route} route: {config}")
     # Gated (#629): the fixture pins the inner boundary — no rotation
-    # mode, so the strategy must NOT drag the coarse solve back to svd.
+    # mode, so the strategy must NOT drag the coarse solve off redundant.
     assert rotated[2] == "redundant", (
         "no verified rotation mode here; the coarse solve must stay "
         "redundant under a strategy change")

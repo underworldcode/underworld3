@@ -601,10 +601,15 @@ live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
 The coarse solve. The Galerkin-coarsened **rotated** velocity block inherits the
 rigid-rotation null space of the constrained problem (a closed circle: one mode;
 a spherical shell: three), and `redundant`/LU hits a zero pivot there —
-`SUBPC_ERROR`, outer reason −11. So the rotated route asks for
-`geometric_mg_bundle(coarse="svd")`, which is null-space robust and cheap on a
-small coarse level. This is a named variant of the shared bundle, not a
-call-site override, so it is visible in the same place as everything else.
+`SUBPC_ERROR`, outer reason −11. The modes are known (the rotated null space), so
+the rotated route asks for `geometric_mg_bundle(coarse="null_modes")` and installs
+`custom_mg.NullModeCoarseSolve` on the coarse level. It restricts the modes there,
+pins one unknown per mode, projects the modes out of the right-hand side and the
+solution, and factors with PETSc's redundant LU (#901). `coarse="svd"` remains as
+a variant for a null space nobody has supplied. It is O(n^3) on every rank: 64 s
+at np 1 and 102 s at np 4 to factor a 614-cell shell bottom level. Both are named
+variants of the shared bundle, not call-site overrides, so they are visible in
+the same place as everything else.
 
 The other native/custom-P asymmetry — that native FMG is unusable for
 single-field solvers because `DMCreateInjection` cannot reliably be built on a

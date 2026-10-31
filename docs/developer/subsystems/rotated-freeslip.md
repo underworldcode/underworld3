@@ -195,10 +195,16 @@ it composes with transverse isotropy.
 The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
-single deliberate difference is the coarse solve: `coarse="svd"`, because the
-Galerkin-coarsened rotated block inherits the rigid-rotation null space where
-`redundant`/LU hits a zero pivot. See
-[the solvers subsystem doc](solvers.md) for the bundle itself.
+single deliberate difference is the coarse solve. When the constraint leaves
+verified rigid rotations, the Galerkin-coarsened rotated block inherits them, and
+`redundant`/LU alone hits a zero pivot. The route then asks for
+`coarse="null_modes"`: `custom_mg.NullModeCoarseSolve` restricts the modes to the
+bottom level, pins one unknown per mode, projects the modes out, and factors the
+pinned system by PETSc's redundant LU (#901). It replaced a dense SVD of the
+gathered matrix. The SVD gave the same answer at the same iteration counts but
+cost O(n^3) on every rank, so it got slower with more ranks: on a 614-cell shell
+bottom level at np 4, the SVD's coarse work took 207 s, against 1.2 s for the
+pinned LU. See [the solvers subsystem doc](solvers.md) for the bundle itself.
 
 The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
 2026-10-14): each takes the per-node wall frame on its own nodes and loses its

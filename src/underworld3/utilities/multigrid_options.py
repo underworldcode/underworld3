@@ -79,9 +79,10 @@ def _user_owns(opts, name, owned):
 
 
 #: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
-#: is the default and is np-safe; ``"svd"`` is required whenever the coarse
-#: operator inherits a null space — see :func:`geometric_mg_bundle`.
-GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd")
+#: is the default and is np-safe; ``"null_modes"`` is the solve for a coarse
+#: operator with known null vectors; ``"svd"`` tolerates an unknown null space at
+#: O(n^3) — see :func:`geometric_mg_bundle`.
+GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd", "null_modes")
 
 #: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
@@ -305,6 +306,14 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # null-space robust and the coarse level is small. Same choice as the
         # native spherical FMG setups.
         settings["mg_coarse_pc_type"] = "svd"
+    elif coarse == "null_modes":
+        # The same inherited rotations, handled explicitly (#901): the caller
+        # installs custom_mg.NullModeCoarseSolve, which restricts the known
+        # modes to the bottom level, pins one unknown per mode and factors the
+        # pinned system by PETSc's redundant LU. The SVD's answer at its
+        # iteration counts, without its O(n^3) cost on every rank: 614-cell
+        # shell bottom level at np 4, 1.2 s of coarse work against 207 s.
+        settings["mg_coarse_pc_type"] = "python"
     else:
         raise ValueError(
             f"coarse must be one of {GEOMETRIC_MG_COARSE_SOLVERS} (got {coarse!r})")
@@ -389,11 +398,13 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
         Which of the two MEASURED regimes to configure. ``"robust"`` is
         ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
         ``solver.strategy``, not usually here.
-    coarse : {"redundant", "svd"}
+    coarse : {"redundant", "svd", "null_modes"}
         The coarse-level solve. ``"redundant"`` (redundant+LU) is the default.
-        Use ``"svd"`` when the coarse operator inherits a null space — which the
-        Galerkin-coarsened *rotated* velocity block always does, because the
-        rigid rotations survive the constraint.
+        When the coarse operator inherits null modes, which the
+        Galerkin-coarsened *rotated* velocity block does whenever a rigid
+        rotation survives the constraint: ``"null_modes"`` when the modes are
+        known (the caller installs ``custom_mg.NullModeCoarseSolve``), or
+        ``"svd"``, which needs no modes and costs O(n^3) on every rank.
 
     Returns
     -------

@@ -204,22 +204,28 @@ treat five figures as a bug in the hierarchy rather than a tuning question. If
 you are near the line, estimate it rather than guessing: the factor grows faster
 than the DOF count, and you pay it on every rank at once.
 
-### When the coarse operator has a null space: SVD
+### When the coarse operator has a null space: the modes handled explicitly
 
 One case does require a different bottom solve, and the solver handles it for
 you. A **rotated** velocity block whose domain leaves rigid rotations free — a
-closed circle (one mode), a spherical shell (three) — hands those modes to the
-Galerkin-coarsened coarse operator, because the rotations survive the
-constraint. `redundant`/LU hits a zero pivot on a singular coarse operator and
-fails with `SUBPC_ERROR` (outer reason `-11`), so the rotated path selects SVD
-instead.
+closed circle (one mode), a spherical shell with the radial normal (three) —
+hands those modes to the Galerkin-coarsened coarse operator, because the
+rotations survive the constraint. `redundant`/LU hits a zero pivot on a singular
+coarse operator and fails with `SUBPC_ERROR` (outer reason `-11`).
+
+The solver knows the modes, since it verified them to build the null space. So
+the rotated path carries them down to the bottom level and pins one unknown per
+mode. It projects the modes out of the right-hand side and the solution, and
+factors the pinned system with PETSc's redundant LU. This gives the answer a
+dense SVD gives, at the same iteration counts, without the SVD's O(n^3) cost on
+every rank. That cost grew with the rank count: on a 614-cell shell bottom level,
+the SVD took 64 s to factor at np 1 and 102 s at np 4. The whole pinned-LU solve
+took 7 s at np 4 (#901).
 
 It is deliberately **not** a blanket choice for every rotated problem. It keys
 on the count of *verified rotation* modes, because a rotated problem with
-Dirichlet walls, or a split-fault contact box, has none — and there an SVD is
-pure cost. A 3-D P2 coarse level is a **dense** factorization: measured, it
-accounted for most of ~0.8 s per V-cycle application at healthy iteration counts
-(#622).
+Dirichlet walls, or a split-fault contact box, has none, and there plain
+`redundant`/LU is right.
 
 ```{warning}
 There is no `petsc_options` override for the coarse solve **on the rotated
@@ -229,9 +235,8 @@ prefix, applies it, and deletes the keys again; anything you set through
 reaches it. The override below works on the standard path only.
 ```
 
-Because SVD is dense, it is affordable only on a genuinely small coarse level —
-which makes the sizing guidance above a hard requirement on this path rather
-than a preference.
+The pinned system is factored like any other coarse level, gathered onto every
+rank, so the sizing guidance above applies here as everywhere.
 
 ### Overriding the coarse solve yourself
 
