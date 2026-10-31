@@ -1559,20 +1559,32 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # rates) and added to a COPY: the ptap-with-result refresh above
         # owns Ahat's structure, and injected entries would be
         # stale-or-doubled on the next refresh.
+        #
+        # The copy is made once and refreshed IN PLACE after that, so the KSP
+        # is handed the same Mat with the same nonzero pattern at every
+        # iterate, as on the contact path. A new Mat each iterate left the
+        # multigrid smoothing with iterate 0's operator (#894), even with an
+        # identical pattern: a new Pmat object resets the PC's nonzero state,
+        # so the fieldsplit builds a new velocity block, and PCSetUp_MG keeps
+        # the finest smoother's operator unless it is the PC's own.
+        # The tangent's pattern is fixed by the fault facets, and Ahat's by
+        # the ptap, so both stay inside the pattern of the first copy.
+        # The direct-LU path still takes a fresh sum each iterate: its pressure
+        # pin (zeroRows) drops the pinned row's entries from the pattern, and
+        # it has no multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
-            if Atot is not None:
-                Atot.destroy()
-            Atot = Ahat.copy()
-            Atot.axpy(1.0, Khat,
-                      structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            if Atot is None or use_lu:
+                if Atot is not None:
+                    Atot.destroy()
+                Atot = Ahat.copy()
+                Atot.axpy(1.0, Khat,
+                          structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            else:
+                Ahat.copy(Atot, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+                Atot.axpy(1.0, Khat,
+                          structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
             Khat.destroy()
-            # A recreated operator loses the null space the first solve
-            # attached; re-attach for iterations after the first (a nonlinear
-            # interface law is what reaches them).
-            if ctx is not None and ctx.get("nsp") is not None:
-                Atot.setNullSpace(ctx["nsp"])
-                Atot.setTransposeNullSpace(ctx["nsp"])
             Aop = Atot
         else:
             Aop = Ahat
