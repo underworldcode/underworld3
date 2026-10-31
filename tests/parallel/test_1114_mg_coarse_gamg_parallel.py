@@ -1,0 +1,109 @@
+"""GAMG as the coarse-level solve of the geometric multigrid, asked for (#901).
+
+For a coarsest mesh too large for every rank to factor, the coarse level can be
+solved by GAMG instead of the gathered LU: ``set_custom_fmg(...,
+coarse_solve="gamg")``. It is never a default and never automatic, so nothing
+else exercises it. This test keeps it from rotting, on the rotated route (an
+annulus with rotated free slip on both walls, where the rigid-body near-null
+space is carried into the wall frame) and on the standard route (a no-slip
+Stokes box). Contract: the live coarse PC is the GAMG solve, the answer is the
+gathered LU's recorded one, and the velocity and Schur iterations stay within
+recorded bounds (the largest measured at np 2 and 4: the counts move with the
+partition). The annulus is a gmsh mesh, so its answer is gated on the mesh's
+fingerprint.
+
+    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1114_mg_coarse_gamg_parallel.py
+"""
+import numpy as np
+import pytest
+import sympy
+
+import underworld3 as uw
+from underworld3.utilities import custom_mg
+
+from serial_reference import mesh_fingerprint
+
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
+              pytest.mark.timeout(600)]
+
+# The gathered-LU answer at np 2 (redundant LU; on the rotated route the SVD
+# coarse solve gave it too), the most velocity / Schur iterations with GAMG on
+# the coarse level at np 2 and 4, and the mesh's fingerprint (owned cells,
+# volume).
+CASES = {
+    "rotated": {"vrms": 4.7900648436, "its": (4, 9), "fingerprint": (640, 2.3561872025)},
+    "standard": {"vrms": 1.597852740266e-01, "its": (4, 16), "fingerprint": (512, 1.0)},
+}
+
+
+def _stokes(route, coarse_solve):
+    if route == "rotated":
+        mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.4,
+                                  refinement=2, qdegree=3)
+    else:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, refinement=2,
+            regular=True, qdegree=3)
+    tag = f"{route}{coarse_solve}"
+    v = uw.discretisation.MeshVariable(f"V1114{tag}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P1114{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    X = mesh.X
+    if route == "rotated":
+        r = sympy.sqrt(X[0] ** 2 + X[1] ** 2)
+        th = sympy.atan2(X[1], X[0])
+        stokes.bodyforce = (1.0e3 * sympy.cos(4 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
+                            * sympy.Matrix([X[0] / r, X[1] / r]))
+        for wall in ("Lower", "Upper"):
+            stokes.add_rotated_freeslip_bc(0, wall)
+    else:
+        stokes.bodyforce = sympy.Matrix(
+            [0, 1.0e2 * sympy.sin(sympy.pi * X[0]) * sympy.sin(sympy.pi * X[1])])
+        for wall in ("Bottom", "Top", "Left", "Right"):
+            stokes.add_dirichlet_bc((0.0, 0.0), wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-6
+    custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0,
+                             coarse_solve=coarse_solve)
+    return mesh, v, stokes
+
+
+
+
+
+@pytest.mark.parametrize("route", ["rotated", "standard"])
+def test_gamg_on_the_coarse_level_when_asked_for(monkeypatch, route):
+    seen = {}
+    configure = custom_mg._configure_pcmg
+
+    def configure_seen(pc, Ps, **kw):
+        out = configure(pc, Ps, **kw)
+        seen["pc"] = pc
+        return out
+
+    monkeypatch.setattr(custom_mg, "_configure_pcmg", configure_seen)
+    case = CASES[route]
+    mesh, v, stokes = _stokes(route, "gamg")
+    stokes.solve(zero_init_guess=True)
+
+    coarse_pc = seen["pc"].getMGCoarseSolve().getPC()
+    assert coarse_pc.getType() == "python"
+    assert isinstance(coarse_pc.getPythonContext(), custom_mg.GamgCoarseSolve)
+    if route == "rotated":
+        info = stokes._rotated_freeslip_info
+        assert info["converged"] and info["coarse_solve"] == "gamg", info
+        its = (info["vel_its_last"][-1], info["pres_its_last"][-1])
+    else:
+        assert stokes.snes.getConvergedReason() > 0
+        vel_ksp, pres_ksp = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()
+        its = (vel_ksp.getIterationNumber(), pres_ksp.getIterationNumber())
+    assert its[0] <= case["its"][0] and its[1] <= case["its"][1], its
+    vol = float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate())
+    vrms = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate() / vol))
+    cells, volume = mesh_fingerprint(mesh)
+    if cells != case["fingerprint"][0] or abs(volume - case["fingerprint"][1]) > 1.0e-9:
+        pytest.skip(f"this host built a different mesh ({cells}, {volume:.10f}; "
+                    f"recorded {case['fingerprint']}): the recorded answer does not apply")
+    assert abs(vrms - case["vrms"]) <= 1.0e-8 * case["vrms"], vrms

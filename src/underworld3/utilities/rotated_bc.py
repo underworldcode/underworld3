@@ -1794,6 +1794,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
+            # the coarse-level solve of the custom FMG: "redundant" (LU with the
+            # zero-pivot shift) or the asked-for "gamg" (None without one)
+            "coarse_solve": None if use_lu else (ctx or {}).get("coarse_solve"),
             "continuation_switched": continuation and phase == "newton",
             "continuation_switch_iteration": switch_iteration,
             "rotation_reused": rotation_reused,
@@ -1951,8 +1954,8 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
         # with no major symmetry rather than leaving it as an argument.
         #
         # _rotated_nullspace records its mode count on the SOLVER, where the
-        # forward path reads it to choose a coarse solve. An adjoint must not
-        # change what the next forward solve does, so put it back below.
+        # forward solve reports it. An adjoint must not change what the next
+        # forward solve reports, so put it back below.
         null_modes_before = getattr(solver, "_rotated_velocity_null_modes", None)
         nsp = _rotated_nullspace(solver, Q, normal_rows)
         # The prolongation depends only on Q and the mesh hierarchy, so the
@@ -2171,6 +2174,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     pres_is = solver._subdict["pressure"][0]
 
     if ctx is None:
+        _coarse = None                     # no custom FMG, no coarse solve of ours
         # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator —
         # built by the CALLER (the Newton loop, after the first Jacobian assembly:
         # the mode verification needs the assembled operator).
@@ -2286,26 +2290,26 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                # coarse="svd" ONLY when the rotated problem carries VERIFIED
-                # null modes (nsp): the Galerkin-coarsened ROTATED velocity
-                # block inherits every rigid-rotation mode of the constrained
-                # problem (a closed circle: one; a spherical shell: three),
-                # and the redundant/LU coarse solve hits a zero pivot there
-                # (SUBPC_ERROR, outer reason -11). When there are NO null
-                # modes — Dirichlet walls, a split-fault contact box — the
-                # blanket SVD is pure cost: a 3-D P2 coarse level is a DENSE
-                # factorisation (measured: most of ~0.8 s per V-cycle
-                # application at healthy iteration counts, #622). Everything
-                # else in the bundle is identical to the native and standard
-                # custom-P routes.
-                # nsp alone cannot discriminate: it is non-None whenever the
-                # constant-PRESSURE mode is attached (enclosed domains), which
-                # says nothing about the velocity block. The recorded count of
-                # verified ROTATION modes does.
-                _coarse = ("svd"
-                           if getattr(solver, "_rotated_velocity_null_modes",
-                                      1 if nsp is not None else 0)
-                           else "redundant")
+                # The coarse solve is the shared bundle's redundant LU with a
+                # nonzero factor shift (#901). The Galerkin-coarsened rotated
+                # block inherits the rigid rotations the constraint leaves (a
+                # closed circle: one; a spherical shell: three), but only
+                # nearly: on every hierarchy measured it is near-singular, not
+                # singular (lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the
+                # annulus, 2.8e-4 on the shell), and plain LU gives the SVD's
+                # answer at its iteration counts. The shift
+                # acts only on an exact zero pivot, the case behind #306 (a
+                # coarse level that is the fine operator itself), and gives
+                # the SVD's answer there too. It replaced a dense SVD of the
+                # gathered matrix, O(n^3) on every rank (64 s at np 1, 102 s
+                # at np 4 to factor a 614-cell shell bottom level). GAMG on
+                # the coarse level only when asked for, for a bottom level too
+                # large to gather (set_custom_fmg(coarse_solve="gamg")).
+                _gamg = custom_mg._registered_coarse_solve(solver) == "gamg"
+                _coarse = "gamg" if _gamg else "redundant"
+                _modes = _velocity_null_modes(nsp, vel_is) if _gamg else []
+                _near = (_rotated_rigid_body_modes(solver, Q, normal_rows, vel_is)
+                         if _gamg else [])
                 # FAC patch smoothing (#629): the hierarchy that built custom_Pl
                 # recorded each level's patch/halo rows; row numbering is the
                 # velocity-block reduced numbering on both paths, and the split
@@ -2314,8 +2318,13 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 _fac_keys = custom_mg._configure_pcmg(
                     vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
-                    patch_rows=getattr(_hier, "level_patch_rows", None))
+                    patch_rows=getattr(_hier, "level_patch_rows", None),
+                    null_modes=_modes, near_null=_near)
+                for _m in _modes + _near:
+                    _m.destroy()
                 vel_pc.setUp()
+                if _coarse == "redundant":
+                    _shift_coarse_zero_pivot(vel_pc)
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
                     # row beside the two-row nodes, and the inode SOR's 2x2
@@ -2324,8 +2333,15 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     # ranks on the Zhong & Gurnis annulus, 2026-10-14) with
                     # every scalar diagonal healthy; without the inode
                     # grouping the same solve converged in 9 iterations to
-                    # the two-rank answer. The finest operator is untouched.
-                    for _l in range(vel_pc.getMGLevels() - 1):
+                    # the two-rank answer. The finest operator is untouched,
+                    # and so is level 0, which is not smoothed by SOR:
+                    # re-assembling it here moved its state, so the coarse PC
+                    # was set up a second time at its first application, and
+                    # an SVD was factored twice (#901). Its LU keeps the
+                    # inode kernel at every np now; it had it at np > 1 already,
+                    # where it factors a gathered copy, and lost it only at
+                    # np 1, where it factors this operator.
+                    for _l in range(1, vel_pc.getMGLevels() - 1):
                         _A = vel_pc.getMGSmoother(_l).getOperators()[0]
                         _A.setOption(PETSc.Mat.Option.USE_INODES, False)
                         _A.assemble()
@@ -2372,6 +2388,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                # which preconditioner this solve actually got — reported so a model
                # (or a test) can assert on it instead of inferring it from timings
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
+               "coarse_solve": _coarse,
                "schur_pre": "1/mu-mass" if Mp is not None else "selfp"}
         # Mirror the degraded arms into the solver-wide fallback record (#484):
         # the ctx keys above stay authoritative for this path's own tests, but
@@ -2456,6 +2473,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     from underworld3.utilities import custom_mg, multigrid_options
     dm = solver.dm
     if ctx is None:
+        _coarse = None                     # no custom FMG, no coarse solve of ours
         if nsp is not None:
             Ahat.setNullSpace(nsp)
             Ahat.setTransposeNullSpace(nsp)
@@ -2477,16 +2495,24 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
             pc = ksp.getPC()
             ksp.setFromOptions()
             if custom_Pl is not None:
-                # coarse="svd" only when verified rotation modes make the
-                # Galerkin-coarsened operator singular (see the saddle route).
-                _coarse = ("svd" if getattr(solver, "_rotated_velocity_null_modes", 0)
-                           else "redundant")
+                # redundant LU with the zero-pivot shift, as on the saddle
+                # route; asked-for GAMG takes its own near-null space here
+                # (this route has no frame rotation to carry the rigid-body
+                # modes) and the verified rotations as its null space
+                _gamg = custom_mg._registered_coarse_solve(solver) == "gamg"
+                _coarse = "gamg" if _gamg else "redundant"
+                _modes = _velocity_null_modes(nsp) if _gamg else []
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
                 _fac_keys = custom_mg._configure_pcmg(
                     pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
-                    patch_rows=getattr(_hier, "level_patch_rows", None))
+                    patch_rows=getattr(_hier, "level_patch_rows", None),
+                    null_modes=_modes)
+                for _m in _modes:
+                    _m.destroy()
                 pc.setUp()
+                if _coarse == "redundant":
+                    _shift_coarse_zero_pivot(pc)
                 for _l in range(1, pc.getMGLevels()):
                     if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
                                          for k in _fac_keys):
@@ -2510,6 +2536,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
         ctx = {"ksp": ksp, "pc": pc, "Mp": None, "nsp": nsp, "cns": None,
                "custom_Pl": custom_Pl, "pfx": pfx,
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
+               "coarse_solve": _coarse,
                "schur_pre": "none"}
         if custom_Pl is None:
             solver._record_pc_fallback(
@@ -2534,6 +2561,53 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     _zero_rows_local(Uhat, normal_rows)
     ctx["velocity_pc_type"] = ksp.getPC().getType()
     return Uhat, ksp.getConvergedReason(), ctx
+
+
+def _shift_coarse_zero_pivot(mg_pc):
+    """Give the redundant LU at ``mg_pc``'s coarse level a nonzero factor shift,
+    which acts only on an exact zero pivot (#901). Set on the live PC after
+    ``mg_pc.setUp()``: PCREDUNDANT passes it to its inner LU, which factors at
+    the first application, and no options key is left to clean up."""
+    mg_pc.getMGCoarseSolve().getPC().setFactorShift(PETSc.Mat.FactorShiftType.NONZERO)
+
+
+def _rotated_rigid_body_modes(solver, Q, normal_rows, vel_is):
+    """Copies of the velocity parts of the rigid-body modes in the rotated
+    frame, the constrained normal rows zeroed: the near-null space of a GAMG
+    coarse solve on the rotated saddle route. Collective."""
+    out = []
+    for g in _rigid_body_modes(solver):
+        t = g.duplicate()
+        Q.mult(g, t)
+        _zero_rows_local(t, normal_rows)
+        sub = t.getSubVector(vel_is)
+        out.append(sub.copy())
+        t.restoreSubVector(vel_is, sub)
+        t.destroy()
+        solver.dm.restoreGlobalVec(g)
+    return out
+
+
+def _velocity_null_modes(nsp, vel_is=None):
+    """Copies of the nonzero velocity parts of the rotated null space ``nsp``:
+    the verified rigid rotations (the constant-pressure vector has none).
+    ``vel_is`` selects the velocity block of the saddle system; ``None`` takes
+    the vectors whole (the vector problem). Collective."""
+    if nsp is None:
+        return []
+    out = []
+    for vec in nsp.getVecs():
+        if vel_is is None:
+            m = vec.copy()
+        else:
+            sub = vec.getSubVector(vel_is)
+            m = sub.copy()
+            vec.restoreSubVector(vel_is, sub)
+        if m.norm() > 0.0:
+            out.append(m)
+        else:
+            m.destroy()
+    return out
 
 
 def _rotated_nullspace(solver, Q, normal_rows):
@@ -2574,11 +2648,9 @@ def _rotated_nullspace(solver, Q, normal_rows):
             vecs.append(tr)
             n_rot += 1
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
-    # The VELOCITY-block null-mode count, recorded for the coarse-solve
-    # choice in _solve_rotated_iterative: only a rotation mode makes the
-    # Galerkin-coarsened velocity block singular (the constant-pressure
-    # mode lives in the pressure block), so only then is the SVD coarse
-    # solve required.
+    # The VELOCITY-block null-mode count (the constant-pressure mode lives in
+    # the pressure block): the rotations removed from the answer, reported by
+    # the solve; an asked-for GAMG coarse solve takes them as its null space.
     solver._rotated_velocity_null_modes = n_rot
     if not vecs:
         return None
@@ -2867,6 +2939,18 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     return write_boundary_scalar_field(solver, field, hmap, dim)
 
 
+def _rigid_rotation_fields(c, cdim):
+    """The rigid rotations at the points ``c``: ``[(-y,x)]`` in 2D, ``[e_k×r]``
+    for k=x,y,z in 3D."""
+    if cdim == 2:
+        return [np.column_stack([-c[:, 1], c[:, 0]])]
+    x, y, z = c[:, 0], c[:, 1], c[:, 2]
+    zero = np.zeros_like(x)
+    return [np.column_stack([zero, -z, y]),      # e_x × r
+            np.column_stack([z, zero, -x]),      # e_y × r
+            np.column_stack([-y, x, zero])]      # e_z × r
+
+
 def _rigid_rotation_modes(solver):
     """The Cartesian rigid-body rotation mode(s) as composite GLOBAL vectors
     (velocity DOFs only, zero pressure): ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
@@ -2876,27 +2960,42 @@ def _rigid_rotation_modes(solver):
     shared nodes are handled by PETSc, not double-counted. The vectors are
     borrowed from the DM pool — every one must go back via
     ``dm.restoreGlobalVec``. COLLECTIVE: all ranks build the same mode list."""
-    dm = solver.dm
+    v = solver.Unknowns.u
+    return _velocity_field_modes(solver, _rigid_rotation_fields(v.coords, solver.mesh.cdim))
+
+
+def _rigid_body_modes(solver):
+    """The Cartesian rigid-body modes, translations then rotations, as composite
+    GLOBAL vectors (velocity DOFs only). They are a near-null space for GAMG,
+    not a null space: no constraint is checked. Borrowed from the DM pool like
+    :func:`_rigid_rotation_modes`. COLLECTIVE."""
     v = solver.Unknowns.u
     c = v.coords
-    saved = v.data.copy()
-    if solver.mesh.cdim == 2:
-        fields = [np.column_stack([-c[:, 1], c[:, 0]])]
-    else:
-        x, y, z = c[:, 0], c[:, 1], c[:, 2]
-        zero = np.zeros_like(x)
-        fields = [np.column_stack([zero, -z, y]),      # e_x × r
-                  np.column_stack([z, zero, -x]),      # e_y × r
-                  np.column_stack([-y, x, zero])]      # e_z × r
+    cdim = solver.mesh.cdim
+    translations = []
+    for k in range(cdim):
+        t = np.zeros((c.shape[0], cdim))
+        t[:, k] = 1.0
+        translations.append(t)
+    return _velocity_field_modes(solver, translations + _rigid_rotation_fields(c, cdim))
+
+
+def _velocity_field_modes(solver, fields):
+    """Each nodal velocity field in ``fields`` as a composite global vector,
+    through localToGlobal on the velocity sub-DM. The velocity variable is set
+    to each field in turn and restored after."""
+    dm = solver.dm
+    v = solver.Unknowns.u
     vis = solver._subdict["velocity"][0]
+    saved = np.array(v.array, copy=True)
     modes = []
     for f in fields:
-        v.data[...] = f
+        v.array[...] = f.reshape(saved.shape)
         tg = dm.getGlobalVec()
         tg.set(0.0)
         sg = tg.getSubVector(vis)
         solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
         tg.restoreSubVector(vis, sg)
         modes.append(tg)
-    v.data[...] = saved
+    v.array[...] = saved
     return modes

@@ -204,22 +204,22 @@ treat five figures as a bug in the hierarchy rather than a tuning question. If
 you are near the line, estimate it rather than guessing: the factor grows faster
 than the DOF count, and you pay it on every rank at once.
 
-### When the coarse operator has a null space: SVD
+### When the domain leaves rigid rotations free
 
-One case does require a different bottom solve, and the solver handles it for
-you. A **rotated** velocity block whose domain leaves rigid rotations free — a
-closed circle (one mode), a spherical shell (three) — hands those modes to the
-Galerkin-coarsened coarse operator, because the rotations survive the
-constraint. `redundant`/LU hits a zero pivot on a singular coarse operator and
-fails with `SUBPC_ERROR` (outer reason `-11`), so the rotated path selects SVD
-instead.
+A **rotated** velocity block whose domain leaves rigid rotations free — a closed
+circle (one mode), a spherical shell with the radial normal (three) — hands those
+modes to the Galerkin-coarsened coarse operator. They arrive nearly, not exactly:
+on every hierarchy measured, the coarse operator is near-singular
+(lambda_min/lambda_max 2.0e-5 to 2.4e-8 on an annulus, 2.8e-4 on a spherical
+shell), and the same redundant LU as everywhere
+else gives a dense SVD's answer at the same iteration counts. The rotated path
+adds a nonzero factor shift, which acts only on an exact zero pivot: a coarse
+level that is singular, such as one that is the fine mesh itself (#901).
 
-It is deliberately **not** a blanket choice for every rotated problem. It keys
-on the count of *verified rotation* modes, because a rotated problem with
-Dirichlet walls, or a split-fault contact box, has none — and there an SVD is
-pure cost. A 3-D P2 coarse level is a **dense** factorization: measured, it
-accounted for most of ~0.8 s per V-cycle application at healthy iteration counts
-(#622).
+The coarse level used to be a dense SVD here, O(n^3) on every rank and slower
+with every rank added: on a 614-cell shell bottom level, the SVD took 64 s to
+factor at np 1 and 102 s at np 4. With the LU, the whole Stokes solve takes 7 s
+at np 4.
 
 ```{warning}
 There is no `petsc_options` override for the coarse solve **on the rotated
@@ -229,9 +229,37 @@ prefix, applies it, and deletes the keys again; anything you set through
 reaches it. The override below works on the standard path only.
 ```
 
-Because SVD is dense, it is affordable only on a genuinely small coarse level —
-which makes the sizing guidance above a hard requirement on this path rather
-than a preference.
+The coarse system is factored gathered onto every rank, so the sizing guidance
+above applies here as everywhere.
+
+### A bottom level too large to gather: GAMG as the coarse solve
+
+Sometimes the coarsest mesh that can be built is too large for every rank to
+factor a gathered copy, for instance a geometry that a coarser gmsh base cannot
+represent. For that one case, a custom-P hierarchy can solve its coarse level
+with GAMG instead:
+
+```python
+custom_mg.set_custom_fmg(stokes, coarse_meshes, field_id=0, coarse_solve="gamg")
+```
+
+The coarse level then runs FGMRES to a relative tolerance of 1e-2, with GAMG on
+the Galerkin coarse operator and a redundant LU at GAMG's own, much smaller,
+base. The coarse solve stays distributed. On the rotated saddle route and the
+standard Stokes route, GAMG is given the rigid-body modes as its near-null
+space: the translations and rotations, carried into the wall frame on the
+rotated route. The rotated thin-sheet route and single-field solvers leave GAMG
+its own. GAMG is given the verified rotations, where they exist, as an exact
+null space.
+
+The answer is unchanged, and so are the outer iterations. The cost is not. It
+was measured at np 4 on 600-cell bottom levels: a spherical shell (2900 coarse
+rows) and an annulus (2400). The coarse work is 4 times a gathered LU's on the
+shell and 1.7 times on the annulus. That comes from GAMG's own 14.6 and 3.9
+cycles per coarse solve; its base costs at most 6% of it (#901). (At a coarse
+tolerance of 1e-6 the shell takes 38 cycles and 10 times the work.) So it is
+never chosen automatically. Ask for it only when the gathered factorisation no longer
+fits, and prefer a coarser bottom level wherever the geometry allows one.
 
 ### Overriding the coarse solve yourself
 
@@ -249,8 +277,9 @@ stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 many copies", which gathers the coarse system onto a sub-communicator instead —
 **is not available here**. It has no DMPlex support, and every Underworld mesh
 is a DMPlex, so requesting it aborts the solve with `Support for DMPLEX is
-currently not available` (PETSc error 56). There is no bottom-solve escape hatch
-from an over-large coarse level: the hierarchy is the lever.
+currently not available` (PETSc error 56). For an over-large coarse level the
+hierarchy is the lever, and on a custom-P hierarchy `coarse_solve="gamg"`
+(above) is the escape hatch.
 ```
 
 ## Benchmark: FMG vs GAMG on a deforming adaptive mesh

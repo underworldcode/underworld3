@@ -596,15 +596,21 @@ comment warning against changing it, while never once taking effect (measured: t
 live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
 ```
 
-### The one legitimate per-route difference
+### The one per-route difference
 
-The coarse solve. The Galerkin-coarsened **rotated** velocity block inherits the
-rigid-rotation null space of the constrained problem (a closed circle: one mode;
-a spherical shell: three), and `redundant`/LU hits a zero pivot there —
-`SUBPC_ERROR`, outer reason −11. So the rotated route asks for
-`geometric_mg_bundle(coarse="svd")`, which is null-space robust and cheap on a
-small coarse level. This is a named variant of the shared bundle, not a
-call-site override, so it is visible in the same place as everything else.
+The coarse solve, and only slightly. The Galerkin-coarsened **rotated** velocity
+block inherits the rigid rotations the constraint leaves (a closed circle: one
+mode; a spherical shell: three), but only nearly: it is near-singular, not
+singular, on every hierarchy measured, and the shared redundant LU solves it at
+the SVD's iteration counts and answer. The rotated route adds a nonzero factor
+shift, set on the live coarse PC after the multigrid set-up, which acts only on an
+exact zero pivot (#901).
+
+The route used a dense SVD coarse solve until then (#306), O(n^3) on every
+rank: 64 s at np 1 and 102 s at np 4 to factor a 614-cell shell bottom level.
+That variant is gone. `coarse="gamg"` is a distributed coarse solve, only when
+asked for. Both are named variants of the shared bundle, not call-site
+overrides, so they are visible in the same place as everything else.
 
 The other native/custom-P asymmetry — that native FMG is unusable for
 single-field solvers because `DMCreateInjection` cannot reliably be built on a

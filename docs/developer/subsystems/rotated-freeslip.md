@@ -200,10 +200,23 @@ it composes with transverse isotropy.
 The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
-single deliberate difference is the coarse solve: `coarse="svd"`, because the
-Galerkin-coarsened rotated block inherits the rigid-rotation null space where
-`redundant`/LU hits a zero pivot. See
-[the solvers subsystem doc](solvers.md) for the bundle itself.
+coarse solve is the same redundant LU, with one addition: a nonzero factor
+shift, which acts only on an exact zero pivot (#901).
+
+When the constraint leaves verified rigid rotations, the Galerkin-coarsened
+rotated block inherits them, but only nearly: the coarse operator is
+near-singular, not singular. lambda_min/lambda_max is 2.0e-5 to 2.4e-8 on the
+annulus with 40 to 600 bottom cells, and 2.8e-4 on the spherical shell. Plain LU
+gives the SVD's answer at its iteration counts there, and also on a faulted
+annulus with rotated coarse levels (ratio not measured). The shift is for the
+singular case, a coarse level that is the fine operator itself (#306's
+situation, test_1111), where it gives the SVD's answer too.
+
+This replaced a dense SVD of the gathered matrix, which cost O(n^3) on every
+rank and got slower with more ranks: one factorisation of a 614-cell shell
+bottom level took 64 s at np 1 and 102 s at np 4. The rotated route also used to
+set the coarse level up twice per solve, which doubled the SVD; that is fixed
+(#901). See [the solvers subsystem doc](solvers.md) for the bundle itself.
 
 The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
 2026-10-14): each takes the per-node wall frame on its own nodes and loses its

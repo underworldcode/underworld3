@@ -79,9 +79,9 @@ def _user_owns(opts, name, owned):
 
 
 #: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
-#: is the default and is np-safe; ``"svd"`` is required whenever the coarse
-#: operator inherits a null space — see :func:`geometric_mg_bundle`.
-GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd")
+#: is the default and is np-safe; ``"gamg"`` is a distributed coarse solve, only
+#: when asked for — see :func:`geometric_mg_bundle`.
+GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "gamg")
 
 #: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
@@ -169,6 +169,8 @@ def describe(settings, levels=None, overridden=()):
         coarse = settings.get("mg_coarse_pc_type", "?")
         if coarse == "redundant":
             coarse += f"/{settings.get('mg_coarse_redundant_pc_type', '?')}"
+        elif coarse == "python":           # the asked-for GAMG coarse solve
+            coarse = "gamg"
         text = f"{what}, {cycle} cycle, smoother {smoother}, coarse {coarse}"
     elif pc == "gamg":
         text = (f"algebraic multigrid (gamg/{settings.get('pc_gamg_type', '?')}), "
@@ -185,10 +187,11 @@ def describe(settings, levels=None, overridden=()):
 def _geometric_mg_settings(coarse, smoother="robust"):
     """The geometric-MG settings for one coarse-solve and smoother variant.
 
-    Every variant sets the SAME keys — only values differ — so the derived stale-key
-    sets are variant-independent. A variant that needs a key the others do not have
-    must add it to all of them (with a default), or the invariant breaks: this is why
-    ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap."""
+    The smoother variants set the SAME keys, only the values differ: this is why
+    ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap. The
+    coarse variants do not: only ``"redundant"`` sets
+    ``mg_coarse_redundant_pc_type``. A key one variant sets and another does not is
+    in the other's stale list (:func:`_bundle`), so switching variants clears it."""
     settings = {
         # The KSP this preconditioner serves must be FLEXIBLE, for both
         # variants. The "robust" smoother is a Krylov solve, so the
@@ -297,14 +300,12 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # small-np users.
         settings["mg_coarse_pc_type"] = "redundant"
         settings["mg_coarse_redundant_pc_type"] = "lu"
-    elif coarse == "svd":
-        # The Galerkin-coarsened ROTATED velocity block inherits every
-        # rigid-rotation null-space mode of the constrained problem (a closed
-        # circle: one; a spherical shell: three), and redundant/LU hits a zero
-        # pivot there (SUBPC_ERROR, outer reason -11 — the #306 fix). SVD is
-        # null-space robust and the coarse level is small. Same choice as the
-        # native spherical FMG setups.
-        settings["mg_coarse_pc_type"] = "svd"
+    elif coarse == "gamg":
+        # GAMG as the coarse solve, only when asked for: a bottom level too
+        # large for every rank to factor. The caller installs
+        # custom_mg.GamgCoarseSolve, which attaches the restricted rigid-body
+        # near-null space.
+        settings["mg_coarse_pc_type"] = "python"
     else:
         raise ValueError(
             f"coarse must be one of {GEOMETRIC_MG_COARSE_SOLVERS} (got {coarse!r})")
@@ -389,11 +390,11 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
         Which of the two MEASURED regimes to configure. ``"robust"`` is
         ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
         ``solver.strategy``, not usually here.
-    coarse : {"redundant", "svd"}
-        The coarse-level solve. ``"redundant"`` (redundant+LU) is the default.
-        Use ``"svd"`` when the coarse operator inherits a null space — which the
-        Galerkin-coarsened *rotated* velocity block always does, because the
-        rigid rotations survive the constraint.
+    coarse : {"redundant", "gamg"}
+        The coarse-level solve. ``"redundant"`` (redundant+LU) is the default,
+        the rotated route's included (it adds a zero-pivot shift). ``"gamg"``
+        is a distributed coarse solve for a bottom level too large to gather
+        (the caller installs ``custom_mg.GamgCoarseSolve``).
 
     Returns
     -------

@@ -1050,16 +1050,155 @@ def _count_zero_columns_parallel(P, comm):
     return nzero
 
 
+def _restrict_null_modes(mg_pc, modes):
+    """The finest operator's null vectors ``modes`` carried to the coarsest
+    level of ``mg_pc`` by least squares, level by level: (P^T P) m_c = P^T m_f.
+    A geometric P reproduces a rigid-body mode closely, so a rotation that is a
+    null vector of the finest operator is a near null vector of each Galerkin
+    operator. Orthonormalised. Collective."""
+    def orthonormal(vs):
+        out = []
+        for v in vs:
+            q = v.copy()
+            for r in out:
+                q.axpy(-q.dot(r), r)
+            q.normalize()
+            out.append(q)
+        return out
+
+    level = orthonormal(modes)             # copies: the caller keeps ``modes``
+    for lev in range(mg_pc.getMGLevels() - 1, 0, -1):
+        P = mg_pc.getMGInterpolation(lev)
+        PtP = P.transposeMatMult(P)
+        ksp = PETSc.KSP().create(comm=P.getComm())
+        ksp.setOperators(PtP)
+        ksp.setType("cg")
+        ksp.getPC().setType("jacobi")
+        ksp.setTolerances(rtol=1.0e-13, max_it=5000)
+        coarser = []
+        for m in level:
+            rhs = P.createVecRight()
+            P.multTranspose(m, rhs)
+            x = rhs.duplicate()
+            ksp.solve(rhs, x)
+            rhs.destroy()
+            coarser.append(x)
+        ksp.destroy()
+        PtP.destroy()
+        for m in level:
+            m.destroy()
+        level = orthonormal(coarser)
+        for x in coarser:
+            x.destroy()
+    return level
+
+
+class GamgCoarseSolve:
+    """GAMG as the coarse-level solve of the geometric multigrid (#901).
+
+    For one case only: the coarsest mesh that can be built is too large for an
+    efficient gathered (redundant) LU, which every rank factors in full. It is
+    never a default and never automatic: ``set_custom_fmg(..., coarse_solve=
+    "gamg")`` asks for it, on the rotated and the standard route alike. A
+    python PC for the coarsest level, it runs FGMRES to ``rtol`` (1e-2) with
+    GAMG on the Galerkin coarse operator, and a redundant LU at GAMG's own
+    base (with a nonzero shift, which acts only on an exact zero pivot). The
+    coarse solve stays distributed, with no gather of the geometric bottom
+    level.
+
+    ``near_null`` are vectors of the finest operator: the rigid-body modes,
+    rotated into the wall frame on the rotated route. They are restricted to
+    this level (:func:`_restrict_null_modes`) and attached as the coarse
+    operator's near-null space, which GAMG builds its aggregates from.
+    ``null`` (optional) are exact null vectors, the verified rotations: they are
+    attached as the null space and projected out of the right-hand side and
+    the solution.
+
+    Measured at np 4 on a 614-cell shell bottom level (2900 rows) and a 600-cell
+    annulus one (2400 rows): the answer and the outer iterations are a gathered
+    LU's. At this rtol the coarse work is 4x a gathered LU's on the shell (14.6
+    GAMG cycles per coarse solve) and 1.7x on the annulus (3.9); at rtol 1e-6,
+    10x and 38 cycles. GAMG's base is at most 6% of it.
+    """
+
+    def __init__(self, mg_pc, near_null, null=None, rtol=1.0e-2, max_it=50):
+        self._mg_pc = mg_pc
+        self._fine_near = [m.copy() for m in (near_null or [])]
+        self._fine_null = [m.copy() for m in (null or [])]
+        self.rtol, self.max_it = rtol, max_it
+        self.near = self.q = None
+        self.inner = None
+
+    def setUp(self, pc):
+        A = pc.getOperators()[0]
+        comm = A.getComm()
+        if self.near is None:
+            fine = self._fine_near + self._fine_null
+            self.near = _restrict_null_modes(self._mg_pc, self._fine_near) if self._fine_near else []
+            self.q = _restrict_null_modes(self._mg_pc, self._fine_null) if self._fine_null else []
+            self._mg_pc = None                     # no reference cycle through the PC
+            for m in fine:
+                m.destroy()
+            self._fine_near = self._fine_null = []
+        if self.near:
+            A.setNearNullSpace(PETSc.NullSpace().create(vectors=self.near, comm=comm))
+        if self.q:
+            A.setNullSpace(PETSc.NullSpace().create(vectors=self.q, comm=comm))
+        if self.inner is None:
+            prefix = (pc.getOptionsPrefix() or "") + "gamg_"
+            self.inner = PETSc.KSP().create(comm=comm)
+            self.inner.setOptionsPrefix(prefix)
+            self.inner.setType("fgmres")
+            self.inner.setTolerances(rtol=self.rtol, max_it=self.max_it)
+            self.inner.getPC().setType("gamg")
+            # GAMG's base is read from the options when GAMG builds its levels
+            opts = PETSc.Options()
+            base = {"mg_coarse_pc_type": "redundant",
+                    "mg_coarse_redundant_pc_factor_shift_type": "nonzero"}
+            for k, v in base.items():
+                opts[prefix + k] = v
+            try:
+                self.inner.setFromOptions()
+                self.inner.setOperators(A)
+                self.inner.setUp()
+            finally:
+                for k in base:
+                    opts.delValue(prefix + k)
+        else:
+            self.inner.setOperators(A)
+            self.inner.setUp()
+
+    def apply(self, pc, b, x):
+        rhs = b.copy()
+        for q in self.q:
+            rhs.axpy(-q.dot(rhs), q)
+        self.inner.solve(rhs, x)
+        for q in self.q:
+            x.axpy(-q.dot(x), q)
+        rhs.destroy()
+
+    def destroy(self, pc):
+        for obj in [self.inner] + list(self.near or []) + list(self.q or []):
+            if obj is not None:
+                obj.destroy()
+        self.inner = None
+        self.near = self.q = None
+
+
 def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
-                    ksp=None, patch_rows=None):
+                    ksp=None, patch_rows=None, null_modes=None, near_null=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
     The option VALUES come from :func:`multigrid_options.geometric_mg_bundle` —
     the same bundle the native (DMPlex-refinement) route applies — so custom-P
     and native multigrid cannot be configured differently (#468). ``coarse``
-    selects the coarse-solve variant: ``"svd"`` on the rotated path, whose
-    Galerkin-coarsened operator inherits the rigid-rotation null space. ``smoother``
+    selects the coarse-solve variant: ``"redundant"`` (gathered LU, the
+    default; the rotated route adds a zero-pivot shift), or ``"gamg"`` only
+    when asked for (``set_custom_fmg(..., coarse_solve="gamg")``), which
+    installs :class:`GamgCoarseSolve` with ``near_null`` and ``null_modes``
+    (vectors of the finest operator: the near-null space and the exact null
+    space). ``smoother``
     is the variant ``solver.strategy`` asks for — pass
     ``solver._mg_smoother_variant``, or the strategy is honoured on the native route
     and silently ignored here, which is the drift this module exists to prevent.
@@ -1139,6 +1278,13 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     for l in range(1, nlev):
         pc.setMGInterpolation(l, Ps[l - 1])
     pc.setFromOptions()
+    if coarse == "gamg":
+        # before any setup; the bundle's mg_coarse_pc_type=python keeps a later
+        # setFromOptions on this type, and a python PC keeps its context when
+        # no python type is given
+        coarse_pc = pc.getMGCoarseSolve().getPC()
+        coarse_pc.setType("python")
+        coarse_pc.setPythonContext(GamgCoarseSolve(pc, near_null, null=null_modes))
     # FAC subdomains go on the LIVE smoother PCs — an IS cannot ride the
     # options DB. setFromOptions above has already pushed the bundle (and the
     # per-level asm keys) into the level KSPs, so the objects are stable now.
@@ -1240,12 +1386,15 @@ def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
     interpolation from the DM hierarchy."""
     nlev = len(Ps) + 1
     pfx = solver._pc_option_prefix or ""
+    coarse = _registered_coarse_solve(solver) or "redundant"
 
     if pfx == "":
         ksp = solver.snes.getKSP()
         solver.snes.setUp()
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
-        _configure_pcmg(ksp.getPC(), Ps,
+        # a single field: GAMG's own near-null space (the constant, or the
+        # block's components) serves
+        _configure_pcmg(ksp.getPC(), Ps, coarse=coarse,
                         smoother=solver._mg_smoother_variant,
                         owned=solver._managed_pc_options, ksp=ksp,
                         patch_rows=patch_rows)
@@ -1272,6 +1421,7 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False,
     the SNES / DM exist but the Jacobian VALUES are not yet assembled."""
     snes = solver.snes
     snes.setUp()
+    coarse = _registered_coarse_solve(solver) or "redundant"
 
     # 1. force monolithic Jacobian assembly so the fieldsplit can form A_vv
     x0 = solver.dm.getGlobalVec()
@@ -1318,8 +1468,12 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False,
     vel_ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
     vel_pc.reset()
     vel_pc.setOperators(A_vv, P_vv)
-    _configure_pcmg(vel_pc, Ps, smoother=solver._mg_smoother_variant,
-                    owned=solver._managed_pc_options, patch_rows=patch_rows)
+    near = _velocity_rigid_body_modes(solver) if coarse == "gamg" else []
+    _configure_pcmg(vel_pc, Ps, coarse=coarse, smoother=solver._mg_smoother_variant,
+                    owned=solver._managed_pc_options, patch_rows=patch_rows,
+                    near_null=near)
+    for m in near:
+        m.destroy()
     vel_pc.setUp()
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
@@ -1937,9 +2091,31 @@ class _DMLevelView:
 # --------------------------------------------------------------------------- #
 #  Entry points
 # --------------------------------------------------------------------------- #
+def _registered_coarse_solve(solver):
+    """The coarse solve asked for with ``set_custom_fmg(..., coarse_solve=)``:
+    ``"gamg"``, or ``None`` for the automatic choice."""
+    reg = getattr(solver, "_custom_mg", None)
+    return reg.get("coarse_solve") if isinstance(reg, dict) else None
+
+
+def _velocity_rigid_body_modes(solver):
+    """Copies of the velocity parts of the Cartesian rigid-body modes, in the
+    velocity block's numbering: the near-null space for a GAMG coarse solve on
+    the standard Stokes route. Collective."""
+    from underworld3.utilities import rotated_bc
+    vis = solver._subdict["velocity"][0]
+    out = []
+    for g in rotated_bc._rigid_body_modes(solver):
+        sub = g.getSubVector(vis)
+        out.append(sub.copy())
+        g.restoreSubVector(vis, sub)
+        solver.dm.restoreGlobalVec(g)
+    return out
+
+
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
                    field_id=None, cross_partition="auto", fac_zone=None,
-                   fac_block_rows=2000,
+                   fac_block_rows=2000, coarse_solve=None,
                    verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
@@ -1963,7 +2139,16 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
     list of masks for per-segment ASM blocks. The structural (cut/split)
     rows are unioned in automatically; the patch is solved strongly once
-    per smoother application (basic ASM, shifted factorization)."""
+    per smoother application (basic ASM, shifted factorization).
+
+    ``coarse_solve="gamg"`` makes the coarse level a GAMG solve
+    (:class:`GamgCoarseSolve`) instead of the gathered direct solve. Use it
+    only when the coarsest mesh that can be built is too large for every rank
+    to factor: where both fit it costs 1.7-4x a gathered LU's coarse work
+    (measured at np 4 on 600-cell bottom levels), at the same answer. ``None``
+    (the default) keeps the gathered LU."""
+    if coarse_solve not in (None, "gamg"):
+        raise ValueError(f"coarse_solve must be None or 'gamg' (got {coarse_solve!r})")
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
@@ -1972,6 +2157,7 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
                                        fac_zone=fac_zone,
                                        fac_block_rows=fac_block_rows),
         "verbose": verbose,
+        "coarse_solve": coarse_solve,
     }
     solver.is_setup = False
 
