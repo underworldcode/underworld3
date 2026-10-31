@@ -238,6 +238,31 @@ reaches it. The override below works on the standard path only.
 The pinned system is factored like any other coarse level, gathered onto every
 rank, so the sizing guidance above applies here as everywhere.
 
+### A bottom level too large to gather: GAMG as the coarse solve
+
+Sometimes the coarsest mesh that can be built is too large for every rank to
+factor a gathered copy, for instance a geometry that a coarser gmsh base cannot
+represent. For that one case, a custom-P hierarchy can solve its coarse level
+with GAMG instead:
+
+```python
+custom_mg.set_custom_fmg(stokes, coarse_meshes, field_id=0, coarse_solve="gamg")
+```
+
+The coarse level then runs FGMRES to a relative tolerance of 1e-2, with GAMG on
+the Galerkin coarse operator and a redundant LU at GAMG's own, much smaller,
+base. The coarse solve stays distributed. GAMG is given the rigid-body modes as
+its near-null space: the translations and rotations, carried into the wall
+frame on the rotated route. It is given the verified rotations, where they
+exist, as an exact null space.
+
+The answer is unchanged, and so are the outer iterations. The cost is not:
+measured on 600-cell bottom levels (an annulus and a spherical shell, np 4), the
+coarse work is 4 to 10 times a gathered LU's. That comes from GAMG's own 15 to 40
+cycles per coarse solve. Its base costs at most 6% of it (#901). So it is never
+chosen automatically. Ask for it only when the gathered factorisation no longer
+fits, and prefer a coarser bottom level wherever the geometry allows one.
+
 ### Overriding the coarse solve yourself
 
 On the standard (non-rotated) path, `"auto"` does not overwrite options you set
@@ -254,8 +279,9 @@ stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 many copies", which gathers the coarse system onto a sub-communicator instead —
 **is not available here**. It has no DMPlex support, and every Underworld mesh
 is a DMPlex, so requesting it aborts the solve with `Support for DMPLEX is
-currently not available` (PETSc error 56). There is no bottom-solve escape hatch
-from an over-large coarse level: the hierarchy is the lever.
+currently not available` (PETSc error 56). For an over-large coarse level the
+hierarchy is the lever, and on a custom-P hierarchy `coarse_solve="gamg"`
+(above) is the escape hatch.
 ```
 
 ## Benchmark: FMG vs GAMG on a deforming adaptive mesh

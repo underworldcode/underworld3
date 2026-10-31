@@ -2317,6 +2317,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 _modes = _velocity_null_modes(nsp, vel_is) if _n_rot else []
                 _coarse = ("null_modes" if _modes
                            else "svd" if _n_rot else "redundant")
+                # GAMG on the coarse level only when asked for, for a bottom
+                # level too large to gather (set_custom_fmg(coarse_solve=))
+                if custom_mg.registered_coarse_solve(solver) == "gamg":
+                    _coarse = "gamg"
+                _near = (_rotated_rigid_body_modes(solver, Q, normal_rows, vel_is)
+                         if _coarse == "gamg" else [])
                 # FAC patch smoothing (#629): the hierarchy that built custom_Pl
                 # recorded each level's patch/halo rows; row numbering is the
                 # velocity-block reduced numbering on both paths, and the split
@@ -2326,8 +2332,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
                     patch_rows=getattr(_hier, "level_patch_rows", None),
-                    null_modes=_modes)
-                for _m in _modes:
+                    null_modes=_modes, near_null=_near)
+                for _m in _modes + _near:
                     _m.destroy()
                 vel_pc.setUp()
                 if getattr(solver, "_custom_mg_rotated_levels", False):
@@ -2504,6 +2510,10 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                 _modes = _velocity_null_modes(nsp) if _n_rot else []
                 _coarse = ("null_modes" if _modes
                            else "svd" if _n_rot else "redundant")
+                # asked-for GAMG: its own near-null space here (this route
+                # has no frame rotation to carry the rigid-body modes)
+                if custom_mg.registered_coarse_solve(solver) == "gamg":
+                    _coarse = "gamg"
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
                 _fac_keys = custom_mg._configure_pcmg(
                     pc, custom_Pl, coarse=_coarse,
@@ -2561,6 +2571,23 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     _zero_rows_local(Uhat, normal_rows)
     ctx["velocity_pc_type"] = ksp.getPC().getType()
     return Uhat, ksp.getConvergedReason(), ctx
+
+
+def _rotated_rigid_body_modes(solver, Q, normal_rows, vel_is):
+    """Copies of the velocity parts of the rigid-body modes in the rotated
+    frame, the constrained normal rows zeroed: the near-null space of a GAMG
+    coarse solve on the rotated saddle route. Collective."""
+    out = []
+    for g in _rigid_body_modes(solver):
+        t = g.duplicate()
+        Q.mult(g, t)
+        _zero_rows_local(t, normal_rows)
+        sub = t.getSubVector(vel_is)
+        out.append(sub.copy())
+        t.restoreSubVector(vel_is, sub)
+        t.destroy()
+        solver.dm.restoreGlobalVec(g)
+    return out
 
 
 def _velocity_null_modes(nsp, vel_is=None):
@@ -2937,6 +2964,39 @@ def _rigid_rotation_modes(solver):
         fields = [np.column_stack([zero, -z, y]),      # e_x × r
                   np.column_stack([z, zero, -x]),      # e_y × r
                   np.column_stack([-y, x, zero])]      # e_z × r
+    return _velocity_field_modes(solver, fields, saved)
+
+
+def _rigid_body_modes(solver):
+    """The Cartesian rigid-body modes, translations then rotations, as composite
+    GLOBAL vectors (velocity DOFs only). They are a near-null space for GAMG,
+    not a null space: no constraint is checked. Borrowed from the DM pool like
+    :func:`_rigid_rotation_modes`. COLLECTIVE."""
+    v = solver.Unknowns.u
+    c = v.coords
+    saved = v.data.copy()
+    dim = solver.mesh.cdim
+    fields = []
+    for k in range(dim):
+        t = np.zeros_like(c[:, :dim])
+        t[:, k] = 1.0
+        fields.append(t)
+    if dim == 2:
+        fields.append(np.column_stack([-c[:, 1], c[:, 0]]))
+    else:
+        x, y, z = c[:, 0], c[:, 1], c[:, 2]
+        zero = np.zeros_like(x)
+        fields += [np.column_stack([zero, -z, y]), np.column_stack([z, zero, -x]),
+                   np.column_stack([-y, x, zero])]
+    return _velocity_field_modes(solver, fields, saved)
+
+
+def _velocity_field_modes(solver, fields, saved):
+    """Each nodal velocity field in ``fields`` as a composite global vector,
+    through localToGlobal on the velocity sub-DM; the velocity variable's data
+    is restored to ``saved`` afterwards."""
+    dm = solver.dm
+    v = solver.Unknowns.u
     vis = solver._subdict["velocity"][0]
     modes = []
     for f in fields:

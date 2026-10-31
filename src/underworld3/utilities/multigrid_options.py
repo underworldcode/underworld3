@@ -82,7 +82,7 @@ def _user_owns(opts, name, owned):
 #: is the default and is np-safe; ``"null_modes"`` is the solve for a coarse
 #: operator with known null vectors; ``"svd"`` tolerates an unknown null space at
 #: O(n^3) — see :func:`geometric_mg_bundle`.
-GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd", "null_modes")
+GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd", "null_modes", "gamg")
 
 #: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
@@ -186,10 +186,11 @@ def describe(settings, levels=None, overridden=()):
 def _geometric_mg_settings(coarse, smoother="robust"):
     """The geometric-MG settings for one coarse-solve and smoother variant.
 
-    Every variant sets the SAME keys — only values differ — so the derived stale-key
-    sets are variant-independent. A variant that needs a key the others do not have
-    must add it to all of them (with a default), or the invariant breaks: this is why
-    ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap."""
+    The smoother variants set the SAME keys, only the values differ: this is why
+    ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap. The
+    coarse variants do not: only ``"redundant"`` sets
+    ``mg_coarse_redundant_pc_type``. A key one variant sets and another does not is
+    in the other's stale list (:func:`_bundle`), so switching variants clears it."""
     settings = {
         # The KSP this preconditioner serves must be FLEXIBLE, for both
         # variants. The "robust" smoother is a Krylov solve, so the
@@ -315,6 +316,12 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # shell bottom level at np 4, 1.2 s of coarse work against ~105 s for
         # one SVD factorisation (207 s as measured, with the coarse level set
         # up twice per solve, which this branch also fixes).
+        settings["mg_coarse_pc_type"] = "python"
+    elif coarse == "gamg":
+        # GAMG as the coarse solve, only when asked for: a bottom level too
+        # large for every rank to factor. The caller installs
+        # custom_mg.GamgCoarseSolve, which attaches the restricted rigid-body
+        # near-null space; same python-PC key as "null_modes".
         settings["mg_coarse_pc_type"] = "python"
     else:
         raise ValueError(
