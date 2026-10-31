@@ -89,6 +89,12 @@ def project_to_degree(
     )
     interp = petsc_dm_create_interpolation_within_plex(subdm_src, dm_scratch)
 
+    # TODO(BUG): a discontinuous source projected to a continuous target sums
+    # the adjacent cells' values at each shared node (2-7x at P1 vertices): the
+    # matrix inserts one entry per cell into different source columns. The
+    # XDMF writer is not affected (it projects a discontinuous field to DG0).
+    # See issue #905.
+
     # --- apply ---
     g_src = subdm_src.createGlobalVec()
     subdm_src.localToGlobal(mesh_var._lvec, g_src)
