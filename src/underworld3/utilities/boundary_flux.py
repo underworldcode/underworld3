@@ -154,6 +154,11 @@ def _trace_interior_coords(solver, degree):
         mesh.dim, cdim, mesh.isSimplex, mesh.qdegree, prefix, PETSc.COMM_SELF)
     dmnew.setField(0, fe)
     dmnew.createDS()
+    # TODO(BUG): #902 — this matrix cannot be assembled on a rank that holds cells
+    # but owns none of their nodes (PETSc skips that rank's preallocation and the
+    # job hangs). A degree >= 3 trace has two or more nodes per edge, ordered by
+    # the edge's orientation, so utilities.closure_interpolation's cell-by-cell
+    # route does not cover it yet.
     mat_interp, vec_scale = dmold.createInterpolation(dmnew)
     coords_new_g = dmnew.getGlobalVec()
     coords_new_l = dmnew.getLocalVec()

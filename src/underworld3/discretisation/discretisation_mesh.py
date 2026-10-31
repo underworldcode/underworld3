@@ -2755,6 +2755,10 @@ class Mesh(Stateful, uw_object):
             # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
             # createCoordinateSpace builds the FE internally with correct
             # subspace initialisation.
+            # TODO(BUG): #902 — for a degree >= 2 coordinate field PETSc projects
+            # the coordinates through an interpolation matrix between two DMs on
+            # this plex, which cannot be assembled on a rank that holds cells but
+            # owns none of their nodes (the job hangs). Degree 1 is a copy.
             self.dm.createCoordinateSpace(self.degree, False, True)
 
             # Issue #96 fix: Force coordinate field creation and strip
@@ -5729,36 +5733,23 @@ class Mesh(Stateful, uw_object):
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
+        """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
+        ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
+        (ghost nodes included).
+
+        The mesh's coordinate field is interpolated cell by cell, not through
+        PETSc's interpolation matrix, which cannot be assembled on a rank that
+        holds cells but owns none of their nodes (#902): see
+        ``utilities.closure_interpolation``.
         """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+        from underworld3.utilities.closure_interpolation import interpolate_within_plex
 
         dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
-
-        matInterp, vecScale = dmold.createInterpolation(dmnew)
-        coordsOld = self.dm.getCoordinates()
-        coordsNewL = dmnew.getLocalVec()
-        coordsNewG = dmnew.getGlobalVec()
-        matInterp.mult(coordsOld, coordsNewG)
-        dmnew.globalToLocal(coordsNewG, coordsNewL)
-
-        arr = coordsNewL.array
-        arrcopy = arr.reshape(-1, self.cdim).copy()
-
-        dmnew.restoreGlobalVec(coordsNewG)
-        dmnew.restoreLocalVec(coordsNewL)
-        # Clean up the PETSc interpolation objects built above. Without this
-        # they accumulate until Python GC runs — noticeable in long adapt
-        # loops that re-fill the coord cache per variable.
-        matInterp.destroy()
-        if vecScale is not None:
-            vecScale.destroy()
+        coords = interpolate_within_plex(
+            self.dm, dmold, self.dm.getCoordinatesLocal().array, dmnew, self.cdim)
         dmnew.destroy()
-
-        return arrcopy
+        return coords
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
