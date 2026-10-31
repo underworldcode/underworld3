@@ -9085,7 +9085,7 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
     >>> mesh, mid, info = place_fault_ribbon(base, sheet_grid, width=0.06)
     >>> stokes = uw.systems.Stokes(mesh, ...)
     >>> stokes.add_fault_bc(0, boundary="Fault")
-    >>> set_custom_fmg(stokes, base._coarse_level_meshes()[:-1] + [base, mid],
+    >>> set_custom_fmg(stokes, base.multigrid_levels + (mid,),
     ...                field_id=0)     # pure contact: no fac_zone
     """
     from enum import Enum
