@@ -20,7 +20,7 @@ every application, which fails the same way on any build. Contracts:
   on its sixth step);
 - a warm request on zero fields is a cold start, with or without a datum;
 - a tolerated cold failure with a datum does not apply the failed lift;
-- a caught raise does not leave the failure latched in the cached workspace:
+- no failure, raised or warned, leaves itself latched in the cached workspace:
   the next solve converges once the cause is gone;
 - ``solve_with_fault``, the fault-contact entry to the same loop, raises too.
 """
@@ -133,6 +133,10 @@ def test_a_failed_warm_rotated_solve_keeps_the_state(monkeypatch):
     # the write-back re-applies the rotation gauge: 3e-10 relative, measured
     assert np.allclose(np.asarray(v.array), solved, rtol=0.0,
                        atol=1.0e-8 * np.abs(solved).max())
+    # a warm failure warns, but its workspace is not cached either
+    coarse.fail = False
+    stokes.solve(zero_init_guess=False)
+    assert stokes._rotated_freeslip_info["converged"], stokes._rotated_freeslip_info
 
 
 def test_a_warm_request_on_zero_fields_with_a_datum_is_a_cold_start(monkeypatch):
@@ -149,7 +153,7 @@ def test_a_tolerated_cold_failure_with_a_datum_does_not_apply_the_lift(monkeypat
     stokes.tolerate_linear_failure = True
     stokes.solve(zero_init_guess=True)
     assert int(stokes._rotated_freeslip_info["ksp_reason"]) == -11
-    assert np.all(np.isfinite(np.asarray(v.array)))
+    assert np.all(np.asarray(v.array) == 0.0)  # neither the lift nor a datum snap
 
 
 def test_a_caught_raise_leaves_the_solver_usable(monkeypatch):

@@ -507,6 +507,11 @@ def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
     rotated wall free-slip and the fault contact compose. The result is also
     stashed on ``solver._rotated_freeslip_info`` so the reaction-based
     recoveries can find it.
+
+    Raises ``RuntimeError`` when the first linear solve of a cold start (the
+    default ``zero_init_guess=True``) fails, after stashing the result; the
+    fields are then not written (#907). ``solver.tolerate_linear_failure =
+    True`` warns and returns instead.
     """
     from underworld3.utilities.rotated_bc import solve_rotated_freeslip
 

@@ -207,9 +207,9 @@ stokes.solve()                                            # rigid-rotation gauge
 ```
 
 **Nonlinear rheology / warm-start / timestepping (PR #298, `feature/rotated-snes`):**
-rotated free-slip now works *inside* the nonlinear iteration — a nonlinearity probe
-auto-dispatches power-law / VEP / TI-with-yield models to a Newton/Picard loop
-(`solve_rotated_freeslip_nonlinear`), so warm-started time loops are correct. On the
+rotated free-slip now works *inside* the nonlinear iteration — `solve_rotated_freeslip`
+runs one Newton/Picard loop for linear and nonlinear models alike (a linear model
+converges after its first increment), so warm-started time loops are correct. On the
 worktree state *before* #298 lands, the rotated path is a SINGLE linear solve — it
 silently returns one Newton linearisation from `u=0` for a nonlinear model. If you
 run nonlinear TI + timestepping with rotated free-slip, make sure #298 is in.
