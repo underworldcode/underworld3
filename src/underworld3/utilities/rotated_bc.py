@@ -1125,7 +1125,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"reaction"`` — the converged Cartesian residual F(u), stashed as the
           constraint reaction for σ_nn recovery (for a linear residual this equals
           the assembled ``A·u − b`` exactly);
-        * ``"U"`` — the Cartesian solution;
+        * ``"U"`` — the Cartesian solution (the zero guess when ``"linear_failure"``
+          is set);
+        * ``"linear_failure"`` — ``None``, or the message the caller raises: a
+          cold start whose first linear solve failed, with no opt-out (#907). The
+          fields are then not written, and ``"rotation_gauge"`` is ``None``;
         * ``"normal_rows"`` — global rows of the constrained normal components;
         * ``"boundaries"`` — the boundary specs the rotation was built from;
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
@@ -1356,6 +1360,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         u.set(0.0)
     else:
         u = _gather_fields_to_global(solver)
+    # a zero initial guess, read before the datum is imposed on it: a failed
+    # first step would leave nothing (#907)
+    cold_start = zero_init_guess or u.norm() == 0.0
     if not lift_datum:
         _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
 
@@ -1511,9 +1518,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # reads ``snes.getConvergedReason() > 0``, so leaving it unset reports every
     # rotated solve as unconverged — including ones that converged at rel 1e-8.
     exit_reason = _SNES_DIVERGED_MAX_IT
-    # a zero initial guess: a failed first step would leave nothing (#907)
-    cold_start = u.norm() == 0.0
     linear_failure = None
+    # a failed preconditioner stays latched in the KSP (PCMG and PCREDUNDANT
+    # never reset it): a workspace that failed hard is not cached
+    failed_hard = False
     phase = "picard" if continuation else "newton"
     switch_iteration = None
     for iters in range(max_it):
@@ -1651,6 +1659,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
+        failed_hard = failed_hard or hard
         if hard:
             # A cold start with no step accepted has produced nothing: raise
             # (#907), after the normal teardown below, and leave the fields as
@@ -1658,7 +1667,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # accepted step keeps that iterate: those warn, the line search
             # rejects the failed increment, and the loop's verdict stands.
             if (cold_start and not any(a > 0 for a in line_search_alpha)
-                    and not getattr(solver, "tolerate_linear_failure", False)):
+                    and not solver.tolerate_linear_failure):
                 reason = int(ctx["ksp"].getConvergedReason())
                 from underworld3.systems.solve_report import ksp_reason_string
                 linear_failure = (
@@ -1743,7 +1752,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # The loop can exhaust max_it or stall in the line search (`not improved`) without
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
     # on divergence — so an unconverged iterate left in the fields is not silent.
-    if not converged:
+    if not converged and not linear_failure:      # a raise follows otherwise
         rel = (rnorm / (ref + 1e-300)) if ref is not None else float("nan")
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
                    f"in {newton_its} iterations (rel |F̂| = {rel:.2e} of the reference "
@@ -1778,7 +1787,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
-    if cache_allowed and ctx is not None and Ahat is not None and not use_lu:
+    if (cache_allowed and ctx is not None and Ahat is not None and not use_lu
+            and not failed_hard):
         # Persist the workspace for the next solve. The stored key describes
         # the operator values Ahat now holds; linear_hint records whether
         # this solve behaved linearly (<= 1 increment), which is what
@@ -1824,7 +1834,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "rotation_gauge_removed": removed,
             # per-mode record of the gauge decision (offered / accepted / the
             # violations that decided it) — see _finalize_rotated_solution
-            "rotation_gauge": getattr(solver, "_rotated_gauge_report", None),
+            "rotation_gauge": (None if linear_failure
+                               else getattr(solver, "_rotated_gauge_report", None)),
             "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
@@ -2483,7 +2494,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # A velocity FGMRES that exhausts its cap returns KSP_DIVERGED_ITS, which
     # KSPCheckSolve deliberately does NOT escalate — so without this it degrades
     # silently. (`preonly` could never fail, which is why the check is new.)
-    _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
+    if not ctx["hard_failure"]:     # a hard outer failure is the caller's to report
+        _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
     if verbose:
         mpi.pprint(f"[rotated_bc] velocity block = {ctx['velocity_pc']} "
                    f"(PC {ctx['velocity_pc_type']}); Schur pre = {ctx['schur_pre']}; "

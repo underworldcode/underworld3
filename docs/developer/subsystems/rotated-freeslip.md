@@ -289,18 +289,23 @@ Newton step) is *verified* against the same reference before it may report
 convergence — a stiff tangent also produces tiny steps far from the solution,
 and an unverified tiny step goes back through the line search (a slow crawl
 continues; a genuine stall ends the loop with an explicit warning). An
-unconverged exit always warns; the fields hold the last iterate.
+unconverged exit warns and leaves the last iterate in the fields, except for the
+one case that raises, below.
 
 A **cold start whose first linear solve fails** raises on every rank (#907). The
 outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can fail hard:
 a preconditioner that failed (reason −11), a breakdown, a NaN, or a residual that
-grew. On the first step of a solve from a zero guess, nothing has been produced.
+grew. On the first step of a solve from a zero guess (a warm request on zero fields
+counts, with or without a datum), nothing has been produced.
 With a preconditioner failing at iteration 0, the route used to write the zero
 guess into the fields as if it were a solution.
 
-The exception names the reason. It is raised after the result is recorded: a
-caller that catches it reads `converged = False`, the KSP reason in
+The exception names the reason. `Stokes.solve` and `fault_contact.solve_with_fault`
+(and so `FaultNetwork.solve`) raise it after the result is recorded: a caller
+that catches it reads `converged = False`, the KSP reason in
 `_rotated_freeslip_info`, and a negative SNES reason. The fields are not written.
+A workspace whose KSP failed hard is not cached: PCMG and PCREDUNDANT never reset
+a failed preconditioner's reason, so a cached one would fail every later solve.
 Set `solver.tolerate_linear_failure = True` to warn and continue instead, as the
 route used to; the fields then hold the zero guess. A cold datum lift whose solve
 failed is not applied.

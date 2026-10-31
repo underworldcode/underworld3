@@ -518,6 +518,8 @@ def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
         solver, list(getattr(solver, "_rotated_freeslip_bcs", [])),
         verbose=verbose, zero_init_guess=zero_init_guess, picard=picard)
     solver._rotated_freeslip_info = info
+    if info["linear_failure"]:      # a cold first step that failed (#907)
+        raise RuntimeError(info["linear_failure"])
     return info
 
 
