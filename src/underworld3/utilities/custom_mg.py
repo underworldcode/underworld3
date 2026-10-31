@@ -1084,10 +1084,11 @@ class GamgCoarseSolve:
     attached as the null space and projected out of the right-hand side and
     the solution.
 
-    Measured (shell and annulus with 600-cell bottom levels, np 4): the answer
-    and the outer iterations are a gathered LU's, at 4-10x its coarse cost.
-    That cost is GAMG's own 15 to 40 cycles per coarse solve; its base is at
-    most 6% of it.
+    Measured at np 4 on a 614-cell shell bottom level (2900 rows) and a 600-cell
+    annulus one (2400 rows): the answer and the outer iterations are a gathered
+    LU's. At this rtol the coarse work is 4x a gathered LU's on the shell (14.6
+    GAMG cycles per coarse solve) and 1.7x on the annulus (3.9); at rtol 1e-6,
+    10x and 38 cycles. GAMG's base is at most 6% of it.
     """
 
     def __init__(self, mg_pc, near_null, null=None, rtol=1.0e-2, max_it=50):
@@ -1126,11 +1127,13 @@ class GamgCoarseSolve:
                     "mg_coarse_redundant_pc_factor_shift_type": "nonzero"}
             for k, v in base.items():
                 opts[prefix + k] = v
-            self.inner.setFromOptions()
-            self.inner.setOperators(A)
-            self.inner.setUp()
-            for k in base:
-                opts.delValue(prefix + k)
+            try:
+                self.inner.setFromOptions()
+                self.inner.setOperators(A)
+                self.inner.setUp()
+            finally:
+                for k in base:
+                    opts.delValue(prefix + k)
         else:
             self.inner.setOperators(A)
             self.inner.setUp()
@@ -1353,7 +1356,7 @@ def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
     interpolation from the DM hierarchy."""
     nlev = len(Ps) + 1
     pfx = solver._pc_option_prefix or ""
-    coarse = registered_coarse_solve(solver) or "redundant"
+    coarse = _registered_coarse_solve(solver) or "redundant"
 
     if pfx == "":
         ksp = solver.snes.getKSP()
@@ -1388,7 +1391,7 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False,
     the SNES / DM exist but the Jacobian VALUES are not yet assembled."""
     snes = solver.snes
     snes.setUp()
-    coarse = registered_coarse_solve(solver) or "redundant"
+    coarse = _registered_coarse_solve(solver) or "redundant"
 
     # 1. force monolithic Jacobian assembly so the fieldsplit can form A_vv
     x0 = solver.dm.getGlobalVec()
@@ -2057,7 +2060,7 @@ class _DMLevelView:
 # --------------------------------------------------------------------------- #
 #  Entry points
 # --------------------------------------------------------------------------- #
-def registered_coarse_solve(solver):
+def _registered_coarse_solve(solver):
     """The coarse solve asked for with ``set_custom_fmg(..., coarse_solve=)``:
     ``"gamg"``, or ``None`` for the automatic choice."""
     reg = getattr(solver, "_custom_mg", None)
@@ -2110,8 +2113,9 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     ``coarse_solve="gamg"`` makes the coarse level a GAMG solve
     (:class:`GamgCoarseSolve`) instead of the gathered direct solve. Use it
     only when the coarsest mesh that can be built is too large for every rank
-    to factor: it costs 4-10x a gathered LU where both fit, at the same
-    answer. ``None`` (the default) keeps the automatic choice."""
+    to factor: where both fit it costs 1.7-4x a gathered LU's coarse work
+    (measured at np 4 on 600-cell bottom levels), at the same answer. ``None``
+    (the default) keeps the gathered LU."""
     if coarse_solve not in (None, "gamg"):
         raise ValueError(f"coarse_solve must be None or 'gamg' (got {coarse_solve!r})")
     solver._custom_mg = {

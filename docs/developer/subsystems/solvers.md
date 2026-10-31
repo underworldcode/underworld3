@@ -603,15 +603,14 @@ block inherits the rigid rotations the constraint leaves (a closed circle: one
 mode; a spherical shell: three), but only nearly: it is near-singular, not
 singular, on every hierarchy measured, and the shared redundant LU solves it at
 the SVD's iteration counts and answer. The rotated route adds a nonzero factor
-shift (`mg_coarse_redundant_pc_factor_shift_type nonzero`, set while the
-multigrid is set up), which acts only on an exact zero pivot (#901).
+shift, set on the live coarse PC after the multigrid set-up, which acts only on an
+exact zero pivot (#901).
 
-The route used `geometric_mg_bundle(coarse="svd")` until then (#306). That
-variant remains, O(n^3) on every rank: 64 s at np 1 and 102 s at np 4 to factor
-a 614-cell shell bottom level. No route selects it. `coarse="gamg"` is a
-distributed coarse solve, only when asked for. All are named variants of the
-shared bundle, not call-site overrides, so they are visible in the same place as
-everything else.
+The route used a dense SVD coarse solve until then (#306), O(n^3) on every
+rank: 64 s at np 1 and 102 s at np 4 to factor a 614-cell shell bottom level.
+That variant is gone. `coarse="gamg"` is a distributed coarse solve, only when
+asked for. Both are named variants of the shared bundle, not call-site
+overrides, so they are visible in the same place as everything else.
 
 The other native/custom-P asymmetry — that native FMG is unusable for
 single-field solvers because `DMCreateInjection` cannot reliably be built on a

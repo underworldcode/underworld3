@@ -80,9 +80,8 @@ def _user_owns(opts, name, owned):
 
 #: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
 #: is the default and is np-safe; ``"gamg"`` is a distributed coarse solve, only
-#: when asked for; ``"svd"`` tolerates a null space at O(n^3) on every rank, and
-#: no route selects it — see :func:`geometric_mg_bundle`.
-GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd", "gamg")
+#: when asked for — see :func:`geometric_mg_bundle`.
+GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "gamg")
 
 #: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
@@ -170,6 +169,8 @@ def describe(settings, levels=None, overridden=()):
         coarse = settings.get("mg_coarse_pc_type", "?")
         if coarse == "redundant":
             coarse += f"/{settings.get('mg_coarse_redundant_pc_type', '?')}"
+        elif coarse == "python":           # the asked-for GAMG coarse solve
+            coarse = "gamg"
         text = f"{what}, {cycle} cycle, smoother {smoother}, coarse {coarse}"
     elif pc == "gamg":
         text = (f"algebraic multigrid (gamg/{settings.get('pc_gamg_type', '?')}), "
@@ -299,13 +300,6 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # small-np users.
         settings["mg_coarse_pc_type"] = "redundant"
         settings["mg_coarse_redundant_pc_type"] = "lu"
-    elif coarse == "svd":
-        # A dense SVD of the gathered coarse matrix: it tolerates a null space,
-        # at O(n^3) on every rank. The rotated route used it while its coarse
-        # operator was taken to inherit the rigid rotations exactly; it is
-        # near-singular instead, and that route now uses redundant LU with a
-        # zero-pivot shift (#901). No route selects it.
-        settings["mg_coarse_pc_type"] = "svd"
     elif coarse == "gamg":
         # GAMG as the coarse solve, only when asked for: a bottom level too
         # large for every rank to factor. The caller installs
@@ -396,12 +390,11 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
         Which of the two MEASURED regimes to configure. ``"robust"`` is
         ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
         ``solver.strategy``, not usually here.
-    coarse : {"redundant", "svd", "gamg"}
+    coarse : {"redundant", "gamg"}
         The coarse-level solve. ``"redundant"`` (redundant+LU) is the default,
         the rotated route's included (it adds a zero-pivot shift). ``"gamg"``
         is a distributed coarse solve for a bottom level too large to gather
-        (the caller installs ``custom_mg.GamgCoarseSolve``). ``"svd"``
-        tolerates a null space at O(n^3) on every rank.
+        (the caller installs ``custom_mg.GamgCoarseSolve``).
 
     Returns
     -------

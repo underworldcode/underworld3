@@ -210,7 +210,8 @@ A **rotated** velocity block whose domain leaves rigid rotations free — a clos
 circle (one mode), a spherical shell with the radial normal (three) — hands those
 modes to the Galerkin-coarsened coarse operator. They arrive nearly, not exactly:
 on every hierarchy measured, the coarse operator is near-singular
-(lambda_min/lambda_max 2e-5 to 2e-8), and the same redundant LU as everywhere
+(lambda_min/lambda_max 2.0e-5 to 2.4e-8 on an annulus, 2.8e-4 on a spherical
+shell), and the same redundant LU as everywhere
 else gives a dense SVD's answer at the same iteration counts. The rotated path
 adds a nonzero factor shift, which acts only on an exact zero pivot: a coarse
 level that is singular, such as one that is the fine mesh itself (#901).
@@ -244,16 +245,20 @@ custom_mg.set_custom_fmg(stokes, coarse_meshes, field_id=0, coarse_solve="gamg")
 
 The coarse level then runs FGMRES to a relative tolerance of 1e-2, with GAMG on
 the Galerkin coarse operator and a redundant LU at GAMG's own, much smaller,
-base. The coarse solve stays distributed. GAMG is given the rigid-body modes as
-its near-null space: the translations and rotations, carried into the wall
-frame on the rotated route. It is given the verified rotations, where they
-exist, as an exact null space.
+base. The coarse solve stays distributed. On the rotated saddle route and the
+standard Stokes route, GAMG is given the rigid-body modes as its near-null
+space: the translations and rotations, carried into the wall frame on the
+rotated route. The rotated thin-sheet route and single-field solvers leave GAMG
+its own. GAMG is given the verified rotations, where they exist, as an exact
+null space.
 
-The answer is unchanged, and so are the outer iterations. The cost is not:
-measured on 600-cell bottom levels (an annulus and a spherical shell, np 4), the
-coarse work is 4 to 10 times a gathered LU's. That comes from GAMG's own 15 to 40
-cycles per coarse solve. Its base costs at most 6% of it (#901). So it is never
-chosen automatically. Ask for it only when the gathered factorisation no longer
+The answer is unchanged, and so are the outer iterations. The cost is not. It
+was measured at np 4 on 600-cell bottom levels: a spherical shell (2900 coarse
+rows) and an annulus (2400). The coarse work is 4 times a gathered LU's on the
+shell and 1.7 times on the annulus. That comes from GAMG's own 14.6 and 3.9
+cycles per coarse solve; its base costs at most 6% of it (#901). (At a coarse
+tolerance of 1e-6 the shell takes 38 cycles and 10 times the work.) So it is
+never chosen automatically. Ask for it only when the gathered factorisation no longer
 fits, and prefer a coarser bottom level wherever the geometry allows one.
 
 ### Overriding the coarse solve yourself

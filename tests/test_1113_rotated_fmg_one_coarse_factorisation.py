@@ -8,10 +8,12 @@ its first application inside ``ksp.solve``. A coarse solve that factors at
 setup paid that factorisation twice per solve: a dense SVD does, so half of
 the SVD time quoted in #901 was this second factorisation.
 
-Level 0 is not smoothed by SOR, and its direct solve factors its own gathered
-copy, so it is left out of the loop. Contract: one linear rotated solve sets
-the coarse PC up exactly once. The test observes it by putting a counting
-python PC, which delegates to redundant LU, on the coarse level.
+Level 0 is not smoothed by SOR, so it is left out of the loop. Its LU then
+keeps the inode kernel at every np. At np > 1 it factors a gathered copy, which
+always had inodes on; at np 1 it factors the level operator itself, which lost
+them before. Contract: one linear rotated solve sets the coarse PC up exactly
+once. The test observes it by putting a counting python PC, which delegates to
+redundant LU, on the coarse level.
 """
 import pytest
 import sympy

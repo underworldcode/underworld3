@@ -23,6 +23,7 @@ GAMG (#467).
 """
 import pytest
 import sympy
+from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.utilities import custom_mg, multigrid_options, rotated_bc
@@ -262,7 +263,7 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     assert rotated["coarse_pc"] == "redundant"
 
 
-def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch):
+def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_path):
     """Rotated free-slip on BOTH annulus boundaries leaves the rigid rotation
     as a genuine null mode, and the null-space builder must verify and record
     it. The coarse solve stays redundant LU (#901): the inherited rotation
@@ -295,15 +296,22 @@ def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch):
         result = real_solve(solver, Ahat, bhat, Q, Qt, normal_rows, **kw)
         captured.setdefault("config", _mg_config(
             result[2]["pc"].getFieldSplitSubKSP()[0].getPC()))
+        captured.setdefault("vel_pc", result[2]["pc"].getFieldSplitSubKSP()[0].getPC())
         return result
 
     monkeypatch.setattr(rotated_bc, "_solve_rotated_iterative", capture)
     s.solve()
     assert s._rotated_velocity_null_modes == 1, (
-        "the free-slip annulus rotation mode was not verified/recorded — "
-        "the gate would silently choose the zero-pivot coarse solve")
+        "the free-slip annulus rotation mode was not verified/recorded, so "
+        "the rotation would not be removed from the answer")
     assert captured["config"]["coarse_pc"] == "redundant"
     assert s._rotated_freeslip_info["coarse_solve"] == "redundant"
+    # and its LU carries the zero-pivot shift, read off the live KSP's view
+    path = tmp_path / "coarse_ksp.txt"
+    viewer = PETSc.Viewer().createASCII(str(path), comm=PETSc.COMM_WORLD)
+    captured["vel_pc"].getMGCoarseSolve().view(viewer)
+    viewer.destroy()
+    assert "[NONZERO]" in path.read_text()
 
 
 def test_rotated_picks_up_a_mesh_owned_hierarchy():

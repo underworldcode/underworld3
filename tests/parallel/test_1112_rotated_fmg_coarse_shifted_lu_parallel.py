@@ -12,18 +12,31 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from petsc4py import PETSc
 from underworld3.utilities import custom_mg
+
+from serial_reference import mesh_fingerprint
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(600)]
 
-# The SVD path's answer on this fixture (development fc67b650, np 2); the
-# partition moves it at the solver tolerance only.
+# The SVD path's answer on this fixture (development fc67b650, np 2), and the
+# fingerprint (owned cells, volume) of the gmsh mesh it was recorded on; the
+# partition moves the answer at the solver tolerance only.
 VRMS = 4.7900648436
 RTOL = 1.0e-8
+FINGERPRINT = (640, 2.3561872025)
 
 
-def test_the_coarse_solve_is_shifted_lu_in_parallel():
+def test_the_coarse_solve_is_shifted_lu_in_parallel(monkeypatch, tmp_path):
+    seen = {}
+    configure = custom_mg._configure_pcmg
+
+    def configure_seen(pc, Ps, **kw):
+        seen["pc"] = pc
+        return configure(pc, Ps, **kw)
+
+    monkeypatch.setattr(custom_mg, "_configure_pcmg", configure_seen)
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.4,
                               refinement=2, qdegree=3)
     v = uw.discretisation.MeshVariable("V1112", mesh, 2, degree=2)
@@ -47,6 +60,18 @@ def test_the_coarse_solve_is_shifted_lu_in_parallel():
     assert info["converged"] and info["velocity_pc"] == "custom-FMG", info
     assert stokes._rotated_velocity_null_modes == 1
     assert info["coarse_solve"] == "redundant", info.get("coarse_solve")
+    # the NONZERO factor shift on the live coarse LU, read off its view (one
+    # file, named by rank 0)
+    path = uw.mpi.comm.bcast(str(tmp_path / "coarse_ksp.txt"), root=0)
+    viewer = PETSc.Viewer().createASCII(path, comm=PETSc.COMM_WORLD)
+    seen["pc"].getMGCoarseSolve().view(viewer)
+    viewer.destroy()
+    uw.mpi.barrier()
+    assert "[NONZERO]" in open(path).read()
     vol = float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate())
     vrms = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate() / vol))
+    cells, volume = mesh_fingerprint(mesh)
+    if cells != FINGERPRINT[0] or abs(volume - FINGERPRINT[1]) > 1.0e-9:
+        pytest.skip(f"this host's gmsh built a different mesh ({cells}, {volume:.10f}; "
+                    f"recorded {FINGERPRINT}): the recorded answer does not apply")
     assert abs(vrms - VRMS) <= RTOL * VRMS, vrms

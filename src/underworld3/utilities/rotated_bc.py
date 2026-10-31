@@ -1954,8 +1954,8 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
         # with no major symmetry rather than leaving it as an argument.
         #
         # _rotated_nullspace records its mode count on the SOLVER, where the
-        # forward path reads it to choose a coarse solve. An adjoint must not
-        # change what the next forward solve does, so put it back below.
+        # forward solve reports it. An adjoint must not change what the next
+        # forward solve reports, so put it back below.
         null_modes_before = getattr(solver, "_rotated_velocity_null_modes", None)
         nsp = _rotated_nullspace(solver, Q, normal_rows)
         # The prolongation depends only on Q and the mesh hierarchy, so the
@@ -2295,8 +2295,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # block inherits the rigid rotations the constraint leaves (a
                 # closed circle: one; a spherical shell: three), but only
                 # nearly: on every hierarchy measured it is near-singular, not
-                # singular (lambda_min/lambda_max 2e-5 to 2e-8), and plain LU
-                # gives the SVD's answer at its iteration counts. The shift
+                # singular (lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the
+                # annulus, 2.8e-4 on the shell), and plain LU gives the SVD's
+                # answer at its iteration counts. The shift
                 # acts only on an exact zero pivot, the case behind #306 (a
                 # coarse level that is the fine operator itself), and gives
                 # the SVD's answer there too. It replaced a dense SVD of the
@@ -2304,7 +2305,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # at np 4 to factor a 614-cell shell bottom level). GAMG on
                 # the coarse level only when asked for, for a bottom level too
                 # large to gather (set_custom_fmg(coarse_solve="gamg")).
-                _gamg = custom_mg.registered_coarse_solve(solver) == "gamg"
+                _gamg = custom_mg._registered_coarse_solve(solver) == "gamg"
                 _coarse = "gamg" if _gamg else "redundant"
                 _modes = _velocity_null_modes(nsp, vel_is) if _gamg else []
                 _near = (_rotated_rigid_body_modes(solver, Q, normal_rows, vel_is)
@@ -2321,9 +2322,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     null_modes=_modes, near_null=_near)
                 for _m in _modes + _near:
                     _m.destroy()
-                _shift_key = (_coarse_zero_pivot_shift(vel_pc)
-                              if _coarse == "redundant" else None)
                 vel_pc.setUp()
+                if _coarse == "redundant":
+                    _shift_coarse_zero_pivot(vel_pc)
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
                     # row beside the two-row nodes, and the inode SOR's 2x2
@@ -2333,10 +2334,13 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     # every scalar diagonal healthy; without the inode
                     # grouping the same solve converged in 9 iterations to
                     # the two-rank answer. The finest operator is untouched,
-                    # and so is level 0: it is not smoothed by SOR, its direct
-                    # solve factors its own gathered copy, and re-assembling it
-                    # here moved its state, so the coarse PC was set up and
-                    # factored a second time at its first application (#901).
+                    # and so is level 0, which is not smoothed by SOR:
+                    # re-assembling it here moved its state, so the coarse PC
+                    # was set up a second time at its first application, and
+                    # an SVD was factored twice (#901). Its LU keeps the
+                    # inode kernel at every np now; it had it at np > 1 already,
+                    # where it factors a gathered copy, and lost it only at
+                    # np 1, where it factors this operator.
                     for _l in range(1, vel_pc.getMGLevels() - 1):
                         _A = vel_pc.getMGSmoother(_l).getOperators()[0]
                         _A.setOption(PETSc.Mat.Option.USE_INODES, False)
@@ -2362,8 +2366,6 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     vopts.delValue(vpfx + key)
                 for key in _fac_keys or ():
                     vopts.delValue(vpfx + key)
-                if _shift_key:
-                    vopts.delValue(_shift_key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -2497,7 +2499,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                 # route; asked-for GAMG takes its own near-null space here
                 # (this route has no frame rotation to carry the rigid-body
                 # modes) and the verified rotations as its null space
-                _gamg = custom_mg.registered_coarse_solve(solver) == "gamg"
+                _gamg = custom_mg._registered_coarse_solve(solver) == "gamg"
                 _coarse = "gamg" if _gamg else "redundant"
                 _modes = _velocity_null_modes(nsp) if _gamg else []
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
@@ -2508,9 +2510,9 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                     null_modes=_modes)
                 for _m in _modes:
                     _m.destroy()
-                _shift_key = (_coarse_zero_pivot_shift(pc)
-                              if _coarse == "redundant" else None)
                 pc.setUp()
+                if _coarse == "redundant":
+                    _shift_coarse_zero_pivot(pc)
                 for _l in range(1, pc.getMGLevels()):
                     if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
                                          for k in _fac_keys):
@@ -2522,8 +2524,6 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                     opts.delValue(vpfx + key)
                 for key in _fac_keys or ():
                     opts.delValue(vpfx + key)
-                if _shift_key:
-                    opts.delValue(_shift_key)
             else:
                 pc.setUp()
         finally:
@@ -2563,16 +2563,12 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     return Uhat, ksp.getConvergedReason(), ctx
 
 
-def _coarse_zero_pivot_shift(mg_pc):
-    """Ask for a nonzero factor shift on the redundant LU at ``mg_pc``'s coarse
-    level, and return the options key, which the caller drops after the set-up
-    (#901). The shift acts only on an exact zero pivot. PCREDUNDANT reads its
-    LU's options when the multigrid sets the coarse level up, and it factors at
-    the first application, so the key must be in place before
-    ``mg_pc.setUp()``."""
-    key = (mg_pc.getOptionsPrefix() or "") + "mg_coarse_redundant_pc_factor_shift_type"
-    PETSc.Options()[key] = "nonzero"
-    return key
+def _shift_coarse_zero_pivot(mg_pc):
+    """Give the redundant LU at ``mg_pc``'s coarse level a nonzero factor shift,
+    which acts only on an exact zero pivot (#901). Set on the live PC after
+    ``mg_pc.setUp()``: PCREDUNDANT passes it to its inner LU, which factors at
+    the first application, and no options key is left to clean up."""
+    mg_pc.getMGCoarseSolve().getPC().setFactorShift(PETSc.Mat.FactorShiftType.NONZERO)
 
 
 def _rotated_rigid_body_modes(solver, Q, normal_rows, vel_is):
@@ -2943,6 +2939,18 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     return write_boundary_scalar_field(solver, field, hmap, dim)
 
 
+def _rigid_rotation_fields(c, cdim):
+    """The rigid rotations at the points ``c``: ``[(-y,x)]`` in 2D, ``[e_k×r]``
+    for k=x,y,z in 3D."""
+    if cdim == 2:
+        return [np.column_stack([-c[:, 1], c[:, 0]])]
+    x, y, z = c[:, 0], c[:, 1], c[:, 2]
+    zero = np.zeros_like(x)
+    return [np.column_stack([zero, -z, y]),      # e_x × r
+            np.column_stack([z, zero, -x]),      # e_y × r
+            np.column_stack([-y, x, zero])]      # e_z × r
+
+
 def _rigid_rotation_modes(solver):
     """The Cartesian rigid-body rotation mode(s) as composite GLOBAL vectors
     (velocity DOFs only, zero pressure): ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
@@ -2952,19 +2960,8 @@ def _rigid_rotation_modes(solver):
     shared nodes are handled by PETSc, not double-counted. The vectors are
     borrowed from the DM pool — every one must go back via
     ``dm.restoreGlobalVec``. COLLECTIVE: all ranks build the same mode list."""
-    dm = solver.dm
     v = solver.Unknowns.u
-    c = v.coords
-    saved = v.data.copy()
-    if solver.mesh.cdim == 2:
-        fields = [np.column_stack([-c[:, 1], c[:, 0]])]
-    else:
-        x, y, z = c[:, 0], c[:, 1], c[:, 2]
-        zero = np.zeros_like(x)
-        fields = [np.column_stack([zero, -z, y]),      # e_x × r
-                  np.column_stack([z, zero, -x]),      # e_y × r
-                  np.column_stack([-y, x, zero])]      # e_z × r
-    return _velocity_field_modes(solver, fields, saved)
+    return _velocity_field_modes(solver, _rigid_rotation_fields(v.coords, solver.mesh.cdim))
 
 
 def _rigid_body_modes(solver):
@@ -2974,38 +2971,31 @@ def _rigid_body_modes(solver):
     :func:`_rigid_rotation_modes`. COLLECTIVE."""
     v = solver.Unknowns.u
     c = v.coords
-    saved = v.data.copy()
-    dim = solver.mesh.cdim
-    fields = []
-    for k in range(dim):
-        t = np.zeros_like(c[:, :dim])
+    cdim = solver.mesh.cdim
+    translations = []
+    for k in range(cdim):
+        t = np.zeros((c.shape[0], cdim))
         t[:, k] = 1.0
-        fields.append(t)
-    if dim == 2:
-        fields.append(np.column_stack([-c[:, 1], c[:, 0]]))
-    else:
-        x, y, z = c[:, 0], c[:, 1], c[:, 2]
-        zero = np.zeros_like(x)
-        fields += [np.column_stack([zero, -z, y]), np.column_stack([z, zero, -x]),
-                   np.column_stack([-y, x, zero])]
-    return _velocity_field_modes(solver, fields, saved)
+        translations.append(t)
+    return _velocity_field_modes(solver, translations + _rigid_rotation_fields(c, cdim))
 
 
-def _velocity_field_modes(solver, fields, saved):
+def _velocity_field_modes(solver, fields):
     """Each nodal velocity field in ``fields`` as a composite global vector,
-    through localToGlobal on the velocity sub-DM; the velocity variable's data
-    is restored to ``saved`` afterwards."""
+    through localToGlobal on the velocity sub-DM. The velocity variable is set
+    to each field in turn and restored after."""
     dm = solver.dm
     v = solver.Unknowns.u
     vis = solver._subdict["velocity"][0]
+    saved = np.array(v.array, copy=True)
     modes = []
     for f in fields:
-        v.data[...] = f
+        v.array[...] = f.reshape(saved.shape)
         tg = dm.getGlobalVec()
         tg.set(0.0)
         sg = tg.getSubVector(vis)
         solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
         tg.restoreSubVector(vis, sg)
         modes.append(tg)
-    v.data[...] = saved
+    v.array[...] = saved
     return modes

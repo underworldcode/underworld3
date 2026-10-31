@@ -199,13 +199,13 @@ coarse solve is the same redundant LU, with one addition: a nonzero factor
 shift, which acts only on an exact zero pivot (#901).
 
 When the constraint leaves verified rigid rotations, the Galerkin-coarsened
-rotated block inherits them, but only nearly. On every hierarchy measured (the
-annulus at 40 to 600 bottom cells, the spherical shell, a faulted annulus with
-rotated coarse levels), the coarse operator is near-singular, not singular:
-lambda_min/lambda_max is 2e-5 to 2e-8. Plain LU gives the SVD's answer at its
-iteration counts there. The shift is for the singular case, a coarse level that
-is the fine operator itself (#306's situation, test_1111), where it gives the
-SVD's answer too.
+rotated block inherits them, but only nearly: the coarse operator is
+near-singular, not singular. lambda_min/lambda_max is 2.0e-5 to 2.4e-8 on the
+annulus with 40 to 600 bottom cells, and 2.8e-4 on the spherical shell. Plain LU
+gives the SVD's answer at its iteration counts there, and also on a faulted
+annulus with rotated coarse levels (ratio not measured). The shift is for the
+singular case, a coarse level that is the fine operator itself (#306's
+situation, test_1111), where it gives the SVD's answer too.
 
 This replaced a dense SVD of the gathered matrix, which cost O(n^3) on every
 rank and got slower with more ranks: one factorisation of a 614-cell shell
