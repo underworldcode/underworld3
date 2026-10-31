@@ -3,6 +3,7 @@ with the mesh itself last: the coarse tail it owns (an adapt child's), or else i
 refinement or coarsening hierarchy."""
 import numpy as np
 import pytest
+from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.utilities.custom_mg import _is_native_refine_pair
@@ -71,6 +72,9 @@ def test_a_mesh_without_a_hierarchy_is_its_own_level():
 
 
 @pytest.mark.tier_b
+@pytest.mark.skipif(not PETSc.Sys.hasExternalPackage("mmg"),
+                    reason="PETSc coarsens a mesh through mmg, which this PETSc lacks "
+                    "(conda-forge's build)")
 @pytest.mark.skipif(uw.mpi.size > 1, reason="PETSc coarsens a distributed 2-D mesh "
                     "through ParMmg, which is 3-D only")
 def test_a_coarsening_hierarchy():
