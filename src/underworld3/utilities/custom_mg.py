@@ -757,6 +757,22 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
+def _strip_block(rows, node_of_row, coords, width):
+    """TODO(MEASURE): probe knob (iterative FAC patch, 2026-11). The rows cut
+    along strike into strips ``width`` long, the strike being the principal
+    direction of their nodes: at the rung spacing, one rung line per block, in
+    place of :func:`_segment_block`'s pieces of a fixed row count."""
+    rows = np.asarray(rows, dtype=np.int64)
+    uniq, inv = np.unique(np.asarray(node_of_row, dtype=np.int64),
+                          return_inverse=True)
+    P = np.asarray(coords)[uniq]
+    c0 = P - P.mean(axis=0)
+    _u, _s, Vt = np.linalg.svd(c0, full_matrices=False)
+    along = c0 @ Vt[0]
+    strip = np.floor((along - along.min()) / float(width)).astype(np.int64)
+    return [rows[strip[inv] == k] for k in np.unique(strip)]
+
+
 def _segmented_structural_patch(split, node_of_row, coords, max_rows, cut):
     """The structural patch ``split = (owned, subdomain)`` as ASM blocks.
 
@@ -770,9 +786,13 @@ def _segmented_structural_patch(split, node_of_row, coords, max_rows, cut):
     ``node_of_row`` gives the node of each subdomain row. Returns the pair
     unchanged, or a list of ``(piece, piece)`` blocks."""
     _owned, sub = split
-    if not (cut or os.environ.get("UW_FAC_SEGMENT_STRUCTURAL")):
+    # TODO(MEASURE): UW_FAC_STRIP_WIDTH (a length) cuts the patch into strips
+    # along strike instead (the iterative-patch probe, 2026-11)
+    width = os.environ.get("UW_FAC_STRIP_WIDTH")
+    if not (cut or os.environ.get("UW_FAC_SEGMENT_STRUCTURAL") or width):
         return split
-    pieces = [p for p in _segment_block(sub, node_of_row, coords, max_rows)
+    pieces = [p for p in (_strip_block(sub, node_of_row, coords, width) if width
+                          else _segment_block(sub, node_of_row, coords, max_rows))
               if p.size]
     if len(pieces) <= 1:
         return split
