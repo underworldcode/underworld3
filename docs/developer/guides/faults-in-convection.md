@@ -66,7 +66,8 @@ iterations on the same states. It stays in the drivers as the measured alternati
 for the case where the LU patch is unavailable or its block too large (the block grows
 with the band's rows; 3-D is not measured). On the production faulted annulus at
 np 16 (kaiju, `development` 25d62812, steps from a TAf checkpoint; the welded arm with
-a 3584-row patch on one rank, the chain with none) the two tails do the same velocity
+a 3584-row patch on the one rank the default gather placement gives the band to, the
+chain with none) the two tails do the same velocity
 work, 8.65 against 8.74 F-cycles per solve, in the same Stokes time within the ±10 %
 run-to-run spread, with the same Newton counts and answers; the box's gain does not
 show there because that model's band ratio is 3.9, below the smallest ratio in the

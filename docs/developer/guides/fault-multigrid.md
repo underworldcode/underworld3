@@ -174,23 +174,35 @@ The base and its coarse levels are balanced at every rank count and nothing in
 the fault machinery touches them. The imbalance is in the add-on levels, in two
 parts, in this order of size:
 
-1. **The add-on child inherits the base's partition.** Every refined cell stays
-   on the rank that owned the cell it came from, so the ranks under the band
-   collect most of the new cells. On a 26,000-cell box at 16 ranks the base
+1. **An adapt-and-cut child inherits the base's partition.** Every refined cell
+   stays on the rank that owned the cell it came from, so the ranks under the
+   band collect most of the new cells. On a 26,000-cell box at 16 ranks the base
    puts about 930 cells on each rank and the child puts 6,800 on one. This
-   exists before any fault is split, and the base is not the fix.
-2. **The fault's cell star is gathered onto one rank**, the contact design's
-   accepted trade: extra load on the owning rank for no communication inside
-   the contact solve. A network's faults go to different ranks region by
-   region, so the cost is a few stars per rank rather than all on one. Measured
-   on the production annulus at np 16 (`development` 25d62812, kaiju's budget):
-   the whole finest-level patch, 3584 rows, sits on the one rank whose partition
-   holds the fault, and its LU solve runs there for 21 to 28 s a step while the
-   other 15 ranks wait, 5 to 6 % of the Stokes solve. The structural patch is one
-   block per rank with no row cap (the 2000-row cap, `fac_block_rows`, cuts only
-   the blocks built from `fac_zone` masks), which is the measured 2-D choice;
-   the share grows with the rank count or with several faults in one partition,
-   and is what #895 tracks.
+   exists before any fault is split, and the base is not the fix. The placement
+   route does not have this term: at np > 1 `place_fault_ribbon_2d` first runs
+   `addon_partition.partition_addon`, which moves the add-on once, before any
+   surgery, and balances the load to within 10 %.
+2. **The band, its split pairs and the FAC patch are on one rank by
+   construction.** That is what the default placement, `seams="gather"`, does:
+   `partition_addon` gives the band's region to one rank and moves cells far
+   from the fault to balance the rest, and the band is then placed and split on
+   that rank, at any rank count. It is the contact design's accepted trade,
+   extra load on the owning rank for no communication inside the contact solve,
+   and a network's faults go to different ranks region by region, so the cost is
+   a few bands per rank rather than all on one. Measured on the production
+   annulus at np 16 (`development` 25d62812, kaiju's budget): the finest-level
+   patch, 3584 rows at fault depth 0.15 and 7010 rows at 0.45, each time all on
+   one rank of 16, and its LU solve runs there for 21 to 28 s a step while the
+   other 15 ranks wait, 5 to 6 % of the Stokes solve. That cost comes from the
+   gather placement, not from the welded tail. `seams="conform"` (#670) meshes
+   the band through the partition boundaries with nothing moved and would divide
+   the patch into one block per rank; it needs `mesher="network"` (the ladder
+   takes only `"gather"`), it has never run in these models, and whether the
+   iteration count holds with the patch divided among ranks is not measured.
+   The structural patch is one block per rank with no row cap (the 2000-row
+   cap, `fac_block_rows`, cuts only the blocks built from `fac_zone` masks),
+   the measured 2-D choice; the share grows with the rank count or with several
+   faults in one partition, and is what #895 tracks.
 
 With a band of area fraction $f$ refined $k$ halvings on $P$ ranks, for a fault
 of length $L$ in a domain of width $D$, the busiest rank sits roughly
@@ -200,9 +212,11 @@ base toward the fault corridor at construction when more is needed, since the
 base is partitioned once for what it holds. Measured on the toy, the solve
 stops scaling at 8 ranks because every smoother sweep waits for the rank that
 holds the band; a plate-scale model puts the cap higher, but it is a cap, and it
-is set by the add-on's inherited partition. Partitioning the add-on levels for
-themselves, star-weighted, is the planned fix; rebalancing the base has been
-proposed twice and ruled out twice.
+is set by whichever rank holds the band: the inherited partition on the
+adapt-and-cut route, the gather placement's choice on the placement route.
+`partition_addon` is the add-on levels partitioned for themselves; what remains
+is the serial band on its rank, and dividing it (`seams="conform"`) is
+unmeasured. Rebalancing the base has been proposed twice and ruled out twice.
 
 ## The split-level hierarchy: merged, and now the alternative
 
