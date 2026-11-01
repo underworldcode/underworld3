@@ -180,8 +180,13 @@ parts, in this order of size:
    puts about 930 cells on each rank and the child puts 6,800 on one. This
    exists before any fault is split, and the base is not the fix. The placement
    route does not have this term: at np > 1 `place_fault_ribbon_2d` first runs
-   `addon_partition.partition_addon`, which moves the add-on once, before any
-   surgery, and balances the load to within 10 %.
+   `addon_partition.partition_addon`, which redistributes a *copy* of the
+   base's finest grid (a cloned DM, distributed by a shell partition) once,
+   before any surgery, and balances its load to within 10 %. The base's DM and
+   its coarse levels are read, never written; the coarse levels under the
+   faulted mesh are the base's own level objects on the base's partition, and
+   the one pair that crosses partitions, the base's finest level against the
+   faulted mesh, is transferred through the provenance the move records.
 2. **The band, its split pairs and the FAC patch are on one rank by
    construction.** That is what the default placement, `seams="gather"`, does:
    `partition_addon` gives the band's region to one rank and moves cells far
