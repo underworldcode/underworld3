@@ -102,14 +102,14 @@ the slip unchanged. The chain of split ladders (the same ladder at $2S$ placed i
 copy of the base's finest level and at $4S$ into a copy of the level below, each split
 along its rungs, the band widening with the level) is the measured alternative and
 not the production tail: its levels never carry the patch, and on the same states it
-takes 83 to 166 and 28 to 76. The ruling's condition, confirmation on the production
-annulus at np 16, is met (kaiju, `development` 25d62812, four steps from a TAf
-checkpoint): the welded base takes 5.9 velocity iterations per Newton increment
-against the chain's 7.7, with the same Newton counts, vrms to 2e-6 and slip to 1 in
-6000; the margin is smaller than on the fixtures because both arms carry the same
-finest patch and only the coarse levels differ. The chain stays driver code
-(`uw_chain`), whose default moves to 0 as the campaign builds move to `development`;
-whether split coarse levels remain a library option is not decided. The adapt-and-cut route is the automated one and the
+takes 83 to 166 and 28 to 76. On the production annulus at np 16 (kaiju,
+`development` 25d62812, steps from a TAf checkpoint) the two tails do the same
+velocity work, 8.65 against 8.74 F-cycles per solve, in the same time within the
+run-to-run spread, with the same Newton counts and answers; the welded arm carries a
+3584-row patch on one rank and the chain none. The welded tail is no worse there and
+has one hierarchy fewer to build, so the drivers' `uw_chain` default moves to 0 as the
+campaign builds move to `development`. Why the annulus shows none of the box's gain is
+open. Whether split coarse levels remain a library option is not decided. The adapt-and-cut route is the automated one and the
 one the hierarchy strategies were compared on; it is not what production runs.
 (Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`, the sweep
 of 2026-10-31, and the decision and finding entries of 2026-11-01.)
@@ -181,11 +181,14 @@ parts, in this order of size:
    accepted trade: extra load on the owning rank for no communication inside
    the contact solve. A network's faults go to different ranks region by
    region, so the cost is a few stars per rank rather than all on one. Measured
-   on the production annulus at np 16 (`development` 25d62812): the whole
-   finest-level patch, 465 rows and all 105 split pairs, sits on the one rank
-   whose partition holds the fault, so the patch's LU solve is serial there. At
-   that size it costs little; at higher rank counts, or with several faults in
-   one partition, it is the imbalance #895 tracks.
+   on the production annulus at np 16 (`development` 25d62812, kaiju's budget):
+   the whole finest-level patch, 3584 rows, sits on the one rank whose partition
+   holds the fault, and its LU solve runs there for 21 to 28 s a step while the
+   other 15 ranks wait, 5 to 6 % of the Stokes solve. The structural patch is one
+   block per rank with no row cap (the 2000-row cap, `fac_block_rows`, cuts only
+   the blocks built from `fac_zone` masks), which is the measured 2-D choice;
+   the share grows with the rank count or with several faults in one partition,
+   and is what #895 tracks.
 
 With a band of area fraction $f$ refined $k$ halvings on $P$ ranks, for a fault
 of length $L$ in a domain of width $D$, the busiest rank sits roughly

@@ -64,13 +64,14 @@ once the lid mobilised and the chain did not. The chain's levels never carry the
 change with the fix, and with the LU blocks it costs 3 to 16 times the welded tail's
 iterations on the same states. It stays in the drivers as the measured alternative,
 for the case where the LU patch is unavailable or its block too large (the block grows
-with the band's rows; 3-D is not measured). The ruling's condition is met: on the
-production faulted annulus at np 16 (kaiju, `development` 25d62812, four steps from a
-TAf checkpoint, both arms with the same 465-row finest patch) the welded base takes
-5.9 velocity iterations per Newton increment against the chain's 7.7 and 448 s of
-Stokes per step against 467 s, with the same Newton counts and the same answers; the
-drivers' `uw_chain` default moves to 0 as the campaign builds move to `development`.
-Whether split coarse levels stay a library option is not decided. The record, with the superseded
+with the band's rows; 3-D is not measured). On the production faulted annulus at
+np 16 (kaiju, `development` 25d62812, steps from a TAf checkpoint; the welded arm with
+a 3584-row patch on one rank, the chain with none) the two tails do the same velocity
+work, 8.65 against 8.74 F-cycles per solve, in the same Stokes time within the ±10 %
+run-to-run spread, with the same Newton counts and answers; the box's gain does not
+show there, and why is open. The welded tail is no worse and has one hierarchy fewer
+to build, so the drivers' `uw_chain` default moves to 0 as the campaign builds move
+to `development`. Whether split coarse levels stay a library option is not decided. The record, with the superseded
 table, is the journal topic
 [Fault multigrid](https://github.com/underworldcode/underworld3-journal/blob/main/topics/fault-multigrid.md)
 (entries 2026-10-29, 2026-10-31 and 2026-11-01).
