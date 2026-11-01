@@ -100,6 +100,11 @@ _VELOCITY_FIELD = 0
 SHEET_TANGENCY = "__sheet_tangency__"
 _PRESSURE_FIELD = 1
 
+# A rigid rotation counts as an EXACT null mode of the constrained problem when
+# its relative violation of the rotated v_n = 0 rows, and of the operator, is
+# below this.
+_ROTATION_MODE_TOL = 1e-8
+
 
 def _boundary_spec(spec):
     """Normalize one entry of a rotated-free-slip boundary list to ``(name, normal)``:
@@ -1789,8 +1794,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # incompressible domain) parks an O(forcing) constant there — and the loop
     # above would report convergence while mass conservation is violated.
     # Surface the component: readable state always, loud when it dominates.
+    # A declared mode the faceted constraints satisfy only to a violation s (the
+    # slack) carries a component of a torque-free forcing too, about s²/3 of the
+    # forcing scale; a torque of 1% of the forcing carries 1.7e-2 (#906's shell,
+    # s = 0.016 and 0.0042). An exact mode has s = 0.
+    slack = getattr(solver, "_rotated_null_mode_slack", 0.0)
     solver._rotated_rotation_gauge_residual = rnull_gauge[0] if rot_modes else 0.0
-    if rot_modes and converged and rnull_gauge[0] > 10.0 * max(rnorm, atol):
+    if rot_modes and converged and rnull_gauge[0] > 10.0 * max(
+            rnorm, atol, slack ** 2 * (ref or 0.0)):
         mpi.pprint(f"[rotated_bc] WARNING: converged in the rotation-gauge QUOTIENT "
                    f"space, but the projected-out rigid-rotation component "
                    f"({rnull_gauge[0]:.2e}) dominates the residual ({rnorm:.2e}): the "
@@ -2646,13 +2657,19 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
     n_rot = 0
+    slack = 0.0
     declared = _rotations_declared(solver.mesh)
     for tg in _rigid_rotation_modes(solver):
-        if _mode_satisfies_constraints(solver, Q, normal_rows, tg, declared=declared):
+        report = []
+        if _mode_satisfies_constraints(solver, Q, normal_rows, tg, report=report,
+                                       declared=declared):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
             n_rot += 1
+            viol = report[-1]["viol"]
+            if viol >= _ROTATION_MODE_TOL:
+                slack = max(slack, viol)
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
     # The VELOCITY-block null-mode count, recorded for the coarse-solve
     # choice in _solve_rotated_iterative: only a rotation mode makes the
@@ -2660,6 +2677,9 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # mode lives in the pressure block), so only then is the SVD coarse
     # solve required.
     solver._rotated_velocity_null_modes = n_rot
+    # the largest constraint violation of an admitted mode: 0 when every mode
+    # is exact; read by the net-torque guard after the Newton loop
+    solver._rotated_null_mode_slack = slack
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -2678,7 +2698,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
     return PETSc.NullSpace().create(constant=False, vectors=ortho, comm=dm.comm)
 
 
-def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
+def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_TOL,
                                 report=None, declared=False):
     """True iff the rigid-body mode ``tg`` is a genuine null mode of the
     constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on

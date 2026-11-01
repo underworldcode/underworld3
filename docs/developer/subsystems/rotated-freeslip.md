@@ -347,6 +347,16 @@ rotation a violation of the order of the discretisation error (0.008-0.016 on
 #906's shell, against a 1e-8 tolerance). Under the analytic normal the modes
 are exact.
 
+The outer Newton test is measured in the quotient space of the admitted modes.
+A guard warns when the projected-out component dominates the converged
+residual, which means the forcing has a net torque that free-slip walls cannot
+balance. A declared mode with violation $s$ also carries a component of a
+torque-free forcing, about $s^2/3$ of the forcing scale, so the guard warns only
+above $10 s^2$ of the convergence reference. On #906's shell that component was
+8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$. A torque of 1 %
+of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
+the guard is unchanged.
+
 A mesh that declares nothing is offered the Cartesian rotations. Each is
 admitted to the increment null space and the post-solve gauge removal only if
 it passes **two** tests: tangential to every rotated constraint row
