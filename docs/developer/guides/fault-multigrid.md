@@ -36,12 +36,23 @@ Louis in August to October 2026, and they fix everything below.
    cut on some levels and a painted band on others: a smeared band on a coarse
    level is a continuous shear that a split fine operator rejects, measured
    worse than no fault on the coarse levels at every band strength.
-3. **No bespoke meshes per case.** The placed ribbon band along the trace,
-   sub-sampled 2:1 so that every coarser spine vertex is a finer one, is the one
-   add-on structure that serves both realisations. The ribbon is part of the
-   multigrid design, not an alternative to it: it is the bridge between the
-   background mesh and the fault, the authored patch key, and the same mesh
-   discipline for split, weak and TI faults.
+3. **No bespoke meshes per case.** The placed ribbon band along the trace is
+   the one add-on structure that serves both realisations. The ribbon is part
+   of the multigrid design, not an alternative to it: it is the bridge between
+   the background mesh and the fault, the authored patch key, and the same mesh
+   discipline for split, weak and TI faults. (Its 2:1 sub-sampling, so that
+   every coarser spine vertex is a finer one, served the split chain, which
+   ruling 4 leaves as the alternative.)
+4. **The add-on is the line, and the fault carries its own resolution**
+   (Louis, 2026-11-02). The fault comes as a divided line or a triangulated
+   surface, and its points are the ladder's rungs: no parameter $S$ sets the
+   along-strike resolution, and the drivers' trace resampling and $2S$ band
+   width are to go. The ladder exists to compute stresses and slip rates
+   accurately with the fewest added nodes; refinement around the fault, for
+   near-fault stress lobes, is a separate question. Split coarse levels are
+   not developed further and stay in the library as they are, for comparison.
+   The work that follows is on the solve (the patch's cost in 2-D and 3-D) and
+   on the parallel decomposition of the patch.
 
 ## What ships on `development`
 
@@ -91,8 +102,10 @@ How to get it:
 **What production runs do.** The campaign drivers (the zg95 annulus and slab
 drivers, the box-fault driver) place the fault as a structured ladder band into a copy
 of the base's finest level with `place_fault_ribbon_2d(..., mesher="ladder",
-split=True)`, rung spacing $S$ and band $2S$; the base and its levels are never
-modified, and no bisection is involved. The tail under it is ruled (Louis,
+split=True)`, the trace's own points as the rungs; the base and its levels are never
+modified, and no bisection is involved. (The drivers still resample the trace at a
+spacing $S$ and take the band $2S$ wide; under ruling 4 that parameter goes, and the
+band ratios below are the base's finest cell over the fault's own point spacing.) The tail under it is ruled (Louis,
 2026-11-01, on #892): **the welded base with the split $S$ level on top and the FAC
 LU patch on that finest level**, `set_custom_fmg(stokes, base.multigrid_levels,
 field_id=0)`. On UWTN 2026-022's fixtures with the LU blocks running it takes 66
@@ -111,7 +124,8 @@ has one hierarchy fewer to build, so the drivers' `uw_chain` default moves to 0 
 campaign builds move to `development`. The annulus shows none of the box's gain
 because its band ratio is 3.9 (base finest cell 0.0156, rung spacing 0.004), below
 the smallest ratio in the sweep table; the patch's gain appears from a ratio of about
-8 upward. Whether split coarse levels remain a library option is not decided. The adapt-and-cut route is the automated one and the
+8 upward. Split coarse levels are not developed further (ruling 4); the chain stays
+in the library as it is. The adapt-and-cut route is the automated one and the
 one the hierarchy strategies were compared on; it is not what production runs.
 (Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`, the sweep
 of 2026-10-31, and the decision and finding entries of 2026-11-01.)
@@ -251,11 +265,15 @@ no patch at all:
 
 With the LU blocks the welded base with the split finest takes 3 velocity
 iterations per linear solve at every band ratio from 6 to 25 on the yielding-lid
-box, so the chain's case in 2-D is gone. It remains the measured alternative
-where the LU patch is unavailable or its block too large (the block grows with
-the band's rows; 3-D is not measured), and whether split coarse levels stay a
-library option is not decided. `FaultNetwork.build` gives the finest band only,
-which is now the production tail. The record, with the dead ends (TI bands
+box, so the chain's case in 2-D is gone. Its limit is structural: every coarse
+level must hold a coarser copy of the fault, which in 3-D is surgery on every
+level, and at a junction the $4S$ ladder cannot be placed at an $8S$ gap. Louis
+ruled on 2026-11-02 that split coarse levels are not developed further; the
+chain stays in the library as it is, for comparison with the measurements
+already made, and no new work builds on it. The add-on's own weakness, the one
+gathered LU block (the block grows with the band's rows; 3-D is not measured,
+#895), is where the work goes next. `FaultNetwork.build` gives the finest band
+only, which is the production tail. The record, with the dead ends (TI bands
 under a split finest, node-cloud transfers to a split level, extrapolated
 weights, nearest-node injection) is the journal topic
 [Fault multigrid](https://github.com/underworldcode/underworld3-journal/blob/main/topics/fault-multigrid.md).
