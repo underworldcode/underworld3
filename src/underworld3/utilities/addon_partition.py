@@ -566,7 +566,10 @@ def _moved_wrap(level, dm, fields, pairs):
         dm, simplex=level.dm.isSimplex(), qdegree=level.qdegree,
         coordinate_system_type=level.CoordinateSystem.coordinate_type,
         boundaries=level.boundaries, verbose=False)
-    moved._mg_static = False
+    # A level keeps its own mark: the base's finest, moved because the base has
+    # no add-on levels, is still static background. Marked add-on, it was taken
+    # for an add-on level at np > 1 only, and a fault was replayed onto it (#919).
+    moved._mg_static = getattr(level, "_mg_static", False)
     for attr in ("_fault_traces", "_fault_specs", "_fault_surfaces",
                  "_fault_seam_normals", "_embedded_surfaces"):
         if getattr(level, attr, None) is not None:
