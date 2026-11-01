@@ -102,9 +102,14 @@ the slip unchanged. The chain of split ladders (the same ladder at $2S$ placed i
 copy of the base's finest level and at $4S$ into a copy of the level below, each split
 along its rungs, the band widening with the level) is the measured alternative and
 not the production tail: its levels never carry the patch, and on the same states it
-takes 83 to 166 and 28 to 76. It stays driver code (`uw_chain`) until the drivers'
-default changes after kaiju's np 16 annulus run; whether split coarse levels remain a
-library option is not decided. The adapt-and-cut route is the automated one and the
+takes 83 to 166 and 28 to 76. The ruling's condition, confirmation on the production
+annulus at np 16, is met (kaiju, `development` 25d62812, four steps from a TAf
+checkpoint): the welded base takes 5.9 velocity iterations per Newton increment
+against the chain's 7.7, with the same Newton counts, vrms to 2e-6 and slip to 1 in
+6000; the margin is smaller than on the fixtures because both arms carry the same
+finest patch and only the coarse levels differ. The chain stays driver code
+(`uw_chain`), whose default moves to 0 as the campaign builds move to `development`;
+whether split coarse levels remain a library option is not decided. The adapt-and-cut route is the automated one and the
 one the hierarchy strategies were compared on; it is not what production runs.
 (Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`, the sweep
 of 2026-10-31, and the decision and finding entries of 2026-11-01.)
@@ -175,7 +180,12 @@ parts, in this order of size:
 2. **The fault's cell star is gathered onto one rank**, the contact design's
    accepted trade: extra load on the owning rank for no communication inside
    the contact solve. A network's faults go to different ranks region by
-   region, so the cost is a few stars per rank rather than all on one.
+   region, so the cost is a few stars per rank rather than all on one. Measured
+   on the production annulus at np 16 (`development` 25d62812): the whole
+   finest-level patch, 465 rows and all 105 split pairs, sits on the one rank
+   whose partition holds the fault, so the patch's LU solve is serial there. At
+   that size it costs little; at higher rank counts, or with several faults in
+   one partition, it is the imbalance #895 tracks.
 
 With a band of area fraction $f$ refined $k$ halvings on $P$ ranks, for a fault
 of length $L$ in a domain of width $D$, the busiest rank sits roughly
