@@ -69,7 +69,8 @@ np 16 (kaiju, `development` 25d62812, steps from a TAf checkpoint; the welded ar
 a 3584-row patch on one rank, the chain with none) the two tails do the same velocity
 work, 8.65 against 8.74 F-cycles per solve, in the same Stokes time within the ±10 %
 run-to-run spread, with the same Newton counts and answers; the box's gain does not
-show there, and why is open. The welded tail is no worse and has one hierarchy fewer
+show there because that model's band ratio is 3.9, below the smallest ratio in the
+table. The welded tail is no worse and has one hierarchy fewer
 to build, so the drivers' `uw_chain` default moves to 0 as the campaign builds move
 to `development`. Whether split coarse levels stay a library option is not decided. The record, with the superseded
 table, is the journal topic

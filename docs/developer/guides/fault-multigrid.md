@@ -108,8 +108,10 @@ velocity work, 8.65 against 8.74 F-cycles per solve, in the same time within the
 run-to-run spread, with the same Newton counts and answers; the welded arm carries a
 3584-row patch on one rank and the chain none. The welded tail is no worse there and
 has one hierarchy fewer to build, so the drivers' `uw_chain` default moves to 0 as the
-campaign builds move to `development`. Why the annulus shows none of the box's gain is
-open. Whether split coarse levels remain a library option is not decided. The adapt-and-cut route is the automated one and the
+campaign builds move to `development`. The annulus shows none of the box's gain
+because its band ratio is 3.9 (base finest cell 0.0156, rung spacing 0.004), below
+the smallest ratio in the sweep table; the patch's gain appears from a ratio of about
+8 upward. Whether split coarse levels remain a library option is not decided. The adapt-and-cut route is the automated one and the
 one the hierarchy strategies were compared on; it is not what production runs.
 (Journal: `2026-10-28-which-fault-mesh-construction-is-used-in-practice`, the sweep
 of 2026-10-31, and the decision and finding entries of 2026-11-01.)
