@@ -945,14 +945,27 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
     # gauge mode, and until this was recorded there was no way to see which of
     # them admitted what.
     gauge = {"offered": 0, "modes": [], "orthonormal": 0, "removed": False,
-             "requested": bool(remove_rotation_gauge)}
+             "requested": bool(remove_rotation_gauge), "declared": None}
     if remove_rotation_gauge:
         live = []
+        declared = _rotations_declared(solver.mesh)
+        gauge["declared"] = declared
         for tg in _rigid_rotation_modes(solver):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
-                                           report=gauge["modes"]):
-                live.append(tg.copy())          # owned copy — pool vec goes back below
+                                           report=gauge["modes"], declared=declared):
+                if declared:
+                    # the constraint-compatible mode: v_n = 0 stays exact when
+                    # it is projected out of U (#906)
+                    tr = tg.duplicate()
+                    Q.mult(tg, tr)
+                    _zero_rows_local(tr, normal_rows)
+                    m = tg.duplicate()
+                    Q.multTranspose(tr, m)
+                    tr.destroy()
+                    live.append(m)
+                else:
+                    live.append(tg.copy())      # owned copy — pool vec goes back below
             dm.restoreGlobalVec(tg)
         ortho = []
         for w in live:
@@ -2633,8 +2646,9 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
     n_rot = 0
+    declared = _rotations_declared(solver.mesh)
     for tg in _rigid_rotation_modes(solver):
-        if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
+        if _mode_satisfies_constraints(solver, Q, normal_rows, tg, declared=declared):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
@@ -2665,7 +2679,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
 
 
 def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
-                                report=None):
+                                report=None, declared=False):
     """True iff the rigid-body mode ``tg`` is a genuine null mode of the
     constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
     every constrained normal row) AND it is a null vector of the assembled
@@ -2694,7 +2708,14 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     test already rejected the mode) and the verdict. Whether a mode is admitted
     decides whether a gauge component is projected out of the answer, so when
     two solves of the same system disagree this is the first thing to look at
-    — but nothing in the returned dict was observable before."""
+    — but nothing in the returned dict was observable before.
+
+    ``declared``: the mode is one the mesh declares (#906). Its constraint
+    violation is recorded but does not reject it: the callers zero its
+    constrained rows, which makes it exactly compatible with v_n = 0, and on a
+    faceted sphere the facet-averaged normal leaves a declared rotation a
+    discretisation-sized violation (0.008-0.016 on #906's shell). The operator
+    test still applies, so a no-slip wall that pins it rejects it."""
     tr = tg.duplicate()
     Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
@@ -2711,7 +2732,7 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     # transient duplicates
     tr.destroy()
     trc.destroy()
-    if viol >= tol:
+    if viol >= tol and not declared:
         if report is not None:
             report.append({"viol": float(viol), "op_viol": None,
                            "accepted": False, "rejected_by": "constraint"})
@@ -2933,9 +2954,35 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     return write_boundary_scalar_field(solver, field, hmap, dim)
 
 
+def _rotations_declared(mesh):
+    """True when the mesh declares its rotation null modes (#906): a factory for
+    a closed surface did, or a user assigned ``mesh.nullspace_rotations``. An
+    empty declaration counts: the mesh has none."""
+    return getattr(mesh, "_nullspace_rotations", None) is not None
+
+
+def _declared_rotation_fields(mesh, c):
+    """The mesh's declared rotation modes evaluated at the points ``c``, one
+    ``(N, cdim)`` array per mode, or None when the mesh declares nothing (the
+    Cartesian rotations are then offered and detected, as before)."""
+    if not _rotations_declared(mesh):
+        return None
+    X = list(mesh.X)
+    fields = []
+    for mode in mesh._nullspace_rotations:
+        cols = []
+        for comp in sympy.Matrix(mode):
+            f = sympy.lambdify(X, comp, "numpy")
+            cols.append(np.broadcast_to(np.asarray(f(*c.T), dtype=float), (c.shape[0],)))
+        fields.append(np.column_stack(cols))
+    return fields
+
+
 def _rigid_rotation_modes(solver):
     """The Cartesian rigid-body rotation mode(s) as composite GLOBAL vectors
-    (velocity DOFs only, zero pressure): ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
+    (velocity DOFs only, zero pressure). The modes the mesh declares
+    (``mesh.nullspace_rotations``, #906); for a mesh that declares none, the
+    Cartesian rotations ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
     k=x,y,z in 3D — a spherical shell with free-slip on both boundaries has all
     THREE, and so does a sheet on the surface of a sphere (embedding dimension
     three), whose tangency constraint every Killing field satisfies. Parallel-safe: built via localToGlobal on the velocity sub-DM, so
@@ -2946,9 +2993,10 @@ def _rigid_rotation_modes(solver):
     v = solver.Unknowns.u
     c = v.coords
     saved = v.data.copy()
-    if solver.mesh.cdim == 2:
+    fields = _declared_rotation_fields(solver.mesh, c)
+    if fields is None and solver.mesh.cdim == 2:
         fields = [np.column_stack([-c[:, 1], c[:, 0]])]
-    else:
+    elif fields is None:
         x, y, z = c[:, 0], c[:, 1], c[:, 2]
         zero = np.zeros_like(x)
         fields = [np.column_stack([zero, -z, y]),      # e_x × r

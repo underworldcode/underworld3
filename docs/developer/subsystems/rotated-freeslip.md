@@ -331,12 +331,28 @@ reported. The standard SNES path only warns on divergence.
 
 ### Null-space handling
 
-Rigid-rotation candidates (one mode on a closed circle, three on a spherical
-shell) are admitted to the increment null space and the post-solve gauge
-removal only if they pass **two** tests: tangential to every rotated
-constraint row (`Q·m ≈ 0` there), **and** a null vector of the assembled
-operator (`‖J·m‖ ≈ 0` against the velocity diagonal scale). The second test is
-what catches pinning the first cannot see — an essential condition on another
+The rigid-rotation candidates are the modes the mesh **declares** in
+`mesh.nullspace_rotations` (#906): one on an annulus, three on a spherical shell
+or a sheet on a sphere, none on a box. The mesh factories declare them, and the
+standard Stokes path reads the same list for `petsc_use_nullspace`. A mesh built
+without them (a gmsh import, a wrapped DM) declares its modes by assignment,
+`mesh.nullspace_rotations = [sympy.Matrix([-y, x])]`. Assigning `[]` declares
+that it has none.
+
+A declared mode is not tested against the constraint rows. Its constrained rows
+are zeroed, in the null space and in the gauge removal alike, which makes it
+exactly compatible with `v·n = 0`. A test against the rows would reject the
+modes on a faceted sphere: there the facet-averaged normal leaves each declared
+rotation a violation of the order of the discretisation error (0.008-0.016 on
+#906's shell, against a 1e-8 tolerance). Under the analytic normal the modes
+are exact.
+
+A mesh that declares nothing is offered the Cartesian rotations. Each is
+admitted to the increment null space and the post-solve gauge removal only if
+it passes **two** tests: tangential to every rotated constraint row
+(`Q·m ≈ 0` there), **and** a null vector of the assembled operator (`‖J·m‖ ≈ 0`
+against the velocity diagonal scale). A declared mode takes the second test
+too. The second test is what catches pinning the first cannot see — an essential condition on another
 boundary leaves the mode tangential to the rotated wall while the eliminated
 operator is *not* null on it, and admitting it projects an irreducible
 component out of every increment (the residual then floors far above

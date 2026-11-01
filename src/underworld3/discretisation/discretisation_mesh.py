@@ -654,10 +654,11 @@ class Mesh(Stateful, uw_object):
         self._lvec = None
         self.petsc_fe = None
 
-        # Rigid-body rotation null modes for this geometry.
-        # Mesh factories override this for closed surfaces (annulus, sphere).
-        # Each entry is a SymPy Matrix velocity field in mesh coordinates.
-        self._nullspace_rotations = []
+        # Rigid-body rotation null modes for this geometry: None until declared.
+        # Mesh factories declare them for closed surfaces (annulus, sphere); a
+        # user declares them through the nullspace_rotations setter. Each entry
+        # is a SymPy Matrix velocity field in mesh coordinates.
+        self._nullspace_rotations = None
 
         self.degree = degree
         self.qdegree = qdegree
@@ -4627,6 +4628,14 @@ class Mesh(Stateful, uw_object):
 
         Each entry represents a rigid rotation: v = omega x r.
 
+        The standard Stokes path reads these for ``petsc_use_nullspace``, and
+        rotated free slip takes its rotation modes from them (#906). A mesh
+        built without them (a gmsh import, a wrapped DM) declares its modes by
+        assignment, ``mesh.nullspace_rotations = [sympy.Matrix([-y, x])]``;
+        assigning ``[]`` declares that it has none. Until a mesh declares,
+        rotated free slip detects the rotations that satisfy the discrete
+        constraints, as it always has.
+
         Returns
         -------
         list of sympy.Matrix
@@ -4639,7 +4648,22 @@ class Mesh(Stateful, uw_object):
         >>> shell = uw.meshing.SphericalShell(...)
         >>> shell.nullspace_rotations   # 3 rotation matrices
         """
-        return self._nullspace_rotations
+        return list(self._nullspace_rotations or [])
+
+    @nullspace_rotations.setter
+    def nullspace_rotations(self, modes):
+        modes = [sympy.Matrix(m) for m in modes]
+        coords = set(self.X)
+        for m in modes:
+            if len(m) != self.cdim:
+                raise ValueError(
+                    f"a rotation mode needs {self.cdim} components on this mesh, "
+                    f"got {len(m)}: {m.T}")
+            if not m.free_symbols <= coords:
+                raise ValueError(
+                    f"a rotation mode is a field of the mesh coordinates {tuple(self.X)} "
+                    f"only, got {m.T}")
+        self._nullspace_rotations = modes
 
     @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
