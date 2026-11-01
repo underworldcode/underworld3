@@ -195,9 +195,11 @@ it composes with transverse isotropy.
 The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
-single deliberate difference is the coarse solve: `coarse="svd"`, because the
-Galerkin-coarsened rotated block inherits the rigid-rotation null space where
-`redundant`/LU hits a zero pivot. See
+single deliberate difference is the coarse solve: `coarse="svd"` when the
+problem has an exact rigid-rotation null mode, because the Galerkin-coarsened
+rotated block inherits it and `redundant`/LU hits a zero pivot there. A mode the
+constraints satisfy only to discretisation error leaves the block near-singular,
+and LU solves it (see Null-space handling below). See
 [the solvers subsystem doc](solvers.md) for the bundle itself.
 
 The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
@@ -356,6 +358,12 @@ above $10 s^2$ of the convergence reference. On #906's shell that component was
 8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$. A torque of 1 %
 of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
 the guard is unchanged.
+
+Only an exact mode (violation below 1e-8) selects the SVD coarse solve. A
+declared mode with a discretisation-sized violation makes the coarse block
+near-singular, not singular, and LU solves it. On #906's shell at cell size
+0.25, counting it ran a dense SVD for 40 minutes, against 40 seconds with LU, at
+the same 12 velocity iterations.
 
 A mesh that declares nothing is offered the Cartesian rotations. Each is
 admitted to the increment null space and the post-solve gauge removal only if

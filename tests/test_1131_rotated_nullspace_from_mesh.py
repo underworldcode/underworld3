@@ -12,7 +12,10 @@ the shell below with FMG: a rigid rotation of rate 6.2e-3 in an answer of v_rms
 The modes are now declared by the geometry, ``mesh.nullspace_rotations``, as the
 standard Stokes path already reads them. A declared mode is made exactly
 compatible with v.n = 0 by zeroing its constrained rows, and is still tested
-against the assembled operator, so a no-slip wall that pins it rejects it. A mesh
+against the assembled operator, so a no-slip wall that pins it rejects it. Only an
+exact mode selects the SVD coarse solve: the declared modes are near-null under
+the facet-averaged normal, and counting them ran a dense SVD for 40 minutes on a
+shell that LU solves in 40 seconds. A mesh
 that declares nothing keeps the detection (a box finds no mode, as before), and
 a mesh without the metadata declares its modes through the public setter.
 """
@@ -111,7 +114,8 @@ def test_a_shell_with_the_default_normal_returns_no_rigid_rotation(radial_shell,
     vrms = _v_rms(v)
     # the gauge removes the rotation to round-off; development left 6.2e-3
     assert np.abs(_rotation_rates(v)).max() < 1e-10 * vrms
-    # near-null, not null (0.0164 here)
+    # near-null, not null (0.0164 here): the coarse solve stays LU
+    assert stokes._rotated_velocity_null_modes == 0
     assert 1e-3 < stokes._rotated_null_mode_slack < 0.05
     assert vrms / radial_shell[1] == pytest.approx(VRMS_RATIO_MESH_OVER_RADIAL, rel=0.01)
 
@@ -131,6 +135,8 @@ def test_the_analytic_normal_makes_the_declared_modes_exact(radial_shell):
     assert info["converged"], info
     assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
     assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1e-14
+    # exact modes: the coarse block is singular, and the count says so
+    assert stokes._rotated_velocity_null_modes == 3
     assert stokes._rotated_null_mode_slack == 0.0
 
 

@@ -2666,16 +2666,21 @@ def _rotated_nullspace(solver, Q, normal_rows):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
-            n_rot += 1
             viol = report[-1]["viol"]
-            if viol >= _ROTATION_MODE_TOL:
+            if viol < _ROTATION_MODE_TOL:
+                n_rot += 1
+            else:
                 slack = max(slack, viol)
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
     # The VELOCITY-block null-mode count, recorded for the coarse-solve
     # choice in _solve_rotated_iterative: only a rotation mode makes the
     # Galerkin-coarsened velocity block singular (the constant-pressure
     # mode lives in the pressure block), so only then is the SVD coarse
-    # solve required.
+    # solve required. A declared mode that the constraints satisfy only to
+    # discretisation error (a faceted sphere's facet-averaged normals) leaves
+    # the block near-singular, not singular, and LU solves it: counting it
+    # turned a 40 s shell solve into 40 min of dense SVD, at the same 12
+    # iterations (#906).
     solver._rotated_velocity_null_modes = n_rot
     # the largest constraint violation of an admitted mode: 0 when every mode
     # is exact; read by the net-torque guard after the Newton loop
