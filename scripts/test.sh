@@ -327,6 +327,10 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # and in parallel, where a rank without slip rows must still make every
   # collective call.
   batch 4 tests/parallel/test_1091_fault_slip_coarse_space_parallel.py
+  # So is the live finest-smoother operator of the rotated Newton loop (#894).
+  batch 4 tests/parallel/test_1088_rotated_interface_operator_parallel.py
+  # So is the band patch, the same rows at any rank count (#896).
+  batch 4 tests/parallel/test_1106_fac_cover_partition_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -349,6 +353,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
   batch 3 tests/test_110*py
   batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
+  batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections

@@ -207,9 +207,9 @@ stokes.solve()                                            # rigid-rotation gauge
 ```
 
 **Nonlinear rheology / warm-start / timestepping (PR #298, `feature/rotated-snes`):**
-rotated free-slip now works *inside* the nonlinear iteration — a nonlinearity probe
-auto-dispatches power-law / VEP / TI-with-yield models to a Newton/Picard loop
-(`solve_rotated_freeslip_nonlinear`), so warm-started time loops are correct. On the
+rotated free-slip now works *inside* the nonlinear iteration — `solve_rotated_freeslip`
+runs one Newton/Picard loop for linear and nonlinear models alike (a linear model
+converges after its first increment), so warm-started time loops are correct. On the
 worktree state *before* #298 lands, the rotated path is a SINGLE linear solve — it
 silently returns one Newton linearisation from `u=0` for a nonlinear model. If you
 run nonlinear TI + timestepping with rotated free-slip, make sure #298 is in.
@@ -365,7 +365,7 @@ Measured guidance, all at matched cell count:
 | adapt added-cell count jitters ±30% step-to-step | small-number geometry on a thin band. Deterministic; quality (near-fault h) is constant. Base ≈ **2× target** minimises it (CoV ~10% at 0.08 base vs 19% at 0.14, 24% at 0.05). |
 | tiny AD timestep / slow advection | `estimate_dt` returns the fault-band Courant limit. Use a fixed dt (SLCN is unconditionally stable). **Rough edge**: `estimate_dt` not adapt-aware. |
 | surface-breaking fault: huge local vmax; topo peak keeps growing | real stress singularity at the outcrop. Topo peak **saturates** (integrable/log, bounded by finite buoyancy) — far field is fine; only the pointwise outcrop value is mesh-dependent. |
-| rotated free-slip Stokes "not converged" | `s.snes` isn't the solving object (manual loop). Read `stokes._rotated_freeslip_info['ksp_reason']` / `['nonlinear_iterations']` (PR #298); sanity-check v·n leakage. |
+| rotated free-slip Stokes "not converged" | `s.snes` isn't the solving object (manual loop). Read `stokes._rotated_freeslip_info['ksp_reason']` / `['nonlinear_iterations']` (PR #298); sanity-check v·n leakage. A cold solve whose first linear solve fails RAISES, naming the reason, after recording that record (#907); `stokes.tolerate_linear_failure = True` warns instead. |
 | nonlinear TI/VEP + rotated free-slip + timestepping gives a wrong (frozen) answer | pre-#298 the rotated path is ONE linear solve (one Newton step from u=0). PR #298 runs it inside a Newton/Picard loop — ensure it's merged for nonlinear/warm-start runs. |
 | FMG under rotated free-slip on a plain (non-adapt) refined mesh | the rotated KSP resolves hierarchies via `custom_mg.build_transfers`: an adapt child's mesh-owned tail is picked up AUTOMATICALLY (#467 fixed the old silent GAMG fallback), but the native `dm_hierarchy` is still not read — on a plain refined mesh, `set_custom_fmg(..., field_id=0)`. |
 | NVB at np>1 raises NotImplementedError | native `_nvb_transform` extension not built (needs the custom-PETSc/amr env). Both `nvb` and `edge_split` are otherwise fully parallel, 2-D and 3-D. |

@@ -1419,7 +1419,8 @@ class FaultNetwork:
     # ------------------------------------------------------------------
     def solve(self, solver, **kwargs):
         """Solve with the fault contact imposed (thin convenience
-        wrapper over ``fault_contact.solve_with_fault``). The velocity
+        wrapper over ``fault_contact.solve_with_fault``, and raises as
+        it does when a cold start's first linear solve fails). The velocity
         preconditioner is reported when it falls back to algebraic
         multigrid: a lost geometric tail must never decline quietly."""
         import underworld3 as uw
