@@ -224,7 +224,11 @@ def _spherical3d_topography_diagnostics(cell_size=0.25):
     s.add_rotated_freeslip_bc(0, "Lower", normal=-unit_r)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
-    s.tolerance = 1.0e-5
+    # The partition check compares at 1e-6, so the solve must be well inside
+    # that. At 1e-5 the coefficients were within 1e-6 only while the pressure
+    # sub-solve over-solved (rtol 0.1 x tol); at its 1e-2 default they move by
+    # ~1e-6. At 1e-8 they are within 1e-9 of a 1e-10 solve, at either rtol.
+    s.tolerance = 1.0e-8
     s.solve()
 
     dm = mesh.dm
