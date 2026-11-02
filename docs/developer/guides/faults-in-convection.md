@@ -75,8 +75,8 @@ work, 8.65 against 8.74 F-cycles per solve, in the same Stokes time within the Â
 run-to-run spread, with the same Newton counts and answers; the box's gain does not
 show there because that model's band ratio is 3.9, below the smallest ratio in the
 table. The welded tail is no worse and has one hierarchy fewer
-to build, so the drivers' `uw_chain` default moves to 0 as the campaign builds move
-to `development`. Split coarse levels are not developed further (Louis,
+to build; the campaign drivers' `uw_chain` default moved to 0 with the build move to
+`development` (b440b88 in `lmoresi/uw3-campaigns`, accepted on kaiju at np 16). Split coarse levels are not developed further (Louis,
 2026-11-02); the chain stays in the library as it is, and no new work builds on it. The record, with the superseded
 table, is the journal topic
 [Fault multigrid](https://github.com/underworldcode/underworld3-journal/blob/main/topics/fault-multigrid.md)

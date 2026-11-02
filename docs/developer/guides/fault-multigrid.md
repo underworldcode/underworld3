@@ -120,8 +120,10 @@ takes 83 to 166 and 28 to 76. On the production annulus at np 16 (kaiju,
 velocity work, 8.65 against 8.74 F-cycles per solve, in the same time within the
 run-to-run spread, with the same Newton counts and answers; the welded arm carries a
 3584-row patch on one rank and the chain none. The welded tail is no worse there and
-has one hierarchy fewer to build, so the drivers' `uw_chain` default moves to 0 as the
-campaign builds move to `development`. The annulus shows none of the box's gain
+has one hierarchy fewer to build; the campaign drivers' `uw_chain` default moved to 0
+with the build move to `development` (b440b88 in `lmoresi/uw3-campaigns`, accepted on
+kaiju at np 16; the drivers' decisions ledger there,
+`zg95_lid_regimes/DECISIONS.md`, is the citation). The annulus shows none of the box's gain
 because its band ratio is 3.9 (base finest cell 0.0156, rung spacing 0.004), below
 the smallest ratio in the sweep table; the patch's gain appears from a ratio of about
 8 upward. Split coarse levels are not developed further (ruling 4); the chain stays
@@ -215,9 +217,15 @@ parts, in this order of size:
    other 15 ranks wait, 5 to 6 % of the Stokes solve. That cost comes from the
    gather placement, not from the welded tail. `seams="conform"` (#670) meshes
    the band through the partition boundaries with nothing moved and would divide
-   the patch into one block per rank; it needs `mesher="network"` (the ladder
-   takes only `"gather"`), it has never run in these models, and whether the
-   iteration count holds with the patch divided among ranks is not measured.
+   the patch into one block per rank, but it cannot be used for a fault that
+   reaches the domain wall as the library stands: it needs `mesher="network"`,
+   whose cavity reaches the wall and refuses ("the ribbon's cavity reached the
+   domain wall", serial reproduction on kaiju, 2026-11-01), and the ladder, which
+   places a wall-reaching fault, takes only `"gather"`. So every surface-reaching
+   fault in 2-D runs its patch as one serial block, and whether the iteration
+   count holds with the patch divided among ranks cannot be measured in those
+   models until the network mesher places such a fault or the ladder learns
+   conform.
    The structural patch is one block per rank with no row cap (the 2000-row
    cap, `fac_block_rows`, cuts only the blocks built from `fac_zone` masks),
    the measured 2-D choice; the share grows with the rank count or with several
@@ -234,8 +242,9 @@ holds the band; a plate-scale model puts the cap higher, but it is a cap, and it
 is set by whichever rank holds the band: the inherited partition on the
 adapt-and-cut route, the gather placement's choice on the placement route.
 `partition_addon` is the add-on levels partitioned for themselves; what remains
-is the serial band on its rank, and dividing it (`seams="conform"`) is
-unmeasured. Rebalancing the base has been proposed twice and ruled out twice.
+is the serial band on its rank, and dividing it (`seams="conform"`) is blocked
+for wall-reaching faults until the network mesher can place one or the ladder
+learns conform. Rebalancing the base has been proposed twice and ruled out twice.
 
 ## The split-level hierarchy: merged, and now the alternative
 
