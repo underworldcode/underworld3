@@ -41,7 +41,7 @@ import underworld3 as uw
 from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2]
 
 # the zone strip's patch rows at np 1 (P2 velocity, 2 components per node)
 ZONE_SERIAL_ROWS = 1510
@@ -69,6 +69,7 @@ def _same_on_every_rank(summary):
     return len(set(uw.mpi.comm.allgather(text))) == 1
 
 
+@pytest.mark.tier_b
 def test_the_zone_patch_summary_is_the_same_on_every_rank():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 8, regular=True,
@@ -104,6 +105,7 @@ def test_the_zone_patch_summary_is_the_same_on_every_rank():
         assert union.size == ZONE_SERIAL_ROWS, (union.size, finest)
 
 
+@pytest.mark.tier_b
 def test_the_structural_patch_summary_is_the_serial_rows_at_any_rank_count():
     a, b = np.array([0.30, 0.45]), np.array([0.70, 0.55])
     n_rungs = 80

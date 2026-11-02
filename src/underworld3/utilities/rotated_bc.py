@@ -2385,8 +2385,6 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                     vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
                     patch_rows=_rows)
-                if _hier is not None:
-                    _hier.record_patch_summary(_rows, solver.dm.comm)
                 vel_pc.setUp()
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
@@ -2404,6 +2402,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # The FAC blocks read their solver from the keys dropped below:
                 # set them up while the keys are there (#892).
                 custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
+                if _hier is not None:
+                    _hier._record_patch_summary(_rows, solver.dm.comm)
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
                 # this solve — drop it again now it is consumed, as the `finally`
@@ -2557,10 +2557,10 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                     pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
                     patch_rows=_rows)
-                if _hier is not None:
-                    _hier.record_patch_summary(_rows, solver.dm.comm)
                 pc.setUp()
                 custom_mg._set_up_fac_smoothers(pc, _fac_keys)
+                if _hier is not None:
+                    _hier._record_patch_summary(_rows, solver.dm.comm)
                 vpfx = pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
                         coarse=_coarse,

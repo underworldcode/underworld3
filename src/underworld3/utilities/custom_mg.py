@@ -1670,6 +1670,8 @@ class CustomMGHierarchy:
         # patch is read off its own transfer ``Ps[l-1]``, in the level
         # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
+        # the record of the previous install no longer describes these rows
+        self.patch_summary = None
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
@@ -1971,12 +1973,13 @@ class CustomMGHierarchy:
                 f"Rebuild the solver so its DM section matches the operator before "
                 f"installing custom-P.")
 
-    def record_patch_summary(self, patch_rows, comm):
+    def _record_patch_summary(self, patch_rows, comm):
         """Set :attr:`patch_summary` from the patch rows handed to the installer.
 
         Collective (see :func:`_fac_patch_summary`). Each install route calls
-        it with the rows it installs, after the orphan restriction has
-        dropped the rows of every coarse level it renumbered. Each block is
+        it once the patch is set up, with the rows it installed, after the
+        orphan restriction has dropped the rows of every coarse level it
+        renumbered; ``build`` clears the previous record. Each block is
         recorded as handed over, before PCASM adds its overlap layer at
         set-up. Reading :attr:`patch_summary` afterwards makes no collective
         call, so any rank can read it alone."""
@@ -2002,7 +2005,7 @@ class CustomMGHierarchy:
                     for level, rows in enumerate(patch_rows)]
             Ps = restricted
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
-        self.record_patch_summary(patch_rows, solver.dm.comm)
+        self._record_patch_summary(patch_rows, solver.dm.comm)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
         solver._custom_mg_live = {"h": id(self),
