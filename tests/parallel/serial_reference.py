@@ -23,7 +23,8 @@ Rank 0 spawns a plain single-rank Python running the test module's own ``__main_
 which prints one ``SERIALREF <json>`` line; the payload is broadcast to every rank. The
 child's environment is scrubbed of the launcher's MPI variables — inherited ``OMPI_*`` /
 ``PMIX_*`` make the child believe it is a member of the parent's job, and it then hangs
-or aborts instead of running as a singleton.
+or aborts instead of running as a singleton. The user's Open MPI component selections
+(``OMPI_MCA_io``, ``_mtl``, ``_btl``, ``_pml``) are kept.
 
 The mesh is read from the same gmsh cache the parent uses, so parent and child are the
 same triangulation by construction; the fingerprint is carried through anyway and
@@ -49,6 +50,10 @@ import underworld3 as uw
 # Open MPI 5's runtime, which is a separate family again from OMPI_.
 _MPI_ENV_PREFIXES = ("OMPI_", "PMIX_", "PMI_", "MPI_", "HYDRA_", "I_MPI_", "SLURM_",
                      "PRTE_", "PRTERUN_", "OPAL_")
+# The user's Open MPI component selections are not job identity, and a singleton
+# runs with them: the child keeps them. A job that sets OMPI_MCA_io=^ompio to keep
+# HDF5 off OMPIO otherwise has its reference runs on OMPIO regardless (#922).
+_MPI_ENV_KEPT = ("OMPI_MCA_io", "OMPI_MCA_mtl", "OMPI_MCA_btl", "OMPI_MCA_pml")
 
 _CACHE = {}
 
@@ -106,16 +111,22 @@ def serial_reference(module_file, kind, timeout=600):
     return payload
 
 
+def _child_env(environ):
+    """``environ`` without the launcher's variables, keeping the user's MPI
+    component selections (``_MPI_ENV_KEPT``)."""
+    return {k: v for k, v in environ.items()
+            if k in _MPI_ENV_KEPT or not k.startswith(_MPI_ENV_PREFIXES)}
+
+
 def _run_child(module_file, kind, timeout):
     """Never raises — see :func:`serial_reference`. Returns the payload dict, or a
     string describing what went wrong."""
     name = os.path.basename(module_file)
     try:
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith(_MPI_ENV_PREFIXES)}
         proc = subprocess.run(
             [sys.executable, "-u", os.path.abspath(module_file), kind],
-            env=env, capture_output=True, text=True, timeout=timeout)
+            env=_child_env(os.environ), capture_output=True, text=True,
+            timeout=timeout)
     except subprocess.TimeoutExpired:
         return f"serial reference for {name}:{kind} timed out after {timeout}s"
     except Exception as exc:                     # noqa: BLE001 - see the docstring
