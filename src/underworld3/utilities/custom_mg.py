@@ -585,7 +585,7 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
     return P
 
 
-def fac_patch_summary(patch_rows, comm):
+def _fac_patch_summary(patch_rows, comm):
     """The FAC patch on each PCMG level, summed over the ranks.
 
     Collective: one allgather, and every rank returns the same list. Read it
@@ -1507,7 +1507,7 @@ class CustomMGHierarchy:
         self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
         # the FAC patch per level as installed, summed over the ranks
-        # (fac_patch_summary); set where the patch goes onto the smoothers
+        # (_fac_patch_summary); set where the patch goes onto the smoothers
         self.patch_summary = None
         # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
         # split-node fault takes the side-aware cell-located transfer, and its
@@ -1974,12 +1974,13 @@ class CustomMGHierarchy:
     def record_patch_summary(self, patch_rows, comm):
         """Set :attr:`patch_summary` from the patch rows handed to the installer.
 
-        Collective (see :func:`fac_patch_summary`). Each install route calls
-        it with the rows it installs. By then the orphan restriction has
-        dropped the rows of every coarse level it renumbered, so the record
-        is what the smoothers carry. Reading :attr:`patch_summary` afterwards
-        makes no collective call, so any rank can read it alone."""
-        self.patch_summary = fac_patch_summary(patch_rows, comm)
+        Collective (see :func:`_fac_patch_summary`). Each install route calls
+        it with the rows it installs, after the orphan restriction has
+        dropped the rows of every coarse level it renumbered. Each block is
+        recorded as handed over, before PCASM adds its overlap layer at
+        set-up. Reading :attr:`patch_summary` afterwards makes no collective
+        call, so any rank can read it alone."""
+        self.patch_summary = _fac_patch_summary(patch_rows, comm)
         return self.patch_summary
 
     def install(self, solver, verbose=False):
@@ -2000,8 +2001,8 @@ class CustomMGHierarchy:
                     else rows
                     for level, rows in enumerate(patch_rows)]
             Ps = restricted
-        self.record_patch_summary(patch_rows, solver.dm.comm)
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
+        self.record_patch_summary(patch_rows, solver.dm.comm)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
         solver._custom_mg_live = {"h": id(self),

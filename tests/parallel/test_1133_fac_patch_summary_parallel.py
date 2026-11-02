@@ -8,7 +8,7 @@ At np 4 on kaiju the ranks made different numbers of calls, and the run hung
 after its solve had finished.
 
 ``hierarchy.patch_summary`` is now made once, where the patch is installed, with
-one allgather (``custom_mg.fac_patch_summary``). Reading it afterwards makes no
+one allgather (``custom_mg._fac_patch_summary``). Reading it afterwards makes no
 collective call. The tests check two routes:
 
 - the hierarchy's own install: a Stokes box with a fault-zone strip near one
@@ -20,9 +20,9 @@ collective call. The tests check two routes:
 At every rank count they assert that every rank holds the identical summary and
 that the coarse levels carry no patch. Against the serial baselines:
 
-- the zone strip's patch rows are exactly 1510 at np 1. At np > 1 there are no
-  fewer, because a zone block's rows include the seam halo, which two ranks can
-  both hold;
+- the zone strip's patch rows are exactly 1510 at np 1. At np > 1 the summed
+  rows can be more, because a zone block's rows include the seam halo, which two
+  ranks can both hold, but the union of the ranks' global rows is exactly 1510;
 - the fault's structural rows are test_1106's recorded serial counts at every
   rank count, and they equal the rank-local record summed over the ranks.
 
@@ -97,6 +97,11 @@ def test_the_zone_patch_summary_is_the_same_on_every_rank():
         assert finest["blocks"] == 1, finest
     else:
         assert finest["owned_rows"] >= ZONE_SERIAL_ROWS, finest
+        entry = h.level_patch_rows[-1]
+        blocks = entry if isinstance(entry, list) else [entry]
+        local = np.concatenate([np.asarray(own, dtype=np.int64) for own, _sub in blocks])
+        union = np.unique(np.concatenate(uw.mpi.comm.allgather(local)))
+        assert union.size == ZONE_SERIAL_ROWS, (union.size, finest)
 
 
 def test_the_structural_patch_summary_is_the_serial_rows_at_any_rank_count():

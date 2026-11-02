@@ -2381,12 +2381,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # is per-node so the per-node rotation Q does not disturb it.
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
                 _rows = getattr(_hier, "level_patch_rows", None)
-                if hasattr(_hier, "record_patch_summary"):
-                    _hier.record_patch_summary(_rows, solver.dm.comm)
                 _fac_keys = custom_mg._configure_pcmg(
                     vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
                     patch_rows=_rows)
+                if _hier is not None:
+                    _hier.record_patch_summary(_rows, solver.dm.comm)
                 vel_pc.setUp()
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
@@ -2553,12 +2553,12 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                            else "redundant")
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
                 _rows = getattr(_hier, "level_patch_rows", None)
-                if hasattr(_hier, "record_patch_summary"):
-                    _hier.record_patch_summary(_rows, solver.dm.comm)
                 _fac_keys = custom_mg._configure_pcmg(
                     pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
                     patch_rows=_rows)
+                if _hier is not None:
+                    _hier.record_patch_summary(_rows, solver.dm.comm)
                 pc.setUp()
                 custom_mg._set_up_fac_smoothers(pc, _fac_keys)
                 vpfx = pc.getOptionsPrefix() or ""
