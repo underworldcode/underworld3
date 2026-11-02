@@ -1160,8 +1160,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ``max_it`` caps the Newton increments; the solver passes a user-set
     ``snes_max_it``, else 50 (#920). The pass after the last increment only
     measures the residual, so a solve that converges in ``max_it`` reports
-    converged, and ``max_it=0`` is one residual evaluation. Staged Picard
-    steps count against the cap, unlike the standard path's warm-up.
+    converged, and ``max_it=0`` is one residual evaluation (a cold datum lift
+    is then not applied). A negative cap carries PETSc's meaning: -3
+    (``PETSC_UNLIMITED``) is no cap, -1 and -2 the default of 50. Staged
+    Picard steps count against the cap, unlike the standard path's warm-up.
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -1185,6 +1187,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     solver._update_constants(record=False)
     if rtol is None:
         rtol = float(solver.tolerance)
+    # a negative cap carries PETSc's meaning: PETSC_UNLIMITED is no cap, and
+    # PETSC_DEFAULT / PETSC_DETERMINE are the default of 50
+    if max_it == PETSc.UNLIMITED:
+        max_it = 2**31 - 2
+    elif max_it < 0:
+        max_it = 50
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
     # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
@@ -1766,8 +1774,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     # The true outer-iteration COUNT is the number of Newton increments solved — one
     # linear solve per increment, so len(lin_its). The loop index `iters` undercounts
-    # by one on the step-norm / line-search-stall / max_it exits (the increment of the
-    # final pass is solved before the break) and matches only on the residual exit.
+    # by one on the step-norm / line-search-stall exits (the increment of the final
+    # pass is solved before the break) and matches on the residual and cap exits.
     newton_its = len(lin_its)
 
     # Publish the loop's verdict on the SNES, so that reading the converged

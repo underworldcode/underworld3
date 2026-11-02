@@ -10,11 +10,14 @@ the cap.
 
 The fixture is test_1018's power-law box (eta = eps_II^(1/3 - 1)) under rotated
 free slip on every wall, with the frozen (Picard) tangent: 43 increments at
-``tolerance`` 1e-7 and 54 at 1e-9, measured on macOS. The tests check that the
-cap can be raised past 50 and lowered, that the loop tests the residual after its
+``tolerance`` 1e-7 and 60 at 1e-11, measured on macOS. The tests check that the
+cap can be raised past 50 and lowered; that the loop tests the residual after its
 last increment as PETSc's SNES does (a linear solve converges under a cap of 1,
-and a cap of 0 is one residual evaluation), and that the cap reaches the vector
-solvers' resolver and ``fault_contact.solve_with_fault``.
+and a cap of 0 is one residual evaluation); that a negative cap means what it
+means to PETSc (-1 the default, -3 no cap); and that the cap reaches the vector
+solvers' resolver and ``fault_contact.solve_with_fault``. The cap-of-1 test also
+passes on development, where the cap was ignored: it guards the measuring pass
+after the last increment, not the cap's reach.
 """
 import numpy as np
 import pytest
@@ -26,7 +29,7 @@ from underworld3.utilities import fault_contact
 
 from test_1018_rotated_freeslip import _powerlaw_stokes
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2]
 
 DIVERGED_MAX_IT = PETSc.SNES.ConvergedReason.DIVERGED_MAX_IT
 
@@ -44,8 +47,9 @@ def _rotated_powerlaw_box(prefix, tolerance):
     return s
 
 
+@pytest.mark.tier_b
 def test_the_cap_can_be_raised_past_50():
-    s = _rotated_powerlaw_box("raised", 1e-9)
+    s = _rotated_powerlaw_box("raised", 1e-11)
     s.petsc_options["snes_max_it"] = 100
     s.solve()
     info = s._rotated_freeslip_info
@@ -54,6 +58,7 @@ def test_the_cap_can_be_raised_past_50():
         "the fixture converges within the default cap, so the test cannot fail")
 
 
+@pytest.mark.tier_b
 def test_the_cap_can_be_lowered():
     s = _rotated_powerlaw_box("lowered", 1e-7)
     s.petsc_options["snes_max_it"] = 3
@@ -66,6 +71,7 @@ def test_the_cap_can_be_lowered():
     assert s.snes.getConvergedReason() == DIVERGED_MAX_IT
 
 
+@pytest.mark.tier_b
 def test_a_linear_solve_converges_under_a_cap_of_one():
     mesh = _box()
     x, _y = mesh.X
@@ -83,6 +89,7 @@ def test_a_linear_solve_converges_under_a_cap_of_one():
     assert info["converged"], "the residual after the last increment was not tested"
 
 
+@pytest.mark.tier_b
 def test_a_cap_of_zero_evaluates_the_residual_only():
     s = _rotated_powerlaw_box("zero", 1e-7)
     s.petsc_options["snes_max_it"] = 0
@@ -93,6 +100,18 @@ def test_a_cap_of_zero_evaluates_the_residual_only():
     assert s.snes.getConvergedReason() == DIVERGED_MAX_IT
 
 
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("cap", [-1, -3])
+def test_a_negative_cap_means_what_it_means_to_petsc(cap):
+    """-1 (PETSC_DETERMINE) is the default of 50, -3 (PETSC_UNLIMITED) no cap:
+    both converge the 43-increment solve."""
+    s = _rotated_powerlaw_box(f"negative{-cap}", 1e-7)
+    s.petsc_options["snes_max_it"] = cap
+    s.solve()
+    info = s._rotated_freeslip_info
+    assert info["converged"], info["nonlinear_iterations"]
+
 def test_a_vector_solver_reads_the_user_cap():
     mesh = _box()
     u = uw.discretisation.MeshVariable("u_cap", mesh, mesh.dim, degree=2)
@@ -102,6 +121,7 @@ def test_a_vector_solver_reads_the_user_cap():
     assert projection._rotated_max_it() == 7
 
 
+@pytest.mark.tier_b
 def test_solve_with_fault_takes_the_cap():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, refinement=1,
