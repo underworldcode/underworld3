@@ -19,7 +19,8 @@ Both tests key a zone strip near the left wall, away from the fault, on UWTN
 2026-022's linear fault fixture at 80 rungs (the fixture of test_1106), and
 compare with the structural patch the same level gets without a zone:
 
-- split: every structural row is in the zone-keyed patch;
+- split: every structural row is in the zone-keyed patch, and so are the
+  strip's rows;
 - placed but not split: no structural row is in it, and the structural patch
   is not empty, so a union would have shown.
 
@@ -101,6 +102,10 @@ def test_a_split_level_keeps_its_structural_rows_with_a_zone_keyed():
     assert uw.mpi.comm.allreduce(missing) == 0, (
         f"rank {uw.mpi.rank}: {missing} of {structural.size} structural rows are not in "
         f"the zone-keyed patch (#921)")
+    # and the zone's own rows are there too: a dropped zone would leave the
+    # structural patch alone, which also contains every structural row
+    zone_only = np.setdiff1d(zoned, structural).size
+    assert uw.mpi.comm.allreduce(zone_only) > 0, "the zone strip is not in the patch"
 
 
 def test_an_unsplit_level_keys_its_patch_on_the_zone_alone():

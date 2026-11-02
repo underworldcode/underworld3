@@ -182,39 +182,49 @@ welded tails converge with the serial slip; the thick twin extruded with its pai
 ## When a level takes the FAC patch
 
 The FAC patch is a level's rows that its transfer cannot represent, plus a one-cell
-halo. It is solved with LU blocks on top of whole-level SOR. On a level without a
-split, the cover gate declines it when the patch and halo exceed 75 % of the rows
-(`_FAC_COVER_MAX` in `custom_mg`). That keeps whole-level smoothing on a uniform
-refinement, whose halo reaches every row, and keeps a wide adapt child from getting
-an LU over nearly the whole level (95-98 % of its rows on a widened NVB metric).
+halo. It is solved with LU blocks on top of whole-level SOR. The cover gate declines
+it, and keeps whole-level smoothing, when the patch and halo exceed a fraction of the
+level's rows (`_FAC_COVER_MAX` and `_FAC_COVER_MAX_SPLIT` in `custom_mg`). On a
+uniform refinement, cut or not, the halo reaches every row.
 
-A level that carries a split fault takes its patch whatever its size. Its
-structural rows are rows the coarse level cannot represent, and whole-level SOR does
-not converge them. On UWTN 2026-022's linear fixture the patch and halo were 76 %
-and 86 % of the rows at h_b/S = 48 and 97. The 75 % gate declined them, and the
-velocity solve took 909 and 1487 iterations against 66 with the patch (#918).
-Keying the decision on the background outside the patch was considered and not
-taken: the background shrinks as the band refines (38, 24 and 14 % at h_b/S = 24,
-48 and 97), so a fine enough band would cross any threshold. The size of the
-structural block is a separate question (#895).
+- **A level without a split: 75 %.** On a wide adapt child the patch and halo reach
+  95-98 % of the rows (a widened NVB metric), and taking them would mean one LU over
+  nearly the whole level.
+- **A level that carries a split fault: 98 %**, that is, it declines only when under
+  2 % of its rows lie outside the patch and halo. A placed fault level keeps an
+  untouched background there. On UWTN 2026-022's linear fixture at h_b/S = 24, 48
+  and 97, the patch and halo were 62 %, 76 % and 86 % of the rows, with 38 %, 24 %
+  and 14 % outside. The 75 % gate declined the last two, and whole-level SOR did not
+  converge the band, 24-97 times finer than the coarse level: the velocity solve took
+  909 and 1487 iterations against 66 with the patch (#918).
+- **`add_fault` on a refined base** keeps the base's coarse levels, so its finest pair
+  is a uniform refinement plus the cut, and its patch and halo are the whole level.
+  That level declines, and whole-level SOR converges it (test_1095's serial baseline
+  is 4 velocity iterations).
 
-The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and halo
-rows, taken), from the global counts in parallel, before install drops a renumbered
-coarse level's patch. `set_custom_fmg(..., verbose=True)` prints it. Serial builds
-gate every level, parallel builds only the finest (`test_1134` in `tests/` and
-`tests/parallel/`).
+The background shrinks as a placed band refines, so a band fine enough (past about
+h_b/S = 800 in 2-D, by extrapolation) would decline again. Bounding the structural
+block's size instead is #895.
+
+The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and halo rows,
+taken), from the global counts in parallel. It is the gate's verdict: install drops
+a renumbered coarse level's patch, and the rotated path drops every coarse level's
+patch, afterwards. `set_custom_fmg(..., verbose=True)` prints it; the mesh-owned and
+rotated routes do not print, and the record is at
+`solver._custom_mg["hierarchy"].fac_gate`. Serial builds gate every level, parallel
+builds only the finest (`test_1134` in `tests/` and `tests/parallel/`).
 
 With `fac_zone` masks keyed, the masks' cells give the patch's blocks. On a finest
-level that carries a split fault, the structural rows are added as one more block
-(without the gate), whatever the masks cover. Those rows are the split duplicates and
-the fill around them, which the coarse level cannot represent and whole-level SOR does
-not converge. On the add-on matrix's row 5 (a TI band keyed beside a split fault at
-h_b/S = 24), the velocity solve took 820 iterations with the TI blocks alone and 94
-with the structural block added (#921). Keying the fault's band mask as well is not
-enough (344): the mask holds the band cells but not the fill around them. A level
-without a split keys its patch on the masks alone. That is #670's default, measured
-on a placed weak plane when the patch replaced the level smoother
-(`test_1135`).
+level that carries a split fault, the structural rows are added as one more block,
+whatever the masks cover, under the split level's 98 % gate. On a placed split fault
+those rows are the band, the split duplicates and the fill around them, which the
+coarse level cannot represent and whole-level SOR does not converge. On the add-on
+matrix's row 5 (a TI band keyed beside a split fault at h_b/S = 24), the velocity
+solve took 820 iterations with the TI blocks alone and 94 with the structural block
+added (#921). Keying the fault's band mask as well is not enough (344): the mask
+holds the band cells but not the fill around them. A level without a split keys its
+patch on the masks alone. That is #670's default, measured on a placed weak plane
+when the patch replaced the level smoother (`test_1135`).
 
 ## Not yet done
 

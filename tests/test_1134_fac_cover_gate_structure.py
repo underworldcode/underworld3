@@ -2,8 +2,9 @@
 
 The cover gate declines a FAC patch whose subdomain (patch plus halo) exceeds
 75 % of the level's rows, so that a uniform refinement, whose halo reaches every
-row, keeps whole-level smoothing. A split fault level now takes its patch
-whatever its size (``tests/parallel/test_1134_fac_cover_gate_split_parallel.py``).
+row, keeps whole-level smoothing. A split fault level now declines only when
+under 2 % of its rows lie outside its patch and halo
+(``tests/parallel/test_1134_fac_cover_gate_split_parallel.py``).
 A level without a split keeps the gate: the measurements that moved it were on
 split levels, and on a wide adapt child the patch and halo reach 95-98 % of the
 level, an LU over nearly all of it. Each verdict is recorded on

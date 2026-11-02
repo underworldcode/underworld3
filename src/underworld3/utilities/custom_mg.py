@@ -584,11 +584,18 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
         return None
     return P
 
-# The FAC cover gate on a level without a split: patch plus halo above this
-# fraction of the level's rows keeps whole-level smoothing. A uniform pair's
-# halo reaches every row; a wide adapt child's patch and halo reach 95-98 %,
-# which would make the patch an LU over nearly the whole level (#918 review).
+# The FAC cover gate (#918): patch plus halo above this fraction of a level's
+# rows keeps whole-level smoothing; a uniform pair's halo reaches every row.
+# Without a split the gate is 0.75: a wide adapt child's patch and halo reach
+# 95-98 % of its rows, an LU over nearly the whole level. A placed fault
+# level keeps a background outside its patch and halo (38, 24 and 14 % at
+# h_b/S = 24, 48 and 97 on UWTN 2026-022's fixture), and whole-level SOR does
+# not converge its band (909 and 1487 velocity iterations against 66 when the
+# 0.75 gate declined it), so a split level declines only when under 2 % of
+# its rows lie outside: a cut uniform pair, whose patch and halo are the
+# whole level and which SOR converges.
 _FAC_COVER_MAX = 0.75
+_FAC_COVER_MAX_SPLIT = 0.98
 
 
 def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
@@ -616,12 +623,11 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     Returns ``(owned_rows, subdomain_rows)`` — reduced fine row indices of
     the patch and of patch+halo — or ``None`` when patch+halo covers more
     than ``cover_max`` of the level: a uniform pair refines everywhere, and
-    whole-level smoothing is then the right configuration. ``cover_max=None``
-    takes the split whatever its size, as a split level does: its structural
-    rows are rows the coarse level cannot represent, and whole-level SOR does
-    not converge them (#918: 909 velocity iterations against 66 with the
-    patch). A dict passed as ``gate`` receives the verdict: ``rows``,
-    ``subdomain_rows`` and ``taken``.
+    whole-level smoothing is then the right configuration. The hierarchy
+    passes 0.75, or 0.98 on a level that carries a split fault
+    (``_FAC_COVER_MAX``, ``_FAC_COVER_MAX_SPLIT``); ``cover_max=None`` takes
+    the split whatever its size. A dict passed as ``gate`` receives the
+    verdict: ``rows``, ``subdomain_rows`` and ``taken``.
     """
     P = P_csr.tocsr()
     n = P.shape[0]
@@ -1440,9 +1446,9 @@ class CustomMGHierarchy:
         one ASM block per fault segment (masks may overlap; a junction cell
         in two masks sits inside both blocks). When the finest level carries
         a split fault, its structural patch (the rows the transfer cannot
-        represent) is added as one more block; a level without a split keys
-        the patch on the masks alone (#921). ``None`` keys the patch on the
-        structural rows alone.
+        represent) is added as one more block, unless the split level's cover
+        gate declines it; a level without a split keys the patch on the masks
+        alone (#921). ``None`` keys the patch on the structural rows alone.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
@@ -1765,15 +1771,17 @@ class CustomMGHierarchy:
                                 if piece.size:
                                     blocks.append((piece, piece))
                                     covered.update(piece.tolist())
-                    # A split level's structural rows (the split duplicates
-                    # and the fill around them) are rows the coarse level
-                    # cannot represent, and whole-level SOR does not converge
-                    # them: with a zone keyed beside a split fault, leaving
-                    # them out took 820 velocity iterations against 94
-                    # (#921). They join the zone's blocks whatever the zone
-                    # covers. A level without a split keeps the zone's blocks
-                    # alone, the default #670 measured on a placed weak plane.
-                    # The split marker is the same on every rank.
+                    # A placed split fault's structural rows (its band, 24
+                    # times finer than the coarse level here, the split
+                    # duplicates and the fill around them) are rows the
+                    # coarse level cannot represent, and whole-level SOR does
+                    # not converge them: with a zone keyed beside the fault,
+                    # leaving them out took 820 velocity iterations against
+                    # 94 (#921). They join the zone's blocks whatever the zone
+                    # covers, under the split level's gate (#918). A level
+                    # without a split keeps the zone's blocks alone, the
+                    # default #670 measured on a placed weak plane. The split
+                    # marker is the same on every rank.
                     split = None
                     split_level = fault_mg.is_split_level(self.level_meshes[l])
                     # the split's cover gate is collective: decide whether
@@ -1782,13 +1790,11 @@ class CustomMGHierarchy:
                     zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
                                                        op=MPI.LOR)
                     if split_level or not zone_anywhere:
-                        # a split level's structural patch is taken whatever
-                        # its size (#918); a level without one keeps the gate
                         gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
                             mpi_comm,
-                            cover_max=None if split_level else _FAC_COVER_MAX,
+                            cover_max=self._fac_cover_max(l),
                             gate=gate)
                         self.fac_gate[l] = gate or None
                     if split is not None:
@@ -1879,15 +1885,17 @@ class CustomMGHierarchy:
                                     blocks.append((piece, piece))
                                     covered[piece] = True
                         # A split level's structural rows join the zone's
-                        # blocks as one more block, as in the parallel branch
-                        # (#921); a level without a split keeps the zone's
-                        # blocks alone (#670).
+                        # blocks as one more block under the split level's
+                        # gate, as in the parallel branch (#921, #918); a
+                        # level without a split keeps the zone's blocks alone
+                        # (#670).
                         split = None
                         if fault_mg.is_split_level(self.level_meshes[l]):
                             gate = {}
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
-                                maps[l], nc, cover_max=None, gate=gate)
+                                maps[l], nc, cover_max=_FAC_COVER_MAX_SPLIT,
+                                gate=gate)
                             self.fac_gate[l] = gate or None
                         if split is not None:
                             _own, sub = split
@@ -1898,14 +1906,10 @@ class CustomMGHierarchy:
                             None if not blocks
                             else blocks[0] if len(blocks) == 1 else blocks)
                     else:
-                        # a split level's structural patch is taken
-                        # whatever its size (#918)
                         gate = {}
                         self.level_patch_rows[l] = _fac_patch_split(
                             Pr, coords[l - 1], coords[l], maps[l - 1],
-                            maps[l], nc,
-                            cover_max=(None if fault_mg.is_split_level(
-                                self.level_meshes[l]) else _FAC_COVER_MAX),
+                            maps[l], nc, cover_max=self._fac_cover_max(l),
                             gate=gate)
                         self.fac_gate[l] = gate or None
                 Ps.append(_to_petsc_aij(Pr))
@@ -1918,6 +1922,13 @@ class CustomMGHierarchy:
             mpi.pprint(f"[{solver.name}] FAC cover gate: "
                        + ("; ".join(verdicts) or "not run"))
         return Ps
+
+    def _fac_cover_max(self, l):
+        """The FAC cover gate's threshold on level ``l`` (#918): 0.98 on a
+        level that carries a split fault, 0.75 on any other."""
+        from underworld3.utilities.fault_mg import is_split_level
+        return (_FAC_COVER_MAX_SPLIT if is_split_level(self.level_meshes[l])
+                else _FAC_COVER_MAX)
 
     @staticmethod
     def _assert_finest_matches_operator(solver, finest_map, parallel):
@@ -2068,9 +2079,13 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     ``mesh.cells_labelled("Band")`` for a placed ribbon, or
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
     list of masks for per-segment ASM blocks. On a split finest level the
-    structural rows are added as one more block; without a split the masks
-    alone key the patch (#921). The patch is solved strongly once per
-    smoother application (basic ASM, shifted factorization)."""
+    structural rows are added as one more block, unless its gate declines
+    them; without a split the masks alone key the patch (#921). The patch is
+    solved strongly once per smoother application (basic ASM, shifted
+    factorization).
+
+    ``verbose`` prints the installed transfer sizes and the FAC cover gate's
+    verdict per level (``hierarchy.fac_gate``, #918)."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
