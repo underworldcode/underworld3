@@ -225,12 +225,14 @@ only the finest. Tests: `test_1134` in `tests/` and `tests/parallel/`.
 
 With `fac_zone` masks keyed, the masks' cells give the patch's blocks. On a finest
 level that carries a split fault, the structural rows are added as one more block,
-whatever the masks cover, under the split level's 98 % gate. On a placed split fault
-those rows are the band, the split duplicates and the fill around them, which the
-coarse level cannot represent and whole-level SOR does not converge. On the add-on
-matrix's row 5 (a TI band keyed beside a split fault at h_b/S = 24), the velocity
-solve took 820 iterations with the TI blocks alone and 94 with the structural block
-added (#921). Keying the fault's band mask as well is not enough (344): the mask
+whatever the masks cover, under the split level's 98 % gate. On a zone-keyed level,
+the gate's verdict in `fac_gate` is the structural block's alone: the zone's blocks are
+installed either way. On a placed split fault the structural rows are the band, the
+split duplicates and the fill around them, which the coarse level cannot represent
+and whole-level SOR converges slowly. On the add-on matrix's row 5 (a TI band keyed
+beside a split fault at h_b/S = 24), the velocity solve took 820 iterations, summed
+over 17 applications, with the TI blocks alone and 94 with the structural block added
+(#921). Keying the fault's band mask as well is not enough (344): the mask
 holds the band cells but not the fill around them. A level without a split keys its
 patch on the masks alone. That is #670's default, measured on a placed weak plane
 when the patch replaced the level smoother (`test_1135`).

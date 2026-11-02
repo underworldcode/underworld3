@@ -4,11 +4,12 @@ The finest level's FAC patch is keyed either on the structural rows (the rows
 its transfer cannot represent, found from the transfer) or, when ``fac_zone``
 masks are passed, on the masks' cells. With a zone keyed, the structural rows
 joined the zone's blocks only under ``UW_FAC_STRUCTURAL=1``, against the
-documentation, which said they were always added. On a split fault those rows
-are the split duplicates and the fill around them, which the coarse level
-cannot represent, and whole-level SOR does not converge them: on the add-on
-matrix's row 5 (a TI band keyed beside a split fault, h_b/S = 24) the velocity
-solve took 820 iterations against 94 with the union.
+documentation, which said they were always added. On a placed split fault those
+rows are the band, the split duplicates and the fill around them, which the
+coarse level cannot represent, and whole-level SOR converges them slowly: on the
+add-on matrix's row 5 (a TI band keyed beside a split fault, h_b/S = 24) the
+velocity solve took 820 iterations, summed over 17 applications, against 94 with
+the union.
 
 Now a level that carries a split fault always has its structural rows in the
 patch, whatever the zone. A level without a split (a painted or placed band)
@@ -39,7 +40,7 @@ import underworld3 as uw
 from underworld3.utilities.custom_mg import CustomMGHierarchy, set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2]
 
 A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
@@ -95,6 +96,7 @@ def _structural_and_zone_patches(split):
     return structural, _patch_rows(zoned.level_patch_rows[-1])
 
 
+@pytest.mark.tier_b
 def test_a_split_level_keeps_its_structural_rows_with_a_zone_keyed():
     structural, zoned = _structural_and_zone_patches(split=True)
     assert uw.mpi.comm.allreduce(structural.size) > 0, "the split level has no structural patch"
@@ -108,6 +110,7 @@ def test_a_split_level_keeps_its_structural_rows_with_a_zone_keyed():
     assert uw.mpi.comm.allreduce(zone_only) > 0, "the zone strip is not in the patch"
 
 
+@pytest.mark.tier_b
 def test_an_unsplit_level_keys_its_patch_on_the_zone_alone():
     structural, zoned = _structural_and_zone_patches(split=False)
     assert uw.mpi.comm.allreduce(structural.size) > 0, (
