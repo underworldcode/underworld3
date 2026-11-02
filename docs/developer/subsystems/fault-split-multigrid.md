@@ -179,21 +179,30 @@ awareness and quadratic exactness) and
 `tests/parallel/test_1089_fault_split_multigrid_parallel.py` (np = 2 and 4: split and
 welded tails converge with the serial slip; the thick twin extruded with its pairing).
 
-## When the finest level takes the FAC patch
+## When a level takes the FAC patch
 
-The FAC patch is the finest level's rows that its transfer cannot represent, plus a
-one-cell halo; it is solved with LU blocks on top of whole-level SOR. The cover gate
-declines it where whole-level smoothing alone is right: a uniform refinement, whose
-halo reaches every row. It reads the background outside the patch and halo, not the
-patch's size. The patch is taken when at least 2 % of the level's rows lie outside
-(`background_min` in `custom_mg._fac_patch_split`). A locally refined fault level
-keeps an untouched background however large its patch. On UWTN 2026-022's linear
-fixture at h_b/S of 24, 48 and 97, the patch and halo were 62 %, 76 % and 86 % of
-the rows, and 38 %, 24 % and 14 % lay outside. The old gate declined at 75 %, and
-the velocity solve then took 909 and 1487 iterations against 66 with the patch
-(#918). The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and
-halo rows, taken), from the global counts in parallel, and
-`set_custom_fmg(..., verbose=True)` prints it (`test_1134`).
+The FAC patch is a level's rows that its transfer cannot represent, plus a one-cell
+halo. It is solved with LU blocks on top of whole-level SOR. On a level without a
+split, the cover gate declines it when the patch and halo exceed 75 % of the rows
+(`_FAC_COVER_MAX` in `custom_mg`). That keeps whole-level smoothing on a uniform
+refinement, whose halo reaches every row, and keeps a wide adapt child from getting
+an LU over nearly the whole level (95-98 % of its rows on a widened NVB metric).
+
+A level that carries a split fault takes its patch whatever its size. Its
+structural rows are rows the coarse level cannot represent, and whole-level SOR does
+not converge them. On UWTN 2026-022's linear fixture the patch and halo were 76 %
+and 86 % of the rows at h_b/S = 48 and 97. The 75 % gate declined them, and the
+velocity solve took 909 and 1487 iterations against 66 with the patch (#918).
+Keying the decision on the background outside the patch was considered and not
+taken: the background shrinks as the band refines (38, 24 and 14 % at h_b/S = 24,
+48 and 97), so a fine enough band would cross any threshold. The size of the
+structural block is a separate question (#895).
+
+The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and halo
+rows, taken), from the global counts in parallel, before install drops a renumbered
+coarse level's patch. `set_custom_fmg(..., verbose=True)` prints it. Serial builds
+gate every level, parallel builds only the finest (`test_1134` in `tests/` and
+`tests/parallel/`).
 
 ## Not yet done
 
