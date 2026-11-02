@@ -1977,9 +1977,10 @@ class CustomMGHierarchy:
         """Set :attr:`patch_summary` from the patch rows handed to the installer.
 
         Collective (see :func:`_fac_patch_summary`). Each install route calls
-        it once the patch is set up, with the rows it installed, after the
-        orphan restriction has dropped the rows of every coarse level it
-        renumbered; ``build`` clears the previous record. Each block is
+        it with the rows it installed, once the PC is configured (and set up,
+        on the velocity-block routes), after the orphan restriction has
+        dropped the rows of every coarse level it renumbered; ``build``
+        clears the previous record. Each block is
         recorded as handed over, before PCASM adds its overlap layer at
         set-up. Reading :attr:`patch_summary` afterwards makes no collective
         call, so any rank can read it alone."""
