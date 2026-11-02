@@ -584,9 +584,15 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
         return None
     return P
 
+# The FAC cover gate on a level without a split: patch plus halo above this
+# fraction of the level's rows keeps whole-level smoothing. A uniform pair's
+# halo reaches every row; a wide adapt child's patch and halo reach 95-98 %,
+# which would make the patch an LU over nearly the whole level (#918 review).
+_FAC_COVER_MAX = 0.75
+
 
 def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
-                     w_tol=1e-8, x_tol=1e-9, background_min=0.02, gate=None):
+                     w_tol=1e-8, x_tol=1e-9, cover_max=_FAC_COVER_MAX, gate=None):
     """FAC patch/background split of one level's reduced fine DOFs (#629).
 
     A locally-refined hierarchy is a COMPOSITE grid: levels differ only in
@@ -608,15 +614,14 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     under the rotated path's per-node Q rotation.
 
     Returns ``(owned_rows, subdomain_rows)`` — reduced fine row indices of
-    the patch and of patch+halo — or ``None`` when fewer than
-    ``background_min`` of the level's rows lie outside patch+halo (#918). On
-    a uniform pair the halo reaches every row and nothing lies outside, so
-    whole-level smoothing is the right configuration. A locally refined
-    level keeps an untouched background however large its patch (14-38 %
-    of the rows on the fault levels of #918, whose patch+halo reached 86 %),
-    so the gate reads the background, not the patch's size.
-    ``background_min=0`` always takes the split. A dict passed as ``gate``
-    receives the verdict: ``rows``, ``subdomain_rows`` and ``taken``.
+    the patch and of patch+halo — or ``None`` when patch+halo covers more
+    than ``cover_max`` of the level: a uniform pair refines everywhere, and
+    whole-level smoothing is then the right configuration. ``cover_max=None``
+    takes the split whatever its size, as a split level does: its structural
+    rows are rows the coarse level cannot represent, and whole-level SOR does
+    not converge them (#918: 909 velocity iterations against 66 with the
+    patch). A dict passed as ``gate`` receives the verdict: ``rows``,
+    ``subdomain_rows`` and ``taken``.
     """
     P = P_csr.tocsr()
     n = P.shape[0]
@@ -716,7 +721,7 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     node_in_sub[node_f[halo_rows]] = True
 
     sub = np.flatnonzero(node_in_sub[node_f])
-    taken = n - sub.size >= background_min * n
+    taken = cover_max is None or sub.size <= cover_max * n
     if gate is not None:
         gate.update(rows=int(n), subdomain_rows=int(sub.size), taken=bool(taken))
     if not taken:
@@ -800,7 +805,7 @@ def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
 
 
 def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
-                              w_tol=1e-8, x_tol=1e-9, background_min=0.02,
+                              w_tol=1e-8, x_tol=1e-9, cover_max=_FAC_COVER_MAX,
                               gate=None):
     """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
 
@@ -887,7 +892,7 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
     n_sub = comm.allreduce(int(sub_local.size), op=MPI.SUM)
     n_all = comm.allreduce(int(n), op=MPI.SUM)
-    taken = n_all - n_sub >= background_min * n_all
+    taken = cover_max is None or n_sub <= cover_max * n_all
     if gate is not None:
         gate.update(rows=int(n_all), subdomain_rows=int(n_sub), taken=bool(taken))
     if not taken:
@@ -1623,7 +1628,9 @@ class CustomMGHierarchy:
         # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
         # per level, the cover gate's verdict where it ran (#918): rows,
-        # patch+halo rows and taken, global counts, the same on every rank
+        # patch+halo rows and taken, global counts, the same on every rank.
+        # It is the gate's verdict: install can still drop a renumbered
+        # coarse level's patch afterwards.
         self.fac_gate = [None] * nlev
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
@@ -1775,15 +1782,15 @@ class CustomMGHierarchy:
                     zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
                                                        op=MPI.LOR)
                     if split_level or not zone_anywhere:
-                        # with a zone keyed, its structural rows are always
-                        # added: no gate
+                        # a split level's structural patch is taken whatever
+                        # its size (#918); a level without one keeps the gate
                         gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
                             mpi_comm,
-                            background_min=(0.0 if zone_anywhere else 0.02),
+                            cover_max=None if split_level else _FAC_COVER_MAX,
                             gate=gate)
-                        self.fac_gate[l] = gate
+                        self.fac_gate[l] = gate or None
                     if split is not None:
                         _own, sub = split
                         extra = np.asarray([g for g in sub if g not in covered],
@@ -1880,8 +1887,8 @@ class CustomMGHierarchy:
                             gate = {}
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
-                                maps[l], nc, background_min=0.0, gate=gate)
-                            self.fac_gate[l] = gate
+                                maps[l], nc, cover_max=None, gate=gate)
+                            self.fac_gate[l] = gate or None
                         if split is not None:
                             _own, sub = split
                             extra = sub[~covered[sub]].astype(np.int64)
@@ -1891,10 +1898,15 @@ class CustomMGHierarchy:
                             None if not blocks
                             else blocks[0] if len(blocks) == 1 else blocks)
                     else:
+                        # a split level's structural patch is taken
+                        # whatever its size (#918)
                         gate = {}
                         self.level_patch_rows[l] = _fac_patch_split(
                             Pr, coords[l - 1], coords[l], maps[l - 1],
-                            maps[l], nc, gate=gate)
+                            maps[l], nc,
+                            cover_max=(None if fault_mg.is_split_level(
+                                self.level_meshes[l]) else _FAC_COVER_MAX),
+                            gate=gate)
                         self.fac_gate[l] = gate or None
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps

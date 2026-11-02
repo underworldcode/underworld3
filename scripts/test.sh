@@ -327,6 +327,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/parallel/test_1088_rotated_interface_operator_parallel.py
   # So is the band patch, the same rows at any rank count (#896).
   batch 4 tests/parallel/test_1106_fac_cover_partition_parallel.py
+  # So is the split level's FAC patch, taken over the old cover gate (#918).
+  batch 4 tests/parallel/test_1134_fac_cover_gate_split_parallel.py
   # So is the zone-keyed patch of a split level, which keeps its structural rows (#921).
   batch 4 tests/parallel/test_1135_fac_zone_split_structural_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
@@ -352,7 +354,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/test_110*py
   batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
   batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
-  batch 4 tests/test_1134*py  # the FAC cover gate reads the background (#918)
+  batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
