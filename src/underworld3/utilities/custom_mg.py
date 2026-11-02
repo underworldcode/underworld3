@@ -761,8 +761,11 @@ def _strip_block(rows, node_of_row, coords, width):
     """TODO(MEASURE): probe knob (iterative FAC patch, 2026-11). The rows cut
     along strike into strips ``width`` long, the strike being the principal
     direction of their nodes: at the rung spacing, one rung line per block, in
-    place of :func:`_segment_block`'s pieces of a fixed row count."""
+    place of :func:`_segment_block`'s pieces of a fixed row count. A rank
+    holding none of the patch has no strips."""
     rows = np.asarray(rows, dtype=np.int64)
+    if not rows.size:
+        return []
     uniq, inv = np.unique(np.asarray(node_of_row, dtype=np.int64),
                           return_inverse=True)
     P = np.asarray(coords)[uniq]
