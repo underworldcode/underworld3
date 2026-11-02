@@ -66,6 +66,7 @@ pages, never copies. A change to a family is reviewed against its guides.
 | [Plasticity solvers](guides/plasticity-solvers.md) | viscoplastic and VEP Stokes |
 | [Adaptive meshing](guides/adaptive-meshing.md) | moving-mesh convection |
 | [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
+| [Fault multigrid](guides/fault-multigrid.md) | the hierarchy and the strong patch for faulted Stokes |
 | [Faults in convection](guides/faults-in-convection.md) | split-node faults in time-dependent Stokes |
 | [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
 | [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
@@ -174,6 +175,8 @@ guides/nonlinear-solver
 guides/plasticity-solvers
 guides/adaptive-meshing
 guides/adapt-on-top-faults
+guides/fault-multigrid
+guides/faults-in-convection
 guides/free-surface-convection
 guides/uw-visualisation
 guides/cetz-figures
