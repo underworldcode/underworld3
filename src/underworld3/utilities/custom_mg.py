@@ -585,6 +585,62 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
     return P
 
 
+def fac_patch_summary(patch_rows, comm):
+    """The FAC patch on each PCMG level, summed over the ranks.
+
+    Collective: one allgather, and every rank returns the same list. Read it
+    in place of ``CustomMGHierarchy.level_patch_rows``, which is rank-local and
+    whose form differs between ranks. A level is None, one ``(owned,
+    subdomain)`` pair of reduced-row arrays, or a list of pairs (one per ASM
+    block), and a rank holding no part of a zone carries an empty pair. A
+    caller that sums it itself must make the same collectives on every rank
+    whatever its own entry is. One that loops a reduction over its own blocks
+    hangs, as the add-on matrix's row 5 driver did at np 4.
+
+    Parameters
+    ----------
+    patch_rows : list or None
+        The per-level patch rows handed to the installer (:func:`_configure_pcmg`).
+    comm : PETSc.Comm
+        The solver's communicator.
+
+    Returns
+    -------
+    list
+        One entry per level: None where no rank has a patch, else a dict with
+        ``blocks`` (ASM subdomains over all ranks, empty ones included),
+        ``owned_rows`` (the patch rows; the structural patch's are disjoint across
+        ranks, so its total does not depend on the partition, while a zone
+        block's rows include the seam halo, which two ranks can both hold),
+        ``subdomain_rows`` (the patch plus its halo, summed over the ranks),
+        ``block_rows_max``, and ``block_rows_per_rank`` (each rank's block
+        sizes, in rank order).
+    """
+    mine = []
+    for entry in (patch_rows or []):
+        if entry is None:
+            mine.append(None)
+            continue
+        blocks = entry if isinstance(entry, list) else [entry]
+        mine.append(([int(len(sub)) for _own, sub in blocks],
+                     int(sum(len(own) for own, _sub in blocks))))
+    every = comm.tompi4py().allgather(mine)
+    out = []
+    for level in range(max((len(m) for m in every), default=0)):
+        parts = [m[level] if level < len(m) else None for m in every]
+        if all(part is None for part in parts):
+            out.append(None)
+            continue
+        sizes = [part[0] if part is not None else [] for part in parts]
+        out.append({"blocks": sum(len(rank) for rank in sizes),
+                    "owned_rows": sum(part[1] for part in parts if part is not None),
+                    "subdomain_rows": sum(sum(rank) for rank in sizes),
+                    "block_rows_max": max((max(rank) for rank in sizes if rank),
+                                          default=0),
+                    "block_rows_per_rank": sizes})
+    return out
+
+
 def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
                      w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
     """FAC patch/background split of one level's reduced fine DOFs (#629).
@@ -1450,6 +1506,9 @@ class CustomMGHierarchy:
         # cost is bounded by the cap however long the band grows.
         self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
+        # the FAC patch per level as installed, summed over the ranks
+        # (fac_patch_summary); set where the patch goes onto the smoothers
+        self.patch_summary = None
         # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
         # split-node fault takes the side-aware cell-located transfer, and its
         # unreached unknowns are dropped at install rather than repaired.
@@ -1912,6 +1971,17 @@ class CustomMGHierarchy:
                 f"Rebuild the solver so its DM section matches the operator before "
                 f"installing custom-P.")
 
+    def record_patch_summary(self, patch_rows, comm):
+        """Set :attr:`patch_summary` from the patch rows handed to the installer.
+
+        Collective (see :func:`fac_patch_summary`). Each install route calls
+        it with the rows it installs. By then the orphan restriction has
+        dropped the rows of every coarse level it renumbered, so the record
+        is what the smoothers carry. Reading :attr:`patch_summary` afterwards
+        makes no collective call, so any rank can read it alone."""
+        self.patch_summary = fac_patch_summary(patch_rows, comm)
+        return self.patch_summary
+
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
@@ -1930,6 +2000,7 @@ class CustomMGHierarchy:
                     else rows
                     for level, rows in enumerate(patch_rows)]
             Ps = restricted
+        self.record_patch_summary(patch_rows, solver.dm.comm)
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).

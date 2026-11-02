@@ -62,6 +62,20 @@ orphans, with and without a split finest) and 512 duplicated columns at np = 2. 
 coarse levels' FAC patch rows do not survive the renumbering and are cleared; the
 finest's are unchanged.
 
+`CustomMGHierarchy.level_patch_rows` is rank-local, and its form differs between
+ranks: per level None, one `(owned, subdomain)` pair, or a list of pairs, and a rank
+holding no part of a zone has an empty pair. Read the patch through
+`hierarchy.patch_summary` instead. It is one entry per level, None where no rank has
+a patch, otherwise the blocks, owned and subdomain rows summed over the ranks, the
+largest block, and each rank's block sizes. It is made once, with one allgather
+(`custom_mg.fac_patch_summary`), wherever the patch is installed:
+`CustomMGHierarchy.install` and the rotated path's two `_configure_pcmg` calls.
+Reading it makes no collective call, so any rank can read it alone. A driver that
+looped a reduction over its own rank's blocks hung at np 4, because the ranks made
+different numbers of calls. The structural patch's owned rows are disjoint across
+ranks, so their total does not depend on the partition. A zone block's rows include
+the seam halo, which two ranks can both hold (`test_1133`).
+
 ## Rotated walls on every level
 
 A hierarchy under rotated free-slip walls (an annulus, a spherical shell) rotates
