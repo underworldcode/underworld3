@@ -112,9 +112,11 @@ over the seams (free cells move from a heavier rank to a lighter neighbour, the
 cells farthest from the faults first), and the one assignment is applied to every
 add-on level through the parent-cell relation. The background levels never move.
 A base with no add-on levels (one built with `refinement`, say) moves its own
-finest, the level the band is placed on. That level stays background
-(`_mg_static`), so the replay leaves it uncut, as in serial; before #919 the moved
-copy was marked add-on, and the replay was attempted at np > 1 only. The cut, the placement and the split then run on rank-interior regions and move
+finest, the level the band is placed on. That level stays background:
+`partition_addon` marks the moved copy `_mg_static`, because the base mesh itself
+carries no mark (only the wraps of its levels do). The replay therefore leaves it
+uncut, as in serial; before #919 the moved copy was unmarked, so it was taken for an
+add-on level, and the replay was attempted at np > 1 only. The cut, the placement and the split then run on rank-interior regions and move
 nothing; the replay of the faults on the add-on levels (`split_tail_levels`) arrives
 on levels already partitioned with the finest.
 
