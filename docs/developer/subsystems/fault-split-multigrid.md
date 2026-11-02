@@ -179,6 +179,22 @@ awareness and quadratic exactness) and
 `tests/parallel/test_1089_fault_split_multigrid_parallel.py` (np = 2 and 4: split and
 welded tails converge with the serial slip; the thick twin extruded with its pairing).
 
+## When the finest level takes the FAC patch
+
+The FAC patch is the finest level's rows that its transfer cannot represent, plus a
+one-cell halo; it is solved with LU blocks on top of whole-level SOR. The cover gate
+declines it where whole-level smoothing alone is right: a uniform refinement, whose
+halo reaches every row. It reads the background outside the patch and halo, not the
+patch's size. The patch is taken when at least 2 % of the level's rows lie outside
+(`background_min` in `custom_mg._fac_patch_split`). A locally refined fault level
+keeps an untouched background however large its patch. On UWTN 2026-022's linear
+fixture at h_b/S of 24, 48 and 97, the patch and halo were 62 %, 76 % and 86 % of
+the rows, and 38 %, 24 % and 14 % lay outside. The old gate declined at 75 %, and
+the velocity solve then took 909 and 1487 iterations against 66 with the patch
+(#918). The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and
+halo rows, taken), from the global counts in parallel, and
+`set_custom_fmg(..., verbose=True)` prints it (`test_1134`).
+
 ## Not yet done
 
 - A regression test for the coarse-level wall rotation itself (a rotated free-slip

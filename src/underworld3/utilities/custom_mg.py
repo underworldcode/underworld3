@@ -586,7 +586,7 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
 
 
 def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
-                     w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+                     w_tol=1e-8, x_tol=1e-9, background_min=0.02, gate=None):
     """FAC patch/background split of one level's reduced fine DOFs (#629).
 
     A locally-refined hierarchy is a COMPOSITE grid: levels differ only in
@@ -608,17 +608,20 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     under the rotated path's per-node Q rotation.
 
     Returns ``(owned_rows, subdomain_rows)`` — reduced fine row indices of
-    the patch and of patch+halo — or ``None`` when patch+halo covers more
-    than ``cover_max`` of the level: a uniform pair refines everywhere, and
-    whole-level smoothing is then the right configuration.
+    the patch and of patch+halo — or ``None`` when fewer than
+    ``background_min`` of the level's rows lie outside patch+halo (#918). On
+    a uniform pair the halo reaches every row and nothing lies outside, so
+    whole-level smoothing is the right configuration. A locally refined
+    level keeps an untouched background however large its patch (14-38 %
+    of the rows on the fault levels of #918, whose patch+halo reached 86 %),
+    so the gate reads the background, not the patch's size.
+    ``background_min=0`` always takes the split. A dict passed as ``gate``
+    receives the verdict: ``rows``, ``subdomain_rows`` and ``taken``.
     """
     P = P_csr.tocsr()
     n = P.shape[0]
     if n == 0:
         return None
-    # TODO(MEASURE): #629 campaign knob for the whole-level gate; remove
-    # once the cover threshold is settled.
-    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
     map_f = np.asarray(map_f, dtype=np.int64)
     map_c = np.asarray(map_c, dtype=np.int64)
     node_f = map_f // nc
@@ -713,7 +716,10 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     node_in_sub[node_f[halo_rows]] = True
 
     sub = np.flatnonzero(node_in_sub[node_f])
-    if sub.size > cover_max * n:
+    taken = n - sub.size >= background_min * n
+    if gate is not None:
+        gate.update(rows=int(n), subdomain_rows=int(sub.size), taken=bool(taken))
+    if not taken:
         return None
     owned = np.flatnonzero(row_is_patch)
     return owned.astype(np.int64), sub.astype(np.int64)
@@ -794,7 +800,8 @@ def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
 
 
 def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
-                              w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+                              w_tol=1e-8, x_tol=1e-9, background_min=0.02,
+                              gate=None):
     """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
 
     This rank's owned rows of ``P`` are classified as in the serial split
@@ -807,10 +814,9 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     patch row of THIS rank references, so it can differ from the serial halo
     where a partition boundary runs along the band. The cover
     gate is decided on the global counts, so every rank returns the same
-    verdict. Returns ``(owned_global_rows, subdomain_global_rows)`` or
-    ``None``.
+    verdict, and ``gate`` receives the same record on every rank. Returns
+    ``(owned_global_rows, subdomain_global_rows)`` or ``None``.
     """
-    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
     fstart, fend = lay_f.rstart, lay_f.rend
     n = fend - fstart
     indptr, cols, data = P.getValuesCSR()
@@ -881,7 +887,10 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
     n_sub = comm.allreduce(int(sub_local.size), op=MPI.SUM)
     n_all = comm.allreduce(int(n), op=MPI.SUM)
-    if n_sub > cover_max * n_all:
+    taken = n_all - n_sub >= background_min * n_all
+    if gate is not None:
+        gate.update(rows=int(n_all), subdomain_rows=int(n_sub), taken=bool(taken))
+    if not taken:
         return None
     owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
     sub = (sub_local + fstart).astype(np.int64)
@@ -1611,6 +1620,9 @@ class CustomMGHierarchy:
         # patch is read off its own transfer ``Ps[l-1]``, in the level
         # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
+        # per level, the cover gate's verdict where it ran (#918): rows,
+        # patch+halo rows and taken, global counts, the same on every rank
+        self.fac_gate = [None] * nlev
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
@@ -1755,10 +1767,15 @@ class CustomMGHierarchy:
                                                        op=MPI.LOR)
                     if (os.environ.get("UW_FAC_STRUCTURAL", "0") != "0"
                             or not zone_anywhere):
+                        # with a zone keyed, its structural rows are always
+                        # added: no gate
+                        gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
                             mpi_comm,
-                            cover_max=(1.01 if zone_anywhere else 0.75))
+                            background_min=(0.0 if zone_anywhere else 0.02),
+                            gate=gate)
+                        self.fac_gate[l] = gate
                     if split is not None:
                         _own, sub = split
                         extra = np.asarray([g for g in sub if g not in covered],
@@ -1856,9 +1873,11 @@ class CustomMGHierarchy:
                         # the uncovered structural rows as one more block.
                         split = None
                         if os.environ.get("UW_FAC_STRUCTURAL", "0") != "0":
+                            gate = {}
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
-                                maps[l], nc, cover_max=1.01)
+                                maps[l], nc, background_min=0.0, gate=gate)
+                            self.fac_gate[l] = gate
                         if split is not None:
                             _own, sub = split
                             extra = sub[~covered[sub]].astype(np.int64)
@@ -1868,11 +1887,20 @@ class CustomMGHierarchy:
                             None if not blocks
                             else blocks[0] if len(blocks) == 1 else blocks)
                     else:
+                        gate = {}
                         self.level_patch_rows[l] = _fac_patch_split(
                             Pr, coords[l - 1], coords[l], maps[l - 1],
-                            maps[l], nc)
+                            maps[l], nc, gate=gate)
+                        self.fac_gate[l] = gate or None
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
+        if (solver._custom_mg or {}).get("verbose"):
+            from underworld3 import mpi
+            verdicts = [f"level {l} {'taken' if g['taken'] else 'declined'} "
+                        f"({g['subdomain_rows']} of {g['rows']} rows in patch+halo)"
+                        for l, g in enumerate(self.fac_gate) if g]
+            mpi.pprint(f"[{solver.name}] FAC cover gate: "
+                       + ("; ".join(verdicts) or "not run"))
         return Ps
 
     @staticmethod
