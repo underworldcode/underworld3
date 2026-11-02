@@ -6,18 +6,25 @@ subdomain (patch plus halo) exceeds 75 % of the level's rows, so that a uniform
 refinement keeps whole-level smoothing, and it said nothing when it did. A split
 fault level crosses 75 % by size alone: on UWTN 2026-022's linear fixture at
 h_b/S = 48 and 97 the patch was declined, and the velocity solve took 909 and
-1487 iterations against 66 with the patch: the placed band, 24-97 times finer
-than the coarse level, is rows the coarse level cannot represent, and whole-level
-SOR does not converge them. A placed fault level keeps an untouched background
-outside its patch and halo (38, 24 and 14 % of the rows at h_b/S = 24, 48 and
-97), so a split level now declines only when under 2 % of its rows lie outside.
+1487 iterations summed over 17 applications (about 53 and 87 each) against 66
+(about 4) with the patch: the placed band, 24-97 times finer than the coarse
+level, is rows the coarse level cannot represent, and whole-level SOR converges
+them slowly. A placed fault level keeps an untouched background outside its
+patch and halo (38, 24 and 14 % of the rows at h_b/S = 24, 48 and 97), so a
+split level now declines only when under 2 % of its rows lie outside.
 
 The other side is ``add_fault`` on a refined base: the cut child keeps the base's
 coarse levels, so its finest pair is a uniform refinement plus the cut, and its
-patch and halo are the whole level. Whole-level SOR converges it (test_1095's
-serial baseline is 4 velocity iterations with the patch declined), where taking
-the patch would be one LU over the entire level. The verdict is recorded on
+patch and halo are the whole level. Whole-level SOR converges it (8 velocity
+iterations on this 2-D base; 4 on test_1095's 3-D patch box), where taking the
+patch would be one LU over the entire level. The verdict is recorded on
 ``hierarchy.fac_gate``.
+
+The welded add-on (an adapt child, then ``add_fault(split_levels=False)``) is
+split too. Its patch and halo grow with the metric's width: 30 % at the
+fixtures' 0.08, 96 % at 1.0, where the patch is taken (2 velocity iterations,
+against 13 with whole-level SOR, for one LU block of 96 % of the level). With
+the cut pair at 100 %, that pins the split threshold between 0.963 and 1.
 
 The fixture is the same linear fault on a base of 1/8 refined once (h_b = 1/16),
 at 160 rungs (h_b/S = 24): the finest level's patch and halo are 85 % of its
@@ -41,15 +48,16 @@ import underworld3 as uw
 from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
-from fault_fixtures import TRACE, base_2d, shear_fault_solve
+from fault_fixtures import H_BASE, TIP_A, TIP_B, TRACE, base_2d, shear_fault_solve
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2]
 
 A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 160
 OLD_GATE = 0.75
 
 
+@pytest.mark.tier_b
 def test_a_split_level_takes_its_patch_over_the_old_gate():
     length = float(np.linalg.norm(B - A))
     spacing = length / N_RUNGS
@@ -88,6 +96,7 @@ def test_a_split_level_takes_its_patch_over_the_old_gate():
     assert len(set(uw.mpi.comm.allgather(text))) == 1, f"rank {uw.mpi.rank}: {gate}"
 
 
+@pytest.mark.tier_b
 def test_a_cut_uniform_pair_is_declined():
     """add_fault on a refined base: the split finest level over a uniform pair."""
     stokes, info, _slip = shear_fault_solve(base_2d().add_fault([("Flt", TRACE)]))
@@ -99,3 +108,25 @@ def test_a_cut_uniform_pair_is_declined():
     assert gate["subdomain_rows"] > 0.98 * gate["rows"], gate
     installed = uw.mpi.comm.allreduce(h.level_patch_rows[-1] is not None)
     assert installed == 0
+
+
+@pytest.mark.tier_b
+def test_a_wide_welded_add_on_takes_its_patch():
+    """A welded add-on on a metric of width 1.0: patch and halo are 96 % of the
+    split finest level, under the 98 % gate."""
+    base = base_2d()
+    pts = np.column_stack([np.linspace(TIP_A[0], TIP_B[0], 9),
+                           np.linspace(TIP_A[1], TIP_B[1], 9), np.zeros(9)])
+    guide = uw.meshing.Surface("guide_wide", base, pts)
+    guide.discretize()
+    child = base.adapt(guide.refinement_metric_function(
+        h_near=H_BASE / 4, h_far=H_BASE, width=1.0, profile="linear"), max_levels=2)
+    stokes, info, _slip = shear_fault_solve(
+        child.add_fault([("Flt", TRACE)], split_levels=False))
+    assert info["converged"]
+    h = stokes._custom_mg["hierarchy"]
+    gate = h.fac_gate[-1]
+    assert gate is not None and gate["taken"], gate
+    assert 0.95 < gate["subdomain_rows"] / gate["rows"] < 0.98, (
+        f"{gate}: the fixture no longer sits between 95 and 98 %, so it does not "
+        f"pin the split threshold")

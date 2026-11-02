@@ -22,7 +22,7 @@ from underworld3.utilities import custom_mg
 
 from test_1017_nested_native_and_fac import _nvb_band, _poisson, _wrap
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2]
 
 BAND = 0.3
 BAND_ROWS, BAND_SUBDOMAIN = 417, 355
@@ -41,6 +41,7 @@ def _wide_band_hierarchy():
     return s._custom_mg["hierarchy"]
 
 
+@pytest.mark.tier_b
 def test_an_unsplit_band_over_the_gate_is_declined_and_recorded():
     h = _wide_band_hierarchy()
     assert h.level_patch_rows[2] is None
@@ -48,6 +49,7 @@ def test_an_unsplit_band_over_the_gate_is_declined_and_recorded():
                              "taken": False}
 
 
+@pytest.mark.tier_b
 def test_the_uniform_level_is_declined_and_recorded():
     h = _wide_band_hierarchy()
     assert h.level_patch_rows[1] is None

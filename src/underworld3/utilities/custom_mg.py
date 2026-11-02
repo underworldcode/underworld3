@@ -589,11 +589,11 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
 # Without a split the gate is 0.75: a wide adapt child's patch and halo reach
 # 95-98 % of its rows, an LU over nearly the whole level. A placed fault
 # level keeps a background outside its patch and halo (38, 24 and 14 % at
-# h_b/S = 24, 48 and 97 on UWTN 2026-022's fixture), and whole-level SOR does
-# not converge its band (909 and 1487 velocity iterations against 66 when the
-# 0.75 gate declined it), so a split level declines only when under 2 % of
-# its rows lie outside: a cut uniform pair, whose patch and halo are the
-# whole level and which SOR converges.
+# h_b/S = 24, 48 and 97 on UWTN 2026-022's fixture), and whole-level SOR
+# converges its band slowly (909 and 1487 velocity iterations over 17
+# applications against 66 when the 0.75 gate declined it), so a split level
+# declines only when under 2 % of its rows lie outside: a cut uniform pair,
+# whose patch and halo are the whole level and which SOR converges.
 _FAC_COVER_MAX = 0.75
 _FAC_COVER_MAX_SPLIT = 0.98
 
@@ -1917,7 +1917,6 @@ class CustomMGHierarchy:
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         if (solver._custom_mg or {}).get("verbose"):
-            from underworld3 import mpi
             verdicts = [f"level {l} {'taken' if g['taken'] else 'declined'} "
                         f"({g['subdomain_rows']} of {g['rows']} rows in patch+halo)"
                         for l, g in enumerate(self.fac_gate) if g]
