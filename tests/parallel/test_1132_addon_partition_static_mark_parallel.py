@@ -21,6 +21,14 @@ This test places the same fixture at 80 rungs. It asserts, at any rank count, th
 - no tail level is split;
 - the carry warning is not raised.
 
+At np > 1 it also checks the parent relation across the second partition. The
+cut that ``add_fault`` makes partitions the placed mesh again, and that partition
+takes the moved base finest as its base. Its first level's parents on that base
+are current addresses. Before the fix they were read through the base's record of
+its own earlier move, which does not apply (an adversarial-review finding). So
+every cell's centroid must lie in the parent its record names on the tail's last
+level.
+
 It places the fault and does not solve. The file carries no ``mpi(min_size=2)``
 mark: at np 1 it checks the serial baseline, and in the parallel batches the
 partition.
@@ -34,7 +42,8 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
-from underworld3.utilities.fault_mg import addon_level_indices
+from fault_fixtures import parents_contain_centroids
+from underworld3.utilities.fault_mg import addon_level_indices, provenance_source
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -63,3 +72,10 @@ def test_a_placed_fault_leaves_the_base_levels_static():
     assert addon_level_indices(tail) == [], addon_level_indices(tail)
     assert not any(getattr(m, "_fault_point_pairs", None) for m in tail)
     assert carried == [], carried
+    if uw.mpi.size > 1:
+        # the cut's partition records the parents of its first level on the
+        # static level under it, and those parents contain their children
+        pre = provenance_source(tail[-1], mesh)
+        assert pre is not None, "no parent record on the tail's last level"
+        outside = parents_contain_centroids(tail[-1], pre)
+        assert outside == 0, f"np {uw.mpi.size}: {outside} cells outside their recorded parent"

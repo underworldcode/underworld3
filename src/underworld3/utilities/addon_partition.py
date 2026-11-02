@@ -778,16 +778,22 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         lev._addon_below = below
         if below is None:
             lev._addon_parent = None
+        elif l == 0:
+            # The base never moves here, so the first level's recorded parents
+            # (base_parent) are its current addresses already. A base an
+            # earlier partition moved still carries that move's record
+            # (_addon_self_old), which does not apply to this one.
+            lev._addon_parent = np.asarray(lev._addon_parent_old,
+                                           dtype=np.int64).copy()
         else:
             _resolve_parents(below, lev)
 
     out = moved[-1]
-    # A mesh without a tail of its own is a base, and its finest grid is the
-    # static background: in serial its children read that grid through the
-    # static wrap _coarse_level_meshes makes of it. The base mesh itself carries
-    # no mark (only its wraps do), so its moved copy came out unmarked, and at
-    # np > 1 only it was taken for an add-on level and a fault was replayed
-    # onto it (#919). An adapt child owns a tail and stays add-on.
+    # The moved finest of a mesh with no tail of its own is static background,
+    # as that mesh's grid is in serial, where its children read it through the
+    # static wraps of _coarse_level_meshes. The mesh itself carries no mark
+    # (only those wraps do), so the mark is set here. A mesh that owns a tail
+    # (an adapt child) is an add-on level and stays unmarked.
     if getattr(mesh, "_custom_mg_coarse_meshes", None) is None:
         out._mg_static = True
     out.parent = mesh
