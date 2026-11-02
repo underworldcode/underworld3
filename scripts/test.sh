@@ -350,6 +350,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/test_110*py
   batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
   batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
+  batch 4 tests/test_1137*py  # the rotated pressure sub-solve runs at 1e-2
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
