@@ -1,4 +1,4 @@
-"""A split finest level takes its FAC patch however large it is (#918).
+"""A split finest level takes its FAC patch unless it is (nearly) the whole level (#918).
 
 The finest level's FAC patch is the rows its transfer from the coarse level
 cannot represent, plus a one-cell halo. The cover gate declines a patch whose
@@ -6,10 +6,18 @@ subdomain (patch plus halo) exceeds 75 % of the level's rows, so that a uniform
 refinement keeps whole-level smoothing, and it said nothing when it did. A split
 fault level crosses 75 % by size alone: on UWTN 2026-022's linear fixture at
 h_b/S = 48 and 97 the patch was declined, and the velocity solve took 909 and
-1487 iterations against 66 with the patch. A split's structural rows are rows
-the coarse level cannot represent, and whole-level SOR does not converge them,
-so a split level now takes its patch whatever its size. The verdict is recorded
-on ``hierarchy.fac_gate``.
+1487 iterations against 66 with the patch: the placed band, 24-97 times finer
+than the coarse level, is rows the coarse level cannot represent, and whole-level
+SOR does not converge them. A placed fault level keeps an untouched background
+outside its patch and halo (38, 24 and 14 % of the rows at h_b/S = 24, 48 and
+97), so a split level now declines only when under 2 % of its rows lie outside.
+
+The other side is ``add_fault`` on a refined base: the cut child keeps the base's
+coarse levels, so its finest pair is a uniform refinement plus the cut, and its
+patch and halo are the whole level. Whole-level SOR converges it (test_1095's
+serial baseline is 4 velocity iterations with the patch declined), where taking
+the patch would be one LU over the entire level. The verdict is recorded on
+``hierarchy.fac_gate``.
 
 The fixture is the same linear fault on a base of 1/8 refined once (h_b = 1/16),
 at 160 rungs (h_b/S = 24): the finest level's patch and halo are 85 % of its
@@ -32,6 +40,8 @@ import pytest
 import underworld3 as uw
 from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
+
+from fault_fixtures import TRACE, base_2d, shear_fault_solve
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -76,3 +86,16 @@ def test_a_split_level_takes_its_patch_over_the_old_gate():
         f"cannot fail")
     text = json.dumps(gate, sort_keys=True)
     assert len(set(uw.mpi.comm.allgather(text))) == 1, f"rank {uw.mpi.rank}: {gate}"
+
+
+def test_a_cut_uniform_pair_is_declined():
+    """add_fault on a refined base: the split finest level over a uniform pair."""
+    stokes, info, _slip = shear_fault_solve(base_2d().add_fault([("Flt", TRACE)]))
+    assert info["converged"]
+    h = stokes._custom_mg["hierarchy"]
+    gate = h.fac_gate[-1]
+    assert gate is not None and not gate["taken"], (
+        f"{gate}: the cut uniform pair took a patch over its whole level")
+    assert gate["subdomain_rows"] > 0.98 * gate["rows"], gate
+    installed = uw.mpi.comm.allreduce(h.level_patch_rows[-1] is not None)
+    assert installed == 0
