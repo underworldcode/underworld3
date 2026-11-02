@@ -522,7 +522,7 @@ def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
     info = solve_rotated_freeslip(
         solver, list(getattr(solver, "_rotated_freeslip_bcs", [])),
         verbose=verbose, zero_init_guess=zero_init_guess, picard=picard,
-        max_it=solver._resolve_snes_max_it(50))
+        max_it=solver._rotated_max_it())
     solver._rotated_freeslip_info = info
     if info["linear_failure"]:      # a cold first step that failed (#907)
         raise RuntimeError(info["linear_failure"])

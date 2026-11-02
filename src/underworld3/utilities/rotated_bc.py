@@ -1156,6 +1156,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ``force_operator_refresh=True`` disables the iteration-0 fast path for this
     solve (used by ``time=`` solves: the DM time reaches the kernels through
     ``petsc_t``, which no state counter or constants value can see).
+
+    ``max_it`` caps the Newton increments; the solver passes a user-set
+    ``snes_max_it``, else 50 (#920). The pass after the last increment only
+    measures the residual, so a solve that converges in ``max_it`` reports
+    converged, and ``max_it=0`` is one residual evaluation. Staged Picard
+    steps count against the cap, unlike the standard path's warm-up.
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -1524,7 +1530,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     failed_hard = False
     phase = "picard" if continuation else "newton"
     switch_iteration = None
-    for iters in range(max_it):
+    # max_it increments, then one more pass that only measures the residual,
+    # as PETSc's SNES tests after its max_it-th update: a cap of N then
+    # reports a solve that converged in N as converged, and a cap of 0 is one
+    # residual evaluation (#920)
+    for iters in range(max_it + 1):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
         rnorm_history.append(float(rnorm))
@@ -1544,6 +1554,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # zero residual at u = 0 is not convergence until it has been applied)
             converged = True
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+            Fhat.destroy()
+            break
+        if iters == max_it:
             Fhat.destroy()
             break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
