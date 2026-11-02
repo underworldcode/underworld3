@@ -596,6 +596,8 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     on its patch plus an interface halo, with the background smoothed once at
     the level that owns it. This function finds that patch algebraically from
     the level's own transfer — builder-agnostic, so placed levels work too.
+    The smoother that ships applies the patch's blocks on top of whole-level
+    SOR (:func:`_configure_pcmg`): the patch alone starved what it left out.
 
     A fine reduced DOF is BACKGROUND when its transfer row is an identity row
     (one effective weight-1 entry) AND its node coincides with the referenced
@@ -1093,13 +1095,13 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
 
     ``patch_rows`` is the FAC configuration (#629): per PCMG level, ``None``
     (whole-level smoothing, the classical setup) or ``(owned, subdomain)``
-    reduced-row index arrays from :func:`_fac_patch_split`. A level with a
-    patch gets its smoother PC switched to ASM with that ONE user subdomain
-    — the smoother relaxes only the refined patch plus its interface halo,
-    the background falls through to the level that owns it, and the V-cycle's
-    smoothing cost follows the patch sizes' geometric series instead of
-    levels-times-whole-mesh. Residual and transfer work stay global. The
-    per-level ``mg_levels_<l>_pc_type`` keys written here are returned so a
+    reduced-row index arrays from :func:`_fac_patch_split`, or a list of such
+    pairs, one per block. A level with a patch gets a multiplicative composite
+    smoother PC: the level's SOR, then a basic ASM over the blocks (patch plus
+    halo, one operator-sparsity overlap layer), each block solved by LU with a
+    nonzero shift. The SOR smooths the whole level; the blocks correct the rows
+    the coarse level cannot represent. The keys written here (each FAC level's
+    ``pc_type`` and its blocks' ``pc_type`` and factor shift) are returned so a
     per-solve caller (the rotated path) can drop them from the DB, once
     :func:`_set_up_fac_smoothers` has set the FAC levels up from them."""
     nlev = len(Ps) + 1
@@ -1170,6 +1172,9 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # whole-level SOR first, then the fault blocks: the blocks correct
             # the band the level smoother cannot, and the level smoother keeps
             # everything the blocks leave out
+            # TODO(BUG): the composite's first member is SOR whatever the
+            # smoother variant; smoother="bulletproof" (mg_levels_pc_type asm,
+            # multigrid_options) is not applied on FAC levels.
             spc = pc.getMGSmoother(l).getPC()
             spc.setType("composite")
             spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
@@ -1199,9 +1204,10 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # where it survives it is no band solve (UWTN 2026-022's linear
             # fault fixture at band ratio 24: 344 velocity iterations
             # against 67).
-            # The block KSPs read these keys when the ASM sets up, which in
-            # the composite form is its first application: a caller that
-            # drops the keys after set-up calls _set_up_fac_smoothers first.
+            # The block KSPs read these keys when the ASM sets up, which as
+            # the composite's second member is its first application: a
+            # caller that drops the keys after set-up calls
+            # _set_up_fac_smoothers first.
             _sub_key = f"mg_levels_{l}_sub_1_sub_pc_type"
             opts[prefix + _sub_key] = "lu"
             fac_keys.append(_sub_key)
@@ -1224,10 +1230,9 @@ def _set_up_fac_smoothers(pc, fac_keys):
     Call it after ``pc.setUp()``, with ``fac_keys`` as :func:`_configure_pcmg`
     returned them and before anything drops those keys from the options
     database. PCASM creates its block KSPs at its own set-up, and they read
-    ``..._sub_pc_type`` and the factor shift from the database then. In the
-    composite form the ASM is the composite's second member, and the composite's
-    set-up only hands its members their operators, so the ASM sets up at its
-    first application. The rotated path drops its per-solve keys straight after
+    ``..._sub_pc_type`` and the factor shift from the database then. The ASM
+    is the composite's second member, and the composite's set-up only hands its
+    members their operators, so the ASM sets up at its first application. The rotated path drops its per-solve keys straight after
     set-up, so its blocks ran PCASM's default, unshifted ILU(0) where LU was
     configured (#892).
 

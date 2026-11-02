@@ -33,8 +33,10 @@ That configuration is the only one: the measurement knobs that varied it
 (``UW_FAC_MODE``, ``UW_FAC_SUB_PC``, ``UW_FAC_ASM_TYPE``, ``UW_FAC_OVERLAP``,
 ``UW_FAC_WHOLE``, ``UW_FAC_LEVELS``) are gone, and the block solver stays LU on
 the add-on matrix's experiment 1: on its box, the fastest inexact block solve
-took 1.48 to 3.2 times LU's solve time, with the same Newton counts and slip. Each path is solved with no knob set and with every old
-knob set to a value it used to act on; both must give the configuration above.
+took 1.48 to 3.2 times LU's solve time, with the same Newton counts and slip
+(``docs/developer/subsystems/fault-split-multigrid.md``). Each path is solved
+with no knob set and with every old knob set to a value it used to act on; both
+must give the configuration above.
 
 The fixture is a fault split in place over a welded base hierarchy (1/8, 1/16),
 so the finest level is the split mesh and the structural patch puts the FAC
@@ -161,8 +163,9 @@ def _checked_fac_levels(mg, path):
         assert [pc.getCompositePC(i).getType() for i in range(2)] == ["sor", "asm"]
         asm = pc.getCompositePC(1)
         asm_text = _view(asm)
-        assert "amount of overlap = 1" in asm_text
-        assert "restriction/interpolation type - BASIC" in asm_text
+        assert "amount of overlap = 1" in asm_text, f"{path} level {l}: overlap"
+        assert "restriction/interpolation type - BASIC" in asm_text, (
+            f"{path} level {l}: not basic ASM")
         blocks = asm.getASMSubKSP()
         for k in blocks:
             assert k.getType() == "preonly"
