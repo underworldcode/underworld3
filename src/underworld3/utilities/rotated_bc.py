@@ -2221,8 +2221,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         exactly what the standard path uses via ``schur_precondition=a11``. Without
         it (Mp=None) the Schur pre falls back to selfp, which degrades badly on
         curved/deformed boundaries and variable viscosity.
-      * the pressure sub-solve mirrors the native FGMRES+GASM at the solver
-        tolerance; the constant-pressure nullspace is attached to the Schur
+      * the pressure sub-solve is the native FGMRES+GASM, at a fixed rtol of
+        1e-2 (``_ROTATED_PRES_RTOL``); the constant-pressure nullspace is attached to the Schur
         complement for enclosed domains (the hand-built IS fieldsplit does not
         inherit it from the operator).
 

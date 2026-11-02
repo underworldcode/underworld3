@@ -23,11 +23,12 @@ import underworld3 as uw
 
 from test_1018_rotated_freeslip import _powerlaw_stokes
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_2]
 
 PRESSURE_RTOL = 1.0e-2
 
 
+@pytest.mark.tier_b
 @pytest.mark.parametrize("tolerance", [1.0e-4, 1.0e-7])
 def test_the_rotated_pressure_sub_solve_runs_at_1e_2(tolerance):
     mesh = uw.meshing.StructuredQuadBox(
@@ -45,3 +46,20 @@ def test_the_rotated_pressure_sub_solve_runs_at_1e_2(tolerance):
     assert pressure_ksp.getTolerances()[0] == pytest.approx(PRESSURE_RTOL, rel=1e-12), (
         f"the rotated pressure sub-KSP runs at rtol {pressure_ksp.getTolerances()[0]:g} "
         f"under tolerance {tolerance:g}")
+
+
+@pytest.mark.tier_b
+def test_the_newton_count_is_unchanged_at_a_tight_tolerance():
+    """At tolerance 1e-7 the box converges in the 8 Newton steps it took at the
+    old 0.1 x tolerance, with at most 2 outer iterations per step (macOS)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    s, _v, _p = _powerlaw_stokes(mesh, "prtol_newton", cj=True)
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.tolerance = 1.0e-7
+    s.solve()
+    info = s._rotated_freeslip_info
+    assert info["converged"]
+    assert info["nonlinear_iterations"] == 8, info["nonlinear_iterations"]
+    assert max(info["ksp_its"]) <= 2, info["ksp_its"]

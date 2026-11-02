@@ -22,7 +22,7 @@ import underworld3 as uw
 params = uw.Params(layout=uw.Param("local", "local | straddle | gathered"),
                    tail=uw.Param(1, "1 = geometric tail (custom-FMG), 0 = GAMG"),
                    solve=uw.Param(1, "0 = build only"),
-                   pres_rtol=uw.Param(0.0, "pressure sub-solve rtol (0 = the path's default, 0.1 x tol)"),
+                   pres_rtol=uw.Param(0.0, "pressure sub-solve rtol (0 = the path's default, 1e-2)"),
                    tol=uw.Param(1e-5, "solver tolerance"),
                    penalty=uw.Param(0.0, "grad-div penalty (0 = the default, none)"))
 layout = str(params.layout)

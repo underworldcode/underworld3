@@ -211,7 +211,7 @@ meets a zero pivot there. Details in
 ### The velocity sub-KSP must converge, not just apply
 
 The velocity block is preconditioned by multigrid, but the KSP *around* that
-multigrid is FGMRES to `0.1 × tolerance` — never `preonly`. This is not a
+multigrid is FGMRES to `0.033 × tolerance` — never `preonly`. This is not a
 tuning preference. `PCFieldSplit` forms the Schur complement
 `S = A₁₁ − A₁₀ A₀₀⁻¹ A₀₁` and applies `A₀₀⁻¹` through this same velocity KSP,
 so `preonly` replaces `A₀₀⁻¹` with a single multigrid cycle and hands the
@@ -235,8 +235,8 @@ null space attached to `S`) has not been isolated.
 
 The native (non-rotated) Stokes path and the GAMG fallback have always wrapped
 their multigrid this way; the rotated custom-FMG branch was the sole exception.
-`max_it` matches both (200); `rtol` matches the GAMG fallback (0.1 × tol), where
-the native path asks for 0.033 × tol.
+`max_it` (200) and `rtol` (0.033 × tol) match both. The pressure sub-solve around
+it runs at a fixed rtol of 1e-2 (`solvers.md`, Axis 3).
 
 Two things make this easy to miss, and both are now instrumented. The outer
 iteration count does not reveal it — a full Schur factorisation with a good

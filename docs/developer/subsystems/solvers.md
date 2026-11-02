@@ -225,7 +225,8 @@ block preconditioner is close to the exact inverse and the outer KSP converges i
 two iterations — a formality wrapped around a Uzawa solve. This is the classical
 arrangement (Moresi & Solomatov 1995): an outer *pressure* iteration with an inexact
 multigrid velocity solve inside it. UW3's inner-tolerance margins (`0.033` velocity,
-`0.1` pressure, applied by the `tolerance` setter) were designed for this shape.
+`0.1` pressure, applied by the `tolerance` setter) were designed for this shape; the
+rotated path runs its pressure sub-solve at a fixed `1e-2` (Axis 3).
 
 **`fieldsplit_pressure_ksp_type = preonly` gives you a block preconditioner.** The Schur
 system is never solved; $\hat S^{-1}$ is a single mass-matrix application, the fieldsplit
@@ -265,8 +266,10 @@ order to apply the Schur complement. Two consequences hold together:
 
 1. inexact inner solves perturb the outer search directions, so **the outer Krylov must be
    flexible**; and
-2. the inexactness is **bounded** — the inner solves must still converge well below the
-   tolerance demanded of the outer solve. The `0.033` and `0.1` factors are that margin.
+2. the inexactness is **bounded** — the velocity sub-solve, through which the Schur
+   complement is applied, must still converge well below the tolerance demanded of the
+   outer solve. The `0.033` factor is that margin; the pressure sub-solve's tolerance
+   sets how good the outer solve's preconditioner is (Axis 3).
 
 "Flexible or not" and "how tight is the inner tolerance" are two halves of one decision,
 not independent axes: flexibility buys tolerance of inexactness, and the margin bounds how
@@ -303,9 +306,13 @@ hold together:
    the outer/Schur Krylov must be flexible** (`fgmres` or similar). A non-flexible
    method assumes a fixed preconditioner; its residual recurrence is invalidated by
    a search direction that drifts.
-2. **Inexact is not unbounded.** The inner solves must still converge to *well
-   below* the final tolerance required of the outer solve. That margin is what the
-   `0.033` and `0.1` factors encode — they are a safety margin, not a tuned constant.
+2. **Inexact is not unbounded.** The velocity sub-solve must still converge to
+   *well below* the final tolerance required of the outer solve: the Schur complement
+   is applied through it, and a velocity solve that stops short makes `S` move
+   between applications, which no Krylov method converges against. That margin is
+   what the `0.033` factor encodes — a safety margin, not a tuned constant. The
+   pressure sub-solve's `0.1` on the native path is the same margin by convention;
+   the rotated path relaxes it to a fixed `1e-2` on measurement (Axis 3).
 
 Flexibility buys tolerance of inexactness; the margin bounds how inexact. Neither
 works without the other, which is why arguing them separately never settles.
@@ -378,14 +385,12 @@ a margin that was never there. That is exactly the stagnation floor measured abo
 
 ### Axis 3 — how far below the outer tolerance the inner solves must go
 
-Not a free parameter. The invariant from the design above is that **every inner
-solve reaches well below the tolerance demanded of the outer solve**; the only
-judgment is how much margin, and the guardrail policy decides that.
-
-The failure this catches is concrete. The rotated free-slip path ran its outer KSP
-at `rtol = tolerance` and its pressure sub-solve *also* at `rtol = tolerance` — no
-margin whatsoever, the inner solve asked to be no better than the answer it feeds.
-That is the invariant broken outright rather than a tuning disagreement.
+For the velocity sub-solve, not a free parameter. The invariant from the design
+above is that **the solve through which the Schur complement is applied reaches well
+below the tolerance demanded of the outer solve**; the only judgment is how much
+margin, and the guardrail policy decides that. The pressure sub-solve is the outer
+solve's preconditioner: its tolerance trades pressure iterations, each a velocity
+solve, against outer iterations, and the outer solve still asks for `tolerance`.
 
 Loosening the velocity sub-solve likewise does not degrade gracefully — it walks
 back toward the `preonly` failure above:
@@ -403,19 +408,15 @@ Current defaults:
 | velocity | `0.033 × tolerance` | `0.033 × tolerance` | 200 |
 | pressure | `0.1 × tolerance` | `1e-2` (fixed) | 200 |
 
-The rotated path previously used `0.1 × tolerance` (velocity) and `1.0 × tolerance`
-(pressure). Adopting the native values costs ~17% wall clock with identical outer
-iteration counts (measured on both velocity-block routes, isotropic and TI) and
-reduced a transversely isotropic fault smoke test from 24 to 15 nonlinear
-iterations. Cheaper is available to anyone who measures their own configuration; it
-is not the default.
+The rotated path once used `0.1 × tolerance` (velocity) and `1.0 × tolerance`
+(pressure). Adopting the native values together cost ~17% wall clock with identical
+outer iteration counts (measured on both velocity-block routes, isotropic and TI) and
+reduced a transversely isotropic fault smoke run from 24 to 15 nonlinear iterations;
+both sub-solves changed in that one step, so the gain is not attributed to either.
 
-The rotated path's pressure sub-solve is the one measured exception to the margin.
-The velocity sub-solve, through which the Schur complement is applied, keeps it, so
-`S` stays consistent between applications. The pressure sub-solve only sets how good
-the outer FGMRES's preconditioner is, and the outer KSP still asks for `tolerance`.
-Each pressure iteration is a velocity solve, so on fault models this sub-solve was
-most of the Stokes time. Measured on the faulted convection campaign (kaiju, np 16,
+The rotated path's pressure sub-solve now runs at a fixed `1e-2`, looser than
+`tolerance` below 1e-2. Each pressure iteration is a velocity solve, so on fault
+models this sub-solve was most of the Stokes time. Measured on the faulted convection campaign (kaiju, np 16,
 `tolerance` 1e-3), against `0.1 × tolerance`, 1e-2 gave:
 
 - 12-22 pressure iterations per Newton increment instead of 41-52;
@@ -423,8 +424,16 @@ most of the Stokes time. Measured on the faulted convection campaign (kaiju, np 
 - the same nonlinear iteration counts, and the answer (vrms, surface velocity,
   mobility, slip) within 7e-6.
 
-At `tolerance` 1e-6 and 1e-7 (a split fault and a power-law box), the Newton counts
-are unchanged and the outer KSP takes at most one more iteration. The old value also
+At tighter tolerances, measured serially:
+
+- a split fault at `tolerance` 1e-6 and a power-law box at 1e-7: Newton counts
+  unchanged, the outer KSP at most one more iteration;
+- Coulomb (sliding, stuck, reaction-fed) and rate-and-state faults at 1e-6
+  (test_0846's fixtures): identical Newton counts, peak slip to 7 figures;
+- SolCx (a 1e3 viscosity jump) on custom FMG: at 1e-9 the outer KSP takes 4
+  iterations instead of 1 for 4 % more flops, at 1e-6 3 instead of 1 for 10 % fewer.
+
+The old value also
 sat below the floor the inexact velocity solve leaves in the Schur residual, about
 7e-6 relative on the fault-network layouts, where the pressure solve crept to its cap.
 `solver._rotated_pres_rtol` overrides the value (`test_1137`).
