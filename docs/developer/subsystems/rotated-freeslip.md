@@ -259,8 +259,10 @@ sub-KSPs at all and both fields record `None`.
 The manual loop exists because the rotated operator `Q A Qᵀ` carries no DM
 field information, so PETSc's DM-coupled fieldsplit cannot precondition it;
 the increment is solved by an IS-built fieldsplit instead, driven from the
-loop. The loop honours `zero_init_guess`, `picard`, and the solver's
-`consistent_jacobian` tangent policy (frozen / Newton / continuation).
+loop. The loop honours `zero_init_guess`, `picard`, the solver's
+`consistent_jacobian` tangent policy (frozen / Newton / continuation), and a
+user-set `snes_max_it` as its iteration cap, 50 otherwise, as the standard path
+does (`_resolve_snes_max_it`; #920, `test_1136`).
 
 ### How the datum passes through Newton
 

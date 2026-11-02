@@ -5481,6 +5481,19 @@ class SolverBaseClass(uw_object):
 ## Specific to dimensionality
 
 
+    def _resolve_snes_max_it(self, default):
+        """The nonlinear iteration cap for this solve: a user-set ``snes_max_it``,
+        else ``default``. ``SNES_Stokes_SaddlePt`` owns the key and resolves it
+        through its owned-option record instead."""
+        if not self.petsc_options.hasName("snes_max_it"):
+            return int(default)
+        try:
+            return int(self.petsc_options.getString("snes_max_it"))
+        except Exception:
+            # A value that is not an integer (a bare flag holds None): this solve
+            # takes its default and leaves the value for PETSc to object to.
+            return int(default)
+
     def _solve_rotated_if_registered(self, zero_init_guess, verbose, picard, time):
         """Run the rotated strong-constraint solve when a rotated free-slip
         boundary or a split-fault contact is registered, and return True; return
@@ -5531,6 +5544,9 @@ class SolverBaseClass(uw_object):
         self._rotated_freeslip_info = solve_rotated_freeslip(
             self, self._rotated_freeslip_bcs, verbose=verbose,
             zero_init_guess=zero_init_guess, picard=picard,
+            # the loop's cap is the standard path's: a user-set snes_max_it,
+            # else 50 (#920)
+            max_it=self._resolve_snes_max_it(50),
             # An explicit `time=` reaches the kernels through petsc_t on
             # the DM — invisible to every state counter and constant
             # value, so it must veto the cached-operator fast path.
