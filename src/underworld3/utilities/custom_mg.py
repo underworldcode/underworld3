@@ -1433,9 +1433,11 @@ class CustomMGHierarchy:
         smoother (#629): a boolean mask over the finest mesh's cells — the
         painted / placed band the modeler authored — or a LIST of masks for
         one ASM block per fault segment (masks may overlap; a junction cell
-        in two masks sits inside both blocks). The structural patch (the
-        cut/split-inserted rows the transfer cannot represent) is unioned in
-        automatically. ``None`` keys the patch on the structural rows alone.
+        in two masks sits inside both blocks). When the finest level carries
+        a split fault, its structural patch (the rows the transfer cannot
+        represent) is added as one more block; a level without a split keys
+        the patch on the masks alone (#921). ``None`` keys the patch on the
+        structural rows alone.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
@@ -1756,17 +1758,23 @@ class CustomMGHierarchy:
                                 if piece.size:
                                     blocks.append((piece, piece))
                                     covered.update(piece.tolist())
-                    # TODO(MEASURE): #670 knob — UW_FAC_STRUCTURAL=0 keeps the
-                    # fault-zone blocks alone, without the structural
-                    # (non-nested transfer) rows; remove when settled.
+                    # A split level's structural rows (the split duplicates
+                    # and the fill around them) are rows the coarse level
+                    # cannot represent, and whole-level SOR does not converge
+                    # them: with a zone keyed beside a split fault, leaving
+                    # them out took 820 velocity iterations against 94
+                    # (#921). They join the zone's blocks whatever the zone
+                    # covers. A level without a split keeps the zone's blocks
+                    # alone, the default #670 measured on a placed weak plane.
+                    # The split marker is the same on every rank.
                     split = None
+                    split_level = fault_mg.is_split_level(self.level_meshes[l])
                     # the split's cover gate is collective: decide whether
                     # to take it from what ANY rank holds, not this rank
                     mpi_comm = comm.tompi4py()
                     zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
                                                        op=MPI.LOR)
-                    if (os.environ.get("UW_FAC_STRUCTURAL", "0") != "0"
-                            or not zone_anywhere):
+                    if split_level or not zone_anywhere:
                         # with a zone keyed, its structural rows are always
                         # added: no gate
                         gate = {}
@@ -1863,16 +1871,12 @@ class CustomMGHierarchy:
                                 if piece.size:
                                     blocks.append((piece, piece))
                                     covered[piece] = True
-                        # The patch smoother REPLACES whole-level smoothing,
-                        # so it inherits every row the coarse level cannot
-                        # represent — the STRUCTURAL (non-identity) transfer
-                        # patch — whether or not the physics zone covers it.
-                        # A zone away from the cut/split leaves those rows
-                        # smoothed nowhere and the velocity solve stalls at
-                        # its cap (measured: any off-cut zone, #629). Add
-                        # the uncovered structural rows as one more block.
+                        # A split level's structural rows join the zone's
+                        # blocks as one more block, as in the parallel branch
+                        # (#921); a level without a split keeps the zone's
+                        # blocks alone (#670).
                         split = None
-                        if os.environ.get("UW_FAC_STRUCTURAL", "0") != "0":
+                        if fault_mg.is_split_level(self.level_meshes[l]):
                             gate = {}
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
@@ -2051,9 +2055,10 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     zone (#629): a boolean mask over the solver mesh's cells — e.g.
     ``mesh.cells_labelled("Band")`` for a placed ribbon, or
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
-    list of masks for per-segment ASM blocks. The structural (cut/split)
-    rows are unioned in automatically; the patch is solved strongly once
-    per smoother application (basic ASM, shifted factorization)."""
+    list of masks for per-segment ASM blocks. On a split finest level the
+    structural rows are added as one more block; without a split the masks
+    alone key the patch (#921). The patch is solved strongly once per
+    smoother application (basic ASM, shifted factorization)."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],

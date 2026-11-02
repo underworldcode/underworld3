@@ -195,6 +195,18 @@ the velocity solve then took 909 and 1487 iterations against 66 with the patch
 halo rows, taken), from the global counts in parallel, and
 `set_custom_fmg(..., verbose=True)` prints it (`test_1134`).
 
+With `fac_zone` masks keyed, the masks' cells give the patch's blocks. On a finest
+level that carries a split fault, the structural rows are added as one more block
+(without the gate), whatever the masks cover. Those rows are the split duplicates and
+the fill around them, which the coarse level cannot represent and whole-level SOR does
+not converge. On the add-on matrix's row 5 (a TI band keyed beside a split fault at
+h_b/S = 24), the velocity solve took 820 iterations with the TI blocks alone and 94
+with the structural block added (#921). Keying the fault's band mask as well is not
+enough (344): the mask holds the band cells but not the fill around them. A level
+without a split keys its patch on the masks alone. That is #670's default, measured
+on a placed weak plane when the patch replaced the level smoother
+(`test_1135`).
+
 ## Not yet done
 
 - A regression test for the coarse-level wall rotation itself (a rotated free-slip
