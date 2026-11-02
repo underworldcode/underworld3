@@ -2176,6 +2176,11 @@ def _velocity_diag_scale(Ahat, solver):
     return float(s) if s > 0.0 else 1.0
 
 
+# The rotated path's pressure (Schur) sub-KSP rtol: see the configuration in
+# _solve_rotated_iterative for the measurement behind it.
+_ROTATED_PRES_RTOL = 1.0e-2
+
+
 def _destroy_rotated_ksp_ctx(ctx):
     """Release a reusable rotated-KSP context and its owned PETSc objects."""
     if ctx is None:
@@ -2258,32 +2263,24 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             "ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "300",
             "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
             "pc_fieldsplit_schur_fact_type": "full",
-            # Pressure sub-solve at native-path parity (pyx Stokes defaults):
-            # FGMRES at 0.1 x tol, GASM on the 1/mu mass (jacobi if only selfp
-            # exists).
-            #
-            # The 0.1 is the MARGIN, and it is the point. The Citcom design this
-            # configuration descends from (Moresi & Solomatov 1995) makes the inner
-            # solves deliberately inexact, which is why the outer/Schur Krylov must
-            # be flexible (fgmres, above) — inexact inner solves perturb the search
-            # directions. But inexact is bounded: an inner solve must still converge
-            # WELL BELOW the tolerance demanded of the outer solve. This path used to
-            # ask for `tol` while the outer KSP also asks for `tol` — no margin at
-            # all, the inner solve permitted to be no better than the answer it
-            # feeds. Restoring the margin costs ~17% wall clock with identical outer
-            # iteration counts (measured, both velocity-block routes, isotropic and
-            # TI); a too-loose inner solve fails by silent stagnation, not loudly.
+            # Pressure sub-solve: FGMRES at a fixed rtol of 1e-2, GASM on the
+            # 1/mu mass (jacobi if only selfp exists). Each pressure iteration
+            # applies the Schur complement through a velocity solve, so this
+            # sub-solve is most of the Stokes time; the flexible outer KSP asks
+            # for `tol` and absorbs its inexactness. Measured on the faulted
+            # convection campaign (np 16, tol 1e-3) against the native path's
+            # 0.1 x tol: 12-22 pressure iterations per increment instead of
+            # 41-52, Stokes time down 28-57 %, the same nonlinear iteration
+            # counts and the answer within 7e-6. At tol 1e-6 and 1e-7 the
+            # Newton counts are unchanged and the outer KSP takes at most one
+            # more iteration (test_1137). The old 0.1 x tol also sat below the
+            # floor the inexact velocity solve leaves in the Schur residual
+            # (~7e-6 relative on the fault-network layouts), where the pressure
+            # solve crept to its 200 cap. A tighter tolerance tightens the
+            # outer KSP, not this one. solver._rotated_pres_rtol overrides it.
             "fieldsplit_pres_ksp_type": "fgmres",
-            # TODO(MEASURE): the 0.1 margin sits BELOW the floor the inexact
-            # velocity solve leaves in the Schur residual (measured on the
-            # fault-network layouts: the pressure residual falls 5e-3 in 20
-            # iterations, then creeps to the 200 cap at ~7e-6 relative, each
-            # iteration a velocity-preconditioner apply). The attribute is
-            # the knob for the measurement in
-            # docs/developer/design/fault-parallel-placement-2026-09.md;
-            # the resolved rule replaces it.
             "fieldsplit_pres_ksp_rtol": str(
-                getattr(solver, "_rotated_pres_rtol", tol * 0.1)),
+                getattr(solver, "_rotated_pres_rtol", _ROTATED_PRES_RTOL)),
             "fieldsplit_pres_ksp_max_it": "200",
         }
         if Mp is not None:

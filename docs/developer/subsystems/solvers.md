@@ -396,12 +396,12 @@ back toward the `preonly` failure above:
 | 1e-2 | 4 |
 | 0.033 × tolerance | 1 |
 
-Current defaults, matched across the native and rotated paths:
+Current defaults:
 
-| sub-solve | rtol | max_it |
-|---|---|---|
-| velocity | `0.033 × tolerance` | 200 |
-| pressure | `0.1 × tolerance` | 200 |
+| sub-solve | native path rtol | rotated path rtol | max_it |
+|---|---|---|---|
+| velocity | `0.033 × tolerance` | `0.033 × tolerance` | 200 |
+| pressure | `0.1 × tolerance` | `1e-2` (fixed) | 200 |
 
 The rotated path previously used `0.1 × tolerance` (velocity) and `1.0 × tolerance`
 (pressure). Adopting the native values costs ~17% wall clock with identical outer
@@ -409,6 +409,25 @@ iteration counts (measured on both velocity-block routes, isotropic and TI) and
 reduced a transversely isotropic fault smoke test from 24 to 15 nonlinear
 iterations. Cheaper is available to anyone who measures their own configuration; it
 is not the default.
+
+The rotated path's pressure sub-solve is the one measured exception to the margin.
+The velocity sub-solve, through which the Schur complement is applied, keeps it, so
+`S` stays consistent between applications. The pressure sub-solve only sets how good
+the outer FGMRES's preconditioner is, and the outer KSP still asks for `tolerance`.
+Each pressure iteration is a velocity solve, so on fault models this sub-solve was
+most of the Stokes time. Measured on the faulted convection campaign (kaiju, np 16,
+`tolerance` 1e-3), against `0.1 × tolerance`, 1e-2 gave:
+
+- 12-22 pressure iterations per Newton increment instead of 41-52;
+- Stokes time down 28-57 %;
+- the same nonlinear iteration counts, and the answer (vrms, surface velocity,
+  mobility, slip) within 7e-6.
+
+At `tolerance` 1e-6 and 1e-7 (a split fault and a power-law box), the Newton counts
+are unchanged and the outer KSP takes at most one more iteration. The old value also
+sat below the floor the inexact velocity solve leaves in the Schur residual, about
+7e-6 relative on the fault-network layouts, where the pressure solve crept to its cap.
+`solver._rotated_pres_rtol` overrides the value (`test_1137`).
 
 The `0.033` and `0.1` factors themselves are inherited from the Citcom
 configuration and have no derivation recorded here beyond "well below the outer

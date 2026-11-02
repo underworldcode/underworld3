@@ -823,6 +823,11 @@ def test_rotated_freeslip_geometric_fmg_velocity_block():
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    # The outer count below guards the velocity sub-KSP's wrapper. The rotated
+    # pressure sub-solve's default (rtol 1e-2) adds outer iterations at this
+    # tolerance (4 against 1, for about the same flops), so it is pinned to
+    # 0.1 x tolerance here and the count moves only with the velocity wrapper.
+    s._rotated_pres_rtol = 0.1 * s.tolerance
     s.solve()
 
     # geometric MG on the velocity block converged, and matches essential
