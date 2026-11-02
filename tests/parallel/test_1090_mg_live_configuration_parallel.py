@@ -23,12 +23,18 @@ the custom multigrid:
   crack), the velocity-block install of the standard solve;
 * ``poisson``: the top-level PC install of a scalar solve.
 
-each in the composite (default) and plain ASM forms (``UW_FAC_MODE``), and checks
-every level against the configuration ``_configure_pcmg`` and the "robust"
-geometric bundle write: coarse ``preonly`` + ``redundant`` with LU inside; every
-other level ``gmres``, 4 iterations, no norm, SOR; the FAC level a composite of
-SOR then ASM (or the ASM alone), basic restriction, one overlap layer, every
-block ``preonly`` + LU with the nonzero shift.
+and checks every level against the configuration ``_configure_pcmg`` and the
+"robust" geometric bundle write: coarse ``preonly`` + ``redundant`` with LU
+inside; every other level ``gmres``, 4 iterations, no norm, SOR; the FAC level a
+composite of SOR then ASM, basic restriction, one overlap layer, every block
+``preonly`` + LU with the nonzero shift.
+
+That configuration is the only one: the measurement knobs that varied it
+(``UW_FAC_MODE``, ``UW_FAC_SUB_PC``, ``UW_FAC_ASM_TYPE``, ``UW_FAC_OVERLAP``,
+``UW_FAC_WHOLE``, ``UW_FAC_LEVELS``) are gone, and the block solver stays LU on
+the add-on matrix's experiment 1: on its box, the fastest inexact block solve
+took 1.48 to 3.2 times LU's solve time, with the same Newton counts and slip. Each path is solved with no knob set and with every old
+knob set to a value it used to act on; both must give the configuration above.
 
 The fixture is a fault split in place over a welded base hierarchy (1/8, 1/16),
 so the finest level is the split mesh and the structural patch puts the FAC
@@ -130,7 +136,7 @@ def _view(obj):
     return comm.bcast(text)
 
 
-def _checked_fac_levels(mg, path, mode):
+def _checked_fac_levels(mg, path):
     """Check every level of the live PCMG ``mg`` against its configuration and
     return the levels that carry a FAC patch."""
     assert mg.getType() == "mg", f"{path}: custom multigrid not installed"
@@ -151,13 +157,9 @@ def _checked_fac_levels(mg, path, mode):
         if pc.getType() == "sor":
             continue
         fac_levels.append(l)
-        if mode == "composite":
-            assert pc.getType() == "composite", f"{path} level {l}: {pc.getType()}"
-            assert [pc.getCompositePC(i).getType() for i in range(2)] == ["sor", "asm"]
-            asm = pc.getCompositePC(1)
-        else:
-            assert pc.getType() == "asm", f"{path} level {l}: {pc.getType()}"
-            asm = pc
+        assert pc.getType() == "composite", f"{path} level {l}: {pc.getType()}"
+        assert [pc.getCompositePC(i).getType() for i in range(2)] == ["sor", "asm"]
+        asm = pc.getCompositePC(1)
         asm_text = _view(asm)
         assert "amount of overlap = 1" in asm_text
         assert "restriction/interpolation type - BASIC" in asm_text
@@ -166,24 +168,31 @@ def _checked_fac_levels(mg, path, mode):
             assert k.getType() == "preonly"
             # the #892 failure: unshifted ILU(0) here instead of the shifted LU
             assert k.getPC().getType() == "lu", (
-                f"{path} ({mode}) level {l}: FAC block solver is "
+                f"{path} level {l}: FAC block solver is "
                 f"{k.getPC().getType()!r}, configured 'lu' (#892)")
             assert "[NONZERO]" in _view(k.getPC()), (
-                f"{path} ({mode}) level {l}: FAC block LU without the nonzero shift")
+                f"{path} level {l}: FAC block LU without the nonzero shift")
     return fac_levels
 
 
+# every measurement knob the FAC smoother used to read, each set to a value it
+# acted on
+OLD_KNOBS = {"UW_FAC_MODE": "asm", "UW_FAC_SUB_PC": "ilu", "UW_FAC_ASM_TYPE": "restrict",
+             "UW_FAC_OVERLAP": "0", "UW_FAC_WHOLE": "1", "UW_FAC_LEVELS": "1"}
+
+
 @pytest.mark.tier_b
-@pytest.mark.parametrize("mode", ["composite", "asm"])
+@pytest.mark.parametrize("knobs", [{}, OLD_KNOBS], ids=["no_knobs", "old_knobs"])
 @pytest.mark.parametrize("path", PATHS)
-def test_every_level_runs_its_configured_smoother(base, path, mode, monkeypatch):
-    monkeypatch.setenv("UW_FAC_MODE", mode)
+def test_every_level_runs_its_configured_smoother(base, path, knobs, monkeypatch):
+    for name, value in knobs.items():
+        monkeypatch.setenv(name, value)
     mg = _solved_mg_pc(base, path)
     assert mg.getMGLevels() == 3
     # the split mesh is the finest level, so the structural patch is always there
     # (the coarse pair is a native refinement and takes none): without it this
     # test would pass on any solver that never installs FAC
-    assert _checked_fac_levels(mg, path, mode) == [2], f"{path}: FAC levels"
+    assert _checked_fac_levels(mg, path) == [2], f"{path}: FAC levels"
 
 
 H_BASE, WIDTH, S_MID, S_FINE = 1 / 8, 0.06, 0.020, 0.010
@@ -210,7 +219,7 @@ def _ribbon(base, size):
 @pytest.mark.skipif(uw.mpi.size > 1, reason="the composed placement is serial")
 @pytest.mark.parametrize("path,expected", [("stokes_rotated", [3]),
                                            ("stokes_plain", [2, 3])])
-def test_which_levels_carry_a_fac_patch(path, expected, monkeypatch):
+def test_which_levels_carry_a_fac_patch(path, expected):
     """test_1022's composed stack (base L0 + L1, an unsplit mid ribbon, the finest
     ribbon cut and split) gives a coarse level a patch: the mid ribbon is not a
     refinement of the base, so its transfer has rows a SOR level cannot smooth.
@@ -230,7 +239,6 @@ def test_which_levels_carry_a_fac_patch(path, expected, monkeypatch):
     the #892 fix; whether the restriction leaves the mid ribbon whole is a
     property of the placed mesh. If this fails, explain which install changed
     rather than reverting it."""
-    monkeypatch.setenv("UW_FAC_MODE", "composite")
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0), maxCoords=(1, 1), cellSize=H_BASE, regular=False,
         qdegree=2, refinement=1)
