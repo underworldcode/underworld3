@@ -278,6 +278,8 @@ belongs to a design where the *outer* loop is doing the converging.
 
 Both `fieldsplit_velocity_ksp_rtol` and `fieldsplit_pressure_ksp_rtol` are settable, and
 setting `tolerance` re-derives them from it — so set `tolerance` first, then any override.
+This holds on the native path; the rotated path builds its own sub-KSPs and reads
+neither key (Axis 3).
 
 ```{warning} `preonly` under the Schur is a different matter
 `preonly` on the **pressure** block is a design choice, as described above. `preonly` on
@@ -308,11 +310,12 @@ hold together:
    a search direction that drifts.
 2. **Inexact is not unbounded.** The velocity sub-solve must still converge to
    *well below* the final tolerance required of the outer solve: the Schur complement
-   is applied through it, and a velocity solve that stops short makes `S` move
-   between applications, which no Krylov method converges against. That margin is
-   what the `0.033` factor encodes — a safety margin, not a tuned constant. The
-   pressure sub-solve's `0.1` on the native path is the same margin by convention;
-   the rotated path relaxes it to a fixed `1e-2` on measurement (Axis 3).
+   is applied through it, and a velocity solve that stops short makes the applied `S`
+   inexact, and under a Krylov inner solve different from one application to the
+   next. That margin is what the `0.033` factor encodes — a safety margin, not a
+   tuned constant. The pressure sub-solve's tolerance is a different choice: it sets
+   how good the outer solve's preconditioner is. The native path keeps it at `0.1`;
+   the rotated path runs it at a fixed `1e-2` on measurement (Axis 3).
 
 Flexibility buys tolerance of inexactness; the margin bounds how inexact. Neither
 works without the other, which is why arguing them separately never settles.
@@ -320,7 +323,9 @@ works without the other, which is why arguing them separately never settles.
 ```{note} Guardrail policy
 Defaults err on the side of robust generality. A default that is slower but
 survives configurations nobody has tested yet is the right default; loosening it is
-the caller's decision and the caller's risk.
+the caller's decision and the caller's risk. The rotated pressure sub-solve's
+`1e-2` is a default set on measurement, under this policy's condition that the
+velocity margin, which carries the robustness, is unchanged (Axis 3).
 ```
 
 ### Axis 1 — flexible or not (`fgmres` vs `gmres` / `cg` / `fcg`)
@@ -440,8 +445,9 @@ sat below the floor the inexact velocity solve leaves in the Schur residual, abo
 
 The `0.033` and `0.1` factors themselves are inherited from the Citcom
 configuration and have no derivation recorded here beyond "well below the outer
-tolerance". They are a margin whose *existence* is principled and whose *size* is
-convention.
+tolerance". For the velocity sub-solve the margin's *existence* is principled and
+its *size* is convention; for the pressure sub-solve the tolerance is a trade
+between pressure and outer iterations, measured on the rotated path above.
 
 ### Detecting a degraded sub-solve
 

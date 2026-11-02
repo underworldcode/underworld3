@@ -309,6 +309,11 @@ iterations with no knob at all (the third block of the table). The
 slips move by 0.2 to 0.7% between the two tolerances, which is the
 loose tolerance's own noise, still below the fill's partition noise.
 
+(2026-11: the rotated default became a fixed 1e-2, on the faulted convection
+campaign's A/B at tolerance 1e-3, where the default took 41-52 pressure
+iterations per Newton increment; `_rotated_pres_rtol` stays as an override,
+no longer a `TODO(MEASURE)`. See `subsystems/solvers.md`, Axis 3.)
+
 | layout | regions | cells moved | cells per rank (max/mean) | cold s | warm s | velocity its | pressure its | slips A / B / D |
 |---|---|---|---|---|---|---|---|---|
 | serial, tail | 3 | 0 | 20778 (1.00) | 31.4 | 14.0 | 3 | 26 | 0.11182 / 0.13117 / 0.11110 |
