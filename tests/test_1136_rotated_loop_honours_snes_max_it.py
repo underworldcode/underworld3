@@ -102,15 +102,21 @@ def test_a_cap_of_zero_evaluates_the_residual_only():
 
 
 @pytest.mark.tier_b
-@pytest.mark.parametrize("cap", [-1, -3])
-def test_a_negative_cap_means_what_it_means_to_petsc(cap):
-    """-1 (PETSC_DETERMINE) is the default of 50, -3 (PETSC_UNLIMITED) no cap:
-    both converge the 43-increment solve."""
-    s = _rotated_powerlaw_box(f"negative{-cap}", 1e-7)
-    s.petsc_options["snes_max_it"] = cap
+def test_a_negative_cap_means_what_it_means_to_petsc():
+    """On the 60-increment solve, -1 (PETSC_DETERMINE) stops at the default of
+    50 and -3 (PETSC_UNLIMITED) runs to convergence."""
+    s = _rotated_powerlaw_box("negative1", 1e-11)
+    s.petsc_options["snes_max_it"] = -1
     s.solve()
     info = s._rotated_freeslip_info
-    assert info["converged"], info["nonlinear_iterations"]
+    assert info["nonlinear_iterations"] == 50 and not info["converged"]
+    assert s.snes.getConvergedReason() == DIVERGED_MAX_IT
+
+    s = _rotated_powerlaw_box("negative3", 1e-11)
+    s.petsc_options["snes_max_it"] = -3
+    s.solve()
+    info = s._rotated_freeslip_info
+    assert info["converged"] and info["nonlinear_iterations"] > 50
 
 
 @pytest.mark.tier_b

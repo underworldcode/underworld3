@@ -1162,8 +1162,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     measures the residual, so a solve that converges in ``max_it`` reports
     converged, and ``max_it=0`` is one residual evaluation (a cold datum lift
     is then not applied). A negative cap carries PETSc's meaning: -3
-    (``PETSC_UNLIMITED``) is no cap, -1 and -2 the default of 50. Staged
-    Picard steps count against the cap, unlike the standard path's warm-up.
+    (``PETSC_UNLIMITED``) lifts the cap to PETSc's function-count limit of
+    10000, and -1 and -2 are the default of 50.
+    Staged Picard steps count against the cap, unlike the standard path's
+    warm-up.
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -1187,10 +1189,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     solver._update_constants(record=False)
     if rtol is None:
         rtol = float(solver.tolerance)
-    # a negative cap carries PETSc's meaning: PETSC_UNLIMITED is no cap, and
-    # PETSC_DEFAULT / PETSC_DETERMINE are the default of 50
+    # A negative cap carries PETSc's meaning. PETSC_UNLIMITED lifts the cap;
+    # PETSc still stops at its function-count limit (snes_max_funcs, 10000),
+    # and this loop evaluates one residual per increment, so it stops there
+    # too. PETSC_DETERMINE and PETSC_CURRENT are the default of 50 (PETSc
+    # refuses anything lower when it reads the option).
     if max_it == PETSc.UNLIMITED:
-        max_it = 2**31 - 2
+        max_it = 10000
     elif max_it < 0:
         max_it = 50
 
