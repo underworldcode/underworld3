@@ -112,6 +112,8 @@ def test_a_negative_cap_means_what_it_means_to_petsc(cap):
     info = s._rotated_freeslip_info
     assert info["converged"], info["nonlinear_iterations"]
 
+
+@pytest.mark.tier_b
 def test_a_vector_solver_reads_the_user_cap():
     mesh = _box()
     u = uw.discretisation.MeshVariable("u_cap", mesh, mesh.dim, degree=2)
