@@ -271,4 +271,4 @@ def test_which_levels_carry_a_fac_patch(path, expected):
         assert stokes.snes.getConvergedReason() > 0
         mg = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC()
     assert mg.getMGLevels() == 4
-    assert _checked_fac_levels(mg, path, "composite") == expected
+    assert _checked_fac_levels(mg, path) == expected
