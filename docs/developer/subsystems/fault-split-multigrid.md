@@ -191,28 +191,37 @@ uniform refinement, cut or not, the halo reaches every row.
   95-98 % of the rows (a widened NVB metric), and taking them would mean one LU over
   nearly the whole level.
 - **A level that carries a split fault: 98 %**, that is, it declines only when under
-  2 % of its rows lie outside the patch and halo. A placed fault level keeps an
-  untouched background there. On UWTN 2026-022's linear fixture at h_b/S = 24, 48
-  and 97, the patch and halo were 62 %, 76 % and 86 % of the rows, with 38 %, 24 %
-  and 14 % outside. The 75 % gate declined the last two, and whole-level SOR did not
-  converge the band, 24-97 times finer than the coarse level: the velocity solve took
-  909 and 1487 iterations against 66 with the patch (#918).
-- **`add_fault` on a refined base** keeps the base's coarse levels, so its finest pair
-  is a uniform refinement plus the cut, and its patch and halo are the whole level.
-  That level declines, and whole-level SOR converges it (test_1095's serial baseline
-  is 4 velocity iterations).
+  2 % of its rows lie outside the patch and halo.
+  - *A placed fault level* keeps an untouched background there. On UWTN 2026-022's
+    linear fixture at h_b/S = 24, 48 and 97, the patch and halo were 62 %, 76 % and
+    86 % of the rows, with 38 %, 24 % and 14 % outside. The 75 % gate declined the
+    last two. Whole-level SOR then converged the band, 24-97 times finer than the
+    coarse level, slowly: 909 and 1487 velocity iterations summed over 17
+    applications (about 53 and 87 each), against 66 (about 4) with the patch (#918).
+  - *`add_fault` on a refined base* keeps the base's coarse levels, so its finest
+    pair is a uniform refinement plus the cut, and its patch and halo are the whole
+    level. That level declines, and whole-level SOR converges it: 8 velocity
+    iterations on the 2-D `base_2d` of `tests/parallel/fault_fixtures.py`, 4 on
+    test_1095's 3-D patch box.
+  - *A welded add-on* (an adapt child, then `add_fault(split_levels=False)`) is
+    split over unsplit coarse levels, and its patch and halo grow with the metric's
+    width: 30 % at width 0.08, 82 % at 0.6, 96 % at 1.0. Up to 98 % it takes the
+    patch. At 96 % that is one LU block over 96 % of the level, for 2 velocity
+    iterations against 13 with whole-level SOR.
 
-The background shrinks as a placed band refines, so a band fine enough (past about
-h_b/S = 800 in 2-D, by extrapolation) would decline again. Bounding the structural
-block's size instead is #895.
+The background outside a placed band shrinks as the band refines, so a band fine
+enough would decline again. By extrapolation that happens near h_b/S = 200 on a 1/16
+base and 800 on a 1/32 base in 2-D; in 3-D the band's rows grow as (h_b/S)². Bounding
+the block's size instead of declining it is #895.
 
 The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and halo rows,
 taken), from the global counts in parallel. It is the gate's verdict: install drops
 a renumbered coarse level's patch, and the rotated path drops every coarse level's
-patch, afterwards. `set_custom_fmg(..., verbose=True)` prints it; the mesh-owned and
-rotated routes do not print, and the record is at
-`solver._custom_mg["hierarchy"].fac_gate`. Serial builds gate every level, parallel
-builds only the finest (`test_1134` in `tests/` and `tests/parallel/`).
+patch, afterwards. `set_custom_fmg(..., verbose=True)` prints it on either path. The
+mesh-owned and auto-injected hierarchies do not print, and their record is at
+`solver._custom_mg["hierarchy"].fac_gate`. Serial builds gate every level the split
+runs on, which leaves out pairs that touch a split coarse level. Parallel builds gate
+only the finest. Tests: `test_1134` in `tests/` and `tests/parallel/`.
 
 With `fac_zone` masks keyed, the masks' cells give the patch's blocks. On a finest
 level that carries a split fault, the structural rows are added as one more block,

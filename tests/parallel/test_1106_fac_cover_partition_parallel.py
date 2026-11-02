@@ -17,8 +17,8 @@ The band does not depend on the partition, so this test asserts that the global
 count of patch rows on the finest level equals the serial count, and that the
 patch is installed. It runs the same fixture at 80 rungs, on a structured base
 (``regular=True``). The count is what catches #896 here: at 80 rungs the cover
-stays under the old gate, and since #918 a split level takes its patch at any
-cover.
+stays under the old gate, and since #918 a split level declines its patch only
+above 98 %.
 
 The serial count still depends on the host by a few rows, through the placed
 fault's cavity fill: 4780 on macOS arm64 (custom PETSc 3.25.0), 4772 on CI's
