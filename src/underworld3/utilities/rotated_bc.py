@@ -1156,6 +1156,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ``force_operator_refresh=True`` disables the iteration-0 fast path for this
     solve (used by ``time=`` solves: the DM time reaches the kernels through
     ``petsc_t``, which no state counter or constants value can see).
+
+    ``max_it`` caps the Newton increments; the solver passes a user-set
+    ``snes_max_it``, else 50 (#920). The pass after the last increment only
+    measures the residual, so a solve that converges in ``max_it`` reports
+    converged, and ``max_it=0`` is one residual evaluation (a cold datum lift
+    is then not applied). A negative cap carries PETSc's meaning: -3
+    (``PETSC_UNLIMITED``) lifts the cap to PETSc's function-count limit of
+    10000, and -1 and -2 are the default of 50.
+    Staged Picard steps count against the cap, unlike the standard path's
+    warm-up.
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -1179,6 +1189,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     solver._update_constants(record=False)
     if rtol is None:
         rtol = float(solver.tolerance)
+    # A negative cap carries PETSc's meaning. PETSC_UNLIMITED lifts the cap;
+    # PETSc still stops at its function-count limit (snes_max_funcs, 10000),
+    # and this loop evaluates one residual per increment, so it stops there
+    # too. PETSC_DETERMINE and PETSC_CURRENT are the default of 50 (PETSc
+    # refuses anything lower when it reads the option).
+    if max_it == PETSc.UNLIMITED:
+        max_it = 10000
+    elif max_it < 0:
+        max_it = 50
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
     # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
@@ -1524,7 +1543,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     failed_hard = False
     phase = "picard" if continuation else "newton"
     switch_iteration = None
-    for iters in range(max_it):
+    # max_it increments, then one more pass that only measures the residual,
+    # as PETSc's SNES tests after its max_it-th update: a cap of N then
+    # reports a solve that converged in N as converged, and a cap of 0 is one
+    # residual evaluation (#920)
+    for iters in range(max_it + 1):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
         rnorm_history.append(float(rnorm))
@@ -1544,6 +1567,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # zero residual at u = 0 is not convergence until it has been applied)
             converged = True
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+            Fhat.destroy()
+            break
+        if iters == max_it:
             Fhat.destroy()
             break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
@@ -1753,8 +1779,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     # The true outer-iteration COUNT is the number of Newton increments solved — one
     # linear solve per increment, so len(lin_its). The loop index `iters` undercounts
-    # by one on the step-norm / line-search-stall / max_it exits (the increment of the
-    # final pass is solved before the break) and matches only on the residual exit.
+    # by one on the step-norm / line-search-stall exits (the increment of the final
+    # pass is solved before the break) and matches on the residual and cap exits.
     newton_its = len(lin_its)
 
     # Publish the loop's verdict on the SNES, so that reading the converged

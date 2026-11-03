@@ -245,11 +245,11 @@ uniform refinement, cut or not, the halo reaches every row.
     last two. Whole-level SOR then converged the band, 24-97 times finer than the
     coarse level, slowly: 909 and 1487 velocity iterations summed over 17
     applications (about 53 and 87 each), against 66 (about 4) with the patch (#918).
-  - *`add_fault` on a refined base* keeps the base's coarse levels, so its finest
-    pair is a uniform refinement plus the cut, and its patch and halo are the whole
-    level. That level declines, and whole-level SOR converges it: 8 velocity
-    iterations on the 2-D `base_2d` of `tests/parallel/fault_fixtures.py`, 4 on
-    test_1095's 3-D patch box.
+  - *A fault cut into a refined base* (`add_fault` in 2-D, `split_fault` on
+    test_1095's 3-D patch box) keeps the base's coarse levels, so its finest pair is
+    a uniform refinement plus the cut, and its patch and halo are the whole level.
+    That level declines, and whole-level SOR converges it: 8 velocity iterations on
+    the 2-D `base_2d` of `tests/parallel/fault_fixtures.py`, 4 on the 3-D box.
   - *A welded add-on* (an adapt child, then `add_fault(split_levels=False)`) is
     split over unsplit coarse levels, and its patch and halo grow with the metric's
     width: 30 % at width 0.08, 82 % at 0.6, 96 % at 1.0. Up to 98 % it takes the
@@ -277,7 +277,7 @@ the gate's verdict in `fac_gate` is the structural block's alone: the zone's blo
 installed either way. On a placed split fault the structural rows are the band, the
 split duplicates and the fill around them, which the coarse level cannot represent
 and whole-level SOR converges slowly. On the add-on matrix's row 5 (a TI band keyed
-beside a split fault at h_b/S = 24), the velocity solve took 820 iterations, summed
+beside a split fault at h_b/S = 24), the velocity solve took 820 iterations serially, summed
 over 17 applications, with the TI blocks alone and 94 with the structural block added
 (#921). Keying the fault's band mask as well is not enough (344): the mask
 holds the band cells but not the fill around them. A level without a split keys its
