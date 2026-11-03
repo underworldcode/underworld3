@@ -274,7 +274,7 @@ the gate's verdict in `fac_gate` is the structural block's alone: the zone's blo
 installed either way. On a placed split fault the structural rows are the band, the
 split duplicates and the fill around them, which the coarse level cannot represent
 and whole-level SOR converges slowly. On the add-on matrix's row 5 (a TI band keyed
-beside a split fault at h_b/S = 24), the velocity solve took 820 iterations, summed
+beside a split fault at h_b/S = 24), the velocity solve took 820 iterations serially, summed
 over 17 applications, with the TI blocks alone and 94 with the structural block added
 (#921). Keying the fault's band mask as well is not enough (344): the mask
 holds the band cells but not the fill around them. A level without a split keys its
