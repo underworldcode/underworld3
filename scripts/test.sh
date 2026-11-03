@@ -129,6 +129,12 @@ fi
 # Re-measure over several runs before re-assigning: runner variance here is of
 # the same order as the imbalance left.
 #
+# 2026-11-03: shard 4 had grown to 55:32 on development (run 41564997729, #930)
+# and ran past the 60-minute cap on PR #934, against 29 min for shards 2 and 3.
+# Shard 4 owns the whole --p N phase, and every new file under tests/parallel/
+# had also put its serial run in batch 4. Those serial runs (about 6 min) moved
+# to shard 3, and test_05*/06*/07* (about 4 min) to shard 2.
+#
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
 # 149 tests finish in the first 2 minutes, then the remainder takes 31. Since
 # the distribution is --dist loadfile, a file is atomic on a worker, so the
@@ -298,7 +304,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # whole band was measured 2026-09-12 and passes; a band is not a unit of trust,
   # and holding one back for a suspicion nobody recorded meant its level_1 files
   # never ran at all.
-  batch 4 tests/test_05*py tests/test_06*py tests/test_07*py
+  batch 2 tests/test_05*py tests/test_06*py tests/test_07*py
 
   # Units system tests (0800-0899: unit-aware functions, arrays, and conversions)
   batch 3 tests/test_08*py
@@ -319,26 +325,26 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # spherical shell at np=1). Run it here so the serial job covers that path —
   # every other serial test of the default boundary normal is on a box, where
   # flat walls make the question vacuous. It also runs in the --p N batch below.
-  batch 4 tests/parallel/test_1069_boundary_normal_parallel.py
+  batch 3 tests/parallel/test_1069_boundary_normal_parallel.py
   # The live multigrid configuration (#892) is the same check in serial and in
   # parallel, so it is one file under tests/parallel/ with no min_size mark too.
-  batch 4 tests/parallel/test_1090_mg_live_configuration_parallel.py
+  batch 3 tests/parallel/test_1090_mg_live_configuration_parallel.py
   # So is the live finest-smoother operator of the rotated Newton loop (#894).
-  batch 4 tests/parallel/test_1088_rotated_interface_operator_parallel.py
+  batch 3 tests/parallel/test_1088_rotated_interface_operator_parallel.py
   # So is the band patch, the same rows at any rank count (#896).
-  batch 4 tests/parallel/test_1106_fac_cover_partition_parallel.py
+  batch 3 tests/parallel/test_1106_fac_cover_partition_parallel.py
   # So is the static mark of a moved base finest (#919).
-  batch 4 tests/parallel/test_1132_addon_partition_static_mark_parallel.py
+  batch 3 tests/parallel/test_1132_addon_partition_static_mark_parallel.py
   # So is the FAC patch summary, the same on every rank (test_1133).
-  batch 4 tests/parallel/test_1133_fac_patch_summary_parallel.py
+  batch 3 tests/parallel/test_1133_fac_patch_summary_parallel.py
   # So is the serial reference child's environment (#922).
-  batch 4 tests/parallel/test_1138_serial_reference_child_env.py
+  batch 3 tests/parallel/test_1138_serial_reference_child_env.py
   # So is the split level's FAC patch, taken over the old cover gate (#918).
-  batch 4 tests/parallel/test_1134_fac_cover_gate_split_parallel.py
+  batch 3 tests/parallel/test_1134_fac_cover_gate_split_parallel.py
   # So is the zone-keyed patch of a split level, which keeps its structural rows (#921).
-  batch 4 tests/parallel/test_1135_fac_zone_split_structural_parallel.py
+  batch 3 tests/parallel/test_1135_fac_zone_split_structural_parallel.py
   # So are the zone-keyed patch's blocks, the same at any rank count (#925).
-  batch 4 tests/parallel/test_1139_fac_zone_blocks_any_rank_count_parallel.py
+  batch 3 tests/parallel/test_1139_fac_zone_blocks_any_rank_count_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
