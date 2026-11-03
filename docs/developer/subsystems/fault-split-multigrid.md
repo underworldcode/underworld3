@@ -302,8 +302,9 @@ and 6 at np 4; gathered it is one block at any rank count (`test_1139`, `test_11
 On row 5 with no zone at n_rungs 320 (30 048 rows in the block; kaiju, 2026-11), both
 take 67 iterations serially, where the code is the same. Cut per rank, the velocity
 solve took 128, 131, 316 and 445 iterations at np 2, 4, 8 and 16; as one block, 76 to
-86. The owning rank's peak memory was about twice the others' (520-540 MB against
-250-290 MB) at np 2 and at np 16 alike.
+86. The owning rank's peak memory was 512-541 MB at np 2-16; the others'
+fell from 379 MB at np 2 to 248-284 MB at np 16 (1.35 times at np 2, 1.6-2.2 times
+at np 4-16).
 
 ## Not yet done
 
