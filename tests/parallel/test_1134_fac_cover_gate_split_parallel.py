@@ -16,7 +16,8 @@ split level now declines only when under 2 % of its rows lie outside.
 The other side is ``add_fault`` on a refined base: the cut child keeps the base's
 coarse levels, so its finest pair is a uniform refinement plus the cut, and its
 patch and halo are the whole level. Whole-level SOR converges it (8 velocity
-iterations on this 2-D base; 4 on test_1095's 3-D patch box), where taking the
+iterations on this 2-D base; 4 on test_1095's 3-D patch box, cut with
+split_fault), where taking the
 patch would be one LU over the entire level. The verdict is recorded on
 ``hierarchy.fac_gate``.
 
