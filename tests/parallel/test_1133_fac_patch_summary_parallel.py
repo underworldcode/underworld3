@@ -24,7 +24,10 @@ each held by one rank, #925):
 
 - the zone strip's patch is one block of exactly 1510 rows;
 - the fault's structural patch is one block, its rows test_1106's recorded serial
-  counts, and they equal the rank-local record summed over the ranks.
+  counts, and they equal the rank-local record summed over the ranks. (This
+  fixture's band lies on one rank at np 2 and 4, so the one-block assertion
+  guards the summary; test_1139 is the fixture whose structural patch the
+  partition cut.)
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 baseline, in the parallel batches the partition.
@@ -64,6 +67,12 @@ def _stokes(mesh):
     return stokes
 
 
+def _nonempty_blocks(level):
+    """The sizes of a level's non-empty blocks over all ranks; a rank holding
+    no block records an empty one."""
+    return [rows for rank in level["block_rows_per_rank"] for rows in rank if rows]
+
+
 def _same_on_every_rank(summary):
     text = json.dumps(summary, sort_keys=True)
     return len(set(uw.mpi.comm.allgather(text))) == 1
@@ -92,8 +101,7 @@ def test_the_zone_patch_summary_is_the_same_on_every_rank():
     assert all(entry is None for entry in summary[:-1]), summary
     finest = summary[-1]
     assert finest is not None, "the zone strip installed no patch"
-    held = [rank for rank in finest["block_rows_per_rank"] if rank]
-    assert held == [[ZONE_SERIAL_ROWS]], (
+    assert _nonempty_blocks(finest) == [ZONE_SERIAL_ROWS], (
         f"np {uw.mpi.size}: zone blocks per rank {finest['block_rows_per_rank']}; "
         f"serial has one block of {ZONE_SERIAL_ROWS} rows (#925)")
     assert finest["owned_rows"] == ZONE_SERIAL_ROWS, finest
@@ -128,8 +136,7 @@ def test_the_structural_patch_summary_is_the_serial_rows_at_any_rank_count():
     assert finest["owned_rows"] in SERIAL_PATCH_ROWS.values(), (
         f"np {uw.mpi.size}: {finest['owned_rows']} structural patch rows; serial "
         f"counts {SERIAL_PATCH_ROWS} (a new host records its serial count in test_1106)")
-    held = [rank for rank in finest["block_rows_per_rank"] if rank]
-    assert len(held) == 1 and len(held[0]) == 1, (
+    assert len(_nonempty_blocks(finest)) == 1, (
         f"np {uw.mpi.size}: structural blocks per rank {finest['block_rows_per_rank']}; "
         f"serial has one block (#925)")
     # the summary is the rank-local record summed over the ranks
