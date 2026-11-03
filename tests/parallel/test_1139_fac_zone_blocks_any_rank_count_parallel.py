@@ -16,6 +16,11 @@ np 4. Removing the rows held twice was not enough: the solve converged in
 4-6 iterations at np 2 and 4 only once the blocks were the serial ones,
 gathered across ranks.
 
+The structural patch alone, with no zone keyed, was one block per rank: on the
+same fixture its velocity solve took 3 iterations serially, 4 at np 2 and 6 at
+np 4 (70, 96 and 143 summed over the solve). It converged, but a partition
+boundary cut it all the same, and it too is built from the gathered rows.
+
 The fixture is that problem at n_rungs 80: UWTN 2026-022's problem A box, the
 main fault split, and a TI band (eta_1 = 0.01 along planes parallel to it) placed
 0.08 below it as a ribbon, not cut, and keyed as the zone.
@@ -26,7 +31,9 @@ main fault split, and a TI band (eta_1 = 0.01 along planes parallel to it) place
   (4 measured at np 1, 2 and 4).
 - placed but not split, the zone alone at ``fac_block_rows=500``: every row is
   held once, and the zone is cut into the fewest pieces of at most 500 rows,
-  ``ceil(rows / 500)``, whatever the rank count.
+  ``ceil(rows / 500)``, whatever the rank count;
+- split with no zone keyed: the structural patch is one block, as in serial, and
+  the velocity solve takes at most 3 iterations (3 measured at np 1).
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 branch, in the parallel batches the parallel one.
@@ -52,9 +59,10 @@ T_HAT = (B - A) / LENGTH
 N_HAT = np.array([T_HAT[1], -T_HAT[0]])
 
 
-def _solve_fixture(split, fac_block_rows):
-    """Solve the TI-band-beside-a-fault box with the band keyed as the zone;
-    return the solver and every rank's finest-level blocks (global rows)."""
+def _solve_fixture(split, fac_block_rows, zone_keyed=True):
+    """Solve the TI-band-beside-a-fault box, with the band keyed as the zone
+    unless ``zone_keyed`` is False; return the solver and every rank's
+    finest-level blocks (global rows)."""
     main = A + (np.arange(N_RUNGS + 1) * S)[:, None] * T_HAT
     band = A + 0.08 * N_HAT + np.linspace(0.0, 1.0, N_RUNGS + 1)[:, None] * (B - A)
     base = uw.meshing.UnstructuredSimplexBox(
@@ -87,7 +95,8 @@ def _solve_fixture(split, fac_block_rows):
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-6
 
-    band_cells = np.asarray(mesh.cells_labelled("Band", 72), dtype=bool)
+    band_cells = (np.asarray(mesh.cells_labelled("Band", 72), dtype=bool)
+                  if zone_keyed else None)
     set_custom_fmg(stokes, levels, field_id=0, fac_zone=band_cells,
                    fac_block_rows=fac_block_rows)
     stokes.solve()
@@ -153,3 +162,27 @@ def test_an_unsplit_zone_is_cut_into_the_same_pieces_at_any_rank_count():
         f"np {uw.mpi.size}: the zone's {count.size} rows are in blocks of {sizes}; "
         f"segmented along strike at 500 rows they are {expected} blocks of at most "
         f"500 (#925)")
+
+
+@pytest.fixture(scope="module")
+def structural_alone():
+    return _solve_fixture(split=True, fac_block_rows=2000, zone_keyed=False)
+
+
+@pytest.mark.tier_b
+def test_the_structural_patch_alone_is_one_block(structural_alone):
+    _stokes, blocks = structural_alone
+    sizes = sorted(int(b.size) for b in blocks)
+    assert len(sizes) == 1, (
+        f"np {uw.mpi.size}: the structural patch is in blocks of {sizes}; serial "
+        f"has one (#925)")
+
+
+@pytest.mark.tier_b
+def test_the_structural_patch_alone_takes_the_serial_iterations(structural_alone):
+    stokes, _blocks = structural_alone
+    info = stokes._rotated_freeslip_info
+    assert info["converged"]
+    its = max(info["vel_its_last"])
+    # 3 measured at np 1; one block per rank took 4 at np 2 and 6 at np 4
+    assert its <= 3, f"np {uw.mpi.size}: the velocity solve took {its} iterations (#925)"

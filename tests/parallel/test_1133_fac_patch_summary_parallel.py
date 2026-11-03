@@ -18,13 +18,13 @@ collective call. The tests check two routes:
   partition.
 
 At every rank count they assert that every rank holds the identical summary and
-that the coarse levels carry no patch. Against the serial baselines:
+that the coarse levels carry no patch. Against the serial baselines, at every rank
+count (the finest level's blocks are cut from the rows gathered over the ranks,
+each held by one rank, #925):
 
-- the zone strip's patch rows are exactly 1510 at np 1. At np > 1 the summed
-  rows can be more, because a zone block's rows include the seam halo, which two
-  ranks can both hold, but the union of the ranks' global rows is exactly 1510;
-- the fault's structural rows are test_1106's recorded serial counts at every
-  rank count, and they equal the rank-local record summed over the ranks.
+- the zone strip's patch is one block of exactly 1510 rows;
+- the fault's structural patch is one block, its rows test_1106's recorded serial
+  counts, and they equal the rank-local record summed over the ranks.
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 baseline, in the parallel batches the partition.
@@ -92,17 +92,11 @@ def test_the_zone_patch_summary_is_the_same_on_every_rank():
     assert all(entry is None for entry in summary[:-1]), summary
     finest = summary[-1]
     assert finest is not None, "the zone strip installed no patch"
-    assert any(sum(rank) > 0 for rank in finest["block_rows_per_rank"])
-    if uw.mpi.size == 1:
-        assert finest["owned_rows"] == ZONE_SERIAL_ROWS, finest
-        assert finest["blocks"] == 1, finest
-    else:
-        assert finest["owned_rows"] >= ZONE_SERIAL_ROWS, finest
-        entry = h.level_patch_rows[-1]
-        blocks = entry if isinstance(entry, list) else [entry]
-        local = np.concatenate([np.asarray(own, dtype=np.int64) for own, _sub in blocks])
-        union = np.unique(np.concatenate(uw.mpi.comm.allgather(local)))
-        assert union.size == ZONE_SERIAL_ROWS, (union.size, finest)
+    held = [rank for rank in finest["block_rows_per_rank"] if rank]
+    assert held == [[ZONE_SERIAL_ROWS]], (
+        f"np {uw.mpi.size}: zone blocks per rank {finest['block_rows_per_rank']}; "
+        f"serial has one block of {ZONE_SERIAL_ROWS} rows (#925)")
+    assert finest["owned_rows"] == ZONE_SERIAL_ROWS, finest
 
 
 @pytest.mark.tier_b
@@ -134,6 +128,10 @@ def test_the_structural_patch_summary_is_the_serial_rows_at_any_rank_count():
     assert finest["owned_rows"] in SERIAL_PATCH_ROWS.values(), (
         f"np {uw.mpi.size}: {finest['owned_rows']} structural patch rows; serial "
         f"counts {SERIAL_PATCH_ROWS} (a new host records its serial count in test_1106)")
+    held = [rank for rank in finest["block_rows_per_rank"] if rank]
+    assert len(held) == 1 and len(held[0]) == 1, (
+        f"np {uw.mpi.size}: structural blocks per rank {finest['block_rows_per_rank']}; "
+        f"serial has one block (#925)")
     # the summary is the rank-local record summed over the ranks
     entry = h.level_patch_rows[-1]
     blocks = entry if isinstance(entry, list) else [entry]
