@@ -56,6 +56,27 @@ def test_orientation_empty_batches_and_refinement():
 
 
 @pytest.mark.tier_b
+def test_radial_order_seven_integrates_degree_thirteen_load_at_fixed_angles():
+    # x**11 represents degree-nine force times a P2 test function. The radial
+    # volume Jacobian raises the polynomial degree to thirteen. Fix the angular
+    # rule in both the numerical and independently integrated radial moments.
+    radius = 2.22
+    facets = radius*np.eye(3)[None]
+    fine = _spherical_facet_quadrature(facets, radius, 8, 7)
+    distance = np.linalg.norm(fine["planar_points"], axis=-1)
+    nx = fine["surface_normals"][..., 0]
+    exact_radial_moment = np.sum(
+        fine["surface_weights"]/radius**2 * nx**11
+        * (radius**14-distance**14)/14
+    )
+    fine_moment = np.sum(fine["gap_weights"]*fine["gap_points"][..., 0]**11)
+    np.testing.assert_allclose(fine_moment, exact_radial_moment, rtol=5e-14)
+    coarse = _spherical_facet_quadrature(facets, radius, 8, 4)
+    coarse_moment = np.sum(coarse["gap_weights"]*coarse["gap_points"][..., 0]**11)
+    assert abs(coarse_moment-exact_radial_moment) > 1e-8*abs(exact_radial_moment)
+
+
+@pytest.mark.tier_b
 @pytest.mark.parametrize("facets,radius,surface_order,radial_order", [
     (np.zeros((1, 3, 2)), 1, 4, 3),
     (_octahedron(1), 2, 4, 3),

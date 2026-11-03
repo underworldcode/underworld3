@@ -218,6 +218,10 @@ def _create_matrix(size, uid, pid, walls, curtains, comm):
     matrix = PETSc.Mat().create(comm=comm)
     matrix.setSizes((size, size)); matrix.setType(PETSc.Mat.Type.AIJ)
     graph.preallocatorPreallocate(matrix, fill=True); graph.destroy()
+    # The filled graph includes both curtain transposes and every gauge
+    # diagonal. A missing connection must fail instead of reallocating silently.
+    matrix.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, True)
+    matrix.setOption(PETSc.Mat.Option.NEW_NONZERO_LOCATION_ERR, True)
     return matrix
 
 
@@ -233,10 +237,68 @@ def _add(vector, ids, values):
         vector.setValues(index, np.asarray(value).ravel(), addv=PETSc.InsertMode.ADD_VALUES)
 
 
+def _refine_direct_solution(ksp, pinned, pinned_rhs, matrix, rhs,
+                            ungauged, physical, restore_gauge):
+    """Check the original equations; refine failed direct solves at most five times.
+
+    Corrections reuse the supplied factorisation of the unchanged pinned system.
+    The original RHS is read only. A solution already passing the physical
+    residual guard is left bitwise unchanged. Residual checks use ungauged
+    iterates for the pinned equations and physical-gauge copies for the original
+    equations; a physical gauge is not required to satisfy artificial point pins.
+    """
+    threshold = 1e-8
+    pinned_norm, matrix_norm = pinned.norm(), matrix.norm()
+    pinned_rhs_norm = max(pinned_rhs.norm(), np.finfo(float).tiny)
+    rhs_norm = max(rhs.norm(), np.finfo(float).tiny)
+    history = []
+    with ExitStack() as cleanup:
+        work = rhs.duplicate(); cleanup.callback(work.destroy)
+
+        def measure(candidate, gauged):
+            pinned.mult(candidate, work); work.axpy(-1, pinned_rhs)
+            pinned_residual = work.norm()
+            matrix.mult(gauged, work); work.axpy(-1, rhs)
+            full_residual = work.norm()
+            record = dict(
+                pinned_relative=pinned_residual/pinned_rhs_norm,
+                full_relative=full_residual/rhs_norm,
+                pinned_backward=pinned_residual/(pinned_norm*candidate.norm()+pinned_rhs_norm),
+                full_backward=full_residual/(matrix_norm*gauged.norm()+rhs_norm),
+            )
+            if not all(np.isfinite(value) for value in record.values()):
+                raise ArithmeticError(f"Nonfinite spherical direct residual: {record}")
+            history.append(record)
+            return record["full_relative"]
+
+        relative = measure(ungauged, physical)
+        if relative <= threshold:
+            return history
+        correction_rhs = rhs.duplicate(); cleanup.callback(correction_rhs.destroy)
+        correction = rhs.duplicate(); cleanup.callback(correction.destroy)
+        candidate = rhs.duplicate(); cleanup.callback(candidate.destroy)
+        for _ in range(5):
+            pinned.mult(ungauged, correction_rhs)
+            correction_rhs.scale(-1); correction_rhs.axpy(1, pinned_rhs)
+            correction.set(0); ksp.solve(correction_rhs, correction)
+            if ksp.getConvergedReason() <= 0:
+                raise ArithmeticError(f"Spherical cached-LU correction failed: {history}")
+            ungauged.axpy(1, correction)
+            ungauged.copy(candidate); restore_gauge(candidate)
+            improved = measure(ungauged, candidate)
+            if improved >= relative and improved > threshold:
+                raise ArithmeticError(f"Spherical direct refinement is nonimproving: {history}")
+            candidate.copy(physical)
+            if improved <= threshold:
+                return history
+            relative = improved
+        raise ArithmeticError(f"Spherical direct refinement exhausted after five corrections: {history}")
+
+
 def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
                        quadrature, linear_solver_options, batch_size, components, volume_force=None,
-                       norm_preconditioner_length=None):
+                       norm_preconditioner_length=None, radial_quadrature=4):
     assembly_started = time.perf_counter()
     mesh, velocity, pressure = stokes.mesh, stokes.u, stokes.p
     use_norm_pc = norm_preconditioner_length is not None
@@ -258,6 +320,9 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             or not isinstance(quadrature, int) or quadrature < 3
             or not isinstance(batch_size, int) or batch_size < 1):
         raise ValueError("Require ordered radii, positive viscosity, quadrature>=3 and positive batch size.")
+    if (not isinstance(radial_quadrature, (int, np.integer))
+            or isinstance(radial_quadrature, bool) or radial_quadrature < 2):
+        raise ValueError("radial_quadrature must be an integer at least two.")
     if (stokes.essential_bcs or stokes.natural_bcs or stokes._rotated_freeslip_bcs
             or getattr(stokes, "_block_constraint_bcs", [])):
         raise ValueError("Spherical gap Stokes replaces wall registration on both complete spheres.")
@@ -269,6 +334,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
     if mu.free_symbols or float(mu) != viscosity or penalty != 0 or stokes.constraints != sp.Matrix((stokes.div_u,)):
         raise ValueError("Require matching constant viscosity, zero penalty and standard continuity.")
     comm = mesh.dm.comm; mpi = comm.tompi4py()
+    resources = {"rss_start_mib": memory_snapshot(full=False)["rss_mb"]}
     # Diagnostic observers may copy borrowed operators at these two stages.
     # No extra matrix assembly or storage is incurred by ordinary solves.
     observer = getattr(stokes, "_spherical_gap_observer", None)
@@ -291,9 +357,16 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         for wall in walls:
             wall["lid"] = (nu+npres+components*compressed[wall["rows"], None]
                            + np.arange(components)).reshape(-1, 6*components).astype(PETSc.IntType)
+        resources["geometry_seconds"] = time.perf_counter()-assembly_started
+        resources["rss_after_geometry_mib"] = memory_snapshot(full=False)["rss_mb"]
+        graph_started = time.perf_counter()
         matrix = _create_matrix(size, uid[owned], pid[owned],
                                 [(uid[w["cells"]], w["lid"]) for w in walls], curtains, comm)
         cleanup.callback(matrix.destroy)
+        resources["graph_seconds"] = time.perf_counter()-graph_started
+        graph_baseline = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
+        resources["rss_after_graph_mib"] = memory_snapshot(full=False)["rss_mb"]
+        numeric_started = time.perf_counter()
         norm_blocks = None
         if use_norm_pc:
             norm_blocks = _SphericalGapNormBlocks(
@@ -354,7 +427,9 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             for start in range(0, len(wall["cells"]), batch_size):
                 sl = slice(start, start+batch_size)
                 cells, sign = wall["cells"][sl], wall["sign"]
-                rule = _spherical_facet_quadrature(wall["facets"][sl], wall["radius"], quadrature, 4)
+                rule = _spherical_facet_quadrature(
+                    wall["facets"][sl], wall["radius"], quadrature, radial_quadrature,
+                )
                 points = rule["gap_points"].reshape(len(cells), -1, 3)
                 weights = rule["gap_weights"].reshape(len(cells), -1)
                 blocks = _tetrahedral_stokes_blocks(vertices[cells], points, weights)
@@ -398,6 +473,20 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         matrix.assemble()
         for vector in (rhs, pmean, *rotation_weights):
             vector.assemble()
+        resources["numeric_assembly_seconds"] = time.perf_counter()-numeric_started
+        resources["rss_after_numeric_assembly_mib"] = memory_snapshot(full=False)["rss_mb"]
+        assembled_info = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
+        graph_checks = {
+            "matrix_mallocs_preallocation": mpi.allreduce(int(graph_baseline["mallocs"]), op=MPI.SUM),
+            "matrix_mallocs_after_assembly": mpi.allreduce(int(assembled_info["mallocs"]), op=MPI.SUM),
+            "matrix_dynamic_allocations": mpi.allreduce(int(assembled_info["mallocs"]-graph_baseline["mallocs"]), op=MPI.SUM),
+            "matrix_nz_allocated": mpi.allreduce(int(assembled_info["nz_allocated"]), op=MPI.SUM),
+            "matrix_nz_used": mpi.allreduce(int(assembled_info["nz_used"]), op=MPI.SUM),
+            "matrix_memory_bytes": mpi.allreduce(assembled_info["memory"], op=MPI.SUM),
+        }
+        if graph_checks["matrix_dynamic_allocations"] != 0:
+            raise ArithmeticError(f"Spherical assembly changed its preallocated graph: {graph_checks}")
+        algebraic_started = time.perf_counter()
         pressure_mode = rhs.duplicate(); cleanup.callback(pressure_mode.destroy); pressure_mode.set(0)
         lo, hi = pressure_mode.getOwnershipRange()
         pids = np.arange(max(lo, nu), min(hi, nu+npres), dtype=PETSc.IntType)
@@ -481,8 +570,10 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             pinned_rhs = rhs.copy(); cleanup.callback(pinned_rhs.destroy)
             local_pins = pins[(pins >= lo) & (pins < hi)]
             pinned_rhs.setValues(local_pins, np.zeros(len(local_pins))); pinned_rhs.assemble()
+        resources["algebraic_preparation_seconds"] = time.perf_counter()-algebraic_started
         assembly_seconds = mpi.allreduce(time.perf_counter()-assembly_started, op=MPI.MAX)
-        norm_rss_before_setup = memory_snapshot(full=False)["rss_mb"] if use_norm_pc else None
+        resources["rss_before_setup_mib"] = memory_snapshot(full=False)["rss_mb"]
+        setup_started = time.perf_counter()
         ksp = PETSc.KSP().create(comm=comm); cleanup.callback(ksp.destroy); ksp.setOperators(pinned)
         prefix = f"spherical_gap_{stokes.instance_number}_"; ksp.setOptionsPrefix(prefix)
         options = PETSc.Options(prefix)
@@ -490,16 +581,17 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             options[key] = value
             cleanup.callback(options.delValue, key)
         ksp.setFromOptions()
-        setup_started = time.perf_counter()
         if use_norm_pc:
             context = norm_blocks.context(umap, coordinates, nodal_rotations, physical_space, prefix+"norm_velocity_")
             cleanup.callback(context.destroy, None)
             ksp.getPC().setPythonContext(context)
             ksp.setPCSide(PETSc.PC.Side.RIGHT)
             ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
-            ksp.setUp()
+        ksp.setUp()  # Include direct factorisation in setup, rather than the solve timer.
+        if use_norm_pc:
             ksp.view()  # PETSc exposes the effective restart in its view, not a Python getter.
         setup_seconds = mpi.allreduce(time.perf_counter()-setup_started, op=MPI.MAX)
+        resources["rss_after_setup_mib"] = memory_snapshot(full=False)["rss_mb"]
         solve_started = time.perf_counter()
         solution = rhs.duplicate(); cleanup.callback(solution.destroy); ksp.solve(pinned_rhs, solution)
         if ksp.getConvergedReason() <= 0:
@@ -513,13 +605,32 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                 f"PC reason={pc.getFailedReason()}, factor diagnostics={factor_details}, pins={pins}"
             )
         solve_seconds = mpi.allreduce(time.perf_counter()-solve_started, op=MPI.MAX)
+        initial_solve_seconds = solve_seconds
+        resources["rss_after_solve_mib"] = memory_snapshot(full=False)["rss_mb"]
         lift_integral = float(pressure_jump_integral)+mpi.allreduce(float(lift_gap), op=MPI.SUM)
-        solution.axpy(-(pmean.dot(solution)+lift_integral)/pmean.sum(), pressure_mode)
-        if components == 1:
-            gram = np.array([[weight.dot(mode) for mode in modes[1:]] for weight in rotation_weights])
-            coefficients = np.linalg.solve(gram, [weight.dot(solution) for weight in rotation_weights])
-            for coefficient, mode in zip(coefficients, modes[1:], strict=True):
-                solution.axpy(-coefficient, mode)
+        direct_lu = ksp.getType() == "preonly" and ksp.getPC().getType() == "lu"
+        ungauged = solution.copy() if direct_lu else None
+        if ungauged is not None:
+            cleanup.callback(ungauged.destroy)
+
+        def restore_gauge(vector):
+            vector.axpy(-(pmean.dot(vector)+lift_integral)/pmean.sum(), pressure_mode)
+            if components == 1:
+                gram = np.array([[weight.dot(mode) for mode in modes[1:]] for weight in rotation_weights])
+                coefficients = np.linalg.solve(gram, [weight.dot(vector) for weight in rotation_weights])
+                for coefficient, mode in zip(coefficients, modes[1:], strict=True):
+                    vector.axpy(-coefficient, mode)
+
+        restore_gauge(solution)
+        direct_history = None
+        refinement_seconds = 0.0
+        if direct_lu:
+            refinement_started = time.perf_counter()
+            direct_history = _refine_direct_solution(
+                ksp, pinned, pinned_rhs, matrix, rhs, ungauged, solution, restore_gauge,
+            )
+            refinement_seconds = mpi.allreduce(time.perf_counter()-refinement_started, op=MPI.MAX)
+            solve_seconds += refinement_seconds
         matrix.mult(solution, work); work.axpy(-1, rhs)
         relative = work.norm()/max(rhs.norm(), np.finfo(float).tiny)
         if not np.isfinite(relative) or relative > 1e-8:
@@ -560,9 +671,26 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                       rotation_integrals=[weight.dot(solution) for weight in rotation_weights],
                       unknowns=size, multiplier_nodes=nboundary, ksp_reason=int(ksp.getConvergedReason()),
                       constraint_components=components, ranks=mpi.size,
+                      surface_quadrature_order=quadrature,
+                      radial_quadrature_order=int(radial_quadrature),
+                      curtain_radial_quadrature_order=4,
                       multiplier_mapping="scalar P2 normal" if components == 1 else "Cartesian P2 times R/|y|")
         checks.update(assembly_seconds=assembly_seconds, setup_seconds=setup_seconds,
                       solve_seconds=solve_seconds, ksp_iterations=int(ksp.getIterationNumber()))
+        if direct_history is not None:
+            checks.update(direct_refinement_steps=len(direct_history)-1,
+                          direct_ksp_solve_calls=len(direct_history),
+                          direct_refinement_seconds=refinement_seconds,
+                          initial_solve_seconds=initial_solve_seconds,
+                          direct_initial_pinned_relative_residual=direct_history[0]["pinned_relative"],
+                          direct_final_pinned_relative_residual=direct_history[-1]["pinned_relative"],
+                          direct_initial_relative_residual=direct_history[0]["full_relative"],
+                          direct_final_relative_residual=direct_history[-1]["full_relative"],
+                          direct_residual_history=direct_history)
+        checks.update(graph_checks)
+        # Durations and RSS snapshots use the largest local value, while matrix
+        # counts above sum rank-local MatInfo. RSS snapshots are not peak RSS.
+        checks.update({key: mpi.allreduce(value, op=MPI.MAX) for key, value in resources.items()})
         if use_norm_pc:
             checks.update(norm_preconditioner_length=float(norm_preconditioner_length),
                           norm_assembly_seconds=mpi.allreduce(norm_blocks.assembly_seconds, op=MPI.MAX),
@@ -572,8 +700,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                           rhs_removed_null_relative=removed_relative,
                           requested_gmres_restart=linear_solver_options.get("ksp_gmres_restart"),
                           restart_evidence="effective PETSc KSP view in run log",
-                          rss_before_norm_setup_mib=mpi.allreduce(norm_rss_before_setup, op=MPI.MAX),
-                          rss_after_solve_mib=mpi.allreduce(memory_snapshot(full=False)["rss_mb"], op=MPI.MAX))
+                          rss_before_norm_setup_mib=checks["rss_before_setup_mib"])
         if ksp.getPC().getType() == "lu" and ksp.getPC().getFactorSolverType() == "mumps":
             checks["effective_mumps_icntl_14"] = ksp.getPC().getFactorMatrix().getMumpsIcntl(14)
         return _SphericalGapResult(normal_field, tangent_field, checks)
@@ -582,16 +709,18 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
 def _solve_spherical_gap(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                          viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
                          quadrature, linear_solver_options, batch_size, volume_force=None,
-                         norm_preconditioner_length=None):
+                         norm_preconditioner_length=None, radial_quadrature=4):
     return _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                               viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                              quadrature, linear_solver_options, batch_size, 1, volume_force, norm_preconditioner_length)
+                              quadrature, linear_solver_options, batch_size, 1, volume_force,
+                              norm_preconditioner_length, radial_quadrature)
 
 
 def _solve_spherical_gap_zero_slip(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                                    viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
                                    quadrature, linear_solver_options, batch_size, volume_force=None,
-                                   norm_preconditioner_length=None):
+                                   norm_preconditioner_length=None, radial_quadrature=4):
     return _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                               viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                              quadrature, linear_solver_options, batch_size, 3, volume_force, norm_preconditioner_length)
+                              quadrature, linear_solver_options, batch_size, 3, volume_force,
+                              norm_preconditioner_length, radial_quadrature)

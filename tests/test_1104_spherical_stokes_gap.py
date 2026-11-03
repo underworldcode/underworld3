@@ -6,9 +6,10 @@ from enum import Enum
 import numpy as np
 import pytest
 import sympy as sp
+from petsc4py import PETSc
 import underworld3 as uw
 
-from underworld3.utilities._spherical_stokes_gap import _source_values
+from underworld3.utilities._spherical_stokes_gap import _create_matrix, _source_values
 
 pytestmark = pytest.mark.level_2
 
@@ -48,7 +49,7 @@ def test_constant_lift_hydrostatic_gauge_and_physical_reactions(shell, zero_slip
         inner_boundary="Lower", outer_boundary="Upper",
         radius_inner=0.55, radius_outer=1, viscosity=1,
         pressure_jump=sp.Integer(1), pressure_jump_integral=polyhedral_volume,
-        gap_bodyforce=sp.zeros(1, 3), volume_force=None, quadrature=6,
+        gap_bodyforce=sp.zeros(1, 3), volume_force=None, quadrature=6, radial_quadrature=7,
         linear_solver_options={"ksp_type": "preonly", "pc_type": "lu",
                                "pc_factor_mat_solver_type": "mumps",
                                "mat_mumps_icntl_14": 100},
@@ -68,6 +69,39 @@ def test_constant_lift_hydrostatic_gauge_and_physical_reactions(shell, zero_slip
     tangent_rms = np.sqrt(abs(uw.maths.Integral(shell, result.tangential_reaction.sym.dot(result.tangential_reaction.sym)).evaluate())/physical_volume)
     assert normal_rms < 1e-7
     assert tangent_rms < 1e-7
+    checks = result.checks
+    assert checks["surface_quadrature_order"] == 6
+    assert checks["radial_quadrature_order"] == 7
+    assert checks["curtain_radial_quadrature_order"] == 4
+    assert checks["matrix_dynamic_allocations"] == 0
+    assert checks["matrix_mallocs_after_assembly"] == checks["matrix_mallocs_preallocation"]
+    assert checks["matrix_nz_used"] == checks["matrix_nz_allocated"] >= checks["unknowns"]
+    assert np.isfinite(checks["matrix_memory_bytes"]) and checks["matrix_memory_bytes"] >= 0
+    for stage in ("geometry", "graph", "numeric_assembly", "algebraic_preparation", "setup", "solve"):
+        assert np.isfinite(checks[f"{stage}_seconds"]) and checks[f"{stage}_seconds"] >= 0
+
+
+@pytest.mark.tier_b
+def test_exact_distributed_graph_rejects_an_unplanned_owned_connection():
+    matrix = _create_matrix(
+        2*uw.mpi.size, np.empty((0, 30), dtype=PETSc.IntType),
+        np.empty((0, 4), dtype=PETSc.IntType), [], [], PETSc.COMM_WORLD,
+    )
+    try:
+        before = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
+        row, _ = matrix.getOwnershipRange()
+        matrix.setValue(row, row, 1)
+        matrix.assemble()
+        after = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
+        assert after["mallocs"] == before["mallocs"]
+        assert after["nz_used"] == after["nz_allocated"] == 2
+        with pytest.raises(PETSc.Error) as error:
+            matrix.setValue(row, row+1, 1)
+        # PETSC_ERR_ARG_OUTOFRANGE: both indices are valid, but the connection
+        # lies outside the declared graph. UW's handler prints details separately.
+        assert error.value.ierr == 63
+    finally:
+        matrix.destroy()
 
 
 @pytest.mark.tier_b
