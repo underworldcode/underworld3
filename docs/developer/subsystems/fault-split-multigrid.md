@@ -243,8 +243,14 @@ uniform refinement, cut or not, the halo reaches every row.
 - **A level without a split: 75 %.** On a wide adapt child the patch and halo reach
   95-98 % of the rows (a widened NVB metric), and taking them would mean one LU over
   nearly the whole level.
-- **A level that carries a split fault: 98 %**, that is, it declines only when under
-  2 % of its rows lie outside the patch and halo.
+- **A 2-D level that carries a split fault: 98 %**, that is, it declines only when
+  under 2 % of its rows lie outside the patch and halo. A 3-D split level keeps
+  75 %: on test_1097's sheet (an adapt child of the 3-D base) its patch and halo are
+  84 435 of 89 520 rows (94 %), and taking them was one 3-D LU over them, 463 s and
+  6.3 GB serially against 35 s and 1.6 GB with whole-level SOR (`test_1097` asserts
+  the decline). The 3-D threshold is a placeholder until the 3-D add-on is measured:
+  that measurement decides whether 3-D needs a different threshold or a bounded
+  block (#895). The cases below are 2-D.
   - *A placed fault level* keeps an untouched background there. On UWTN 2026-022's
     linear fixture at h_b/S = 24, 48 and 97, the patch and halo were 62 %, 76 % and
     86 % of the rows, with 38 %, 24 % and 14 % outside. The 75 % gate declined the
