@@ -43,8 +43,10 @@ def test_norm_pc_repeated_nonzero_flow_agrees_with_lu_fields(shell, wall):
     force_norm = np.sqrt(abs(uw.maths.Integral(shell, stokes.bodyforce.dot(stokes.bodyforce)).evaluate()))
     velocity_norm = np.sqrt(abs(uw.maths.Integral(shell, reference_velocity.sym.dot(reference_velocity.sym)).evaluate()))
     assert velocity_norm > 1e-7*force_norm
+    # Match the production work budget: the Gadi zero-slip mesh needs 2010
+    # iterations. Residual tolerances and the independent LU checks stay fixed.
     options = {"ksp_type": "fgmres", "pc_type": "python", "ksp_rtol": 1e-9,
-               "ksp_atol": 1e-50, "ksp_max_it": 2000, "ksp_gmres_restart": 100}
+               "ksp_atol": 1e-50, "ksp_max_it": 4000, "ksp_gmres_restart": 100}
     for repeat in range(2):
         result = solve(*args, options, 128, None, 1/8)
         checks = result.checks
