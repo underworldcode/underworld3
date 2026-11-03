@@ -773,6 +773,59 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
+def _gathered_zone_blocks(zones, structural, max_rows, rstart, comm):
+    """The finest level's FAC blocks in parallel, the same at any rank count.
+
+    ``zones`` holds, per ``fac_zone`` mask, this rank's rows of the mask's cells
+    (ghost rows resolved to their owners') as ``(rows, node_keys, coords)``, one
+    entry per row; ``structural`` is this rank's structural subdomain rows, or
+    None. COLLECTIVE: every rank gathers every rank's rows and cuts them as the
+    serial branch does. Each mask is one band, segmented along its strike by
+    :func:`_segment_block`; the structural rows outside every mask are one more
+    block. Each block then goes whole to the rank that owns most of its rows.
+
+    Built rank by rank instead, a rank's blocks held the seam rows its
+    neighbour's blocks also held, and rank boundaries cut the band and the
+    structural block, which the coarse level cannot repair: on a TI band keyed
+    beside a split fault the velocity solve took 4 iterations serially, 118 at
+    np 2 and more than 200 at np 4 (#925). A row is in one block of each mask;
+    masks that overlap share their common rows by design. Returns this rank's
+    blocks as ``(rows, rows)`` pairs."""
+    everyone = comm.allgather((rstart, zones, structural))
+    starts = np.array([e[0] for e in everyone])
+    blocks, covered = [], []
+    for k in range(len(zones)):
+        rows = np.concatenate([e[1][k][0] for e in everyone]).astype(np.int64)
+        keys = np.concatenate([e[1][k][1] for e in everyone])
+        xy = np.concatenate([e[1][k][2] for e in everyone])
+        rows, first = np.unique(rows, return_index=True)
+        keys, xy = keys[first], xy[first]
+        # number the nodes in coordinate order, not by their partition-dependent
+        # global rows, so that the segmentation sees the same points in the
+        # same order at any rank count
+        node_keys, at = np.unique(keys, return_index=True)
+        order = np.lexsort((node_keys,) + tuple(xy[at].T[::-1]))
+        position = np.empty(order.size, dtype=np.int64)
+        position[order] = np.arange(order.size)
+        node = position[np.searchsorted(node_keys, keys)]
+        for piece in _segment_block(rows, node, xy[at][order], max_rows):
+            if piece.size:
+                blocks.append(np.unique(piece))
+        covered.append(rows)
+    held = [e[2] for e in everyone if e[2] is not None]
+    if held:
+        sub = np.unique(np.concatenate(held).astype(np.int64))
+        extra = np.setdiff1d(sub, np.concatenate(covered))
+        if extra.size:
+            blocks.append(extra)
+    mine = []
+    for block in blocks:
+        owner = np.searchsorted(starts, block, side="right") - 1
+        if np.bincount(owner, minlength=comm.size).argmax() == comm.rank:
+            mine.append((block, block))
+    return mine
+
+
 def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
     """Append the coarse nodes of the global rows ``remote``, held on other
     ranks, to this rank's node table. COLLECTIVE: one scatter from the rows'
@@ -1739,37 +1792,31 @@ class CustomMGHierarchy:
                                     f"the co-partitioned transfer (#671).")
                 # an orphan coarse DOF (no fine image) is dropped at install
                 # (restrict_unreached), never injected — see drop_orphans
-                # FAC in parallel (#670): the same blocks as the serial branch
-                # below, in GLOBAL row numbering — the layout's ghost-resolved
-                # l2g puts a masked cell's off-rank nodes into this rank's
-                # subdomain, which is the seam halo; the structural split
-                # reads this rank's owned rows of the distributed transfer;
-                # the cover gate is one collective verdict.
+                # FAC in parallel (#670): the serial branch's blocks, in GLOBAL
+                # row numbering. A zone's rows are gathered from every rank (the
+                # layout's ghost-resolved l2g names a masked cell's off-rank
+                # nodes by their owner's rows) and cut into blocks as one band,
+                # so the blocks do not depend on the partition (#925); the
+                # structural split reads this rank's owned rows of the
+                # distributed transfer; the cover gate is one collective
+                # verdict.
                 if (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
                         and l == nlev - 1):
                     lay = maps[l]
                     blocks = []
-                    covered = set()
+                    zones = []
                     if self.fac_zone is not None:
                         cn = self.level_meshes[l]._cell_node_indices(
                             degree, continuous)
                         for mk in self.fac_zone:
                             nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
-                            full = (nodes[:, None] * nc
-                                    + np.arange(nc)[None, :]).ravel()
-                            rows = lay.l2g[full]
-                            keep = rows >= 0
-                            rows, node_r = rows[keep], full[keep] // nc
-                            # TODO(MEASURE): #670 knob — rows per block;
-                            # the default comes from the size sweep.
-                            cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
-                                                     self.fac_block_rows))
-                            for piece in _segment_block(rows, node_r,
-                                                        coords[l], cap):
-                                piece = np.unique(piece).astype(np.int64)
-                                if piece.size:
-                                    blocks.append((piece, piece))
-                                    covered.update(piece.tolist())
+                            rows = lay.l2g[nodes[:, None] * nc
+                                           + np.arange(nc)[None, :]]
+                            # a node is named by its largest global row, which
+                            # every rank holding it resolves alike
+                            key = rows.max(axis=1)
+                            n, c = np.nonzero(rows >= 0)
+                            zones.append((rows[n, c], key[n], coords[l][nodes[n]]))
                     # A placed split fault's structural rows (its band, the
                     # split duplicates and the fill around them) are rows the
                     # coarse level cannot represent, and whole-level SOR
@@ -1786,8 +1833,8 @@ class CustomMGHierarchy:
                     # the split's cover gate is collective: decide whether
                     # to take it from what ANY rank holds, not this rank
                     mpi_comm = comm.tompi4py()
-                    zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
-                                                       op=MPI.LOR)
+                    zone_anywhere = mpi_comm.allreduce(
+                        any(z[0].size for z in zones), op=MPI.LOR)
                     if split_level or not zone_anywhere:
                         gate = {}
                         split = _fac_patch_split_parallel(
@@ -1796,16 +1843,18 @@ class CustomMGHierarchy:
                             cover_max=self._fac_cover_max(l),
                             gate=gate)
                         self.fac_gate[l] = gate or None
-                    if split is not None:
+                    if zone_anywhere:
+                        # TODO(MEASURE): #670 knob — rows per block; the
+                        # default comes from the size sweep.
+                        cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                 self.fac_block_rows))
+                        blocks = _gathered_zone_blocks(
+                            zones, None if split is None else split[1], cap,
+                            lay.rstart, mpi_comm)
+                    elif split is not None:
                         _own, sub = split
-                        extra = np.asarray([g for g in sub if g not in covered],
-                                           dtype=np.int64)
-                        if blocks:
-                            if extra.size:
-                                blocks.append((extra, extra))
-                        else:
-                            blocks.append((np.asarray(_own, dtype=np.int64),
-                                           np.asarray(sub, dtype=np.int64)))
+                        blocks.append((np.asarray(_own, dtype=np.int64),
+                                       np.asarray(sub, dtype=np.int64)))
                     # every rank installs the patch, or none does: a rank with
                     # no rows of its own still sets the smoother type
                     n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)

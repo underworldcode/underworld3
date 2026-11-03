@@ -237,6 +237,16 @@ holds the band cells but not the fill around them. A level without a split keys 
 patch on the masks alone. That is #670's default, measured on a placed weak plane
 when the patch replaced the level smoother (`test_1135`).
 
+In parallel the zone's blocks are built from every rank's rows, so they are the
+serial blocks at any rank count. Each mask's rows are gathered and segmented along
+strike as one band, the structural rows outside every mask are one block, and each
+block goes whole to the rank that owns most of its rows. Built rank by rank, a
+rank's blocks held seam rows that its neighbour's blocks also held, and rank
+boundaries cut the band and the structural block. On row 5 at n_rungs 80 the velocity
+solve then took 4 iterations serially, 118 at np 2 and more than 200 at np 4 (#925).
+Gathered, it takes 4 at np 1, 2 and 4 (`test_1139`). The structural patch without a
+zone is still one block per rank, made of that rank's owned rows and halo.
+
 ## Not yet done
 
 - A regression test for the coarse-level wall rotation itself (a rotated free-slip
