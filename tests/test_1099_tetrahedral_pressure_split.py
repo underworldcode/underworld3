@@ -78,7 +78,7 @@ def test_tetrahedral_joint_jump_normal_reversal_preserves_lift():
 
 
 def _check_closed_interface_traces(mesh, split):
-    """Check all two-cell facet traces, oriented by cell-centroid radius.
+    """Check all two-cell facet traces, oriented by independently labelled volumes.
 
     The interface is polyhedral: affine jumps are interpolated at its vertices.
     Nothing here substitutes a true-sphere surface integral for those facets.
@@ -91,7 +91,11 @@ def _check_closed_interface_traces(mesh, split):
     coefficients = np.linalg.solve(
         design, split.pressure_jump_field.array[rows, 0, 0][..., None],
     )[..., 0]
-    radii = np.linalg.norm(coordinates.mean(axis=1), axis=1)
+    # A cell outside a fitted chordal interface can still have |centroid| < R.
+    # Material-volume labels identify sides without imposing true-sphere geometry.
+    outer = mesh.cells_labelled("Outer", mesh.regions.Outer.value)
+    inner = mesh.cells_labelled("Inner", mesh.regions.Inner.value)
+    assert np.all(outer != inner)
     first_vertex, last_vertex = dm.getDepthStratum(0)
     first_facet, last_facet = dm.getHeightStratum(1)
     coordinate_section = dm.getCoordinateSection()
@@ -113,8 +117,8 @@ def _check_closed_interface_traces(mesh, split):
         left, right = np.asarray(adjacent, dtype=int) - first_cell
         expected = np.zeros(len(points))
         if dm.getLabel("Internal").getValue(facet) == mesh.boundaries.Internal.value:
-            assert (radii[left] - 2) * (radii[right] - 2) < 0
-            expected = np.sign(radii[right] - radii[left]) * (
+            assert outer[left] != outer[right]
+            expected = (int(outer[right]) - int(outer[left])) * (
                 1 + 2*points[:, 0] - 3*points[:, 1]
             )
             checked_interface_facets += 1
