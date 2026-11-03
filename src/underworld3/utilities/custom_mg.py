@@ -598,6 +598,62 @@ _FAC_COVER_MAX = 0.75
 _FAC_COVER_MAX_SPLIT = 0.98
 
 
+def _fac_patch_summary(patch_rows, comm):
+    """The FAC patch on each PCMG level, summed over the ranks.
+
+    Collective: one allgather, and every rank returns the same list. Read it
+    in place of ``CustomMGHierarchy.level_patch_rows``, which is rank-local and
+    whose form differs between ranks. A level is None, one ``(owned,
+    subdomain)`` pair of reduced-row arrays, or a list of pairs (one per ASM
+    block), and a rank holding no part of a zone carries an empty pair. A
+    caller that sums it itself must make the same collectives on every rank
+    whatever its own entry is. One that loops a reduction over its own blocks
+    hangs, as the add-on matrix's row 5 driver did at np 4.
+
+    Parameters
+    ----------
+    patch_rows : list or None
+        The per-level patch rows handed to the installer (:func:`_configure_pcmg`).
+    comm : PETSc.Comm
+        The solver's communicator.
+
+    Returns
+    -------
+    list
+        One entry per level: None where no rank has a patch, else a dict with
+        ``blocks`` (ASM subdomains over all ranks, empty ones included),
+        ``owned_rows`` (the patch rows; the structural patch's are disjoint across
+        ranks, so its total does not depend on the partition, while a zone
+        block's rows include the seam halo, which two ranks can both hold),
+        ``subdomain_rows`` (the patch plus its halo, summed over the ranks),
+        ``block_rows_max``, and ``block_rows_per_rank`` (each rank's block
+        sizes, in rank order).
+    """
+    mine = []
+    for entry in (patch_rows or []):
+        if entry is None:
+            mine.append(None)
+            continue
+        blocks = entry if isinstance(entry, list) else [entry]
+        mine.append(([int(len(sub)) for _own, sub in blocks],
+                     int(sum(len(own) for own, _sub in blocks))))
+    every = comm.tompi4py().allgather(mine)
+    out = []
+    for level in range(max((len(m) for m in every), default=0)):
+        parts = [m[level] if level < len(m) else None for m in every]
+        if all(part is None for part in parts):
+            out.append(None)
+            continue
+        sizes = [part[0] if part is not None else [] for part in parts]
+        out.append({"blocks": sum(len(rank) for rank in sizes),
+                    "owned_rows": sum(part[1] for part in parts if part is not None),
+                    "subdomain_rows": sum(sum(rank) for rank in sizes),
+                    "block_rows_max": max((max(rank) for rank in sizes if rank),
+                                          default=0),
+                    "block_rows_per_rank": sizes})
+    return out
+
+
 def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
                      w_tol=1e-8, x_tol=1e-9, cover_max=_FAC_COVER_MAX, gate=None):
     """FAC patch/background split of one level's reduced fine DOFs (#629).
@@ -609,6 +665,8 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     on its patch plus an interface halo, with the background smoothed once at
     the level that owns it. This function finds that patch algebraically from
     the level's own transfer — builder-agnostic, so placed levels work too.
+    The smoother that ships applies the patch's blocks on top of whole-level
+    SOR (:func:`_configure_pcmg`): the patch alone starved what it left out.
 
     A fine reduced DOF is BACKGROUND when its transfer row is an identity row
     (one effective weight-1 entry) AND its node coincides with the referenced
@@ -676,7 +734,7 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     # structure: the smooth refined bulk stays on whole-level smoothing (it
     # is well served by ordinary multigrid), and only the fault trace gets
     # the subdomain solve. The halo comes from ASM overlap through the
-    # operator sparsity (set UW_FAC_OVERLAP). Remove when settled.
+    # operator sparsity (one layer). Remove when settled.
     if os.environ.get("UW_FAC_PATCH") == "slit":
         # The fault trace = COINCIDENT FINE PAIRS — the split's plus/minus
         # nodes at bit-identical coordinates. Detected in the fine cloud
@@ -1113,13 +1171,13 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
 
     ``patch_rows`` is the FAC configuration (#629): per PCMG level, ``None``
     (whole-level smoothing, the classical setup) or ``(owned, subdomain)``
-    reduced-row index arrays from :func:`_fac_patch_split`. A level with a
-    patch gets its smoother PC switched to ASM with that ONE user subdomain
-    — the smoother relaxes only the refined patch plus its interface halo,
-    the background falls through to the level that owns it, and the V-cycle's
-    smoothing cost follows the patch sizes' geometric series instead of
-    levels-times-whole-mesh. Residual and transfer work stay global. The
-    per-level ``mg_levels_<l>_pc_type`` keys written here are returned so a
+    reduced-row index arrays from :func:`_fac_patch_split`, or a list of such
+    pairs, one per block. A level with a patch gets a multiplicative composite
+    smoother PC: the level's SOR, then a basic ASM over the blocks (patch plus
+    halo, one operator-sparsity overlap layer), each block solved by LU with a
+    nonzero shift. The SOR smooths the whole level; the blocks correct the rows
+    the coarse level cannot represent. The keys written here (each FAC level's
+    ``pc_type`` and its blocks' ``pc_type`` and factor shift) are returned so a
     per-solve caller (the rotated path) can drop them from the DB, once
     :func:`_set_up_fac_smoothers` has set the FAC levels up from them."""
     nlev = len(Ps) + 1
@@ -1136,19 +1194,14 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     # generic mg_levels_pc_type from the bundle, and having it in the DB keeps
     # any later setFromOptions from reverting the live setType below.
     fac_keys = []
-    _only = os.environ.get("UW_FAC_LEVELS")            # TODO(MEASURE): #629 knob
-    _only = {int(t) for t in _only.split(",")} if _only else None
     if patch_rows:
         for l in range(1, nlev):
-            if (l < len(patch_rows) and patch_rows[l] is not None
-                    and (_only is None or l in _only)):
+            if l < len(patch_rows) and patch_rows[l] is not None:
+                # The whole-level smoother stays and the fault blocks apply ON
+                # TOP of it (a multiplicative composite): replacing it starves
+                # whatever the blocks leave out (#670).
                 key = f"mg_levels_{l}_pc_type"
-                # TODO(MEASURE): #670 knob — UW_FAC_MODE=composite keeps the
-                # whole-level smoother and applies the fault blocks ON TOP
-                # (multiplicative composite), instead of replacing it; the
-                # replacement form starves whatever the blocks leave out.
-                opts[prefix + key] = ("composite" if os.environ.get(
-                    "UW_FAC_MODE", "composite") == "composite" else "asm")
+                opts[prefix + key] = "composite"
                 fac_keys.append(key)
     # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
     # between applications, so its KSP must judge convergence flexibly), but on
@@ -1177,62 +1230,48 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     # options DB. setFromOptions above has already pushed the bundle (and the
     # per-level asm keys) into the level KSPs, so the objects are stable now.
     if patch_rows:
-        # TODO(MEASURE): #629 campaign knobs — ASM variant and subdomain
-        # solver for the FAC smoother; remove once the configuration settles.
-        # BASIC, not restricted, ASM: the correction must land on the halo
-        # too. Measured (banded Poisson, 4-level tail): restrict stalls the
-        # outer KSP at 80-375 iterations where basic runs 6 against a
-        # whole-level baseline of 4 — discarding the subdomain solve's halo
-        # correction breaks the interface error systematically.
-        _asm_type = os.environ.get("UW_FAC_ASM_TYPE", "basic")
-        # The measured default (fine S-fault rig, TI 1e-3, 4 September):
-        # whole-level SOR then the fault blocks with an exact LU sub-solve
-        # and one overlap layer — 10 velocity iterations against 44 with
-        # no patch and 60 with the replacing patch; 11 against 57 at np=2.
-        _sub_pc = os.environ.get("UW_FAC_SUB_PC", "lu")
-        _whole = os.environ.get("UW_FAC_WHOLE")        # asm WITHOUT subdomain
+        # The configuration, measured on the fine S-fault rig (TI 1e-3,
+        # 4 September): whole-level SOR, then the fault blocks with an exact
+        # LU sub-solve and one overlap layer — 10 velocity iterations against
+        # 44 with no patch and 60 with blocks replacing the SOR; 11 against 57
+        # at np=2. LU over an inexact block solve: on the add-on matrix's box
+        # (experiment 1, 2026-11) the fastest inexact block solve, ILU(2) at
+        # five steps, took 1.48 to 3.2 times LU's solve time for the same
+        # Newton counts and slip.
         for l in range(1, nlev):
             entry = patch_rows[l] if l < len(patch_rows) else None
-            if entry is None or (_only is not None and l not in _only):
-                continue
-            if _whole:
-                pc.getMGSmoother(l).getPC().setType("asm")
+            if entry is None:
                 continue
             # An entry is one (owned, subdomain) pair, or a LIST of them —
             # one ASM subdomain per block (the segmented-fault shape).
             blocks = entry if isinstance(entry, list) else [entry]
-            sm = pc.getMGSmoother(l)
-            spc = sm.getPC()
-            _composite = os.environ.get("UW_FAC_MODE", "composite") == "composite"
-            if _composite:
-                # whole-level SOR first, then the fault blocks: the blocks
-                # correct the band the level smoother cannot, and the level
-                # smoother keeps everything the blocks leave out
-                spc.setType("composite")
-                spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
-                spc.addCompositePCType("sor")
-                spc.addCompositePCType("asm")
-                lvl_pc = spc
-                spc = spc.getCompositePC(1)
+            # whole-level SOR first, then the fault blocks: the blocks correct
+            # the band the level smoother cannot, and the level smoother keeps
+            # everything the blocks leave out
+            # TODO(BUG): the composite's first member is SOR whatever the
+            # smoother variant; smoother="bulletproof" (mg_levels_pc_type asm,
+            # multigrid_options) is not applied on FAC levels.
+            spc = pc.getMGSmoother(l).getPC()
+            spc.setType("composite")
+            spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
+            spc.addCompositePCType("sor")
+            spc.addCompositePCType("asm")
+            spc = spc.getCompositePC(1)
             spc.setType("asm")
             is_subs = [PETSc.IS().createGeneral(
                 np.asarray(sub_rows, dtype=PETSc.IntType),
                 comm=PETSc.COMM_SELF) for _own, sub_rows in blocks]
-            is_owns = [PETSc.IS().createGeneral(
-                np.asarray(own_rows, dtype=PETSc.IntType),
-                comm=PETSc.COMM_SELF) for own_rows, _sub in blocks]
-            # Subdomain = patch + halo; BASIC applies corrections on the
-            # whole subdomain (restricted stalls — see the class note).
-            # Overlap 0: the transfer-graph halo is the overlap; the env
-            # knob adds operator-sparsity layers at PCSetUp instead.
-            if _asm_type == "basic":
-                spc.setASMType(PETSc.PC.ASMType.BASIC)
-                spc.setASMLocalSubdomains(len(blocks), is_subs)
-            else:
-                spc.setASMLocalSubdomains(len(blocks), is_subs, is_owns)
-            # Extra operator-sparsity overlap layers on top of the transfer
-            # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
-            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "1")))
+            # Subdomain = patch + halo. BASIC, not restricted, ASM: the
+            # correction must land on the halo too. Measured (banded Poisson,
+            # 4-level tail): restrict stalls the outer KSP at 80-375
+            # iterations where basic runs 6 against a whole-level baseline
+            # of 4 — discarding the halo correction breaks the interface
+            # error systematically.
+            spc.setASMType(PETSc.PC.ASMType.BASIC)
+            spc.setASMLocalSubdomains(len(blocks), is_subs)
+            # one operator-sparsity overlap layer on top of the transfer halo
+            # (PCASM extends it via MatIncreaseOverlap at PCSetUp)
+            spc.setASMOverlap(1)
             # Subdomain solver: FAC blocks are LU (with the nonzero shift
             # below); ILU there is a regression (#892). PCASM's default
             # sub-solve is unshifted ILU(0): it takes a NUMERIC_ZEROPIVOT on
@@ -1241,22 +1280,21 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # where it survives it is no band solve (UWTN 2026-022's linear
             # fault fixture at band ratio 24: 344 velocity iterations
             # against 67).
-            # The block KSPs read these keys when the ASM sets up, which in
-            # the composite form is its first application: a caller that
-            # drops the keys after set-up calls _set_up_fac_smoothers first.
-            _sub_key = (f"mg_levels_{l}_sub_1_sub_pc_type" if _composite
-                        else f"mg_levels_{l}_sub_pc_type")
-            opts[prefix + _sub_key] = _sub_pc or "sor"
+            # The block KSPs read these keys when the ASM sets up, which as
+            # the composite's second member is its first application: a
+            # caller that drops the keys after set-up calls
+            # _set_up_fac_smoothers first.
+            _sub_key = f"mg_levels_{l}_sub_1_sub_pc_type"
+            opts[prefix + _sub_key] = "lu"
             fac_keys.append(_sub_key)
-            if (_sub_pc or "sor") in ("lu", "ilu", "cholesky"):
-                # The rotated Galerkin patch block carries near-zero pivots
-                # (constraint-zeroed transfer rows leave weakly-attached
-                # coarse DOFs, min diag ~1e-5); an unshifted factorization
-                # takes NUMERIC_ZEROPIVOT even as exact LU.
-                key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
-                opts[prefix + key] = "nonzero"
-                fac_keys.append(key)
-            for _is in is_subs + is_owns:   # the PC holds its own references
+            # The rotated Galerkin patch block carries near-zero pivots
+            # (constraint-zeroed transfer rows leave weakly-attached coarse
+            # DOFs, min diag ~1e-5); an unshifted factorization takes
+            # NUMERIC_ZEROPIVOT even as exact LU.
+            key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
+            opts[prefix + key] = "nonzero"
+            fac_keys.append(key)
+            for _is in is_subs:   # the PC holds its own references
                 _is.destroy()
     return fac_keys
 
@@ -1268,10 +1306,9 @@ def _set_up_fac_smoothers(pc, fac_keys):
     Call it after ``pc.setUp()``, with ``fac_keys`` as :func:`_configure_pcmg`
     returned them and before anything drops those keys from the options
     database. PCASM creates its block KSPs at its own set-up, and they read
-    ``..._sub_pc_type`` and the factor shift from the database then. In the
-    composite form the ASM is the composite's second member, and the composite's
-    set-up only hands its members their operators, so the ASM sets up at its
-    first application. The rotated path drops its per-solve keys straight after
+    ``..._sub_pc_type`` and the factor shift from the database then. The ASM
+    is the composite's second member, and the composite's set-up only hands its
+    members their operators, so the ASM sets up at its first application. The rotated path drops its per-solve keys straight after
     set-up, so its blocks ran PCASM's default, unshifted ILU(0) where LU was
     configured (#892).
 
@@ -1287,19 +1324,14 @@ def _set_up_fac_smoothers(pc, fac_keys):
             continue
         smoother = pc.getMGSmoother(l)
         smoother.setUp()
-        level_pc = smoother.getPC()
-        asm = (level_pc.getCompositePC(1) if level_pc.getType() == "composite"
-               else level_pc)
+        asm = smoother.getPC().getCompositePC(1)
         asm.setUp()
         for block in asm.getASMSubKSP():
             prefix = block.getOptionsPrefix() or ""
             block_pc = block.getPC()
-            # a level with no block keys (the UW_FAC_WHOLE knob) keeps PCASM's own
-            if opts.hasName(prefix + "pc_type"):
-                block_pc.setType(opts.getString(prefix + "pc_type"))
-            if opts.hasName(prefix + "pc_factor_shift_type"):
-                block_pc.setFactorShift(
-                    shift_type=opts.getString(prefix + "pc_factor_shift_type"))
+            block_pc.setType(opts.getString(prefix + "pc_type"))
+            block_pc.setFactorShift(
+                shift_type=opts.getString(prefix + "pc_factor_shift_type"))
 
 
 def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
@@ -1470,6 +1502,9 @@ class CustomMGHierarchy:
         # cost is bounded by the cap however long the band grows.
         self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
+        # the FAC patch per level as installed, summed over the ranks
+        # (_fac_patch_summary); set where the patch goes onto the smoothers
+        self.patch_summary = None
         # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
         # split-node fault takes the side-aware cell-located transfer, and its
         # unreached unknowns are dropped at install rather than repaired.
@@ -1636,6 +1671,8 @@ class CustomMGHierarchy:
         # It is the gate's verdict: install can still drop a renumbered
         # coarse level's patch afterwards.
         self.fac_gate = [None] * nlev
+        # the record of the previous install no longer describes these rows
+        self.patch_summary = None
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
@@ -1968,6 +2005,20 @@ class CustomMGHierarchy:
                 f"Rebuild the solver so its DM section matches the operator before "
                 f"installing custom-P.")
 
+    def _record_patch_summary(self, patch_rows, comm):
+        """Set :attr:`patch_summary` from the patch rows handed to the installer.
+
+        Collective (see :func:`_fac_patch_summary`). Each install route calls
+        it with the rows it installed, once the PC is configured (and set up,
+        on the velocity-block routes), after the orphan restriction has
+        dropped the rows of every coarse level it renumbered; ``build``
+        clears the previous record. Each block is
+        recorded as handed over, before PCASM adds its overlap layer at
+        set-up. Reading :attr:`patch_summary` afterwards makes no collective
+        call, so any rank can read it alone."""
+        self.patch_summary = _fac_patch_summary(patch_rows, comm)
+        return self.patch_summary
+
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
@@ -1987,6 +2038,7 @@ class CustomMGHierarchy:
                     for level, rows in enumerate(patch_rows)]
             Ps = restricted
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
+        self._record_patch_summary(patch_rows, solver.dm.comm)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
         solver._custom_mg_live = {"h": id(self),
