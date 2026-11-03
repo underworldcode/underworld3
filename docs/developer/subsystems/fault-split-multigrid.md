@@ -237,10 +237,13 @@ holds the band cells but not the fill around them. A level without a split keys 
 patch on the masks alone. That is #670's default, measured on a placed weak plane
 when the patch replaced the level smoother (`test_1135`).
 
-In parallel the zone's blocks are built from every rank's rows, so they are the
-serial blocks at any rank count. Each mask's rows are gathered and segmented along
-strike as one band, the structural rows outside every mask are one block, and each
-block goes whole to the rank that owns most of its rows. Built rank by rank, a
+In parallel the zone's blocks are built from every rank's rows. Each mask's rows are
+gathered and segmented along strike as one band, with the two nodes of a split pair
+kept in one piece, so the zone's pieces are the same at any rank count. The
+structural rows outside every mask are one block; its halo can differ from the
+serial one by a few rows where a partition boundary runs along the band (#896). Each
+block goes whole to the rank that owns most of its rows, so with a zone keyed the
+structural block is one LU on one rank, as in serial. Built rank by rank, a
 rank's blocks held seam rows that its neighbour's blocks also held, and rank
 boundaries cut the band and the structural block. On row 5 at n_rungs 80 the velocity
 solve then took 4 iterations serially, 118 at np 2 and more than 200 at np 4 (#925).

@@ -65,7 +65,7 @@ def _solve_fixture(split, fac_block_rows):
         base, [("Fault", main)], 2 * S, spines=[("Fault", main), ("TI", band)],
         margin_rings=1, clearance=0.7, split=split, mesher="ladder")[0]
     _x, y = mesh.X
-    v =uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
+    v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 
@@ -122,8 +122,8 @@ def test_each_patch_row_is_in_one_block(split_level):
 def test_the_blocks_are_the_serial_ones(split_level):
     _stokes, blocks = split_level
     sizes = sorted(int(b.size) for b in blocks)
-    # serial: the zone's 1650 rows fit under the cap as one block, and the
-    # structural rows outside the zone are one more
+    # serial: the zone's 1650 rows (macOS and Linux alike) fit under the cap as
+    # one block, and the structural rows outside the zone are one more
     assert len(sizes) == 2 and sizes[0] == 1650, (
         f"np {uw.mpi.size}: block sizes {sizes}, serial has the zone's 1650 rows "
         f"and one structural block (#925)")
@@ -148,6 +148,8 @@ def test_an_unsplit_zone_is_cut_into_the_same_pieces_at_any_rank_count():
         f"{int(np.sum(count > 1))} of {count.size} zone rows are held by two or more "
         f"blocks at np {uw.mpi.size} (#925)")
     expected = int(np.ceil(count.size / 500))
-    assert len(blocks) == expected, (
-        f"np {uw.mpi.size}: the zone's {count.size} rows are in {len(blocks)} blocks; "
-        f"segmented along strike at 500 rows they are {expected} (#925)")
+    sizes = sorted(int(b.size) for b in blocks)
+    assert len(blocks) == expected and sizes[-1] <= 500, (
+        f"np {uw.mpi.size}: the zone's {count.size} rows are in blocks of {sizes}; "
+        f"segmented along strike at 500 rows they are {expected} blocks of at most "
+        f"500 (#925)")

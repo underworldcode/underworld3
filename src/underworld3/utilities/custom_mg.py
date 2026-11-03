@@ -774,56 +774,68 @@ def _segment_block(rows, node_of_row, coords, max_rows):
 
 
 def _gathered_zone_blocks(zones, structural, max_rows, rstart, comm):
-    """The finest level's FAC blocks in parallel, the same at any rank count.
+    """The finest level's FAC blocks in parallel, built from every rank's rows.
 
-    ``zones`` holds, per ``fac_zone`` mask, this rank's rows of the mask's cells
-    (ghost rows resolved to their owners') as ``(rows, node_keys, coords)``, one
-    entry per row; ``structural`` is this rank's structural subdomain rows, or
-    None. COLLECTIVE: every rank gathers every rank's rows and cuts them as the
-    serial branch does. Each mask is one band, segmented along its strike by
-    :func:`_segment_block`; the structural rows outside every mask are one more
-    block. Each block then goes whole to the rank that owns most of its rows.
+    COLLECTIVE. Rank 0 gathers every rank's rows and cuts them as the serial
+    branch does: each mask is one band, segmented along its strike by
+    :func:`_segment_block`, and the structural rows outside every mask are one
+    more block. Each block goes whole to the rank that owns most of its rows.
+    The zone's pieces are therefore the same at any rank count; the structural
+    block's halo is :func:`_fac_patch_split_parallel`'s, which can differ by a
+    few rows where a partition boundary runs along the band.
 
-    Built rank by rank instead, a rank's blocks held the seam rows its
-    neighbour's blocks also held, and rank boundaries cut the band and the
-    structural block, which the coarse level cannot repair: on a TI band keyed
-    beside a split fault the velocity solve took 4 iterations serially, 118 at
-    np 2 and more than 200 at np 4 (#925). A row is in one block of each mask;
-    masks that overlap share their common rows by design. Returns this rank's
-    blocks as ``(rows, rows)`` pairs."""
-    everyone = comm.allgather((rstart, zones, structural))
-    starts = np.array([e[0] for e in everyone])
-    blocks, covered = [], []
-    for k in range(len(zones)):
-        rows = np.concatenate([e[1][k][0] for e in everyone]).astype(np.int64)
-        keys = np.concatenate([e[1][k][1] for e in everyone])
-        xy = np.concatenate([e[1][k][2] for e in everyone])
-        rows, first = np.unique(rows, return_index=True)
-        keys, xy = keys[first], xy[first]
-        # number the nodes in coordinate order, not by their partition-dependent
-        # global rows, so that the segmentation sees the same points in the
-        # same order at any rank count
-        node_keys, at = np.unique(keys, return_index=True)
-        order = np.lexsort((node_keys,) + tuple(xy[at].T[::-1]))
-        position = np.empty(order.size, dtype=np.int64)
-        position[order] = np.arange(order.size)
-        node = position[np.searchsorted(node_keys, keys)]
-        for piece in _segment_block(rows, node, xy[at][order], max_rows):
-            if piece.size:
-                blocks.append(np.unique(piece))
-        covered.append(rows)
-    held = [e[2] for e in everyone if e[2] is not None]
-    if held:
-        sub = np.unique(np.concatenate(held).astype(np.int64))
-        extra = np.setdiff1d(sub, np.concatenate(covered))
-        if extra.size:
-            blocks.append(extra)
-    mine = []
-    for block in blocks:
-        owner = np.searchsorted(starts, block, side="right") - 1
-        if np.bincount(owner, minlength=comm.size).argmax() == comm.rank:
-            mine.append((block, block))
-    return mine
+    Cut rank by rank, a rank's blocks held the seam rows its neighbour's blocks
+    also held, and rank boundaries cut the band and the structural block (#925).
+
+    Parameters
+    ----------
+    zones : list of (ndarray, ndarray)
+        Per ``fac_zone`` mask, this rank's rows of the mask's cells (global,
+        ghost rows resolved to their owners') and each row's node coordinates.
+    structural : ndarray or None
+        This rank's structural subdomain rows (global), or None where the split
+        level's gate declined them or the level has no split.
+    max_rows : int
+        The cap on a zone piece's rows (``fac_block_rows``).
+    rstart : int
+        The first global row this rank owns.
+    comm : mpi4py communicator
+
+    Returns
+    -------
+    list of (ndarray, ndarray)
+        This rank's blocks as ``(rows, rows)`` pairs. A row is in one block of
+        each mask; masks that overlap share their common rows by design.
+    """
+    everyone = comm.gather((rstart, zones, structural), root=0)
+    per_rank = None
+    if comm.rank == 0:
+        starts = np.array([e[0] for e in everyone])
+        blocks, covered = [], []
+        for k in range(len(zones)):
+            rows = np.concatenate([e[1][k][0] for e in everyone]).astype(np.int64)
+            xy = np.concatenate([e[1][k][1] for e in everyone])
+            rows, first = np.unique(rows, return_index=True)
+            # nodes by coordinate: the segmentation sees the same points in the
+            # same order at any rank count, and the two nodes of a split pair
+            # stay in one piece
+            site_xy, site = np.unique(xy[first], axis=0, return_inverse=True)
+            for piece in _segment_block(rows, site.ravel(), site_xy, max_rows):
+                if piece.size:
+                    blocks.append(np.unique(piece))
+            covered.append(rows)
+        held = [e[2] for e in everyone if e[2] is not None]
+        if held:
+            sub = np.unique(np.concatenate(held).astype(np.int64))
+            extra = np.setdiff1d(sub, np.concatenate(covered))
+            if extra.size:
+                blocks.append(extra)
+        per_rank = [[] for _ in everyone]
+        for block in blocks:
+            owner = np.searchsorted(starts, block, side="right") - 1
+            per_rank[int(np.bincount(owner, minlength=len(everyone)).argmax())].append(
+                (block, block))
+    return comm.scatter(per_rank, root=0)
 
 
 def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
@@ -1796,7 +1808,7 @@ class CustomMGHierarchy:
                 # row numbering. A zone's rows are gathered from every rank (the
                 # layout's ghost-resolved l2g names a masked cell's off-rank
                 # nodes by their owner's rows) and cut into blocks as one band,
-                # so the blocks do not depend on the partition (#925); the
+                # so its pieces do not depend on the partition (#925); the
                 # structural split reads this rank's owned rows of the
                 # distributed transfer; the cover gate is one collective
                 # verdict.
@@ -1812,11 +1824,8 @@ class CustomMGHierarchy:
                             nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
                             rows = lay.l2g[nodes[:, None] * nc
                                            + np.arange(nc)[None, :]]
-                            # a node is named by its largest global row, which
-                            # every rank holding it resolves alike
-                            key = rows.max(axis=1)
                             n, c = np.nonzero(rows >= 0)
-                            zones.append((rows[n, c], key[n], coords[l][nodes[n]]))
+                            zones.append((rows[n, c], coords[l][nodes[n]]))
                     # A placed split fault's structural rows (its band, the
                     # split duplicates and the fill around them) are rows the
                     # coarse level cannot represent, and whole-level SOR

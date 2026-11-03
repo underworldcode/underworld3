@@ -25,8 +25,10 @@ compare with the structural patch the same level gets without a zone:
 - placed but not split: no structural row is in it, and the structural patch
   is not empty, so a union would have shown.
 
-In parallel each rank compares its own rows: both hierarchies are built on the
-one solver, so the global numbering is the same. This file carries no
+In parallel the rows are compared over all ranks: both hierarchies are built on
+the one solver, so the global numbering is the same, and a zone-keyed level's
+blocks go whole to one rank each, whoever owns their rows (#925). This file
+carries no
 ``mpi(min_size=2)`` mark: at np 1 it checks the serial branch, in the parallel
 batches the parallel one.
 
@@ -50,18 +52,17 @@ STRIP = (0.03, 0.12)
 
 
 def _patch_rows(entry):
-    """Every row of one level's patch on this rank (owned and halo)."""
-    if entry is None:
-        return np.zeros(0, dtype=np.int64)
-    blocks = entry if isinstance(entry, list) else [entry]
-    return np.unique(np.concatenate([np.asarray(sub, dtype=np.int64)
-                                     for _own, sub in blocks]))
+    """Every row of one level's patch (owned and halo), over all ranks."""
+    blocks = [] if entry is None else entry if isinstance(entry, list) else [entry]
+    mine = [np.asarray(sub, dtype=np.int64) for _own, sub in blocks]
+    held = [rows for rank in uw.mpi.comm.allgather(mine) for rows in rank]
+    return np.unique(np.concatenate(held)) if held else np.zeros(0, dtype=np.int64)
 
 
 def _structural_and_zone_patches(split):
     """Solve the fixture with the structural patch (no zone), then build the
-    zone-keyed hierarchy on the same solver; return this rank's rows of both
-    finest-level patches."""
+    zone-keyed hierarchy on the same solver; return the rows of both
+    finest-level patches over all ranks."""
     length = float(np.linalg.norm(B - A))
     spacing = length / N_RUNGS
     trace = A + (np.arange(N_RUNGS + 1) * spacing)[:, None] * (B - A) / length
@@ -99,24 +100,23 @@ def _structural_and_zone_patches(split):
 @pytest.mark.tier_b
 def test_a_split_level_keeps_its_structural_rows_with_a_zone_keyed():
     structural, zoned = _structural_and_zone_patches(split=True)
-    assert uw.mpi.comm.allreduce(structural.size) > 0, "the split level has no structural patch"
+    assert structural.size > 0, "the split level has no structural patch"
     missing = np.setdiff1d(structural, zoned).size
-    assert uw.mpi.comm.allreduce(missing) == 0, (
-        f"rank {uw.mpi.rank}: {missing} of {structural.size} structural rows are not in "
-        f"the zone-keyed patch (#921)")
+    assert missing == 0, (
+        f"{missing} of {structural.size} structural rows are not in the zone-keyed "
+        f"patch (#921)")
     # and the zone's own rows are there too: a dropped zone would leave the
     # structural patch alone, which also contains every structural row
-    zone_only = np.setdiff1d(zoned, structural).size
-    assert uw.mpi.comm.allreduce(zone_only) > 0, "the zone strip is not in the patch"
+    assert np.setdiff1d(zoned, structural).size > 0, "the zone strip is not in the patch"
 
 
 @pytest.mark.tier_b
 def test_an_unsplit_level_keys_its_patch_on_the_zone_alone():
     structural, zoned = _structural_and_zone_patches(split=False)
-    assert uw.mpi.comm.allreduce(structural.size) > 0, (
+    assert structural.size > 0, (
         "the placed level has no structural patch, so a union could not show")
-    assert uw.mpi.comm.allreduce(zoned.size) > 0, "the zone strip keyed no patch"
+    assert zoned.size > 0, "the zone strip keyed no patch"
     shared = np.intersect1d(structural, zoned).size
-    assert uw.mpi.comm.allreduce(shared) == 0, (
-        f"rank {uw.mpi.rank}: {shared} structural rows are in the zone-keyed patch of "
-        f"a level with no split (#670's default is the zone alone)")
+    assert shared == 0, (
+        f"{shared} structural rows are in the zone-keyed patch of a level with no "
+        f"split (#670's default is the zone alone)")
