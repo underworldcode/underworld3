@@ -48,7 +48,7 @@ def test_constant_lift_hydrostatic_gauge_and_physical_reactions(shell, zero_slip
         inner_boundary="Lower", outer_boundary="Upper",
         radius_inner=0.55, radius_outer=1, viscosity=1,
         pressure_jump=sp.Integer(1), pressure_jump_integral=polyhedral_volume,
-        gap_bodyforce=sp.zeros(1, 3), quadrature=6,
+        gap_bodyforce=sp.zeros(1, 3), volume_force=None, quadrature=6,
         linear_solver_options={"ksp_type": "preonly", "pc_type": "lu",
                                "pc_factor_mat_solver_type": "mumps",
                                "mat_mumps_icntl_14": 100},

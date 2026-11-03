@@ -14,8 +14,12 @@ from contextlib import ExitStack
 
 from mpi4py import MPI
 import numpy as np
+import sympy as sp
 from petsc4py import PETSc
 import underworld3 as uw
+
+from underworld3.function.expressions import mesh_vars_in_expression, unwrap
+from underworld3.utilities._spherical_solver_contract import require_native_solver_mesh
 
 from underworld3.maths.spherical_harmonics import (
     AXISYMMETRIC_UNNORMALIZED,
@@ -609,6 +613,66 @@ def _project_spherical_harmonic_trace_coefficient(
 __all__ = ["InterfaceLoadDiagnostics"]
 
 
+def _prepare_linear_spherical_sheet_operator(stokes):
+    """Validate the restricted linear contract and prepare its native Jacobian."""
+    mesh = stokes.mesh
+    require_native_solver_mesh(mesh)
+    if mesh.dim!=3 or stokes.u.degree!=2 or not stokes.u.continuous:
+        raise ValueError('This load needs a 3D continuous P2 velocity space.')
+    if type(stokes.constitutive_model) is not uw.constitutive_models.ViscousFlowModel:
+        raise ValueError('Only the linear ViscousFlowModel is supported.')
+    viscosity=stokes.constitutive_model.Parameters.shear_viscosity_0
+    viscosity=unwrap(viscosity,keep_constants=False,return_self=False)
+    force=uw.function.unwrap(stokes.bodyforce)
+    _,regular,derivatives=mesh_vars_in_expression(sp.sympify(viscosity))
+    coefficient_variables={getattr(fn.meshvar(),'_base_var',fn.meshvar()) for fn in regular}
+    coefficient_variables.update(getattr(var,'_base_var',var) for var in derivatives)
+    unknowns={getattr(var,'_base_var',var) for var in (stokes.u,stokes.p)}
+    if coefficient_variables.intersection(unknowns) or force.is_zero_matrix is not True:
+        raise ValueError('This restricted API requires solution-independent viscosity and zero bulk force.')
+    if stokes.natural_bcs:
+        raise ValueError('Install this sheet instead of natural load data, not in addition to them.')
+    for bc in stokes.essential_bcs:
+        if any(sp.sympify(value).is_zero is not True for value in bc.fn if value is not None):
+            raise ValueError('Only homogeneous essential data are supported by this linear load API.')
+    # Build the unchanged native linear operator before installing the
+    # RHS. It is also the operator used by the rotated constraint solve.
+    stokes._build(False,False,None)
+    mesh.update_lvec();stokes.dm.setAuxiliaryVec(mesh.lvec,None)
+    stokes._update_constants(record=True)
+    # A direct computeJacobian requires SNES setup. Rotational-nullspace
+    # setup happened to do this for free-slip callers; other callers can
+    # otherwise receive null Jacobian handles and crash inside PETSc.
+    stokes.snes.setUp()
+    zero=stokes.dm.createGlobalVec();zero.set(0.)
+    J,Jp=stokes.snes.getJacobian()[:2]
+    try:stokes.snes.computeJacobian(zero,J,Jp)
+    finally:zero.destroy()
+    stokes.u._set_vec(available=True)
+    return J
+
+
+def _install_linear_spherical_rhs(stokes, jacobian, rhs):
+    """Transfer ownership of a coupled residual vector to its native callback.
+
+    The callback evaluates F(x)=J*x+b. Reinstall only after the new callback
+    is attached so no live SNES closure retains a destroyed previous vector.
+    """
+    def residual(snes, vector, out):
+        jacobian.mult(vector, out)
+        out.axpy(1, rhs)
+    try:
+        stokes.snes.setFunction(residual)
+    except Exception:
+        rhs.destroy()
+        raise
+    previous = getattr(stokes, '_linear_spherical_sheet_rhs', None)
+    stokes._linear_spherical_sheet_rhs = rhs
+    if previous is not None:
+        previous.destroy()
+    return rhs
+
+
 def _install_linear_spherical_stokes_sheet_load(
     *, stokes, interface, harmonic_degree, density_coefficient,
     harmonic_order=0, harmonic_component='cos',
@@ -679,11 +743,7 @@ def _install_linear_spherical_stokes_sheet_load(
     Consistent facet coordinates and radial directions give zero work against
     rigid rotations. Empty local interface strata are allowed, empty mesh charts
     and proper subcommunicators are not. Reinstall after model/mesh setup changes."""
-    import sympy as sp
-    from underworld3.function.expressions import mesh_vars_in_expression, unwrap
-    from ._spherical_solver_contract import require_native_solver_mesh
     mesh=stokes.mesh
-    require_native_solver_mesh(mesh)
     comm=mesh.dm.getComm().tompi4py()
     specifications=[dict(harmonic_degree=harmonic_degree, harmonic_order=harmonic_order,
         harmonic_component=harmonic_component, harmonic_normalization=harmonic_normalization,
@@ -697,40 +757,11 @@ def _install_linear_spherical_stokes_sheet_load(
         amplitude=float(spec['density_coefficient'])
         if not np.isfinite(amplitude):raise ValueError('Invalid mode density.')
         validated.append((degree,order,component,normalization,amplitude))
-    if mesh.dim!=3 or stokes.u.degree!=2 or not stokes.u.continuous:
-        raise ValueError('This load needs a 3D continuous P2 velocity space.')
-    if interface not in mesh.boundaries.__members__:raise ValueError(f'Unknown interface {interface!r}.')
-    if quadrature_points<2:raise ValueError('Invalid quadrature.')
-    if type(stokes.constitutive_model) is not uw.constitutive_models.ViscousFlowModel:
-        raise ValueError('Only the linear ViscousFlowModel is supported.')
-    viscosity=stokes.constitutive_model.Parameters.shear_viscosity_0
-    viscosity=unwrap(viscosity,keep_constants=False,return_self=False)
-    force=uw.function.unwrap(stokes.bodyforce)
-    _,regular,derivatives=mesh_vars_in_expression(sp.sympify(viscosity))
-    coefficient_variables={getattr(fn.meshvar(),'_base_var',fn.meshvar()) for fn in regular}
-    coefficient_variables.update(getattr(var,'_base_var',var) for var in derivatives)
-    unknowns={getattr(var,'_base_var',var) for var in (stokes.u,stokes.p)}
-    if coefficient_variables.intersection(unknowns) or force.is_zero_matrix is not True:
-        raise ValueError('This restricted API requires solution-independent viscosity and zero bulk force.')
-    if stokes.natural_bcs:
-        raise ValueError('Install this sheet instead of natural load data, not in addition to them.')
-    for bc in stokes.essential_bcs:
-        if any(sp.sympify(value).is_zero is not True for value in bc.fn if value is not None):
-            raise ValueError('Only homogeneous essential data are supported by this linear load API.')
-    # Build the unchanged native linear operator before installing the
-    # RHS. It is also the operator used by the rotated constraint solve.
-    stokes._build(False,False,None)
-    mesh.update_lvec();stokes.dm.setAuxiliaryVec(mesh.lvec,None)
-    stokes._update_constants(record=True)
-    # A direct computeJacobian requires SNES setup. Rotational-nullspace
-    # setup happened to do this for free-slip callers; other callers can
-    # otherwise receive null Jacobian handles and crash inside PETSc.
-    stokes.snes.setUp()
-    zero=stokes.dm.createGlobalVec();zero.set(0.)
-    J,Jp=stokes.snes.getJacobian()[:2]
-    try:stokes.snes.computeJacobian(zero,J,Jp)
-    finally:zero.destroy()
-    stokes.u._set_vec(available=True)
+    if interface not in mesh.boundaries.__members__:
+        raise ValueError(f'Unknown interface {interface!r}.')
+    if quadrature_points < 2:
+        raise ValueError('Invalid quadrature.')
+    J = _prepare_linear_spherical_sheet_operator(stokes)
     ilocal=None
     if comm.size>1:_nroots,ilocal,_iremote=mesh.dm.getPointSF().getGraph()
     ghosts=set() if ilocal is None else set(map(int,ilocal))
@@ -770,14 +801,78 @@ def _install_linear_spherical_stokes_sheet_load(
         except Exception:
             rhs.destroy()
             raise
-    def residual(snes,vector,out):
-        J.mult(vector,out)
-        out.axpy(1.,rhs)
-    try:stokes.snes.setFunction(residual)
+    return _install_linear_spherical_rhs(stokes, J, rhs)
+
+
+def _install_linear_physical_spherical_stokes_sheet_load(
+    *, stokes, interface, radius, harmonic_degree, harmonic_order,
+    harmonic_component, harmonic_normalization, density_coefficient,
+    quadrature_points,
+):
+    """Install the true-sphere residual in the unchanged native Stokes operator."""
+    # The physical integrator uses this module's facet-coordinate primitive;
+    # import it only after module initialization to keep that dependency acyclic.
+    from underworld3.utilities._physical_spherical_sheet import _assemble_physical_spherical_sheet
+
+    validate_harmonic(harmonic_degree, harmonic_order, harmonic_component, harmonic_normalization)
+    if interface not in stokes.mesh.boundaries.__members__:
+        raise ValueError(f'Unknown interface {interface!r}.')
+    if not np.isfinite(radius) or radius <= 0 or not np.isfinite(density_coefficient):
+        raise ValueError('Require positive finite sheet radius and finite density coefficient.')
+    if not isinstance(quadrature_points, (int, np.integer)) or quadrature_points < 2:
+        raise ValueError('Physical sheet quadrature requires an integer order of at least two.')
+    jacobian = _prepare_linear_spherical_sheet_operator(stokes)
+    assembled = _assemble_physical_spherical_sheet(
+        stokes.u, interface, radius, harmonic_degree, harmonic_order,
+        harmonic_component, harmonic_normalization, density_coefficient,
+        quadrature_points,
+    )
+    rhs = stokes.dm.createGlobalVec()
+    rhs.set(0)
+    try:
+        _copy_full_velocity_load_to_native(stokes, assembled.residual, rhs)
     except Exception:
         rhs.destroy()
         raise
-    previous=getattr(stokes,'_linear_spherical_sheet_rhs',None)
-    stokes._linear_spherical_sheet_rhs=rhs
-    if previous is not None:previous.destroy()
-    return rhs
+    finally:
+        assembled.residual.destroy()
+    stokes._physical_spherical_sheet_checks = assembled.checks
+    return _install_linear_spherical_rhs(stokes, jacobian, rhs)
+
+
+def _copy_full_velocity_load_to_native(stokes, load, coupled_rhs):
+    """Copy assembled velocity entries once, dropping homogeneous essential rows."""
+    velocity_is, velocity_dm = stokes._subdict['velocity']
+    with ExitStack() as cleanup:
+        field_is, field_dm = stokes.mesh.dm.createSubDM(stokes.u.field_id)
+        cleanup.callback(field_is.destroy)
+        cleanup.callback(field_dm.destroy)
+        local = stokes.u.vec.duplicate()
+        cleanup.callback(local.destroy)
+        field_dm.globalToLocal(load, local)
+        subvector = coupled_rhs.getSubVector(velocity_is)
+        try:
+            velocity_dm.localToGlobal(local, subvector, addv=PETSc.InsertMode.INSERT_VALUES)
+        finally:
+            coupled_rhs.restoreSubVector(velocity_is, subvector)
+
+
+def _install_linear_spherical_pressure_lift(*, stokes, pressure_lift):
+    """Replace the sheet with regular and planar natural loads in native residual sign."""
+    from underworld3.utilities._spherical_pressure_lift import _SphericalPressureLift
+    if not isinstance(pressure_lift, _SphericalPressureLift) or pressure_lift.owner_stokes() is not stokes:
+        raise ValueError("pressure_lift must be created by this Stokes instance.")
+    jacobian = _prepare_linear_spherical_sheet_operator(stokes)
+    with ExitStack() as cleanup:
+        force = pressure_lift.volume_force.copy()
+        cleanup.callback(force.destroy)
+        force.axpy(1, pressure_lift.native_outer_boundary_force)
+        force.scale(-1)  # Both input vectors use FORCE RHS; native F=J*x+b.
+        rhs = stokes.dm.createGlobalVec(); rhs.set(0)
+        try:
+            _copy_full_velocity_load_to_native(stokes, force, rhs)
+        except Exception:
+            rhs.destroy()
+            raise
+    stokes._spherical_pressure_lift_checks = pressure_lift.checks.copy()
+    return _install_linear_spherical_rhs(stokes, jacobian, rhs)

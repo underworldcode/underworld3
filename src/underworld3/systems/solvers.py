@@ -1468,7 +1468,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     def solve_spherical_gap(
         self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
         viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-        quadrature, linear_solver_options, batch_size,
+        quadrature, linear_solver_options, batch_size, volume_force,
     ):
         r"""Solve an opt-in spherical P2/P1 system with weak normal wall constraints.
 
@@ -1495,6 +1495,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             signed wall-gap contributions are added for the physical gauge.
         gap_bodyforce : sympy matrix
             Explicit coordinate-only continuation of the regular volume force.
+        volume_force : PETSc.Vec or None
+            Caller-owned assembled force on the full velocity field. Added once
+            to the ordinary bodyforce integral; pass None when absent. For a
+            true-sphere pressure lift, pass its volume_force, its pressure_jump
+            and integral, and continue its regular_force_expression in the gaps.
+            The native_outer_boundary_force is excluded by physical wall data.
         quadrature : int
             Surface Gauss order, at least three; assess quadrature convergence.
         linear_solver_options : dict
@@ -1523,13 +1529,13 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         return _solve_spherical_gap(
             self, inner_boundary, outer_boundary, radius_inner, radius_outer,
             viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-            quadrature, linear_solver_options, batch_size,
+            quadrature, linear_solver_options, batch_size, volume_force,
         )
 
     def solve_spherical_gap_zero_slip(
         self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
         viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-        quadrature, linear_solver_options, batch_size,
+        quadrature, linear_solver_options, batch_size, volume_force,
     ):
         r"""Solve the spherical-gap system with all three wall velocities constrained.
 
@@ -1545,7 +1551,88 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         return _solve_spherical_gap_zero_slip(
             self, inner_boundary, outer_boundary, radius_inner, radius_outer,
             viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-            quadrature, linear_solver_options, batch_size,
+            quadrature, linear_solver_options, batch_size, volume_force,
+        )
+
+    def spherical_pressure_lifting(
+        self, *, inner_boundary, interface, interface_radius, outer_boundary,
+        outer_radius, jump, volume_order, surface_order, radial_order,
+    ):
+        r"""Build a true-sphere lift p_J=jump*H(r-interface_radius).
+
+        Return caller-owned regular volume and native planar boundary force
+        vectors, the reconstructed physical_pressure=q+p_J, and gauge integrals.
+        The original sheet must be removed when using these replacement loads.
+        Native walls use install_linear_spherical_pressure_lift; coupled walls
+        use only volume_force plus their physical wall datum and gap force.
+        Destroy the returned vectors after solver attachment/solve is complete.
+        """
+        from underworld3.utilities._spherical_pressure_lift import _spherical_pressure_lifting
+        return _spherical_pressure_lifting(
+            self, inner_boundary, interface, interface_radius, outer_boundary,
+            outer_radius, jump, volume_order, surface_order, radial_order,
+        )
+
+    def install_linear_spherical_pressure_lift(self, *, pressure_lift):
+        r"""Install replacement force loads for this solver's true-sphere lift.
+
+        Configure homogeneous native walls and zero ordinary bodyforce first.
+        The callback owns a copy in residual sign F=J*x-force; the caller retains
+        both lift vectors. This shares replacement/reset lifetime with sheet
+        adapters and removes essential rows through the native velocity layout.
+        """
+        from underworld3.utilities._spherical_interface_load import _install_linear_spherical_pressure_lift
+        return _install_linear_spherical_pressure_lift(stokes=self, pressure_lift=pressure_lift)
+
+    def install_linear_physical_spherical_sheet_load(
+        self, *, interface, radius, harmonic_degree, harmonic_order,
+        harmonic_component, harmonic_normalization, density_coefficient,
+        quadrature_points,
+    ):
+        r"""Install a radial residual integrated on the true internal sphere.
+
+        Parameters
+        ----------
+        interface : str
+            Fitted internal spherical interface label.
+        radius : float
+            Positive physical radius matching the fitted interface vertices.
+        harmonic_degree, harmonic_order : int
+            Real spherical harmonic degree and order, with degree >= 1.
+        harmonic_component, harmonic_normalization : str
+            Explicit real harmonic component and angular normalization.
+        density_coefficient : float
+            Signed residual amplitude: b_sheet integrates g Y_lm e_r.
+            No 4*pi*G factor is applied; the algebraic equation is J*x=-b_sheet.
+        quadrature_points : int
+            At least two Gauss points per spherical facet coordinate.
+
+        Returns
+        -------
+        petsc4py.PETSc.Vec
+            Borrowed coupled global vector owned by this solver. Pressure-block
+            entries are zero; the callback evaluates F(x)=J*x+b_sheet.
+
+        Notes
+        -----
+        Uses actual containing tetrahedra for physical-surface quadrature;
+        no facet-owner extrapolation is used. Requires continuous P2 velocity,
+        fixed solution-independent viscosity, zero bulk force and homogeneous
+        walls, with no simultaneous natural loads. The native Jacobian and
+        solver settings are retained. Reinstallation, reset and DM rebuild
+        release the borrowed vector; callers must not modify or destroy it.
+        This differs geometrically from :meth:`install_linear_spherical_sheet_load`.
+        """
+        from underworld3.utilities._spherical_interface_load import (
+            _install_linear_physical_spherical_stokes_sheet_load,
+        )
+        return _install_linear_physical_spherical_stokes_sheet_load(
+            stokes=self, interface=interface, radius=radius,
+            harmonic_degree=harmonic_degree, harmonic_order=harmonic_order,
+            harmonic_component=harmonic_component,
+            harmonic_normalization=harmonic_normalization,
+            density_coefficient=density_coefficient,
+            quadrature_points=quadrature_points,
         )
 
     def install_linear_spherical_sheet_load(self, *, interface, harmonic_degree,

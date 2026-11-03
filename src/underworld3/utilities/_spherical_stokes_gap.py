@@ -7,6 +7,22 @@ Zero slip uses three Cartesian multiplier components with mapped basis
 exact sphere normals, preserving the paired pressure/reaction gauge; its
 uniform stability is unproven. No polar tangent frame or pressure filtering is
 used. Returned reactions are physical values at projected boundary nodes.
+
+The gap extension and weak normal constraint are inspired by Collins et al.,
+Gap-SBM (2025), https://arxiv.org/abs/2508.09613, and Urquiza, Garon and Farinas,
+JCP 256 (2014), https://doi.org/10.1016/j.jcp.2013.08.045. They do not establish
+stability of this three-dimensional mixed space or its signed inner gaps.
+The cited Gap-SBM analysis is two-dimensional and does not supply the curtain
+terms or mapped Cartesian multipliers used here.
+
+For adjacent cap extensions A/B, let [v]=v_A-v_B and {q}=(q_A+q_B)/2.
+With n pointing A to B and cap sign s, the additional continuity form is
++s integral({q} [v].n). The symmetric viscous correction is
+-s integral([v].{2 mu epsilon(u) n} + [u].{2 mu epsilon(v) n}).
+These cancel the artificial-curtain fluxes for smooth exact fields and retain
+all three rigid rotations. Inner-cap subtraction is a signed continuation
+method, so these identities do not prove coercivity on ker([B; C]) or an
+inf-sup bound. Both require independent measured checks before acceptance.
 """
 
 from contextlib import ExitStack
@@ -214,7 +230,7 @@ def _add(vector, ids, values):
 
 def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                       quadrature, linear_solver_options, batch_size, components):
+                       quadrature, linear_solver_options, batch_size, components, volume_force=None):
     mesh, velocity, pressure = stokes.mesh, stokes.u, stokes.p
     if (mesh.dim != 3 or mesh.cdim != 3 or mesh.degree != 1 or not mesh.isSimplex
             or velocity.degree != 2 or not velocity.continuous
@@ -222,7 +238,8 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         raise ValueError("Spherical gap Stokes requires affine tetrahedra and continuous P2/P1 fields.")
     if uw.is_nondimensional_scaling_active() or uw.get_default_model().has_units_active():
         raise ValueError("Spherical gap Stokes supports nondimensional data only.")
-    if (not 0 < radius_inner < radius_outer or not np.isfinite(viscosity) or viscosity <= 0
+    if (not np.isfinite(pressure_jump_integral) or not 0 < radius_inner < radius_outer
+            or not np.isfinite(viscosity) or viscosity <= 0
             or not isinstance(quadrature, int) or quadrature < 3
             or not isinstance(batch_size, int) or batch_size < 1):
         raise ValueError("Require ordered radii, positive viscosity, quadrature>=3 and positive batch size.")
@@ -237,6 +254,9 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
     if mu.free_symbols or float(mu) != viscosity or penalty != 0 or stokes.constraints != sp.Matrix((stokes.div_u,)):
         raise ValueError("Require matching constant viscosity, zero penalty and standard continuity.")
     comm = mesh.dm.comm; mpi = comm.tompi4py()
+    # Diagnostic observers may copy borrowed operators at these two stages.
+    # No extra matrix assembly or storage is incurred by ordinary solves.
+    observer = getattr(stokes, "_spherical_gap_observer", None)
     vertex_rows = mesh._cell_node_indices(1, True)
     vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
     urows, prows = _canonical_rows(mesh, velocity, vertices), _canonical_rows(mesh, pressure, vertices)
@@ -260,6 +280,19 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                                 [(uid[w["cells"]], w["lid"]) for w in walls], curtains, comm)
         cleanup.callback(matrix.destroy)
         rhs = matrix.createVecRight(); cleanup.callback(rhs.destroy); rhs.set(0)
+        if volume_force is not None:
+            if (not isinstance(volume_force, PETSc.Vec) or volume_force.getSize() != nu
+                    or MPI.Comm.Compare(volume_force.comm.tompi4py(), mpi) not in (MPI.IDENT, MPI.CONGRUENT)):
+                raise ValueError("volume_force must be a full-field velocity Vec on the mesh communicator.")
+            # Globally assembled source entries are transferred once, including
+            # ownership ranges that differ from the larger mixed vector.
+            vlo, vhi = volume_force.getOwnershipRange()
+            indices = PETSc.IS().createGeneral(np.arange(vlo, vhi, dtype=PETSc.IntType), comm=comm)
+            cleanup.callback(indices.destroy)
+            scatter = PETSc.Scatter().create(volume_force, indices, rhs, indices)
+            cleanup.callback(scatter.destroy)
+            scatter.scatter(volume_force, rhs, addv=PETSc.InsertMode.ADD_VALUES,
+                            mode=PETSc.ScatterMode.FORWARD)
         pmean = rhs.duplicate(); cleanup.callback(pmean.destroy); pmean.set(0)
         rotation_weights = []
         for _ in range(3):
@@ -285,6 +318,9 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             shape, _, _ = _tetrahedral_p2_basis(vertices[cells], points)
             force = _source_values(force_expr, vertices, points, cells, mesh)
             _add(rhs, uid[cells], np.einsum("eq,eqi,eqd->eid", weights, shape, force))
+        if observer is not None:
+            matrix.assemble()
+            observer.background(matrix, nu, npres)
         lift_gap = 0.0
         for wall in walls:
             for start in range(0, len(wall["cells"]), batch_size):
@@ -361,9 +397,16 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             null_errors.append(work.norm()/(matrix_norm*vector.norm()))
         if max(null_errors) > 1e-10:
             raise ArithmeticError(f"Spherical pressure/rotation nullspace failed: {null_errors}")
+        if not np.isfinite(rhs.norm()):
+            raise ArithmeticError("Spherical assembled force is nonfinite.")
         compatibility = [abs(rhs.dot(vector))/vector.norm() for vector in modes]
         if max(compatibility) > 1e-10*max(rhs.norm(), 1):
             raise ValueError(f"Spherical force is incompatible with physical null modes: {compatibility}")
+        if observer is not None:
+            observer.physical(
+                matrix, nu, npres, pressure_mode, modes[1:],
+                rotation_weights, walls, components,
+            )
         pins = [nu]
         if components == 1:
             residual_rows = nodal_rotations.copy()
@@ -409,7 +452,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                 solution.axpy(-coefficient, mode)
         matrix.mult(solution, work); work.axpy(-1, rhs)
         relative = work.norm()/max(rhs.norm(), np.finfo(float).tiny)
-        if relative > 1e-8:
+        if not np.isfinite(relative) or relative > 1e-8:
             raise ArithmeticError(f"Spherical unpinned physical residual failed: {relative}")
         velocity.array[:, 0, :] = _scatter_values(solution, umap).reshape(-1, 3)
         pressure.array[:, 0, 0] = _scatter_values(solution, pmap+nu)
@@ -455,15 +498,15 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
 
 def _solve_spherical_gap(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                          viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                         quadrature, linear_solver_options, batch_size):
+                         quadrature, linear_solver_options, batch_size, volume_force=None):
     return _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                               viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                              quadrature, linear_solver_options, batch_size, 1)
+                              quadrature, linear_solver_options, batch_size, 1, volume_force)
 
 
 def _solve_spherical_gap_zero_slip(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                                    viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                                   quadrature, linear_solver_options, batch_size):
+                                   quadrature, linear_solver_options, batch_size, volume_force=None):
     return _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                               viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                              quadrature, linear_solver_options, batch_size, 3)
+                              quadrature, linear_solver_options, batch_size, 3, volume_force)
