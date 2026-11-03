@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
+from mpi4py import MPI
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
@@ -48,7 +49,17 @@ def test_cellwise_integral_carries_the_expression_value(setup):
     mesh, x, y, T = setup
     c = uw.function.expression(r"c_{c}", 2.0, "probe constant")
     cells = uw.maths.CellWiseIntegral(mesh, c * T.sym[0].diff(y)).evaluate()
-    assert np.isclose(np.asarray(cells).sum(), 2.0, rtol=1e-8)
+    # CellWiseIntegral returns rank-local cells, including overlap if present.
+    # Check each owned cell independently, then sum each physical cell once.
+    owned = mesh._get_owned_cells_mask()
+    cstart, _ = mesh.dm.getHeightStratum(0)
+    expected = []
+    for cell in np.flatnonzero(owned):
+        area, centroid, _ = mesh.dm.computeCellGeometryFVM(int(cell)+cstart)
+        expected.append(4*centroid[1]*area)
+    np.testing.assert_allclose(np.asarray(cells)[owned], expected, rtol=1e-8, atol=1e-12)
+    total = mesh.dm.comm.tompi4py().allreduce(float(np.asarray(cells)[owned].sum()), op=MPI.SUM)
+    assert np.isclose(total, 2.0, rtol=1e-8)
 
 
 def test_constitutive_flux_in_a_boundary_integral(setup):
