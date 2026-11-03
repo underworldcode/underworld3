@@ -72,11 +72,11 @@ largest block, and each rank's block sizes. It is made once, with one allgather
 `CustomMGHierarchy.install` and the rotated path's two `_configure_pcmg` calls.
 Reading it makes no collective call, so any rank can read it alone. A driver that
 looped a reduction over its own rank's blocks hung at np 4, because the ranks made
-different numbers of calls. The structural patch's owned rows are disjoint across
-ranks, so their total does not depend on the partition. A zone block's rows include
-the seam halo, which two ranks can both hold, so its summed rows can exceed the serial
-count while the union of the ranks' rows equals it (`test_1133`). The record is each
-block as handed to the installer, before PCASM adds its overlap layer at set-up.
+different numbers of calls. Each block of the finest level is held whole by one rank
+(see below, #925), so the summed rows are the serial count at any rank count
+(`test_1133`), and `block_rows_per_rank` shows where each block sits: the structural
+LU on one rank. The record is each block as handed to the installer, before PCASM
+adds its overlap layer at set-up.
 
 ## Rotated walls on every level
 
@@ -281,18 +281,21 @@ holds the band cells but not the fill around them. A level without a split keys 
 patch on the masks alone. That is #670's default, measured on a placed weak plane
 when the patch replaced the level smoother (`test_1135`).
 
-In parallel the zone's blocks are built from every rank's rows. Each mask's rows are
-gathered and segmented along strike as one band, with the two nodes of a split pair
-kept in one piece, so the zone's pieces are the same at any rank count. The
-structural rows outside every mask are one block; its halo can differ from the
-serial one by a few rows where a partition boundary runs along the band (#896). Each
-block goes whole to the rank that owns most of its rows, so with a zone keyed the
-structural block is one LU on one rank, as in serial. Built rank by rank, a
-rank's blocks held seam rows that its neighbour's blocks also held, and rank
-boundaries cut the band and the structural block. On row 5 at n_rungs 80 the velocity
-solve then took 4 iterations serially, 118 at np 2 and more than 200 at np 4 (#925).
-Gathered, it takes 4 at np 1, 2 and 4 (`test_1139`). The structural patch without a
-zone is still one block per rank, made of that rank's owned rows and halo.
+In parallel the finest level's blocks are built from every rank's rows. Each mask's
+rows are gathered and segmented along strike as one band, with the two nodes of a
+split pair kept in one piece, so the zone's pieces are the same at any rank count.
+The structural rows outside every mask are one block, and with no zone keyed the
+structural patch is one block; its halo can differ from the serial one by a few rows
+where a partition boundary runs along the band (#896). Each block goes whole to the
+rank that owns most of its rows, so the structural block is one LU on one rank, as in
+serial. That rank carries the factorisation the others do not
+(`patch_summary`'s `block_rows_per_rank`); balancing it is #895's question. Built
+rank by rank, a rank's blocks held seam rows that its neighbour's blocks also held,
+and rank boundaries cut the band and the structural block. On row 5 at n_rungs 80
+the velocity solve then took 4 iterations serially, 118 at np 2 and more than 200 at
+np 4 (#925). Gathered, it takes 4 at np 1, 2 and 4 (`test_1139`). The structural
+patch alone, one block per rank, converged but took 3 iterations serially, 4 at np 2
+and 6 at np 4; gathered it is one block at any rank count (`test_1139`, `test_1133`).
 
 ## Not yet done
 
