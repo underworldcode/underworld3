@@ -23,6 +23,12 @@ def test_closed_sphere_area_volume_and_moments(radius):
     octahedron_volume = 4 * radius**3 / 3
     np.testing.assert_allclose(rule["surface_weights"].sum(), area, rtol=2e-12)
     np.testing.assert_allclose(rule["gap_weights"].sum(), volume - octahedron_volume, rtol=2e-12)
+    # Sphere radial second moment minus the octahedron's 2 R**5 / 5.
+    radial_second_moment = np.sum(
+        rule["gap_weights"] * np.sum(rule["gap_points"]**2, axis=-1)
+    )
+    np.testing.assert_allclose(radial_second_moment,
+                               (4 * np.pi - 2) * radius**5 / 5, rtol=2e-12)
     x = rule["surface_points"]
     np.testing.assert_allclose(np.linalg.norm(x, axis=-1), radius, rtol=1e-14)
     np.testing.assert_allclose(np.einsum("fq,fqi->i", rule["surface_weights"], x), 0, atol=area * radius * 1e-14)
