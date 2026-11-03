@@ -154,16 +154,25 @@ every add-on level because a coarser level's star reaches further — are glued 
 sent to the rank already holding most of them, the load is balanced by diffusion
 over the seams (free cells move from a heavier rank to a lighter neighbour, the
 cells farthest from the faults first), and the one assignment is applied to every
-add-on level through the parent-cell relation. The background levels never move.
-The cut, the placement and the split then run on rank-interior regions and move
-nothing; the replay of the faults on the add-on levels (`split_tail_levels`) arrives
-on levels already partitioned with the finest.
+add-on level through the parent-cell relation. The coarse background levels never
+move. When the base has no add-on levels (one built with `refinement`, say), the
+level that moves is the base's own finest, the one the band is placed on. That
+level is still background: `partition_addon` marks the moved copy `_mg_static`,
+because the base mesh itself carries no mark (only the wraps of its levels do). The
+replay therefore leaves it uncut, as in serial. A later partition of a mesh placed on
+it (the cut that `add_fault` makes) takes that moved level as its base and does not
+move it. The first level's recorded parents on it are its current addresses, and the
+record of the level's own earlier move does not apply. The cut, the placement and the
+split then run on rank-interior regions and move nothing. The replay of the faults on
+the add-on levels (`split_tail_levels`) arrives on levels already partitioned with
+the finest.
 
 Every add-on pair is therefore co-partitioned exactly and the cell-located transfer
 finds every node in its local coarse cells (`level_transfer_stats` records `misses`
 zero; the query exchange still runs, with nothing to send). The one pair the
-partition separates — the base's finest static level against the first add-on
-level — carries the exact relation: each level records, per cell, where its parent
+partition separates, the static level under the add-on (a coarse wrap, or the moved
+finest of a base with no add-on levels) against the first level above it, carries
+the exact relation: each level records, per cell, where its parent
 on the level below lives (provenance riding the move through `distributeField`, the
 new addresses resolved through two star forests), and `provenance_transfer_parallel`
 fetches each fine cell's parent through one star forest (its record carries

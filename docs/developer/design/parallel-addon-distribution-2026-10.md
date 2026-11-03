@@ -93,7 +93,9 @@ places with nothing gathered and splits with nothing moved (test_1097).
 
 **One assignment for the whole add-on, computed on the finest level before any
 surgery, applied to every add-on level through the parent-cell relation, once.** The
-base levels never move. Concretely:
+base levels never move. A base with no add-on levels moves its own finest the first
+time, as the unit carrier; that moved level is static background from then on, and a
+later partition takes it as its base and does not move it again. Concretely:
 
 1. **Units.** The unit of assignment is a cell of the coarsest add-on level together
    with all its descendants on the finer add-on levels (the finest mesh itself when
