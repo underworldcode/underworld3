@@ -1442,8 +1442,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             else:
                 J.ptap(Qt, result=Ahat)
             # PtAP refreshes values, not the validity of attached nullspaces.
-            Ahat.setNullSpace(None)
-            Ahat.setTransposeNullSpace(None)
+            Ahat.setNullSpace(PETSc.NullSpace())
+            Ahat.setTransposeNullSpace(PETSc.NullSpace())
         if interface is not None:
             Khat = interface.tangent(solver, u)
             if Atot is not None:
@@ -1452,8 +1452,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Atot.axpy(1.0, Khat, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
             Khat.destroy()
             Aop = Atot
-            Aop.setNullSpace(None)
-            Aop.setTransposeNullSpace(None)
+            Aop.setNullSpace(PETSc.NullSpace())
+            Aop.setTransposeNullSpace(PETSc.NullSpace())
         else:
             Aop = Ahat
         if diag_scale is None:
@@ -1518,8 +1518,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 ctx["pressure_nullspace_checks"] = pressure_checks
                 nsp = ctx["nsp"]
                 if nsp is not None:
-                    Aop.setNullSpace(nsp)
-                    Aop.setTransposeNullSpace(nsp)
+                    Aop.setNullSpace(nsp if nsp is not None else PETSc.NullSpace())
+                    Aop.setTransposeNullSpace(nsp if nsp is not None else PETSc.NullSpace())
         return Aop, bhat
 
     r0 = None
@@ -2247,7 +2247,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             if ctx.get("pressure_coarse") is None:
                 ctx["pc"].setUp()
                 schur = ctx["pc"].getFieldSplitSubKSP()[1].getOperators()[0]
-                schur.setNullSpace(ctx["cns"])
+                schur.setNullSpace(ctx["cns"] if ctx["cns"] is not None else PETSc.NullSpace())
 
     # A measured, nonzero pressure response is a weakly determined mode, not
     # a gauge. Correct its preconditioning without projecting its equation.
@@ -2260,7 +2260,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         ctx["pc"].setOperators(Ahat)
         ctx["pc"].setUp()
         schur = ctx["pc"].getFieldSplitSubKSP()[1].getOperators()[0]
-        schur.setNullSpace(ctx["cns"])
+        schur.setNullSpace(ctx["cns"] if ctx["cns"] is not None else PETSc.NullSpace())
     elif use_coarse and coarse is None:
         from underworld3.utilities._rotated_pressure_coarse import _RotatedBalancedPressureCoarse
         rotations = list(nsp.getVecs()) if nsp is not None else []

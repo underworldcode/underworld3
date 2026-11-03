@@ -263,5 +263,5 @@ class _RotatedBalancedPressureCoarse(_BalancedPressureCoarse):
             self.base.setUp()
             self.velocity_ksp = self.base.getFieldSplitSubKSP()[0]
             schur = self.base.getFieldSplitSubKSP()[1].getOperators()[0]
-            schur.setNullSpace(None)
+            schur.setNullSpace(PETSc.NullSpace())
             self.refresh()
