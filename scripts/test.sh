@@ -331,6 +331,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/parallel/test_1132_addon_partition_static_mark_parallel.py
   # So is the FAC patch summary, the same on every rank (test_1133).
   batch 4 tests/parallel/test_1133_fac_patch_summary_parallel.py
+  # So is the serial reference child's environment (#922).
+  batch 4 tests/parallel/test_1138_serial_reference_child_env.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
