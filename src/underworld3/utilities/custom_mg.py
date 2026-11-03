@@ -593,7 +593,10 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
 # converges its band slowly (909 and 1487 velocity iterations over 17
 # applications against 66 when the 0.75 gate declined it), so a split level
 # declines only when under 2 % of its rows lie outside: a cut uniform pair,
-# whose patch and halo are the whole level and which SOR converges.
+# whose patch and halo are the whole level and which SOR converges. That is
+# 2-D only: a 3-D split level keeps 0.75. On test_1097's sheet its patch and
+# halo are 94 % of the level, and taking them was one 3-D LU over 84 435 rows,
+# 463 s and 6.3 GB serially against 35 s and 1.6 GB declined.
 _FAC_COVER_MAX = 0.75
 _FAC_COVER_MAX_SPLIT = 0.98
 
@@ -682,7 +685,7 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     the patch and of patch+halo — or ``None`` when patch+halo covers more
     than ``cover_max`` of the level: a uniform pair refines everywhere, and
     whole-level smoothing is then the right configuration. The hierarchy
-    passes 0.75, or 0.98 on a level that carries a split fault
+    passes 0.75, or 0.98 on a 2-D level that carries a split fault
     (``_FAC_COVER_MAX``, ``_FAC_COVER_MAX_SPLIT``). A dict passed as
     ``gate`` receives the verdict: ``rows``, ``subdomain_rows`` and ``taken``.
     """
@@ -2046,10 +2049,14 @@ class CustomMGHierarchy:
         return Ps
 
     def _fac_cover_max(self, l):
-        """The FAC cover gate's threshold on level ``l`` (#918): 0.98 on a
-        level that carries a split fault, 0.75 on any other."""
+        """The FAC cover gate's threshold on level ``l`` (#918): 0.98 on a 2-D
+        level that carries a split fault, 0.75 on any other. A 3-D split level
+        keeps 0.75: the 0.98 evidence is 2-D, and in 3-D a 94 % patch taken was
+        one LU at 4x the memory and 13x the time of whole-level SOR (test_1097's
+        sheet)."""
         from underworld3.utilities.fault_mg import is_split_level
-        return (_FAC_COVER_MAX_SPLIT if is_split_level(self.level_meshes[l])
+        mesh = self.level_meshes[l]
+        return (_FAC_COVER_MAX_SPLIT if mesh.dim == 2 and is_split_level(mesh)
                 else _FAC_COVER_MAX)
 
     @staticmethod

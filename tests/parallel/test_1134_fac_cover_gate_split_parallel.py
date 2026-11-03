@@ -34,6 +34,12 @@ host by a few rows (test_1106), so the test asserts the fraction against the
 old gate, not the counts. The verdict comes from the global counts, so it is
 the same at any rank count.
 
+The 0.98 threshold is 2-D only. In 3-D a split level keeps 0.75: on
+test_1097's sheet (an adapt child of the 3-D base) the split level's patch and
+halo are 84 435 of 89 520 rows (94 %), and taking them is one 3-D LU over them,
+463 s and 6.3 GB serially against 35 s and 1.6 GB declined. The 3-D test pins
+the threshold on a small split box (test_1095's geometry).
+
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 branch, in the parallel batches the parallel one.
 
@@ -46,6 +52,7 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
+from underworld3.utilities import custom_mg
 from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
@@ -131,3 +138,21 @@ def test_a_wide_welded_add_on_takes_its_patch():
     assert 0.95 < gate["subdomain_rows"] / gate["rows"] < 0.98, (
         f"{gate}: the fixture no longer sits between 95 and 98 %, so it does not "
         f"pin the split threshold")
+
+
+@pytest.mark.tier_b
+def test_a_3d_split_level_keeps_the_075_gate():
+    """A 3-D split level gets the 0.75 threshold, not the 2-D 0.98."""
+    from underworld3.utilities.fault_split import split_fault
+    patch = np.array([[1.0, 1.0, 0.5], [2.0, 1.0, 0.5], [2.0, 1.0, 0.8], [1.0, 1.0, 0.8]])
+    fine = uw.meshing.BoxInternalPatch(
+        cellSize=0.8, minCoords=(0, 0, 0), maxCoords=(3.0, 2.0, 1.0), patch_points=patch,
+        patch_name="Fault", patch_cellSize=0.4, grading_distance=0.8, refinement=2,
+        qdegree=3)
+    split = split_fault(fine, "Fault")
+    levels = fine._coarse_level_meshes()[:-1] + [split]
+    h = custom_mg.CustomMGHierarchy(levels)
+    finest = len(levels) - 1
+    assert h._fac_cover_max(finest) == OLD_GATE, (
+        f"a 3-D split level gets {h._fac_cover_max(finest)}; a 94 % patch taken in "
+        f"3-D is one LU at 4x the memory and 13x the time (#918)")

@@ -28,13 +28,11 @@ Measured 2026-10-17 on this fixture (k = 2): velocity iterations 6 at np 2 and
 import numpy as np
 import pytest
 from mpi4py import MPI
-from petsc4py import PETSc
 
 import underworld3 as uw
-from fault_fixtures import TRACE, adapted_2d, shear_fault_solve
+from fault_fixtures import TRACE, adapted_2d, parents_contain_centroids, shear_fault_solve
 from underworld3.utilities import addon_partition as ap
-from underworld3.utilities.fault_mg import (_barycentric, _cell_vertex_table,
-                                            addon_level_indices)
+from underworld3.utilities.fault_mg import addon_level_indices
 from underworld3.utilities.place_surface import _region_cells
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
@@ -56,28 +54,6 @@ def _levels(mesh):
     idx = addon_level_indices(tail)
     static = [tail[i] for i in range(len(tail)) if i not in idx]
     return static, [tail[i] for i in idx] + [mesh]
-
-
-def _parents_contain_centroids(below, lev):
-    """Fetch each cell's parent (by its CURRENT address) and test containment.
-    Returns the global count of cells NOT inside their parent."""
-    par = lev._addon_parent
-    vxy_b, cv_b = _cell_vertex_table(below)
-    nb = cv_b.shape[0]
-    verts = np.ascontiguousarray(vxy_b[cv_b].reshape(nb, -1))
-    sf = PETSc.SF().create(comm=PETSc.COMM_WORLD)
-    sf.setGraph(nb, None, np.ascontiguousarray(par, dtype=np.int32))
-    sf.setUp()
-    got = np.zeros((par.shape[0], verts.shape[1]))
-    unit = MPI.DOUBLE.Create_contiguous(verts.shape[1])
-    unit.Commit()
-    sf.bcastBegin(unit, verts, got, MPI.REPLACE)
-    sf.bcastEnd(unit, verts, got, MPI.REPLACE)
-    unit.Free()
-    sf.destroy()
-    fcent, _v, _c = ap._cell_centroids(lev)
-    lam = _barycentric(fcent, got.reshape(par.shape[0], cv_b.shape[1], -1))
-    return comm.allreduce(int((lam.min(axis=1) < -1e-9).sum()))
 
 
 def test_partition_invariants_on_the_adapt_child():
@@ -102,9 +78,9 @@ def test_partition_invariants_on_the_adapt_child():
     # cell's centroid, on the add-on pairs and on the base boundary
     assert len(levels) == len(_levels(child)[1])
     for l in range(1, len(levels)):
-        assert _parents_contain_centroids(levels[l - 1], levels[l]) == 0
+        assert parents_contain_centroids(levels[l - 1], levels[l]) == 0
         assert comm.allreduce(int((levels[l]._addon_parent[:, 0] != comm.rank).sum())) == 0
-    assert _parents_contain_centroids(static[-1], levels[0]) == 0
+    assert parents_contain_centroids(static[-1], levels[0]) == 0
     # a cell of the coarsest add-on level has a remote parent exactly when
     # its unit moved
     remote = comm.allreduce(int((levels[0]._addon_parent[:, 0] != comm.rank).sum()))
@@ -152,7 +128,7 @@ def test_a_second_partition_keeps_the_first_fault_whole():
         counts = np.asarray(comm.allgather(
             [int((cell_region == r).sum()) for r in regions]))
         assert all(np.count_nonzero(counts[:, j]) == 1 for j in range(len(regions)))
-    assert _parents_contain_centroids(static[-1], levels[0]) == 0
+    assert parents_contain_centroids(static[-1], levels[0]) == 0
 
 
 def test_add_fault_moves_nothing_after_the_partition_and_converges():
