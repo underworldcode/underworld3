@@ -154,16 +154,25 @@ every add-on level because a coarser level's star reaches further — are glued 
 sent to the rank already holding most of them, the load is balanced by diffusion
 over the seams (free cells move from a heavier rank to a lighter neighbour, the
 cells farthest from the faults first), and the one assignment is applied to every
-add-on level through the parent-cell relation. The background levels never move.
-The cut, the placement and the split then run on rank-interior regions and move
-nothing; the replay of the faults on the add-on levels (`split_tail_levels`) arrives
-on levels already partitioned with the finest.
+add-on level through the parent-cell relation. The coarse background levels never
+move. When the base has no add-on levels (one built with `refinement`, say), the
+level that moves is the base's own finest, the one the band is placed on. That
+level is still background: `partition_addon` marks the moved copy `_mg_static`,
+because the base mesh itself carries no mark (only the wraps of its levels do). The
+replay therefore leaves it uncut, as in serial. A later partition of a mesh placed on
+it (the cut that `add_fault` makes) takes that moved level as its base and does not
+move it. The first level's recorded parents on it are its current addresses, and the
+record of the level's own earlier move does not apply. The cut, the placement and the
+split then run on rank-interior regions and move nothing. The replay of the faults on
+the add-on levels (`split_tail_levels`) arrives on levels already partitioned with
+the finest.
 
 Every add-on pair is therefore co-partitioned exactly and the cell-located transfer
 finds every node in its local coarse cells (`level_transfer_stats` records `misses`
 zero; the query exchange still runs, with nothing to send). The one pair the
-partition separates — the base's finest static level against the first add-on
-level — carries the exact relation: each level records, per cell, where its parent
+partition separates, the static level under the add-on (a coarse wrap, or the moved
+finest of a base with no add-on levels) against the first level above it, carries
+the exact relation: each level records, per cell, where its parent
 on the level below lives (provenance riding the move through `distributeField`, the
 new addresses resolved through two star forests), and `provenance_transfer_parallel`
 fetches each fine cell's parent through one star forest (its record carries
@@ -234,8 +243,14 @@ uniform refinement, cut or not, the halo reaches every row.
 - **A level without a split: 75 %.** On a wide adapt child the patch and halo reach
   95-98 % of the rows (a widened NVB metric), and taking them would mean one LU over
   nearly the whole level.
-- **A level that carries a split fault: 98 %**, that is, it declines only when under
-  2 % of its rows lie outside the patch and halo.
+- **A 2-D level that carries a split fault: 98 %**, that is, it declines only when
+  under 2 % of its rows lie outside the patch and halo. A 3-D split level keeps
+  75 %: on test_1097's sheet (an adapt child of the 3-D base) its patch and halo are
+  84 435 of 89 520 rows (94 %), and taking them was one 3-D LU over them, 463 s and
+  6.3 GB serially against 35 s and 1.6 GB with whole-level SOR (`test_1097` asserts
+  the decline). The 3-D threshold is a placeholder until the 3-D add-on is measured:
+  that measurement decides whether 3-D needs a different threshold or a bounded
+  block (#895). The cases below are 2-D.
   - *A placed fault level* keeps an untouched background there. On UWTN 2026-022's
     linear fixture at h_b/S = 24, 48 and 97, the patch and halo were 62 %, 76 % and
     86 % of the rows, with 38 %, 24 % and 14 % outside. The 75 % gate declined the

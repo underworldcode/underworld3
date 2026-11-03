@@ -566,7 +566,10 @@ def _moved_wrap(level, dm, fields, pairs):
         dm, simplex=level.dm.isSimplex(), qdegree=level.qdegree,
         coordinate_system_type=level.CoordinateSystem.coordinate_type,
         boundaries=level.boundaries, verbose=False)
-    moved._mg_static = False
+    # A level keeps its own mark: an add-on level is unmarked, and a base's
+    # finest moved by an earlier partition carries True. A base's finest moved
+    # for the first time is marked by partition_addon, which knows it (#919).
+    moved._mg_static = getattr(level, "_mg_static", False)
     for attr in ("_fault_traces", "_fault_specs", "_fault_surfaces",
                  "_fault_seam_normals", "_embedded_surfaces"):
         if getattr(level, attr, None) is not None:
@@ -775,10 +778,24 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         lev._addon_below = below
         if below is None:
             lev._addon_parent = None
+        elif l == 0:
+            # The base never moves here, so the first level's recorded parents
+            # (base_parent) are its current addresses already. A base an
+            # earlier partition moved still carries that move's record
+            # (_addon_self_old), which does not apply to this one.
+            lev._addon_parent = np.asarray(lev._addon_parent_old,
+                                           dtype=np.int64).copy()
         else:
             _resolve_parents(below, lev)
 
     out = moved[-1]
+    # The moved finest of a mesh with no tail of its own is static background,
+    # as that mesh's grid is in serial, where its children read it through the
+    # static wraps of _coarse_level_meshes. The mesh itself carries no mark
+    # (only those wraps do), so the mark is set here. A mesh that owns a tail
+    # (an adapt child) is an add-on level and stays unmarked.
+    if getattr(mesh, "_custom_mg_coarse_meshes", None) is None:
+        out._mg_static = True
     out.parent = mesh
     out._relationship_kind = "refinement"
     out._refine_dofs_coincide = False
