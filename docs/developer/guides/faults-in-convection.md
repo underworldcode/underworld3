@@ -34,17 +34,19 @@ from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
 spine, trace = fault_trace()          # the fault's own points: they are the rungs
-faulted, info = place_fault_ribbon_2d(base, [("Fault", trace)], width,
+faulted, info = place_fault_ribbon_2d(base, [("Fault", trace)], width,   # the local mesh size
                                       spines=[("Fault", spine)], margin_rings=1,
                                       clearance=0.7, split=True, mesher="ladder")
 stokes = uw.systems.Stokes(faulted, ...)
 set_custom_fmg(stokes, base.multigrid_levels, field_id=0)   # coarsest .. base; faulted on top
 ```
 
-The fault carries its own resolution (Louis, 2026-11-02): the trace's points are the
-rungs, and no parameter sets the spacing along the fault. The drivers still resample
-the trace at a spacing $S$ and take the band $2S$ wide; that parameter is to go, and
-the band ratio below is the base's finest cell size over the fault's own point spacing.
+The fault carries its own resolution (Louis, 2026-11-02, clarified 2026-11-03): the
+trace's points are the rungs, no parameter sets the spacing along the fault, and the
+band is as wide as the local mesh size. The drivers still resample the trace at a
+spacing $S$ and take the band $2S$ wide; that parameter is to go, every measurement so
+far used the $2S$ band, and the band ratio below is the base's finest cell size over the
+fault's own point spacing.
 Measured on UWTN 2026-022's fixtures in the tail sweep and reproduced on #912's build
 (velocity iterations as the rotated loop reports them):
 
