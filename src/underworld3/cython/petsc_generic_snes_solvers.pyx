@@ -3080,6 +3080,13 @@ class SolverBaseClass(uw_object):
             from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
             _destroy_rotated_linear_cache(cache)
 
+    def _release_linear_spherical_sheet_rhs(self):
+        """Release the restricted load after its owning SNES is destroyed."""
+        sheet_rhs = getattr(self, "_linear_spherical_sheet_rhs", None)
+        self._linear_spherical_sheet_rhs = None
+        if sheet_rhs is not None:
+            sheet_rhs.destroy()
+
     def _reset(self):
 
         self._reset_rotated_solver_cache()
@@ -3096,6 +3103,8 @@ class SolverBaseClass(uw_object):
                 self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
+
+        self._release_linear_spherical_sheet_rhs()
 
         if self.dm is not None:
             for coarse_dm in self.dm_hierarchy:
@@ -4228,6 +4237,8 @@ class SolverBaseClass(uw_object):
                 self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
+
+        self._release_linear_spherical_sheet_rhs()
 
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
