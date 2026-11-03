@@ -62,6 +62,22 @@ orphans, with and without a split finest) and 512 duplicated columns at np = 2. 
 coarse levels' FAC patch rows do not survive the renumbering and are cleared; the
 finest's are unchanged.
 
+`CustomMGHierarchy.level_patch_rows` is rank-local, and its form differs between
+ranks: per level None, one `(owned, subdomain)` pair, or a list of pairs, and a rank
+holding no part of a zone has an empty pair. Read the patch through
+`hierarchy.patch_summary` instead. It is one entry per level, None where no rank has
+a patch, otherwise the blocks, owned and subdomain rows summed over the ranks, the
+largest block, and each rank's block sizes. It is made once, with one allgather
+(`custom_mg._fac_patch_summary`), wherever the patch is installed:
+`CustomMGHierarchy.install` and the rotated path's two `_configure_pcmg` calls.
+Reading it makes no collective call, so any rank can read it alone. A driver that
+looped a reduction over its own rank's blocks hung at np 4, because the ranks made
+different numbers of calls. The structural patch's owned rows are disjoint across
+ranks, so their total does not depend on the partition. A zone block's rows include
+the seam halo, which two ranks can both hold, so its summed rows can exceed the serial
+count while the union of the ranks' rows equals it (`test_1133`). The record is each
+block as handed to the installer, before PCASM adds its overlap layer at set-up.
+
 ## Rotated walls on every level
 
 A hierarchy under rotated free-slip walls (an annulus, a spherical shell) rotates
@@ -98,6 +114,34 @@ zero). Two further rules came out of the same case:
   (`normal=mesh.CoordinateSystem.unit_e_0`); and that SVD needs a small coarsest
   level (14k unknowns took over 30 minutes, 900 is instant), so a base with three
   halvings rather than one.
+
+## The FAC patch smoother
+
+A level with a FAC patch (the rows its transfer cannot represent, plus a one-cell
+halo, or a keyed `fac_zone`) is smoothed by a multiplicative composite: the level's
+SOR, then a basic ASM over the patch's blocks with one operator-sparsity overlap
+layer, each block solved by LU with a nonzero factor shift
+(`custom_mg._configure_pcmg`). This is the one configuration; the measurement knobs
+that varied it are gone, and `test_1090` checks the live objects on every install
+path.
+
+- **Composite, not replacing.** Blocks that replace the level's SOR starve whatever
+  they leave out: 60 velocity iterations against 10 on the fine S-fault rig (#670).
+- **Basic ASM.** The correction must land on the halo too; restricted ASM stalled at
+  80-375 outer iterations on a banded Poisson tail.
+- **LU with a shift.** PCASM's default, unshifted ILU(0), takes a zero pivot on the
+  rotated Galerkin block or gives no band solve (344 velocity iterations against
+  67, #892). Inexact block solves were measured on the add-on matrix's box (kaiju,
+  np 4, 2026-11). They gave the same Newton counts and slip as LU, and took longer:
+
+  | box | LU | ILU(2), 5 steps | GAMG, 5 / 10 steps | hypre, 5 / 10 steps |
+  |---|---|---|---|---|
+  | S 0.004, one block | 603 s | 1299 s | 1750 / 2102 s | 2360 / 2179 s |
+  | S 0.004, blocks of 2000 rows | 433 s | 1404 s | 2089 / 2058 s | 2248 / 2981 s |
+  | S 0.015625, one block | 516 s | 766 s | 931 / 869 s | 923 / 1207 s |
+
+The size of the LU blocks is bounded by `fac_block_rows` for keyed zones; the
+structural block is one block per rank (#895).
 
 ## Parallel
 

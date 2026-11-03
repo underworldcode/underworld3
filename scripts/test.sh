@@ -327,6 +327,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/parallel/test_1088_rotated_interface_operator_parallel.py
   # So is the band patch, the same rows at any rank count (#896).
   batch 4 tests/parallel/test_1106_fac_cover_partition_parallel.py
+  # So is the FAC patch summary, the same on every rank (test_1133).
+  batch 4 tests/parallel/test_1133_fac_patch_summary_parallel.py
   # So is the split level's FAC patch, taken over the old cover gate (#918).
   batch 4 tests/parallel/test_1134_fac_cover_gate_split_parallel.py
   # So is the zone-keyed patch of a split level, which keeps its structural rows (#921).
