@@ -820,6 +820,7 @@ def getext(
     debug_name=None,
     cache=True,
     route=None,
+    primary_component_offsets=None,
 ):
     """Compile (or retrieve cached) JIT extension for PETSc pointwise functions.
 
@@ -833,6 +834,11 @@ def getext(
     primary_field_list : iterable
         Variables that map to PETSc primary arrays (``petsc_u[]``).
         All others map to auxiliary arrays (``petsc_a[]``).
+    primary_component_offsets : dict or None, optional
+        Explicit component offsets keyed by mesh field id for primary arrays.
+        Integrals on the complete mesh DM pass its full layout, including fields
+        whose Python variables were retired. None retains compact primary-list
+        order for solver sub-DMs. Never infer this contract from live variables.
     route : {"graph", "expanded"}, optional
         The JIT route (``resolve_jit_route``); the process default when omitted.
 
@@ -881,6 +887,7 @@ def getext(
         debug=debug,
         debug_name=debug_name,
         route=route,
+        primary_component_offsets=primary_component_offsets,
     )
     gen_randstr = diag["randstr"]
 
@@ -1079,11 +1086,11 @@ _NUMBER_DECLARATION = re.compile(r"const double [A-Za-z_]\w* = [^;]*;")
 
 
 def _graph_equations(fns, lowered_fns, constants_subs_map, mesh, primary_field_list,
-                     printer, verbose):
+                     printer, verbose, primary_component_offsets=None):
     """The ``(name, C body)`` of each kernel on the graph route: one temporary per
     distinct computation, then the outputs, every leaf written by an explicit map
     built for this compile instead of C names patched onto the field classes."""
-    spellings = _leaf_spellings(mesh, primary_field_list)
+    spellings = _leaf_spellings(mesh, primary_field_list, primary_component_offsets)
 
     eqns = []
     for index, fn_original in enumerate(fns):
@@ -1126,7 +1133,7 @@ def _graph_equations(fns, lowered_fns, constants_subs_map, mesh, primary_field_l
 
 
 def _expanded_equations(fns, constants_subs_map, mesh, primary_field_list, printer,
-                        verbose):
+                        verbose, primary_component_offsets=None):
     """The ``(name, C body)`` of each kernel on the expanded route: the JIT before
     #823 tier 2, unchanged. Every named quantity is unwrapped into one expression and
     printed whole; field symbols are given their C names by patching their classes."""
@@ -1241,7 +1248,8 @@ def _expanded_equations(fns, constants_subs_map, mesh, primary_field_list, print
 
     ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a",
                     component_offsets=_aux_component_offsets(mesh))
-    ccode_patch_fns(primary_field_list, "petsc_u")
+    ccode_patch_fns(primary_field_list, "petsc_u",
+                    component_offsets=primary_component_offsets)
 
     # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
     # make sure each component points to the correct PETSc data
@@ -1521,7 +1529,7 @@ _IP_DERIVATIVE_REFUSAL = _Refusal(
 )
 
 
-def _leaf_spellings(mesh, primary_field_list):
+def _leaf_spellings(mesh, primary_field_list, primary_component_offsets=None):
     """The C a kernel reads for each mesh-variable leaf, keyed by the leaf's class.
 
     For a 2-D velocity and pressure in the primary arrays: ``V_x -> petsc_u[0]``,
@@ -1566,7 +1574,7 @@ def _leaf_spellings(mesh, primary_field_list):
 
     enter(_stable_sorted(mesh.vars.values()), "petsc_a",
           component_offsets=_aux_component_offsets(mesh))
-    enter(primary_field_list, "petsc_u")
+    enter(primary_field_list, "petsc_u", component_offsets=primary_component_offsets)
     return spellings
 
 
@@ -1727,6 +1735,7 @@ def generate_c_source(
     debug: Optional[bool] = False,
     debug_name=None,
     route="graph",
+    primary_component_offsets=None,
 ):
     """Generate the setup.py / C header / Cython wrapper for a JIT bundle.
 
@@ -1839,10 +1848,10 @@ def generate_c_source(
 
     if route == "graph":
         eqns = _graph_equations(fns, lowered_fns, constants_subs_map, mesh,
-                                primary_field_list, printer, verbose)
+                                primary_field_list, printer, verbose, primary_component_offsets)
     else:
         eqns = _expanded_equations(fns, constants_subs_map, mesh, primary_field_list,
-                                   printer, verbose)
+                                   printer, verbose, primary_component_offsets)
 
     _warn_dirac_deltas_dropped(dropped_deltas, "JIT", collective=True)
 
