@@ -20,8 +20,8 @@ The structural patch alone, with no zone keyed, was one block per rank: on the
 same fixture its velocity solve took 3 iterations serially, 4 at np 2 and 6 at
 np 4 (70, 96 and 143 summed over the solve). It converged, but a partition
 boundary cut it all the same, and it too is built from the gathered rows. At
-n_rungs 320, cut per rank, it took 67, 128, 131, 316 and 445 iterations at np 1,
-2, 4, 8 and 16; as one block, 67 to 86.
+n_rungs 320, cut per rank, it took 128, 131, 316 and 445 iterations at np 2, 4, 8
+and 16 against 67 serially; as one block, 76 to 86.
 
 The fixture is that problem at n_rungs 80: UWTN 2026-022's problem A box, the
 main fault split, and a TI band (eta_1 = 0.01 along planes parallel to it) placed

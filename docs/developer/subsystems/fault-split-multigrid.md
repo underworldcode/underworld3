@@ -72,10 +72,12 @@ largest block, and each rank's block sizes. It is made once, with one allgather
 `CustomMGHierarchy.install` and the rotated path's two `_configure_pcmg` calls.
 Reading it makes no collective call, so any rank can read it alone. A driver that
 looped a reduction over its own rank's blocks hung at np 4, because the ranks made
-different numbers of calls. Each block of the finest level is held whole by one rank
-(see below, #925), so the summed patch (owned) rows are the serial count at any rank
-count (`test_1133`); the subdomain rows follow the structural halo, which can be a
-few rows short of serial (#896). `block_rows_per_rank` shows where each block sits:
+different numbers of calls. With no zone keyed, the summed patch (owned) rows are the
+serial count at any rank count (`test_1133`), and the subdomain rows follow the
+structural halo, which can be a few rows short of serial (#896). With a zone keyed,
+its blocks and the structural block beside them hold the same rows as patch and
+subdomain, so both counts carry that halo. Each block of the finest level is held
+whole by one rank (see below, #925), and `block_rows_per_rank` shows where each sits:
 the structural LU on one rank. The record is each block as handed to the installer, before PCASM
 adds its overlap layer at set-up.
 
@@ -297,11 +299,11 @@ the velocity solve then took 4 iterations serially, 118 at np 2 and more than 20
 np 4 (#925). Gathered, it takes 4 at np 1, 2 and 4 (`test_1139`). The structural
 patch alone, one block per rank, converged but took 3 iterations serially, 4 at np 2
 and 6 at np 4; gathered it is one block at any rank count (`test_1139`, `test_1133`).
-On row 5 with no zone at n_rungs 320 (30 048 rows in the block; kaiju, 2026-11), cut
-per rank the velocity solve took 67, 128, 131, 316 and 445 iterations at np 1, 2, 4,
-8 and 16, and the first solve 33 s serially and 112 s at np 16. As one block it took
-67 to 86 iterations and 22 to 37 s at every rank count. The owning rank's peak memory
-was about twice the others' (520-540 MB against 250-290 MB) at np 2 and at np 16 alike.
+On row 5 with no zone at n_rungs 320 (30 048 rows in the block; kaiju, 2026-11), both
+take 67 iterations serially, where the code is the same. Cut per rank, the velocity
+solve took 128, 131, 316 and 445 iterations at np 2, 4, 8 and 16; as one block, 76 to
+86. The owning rank's peak memory was about twice the others' (520-540 MB against
+250-290 MB) at np 2 and at np 16 alike.
 
 ## Not yet done
 

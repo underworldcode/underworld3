@@ -1558,6 +1558,8 @@ class CustomMGHierarchy:
         represent) is added as one more block, unless the split level's cover
         gate declines it; a level without a split keys the patch on the masks
         alone (#921). ``None`` keys the patch on the structural rows alone.
+        Pass a mask on every rank, all-False where a rank holds no zone cell,
+        or None on every rank.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
@@ -1605,12 +1607,28 @@ class CustomMGHierarchy:
         Validated against the FINEST level's cell count at construction —
         a mask of the wrong length would otherwise surface as a silently
         empty (or wrong) patch, which is exactly the declining-quietly
-        failure mode the ASM probe discipline exists to catch."""
-        if fac_zone is None:
-            return None
-        masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
-                 else [fac_zone])
+        failure mode the ASM probe discipline exists to catch.
+
+        Collective: the keying must be the same on every rank, a mask on
+        every rank (all-False where the rank holds no zone cell) or None on
+        every rank. The parallel finest level gathers the masks' rows, so a
+        rank keyed differently would wait in another collective (#925)."""
+        masks = None
+        if fac_zone is not None:
+            masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
+                     else [fac_zone])
         finest = self.level_meshes[-1]
+        counts = finest.dm.comm.tompi4py().allgather(
+            -1 if masks is None else len(masks))
+        if len(set(counts)) > 1:
+            raise ValueError(
+                f"fac_zone: the ranks pass {counts} masks (-1 for None); pass "
+                f"a mask on every rank, all-False where a rank holds no zone "
+                f"cell, or None on every rank.")
+        if masks is None:
+            return None
+        if not masks:
+            raise ValueError("fac_zone holds no mask; pass None for no zone.")
         cS, cE = finest.dm.getHeightStratum(0)
         out = []
         for k, mk in enumerate(masks):
@@ -2201,7 +2219,8 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     structural rows are added as one more block, unless its gate declines
     them; without a split the masks alone key the patch (#921). The patch is
     solved strongly once per smoother application (basic ASM, shifted
-    factorization).
+    factorization). In parallel pass a mask on every rank, all-False where a
+    rank holds no zone cell, or None on every rank.
 
     ``verbose`` prints the installed transfer sizes and the FAC cover gate's
     verdict per level (``hierarchy.fac_gate``, #918)."""
