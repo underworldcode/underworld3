@@ -141,8 +141,8 @@ path.
   | S 0.004, blocks of 2000 rows | 433 s | 1404 s | 2089 / 2058 s | 2248 / 2981 s |
   | S 0.015625, one block | 516 s | 766 s | 931 / 869 s | 923 / 1207 s |
 
-The size of the LU blocks is bounded by `fac_block_rows` for keyed zones; the
-structural block is one block per rank (#895).
+The size of the LU blocks is bounded by `fac_block_rows` for keyed zones. The
+structural block is not bounded: it is one LU, held by one rank in parallel (#895).
 
 ## Parallel
 
@@ -297,6 +297,11 @@ the velocity solve then took 4 iterations serially, 118 at np 2 and more than 20
 np 4 (#925). Gathered, it takes 4 at np 1, 2 and 4 (`test_1139`). The structural
 patch alone, one block per rank, converged but took 3 iterations serially, 4 at np 2
 and 6 at np 4; gathered it is one block at any rank count (`test_1139`, `test_1133`).
+On row 5 with no zone at n_rungs 320 (30 048 rows in the block; kaiju, 2026-11), cut
+per rank the velocity solve took 67, 128, 131, 316 and 445 iterations at np 1, 2, 4,
+8 and 16, and the first solve 33 s serially and 112 s at np 16. As one block it took
+67 to 86 iterations and 22 to 37 s at every rank count. The owning rank's peak memory
+was about twice the others' (520-540 MB against 250-290 MB) at np 2 and at np 16 alike.
 
 ## Not yet done
 

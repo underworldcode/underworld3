@@ -19,7 +19,9 @@ gathered across ranks.
 The structural patch alone, with no zone keyed, was one block per rank: on the
 same fixture its velocity solve took 3 iterations serially, 4 at np 2 and 6 at
 np 4 (70, 96 and 143 summed over the solve). It converged, but a partition
-boundary cut it all the same, and it too is built from the gathered rows.
+boundary cut it all the same, and it too is built from the gathered rows. At
+n_rungs 320, cut per rank, it took 67, 128, 131, 316 and 445 iterations at np 1,
+2, 4, 8 and 16; as one block, 67 to 86.
 
 The fixture is that problem at n_rungs 80: UWTN 2026-022's problem A box, the
 main fault split, and a TI band (eta_1 = 0.01 along planes parallel to it) placed
@@ -32,8 +34,9 @@ main fault split, and a TI band (eta_1 = 0.01 along planes parallel to it) place
 - placed but not split, the zone alone at ``fac_block_rows=500``: every row is
   held once, and the zone is cut into the fewest pieces of at most 500 rows,
   ``ceil(rows / 500)``, whatever the rank count;
-- split with no zone keyed: the structural patch is one block, as in serial, and
-  the velocity solve takes at most 3 iterations (3 measured at np 1);
+- split with no zone keyed: the structural patch is one block holding every
+  rank's patch and halo rows, as in serial, and the velocity solve takes at most
+  3 iterations (3 measured at np 1, 2 and 4);
 - placed but not split, a keyed mask holding no cell: no patch, as in serial. A
   keyed zone beats detection; the parallel branch fell back to the structural
   split when no rank held a zone cell.
@@ -177,11 +180,16 @@ def structural_alone():
 
 @pytest.mark.tier_b
 def test_the_structural_patch_alone_is_one_block(structural_alone):
-    _stokes, blocks = structural_alone
+    stokes, blocks = structural_alone
     sizes = sorted(int(b.size) for b in blocks)
     assert len(sizes) == 1, (
         f"np {uw.mpi.size}: the structural patch is in blocks of {sizes}; serial "
         f"has one (#925)")
+    # the gate counts every rank's patch and halo rows before they are gathered
+    gate = stokes._custom_mg["hierarchy"].fac_gate[-1]
+    assert sizes[0] == gate["subdomain_rows"], (
+        f"np {uw.mpi.size}: the block holds {sizes[0]} rows, the ranks' patch and "
+        f"halo rows are {gate['subdomain_rows']} (#925)")
 
 
 @pytest.mark.tier_b
@@ -190,7 +198,8 @@ def test_the_structural_patch_alone_takes_the_serial_iterations(structural_alone
     info = stokes._rotated_freeslip_info
     assert info["converged"]
     its = max(info["vel_its_last"])
-    # 3 measured at np 1; one block per rank took 4 at np 2 and 6 at np 4
+    # 3 measured at np 1, 2 and 4 (kaiju) and np 1 (macOS); one block per rank
+    # took 4 at np 2 and 6 at np 4
     assert its <= 3, f"np {uw.mpi.size}: the velocity solve took {its} iterations (#925)"
 
 
