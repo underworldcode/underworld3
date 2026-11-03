@@ -1,7 +1,9 @@
 r"""Opt-in affine P2/P1 spherical-gap mixed Stokes assembly.
 
-The physical-domain bilinear form adds outer gaps and subtracts inner gaps in
-both momentum and continuity. Free slip uses scalar P2 normal multipliers.
+The signed-gap discrete extension form adds outer gaps and subtracts inner
+continuations in both momentum and continuity. An inner radial cap can cross
+other tetrahedra; its adjacent-cell continuation is not the exact restriction
+of the ordinary piecewise FE field to the physical spherical shell. Free slip uses scalar P2 normal multipliers.
 Zero slip uses three Cartesian multiplier components with mapped basis
 (R/|y|) N_i(y) on each planar facet parameter y. This custom mapping contains
 exact sphere normals, preserving the paired pressure/reaction gauge; its
@@ -28,6 +30,7 @@ inf-sup bound. Both require independent measured checks before acceptance.
 from contextlib import ExitStack
 from itertools import combinations
 from typing import NamedTuple
+import time
 
 import numpy as np
 import sympy as sp
@@ -37,6 +40,8 @@ import underworld3 as uw
 
 from underworld3.utilities._cylindrical_gap import _layout, _scatter_values
 from underworld3.utilities._spherical_gap import _spherical_facet_quadrature
+from underworld3.utilities._spherical_gap_preconditioner import _SphericalGapNormBlocks
+from underworld3.utilities.memprobe import snapshot as memory_snapshot
 from underworld3.utilities._spherical_curtain import (
     _spherical_curtain_quadrature, _curtain_stokes_blocks,
 )
@@ -230,8 +235,18 @@ def _add(vector, ids, values):
 
 def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                       quadrature, linear_solver_options, batch_size, components, volume_force=None):
+                       quadrature, linear_solver_options, batch_size, components, volume_force=None,
+                       norm_preconditioner_length=None):
+    assembly_started = time.perf_counter()
     mesh, velocity, pressure = stokes.mesh, stokes.u, stokes.p
+    use_norm_pc = norm_preconditioner_length is not None
+    if use_norm_pc:
+        if not np.isfinite(norm_preconditioner_length) or norm_preconditioner_length <= 0:
+            raise ValueError("The norm-preconditioner length must be finite and positive.")
+        if viscosity != 1:
+            raise ValueError("The measured norm preconditioner currently requires viscosity=1.")
+        if linear_solver_options.get("ksp_type") != "fgmres" or linear_solver_options.get("pc_type") != "python":
+            raise ValueError("Norm preconditioning requires explicit ksp_type=fgmres and pc_type=python.")
     if (mesh.dim != 3 or mesh.cdim != 3 or mesh.degree != 1 or not mesh.isSimplex
             or velocity.degree != 2 or not velocity.continuous
             or pressure.degree != 1 or not pressure.continuous):
@@ -279,6 +294,13 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         matrix = _create_matrix(size, uid[owned], pid[owned],
                                 [(uid[w["cells"]], w["lid"]) for w in walls], curtains, comm)
         cleanup.callback(matrix.destroy)
+        norm_blocks = None
+        if use_norm_pc:
+            norm_blocks = _SphericalGapNormBlocks(
+                velocity, matrix, nu, npres, components*nboundary, components,
+                norm_preconditioner_length,
+            )
+            cleanup.callback(norm_blocks.destroy)
         rhs = matrix.createVecRight(); cleanup.callback(rhs.destroy); rhs.set(0)
         if volume_force is not None:
             if (not isinstance(volume_force, PETSc.Vec) or volume_force.getSize() != nu
@@ -299,25 +321,31 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             vector = rhs.duplicate(); cleanup.callback(vector.destroy); vector.set(0)
             rotation_weights.append(vector)
         force_expr = unwrap(stokes.bodyforce, keep_constants=False, return_self=False)
-        fe = PETSc.FE().createDefault(3, 1, True, mesh.qdegree, "sphere_gap_source_")
-        cleanup.callback(fe.destroy)
-        native_points, native_weights = fe.getQuadrature().getData()
-        xi = (np.asarray(native_points).reshape(-1, 3)+1)/2
-        native_bary = np.column_stack((1-xi.sum(axis=1), xi))
+        has_volume_bodyforce = force_expr.is_zero_matrix is not True
+        if has_volume_bodyforce:
+            fe = PETSc.FE().createDefault(3, 1, True, mesh.qdegree, "sphere_gap_source_")
+            cleanup.callback(fe.destroy)
+            native_points, native_weights = fe.getQuadrature().getData()
+            xi = (np.asarray(native_points).reshape(-1, 3)+1)/2
+            native_bary = np.column_stack((1-xi.sum(axis=1), xi))
         for start in range(0, len(owned), batch_size):
             cells = owned[start:start+batch_size]
             points, weights = _tetrahedron_quadrature(vertices[cells], 4)
             blocks = _tetrahedral_stokes_blocks(vertices[cells], points, weights)
             _insert(matrix, uid[cells], pid[cells], blocks, viscosity, 1)
+            if norm_blocks is not None:
+                norm_blocks.add_volume(vertices[cells], points, weights, uid[cells], pid[cells],
+                                       viscosity*blocks["A"])
             _add(pmean, pid[cells], blocks["pressure_mean"])
             for axis in range(3):
                 _add(rotation_weights[axis], uid[cells], blocks["rotation"][..., axis])
-            points = np.einsum("qi,eid->eqd", native_bary, vertices[cells])
-            determinant = np.abs(np.linalg.det(np.swapaxes(vertices[cells, 1:]-vertices[cells, None, 0], 1, 2)))
-            weights = determinant[:, None]*np.asarray(native_weights).reshape(1, -1)/8
-            shape, _, _ = _tetrahedral_p2_basis(vertices[cells], points)
-            force = _source_values(force_expr, vertices, points, cells, mesh)
-            _add(rhs, uid[cells], np.einsum("eq,eqi,eqd->eid", weights, shape, force))
+            if has_volume_bodyforce:
+                points = np.einsum("qi,eid->eqd", native_bary, vertices[cells])
+                determinant = np.abs(np.linalg.det(np.swapaxes(vertices[cells, 1:]-vertices[cells, None, 0], 1, 2)))
+                weights = determinant[:, None]*np.asarray(native_weights).reshape(1, -1)/8
+                shape, _, _ = _tetrahedral_p2_basis(vertices[cells], points)
+                force = _source_values(force_expr, vertices, points, cells, mesh)
+                _add(rhs, uid[cells], np.einsum("eq,eqi,eqd->eid", weights, shape, force))
         if observer is not None:
             matrix.assemble()
             observer.background(matrix, nu, npres)
@@ -348,6 +376,8 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                 else:
                     multiplier *= wall["radius"]/np.linalg.norm(rule["planar_points"], axis=-1)[..., None]
                     coupling = np.einsum("eq,eql,eqi,cd->elcid", rule["surface_weights"], multiplier, shape, np.eye(3))
+                if norm_blocks is not None:
+                    norm_blocks.add_surface(rule["surface_weights"], multiplier, wall["lid"][sl])
                 coupling = coupling.reshape(-1, 6*components, 30)
                 for u, l, c in zip(uid[cells], wall["lid"][sl], coupling, strict=True):
                     matrix.setValues(l, u, np.ascontiguousarray(c), addv=PETSc.InsertMode.ADD_VALUES)
@@ -407,24 +437,52 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                 matrix, nu, npres, pressure_mode, modes[1:],
                 rotation_weights, walls, components,
             )
-        pins = [nu]
-        if components == 1:
-            residual_rows = nodal_rotations.copy()
-            for _ in range(3):
-                magnitudes = np.linalg.norm(residual_rows, axis=1)
-                selected = np.arange(len(umap))
-                index = selected[np.argmax(magnitudes[selected])] if len(selected) else None
-                candidate = (float(magnitudes[index]), int(umap[index]), residual_rows[index].copy()) if index is not None else (-1, nu, np.zeros(3))
-                magnitude, pin, direction = max(mpi.allgather(candidate), key=lambda item: (item[0], -item[1]))
-                if magnitude < 1e-12:
-                    raise ArithmeticError("Could not select three independent rotation gauges.")
-                pins.append(pin); direction /= magnitude
-                residual_rows -= np.outer(residual_rows@direction, direction)
-        pins = np.asarray(pins, dtype=PETSc.IntType)
-        pinned = matrix.copy(); cleanup.callback(pinned.destroy); pinned.zeroRowsColumns(pins, diag=1)
-        pinned_rhs = rhs.copy(); cleanup.callback(pinned_rhs.destroy)
-        local_pins = pins[(pins >= lo) & (pins < hi)]
-        pinned_rhs.setValues(local_pins, np.zeros(len(local_pins))); pinned_rhs.assemble()
+        context = None
+        removed_relative = 0.0
+        physical_space = None
+        if use_norm_pc:
+            norm_blocks.assemble()
+            orthogonal_modes = []
+            for original in modes:
+                vector = original.copy(); cleanup.callback(vector.destroy)
+                for previous in orthogonal_modes:
+                    vector.axpy(-previous.dot(vector), previous)
+                vector.scale(1/vector.norm())
+                orthogonal_modes.append(vector)
+            physical_space = PETSc.NullSpace().create(vectors=orthogonal_modes, constant=False, comm=comm)
+            cleanup.callback(physical_space.destroy)
+            if not physical_space.test(matrix):
+                raise ArithmeticError("Physical nullspace fails the original spherical operator test.")
+            matrix.setNullSpace(physical_space); matrix.setTransposeNullSpace(physical_space)
+            pinned = matrix
+            pinned_rhs = rhs.copy(); cleanup.callback(pinned_rhs.destroy)
+            physical_space.remove(pinned_rhs)
+            removed = pinned_rhs.copy(); cleanup.callback(removed.destroy); removed.axpy(-1, rhs)
+            removed_relative = removed.norm()/max(rhs.norm(), np.finfo(float).tiny)
+            if removed_relative > 1e-10:
+                raise ValueError(f"Force is not roundoff-compatible with physical null modes: {removed_relative}")
+            pins = np.empty(0, dtype=PETSc.IntType)
+        else:
+            pins = [nu]
+            if components == 1:
+                residual_rows = nodal_rotations.copy()
+                for _ in range(3):
+                    magnitudes = np.linalg.norm(residual_rows, axis=1)
+                    selected = np.arange(len(umap))
+                    index = selected[np.argmax(magnitudes[selected])] if len(selected) else None
+                    candidate = (float(magnitudes[index]), int(umap[index]), residual_rows[index].copy()) if index is not None else (-1, nu, np.zeros(3))
+                    magnitude, pin, direction = max(mpi.allgather(candidate), key=lambda item: (item[0], -item[1]))
+                    if magnitude < 1e-12:
+                        raise ArithmeticError("Could not select three independent rotation gauges.")
+                    pins.append(pin); direction /= magnitude
+                    residual_rows -= np.outer(residual_rows@direction, direction)
+            pins = np.asarray(pins, dtype=PETSc.IntType)
+            pinned = matrix.copy(); cleanup.callback(pinned.destroy); pinned.zeroRowsColumns(pins, diag=1)
+            pinned_rhs = rhs.copy(); cleanup.callback(pinned_rhs.destroy)
+            local_pins = pins[(pins >= lo) & (pins < hi)]
+            pinned_rhs.setValues(local_pins, np.zeros(len(local_pins))); pinned_rhs.assemble()
+        assembly_seconds = mpi.allreduce(time.perf_counter()-assembly_started, op=MPI.MAX)
+        norm_rss_before_setup = memory_snapshot(full=False)["rss_mb"] if use_norm_pc else None
         ksp = PETSc.KSP().create(comm=comm); cleanup.callback(ksp.destroy); ksp.setOperators(pinned)
         prefix = f"spherical_gap_{stokes.instance_number}_"; ksp.setOptionsPrefix(prefix)
         options = PETSc.Options(prefix)
@@ -432,17 +490,29 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             options[key] = value
             cleanup.callback(options.delValue, key)
         ksp.setFromOptions()
+        setup_started = time.perf_counter()
+        if use_norm_pc:
+            context = norm_blocks.context(umap, coordinates, nodal_rotations, physical_space, prefix+"norm_velocity_")
+            cleanup.callback(context.destroy, None)
+            ksp.getPC().setPythonContext(context)
+            ksp.setPCSide(PETSc.PC.Side.RIGHT)
+            ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
+            ksp.setUp()
+            ksp.view()  # PETSc exposes the effective restart in its view, not a Python getter.
+        setup_seconds = mpi.allreduce(time.perf_counter()-setup_started, op=MPI.MAX)
+        solve_started = time.perf_counter()
         solution = rhs.duplicate(); cleanup.callback(solution.destroy); ksp.solve(pinned_rhs, solution)
         if ksp.getConvergedReason() <= 0:
             pc = ksp.getPC()
             factor_details = None
-            if pc.getFactorSolverType() == "mumps":
+            if pc.getType() == "lu" and pc.getFactorSolverType() == "mumps":
                 factor = pc.getFactorMatrix()
                 factor_details = (factor.getMumpsInfog(1), factor.getMumpsInfog(2), factor.getMumpsIcntl(14))
             raise ArithmeticError(
                 f"Spherical gap KSP failed: reason={ksp.getConvergedReason()}, "
                 f"PC reason={pc.getFailedReason()}, factor diagnostics={factor_details}, pins={pins}"
             )
+        solve_seconds = mpi.allreduce(time.perf_counter()-solve_started, op=MPI.MAX)
         lift_integral = float(pressure_jump_integral)+mpi.allreduce(float(lift_gap), op=MPI.SUM)
         solution.axpy(-(pmean.dot(solution)+lift_integral)/pmean.sum(), pressure_mode)
         if components == 1:
@@ -491,6 +561,19 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                       unknowns=size, multiplier_nodes=nboundary, ksp_reason=int(ksp.getConvergedReason()),
                       constraint_components=components, ranks=mpi.size,
                       multiplier_mapping="scalar P2 normal" if components == 1 else "Cartesian P2 times R/|y|")
+        checks.update(assembly_seconds=assembly_seconds, setup_seconds=setup_seconds,
+                      solve_seconds=solve_seconds, ksp_iterations=int(ksp.getIterationNumber()))
+        if use_norm_pc:
+            checks.update(norm_preconditioner_length=float(norm_preconditioner_length),
+                          norm_assembly_seconds=mpi.allreduce(norm_blocks.assembly_seconds, op=MPI.MAX),
+                          norm_context=type(context).__name__, norm_velocity_pc=context.velocity_ksp.getPC().getType(),
+                          norm_velocity_block_size=norm_blocks.h.getBlockSize(),
+                          norm_pc_applications=context.applications,
+                          rhs_removed_null_relative=removed_relative,
+                          requested_gmres_restart=linear_solver_options.get("ksp_gmres_restart"),
+                          restart_evidence="effective PETSc KSP view in run log",
+                          rss_before_norm_setup_mib=mpi.allreduce(norm_rss_before_setup, op=MPI.MAX),
+                          rss_after_solve_mib=mpi.allreduce(memory_snapshot(full=False)["rss_mb"], op=MPI.MAX))
         if ksp.getPC().getType() == "lu" and ksp.getPC().getFactorSolverType() == "mumps":
             checks["effective_mumps_icntl_14"] = ksp.getPC().getFactorMatrix().getMumpsIcntl(14)
         return _SphericalGapResult(normal_field, tangent_field, checks)
@@ -498,15 +581,17 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
 
 def _solve_spherical_gap(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                          viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                         quadrature, linear_solver_options, batch_size, volume_force=None):
+                         quadrature, linear_solver_options, batch_size, volume_force=None,
+                         norm_preconditioner_length=None):
     return _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                               viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                              quadrature, linear_solver_options, batch_size, 1, volume_force)
+                              quadrature, linear_solver_options, batch_size, 1, volume_force, norm_preconditioner_length)
 
 
 def _solve_spherical_gap_zero_slip(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                                    viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                                   quadrature, linear_solver_options, batch_size, volume_force=None):
+                                   quadrature, linear_solver_options, batch_size, volume_force=None,
+                                   norm_preconditioner_length=None):
     return _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
                               viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-                              quadrature, linear_solver_options, batch_size, 3, volume_force)
+                              quadrature, linear_solver_options, batch_size, 3, volume_force, norm_preconditioner_length)

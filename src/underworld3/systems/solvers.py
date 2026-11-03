@@ -1469,6 +1469,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
         viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
         quadrature, linear_solver_options, batch_size, volume_force,
+        norm_preconditioner_length=None,
     ):
         r"""Solve an opt-in spherical P2/P1 system with weak normal wall constraints.
 
@@ -1501,6 +1502,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             true-sphere pressure lift, pass its volume_force, its pressure_jump
             and integral, and continue its regular_force_expression in the gaps.
             The native_outer_boundary_force is excluded by physical wall data.
+        norm_preconditioner_length : float or None, default=None
+            Explicit nominal mesh spacing for the experimental norm-block
+            preconditioner. None retains the pinned solve with supplied PETSc
+            options. A positive value requests FGMRES/PythonPC on the original
+            verified singular operator; configure those PETSc options explicitly.
+            This solver experiment requires independent refinement validation.
         quadrature : int
             Surface Gauss order, at least three; assess quadrature convergence.
         linear_solver_options : dict
@@ -1529,13 +1536,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         return _solve_spherical_gap(
             self, inner_boundary, outer_boundary, radius_inner, radius_outer,
             viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-            quadrature, linear_solver_options, batch_size, volume_force,
+            quadrature, linear_solver_options, batch_size, volume_force, norm_preconditioner_length,
         )
 
     def solve_spherical_gap_zero_slip(
         self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
         viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
         quadrature, linear_solver_options, batch_size, volume_force,
+        norm_preconditioner_length=None,
     ):
         r"""Solve the spherical-gap system with all three wall velocities constrained.
 
@@ -1551,7 +1559,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         return _solve_spherical_gap_zero_slip(
             self, inner_boundary, outer_boundary, radius_inner, radius_outer,
             viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
-            quadrature, linear_solver_options, batch_size, volume_force,
+            quadrature, linear_solver_options, batch_size, volume_force, norm_preconditioner_length,
         )
 
     def spherical_pressure_lifting(
