@@ -84,25 +84,73 @@ def _coordinate_values(expression, points, components, mesh):
     return np.asarray(values).reshape(*points.shape[:-1], components)
 
 
-def _source_values(expression, vertices, points, cells, mesh):
+class _SphericalSourceSnapshot(NamedTuple):
+    """Cell polynomials prepared before rank-dependent integration batches.
+
+    The geometry must remain fixed while the snapshot is used. Evaluation has
+    no mesh, variable or communicator access, including for empty batches.
+    """
+
+    degree: int
+    vertices: np.ndarray
+    coefficients: np.ndarray
+
+    def evaluate(self, points, cells):
+        if self.degree == 0:
+            return np.broadcast_to(self.coefficients[cells, :1], points.shape).copy()
+        shape, _, bary = _tetrahedral_p2_basis(self.vertices[cells], points)
+        basis = shape if self.degree == 2 else bary
+        return np.einsum("eqi,eid->eqd", basis, self.coefficients[cells])
+
+
+def _prepare_source_snapshot(expression, vertices, mesh):
+    """Collectively snapshot one prescribed DG0/P1/P2 vector field.
+
+    All ranks must call this before any unequal or empty integration batches:
+    public variable-array reads synchronize ghost values on every access.
+    Coordinate-only expressions return ``None`` and retain their usual path.
+    Coefficients are independent of subsequent source-field value changes.
+    """
+    expression = uw.function.expressions._unwrap_for_compilation(
+        expression, keep_constants=False, return_self=False,
+    )
     variables = {type(atom).meshvar() for atom in expression.atoms(sp.Function)
                  if hasattr(type(atom), "meshvar")}
     if not variables:
-        return _coordinate_values(expression, points, 3, mesh)
+        return None
     if len(variables) != 1:
         raise ValueError("Use one unmodified DG0/P1/P2 vector source field or a coordinate force.")
     field = variables.pop()
     if (field.mesh is not mesh or field.degree not in (0, 1, 2)
             or field.num_components != 3 or tuple(expression) != tuple(field.sym)):
         raise ValueError("Use one unmodified DG0/P1/P2 vector source field on the Stokes mesh.")
-    rows = mesh._cell_node_indices(field.degree, field.continuous)[cells]
+    rows = mesh._cell_node_indices(field.degree, field.continuous)
+    nodal_values = np.asarray(field.array)[:, 0, :]
     if field.degree == 0:
-        return np.broadcast_to(np.asarray(field.array)[rows[:, 0], 0, :][:, None, :], points.shape).copy()
-    shape, _, bary = _tetrahedral_p2_basis(vertices[cells], np.asarray(field.coords)[rows])
-    design = shape if field.degree == 2 else bary
-    coefficients = np.linalg.solve(design, np.asarray(field.array)[rows, 0, :])
-    shape, _, bary = _tetrahedral_p2_basis(vertices[cells], points)
-    return np.einsum("eqi,eid->eqd", shape if field.degree == 2 else bary, coefficients)
+        coefficients = nodal_values[rows].copy()
+    else:
+        coordinates = np.asarray(field.coords)
+        coefficients = np.empty((*rows.shape, 3), dtype=np.result_type(float, nodal_values.dtype))
+        # Keep the nodal design matrices bounded even on production meshes.
+        for start in range(0, len(vertices), 256):
+            cells = slice(start, start+256)
+            shape, _, bary = _tetrahedral_p2_basis(vertices[cells], coordinates[rows[cells]])
+            design = shape if field.degree == 2 else bary
+            coefficients[cells] = np.linalg.solve(design, nodal_values[rows[cells]])
+    coefficients.setflags(write=False)
+    return _SphericalSourceSnapshot(field.degree, vertices, coefficients)
+
+
+def _source_values(expression, vertices, points, cells, mesh):
+    """Evaluate one batch; collective for an FE source even if the batch is empty.
+
+    Unequal batch loops must instead collectively prepare one source snapshot,
+    then call its NumPy-only ``evaluate`` method from their local loops.
+    """
+    snapshot = _prepare_source_snapshot(expression, vertices, mesh)
+    if snapshot is None:
+        return _coordinate_values(expression, points, 3, mesh)
+    return snapshot.evaluate(points, cells)
 
 
 def _wall_faces(mesh, vertices, urows, owned, name, radius):
@@ -395,6 +443,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             rotation_weights.append(vector)
         force_expr = unwrap(stokes.bodyforce, keep_constants=False, return_self=False)
         has_volume_bodyforce = force_expr.is_zero_matrix is not True
+        source_snapshot = _prepare_source_snapshot(force_expr, vertices, mesh) if has_volume_bodyforce else None
         if has_volume_bodyforce:
             fe = PETSc.FE().createDefault(3, 1, True, mesh.qdegree, "sphere_gap_source_")
             cleanup.callback(fe.destroy)
@@ -417,7 +466,8 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                 determinant = np.abs(np.linalg.det(np.swapaxes(vertices[cells, 1:]-vertices[cells, None, 0], 1, 2)))
                 weights = determinant[:, None]*np.asarray(native_weights).reshape(1, -1)/8
                 shape, _, _ = _tetrahedral_p2_basis(vertices[cells], points)
-                force = _source_values(force_expr, vertices, points, cells, mesh)
+                force = (_coordinate_values(force_expr, points, 3, mesh)
+                         if source_snapshot is None else source_snapshot.evaluate(points, cells))
                 _add(rhs, uid[cells], np.einsum("eq,eqi,eqd->eid", weights, shape, force))
         if observer is not None:
             matrix.assemble()
