@@ -46,12 +46,14 @@ Louis in August to October 2026, and they fix everything below.
 4. **The add-on is the line, and the fault carries its own resolution**
    (Louis, 2026-11-02). The fault comes as a divided line or a triangulated
    surface, and its points are the ladder's rungs: no parameter $S$ sets the
-   along-strike resolution, and the band is as wide as the local mesh size, an
-   average of it where the mesh is not uniform. Neither is a knob a model turns
-   (Louis, 2026-11-03, clarifying this ruling): whether the fault's division
-   is sufficient is observed and recorded, not set. The drivers' trace
-   resampling and $2S$ band width are to go; every measurement so far used a
-   $2S$ band. The ladder exists to compute stresses and slip rates
+   along-strike resolution, and the ladder is equant, its rungs about one
+   local cell $h$ apart and its half-width one cell, so the band is $2h$ wide.
+   Neither the division nor the width is a knob a model turns (Louis,
+   2026-11-03, clarifying this ruling): whether the fault's division is
+   sufficient is observed and recorded, not set. The campaign drivers' recipe
+   v2 is that ladder (the rung spacing derived as one base cell, the width
+   twice it); every measurement so far used a band twice the rung spacing, so
+   those ladders are equant too, UWTN 2026-022's finer than the cells. The ladder exists to compute stresses and slip rates
    accurately with the fewest added nodes; refinement around the fault, for
    near-fault stress lobes, is a separate question. Split coarse levels are
    not developed further and stay in the library as they are, for comparison.
@@ -107,10 +109,9 @@ How to get it:
 drivers, the box-fault driver) place the fault as a structured ladder band into a copy
 of the base's finest level with `place_fault_ribbon_2d(..., mesher="ladder",
 split=True)`, the trace's own points as the rungs; the base and its levels are never
-modified, and no bisection is involved. (The drivers still resample the trace at a
-spacing $S$, one base cell since 2026-11-02, and take the band $2S$ wide; under ruling 4
-the parameter goes and the band becomes one local cell wide, and the band ratios below
-are the base's finest cell over the fault's own point spacing.) The tail under it is ruled (Louis,
+modified, and no bisection is involved. (The drivers derive the rung spacing $S$ as
+one base cell since 2026-11-02 and take the band $2S$ wide, which is ruling 4's equant
+ladder; the band ratios below are the base's finest cell over the rung spacing.) The tail under it is ruled (Louis,
 2026-11-01, on #892): **the welded base with the split $S$ level on top and the FAC
 LU patch on that finest level**, `set_custom_fmg(stokes, base.multigrid_levels,
 field_id=0)`. On UWTN 2026-022's fixtures with the LU blocks running it takes 66
