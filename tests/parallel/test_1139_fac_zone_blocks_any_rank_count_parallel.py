@@ -40,6 +40,11 @@ main fault split, and a TI band (eta_1 = 0.01 along planes parallel to it) place
 - placed but not split, a keyed mask holding no cell: no patch, as in serial. A
   keyed zone beats detection; the parallel branch fell back to the structural
   split when no rank held a zone cell.
+- the keying is refused at construction unless it is the same on every rank (a
+  mask on every rank, or None on every rank) and holds a mask: rank 0 keyed and
+  the others not would wait in the zone's gather on rank 0 and in the cover
+  gate's allreduce on the others, and an empty list of masks would be keyed but
+  hold no zone.
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
 branch, in the parallel batches the parallel one.
@@ -52,7 +57,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
-from underworld3.utilities.custom_mg import set_custom_fmg
+from underworld3.utilities.custom_mg import CustomMGHierarchy, set_custom_fmg
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
 
 pytestmark = [pytest.mark.level_2]
@@ -210,3 +215,27 @@ def test_an_empty_keyed_zone_installs_no_patch():
     assert not sizes, (
         f"np {uw.mpi.size}: a keyed zone with no cells installed blocks of {sizes}; "
         f"serial installs none (#925)")
+
+
+def _hierarchy_keyed(zone_of):
+    """Construct, not build, a hierarchy on a plain box with ``zone_of(n_cells)`` as
+    this rank's ``fac_zone``."""
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 4, regular=False,
+        qdegree=2, refinement=1)
+    levels = base._coarse_level_meshes()[:-1] + [base]
+    c_start, c_end = base.dm.getHeightStratum(0)
+    return CustomMGHierarchy(levels, fac_zone=zone_of(c_end - c_start))
+
+
+@pytest.mark.tier_b
+def test_an_empty_list_of_masks_is_refused():
+    with pytest.raises(ValueError, match="no mask"):
+        _hierarchy_keyed(lambda n: [])
+
+
+@pytest.mark.tier_b
+@pytest.mark.skipif(uw.mpi.size < 2, reason="the keying can differ only between ranks")
+def test_a_zone_keyed_on_some_ranks_only_is_refused():
+    with pytest.raises(ValueError, match="every rank"):
+        _hierarchy_keyed(lambda n: np.ones(n, dtype=bool) if uw.mpi.rank == 0 else None)
