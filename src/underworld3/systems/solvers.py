@@ -1465,6 +1465,89 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     instances = 0
 
+    def solve_spherical_gap(
+        self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
+        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+        quadrature, linear_solver_options, batch_size,
+    ):
+        r"""Solve an opt-in spherical P2/P1 system with weak normal wall constraints.
+
+        Affine computational tetrahedra retain their polynomial field extensions.
+        Signed spherical gaps correct both momentum and continuity. Radial
+        curtains between neighboring extensions carry symmetric viscous and
+        pressure consistency terms; independent facet gaps alone do not satisfy
+        the constant-pressure identity in three dimensions. No jump penalty or
+        pressure filtering is added. Uniform multiplier stability is unproven.
+
+        Parameters
+        ----------
+        inner_boundary, outer_boundary : str
+            Complete triangular walls whose vertices lie on the physical spheres.
+        radius_inner, radius_outer : float
+            Positive physical radii, with inner < outer.
+        viscosity : float
+            Positive constant matching this solver's constitutive viscosity.
+        pressure_jump : sympy expression
+            Coordinate-only pressure lift at the walls and in boundary gaps.
+            Pass zero when no pressure lift is present.
+        pressure_jump_integral : float
+            Integral of the lift over the computational polyhedral volume;
+            signed wall-gap contributions are added for the physical gauge.
+        gap_bodyforce : sympy matrix
+            Explicit coordinate-only continuation of the regular volume force.
+        quadrature : int
+            Surface Gauss order, at least three; assess quadrature convergence.
+        linear_solver_options : dict
+            Explicit PETSc KSP/PC options for the coupled mixed system.
+        batch_size : int
+            Positive cell batch bound for local integration workspaces.
+
+        Returns
+        -------
+        named tuple
+            Physical normal/tangential reaction fields and validation checks.
+            The normal reaction is negative physical normal stress. Scalar
+            free-slip multipliers enforce normal velocity weakly; tangential
+            traction is natural. All three rigid rotations and the paired
+            pressure/reaction gauge are checked before solving.
+
+        Notes
+        -----
+        Configure continuous P2 velocity, continuous P1 pressure, constant
+        Newtonian viscosity, zero penalty and standard continuity. This method
+        replaces wall registration; do not add ordinary boundary conditions.
+        It is experimental until analytical, partition and stability gates pass.
+        """
+        from underworld3.utilities._spherical_stokes_gap import _solve_spherical_gap
+
+        return _solve_spherical_gap(
+            self, inner_boundary, outer_boundary, radius_inner, radius_outer,
+            viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+            quadrature, linear_solver_options, batch_size,
+        )
+
+    def solve_spherical_gap_zero_slip(
+        self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
+        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+        quadrature, linear_solver_options, batch_size,
+    ):
+        r"""Solve the spherical-gap system with all three wall velocities constrained.
+
+        Parameters and signed gap/curtain forms match :meth:`solve_spherical_gap`.
+        Three Cartesian surface multipliers avoid polar tangent singularities.
+        Their mapped basis contains the exact physical normal, preserving the
+        paired pressure/reaction gauge. Rotations are constrained by zero slip;
+        returned tangential reactions remain separate from the normal reaction.
+        The mapped multiplier space requires independent stability verification.
+        """
+        from underworld3.utilities._spherical_stokes_gap import _solve_spherical_gap_zero_slip
+
+        return _solve_spherical_gap_zero_slip(
+            self, inner_boundary, outer_boundary, radius_inner, radius_outer,
+            viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+            quadrature, linear_solver_options, batch_size,
+        )
+
     def install_linear_spherical_sheet_load(self, *, interface, harmonic_degree,
             density_coefficient, harmonic_order=0, harmonic_component="cos",
             harmonic_normalization="axisymmetric_unnormalized", quadrature_points=8,
