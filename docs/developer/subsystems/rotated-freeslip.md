@@ -105,8 +105,28 @@ analytic column is unchanged by this fix, and identical at every rank count).
 
 Prefer the default. Reach for `normal=` when the constraint must follow the true
 surface rather than the mesh — a coarse spherical shell where faceting, not the
-gauge, is the dominant error — and be aware that the pressure gauge is then only
-as good as the numbers above.
+gauge, is the dominant error. Such a constraint need not preserve a discrete
+pressure gauge. The solver tests the constant-pressure vector on both the
+constrained operator and its transpose, using roundoff-scaled pressure-block
+bounds. A failed test disables pressure-nullspace registration and pressure-mean
+residual projection; it does not remove the pressure equation. A direct-LU datum
+is permitted only after the unpinned operator passes this test.
+
+For a requested pressure mode with measured nonzero actions on both sides,
+the native iterative route retains its fieldsplit PC $M_0$ and applies
+
+$$M^{-1}=E+(I-EA)M_0^{-1}(I-AE),\qquad
+E=V(V^TAV)^{-1}V^T.$$
+
+The two columns of $V$ are constant pressure and its velocity-block response,
+with the response's natural scale. Only independently verified rigid rotations
+are projected from the PC output; zero, one and three rotations are supported.
+The original $A$, right-hand side, physical pressure level and convergence
+tolerance are unchanged. Coarse equations are audited with the componentwise
+backward-error bound recorded in the correction metrics. Operator/PC changes
+refresh these products collectively; loss of a true null mode or a degenerate
+coarse block raises rather than regularizing the equations. One-sided nullity
+does not activate this right-response correction.
 
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy

@@ -16,7 +16,8 @@ in ``underworld3.utilities.multigrid_options``, so the rotated velocity block is
 configured identically to the native and standard custom-P routes.
 The Schur complement is preconditioned by the native 1/mu pressure mass
 (the Pmat p-p block, exactly the standard path's ``schur_precondition=a11``), with a
-constant-pressure nullspace on the inner Schur solve for enclosed domains; direct
+constant-pressure nullspace on the inner Schur solve only when the constrained
+operator verifies that gauge; direct
 MUMPS LU is opt-in via ``solver._rotated_use_lu``.
 σ_nn / dynamic topography reuse the shared Consistent-Boundary-Flux de-smear in
 ``underworld3.utilities.boundary_flux``.
@@ -790,6 +791,72 @@ def _destroy_rotated_linear_cache(cache):
     cache["custom_Pl"] = None
 
 
+def _pressure_coarse_correction_needed(checks: dict) -> bool:
+    """The right-response correction requires measured non-nullity on both sides."""
+    return bool(checks["requested"] and not checks["verified"]
+                and checks["right_relative"] is not None and checks["left_relative"] is not None
+                and checks["right_relative"] > checks["tolerance"]
+                and checks["left_relative"] > checks["tolerance"])
+
+
+def _pressure_nullspace_checks(operator, pressure_is, requested: bool) -> dict:
+    """Verify a constant pressure on both sides of the constrained operator.
+
+    The bounds use ``||A[:,P]||_inf`` and ``||A[P,:]||_1`` for ``z_P=1``.
+    Restricting the scale to the pressure columns/rows prevents a large
+    viscosity from masking a pressure defect. The allowance of 256 real-scalar
+    epsilons covers assembly and sparse-summation roundoff, not a geometric
+    consistency error. A large velocity block must not dilute the test through
+    a global Frobenius norm or a discretisation-scale tolerance.
+    """
+    checks = {"requested": bool(requested), "verified": False,
+              "tolerance": float(256*np.finfo(PETSc.RealType).eps),
+              "right_action_norm": None, "left_action_norm": None,
+              "right_scale": None, "left_scale": None,
+              "right_relative": None, "left_relative": None,
+              "operator_scope": "last prepared constrained operator",
+              "candidate": "pressure coefficients one; other fields zero",
+              "scale_definition": "pressure-column infinity / pressure-row one norm"}
+    if pressure_is.getSize() == 0:
+        checks["reason"] = "no free pressure degrees of freedom"
+        return checks
+    if not requested:
+        return checks
+    mode = operator.createVecRight()
+    mode.set(0)
+    part = mode.getSubVector(pressure_is)
+    part.set(1)
+    mode.restoreSubVector(pressure_is, part)
+    right, left = mode.duplicate(), mode.duplicate()
+    lo, hi = operator.getOwnershipRange()
+    all_rows = PETSc.IS().createStride(hi-lo, first=lo, comm=operator.comm)
+    try:
+        operator.mult(mode, right)
+        operator.multTranspose(mode, left)
+        for name, action, rows, columns, norm in (
+                ("right", right, all_rows, pressure_is, PETSc.NormType.INFINITY),
+                ("left", left, pressure_is, all_rows, PETSc.NormType.NORM_1)):
+            value = float(action.norm(PETSc.NormType.INFINITY))
+            block = operator.createSubMatrix(rows, columns)
+            try:
+                scale = float(block.norm(norm))
+            finally:
+                block.destroy()
+            checks[name+"_action_norm"] = value
+            checks[name+"_scale"] = scale
+            checks[name+"_relative"] = value/scale if scale else (0.0 if value == 0 else float("inf"))
+        checks["verified"] = bool(all(
+            np.isfinite(checks[name+"_relative"])
+            and checks[name+"_relative"] <= checks["tolerance"]
+            for name in ("right", "left")))
+    finally:
+        right.destroy()
+        left.destroy()
+        mode.destroy()
+        all_rows.destroy()
+    return checks
+
+
 # --------------------------------------------------------------------------- #
 #  The rotated solve
 # --------------------------------------------------------------------------- #
@@ -1098,9 +1165,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     if continuation:
         solver._set_newton_alpha(0.0)            # start in the Picard phase
 
-    # Q, the custom-FMG prolongation, the coupled null space and the datum values
-    # depend only on the geometry / normals / prescribed surface field (NOT the
-    # solution), so build them ONCE and reuse each step. The datum ũ_n enters the
+    # Q, the custom-FMG prolongation and the datum values depend only on the
+    # geometry / normals / prescribed surface field. Null modes additionally
+    # require the operator verification below. The datum ũ_n enters the
     # iteration ONLY through the feasible-iterate projection below: every iterate
     # carries v_n = ũ_n exactly, so the Newton increment satisfies the HOMOGENEOUS
     # constraint n̂·δ = 0 and the per-iteration operator treatment (zeroRowsColumns
@@ -1110,16 +1177,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # Direct LU per increment: no FMG prolongation / null space to build — the
     # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
-    # The pin is decided ONCE, here, because the residual has to agree with the
-    # operator about it. The direct path replaces the pinned pressure row with
-    # the identity, so that equation is no longer part of the system being
-    # solved; a residual that still counts it can never fall below whatever sits
-    # there, and the loop then iterates to max_it against a floor it has itself
-    # defined as unreachable. Measured before this was hoisted: the velocity
-    # residual reached 6e-12 at the first increment and the remaining |F̂| was
-    # the pinned DOF alone, bit-identical for eight further no-op iterations.
-    lu_pin = _naive_pressure_pin(dm) if use_lu else None
+    # A direct pressure datum is allowed only after the unpinned constrained
+    # operator verifies that pressure is genuinely a gauge. Choosing it earlier
+    # would silently discard a physical pressure equation on mismatched walls.
+    lu_pin = None
     interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
+    pressure_requested = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+    if mpi.size > 1:
+        requests = mpi.comm.allgather(pressure_requested)
+        if any(request != requests[0] for request in requests):
+            raise ValueError("The requested pressure-nullspace setting must agree across ranks.")
 
     # ---- cross-solve workspace cache (issue #417; see the block comment
     # above _operator_coefficient_variables for the tier design) ----
@@ -1163,7 +1230,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                  and coefficient_states is not None
                  and operator_sig is not None
                  and cache.get("coefficient_states") == coefficient_states
-                 and cache.get("operator_sig") == operator_sig)
+                 and cache.get("operator_sig") == operator_sig
+                 and cache.get("pressure_nullspace_requested") == pressure_requested
+                 and cache.get("ctx") is not None
+                 and cache["ctx"].get("pressure_nullspace_checks") is not None
+                 and cache["ctx"].get("pressure_nullspace_verified")
+                     == cache["ctx"]["pressure_nullspace_checks"]["verified"]
+                 and cache.get("pressure_operator_state") == cache["Ahat"].stateGet())
         # COLLECTIVE verdict: state counters are bumped by rank-local data
         # writes, so a rank-divergent match here would desync the collective
         # assembly/PCSetUp calls the verdict gates (the np>1 deadlock class).
@@ -1218,7 +1291,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # The null space is built INSIDE the loop, after the first Jacobian assembly:
     # _mode_satisfies_constraints verifies each candidate mode against the
     # ASSEMBLED operator (‖J·m‖ ≈ 0), which an unassembled J cannot support.
-    # A cached ctx carries the (geometry-tier) null space it was built with.
+    # A cached ctx carries its last verified null space; refreshed operators
+    # must recheck pressure nullity before using it.
     nsp = cache["ctx"].get("nsp") if (cache is not None
                                       and cache.get("ctx")) else None
 
@@ -1277,24 +1351,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     vel_its_last = []
     pres_its_last = []
 
-    # With the constant-pressure nullspace active, the outer residual is measured
-    # in the pressure-gauge QUOTIENT space: the inner KSP projects the constant
-    # mode out of every increment (it is the gauge of an enclosed incompressible
-    # domain), so the loop cannot reduce that component and must not measure it.
-    # On a DEFORMED faceted boundary the component is not exactly zero — free
-    # tangential DOFs carry a small net flux through the node-vs-facet normal
-    # mismatch, an irreducible discrete incompatibility (measured: an unprojected
-    # outer norm floors at rel ~2e-3, 100% pressure rows, and the line search
-    # stalls against the constant offset). This mirrors PETSc's own projected
-    # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
-    # (σ_nn reads velocity rows only).
-    use_pnull = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
-    # L2 norm of the LAST projected-out gauge component (|mean|·√N over the
-    # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
-    # behind the projection (see the guard after the Newton loop).
+    # A requested pressure gauge is not evidence of a discrete null mode.
+    # Until the constrained operator is verified, no residual is projected.
+    use_pnull = False
+    pressure_checks = None
     pnull_gauge = [0.0]
+    context_operator_current = bool(cache is not None and op_ok)
+    solver._rotated_pressure_gauge_residual = 0.0
 
-    def rotated_residual(uvec, keep_cartesian=False):
+    def project_pressure_residual(vector):
+        if use_pnull:
+            part = vector.getSubVector(pres_is)
+            count = part.getSize()
+            mean = part.sum()/max(count, 1)
+            part.shift(-mean)
+            vector.restoreSubVector(pres_is, part)
+            pnull_gauge[0] = abs(mean)*max(count, 1)**0.5
+
+    def rotated_residual(uvec, keep_cartesian=False, *, project_pressure):
         snes.computeFunction(uvec, Fc)
         if keep_cartesian:
             Fc.copy(reaction)                # stash the Cartesian reaction for σ_nn
@@ -1320,13 +1394,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # Same reason as normal_rows: the pinned row is not an equation the
             # solve is trying to satisfy, so it is not evidence about convergence.
             _zero_rows_local(Fh, [lu_pin])
-        if use_pnull:
-            sp = Fh.getSubVector(pres_is)
-            n_p = sp.getSize()
-            mean = sp.sum() / max(n_p, 1)
-            sp.shift(-mean)                  # project out the pressure-gauge mode
-            Fh.restoreSubVector(pres_is, sp)
-            pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if project_pressure:
+            project_pressure_residual(Fh)
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
@@ -1336,14 +1405,122 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # being far below tolerance on the physical scale). The rest-state residual
     # is the problem's intrinsic forcing scale; a cold start's r0 IS that scale,
     # so nothing changes there.
-    fnorm_rest = None
+    rest_residual = None
+    initial_residual = None
     if not zero_init_guess:
         z = dm.getGlobalVec()
         z.set(0.0)
-        Fz = rotated_residual(z)
-        fnorm_rest = Fz.norm()
-        Fz.destroy()
+        rest_residual = rotated_residual(z, project_pressure=False)
         dm.restoreGlobalVec(z)
+
+    def projected_reference_norm(vector):
+        projected = vector.copy()
+        project_pressure_residual(projected)
+        value = projected.norm()
+        projected.destroy()
+        return value
+
+    def residual_reference():
+        initial = projected_reference_norm(initial_residual)
+        reference = max(initial, projected_reference_norm(rest_residual)) \
+            if rest_residual is not None else initial
+        return initial, reference
+
+    def unprojected_reference_norm():
+        return max(initial_residual.norm(), rest_residual.norm()) \
+            if rest_residual is not None else initial_residual.norm()
+
+    def prepare_operator(raw_residual, assemble, lift):
+        nonlocal Ahat, Atot, ctx, Mp, nsp, diag_scale, did_assemble
+        nonlocal use_pnull, pressure_checks, context_operator_current, lu_pin
+        if assemble:
+            did_assemble = True
+            context_operator_current = False
+            snes.computeJacobian(u, J, Jp)
+            if Ahat is None:
+                Ahat = J.ptap(Qt)
+            else:
+                J.ptap(Qt, result=Ahat)
+            # PtAP refreshes values, not the validity of attached nullspaces.
+            Ahat.setNullSpace(None)
+            Ahat.setTransposeNullSpace(None)
+        if interface is not None:
+            Khat = interface.tangent(solver, u)
+            if Atot is not None:
+                Atot.destroy()
+            Atot = Ahat.copy()
+            Atot.axpy(1.0, Khat, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            Khat.destroy()
+            Aop = Atot
+            Aop.setNullSpace(None)
+            Aop.setTransposeNullSpace(None)
+        else:
+            Aop = Ahat
+        if diag_scale is None:
+            diag_scale = _velocity_diag_scale(Aop, solver)
+        bhat = raw_residual.copy()
+        bhat.scale(-1.0)
+        if lift:
+            # Preserve PETSc's original affine lift before eliminating columns.
+            Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
+        elif assemble:
+            Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
+        if use_lu:
+            pressure_checks = _pressure_nullspace_checks(Aop, pres_is, requested=True)
+            pressure_checks["requested"] = pressure_requested
+            pressure_checks["operator_scope"] = "constrained operator before direct-LU pressure datum"
+            if not pressure_checks["verified"]:
+                bhat.destroy()
+                _destroy_rotated_ksp_ctx(ctx)
+                # This newly rejected branch returns no result owning the
+                # workspace. Release it collectively instead of leaking a mesh-
+                # sized operator through the exception's traceback.
+                for resource in (raw_residual, initial_residual, rest_residual, xhat,
+                                 Fc, reaction, u, Atot, Ahat, Q, Qt):
+                    if resource is not None:
+                        resource.destroy()
+                raise NotImplementedError(
+                    "Rotated direct-LU pressure datum is unsupported: constant pressure "
+                    "is not a right and left null mode of the constrained operator. "
+                    "A physical pressure equation must not be pinned; use the iterative path."
+                    f" Relative actions: right={pressure_checks['right_relative']!r}, "
+                    f"left={pressure_checks['left_relative']!r}."
+                )
+            if lu_pin is None:
+                lu_pin = _naive_pressure_pin(dm)
+            pressure_checks["pressure_datum_global_dof"] = int(lu_pin) if lu_pin is not None else None
+            if lu_pin is not None:
+                # Match the existing direct-LU equation set, including a warm
+                # reference evaluated before the verified datum was selected.
+                for vector in (raw_residual, bhat, initial_residual, rest_residual):
+                    if vector is not None:
+                        _zero_rows_local(vector, [lu_pin])
+        elif assemble:
+            pressure_checks = _pressure_nullspace_checks(Aop, pres_is, pressure_requested)
+        else:
+            pressure_checks = dict(ctx["pressure_nullspace_checks"])
+        use_pnull = bool(not use_lu and pressure_checks["verified"])
+        if not use_pnull:
+            pnull_gauge[0] = 0.0
+            solver._rotated_pressure_gauge_residual = 0.0
+        if not use_lu and ctx is not None:
+            rebuild_context = ctx["pressure_nullspace_verified"] != use_pnull
+            if mpi.size > 1:
+                rebuild_context = any(mpi.comm.allgather(rebuild_context))
+            if rebuild_context:
+                # KSP/Schur metadata and their owned nullspaces must change
+                # together. Geometry and the operator allocation remain reusable.
+                if cache is not None:
+                    cache["ctx"] = None
+                _destroy_rotated_ksp_ctx(ctx)
+                ctx, Mp, nsp = None, None, None
+            else:
+                ctx["pressure_nullspace_checks"] = pressure_checks
+                nsp = ctx["nsp"]
+                if nsp is not None:
+                    Aop.setNullSpace(nsp)
+                    Aop.setTransposeNullSpace(nsp)
+        return Aop, bhat
 
     r0 = None
     ref = None
@@ -1360,91 +1537,71 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     exit_reason = _SNES_DIVERGED_MAX_IT
     phase = "picard" if continuation else "newton"
     for iters in range(max_it):
-        Fhat = rotated_residual(u, keep_cartesian=True)
-        rnorm = Fhat.norm()
-        if r0 is None:
-            r0 = rnorm
-            ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
-        if verbose:
-            mpi.pprint(f"[rotated_bc] nonlinear iter {iters:2d}  |F̂|={rnorm:.6e}  "
-                       f"rel={rnorm/(ref+1e-300):.3e}  [{phase}]")
-        # residual convergence (relative to the reference scale, plus an absolute
-        # floor so an already-converged warm start does not chase machine noise).
-        if rnorm <= rtol * ref + atol:
-            converged = True
-            exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+        # Updating the reaction-fed interface law precedes its tangent, but
+        # projection and convergence must wait for that tangent's nullity test.
+        raw_residual = rotated_residual(u, keep_cartesian=True, project_pressure=False)
+        if initial_residual is None:
+            initial_residual = raw_residual.copy()
+        if reuse_operator and iters == 0:
+            pressure_checks = dict(ctx["pressure_nullspace_checks"])
+            use_pnull = pressure_checks["verified"]
+            workspace_reused = True
+        # An already verified operator may finish on the ORIGINAL residual.
+        # This keeps a solved linear tangent and its PC current in the cache;
+        # a fresh/invalidated operator cannot take this exit before verification.
+        if pressure_checks is not None and raw_residual.norm() <= rtol*unprojected_reference_norm()+atol:
+            r0, ref = residual_reference()
+            Fhat = raw_residual.copy()
+            project_pressure_residual(Fhat)
+            rnorm = Fhat.norm()
             Fhat.destroy()
-            break
-        # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
-        # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
-        # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
-        if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
+            if rnorm <= rtol*ref+atol:
+                converged = True
+                exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+                raw_residual.destroy()
+                break
+        assemble = not (reuse_operator and iters == 0)
+        workspace_reused = workspace_reused or not assemble
+        Aop, bhat = prepare_operator(raw_residual, assemble, lift_datum and iters == 0)
+        r0, ref = residual_reference()
+        Fhat = raw_residual.copy()
+        project_pressure_residual(Fhat)
+        rnorm = Fhat.norm()
+        if continuation and phase == "picard" and rnorm <= switch_rtol*r0 and iters >= picard \
+                and rnorm > rtol*ref+atol:
             solver._set_newton_alpha(1.0)
             phase = "newton"
+            bhat.destroy()
+            Fhat.destroy()
+            assemble = True
+            Aop, bhat = prepare_operator(raw_residual, assemble, False)
+            r0, ref = residual_reference()
+            Fhat = raw_residual.copy()
+            project_pressure_residual(Fhat)
+            rnorm = Fhat.norm()
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
                            f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
-        # Iteration 0 may ride the cross-solve fast path: the cached Ahat still
-        # holds the rotated, constraint-eliminated operator and the cached
-        # KSP/PC is set up on it. Every LATER iteration always reassembles —
-        # that, plus the exact residual measured at every iterate, is the
-        # structural safety net: a wrong skip costs one extra increment, never
-        # a stale solution.
-        assemble = not (reuse_operator and iters == 0)
-        if assemble:
-            did_assemble = True
-            snes.computeJacobian(u, J, Jp)   # Jp carries the 1/mu mass (Schur pmat)
-            if Ahat is None:
-                Ahat = J.ptap(Qt)
-            else:
-                J.ptap(Qt, result=Ahat)      # same nonzero pattern → in-place refresh
-        else:
-            workspace_reused = True
-        # The interface tangent is REASSEMBLED at every iterate (that is
-        # what makes it consistent Newton, dtau/dV at the current slip
-        # rates) and added to a COPY: the ptap-with-result refresh above
-        # owns Ahat's structure, and injected entries would be
-        # stale-or-doubled on the next refresh.
-        if interface is not None:
-            Khat = interface.tangent(solver, u)
-            if Atot is not None:
-                Atot.destroy()
-            Atot = Ahat.copy()
-            Atot.axpy(1.0, Khat,
-                      structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
-            Khat.destroy()
-            # A recreated operator loses the null space the first solve
-            # attached; re-attach for iterations after the first (a nonlinear
-            # interface law is what reaches them).
-            if ctx is not None and ctx.get("nsp") is not None:
-                Atot.setNullSpace(ctx["nsp"])
-                Atot.setTransposeNullSpace(ctx["nsp"])
-            Aop = Atot
-        else:
-            Aop = Ahat
+        raw_residual.destroy()
+        if verbose:
+            mpi.pprint(f"[rotated_bc] nonlinear iter {iters:2d}  |F̂|={rnorm:.6e}  "
+                       f"rel={rnorm/(ref+1e-300):.3e}  [{phase}]")
+        if rnorm <= rtol*ref+atol:
+            converged = True
+            exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+            bhat.destroy()
+            Fhat.destroy()
+            break
+        if lift_datum and iters == 0:
+            xhat.destroy()
+            xhat = None
         if not use_lu:
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver)
-                nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
+                nsp = _rotated_nullspace(solver, Q, normal_rows,
+                                         pressure_null_verified=use_pnull)
             elif assemble and Mp is not None:
-                Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
-        if diag_scale is None:
-            diag_scale = _velocity_diag_scale(Aop, solver)
-        bhat = Fhat.copy()
-        bhat.scale(-1.0)
-        if lift_datum and iters == 0:
-            # cold-start lift: the increment FROM ZERO carries the datum jump —
-            # b̂[rows] = diag·x̂ and the eliminated columns' A[:,cols]·x̂ are
-            # subtracted from the other rows. For a LINEAR model this increment IS
-            # the whole solve; the loop converges at the next residual check.
-            Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
-            xhat.destroy()
-            xhat = None
-        elif assemble:
-            Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
-        # else: the cached Aop already carries the eliminated constraint
-        # rows/cols from the solve that built it — re-zeroing would bump the
-        # Mat state and force PCSetUp, defeating the fast path.
+                Jp.createSubMatrix(pres_is, pres_is, submat=Mp)
         if use_lu:
             if ctx is None:
                 ksp_lu = PETSc.KSP().create(comm=dm.comm)
@@ -1471,7 +1628,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             dhat, last_reason, ctx = _solve_rotated_iterative(
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
-                refresh_operator=assemble)
+                refresh_operator=assemble, pressure_null_verified=use_pnull,
+                pressure_nullspace_checks=pressure_checks)
+            ctx["pressure_nullspace_checks"] = pressure_checks
+            context_operator_current = True
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
@@ -1508,7 +1668,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             improved = True
         elif not step_converged:
             u, improved = _backtracking_line_search(
-                u, d, rnorm, rotated_residual, Q, Qt, normal_rows, datum_map)
+                u, d, rnorm, lambda trial: rotated_residual(trial, project_pressure=True),
+                Q, Qt, normal_rows, datum_map)
         # every per-iteration temporary dies HERE, on all exit paths
         dhat.destroy()
         d.destroy()
@@ -1565,7 +1726,22 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"integral (solver._rotated_pressure_gauge_residual holds "
                        f"this number).")
 
-    Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
+    active_operator = Atot if Atot is not None else Ahat
+    pressure_attached = False
+    if use_pnull and not use_lu and ctx is not None:
+        # This context includes p=1 iff its verified verdict admitted it.
+        # Check that this very space is attached to the actual operator, rather
+        # than equating a successful candidate test with an installation.
+        attached_space = active_operator.getNullSpace()
+        pressure_attached = bool(attached_space is not None and attached_space.handle
+                                 and attached_space.handle == ctx["nsp"].handle)
+    if mpi.size > 1:
+        pressure_attached = all(mpi.comm.allgather(pressure_attached))
+    coarse = (ctx or {}).get("pressure_coarse")
+    coarse_active = coarse is not None
+    coarse_metrics = coarse.metrics() if coarse_active else None
+    outer_pc_type = ctx["ksp"].getPC().getType() if ctx is not None else None
+    retained_base_pc_type = ctx["pc"].getType() if coarse_active else None
     if cache_allowed and ctx is not None and Ahat is not None and not use_lu:
         # Persist the workspace for the next solve. The stored key describes
         # the operator values Ahat now holds; linear_hint records whether
@@ -1580,6 +1756,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
             "coefficient_variables": coefficient_variables,
             "coefficient_states": coefficient_states,
+            "pressure_nullspace_requested": pressure_requested,
+            "pressure_operator_state": Ahat.stateGet(),
             # The stored key must describe what Ahat HOLDS: valid if this
             # solve reassembled (values current), or if the fast path rode a
             # key-matched operator untouched. A poisoned solve that exited at
@@ -1587,7 +1765,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # against unrefreshed values (#543 review, m2).
             "operator_sig": (operator_sig if (did_assemble or reuse_operator)
                              else None),
-            "linear_hint": bool(converged and newton_its <= 1),
+            "linear_hint": bool(converged and newton_its <= 1 and context_operator_current),
         }
     else:
         if cache_allowed:
@@ -1602,6 +1780,28 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     if xhat is not None:
         xhat.destroy()                       # unused lift vector (loop exited before it)
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
+    fresh = rotated_residual(u, project_pressure=False)
+    fresh_unprojected_rnorm = float(fresh.norm())
+    project_pressure_residual(fresh)
+    fresh_projected_rnorm = float(fresh.norm())
+    fresh.destroy()
+    fresh_passed = bool(np.isfinite(fresh_projected_rnorm)
+                        and fresh_projected_rnorm <= rtol*ref+atol)
+    if converged and not fresh_passed:
+        converged = False
+        # Clear the loop's positive verdict; no Krylov reason describes this
+        # post-finalizer failure, so retain the actual last KSP reason unchanged.
+        snes.setConvergedReason(0)
+        if cache_allowed and solver._rotated_linear_cache is not None:
+            solver._rotated_linear_cache["linear_hint"] = False
+        mpi.pprint("[rotated_bc] WARNING: finalized fields fail the rotated residual "
+                   f"criterion (|F̂|={fresh_projected_rnorm:.6e}); solve is unconverged.")
+    full_reference = unprojected_reference_norm()
+    initial_residual.destroy()
+    if rest_residual is not None:
+        rest_residual.destroy()
+    Fc.destroy()
+    solver._rotated_pressure_gauge_residual = float(pnull_gauge[0]) if use_pnull else 0.0
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
@@ -1611,7 +1811,22 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "rotation_gauge": getattr(solver, "_rotated_gauge_report", None),
             "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
-            "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
+            "ksp_its": lin_its, "rnorm": fresh_projected_rnorm, "rnorm0": r0,
+            "pressure_nullspace_requested": pressure_requested,
+            "pressure_nullspace_verified": bool(pressure_checks["verified"]),
+            "pressure_nullspace_projection_active": bool(use_pnull),
+            "pressure_nullspace_attached": bool(pressure_attached),
+            "pressure_nullspace_checks": pressure_checks,
+            "pressure_coarse_correction_active": bool(coarse_active),
+            "pressure_coarse_correction_metrics": coarse_metrics,
+            "outer_pc_type": outer_pc_type,
+            "retained_base_pc_type": retained_base_pc_type,
+            "fresh_unprojected_rnorm": fresh_unprojected_rnorm,
+            "fresh_projected_rnorm": fresh_projected_rnorm,
+            "fresh_projected_residual_passed": fresh_passed,
+            "fresh_reference_rnorm": float(ref),
+            "fresh_residual_scope": "normal and direct-LU datum rows excluded" if use_lu else "normal rows excluded",
+            "fresh_unprojected_reference_rnorm": float(full_reference),
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
             # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
             # with ctx unset when a warm start is already converged at increment 0.
@@ -1710,9 +1925,16 @@ def _destroy_rotated_ksp_ctx(ctx):
     """Release a reusable rotated-KSP context and its owned PETSc objects."""
     if ctx is None:
         return
+    coarse = ctx.get("pressure_coarse")
+    if coarse is not None:
+        coarse.destroy(None)
+        ctx["pressure_coarse"] = None
     if ctx.get("ksp") is not None:
         ctx["ksp"].destroy()
         ctx["ksp"] = None
+    if ctx.get("pc") is not None:
+        ctx["pc"].destroy()
+        ctx["pc"] = None
     if ctx.get("Mp") is not None:
         ctx["Mp"].destroy()
         ctx["Mp"] = None
@@ -1744,7 +1966,8 @@ def _rotated_ksp_overrides(solver) -> dict[str, str | int]:
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
                              custom_Pl=None, nsp=None, Mp=None, ctx=None,
-                             refresh_operator=True):
+                             refresh_operator=True, *, pressure_null_verified,
+                             pressure_nullspace_checks):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
     (PR#290, rotated) whenever the solver has a hierarchy — ``set_custom_fmg`` or a
@@ -1765,8 +1988,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         it (Mp=None) the Schur pre falls back to selfp, which degrades badly on
         curved/deformed boundaries and variable viscosity.
       * the pressure sub-solve mirrors the native FGMRES+GASM at the solver
-        tolerance; the constant-pressure nullspace is attached to the Schur
-        complement for enclosed domains (the hand-built IS fieldsplit does not
+        tolerance; an operator-verified constant-pressure nullspace is attached
+        to the Schur complement (the hand-built IS fieldsplit does not
         inherit it from the operator).
 
     ``custom_Pl`` / ``nsp`` are built by the CALLER (once, reused each Newton step;
@@ -1970,7 +2193,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # nullspace to the inner Schur solve, which is otherwise singular
             # and grinds against its iteration cap every outer iteration.
             cns = None
-            if getattr(solver, "_petsc_use_pressure_nullspace", False):
+            if pressure_null_verified:
                 S = pc.getFieldSplitSubKSP()[1].getOperators()[0]
                 cns = PETSc.NullSpace().create(constant=True, comm=dm.comm)
                 S.setNullSpace(cns)
@@ -1983,6 +2206,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 except Exception:
                     pass
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "pressure_nullspace_verified": bool(pressure_null_verified),
                "custom_Pl": custom_Pl, "pfx": pfx,
                # which preconditioner this solve actually got — reported so a model
                # (or a test) can assert on it instead of inferring it from timings
@@ -2018,6 +2242,39 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         # unchanged matrix: leave the KSP/PC/GAMG setup untouched entirely.
         if refresh_operator:
             ksp.setOperators(Ahat)
+            # PC setup may refresh/recreate the Schur operator. Its pressure
+            # metadata must follow the same verified verdict as the full Mat.
+            if ctx.get("pressure_coarse") is None:
+                ctx["pc"].setUp()
+                schur = ctx["pc"].getFieldSplitSubKSP()[1].getOperators()[0]
+                schur.setNullSpace(ctx["cns"])
+
+    # A measured, nonzero pressure response is a weakly determined mode, not
+    # a gauge. Correct its preconditioning without projecting its equation.
+    use_coarse = _pressure_coarse_correction_needed(pressure_nullspace_checks) and pres_is.getSize() > 0
+    coarse = ctx.get("pressure_coarse")
+    if coarse is not None and not use_coarse:
+        coarse.destroy(None)
+        ctx["pressure_coarse"] = None
+        ksp.setPC(ctx["pc"])
+        ctx["pc"].setOperators(Ahat)
+        ctx["pc"].setUp()
+        schur = ctx["pc"].getFieldSplitSubKSP()[1].getOperators()[0]
+        schur.setNullSpace(ctx["cns"])
+    elif use_coarse and coarse is None:
+        from underworld3.utilities._rotated_pressure_coarse import _RotatedBalancedPressureCoarse
+        rotations = list(nsp.getVecs()) if nsp is not None else []
+        coarse = _RotatedBalancedPressureCoarse(
+            Ahat, ctx["pc"], ctx["pc"].getFieldSplitSubKSP()[0],
+            vel_is, pres_is, normal_rows, rotations, 1e-10)
+        outer = PETSc.PC().create(comm=dm.comm)
+        outer.setType("python")
+        outer.setOptionsPrefix(ksp.getOptionsPrefix())
+        outer.setOperators(Ahat)
+        outer.setPythonContext(coarse)
+        ksp.setPC(outer)
+        outer.destroy()  # The KSP owns its reference; ctx retains independent M0.
+        ctx["pressure_coarse"] = coarse
 
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs
@@ -2062,9 +2319,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     return Uhat, ksp.getConvergedReason(), ctx
 
 
-def _rotated_nullspace(solver, Q, normal_rows):
-    """Coupled Stokes null space in the rotated frame: constant pressure, plus every
-    rigid rotation Q·mode that is a genuine null space of the constraints — one
+def _rotated_nullspace(solver, Q, normal_rows, *, pressure_null_verified):
+    """Coupled null space: verified constant pressure and admissible rotations.
+
+    Each rigid rotation Q·mode must be a genuine null space of the constraints — one
     mode (-y,x) in 2D, up to THREE (e_k×r) in 3D (all three on a spherical shell
     with free-slip inner and outer boundaries; leaving them off makes the outer
     Krylov grind against a near-singular operator and pollutes the solution with
@@ -2081,7 +2339,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
     dm = solver.dm
     vecs = []
     # constant pressure (Q = identity on pressure → unchanged)
-    if getattr(solver, "_petsc_use_pressure_nullspace", False):
+    if pressure_null_verified:
         pv = dm.createGlobalVec()                  # persists inside the returned NullSpace
         pv.set(0.0)
         pis = solver._subdict["pressure"][0]

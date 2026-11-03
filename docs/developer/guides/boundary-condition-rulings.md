@@ -41,6 +41,22 @@ The `rotated_fieldsplit_velocity_ksp_type`,
 `solver.petsc_options` select the benchmark's inner solvers and outer iteration
 allowance; see the governing document's explicit linear-solver options.
 
+For Stokes, `petsc_use_pressure_nullspace=True` requests a pressure gauge;
+the rotated solver verifies it against both sides of the actual constrained
+operator before projecting any residual. Analytic radial normals on faceted
+spherical walls can make pressure physically determined in the discrete system.
+That pressure component is then retained. When both operator actions are
+nonzero, the native iterative route applies a balanced two-vector pressure
+correction around its independent fieldsplit preconditioner. It changes neither
+the original equations nor their residual target. Verified pressure gauges and
+explicitly disabled requests retain the existing preconditioner.
+
+`solve_report.config['gauge']` records requested, verified, attached and active
+pressure projection separately. `config['rotated_preconditioner']` records the
+correction and retained base PC; `config['rotated_residual']` records fresh
+residuals after finalizing the fields. Solver convergence establishes the
+algebraic residual, while physical-wall accuracy still requires benchmark checks.
+
 ## Physical circular walls on affine annulus meshes
 
 `Stokes.add_cylindrical_wall_transfer` registers a lagged rotated normal

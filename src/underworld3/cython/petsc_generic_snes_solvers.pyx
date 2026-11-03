@@ -3408,11 +3408,38 @@ class SolverBaseClass(uw_object):
         config = dict(tangent=dict(consistent_jacobian=self.consistent_jacobian,
                                    newton_pressure_coupling=self.newton_pressure_coupling,
                                    path="rotated_freeslip"))
+        if "pressure_nullspace_verified" in info:
+            config["_rotated_pressure_projection_active"] = bool(info["pressure_nullspace_projection_active"])
         try:
             self._snapshot_model_facts(config)
         except Exception:
             # Sanctioned: formulation facts are a record; none is recorded on failure
             pass
+        config.pop("_rotated_pressure_projection_active", None)
+        if "pressure_nullspace_verified" in info:
+            # The rotated solve uses its constrained operator, rather than the
+            # native SNES Jacobian inspected by the generic model snapshot.
+            config.setdefault("gauge", {}).update(
+                pressure_nullspace_requested=bool(info["pressure_nullspace_requested"]),
+                pressure_nullspace_verified=bool(info["pressure_nullspace_verified"]),
+                pressure_nullspace_projection_active=bool(info["pressure_nullspace_projection_active"]),
+                pressure_nullspace_attached=bool(info["pressure_nullspace_attached"]),
+                pressure_nullspace_checks=info["pressure_nullspace_checks"],
+                operator_scope=info["pressure_nullspace_checks"]["operator_scope"],
+            )
+            config["rotated_residual"] = dict(
+                scope=info["fresh_residual_scope"],
+                fresh_unprojected_norm=float(info["fresh_unprojected_rnorm"]),
+                fresh_projected_norm=float(info["fresh_projected_rnorm"]),
+                full_reference_norm=float(info["fresh_unprojected_reference_rnorm"]),
+            )
+        if "pressure_coarse_correction_active" in info:
+            config["rotated_preconditioner"] = dict(
+                outer_pc_type=info["outer_pc_type"],
+                retained_base_pc_type=info["retained_base_pc_type"],
+                pressure_coarse_correction_active=info["pressure_coarse_correction_active"],
+                pressure_coarse_correction_metrics=info["pressure_coarse_correction_metrics"],
+            )
         self._emit_solve_notes(config.pop("_warnings", ()))
         report = SolveReport(
             reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
@@ -9892,6 +9919,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     def _snapshot_model_facts(self, cfg):
         """``cfg["gauge"]``: the pressure-level convention this Stokes solve runs under."""
+        pressure_projection_active = cfg.pop(
+            "_rotated_pressure_projection_active", bool(self._petsc_use_pressure_nullspace))
         attached = False
         try:
             # Before the first solve SNESGetJacobian hands back NULL matrices; a method
@@ -9941,7 +9970,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     f"the regularisation (Parameters.plastic_rate_strengthening, units of "
                     f"viscosity) — its scale is the model's, there is no universal default "
                     f"— or accept the risk. Recorded in solve_report.config['regularisation'].")
-        if self._petsc_use_pressure_nullspace and in_rheology is True:
+        if pressure_projection_active and in_rheology is True:
             # The projection fixes mean(p) = 0 on every Krylov solve. With a pressure-
             # dependent viscosity (Drucker-Prager) the yield stress then follows that
             # gauge choice, and moves with it as the yielded region changes between
