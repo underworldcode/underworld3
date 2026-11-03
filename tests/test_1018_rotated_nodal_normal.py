@@ -22,7 +22,12 @@ import sympy
 import underworld3 as uw
 import underworld3.utilities.rotated_bc as rbc
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# These fixtures inspect a complete dense operator and freeze the historical
+# whole-mesh normal orientation. Their geometry/CSR captures are serial; the
+# distributed pressure/nullspace regressions live in the adjacent test modules.
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_a,
+              pytest.mark.skipif(uw.mpi.size > 1,
+                                 reason="Serial dense-operator and historical normal-orientation fixtures")]
 
 _MACHINE = 1e-15         # |A z|/|A| at machine level; the straight box sits at 3e-18
 
