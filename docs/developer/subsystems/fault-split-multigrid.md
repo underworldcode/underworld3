@@ -73,9 +73,10 @@ largest block, and each rank's block sizes. It is made once, with one allgather
 Reading it makes no collective call, so any rank can read it alone. A driver that
 looped a reduction over its own rank's blocks hung at np 4, because the ranks made
 different numbers of calls. Each block of the finest level is held whole by one rank
-(see below, #925), so the summed rows are the serial count at any rank count
-(`test_1133`), and `block_rows_per_rank` shows where each block sits: the structural
-LU on one rank. The record is each block as handed to the installer, before PCASM
+(see below, #925), so the summed patch (owned) rows are the serial count at any rank
+count (`test_1133`); the subdomain rows follow the structural halo, which can be a
+few rows short of serial (#896). `block_rows_per_rank` shows where each block sits:
+the structural LU on one rank. The record is each block as handed to the installer, before PCASM
 adds its overlap layer at set-up.
 
 ## Rotated walls on every level

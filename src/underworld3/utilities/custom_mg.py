@@ -834,15 +834,17 @@ def _segment_block(rows, node_of_row, coords, max_rows):
 def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
     """The finest level's FAC blocks in parallel, built from every rank's rows.
 
-    COLLECTIVE. Rank 0 gathers every rank's rows and cuts them as the serial
-    branch does: each mask is one band, segmented along its strike by
+    COLLECTIVE. Rank 0 gathers every rank's rows and cuts them into the serial
+    branch's blocks: each mask is one band, segmented along its strike by
     :func:`_segment_block`, and the structural rows outside every mask are one
-    more block; with no zone rows, the structural patch is one block. Each
+    more block; with no zone keyed, the structural patch is one block. Each
     block goes whole to the rank that owns most of its rows, so the structural
     block is one LU on one rank, as in serial. The blocks are therefore the
     same at any rank count, except that the structural halo is
     :func:`_fac_patch_split_parallel`'s, which can differ by a few rows where a
-    partition boundary runs along the band.
+    partition boundary runs along the band. A segmented piece's cut can fall
+    a node away from the serial one: the serial branch orders a split pair's
+    two nodes separately, this one keeps them as one site.
 
     Cut rank by rank, a rank's blocks held the seam rows its neighbour's blocks
     also held, and rank boundaries cut the band and the structural block (#925).
@@ -852,7 +854,7 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
     zones : list of (ndarray, ndarray)
         Per ``fac_zone`` mask, this rank's rows of the mask's cells (global,
         ghost rows resolved to their owners') and each row's node coordinates.
-        Empty where no zone is keyed.
+        An empty list where no zone is keyed; the same length on every rank.
     structural : (ndarray, ndarray) or None
         This rank's structural patch and subdomain rows (global, owned), or
         None where the split level's gate declined them or the level has no
@@ -892,10 +894,8 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
         held = [e[2] for e in everyone if e[2] is not None]
         if held:
             sub = np.unique(np.concatenate([s for _o, s in held]).astype(np.int64))
-            zone_rows = (np.concatenate(covered) if covered
-                         else np.zeros(0, dtype=np.int64))
-            if zone_rows.size:
-                extra = np.setdiff1d(sub, zone_rows)
+            if zones:
+                extra = np.setdiff1d(sub, np.concatenate(covered))
                 if extra.size:
                     blocks.append((extra, extra))
             elif sub.size:
@@ -1887,14 +1887,15 @@ class CustomMGHierarchy:
                     # without a split keeps the zone's blocks alone, the
                     # default #670 measured on a placed weak plane. The split
                     # marker is the same on every rank.
+                    # A keyed zone beats detection, as in the serial branch,
+                    # even where its masks hold no cell on any rank. The
+                    # split marker and the keying are the same on every rank,
+                    # so the cover gate's collectives run on all or none.
                     split = None
                     split_level = fault_mg.is_split_level(self.level_meshes[l])
-                    # the split's cover gate is collective: decide whether
-                    # to take it from what ANY rank holds, not this rank
+                    keyed = self.fac_zone is not None
                     mpi_comm = comm.tompi4py()
-                    zone_anywhere = mpi_comm.allreduce(
-                        any(z[0].size for z in zones), op=MPI.LOR)
-                    if split_level or not zone_anywhere:
+                    if split_level or not keyed:
                         gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
@@ -1904,14 +1905,13 @@ class CustomMGHierarchy:
                         self.fac_gate[l] = gate or None
                     # split is None on every rank or on none: the gate's
                     # verdict is collective
-                    if zone_anywhere or split is not None:
+                    if keyed or split is not None:
                         # TODO(MEASURE): #670 knob — rows per block; the
                         # default comes from the size sweep.
                         cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
                                                  self.fac_block_rows))
                         blocks = _gathered_patch_blocks(
-                            zones if zone_anywhere else [], split, cap,
-                            lay.rstart, mpi_comm)
+                            zones, split, cap, lay.rstart, mpi_comm)
                     # every rank installs the patch, or none does: a rank with
                     # no rows of its own still sets the smoother type
                     n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
