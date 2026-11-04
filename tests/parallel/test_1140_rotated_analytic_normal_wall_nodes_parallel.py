@@ -1,36 +1,43 @@
-"""An analytic rotated free-slip normal constrains every owned wall node at any rank
-count (#935).
+"""Every owned wall node is found at any rank count, by the rotated free-slip node list
+with an analytic normal and by the free surface's node list (#935).
 
-``rotated_bc._boundary_velocity_nodes`` takes a rank's wall nodes from the closures of
-the boundary facets labelled on that rank. Each facet is labelled on one rank, so a
-rank can own a wall node all of whose labelled facets sit on neighbours. The geometric
-normal (``normal=None``) completes the node set over the point SF (#560). An analytic
-or constant normal did not, and such a node got no constraint row. Kaiju met it on the
-zg95 annulus at np 24 to 52 with the radial normal; np 16 happened to be clean.
+Each boundary facet is labelled on one rank, so a rank can own a wall node all of
+whose labelled facets sit on neighbours. ``rotated_bc._boundary_velocity_nodes`` with
+the geometric normal (``normal=None``) completes its node set over the point SF
+(#560). With an analytic or constant normal it took only the nodes of the facets
+labelled on the rank, so such a node got no constraint row and carried normal flow;
+a production annulus showed it at np 24 to 52 with the radial normal.
+``FreeSurface._surface_node_coords`` took its vertices the same way, and every
+surface row it matches (the mesh deformation, the datum of the consistent solve)
+missed that vertex on its owner.
 
-What the analytic path lost is a rank whose share of a wall is one node, or a short
-run of them, so the fixtures are coarse boxes. On kaiju (development 60dbf0e4) one rank
-owns a corner at np 2, with no facet of either wall beside it: the unstructured box at
-cellSize 0.5 and the regular box at cellSize 0.4, at np 2, 3 and 4.
+A rank whose share of a wall is one node is what the label-local lists lost, so the
+fixtures are coarse boxes. Measured on Linux with PETSc 3.25 and ParMETIS (the
+default partitioner when it is built), one rank owns a corner at np 2 with no facet
+of either wall beside it, on both fixtures, and at np 4 a wall node of the same
+kind.
 
-- On every rank and wall, the analytic normal finds the geometric path's nodes.
-- The fixtures exercise the case: some rank owns a wall node that no facet labelled on
-  that rank reaches. If a partitioner change makes this fail, the fixtures have lost
-  their power, not the library its fix; choose a mesh that shows it again with the
-  campaigns probe ``probe_935_analytic_wall_nodes.py``.
-- A rotated free-slip solve with the constant wall normals leaves no normal flow at any
-  wall node. The node that got no row is a corner, which with its row on both walls
-  carries no flow; without the rows it moves with the cell.
+- On every rank and wall, the analytic normal finds exactly the geometric path's nodes.
+- Each fixture exercises the case: some rank owns a wall node that no facet labelled
+  on that rank reaches. If a partitioner change makes this fail, the fixture has lost
+  its power, not the library its fix: choose a coarse mesh on which, at np 2, some
+  rank owns a wall node that only a neighbour's facets reach.
+- A rotated free-slip solve with the constant wall normals leaves no normal flow at
+  any wall node (exactly none serially; up to 0.67 of max |v| without the fix).
+- The free surface's node list on Top holds every local vertex on Top.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py
     mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py
 """
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import sympy
 
 import underworld3 as uw
 import underworld3.utilities.rotated_bc as rbc
+from underworld3.systems.free_surface import FreeSurface
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.timeout(300)]
 
@@ -39,10 +46,14 @@ WALL_NORMALS = {"Top": (0.0, 1.0), "Bottom": (0.0, -1.0),
 FIXTURES = [(False, 0.5), (True, 0.4)]     # (regular, cellSize)
 
 
-def _box_solver(regular, cell_size):
-    mesh = uw.meshing.UnstructuredSimplexBox(
+def _box(regular, cell_size):
+    return uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=cell_size,
         regular=regular, qdegree=2)
+
+
+def _box_solver(regular, cell_size):
+    mesh = _box(regular, cell_size)
     v = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -80,34 +91,34 @@ def _reached_by_local_facets(stokes, wall):
 
 @pytest.mark.tier_b
 @pytest.mark.parametrize("regular, cell_size", FIXTURES)
-def test_the_analytic_normal_finds_every_wall_node(regular, cell_size):
+def test_the_analytic_normal_finds_the_geometric_nodes(regular, cell_size):
     stokes = _set_up(regular, cell_size)
-    missed = []
+    differ = []
     for wall, normal in WALL_NORMALS.items():
         geometric = {q for q, _n in rbc._boundary_velocity_nodes(stokes, wall)}
         analytic = {q for q, _n in rbc._boundary_velocity_nodes(stokes, wall, normal=normal)}
-        if geometric - analytic:
-            missed.append((wall, sorted(geometric - analytic)))
-    every = uw.mpi.comm.allgather(missed)
+        if geometric != analytic:
+            differ.append((wall, sorted(geometric - analytic), sorted(analytic - geometric)))
+    every = uw.mpi.comm.allgather(differ)
     assert not any(every), (
-        f"np {uw.mpi.size}: the analytic normal misses wall nodes the geometric path "
-        f"finds, per rank (wall, points): {every} (#935)")
+        f"np {uw.mpi.size}: the analytic and geometric node sets differ, per rank "
+        f"(wall, missed, extra): {every} (#935)")
 
 
 @pytest.mark.tier_b
-def test_the_fixtures_hold_an_owned_wall_node_no_local_facet_reaches():
+@pytest.mark.parametrize("regular, cell_size", FIXTURES)
+def test_the_fixture_holds_an_owned_wall_node_no_local_facet_reaches(regular, cell_size):
+    stokes = _set_up(regular, cell_size)
+    owned = _owned(stokes.dm)
     held = 0
-    for regular, cell_size in FIXTURES:
-        stokes = _set_up(regular, cell_size)
-        owned = _owned(stokes.dm)
-        for wall in WALL_NORMALS:
-            complete = {q for q, _n in rbc._boundary_velocity_nodes(stokes, wall)}
-            held += len((complete - _reached_by_local_facets(stokes, wall)) & owned)
+    for wall in WALL_NORMALS:
+        complete = {q for q, _n in rbc._boundary_velocity_nodes(stokes, wall)}
+        held += len((complete - _reached_by_local_facets(stokes, wall)) & owned)
     total = sum(uw.mpi.comm.allgather(held))
     assert total > 0, (
         f"np {uw.mpi.size}: no rank owns a wall node that only a neighbour's facets "
-        f"reach, so this file cannot see #935; the partition has changed under the "
-        f"fixtures (see the module docstring)")
+        f"reach, so this fixture cannot see #935; the partition has changed under it "
+        f"(see the module docstring)")
 
 
 @pytest.mark.tier_b
@@ -138,6 +149,27 @@ def test_no_normal_flow_at_any_wall_node(regular, cell_size):
             worst = max(worst, float(np.abs(un).max()))
     worst = max(uw.mpi.comm.allgather(worst))
     assert scale > 0.0
-    assert worst <= 1.0e-10 * scale, (
+    # exactly 0 serially (axis-aligned walls); on kaiju without the fix the missed
+    # node carried 1.3e-10 to 0.67 of max |v| at np 2 and 4
+    assert worst <= 1.0e-13 * scale, (
         f"np {uw.mpi.size}: normal flow {worst:.3e} at a wall node against "
         f"max |v| {scale:.3e} (#935)")
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("regular, cell_size", FIXTURES)
+def test_the_free_surface_finds_every_surface_vertex(regular, cell_size):
+    mesh = _box(regular, cell_size)
+    found = FreeSurface._surface_node_coords(SimpleNamespace(mesh=mesh, surface="Top"))
+    dm = mesh.dm
+    v0, v1 = dm.getDepthStratum(0)
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
+    local = cvec[[csec.getOffset(q) // 2 for q in range(v0, v1)]]
+    on_top = {tuple(x) for x in local[local[:, 1] == 1.0]}
+    missed = sorted(on_top - {tuple(x) for x in found})
+    extra = sorted({tuple(x) for x in found} - on_top)
+    every = uw.mpi.comm.allgather((missed, extra))
+    assert not any(m or e for m, e in every), (
+        f"np {uw.mpi.size}: the free surface's Top vertices miss or add local "
+        f"vertices on Top, per rank (missed, extra): {every} (#935)")
