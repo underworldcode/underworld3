@@ -625,12 +625,12 @@ def _fac_patch_summary(patch_rows, comm):
     list
         One entry per level: None where no rank has a patch, else a dict with
         ``blocks`` (ASM subdomains over all ranks, empty ones included),
-        ``owned_rows`` (the patch rows; the structural patch's are disjoint across
-        ranks, so its total does not depend on the partition, while a zone
-        block's rows include the seam halo, which two ranks can both hold),
+        ``owned_rows`` (the patch rows; each block is held by one rank, so
+        the total does not depend on the partition, #925),
         ``subdomain_rows`` (the patch plus its halo, summed over the ranks),
         ``block_rows_max``, and ``block_rows_per_rank`` (each rank's block
-        sizes, in rank order).
+        sizes, in rank order: a block goes whole to the rank that owns most
+        of its rows, so the structural LU sits on one rank).
     """
     mine = []
     for entry in (patch_rows or []):
@@ -832,6 +832,84 @@ def _segment_block(rows, node_of_row, coords, max_rows):
         if sel.any():
             pieces.append(rows[sel])
     return pieces
+
+
+def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
+    """The finest level's FAC blocks in parallel, built from every rank's rows.
+
+    COLLECTIVE. Rank 0 gathers every rank's rows and cuts them into the serial
+    branch's blocks: each mask is one band, segmented along its strike by
+    :func:`_segment_block`, and the structural rows outside every mask are one
+    more block; with no zone keyed, the structural patch is one block. Each
+    block goes whole to the rank that owns most of its rows, so the structural
+    block is one LU on one rank, as in serial. The blocks are therefore the
+    same at any rank count, except that the structural halo is
+    :func:`_fac_patch_split_parallel`'s, which can differ by a few rows where a
+    partition boundary runs along the band. A segmented piece's cut can fall
+    a node away from the serial one: the serial branch orders a split pair's
+    two nodes separately, this one keeps them as one site.
+
+    Cut rank by rank, a rank's blocks held the seam rows its neighbour's blocks
+    also held, and rank boundaries cut the band and the structural block (#925).
+
+    Parameters
+    ----------
+    zones : list of (ndarray, ndarray)
+        Per ``fac_zone`` mask, this rank's rows of the mask's cells (global,
+        ghost rows resolved to their owners') and each row's node coordinates.
+        An empty list where no zone is keyed; the same length on every rank.
+    structural : (ndarray, ndarray) or None
+        This rank's structural patch and subdomain rows (global, owned), or
+        None where the split level's gate declined them or the level has no
+        split.
+    max_rows : int
+        The cap on a zone piece's rows (``fac_block_rows``).
+    rstart : int
+        The first global row this rank owns.
+    comm : mpi4py communicator
+
+    Returns
+    -------
+    list of (ndarray, ndarray)
+        This rank's blocks as ``(owned, subdomain)`` pairs: ``(rows, rows)``
+        for a zone piece and for the structural rows beside a zone, the patch
+        and its halo for the structural patch alone. A row is in one block of
+        each mask; masks that overlap share their common rows by design.
+    """
+    everyone = comm.gather((rstart, zones, structural), root=0)
+    per_rank = None
+    if comm.rank == 0:
+        starts = np.array([e[0] for e in everyone])
+        blocks, covered = [], []
+        for k in range(len(zones)):
+            rows = np.concatenate([e[1][k][0] for e in everyone]).astype(np.int64)
+            xy = np.concatenate([e[1][k][1] for e in everyone])
+            rows, first = np.unique(rows, return_index=True)
+            # nodes by coordinate: the segmentation sees the same points in the
+            # same order at any rank count, and the two nodes of a split pair
+            # stay in one piece
+            site_xy, site = np.unique(xy[first], axis=0, return_inverse=True)
+            for piece in _segment_block(rows, site.ravel(), site_xy, max_rows):
+                if piece.size:
+                    piece = np.unique(piece)
+                    blocks.append((piece, piece))
+            covered.append(rows)
+        held = [e[2] for e in everyone if e[2] is not None]
+        if held:
+            sub = np.unique(np.concatenate([s for _o, s in held]).astype(np.int64))
+            if zones:
+                extra = np.setdiff1d(sub, np.concatenate(covered))
+                if extra.size:
+                    blocks.append((extra, extra))
+            elif sub.size:
+                owned = np.unique(np.concatenate([o for o, _s in held]).astype(np.int64))
+                blocks.append((owned, sub))
+        per_rank = [[] for _ in everyone]
+        for owned, sub in blocks:
+            owner = np.searchsorted(starts, sub, side="right") - 1
+            per_rank[int(np.bincount(owner, minlength=len(everyone)).argmax())].append(
+                (owned, sub))
+    return comm.scatter(per_rank, root=0)
 
 
 def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
@@ -1483,6 +1561,8 @@ class CustomMGHierarchy:
         represent) is added as one more block, unless the split level's cover
         gate declines it; a level without a split keys the patch on the masks
         alone (#921). ``None`` keys the patch on the structural rows alone.
+        Pass a mask on every rank, all-False where a rank holds no zone cell,
+        or None on every rank.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
@@ -1530,12 +1610,28 @@ class CustomMGHierarchy:
         Validated against the FINEST level's cell count at construction —
         a mask of the wrong length would otherwise surface as a silently
         empty (or wrong) patch, which is exactly the declining-quietly
-        failure mode the ASM probe discipline exists to catch."""
-        if fac_zone is None:
-            return None
-        masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
-                 else [fac_zone])
+        failure mode the ASM probe discipline exists to catch.
+
+        Collective: the keying must be the same on every rank, a mask on
+        every rank (all-False where the rank holds no zone cell) or None on
+        every rank. The parallel finest level gathers the masks' rows, so a
+        rank keyed differently would wait in another collective (#925)."""
+        masks = None
+        if fac_zone is not None:
+            masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
+                     else [fac_zone])
         finest = self.level_meshes[-1]
+        counts = finest.dm.comm.tompi4py().allgather(
+            -1 if masks is None else len(masks))
+        if len(set(counts)) > 1:
+            raise ValueError(
+                f"fac_zone: the ranks pass {counts} masks (-1 for None); pass "
+                f"a mask on every rank, all-False where a rank holds no zone "
+                f"cell, or None on every rank.")
+        if masks is None:
+            return None
+        if not masks:
+            raise ValueError("fac_zone holds no mask; pass None for no zone.")
         cS, cE = finest.dm.getHeightStratum(0)
         out = []
         for k, mk in enumerate(masks):
@@ -1779,37 +1875,28 @@ class CustomMGHierarchy:
                                     f"the co-partitioned transfer (#671).")
                 # an orphan coarse DOF (no fine image) is dropped at install
                 # (restrict_unreached), never injected — see drop_orphans
-                # FAC in parallel (#670): the same blocks as the serial branch
-                # below, in GLOBAL row numbering — the layout's ghost-resolved
-                # l2g puts a masked cell's off-rank nodes into this rank's
-                # subdomain, which is the seam halo; the structural split
-                # reads this rank's owned rows of the distributed transfer;
-                # the cover gate is one collective verdict.
+                # FAC in parallel (#670): the serial branch's blocks, in GLOBAL
+                # row numbering. The structural split reads this rank's owned
+                # rows of the distributed transfer, under one collective cover
+                # verdict. A zone's rows are gathered from every rank (the
+                # layout's ghost-resolved l2g names a masked cell's off-rank
+                # nodes by their owner's rows), and the zone and the structural
+                # rows are cut into blocks from what every rank holds, so the
+                # blocks do not depend on the partition (#925).
                 if (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
                         and l == nlev - 1):
                     lay = maps[l]
                     blocks = []
-                    covered = set()
+                    zones = []
                     if self.fac_zone is not None:
                         cn = self.level_meshes[l]._cell_node_indices(
                             degree, continuous)
                         for mk in self.fac_zone:
                             nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
-                            full = (nodes[:, None] * nc
-                                    + np.arange(nc)[None, :]).ravel()
-                            rows = lay.l2g[full]
-                            keep = rows >= 0
-                            rows, node_r = rows[keep], full[keep] // nc
-                            # TODO(MEASURE): #670 knob — rows per block;
-                            # the default comes from the size sweep.
-                            cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
-                                                     self.fac_block_rows))
-                            for piece in _segment_block(rows, node_r,
-                                                        coords[l], cap):
-                                piece = np.unique(piece).astype(np.int64)
-                                if piece.size:
-                                    blocks.append((piece, piece))
-                                    covered.update(piece.tolist())
+                            rows = lay.l2g[nodes[:, None] * nc
+                                           + np.arange(nc)[None, :]]
+                            n, c = np.nonzero(rows >= 0)
+                            zones.append((rows[n, c], coords[l][nodes[n]]))
                     # A placed split fault's structural rows (its band, the
                     # split duplicates and the fill around them) are rows the
                     # coarse level cannot represent, and whole-level SOR
@@ -1821,14 +1908,15 @@ class CustomMGHierarchy:
                     # without a split keeps the zone's blocks alone, the
                     # default #670 measured on a placed weak plane. The split
                     # marker is the same on every rank.
+                    # A keyed zone beats detection, as in the serial branch,
+                    # even where its masks hold no cell on any rank. The
+                    # split marker and the keying are the same on every rank,
+                    # so the cover gate's collectives run on all or none.
                     split = None
                     split_level = fault_mg.is_split_level(self.level_meshes[l])
-                    # the split's cover gate is collective: decide whether
-                    # to take it from what ANY rank holds, not this rank
+                    keyed = self.fac_zone is not None
                     mpi_comm = comm.tompi4py()
-                    zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
-                                                       op=MPI.LOR)
-                    if split_level or not zone_anywhere:
+                    if split_level or not keyed:
                         gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
@@ -1836,16 +1924,15 @@ class CustomMGHierarchy:
                             cover_max=self._fac_cover_max(l),
                             gate=gate)
                         self.fac_gate[l] = gate or None
-                    if split is not None:
-                        _own, sub = split
-                        extra = np.asarray([g for g in sub if g not in covered],
-                                           dtype=np.int64)
-                        if blocks:
-                            if extra.size:
-                                blocks.append((extra, extra))
-                        else:
-                            blocks.append((np.asarray(_own, dtype=np.int64),
-                                           np.asarray(sub, dtype=np.int64)))
+                    # split is None on every rank or on none: the gate's
+                    # verdict is collective
+                    if keyed or split is not None:
+                        # TODO(MEASURE): #670 knob — rows per block; the
+                        # default comes from the size sweep.
+                        cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                 self.fac_block_rows))
+                        blocks = _gathered_patch_blocks(
+                            zones, split, cap, lay.rstart, mpi_comm)
                     # every rank installs the patch, or none does: a rank with
                     # no rows of its own still sets the smoother type
                     n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
@@ -2139,7 +2226,8 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     structural rows are added as one more block, unless its gate declines
     them; without a split the masks alone key the patch (#921). The patch is
     solved strongly once per smoother application (basic ASM, shifted
-    factorization).
+    factorization). In parallel pass a mask on every rank, all-False where a
+    rank holds no zone cell, or None on every rank.
 
     ``verbose`` prints the installed transfer sizes and the FAC cover gate's
     verdict per level (``hierarchy.fac_gate``, #918)."""
