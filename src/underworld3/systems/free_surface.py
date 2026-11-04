@@ -507,29 +507,53 @@ class FreeSurface:
         r"""Coordinates of the vertices on ``surface``, from the DMPlex boundary
         stratum (label-based, parallel-correct) — not a radial ``|y-H|`` heuristic.
 
-        Each rank returns its local surface vertices; the stratum closure resolves
-        the facet-to-vertex map so this is exact on deformed and curved boundaries.
+        Each rank returns every local vertex on the surface; the stratum closure
+        resolves the facet-to-vertex map so this is exact on deformed and curved
+        boundaries. A facet is labelled on one rank, so a rank can hold a surface
+        vertex whose facets all sit on neighbours, which the closures of its own
+        facets miss (#935). A marker summed over the point SF, through the
+        coordinate DM's local-to-global scatter, completes the set. COLLECTIVE.
         """
+        from petsc4py import PETSc
         from underworld3.utilities.boundary_flux import _boundary_stratum_is
 
         dm = self.mesh.dm
-        facet_is = _boundary_stratum_is(dm, self.mesh, self.surface)
-        # In parallel a rank may own NO surface facets → a NULL-handle IS; any
-        # method call on it segfaults (the house guard every other stratum-IS
-        # call site carries — see rotated_bc._boundary_velocity_nodes). Return
-        # no local surface nodes; every consumer already handles the empty case.
-        if not (facet_is and facet_is.getSize() > 0):
-            return np.empty((0, self.mesh.cdim))
+        cdim = self.mesh.cdim
         v_start, v_end = dm.getDepthStratum(0)
         csec = dm.getCoordinateSection()
-        cdim = self.mesh.cdim
         cvec = dm.getCoordinatesLocal().array.reshape(-1, cdim)
 
+        facet_is = _boundary_stratum_is(dm, self.mesh, self.surface)
         vertices = set()
-        for facet in facet_is.getIndices():
-            closure = dm.getTransitiveClosure(facet)[0]
-            vertices.update(p for p in closure if v_start <= p < v_end)
-        rows = [csec.getOffset(v) // cdim for v in vertices]
+        # In parallel a rank may own NO surface facets → a NULL-handle IS; any
+        # method call on it segfaults (the house guard every other stratum-IS
+        # call site carries — see rotated_bc._boundary_velocity_nodes). Such a
+        # rank still takes part in the scatter below.
+        if facet_is and facet_is.getSize() > 0:
+            for facet in facet_is.getIndices():
+                closure = dm.getTransitiveClosure(facet)[0]
+                vertices.update(int(p) for p in closure if v_start <= p < v_end)
+
+        if dm.comm.getSize() > 1:
+            cdm = dm.getCoordinateDM()
+            lvec = cdm.getLocalVec()
+            gvec = cdm.getGlobalVec()
+            try:
+                lvec.set(0.0)
+                marks = lvec.getArray()
+                for v in vertices:
+                    marks[csec.getOffset(v)] = 1.0
+                gvec.set(0.0)
+                cdm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
+                cdm.globalToLocal(gvec, lvec)
+                marks = lvec.getArray()
+                vertices = {v for v in range(v_start, v_end)
+                            if marks[csec.getOffset(v)] != 0.0}
+            finally:
+                cdm.restoreLocalVec(lvec)
+                cdm.restoreGlobalVec(gvec)
+
+        rows = [csec.getOffset(v) // cdim for v in sorted(vertices)]
         return np.ascontiguousarray(cvec[rows]) if rows else np.empty((0, cdim))
 
     def _field_rows(self, field, coords):
