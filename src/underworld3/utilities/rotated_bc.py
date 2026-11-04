@@ -166,13 +166,18 @@ def _manifold_velocity_nodes(solver, normal):
     for q in range(pStart, pEnd):
         if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
             continue
-        if sym_fn is not None:
-            ne = np.asarray(sym_fn(*_point_coord(dm, cdim, cvec, csec, v0, v1, q)),
-                            dtype=float).ravel()
-        else:
-            ne = const_normal.copy()
-        nodes.append((q, ne / (np.linalg.norm(ne) + 1e-30)))
+        x = (_point_coord(dm, cdim, cvec, csec, v0, v1, q)
+             if sym_fn is not None else None)
+        nodes.append((q, _unit_normal(sym_fn, const_normal, x)))
     return nodes
+
+
+def _unit_normal(sym_fn, const_normal, x):
+    """The analytic normal ``sym_fn`` at ``x``, or the constant one, to unit length
+    (``sym_fn, const_normal`` from :func:`_normal_source`)."""
+    ne = (np.asarray(sym_fn(*x), dtype=float).ravel() if sym_fn is not None
+          else np.array(const_normal, dtype=float).ravel())
+    return ne / (np.linalg.norm(ne) + 1e-30)
 
 
 def _boundary_velocity_nodes(solver, boundary, normal=None):
@@ -242,9 +247,12 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     every rank ends with a bit-identical normal at a shared node. The reduction is
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
 
-    The analytic-normal path is NOT reduced: it evaluates a function of the node
-    coordinate, so every rank already computes the same value and summing copies would
-    only rescale it (and by a rank-count-dependent factor).
+    The analytic-normal path does not sum the normal: it is a function of the node
+    coordinate, evaluated once per node after the node set is complete, so every rank
+    holding the node computes the same value to the bit. It does complete the node SET
+    across ranks, summing a marker by the same scatter: a rank can own a node whose
+    labelled facets all sit on neighbours, and that node would otherwise get no
+    constraint row (#935). Both paths are therefore collective.
     """
     dm = solver.dm
     dim = solver.mesh.cdim
@@ -254,10 +262,10 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     lsec = dm.getLocalSection()
     # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
     # not survive mesh adaptation); raises a clear error for an unknown boundary name.
-    # In parallel a rank may own NO part of this boundary → a null IS; guard and return
-    # no local nodes (calling getIndices() on a null IS would segfault).
-    # A rank owning no part of this boundary gets a null/empty IS and contributes
-    # nothing — but it must NOT return early: the cross-rank sum below is collective.
+    # In parallel a rank may hold NO facet of this boundary → a null IS; guard it
+    # (calling getIndices() on a null IS would segfault). Such a rank contributes
+    # nothing but must NOT return early: the cross-rank sum below is collective, and
+    # it can still return nodes, ones it owns whose facets sit on neighbours (#935).
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     facets = ([int(z) for z in sis.getIndices()]
               if (sis and sis.getSize() > 0) else [])
@@ -276,12 +284,14 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     # the curvilinear symbol by bare name and dies with a NameError at call time.
     sym_fn, const_normal = _normal_source(solver, normal, boundary)
 
-    nacc = {}                                    # velocity node → Σ_f measure · n̂_f
+    # velocity node → Σ_f measure · n̂_f (geometric), or a marker per facet (analytic,
+    # whose normal does not come from the facet)
+    nacc = {}
+    marker = np.ones(dim)
     for f in facets:
         if not (fS <= f < fE):
             continue
-        # facet outward normal, and the measure the boundary term is integrated over
-        # (1.0 on the analytic path, whose normal does not come from the facet).
+        # facet outward normal, and the measure the boundary term is integrated over.
         #
         # The orientation rule lives in ONE place, `facet_measure_and_normal`:
         # outward = away from the one cell this boundary facet belongs to, which is
@@ -298,36 +308,38 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         # exactly as given and is NOT reoriented, so ``X/|X|`` on an inner arc points
         # into the domain and disagrees in sign with the default — see "Which normal
         # to use" in ``docs/developer/subsystems/rotated-freeslip.md``.
-        wgt = 1.0
         if normal is None:
             vol, ne, _exterior = facet_measure_and_normal(dm, f)
-            wgt = vol
+            contribution = vol * ne
+        else:
+            contribution = marker
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
                 continue
-            if normal is not None:
-                if sym_fn is not None:
-                    cq = coord(q)
-                    ne = np.asarray(sym_fn(*cq), dtype=float).ravel()
-                else:
-                    ne = const_normal.copy()
-                ne = ne / (np.linalg.norm(ne) + 1e-30)
-            nacc[q] = nacc.get(q, np.zeros(dim)) + wgt * ne
+            nacc[q] = nacc.get(q, np.zeros(dim)) + contribution
 
-    if normal is None:
-        nacc = _sum_facet_normals_across_ranks(solver, nacc)
+    # The geometric sum, or the analytic path's node set, completed across ranks: a
+    # rank can own a node whose labelled facets all sit on neighbours, and without
+    # it the node gets no constraint row (#935). The analytic normal is then taken
+    # once per node, so every rank holding the node computes the same value.
+    nacc = _sum_node_vectors_across_ranks(solver, nacc)
+    if normal is not None:
+        nacc = {q: _unit_normal(sym_fn, const_normal,
+                                coord(q) if sym_fn is not None else None)
+                for q in nacc}
 
     return [(q, v / (np.linalg.norm(v) + 1e-30))
             for q, v in sorted(nacc.items())
             if np.linalg.norm(v) > 0.0]
 
 
-def _sum_facet_normals_across_ranks(solver, contribs):
-    """Complete the per-node facet sum across ranks: ``{point: Σ_f |f| n̂_f}`` restricted
-    to this rank's facets in, the sum over EVERY rank's facets out — the same value on
-    every rank that holds the node.
+def _sum_node_vectors_across_ranks(solver, contribs):
+    """Complete a per-node sum over boundary facets across ranks: ``{point: vector}``
+    restricted to this rank's facets in, the sum over EVERY rank's facets out — the same
+    value on every rank that holds the node. The geometric normal sums
+    ``Σ_f |f| n̂_f``; the analytic normal sums a marker, to complete its node set.
 
     Each boundary facet is labelled on exactly one rank, and on the rank that owns it
     (measured: no facet is labelled twice and none is labelled away from its owner), so
@@ -369,14 +381,15 @@ def _sum_facet_normals_across_ranks(solver, contribs):
             elif q in contribs:
                 # Velocity DOFs constrained out of the global vector (an essential
                 # BC meeting this boundary) come back zero. Keep this rank's own
-                # contribution so the node set is exactly what it always was.
-                # build_rotation drops these nodes (l2g < 0); boundary_normal_traction
-                # does NOT — it reads n̂·r_c at every returned node — so on such a node
-                # it reports the reaction of the ESSENTIAL constraint along a
-                # rank-locally accumulated normal. That was true before this change
-                # too, and the nodes are the corners where a rotated wall meets an
-                # essential one (measured: 2 of 75 on the test_1070 configuration, at
-                # every rank count, and never shared between ranks there).
+                # contribution, so such a node stays in the set of a rank holding one
+                # of its facets. build_rotation drops these nodes (l2g < 0);
+                # boundary_normal_traction does NOT — it reads n̂·r_c at every returned
+                # node, and at a constrained DOF that read is uninitialised (#936).
+                # The nodes are the corners where a rotated wall meets an essential
+                # one (measured: 2 of 75 on the test_1070 configuration, at every rank
+                # count, and never shared between ranks there). A marker (the analytic
+                # path) loses only the constrained components, so where one component
+                # is free such a node is kept on every rank that holds it.
                 out[q] = contribs[q]
         return out
     finally:
@@ -398,7 +411,7 @@ def _local_boundary_candidates(dm, lsec):
     measured they are 13-27% of what this returns. The caller is what makes the result
     correct — those points receive no contribution from any labelled facet, so their
     summed normal is exactly zero and the ``w.any()`` test in
-    :func:`_sum_facet_normals_across_ranks` drops them. That test is load-bearing, not
+    :func:`_sum_node_vectors_across_ranks` drops them. That test is load-bearing, not
     an aside; do not remove it while over-collecting here.
     """
     fS, fE = dm.getHeightStratum(1)
@@ -665,11 +678,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
                         normal_rows.append(gp[2])
                         if sheet_dspec is not None:
                             xq = _point_coord(dm, dim, pcvec, pcsec, pv0, pv1, q_plus)
-                            if sheet_normal_fn is not None:
-                                ne = np.asarray(sheet_normal_fn(*xq), dtype=float).ravel()
-                            else:
-                                ne = np.asarray(sheet_normal_const, dtype=float).ravel()
-                            ne = ne / (np.linalg.norm(ne) + 1e-30)
+                            ne = _unit_normal(sheet_normal_fn, sheet_normal_const, xq)
                             sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
                             # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
                             datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
