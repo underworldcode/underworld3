@@ -266,7 +266,7 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     # node on a partition seam would get a partial stencil — the #564 defect. It is
     # unreachable today (the only caller guards it with `if normal is not None`), which
     # is why it is not carrying its own cross-rank reduction: wire one in from
-    # `rotated_bc._sum_facet_normals_across_ranks` before making this branch live.
+    # `rotated_bc._sum_node_vectors_across_ranks` before making this branch live.
     sym_fn = const = None
     if normal is not None:
         try:
