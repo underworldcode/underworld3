@@ -242,9 +242,12 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     every rank ends with a bit-identical normal at a shared node. The reduction is
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
 
-    The analytic-normal path is NOT reduced: it evaluates a function of the node
-    coordinate, so every rank already computes the same value and summing copies would
-    only rescale it (and by a rank-count-dependent factor).
+    The analytic-normal path does not sum the normal: it evaluates a function of the
+    node coordinate, so every rank already computes the same value and summing copies
+    would only rescale it (and by a rank-count-dependent factor). It does complete the
+    node SET across ranks, by the same scatter: a rank can own a node whose labelled
+    facets all sit on neighbours, and that node would otherwise get no constraint row
+    (#935). Both paths are therefore collective.
     """
     dm = solver.dm
     dim = solver.mesh.cdim
@@ -318,6 +321,21 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
 
     if normal is None:
         nacc = _sum_facet_normals_across_ranks(solver, nacc)
+    else:
+        # The analytic normal needs no sum, but the node SET does: a rank can own a
+        # node whose labelled facets all sit on neighbours, and without it the node
+        # gets no constraint row (#935). A marker summed over the point SF finds it,
+        # as the geometric sum does, and it takes the normal at its coordinate.
+        marked = _sum_facet_normals_across_ranks(
+            solver, {q: np.ones(dim) for q in nacc})
+        for q in marked:
+            if q in nacc:
+                continue
+            if sym_fn is not None:
+                ne = np.asarray(sym_fn(*coord(q)), dtype=float).ravel()
+            else:
+                ne = const_normal.copy()
+            nacc[q] = ne / (np.linalg.norm(ne) + 1e-30)
 
     return [(q, v / (np.linalg.norm(v) + 1e-30))
             for q, v in sorted(nacc.items())

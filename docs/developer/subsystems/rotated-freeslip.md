@@ -108,6 +108,15 @@ surface rather than the mesh — a coarse spherical shell where faceting, not th
 gauge, is the dominant error — and be aware that the pressure gauge is then only
 as good as the numbers above.
 
+In parallel both normals constrain the same wall nodes. Each boundary facet is
+labelled on one rank, so a rank can own a wall node whose facets all sit on
+neighbours. Both paths find it through the cross-rank scatter that sums the
+geometric normal, so both are collective. Before #935 the analytic path took
+only the nodes of the facets labelled on its rank, and such a node got no
+constraint row. On coarse boxes the node was a corner, from np 2; on the zg95
+annulus it was an arc node, from np 24. Guard:
+`tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py`.
+
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy
 makes the boundary condition matter), it is correct on curved/tilted/deformed
