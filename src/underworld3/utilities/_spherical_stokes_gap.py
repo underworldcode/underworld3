@@ -482,8 +482,15 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             blocks = _tetrahedral_stokes_blocks(vertices[cells], points, weights)
             _insert(matrix, uid[cells], pid[cells], blocks, viscosity, 1)
             if norm_blocks is not None:
-                norm_blocks.add_volume(vertices[cells], points, weights, uid[cells], pid[cells],
-                                       viscosity*blocks["A"])
+                # Retain full background norms on supported cells, including
+                # cut cells; a wholly void cell has no physical FE support.
+                active = relation[cells] != -1
+                if active.any():
+                    selection = slice(None) if active.all() else active
+                    norm_blocks.add_volume(
+                        vertices[cells][selection], points[selection], weights[selection],
+                        uid[cells][selection], pid[cells][selection], viscosity*blocks["A"][selection],
+                    )
             _add(pmean, pid[cells], blocks["pressure_mean"])
             for axis in range(3):
                 _add(rotation_weights[axis], uid[cells], blocks["rotation"][..., axis])
@@ -501,7 +508,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         lift_gap = 0.0
         # Replace each intersected or void background-cell integral by its
         # physical restriction. Every block and moment uses the same geometry.
-        # Norm preconditioning retains the positive background-cell norm.
+        # Norm preconditioning retains full background norms on supported cells.
         for cell in np.concatenate((inner_cells, void_cells)):
             full_points, full_weights = _tetrahedron_quadrature(vertices[cell:cell+1], 4)
             full = _tetrahedral_stokes_blocks(vertices[cell:cell+1], full_points, full_weights)

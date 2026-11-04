@@ -115,6 +115,15 @@ and the original radially projected multiplier space. Only outer continuations
 retain artificial radial curtains. The corrected inner geometry does not prove
 global mixed stability or convergence of a particular iterative preconditioner.
 
+The optional spherical norm preconditioner uses full background viscous and mass
+terms on physically supported cells, including cut cells. Wholly void cells do
+not contribute to its velocity or pressure norms. Exact-zero unsupported velocity
+rows and pressure diagonals receive identity completion, matching their algebraic
+removal from the physical system. The velocity action remains one GAMG cycle;
+pressure and wall multipliers retain their separate Jacobi actions. This changes
+the preconditioning norm, not the mixed equations, boundary constraints or their
+original residual target. It does not establish uniform mixed stability.
+
 
 ## Nitsche: only for a condition that must evolve
 

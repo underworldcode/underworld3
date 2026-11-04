@@ -1,6 +1,9 @@
 """Distributed norm-block preconditioner for the unchanged spherical mixed operator.
 
-The positive velocity norm is background viscous energy plus consistent mass.
+The positive velocity norm is background viscous energy plus consistent mass on
+physically supported cells. Cut cells retain their full background norm; wholly
+void cells contribute nothing. Unsupported velocity and pressure entries receive
+identity completion without changing the physical mixed operator or its RHS.
 P1 pressure mass Jacobi is spectrally equivalent to its consistent mass; the
 multiplier diagonal is an explicitly supplied h-scaled surface-mass proxy.
 This proxy has no established uniform H^{-1/2} equivalence. Outer convergence
@@ -99,7 +102,12 @@ class _SphericalGapNormPreconditioner:
 
 
 class _SphericalGapNormBlocks:
-    """Own distributed positive norm blocks, assembled without boundary replication."""
+    """Own active-background norm blocks without boundary replication.
+
+    The spherical assembler supplies only physically supported cells. Exact-zero
+    H rows and pressure diagonals represent unsupported unknowns; identity
+    completion gives these algebraic entries a positive norm without a penalty.
+    """
 
     def __init__(self, velocity, matrix, nu, npres, multiplier_count, components, length):
         started = time.perf_counter()
@@ -119,8 +127,11 @@ class _SphericalGapNormBlocks:
         self.multiplier_is = PETSc.IS().createStride(hi-lo, first=nu+npres+lo, step=1, comm=matrix.comm)
         self.multiplier_offset = nu+npres
         self.closed, self.assembly_seconds = False, time.perf_counter()-started
+        self._completed = False
 
     def add_volume(self, vertices, points, weights, uids, pids, stiffness):
+        if self._completed:
+            raise RuntimeError("Norm contributions must precede assembly completion.")
         started = time.perf_counter()
         shape, _, bary = _tetrahedral_p2_basis(vertices, points)
         mass = np.einsum("eq,eqi,eqj->eij", weights, shape, shape)
@@ -134,6 +145,8 @@ class _SphericalGapNormBlocks:
         self.assembly_seconds += time.perf_counter()-started
 
     def add_surface(self, weights, multiplier, lids):
+        if self._completed:
+            raise RuntimeError("Norm contributions must precede assembly completion.")
         started = time.perf_counter()
         diagonal = self.length*np.einsum("eq,eql,eql->el", weights, multiplier, multiplier)
         diagonal = np.repeat(diagonal[..., None], self.components, axis=2)
@@ -141,7 +154,39 @@ class _SphericalGapNormBlocks:
         self.assembly_seconds += time.perf_counter()-started
 
     def assemble(self):
-        self.h.assemble(); self.pressure.assemble(); self.multiplier.assemble()
+        self.h.assemble()
+        self.pressure.assemble()
+        self.multiplier.assemble()
+        if self._completed:
+            return
+        diagonal = self.h.getDiagonal()
+        try:
+            minimum = diagonal.min()[1]
+            if not math.isfinite(diagonal.norm()) or minimum < 0:
+                raise ArithmeticError("Active-background velocity norm has an invalid diagonal.")
+            if minimum == 0:
+                lower, _ = diagonal.getOwnershipRange()
+                rows = np.flatnonzero(diagonal.getArray(readonly=True) == 0).astype(PETSc.IntType)+lower
+                nonzero_rows = 0
+                for row in rows:
+                    _, values = self.h.getRow(int(row))
+                    nonzero_rows += int(np.count_nonzero(values) != 0)
+                # Every rank must agree before entering the collective row/column
+                # completion, including ranks with no owned unsupported entries.
+                if self.h.comm.tompi4py().allreduce(nonzero_rows):
+                    raise ArithmeticError("A zero norm diagonal has a nonzero row.")
+                self.h.zeroRowsColumns(rows, diag=1)
+        finally:
+            diagonal.destroy()
+        minimum = self.pressure.min()[1]
+        if not math.isfinite(self.pressure.norm()) or minimum < 0:
+            raise ArithmeticError("Active-background pressure norm has an invalid diagonal.")
+        if minimum == 0:
+            lower, _ = self.pressure.getOwnershipRange()
+            rows = np.flatnonzero(self.pressure.getArray(readonly=True) == 0).astype(PETSc.IntType)+lower
+            self.pressure.setValues(rows, np.ones(len(rows)))
+            self.pressure.assemble()
+        self._completed = True
 
     def context(self, umap, coordinates, nodal_rotations, physical_nullspace, prefix):
         near = []
