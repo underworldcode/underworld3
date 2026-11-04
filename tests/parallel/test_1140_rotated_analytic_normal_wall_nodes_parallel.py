@@ -14,13 +14,14 @@ missed that vertex on its owner.
 A rank whose share of a wall is one node is what the label-local lists lost, so the
 fixtures are coarse boxes. Measured on Linux with PETSc 3.25 and ParMETIS (the
 default partitioner when it is built), one rank owns a corner at np 2 with no facet
-of either wall beside it, on both fixtures, and at np 4 a wall node of the same
-kind.
+of either wall beside it, on both fixtures; at np 4 the unstructured box holds such
+a node and the regular box does not (``HOLDS_AT``).
 
 - On every rank and wall, the analytic normal finds exactly the geometric path's nodes.
-- Each fixture exercises the case: some rank owns a wall node that no facet labelled
-  on that rank reaches. If a partitioner change makes this fail, the fixture has lost
-  its power, not the library its fix: choose a coarse mesh on which, at np 2, some
+- Each fixture exercises the case at the rank counts it was measured at (np 2, CI's
+  count, for both): some rank owns a wall node that no facet labelled on that rank
+  reaches. If a partitioner change makes this fail, the fixture has lost its power,
+  not the library its fix: choose a coarse mesh on which, at that rank count, some
   rank owns a wall node that only a neighbour's facets reach.
 - A rotated free-slip solve with the constant wall normals leaves no normal flow at
   any wall node (exactly none serially; up to 0.67 of max |v| without the fix).
@@ -44,6 +45,8 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.time
 WALL_NORMALS = {"Top": (0.0, 1.0), "Bottom": (0.0, -1.0),
                 "Left": (-1.0, 0.0), "Right": (1.0, 0.0)}
 FIXTURES = [(False, 0.5), (True, 0.4)]     # (regular, cellSize)
+# the rank counts at which each fixture was measured to hold the case
+HOLDS_AT = {(False, 0.5): (2, 4), (True, 0.4): (2,)}
 
 
 def _box(regular, cell_size):
@@ -108,6 +111,8 @@ def test_the_analytic_normal_finds_the_geometric_nodes(regular, cell_size):
 @pytest.mark.tier_b
 @pytest.mark.parametrize("regular, cell_size", FIXTURES)
 def test_the_fixture_holds_an_owned_wall_node_no_local_facet_reaches(regular, cell_size):
+    if uw.mpi.size not in HOLDS_AT[(regular, cell_size)]:
+        pytest.skip(f"not measured to hold the case at np {uw.mpi.size}")
     stokes = _set_up(regular, cell_size)
     owned = _owned(stokes.dm)
     held = 0
