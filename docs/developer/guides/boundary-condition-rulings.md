@@ -103,6 +103,18 @@ connectivity with PETSc `MATPREALLOCATOR`, including off-process rows. Zero-fill
 that graph prevents storage growth during numerical insertion; allocation errors
 remain enabled to catch a missing coupling. This changes storage, not the weak form.
 
+`Stokes.solve_spherical_gap` and `solve_spherical_gap_zero_slip` integrate
+inner-cut tetrahedra on their physical restriction outside the inner ball.
+An inner radial gap may leave its boundary owner's tetrahedron, so its owner's
+polynomial must not be subtracted throughout that gap. The cell-local rule uses
+the actual tetrahedral faces, splits their circle intersections, and integrates
+each cell polynomial consistently in momentum, continuity, forces and gauges.
+Wholly void cells contribute zero; unknowns without physical support receive
+identity completion. Inner-wall velocity traces use these same cell polynomials
+and the original radially projected multiplier space. Only outer continuations
+retain artificial radial curtains. The corrected inner geometry does not prove
+global mixed stability or convergence of a particular iterative preconditioner.
+
 
 ## Nitsche: only for a condition that must evolve
 

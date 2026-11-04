@@ -1,9 +1,9 @@
 r"""Opt-in affine P2/P1 spherical-gap mixed Stokes assembly.
 
-The signed-gap discrete extension form adds outer gaps and subtracts inner
-continuations in both momentum and continuity. An inner radial cap can cross
-other tetrahedra; its adjacent-cell continuation is not the exact restriction
-of the ordinary piecewise FE field to the physical spherical shell. Free slip uses scalar P2 normal multipliers.
+The physical inner cut integrates each tetrahedron's restriction outside the
+inner sphere, in both momentum and continuity. Wholly void tetrahedra have
+zero physical support. Outer gaps retain their adjacent-cell continuation.
+Free slip uses scalar P2 normal multipliers.
 Zero slip uses three Cartesian multiplier components with mapped basis
 (R/|y|) N_i(y) on each planar facet parameter y. This custom mapping contains
 exact sphere normals, preserving the paired pressure/reaction gauge; its
@@ -13,7 +13,7 @@ used. Returned reactions are physical values at projected boundary nodes.
 The gap extension and weak normal constraint are inspired by Collins et al.,
 Gap-SBM (2025), https://arxiv.org/abs/2508.09613, and Urquiza, Garon and Farinas,
 JCP 256 (2014), https://doi.org/10.1016/j.jcp.2013.08.045. They do not establish
-stability of this three-dimensional mixed space or its signed inner gaps.
+stability of this three-dimensional mixed space.
 The cited Gap-SBM analysis is two-dimensional and does not supply the curtain
 terms or mapped Cartesian multipliers used here.
 
@@ -22,8 +22,7 @@ With n pointing A to B and cap sign s, the additional continuity form is
 +s integral({q} [v].n). The symmetric viscous correction is
 -s integral([v].{2 mu epsilon(u) n} + [u].{2 mu epsilon(v) n}).
 These cancel the artificial-curtain fluxes for smooth exact fields and retain
-all three rigid rotations. Inner-cap subtraction is a signed continuation
-method, so these identities do not prove coercivity on ker([B; C]) or an
+all three rigid rotations. These identities do not prove coercivity on ker([B; C]) or an
 inf-sup bound. Both require independent measured checks before acceptance.
 """
 
@@ -40,6 +39,10 @@ import underworld3 as uw
 
 from underworld3.utilities._cylindrical_gap import _layout, _scatter_values
 from underworld3.utilities._spherical_gap import _spherical_facet_quadrature
+from underworld3.utilities._spherical_cut_cell import (
+    _inner_cell_relation, _spherical_cut_cell_quadrature, _spherical_cut_cell_surface,
+)
+from underworld3.utilities._spherical_wall_trace import _inner_wall_cell_facets
 from underworld3.utilities._spherical_gap_preconditioner import _SphericalGapNormBlocks
 from underworld3.utilities.memprobe import snapshot as memory_snapshot
 from underworld3.utilities._spherical_curtain import (
@@ -398,18 +401,41 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         wall = _wall_faces(mesh, vertices, urows, owned, name, radius)
         wall.update(radius=radius, sign=sign)
         walls.append(wall)
-    curtains = _curtain_pairs(walls, vertices, uid, pid, mesh)
+    # Inner cuts use the actual piecewise cell restriction. Only the outer
+    # continuation has artificial radial curtains.
+    curtains = _curtain_pairs(walls[1:], vertices, uid, pid, mesh)
+    relation = _inner_cell_relation(vertices, radius_inner)
+    inner_cells = owned[relation[owned] == 0]
+    void_cells = owned[relation[owned] == -1]
+    physical_cells = owned[relation[owned] != -1]
+    cut_order = max(12, quadrature)
     with ExitStack() as cleanup:
         compressed, nboundary = _compressed_boundary_ids(umap.reshape(-1, 3)[:, 0]//3, nu//3, walls, comm, cleanup)
         size = nu+npres+components*nboundary
         for wall in walls:
             wall["lid"] = (nu+npres+components*compressed[wall["rows"], None]
                            + np.arange(components)).reshape(-1, 6*components).astype(PETSc.IntType)
+        # Retain surface rules for the graph and numeric insertion; regenerate
+        # volume rules one cell at a time to bound temporary storage.
+        inner_surface = []
+        candidates = _inner_wall_cell_facets(mesh, walls[0], vertices[inner_cells])
+        inner_graph = []
+        for cell, (facets, lids) in zip(inner_cells, candidates, strict=True):
+            points, weights, trace_lids, trace_values = _spherical_cut_cell_surface(
+                vertices[cell], radius_inner, cut_order, facets, lids)
+            inner_surface.append((cell, points, weights, trace_lids, trace_values))
+            lids = trace_lids
+            inner_graph.append((uid[cell:cell+1], np.unique(lids).reshape(1, -1)))
+        missing = mpi.allgather(sum(len(item[1]) == 0 for item in inner_surface))
+        if any(missing):
+            raise ArithmeticError(f"Physical inner-cut cells have no wall quadrature: {missing}")
+        # An inner-wall owner need not contain the physical wall. Preallocate
+        # every actual cell/multiplier connection, including remote rows.
         resources["geometry_seconds"] = time.perf_counter()-assembly_started
         resources["rss_after_geometry_mib"] = memory_snapshot(full=False)["rss_mb"]
         graph_started = time.perf_counter()
         matrix = _create_matrix(size, uid[owned], pid[owned],
-                                [(uid[w["cells"]], w["lid"]) for w in walls], curtains, comm)
+                                [(uid[w["cells"]], w["lid"]) for w in walls[1:]]+inner_graph, curtains, comm)
         cleanup.callback(matrix.destroy)
         resources["graph_seconds"] = time.perf_counter()-graph_started
         graph_baseline = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
@@ -473,7 +499,73 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             matrix.assemble()
             observer.background(matrix, nu, npres)
         lift_gap = 0.0
-        for wall in walls:
+        # Replace each intersected or void background-cell integral by its
+        # physical restriction. Every block and moment uses the same geometry.
+        # Norm preconditioning retains the positive background-cell norm.
+        for cell in np.concatenate((inner_cells, void_cells)):
+            full_points, full_weights = _tetrahedron_quadrature(vertices[cell:cell+1], 4)
+            full = _tetrahedral_stokes_blocks(vertices[cell:cell+1], full_points, full_weights)
+            _insert(matrix, uid[cell:cell+1], pid[cell:cell+1], full, viscosity, -1)
+            _add(pmean, pid[cell:cell+1], -full["pressure_mean"])
+            for axis in range(3):
+                _add(rotation_weights[axis], uid[cell:cell+1], -full["rotation"][..., axis])
+            rule = _spherical_cut_cell_quadrature(vertices[cell], radius_inner, cut_order, radial_quadrature)
+            points, weights = rule["volume_points"][None], rule["volume_weights"][None]
+            if weights.size:
+                blocks = _tetrahedral_stokes_blocks(vertices[cell:cell+1], points, weights)
+                _insert(matrix, uid[cell:cell+1], pid[cell:cell+1], blocks, viscosity, 1)
+                _add(pmean, pid[cell:cell+1], blocks["pressure_mean"])
+                for axis in range(3):
+                    _add(rotation_weights[axis], uid[cell:cell+1], blocks["rotation"][..., axis])
+            # Correct the ordinary bodyforce using its actual prescribed cell
+            # polynomial. A caller-supplied vector already owns its physical
+            # inner-domain integration; its density cannot be inferred here.
+            if has_volume_bodyforce:
+                native_x = np.einsum("qi,eid->eqd", native_bary, vertices[cell:cell+1])
+                determinant = abs(np.linalg.det((vertices[cell, 1:]-vertices[cell, 0]).T))
+                native_w = determinant*np.asarray(native_weights).reshape(1, -1)/8
+                force = (_coordinate_values(force_expr, native_x, 3, mesh) if source_snapshot is None
+                         else source_snapshot.evaluate(native_x, np.array([cell])))
+                shape, _, _ = _tetrahedral_p2_basis(vertices[cell:cell+1], native_x)
+                _add(rhs, uid[cell:cell+1], -np.einsum("eq,eqi,eqd->eid", native_w, shape, force))
+            if weights.size:
+                force = (source_snapshot.evaluate(points, np.array([cell]))
+                         if source_snapshot is not None
+                         else _coordinate_values(force_expr, points, 3, mesh))
+                shape, _, _ = _tetrahedral_p2_basis(vertices[cell:cell+1], points)
+                _add(rhs, uid[cell:cell+1], np.einsum("eq,eqi,eqd->eid", weights, shape, force))
+                lift_gap += np.sum(weights*_coordinate_values(pressure_jump, points, 1, mesh)[..., 0])
+            lift_gap -= np.sum(full_weights*_coordinate_values(pressure_jump, full_points, 1, mesh)[..., 0])
+        for cell, points, weights, lids, multiplier in inner_surface:
+            shape, _, _ = _tetrahedral_p2_basis(vertices[cell:cell+1], points[None])
+            normal = -points/radius_inner
+            for ids in np.unique(lids, axis=0):
+                selected = np.all(lids == ids, axis=1)
+                m = multiplier[selected]
+                if components == 1:
+                    coupling = np.einsum("q,ql,qi,qd->lid", weights[selected], m,
+                                         shape[0, selected], normal[selected]).reshape(6, 30)
+                else:
+                    coupling = np.einsum("q,ql,qi,cd->lcid", weights[selected], m,
+                                         shape[0, selected], np.eye(3)).reshape(18, 30)
+                matrix.setValues(ids, uid[cell], np.ascontiguousarray(coupling), addv=PETSc.InsertMode.ADD_VALUES)
+                matrix.setValues(uid[cell], ids, np.ascontiguousarray(coupling.T), addv=PETSc.InsertMode.ADD_VALUES)
+            lift = _coordinate_values(pressure_jump, points[None], 1, mesh)[0, :, 0]
+            _add(rhs, uid[cell:cell+1], np.einsum("q,qi,q,qd->id", weights, shape[0], lift, normal)[None])
+        # The positive multiplier norm belongs to the original surface space,
+        # even though its velocity trace is evaluated on actual cut cells.
+        if norm_blocks is not None:
+            wall = walls[0]
+            for start in range(0, len(wall["cells"]), batch_size):
+                sl = slice(start, start+batch_size)
+                cells = wall["cells"][sl]
+                rule = _spherical_facet_quadrature(wall["facets"][sl], radius_inner, quadrature, radial_quadrature)
+                planar, _, _ = _tetrahedral_p2_basis(vertices[cells], rule["planar_points"])
+                multiplier = np.take_along_axis(planar, wall["positions"][sl, None], axis=2)
+                if components == 3:
+                    multiplier *= radius_inner/np.linalg.norm(rule["planar_points"], axis=-1)[..., None]
+                norm_blocks.add_surface(rule["surface_weights"], multiplier, wall["lid"][sl])
+        for wall in walls[1:]:
             for start in range(0, len(wall["cells"]), batch_size):
                 sl = slice(start, start+batch_size)
                 cells, sign = wall["cells"][sl], wall["sign"]
@@ -523,6 +615,22 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         matrix.assemble()
         for vector in (rhs, pmean, *rotation_weights):
             vector.assemble()
+        # Values on nodes with no physical cell support are undefined. Remove
+        # these algebraic unknowns by identity completion, not a wall penalty.
+        support = rhs.duplicate(); cleanup.callback(support.destroy); support.set(0)
+        supported = np.unique(np.concatenate((uid[physical_cells].ravel(), pid[physical_cells].ravel())))
+        support.setValues(supported, np.ones(len(supported)), addv=PETSc.InsertMode.ADD_VALUES)
+        support.assemble()
+        support_lo, support_hi = support.getOwnershipRange()
+        local_rows = np.arange(support_lo, support_hi, dtype=PETSc.IntType)
+        unsupported = local_rows[(support.array == 0) & (local_rows < nu+npres)]
+        unsupported_load = np.max(np.abs(rhs.array[unsupported-support_lo]), initial=0.)
+        unsupported_load = mpi.allreduce(unsupported_load, op=MPI.MAX)
+        if unsupported_load > 1e-10*max(rhs.norm(), np.finfo(float).tiny):
+            raise ValueError("Prescribed force has entries on nodes with no physical support.")
+        matrix.zeroRowsColumns(unsupported, diag=1)
+        for vector in (rhs, pmean, *rotation_weights):
+            vector.setValues(unsupported, np.zeros(len(unsupported))); vector.assemble()
         resources["numeric_assembly_seconds"] = time.perf_counter()-numeric_started
         resources["rss_after_numeric_assembly_mib"] = memory_snapshot(full=False)["rss_mb"]
         assembled_info = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
@@ -558,6 +666,8 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             vector.setValues(umap, nodal_rotations[:, axis]); vector.assemble()
             if components == 1:
                 modes.append(vector)
+        for vector in modes:
+            vector.setValues(unsupported, np.zeros(len(unsupported))); vector.assemble()
         work = rhs.duplicate(); cleanup.callback(work.destroy)
         matrix_norm = matrix.norm()
         null_errors = []
@@ -724,6 +834,11 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                       surface_quadrature_order=quadrature,
                       radial_quadrature_order=int(radial_quadrature),
                       curtain_radial_quadrature_order=4,
+                      inner_integration="physical tetrahedron outside ball",
+                      inner_cut_quadrature_order=cut_order,
+                      inner_cut_cells=mpi.allreduce(len(inner_cells), op=MPI.SUM),
+                      wholly_void_cells=mpi.allreduce(len(void_cells), op=MPI.SUM),
+                      unsupported_unknowns=mpi.allreduce(len(unsupported), op=MPI.SUM),
                       multiplier_mapping="scalar P2 normal" if components == 1 else "Cartesian P2 times R/|y|")
         checks.update(assembly_seconds=assembly_seconds, setup_seconds=setup_seconds,
                       solve_seconds=solve_seconds, ksp_iterations=int(ksp.getIterationNumber()))

@@ -1473,12 +1473,13 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     ):
         r"""Solve an opt-in spherical P2/P1 system with weak normal wall constraints.
 
-        Affine computational tetrahedra retain their polynomial field extensions.
-        Signed spherical gaps correct both momentum and continuity. Radial
-        curtains between neighboring extensions carry symmetric viscous and
-        pressure consistency terms; independent facet gaps alone do not satisfy
-        the constant-pressure identity in three dimensions. No jump penalty or
-        pressure filtering is added. Uniform multiplier stability is unproven.
+        Each inner-cut tetrahedron integrates its own polynomial over its
+        physical restriction outside the inner sphere. Inner-wall traces use
+        those cell polynomials with the original surface multiplier space;
+        wholly void cells contribute zero, and unsupported unknowns are removed
+        by identity completion. Outer gaps retain polynomial continuations and
+        their radial-curtain consistency terms. No jump penalty or pressure
+        filtering is added. Uniform multiplier stability is unproven.
 
         Parameters
         ----------
@@ -1498,7 +1499,11 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             Explicit coordinate-only continuation of the regular volume force.
         volume_force : PETSc.Vec or None
             Caller-owned assembled force on the full velocity field. Added once
-            to the ordinary bodyforce integral; pass None when absent. For a
+            to the ordinary bodyforce integral; pass None when absent. Its
+            inner-domain integration must already use the physical cell
+            restriction: a load vector alone does not identify a source density.
+            The true-sphere pressure lift is supported outside its internal
+            interface and therefore has no inner-cut contribution. For a
             true-sphere pressure lift, pass its volume_force, its pressure_jump
             and integral, and continue its regular_force_expression in the gaps.
             The native_outer_boundary_force is excluded by physical wall data.
@@ -1509,7 +1514,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             verified singular operator; configure those PETSc options explicitly.
             This solver experiment requires independent refinement validation.
         quadrature : int
-            Surface Gauss order, at least three; assess quadrature convergence.
+            Outer surface Gauss order, at least three. Physical inner-cell
+            integration uses at least order twelve, recorded in the checks;
+            assess quadrature convergence independently of mesh refinement.
         radial_quadrature : int, default=4
             Gap radial Gauss order, at least two. Choose it independently for
             polynomial force loads; degree-nine force times P2 and the radial
@@ -1553,7 +1560,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     ):
         r"""Solve the spherical-gap system with all three wall velocities constrained.
 
-        Parameters and signed gap/curtain forms match :meth:`solve_spherical_gap`.
+        Parameters and physical inner-cut/outer-gap forms match :meth:`solve_spherical_gap`.
         Three Cartesian surface multipliers avoid polar tangent singularities.
         Their mapped basis contains the exact physical normal, preserving the
         paired pressure/reaction gauge. Rotations are constrained by zero slip;
