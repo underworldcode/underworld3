@@ -912,7 +912,8 @@ def getext(
     # fired in practice before the graph lowering (#752): a Stokes solve with a
     # power-law transversely isotropic viscosity tripped it in about one np=2 run
     # in five. The graph's emission is canonical by construction (temporaries
-    # ordered by a hash of their C, leaves written as the C they read), and the
+    # ordered by a hash of their C, leaves written as the C they read, and since
+    # #917 its SymPy dummies named to sort as made), and the
     # #752 fixture now agrees at np = 2, 3 and 4; the check stays as a guard. What
     # was measured on the disagreeing runs is why repairing is safe:
     #

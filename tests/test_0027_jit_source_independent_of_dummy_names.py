@@ -3,20 +3,23 @@
 SymPy names an unnamed ``Dummy`` ``Dummy_<count>``, with ``<count>`` the number of
 dummies the process has made so far, and orders dummies by that name as a string.
 The JIT graph made unnamed dummies to hide a body's leaves from ``cse``
-(``KernelGraph._split_shared``) and to differentiate a node's body with respect to one
-of its slots (``KernelGraph.slot_derivative``). A build whose dummies straddled a
-power of ten ordered them differently from one that did not ("Dummy_1000" sorts before
-"Dummy_998"), so ``cse`` shared different subexpressions, and a node derivative came
-back in a different form. The kernel was the same mathematically but its source, and
-the JIT key, changed. How many dummies a process had made before a build depended on
-what ran before it. So test_0023's softness test, which asserts that changing a
-constants[] value keeps the key, failed in some CI batch orders (#917).
+(``KernelGraph._split_shared``). A build whose dummies straddled a power of ten
+ordered them differently from one that did not ("Dummy_1000" sorts before
+"Dummy_998"), so ``cse`` shared different subexpressions: the same kernel
+mathematically, but a different source and JIT key. (``slot_derivative``'s dummies are
+named the same way for uniformity; they are substituted back before anything sorts
+them, and no fixture shows an effect there.) How many dummies a process had made
+before a build depended on what ran before it. So test_0023's softness test, which
+asserts that changing a constants[] value keeps the key, failed in some CI batch
+orders (#917).
 
 This rebuilds test_0023's yielding box (the power-mean soft-min with the consistent
 tangent) after each softness change. Before each rebuild the Dummy counter is set so
-the rebuild crosses a new power of ten partway through: after 10, 20, ... 270 of the
-280 or so dummies a rebuild makes. Every rebuild must give the first build's key. On
-the previous code, crossings after 70, 126, 180 and 240 dummies gave four other keys.
+the rebuild crosses a new power of ten partway through: after 5, 10, ... 275 of the
+280 or so dummies a rebuild makes, and the test checks that it did cross. Every
+rebuild must give the first build's key. On the previous code the keys that differ
+come in windows about five dummies wide, about 56 apart, and this grid lands in every
+one: crossings after 70, 75, 125, 130, 180 and 235 dummies gave four other keys.
 """
 import pytest
 import sympy
@@ -53,12 +56,17 @@ def test_a_rebuild_does_not_depend_on_the_dummy_counter():
     first = stokes._current_jit_cache_key
     exponent = max(6, len(str(sympy.Dummy._count)) + 1)
     changed = {}
-    for k, offset in enumerate(range(10, 280, 10)):
+    for k, offset in enumerate(range(5, 280, 5)):
         stokes.constitutive_model.yield_softness = (0.25, 1.0)[k % 2]
         # the counter only rises: each rebuild crosses a power of ten not yet reached
-        sympy.Dummy._count = 10 ** (exponent + k) - offset
+        boundary = 10 ** (exponent + k)
+        sympy.Dummy._count = boundary - offset
         # the build solve() makes first after a change (the solver's fast path 1)
         stokes._setup_pointwise_functions()
+        assert sympy.Dummy._count > boundary, (
+            f"the rebuild made {sympy.Dummy._count - boundary + offset} dummies, fewer "
+            f"than {offset}: it no longer crosses the power of ten, so this test cannot "
+            f"see #917; lower the offsets")
         if stokes._current_jit_cache_key != first:
             changed[offset] = stokes._current_jit_cache_key
     assert not changed, (

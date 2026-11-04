@@ -127,9 +127,10 @@ def _dummies(prefix, n):
     SymPy names an unnamed Dummy ``Dummy_<count>``, ``<count>`` being how many dummies
     the process has made, and orders dummies by that name as a string. Dummies that
     straddle a power of ten then sort out of order ("Dummy_1000" before "Dummy_998"),
-    so ``cse`` shares different subexpressions and a derivative comes back in another
-    form: the same kernel, a different source and JIT key, depending on what ran
-    before the build (#917). Fixed-width names sort as made."""
+    so ``cse`` over a body whose leaves they hide shares different subexpressions: the
+    same kernel, a different source and JIT key, depending on what ran before the build
+    (#917, test_0027). Fixed-width names sort as made. ``slot_derivative`` uses them too,
+    for uniformity: its dummies are substituted back before anything sorts them."""
     return [sympy.Dummy(f"{prefix}{k:06d}", real=True) for k in range(n)]
 
 
