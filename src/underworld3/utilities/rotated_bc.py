@@ -384,7 +384,8 @@ def _sum_node_vectors_across_ranks(solver, contribs):
                 # contribution, so such a node stays in the set of a rank holding one
                 # of its facets. build_rotation drops these nodes (l2g < 0);
                 # boundary_normal_traction does NOT — it reads n̂·r_c at every returned
-                # node, and at a constrained DOF that read is uninitialised (#936).
+                # node, and reads zero at a constrained DOF: an essential wall's
+                # components contribute nothing to σ_nn (#936).
                 # The nodes are the corners where a rotated wall meets an essential
                 # one (measured: 2 of 75 on the test_1070 configuration, at every rank
                 # count, and never shared between ranks there). A marker (the analytic
@@ -2800,8 +2801,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     Projecting the Cartesian reaction onto the boundary normal (rather than reading the
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
-    normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
-    σ_nn is the boundary-mass de-smear of R.
+    normals, but n̂·r_c is the true normal traction for this boundary. At a node an
+    essential wall also constrains (a corner with a Dirichlet wall), the constrained
+    components are not in the reaction vector and read zero, so they contribute
+    nothing to σ_nn (#936). The pointwise σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
       * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles,
@@ -2839,6 +2842,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     # this equals the assembled A·u−b exactly).
     rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
     rcl = dm.getLocalVec()
+    # globalToLocal does not write DOFs an essential condition constrains, and a pooled
+    # vector holds whatever its last user left: zero it, so those components
+    # contribute nothing to σ_nn (#936)
+    rcl.set(0.0)
     dm.globalToLocal(rc, rcl)
     rca = np.asarray(rcl.getArray())
 
@@ -2895,6 +2902,7 @@ def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
     rc = solve_result["reaction"]
     rstart, rend = rc.getOwnershipRange()
     rcl = dm.getLocalVec()
+    rcl.set(0.0)                                 # constrained DOFs read zero (#936)
     dm.globalToLocal(rc, rcl)
 
     try:
