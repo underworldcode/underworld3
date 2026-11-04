@@ -402,6 +402,11 @@ class SolverBaseClass(uw_object):
         # Switch threshold of the rotated-free-slip two-phase path (rotated_bc.py):
         # Picard until the relative residual falls below this, then Newton.
         self.newton_switch_rtol = 1.0e-2
+        # The rotated-free-slip path (rotated_bc.py): a hard failure of the first
+        # linear solve of a cold start raises, because it leaves no solution
+        # (#907). True warns and continues instead, as before. The standard SNES
+        # path only warns on divergence.
+        self.tolerate_linear_failure = False
         # consistent_jacobian = "continuation" (#791): alpha is keyed on the residual,
         #     alpha = clip(log10(F_ref / F) - log10(1 / start)) / (log10(1 / newton_at)
         #             - log10(1 / start)), never decreasing,
@@ -5476,6 +5481,18 @@ class SolverBaseClass(uw_object):
 ## Specific to dimensionality
 
 
+    def _rotated_max_it(self):
+        """The rotated loop's iteration cap (#920): a user-set ``snes_max_it``,
+        else 50. ``SNES_Stokes_SaddlePt`` owns the key and overrides this."""
+        if not self.petsc_options.hasName("snes_max_it"):
+            return 50
+        try:
+            return int(self.petsc_options.getString("snes_max_it"))
+        except Exception:
+            # A value that is not an integer (a bare flag holds None): this solve
+            # takes the default and leaves the value for PETSc to object to.
+            return 50
+
     def _solve_rotated_if_registered(self, zero_init_guess, verbose, picard, time):
         """Run the rotated strong-constraint solve when a rotated free-slip
         boundary or a split-fault contact is registered, and return True; return
@@ -5526,6 +5543,7 @@ class SolverBaseClass(uw_object):
         self._rotated_freeslip_info = solve_rotated_freeslip(
             self, self._rotated_freeslip_bcs, verbose=verbose,
             zero_init_guess=zero_init_guess, picard=picard,
+            max_it=self._rotated_max_it(),
             # An explicit `time=` reaches the kernels through petsc_t on
             # the DM — invisible to every state counter and constant
             # value, so it must veto the cached-operator fast path.
@@ -5536,6 +5554,10 @@ class SolverBaseClass(uw_object):
         # The warm-start flag must follow the rotated solve's own verdict — the SNES
         # was never run, so the generic reader would latch a stale reason.
         self._record_convergence_status(converged=_rotated_report.converged)
+        # raised after the result and the convergence status are recorded, so a
+        # caller that catches it reads a failed solve (#907)
+        if self._rotated_freeslip_info.get("linear_failure"):
+            raise RuntimeError(self._rotated_freeslip_info["linear_failure"])
         return True
 
     def _reject_mixed_constraint_mechanisms(self, adding):
@@ -9307,6 +9329,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     def _push_snes_max_it(self, value):
         self._push_owned_option("snes_max_it", int(value))
+
+    def _rotated_max_it(self):
+        """The rotated loop's cap through the owned-option record: resolved as
+        the standard path resolves it, then pushed, so that the record reads a
+        later user value correctly on either path (#920)."""
+        cap = self._resolve_snes_max_it(50)
+        self._push_snes_max_it(cap)
+        return cap
 
     def _reassert_outer_tolerances(self):
         """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.

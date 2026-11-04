@@ -188,6 +188,11 @@ for step in range(n_steps):
     # monitor -> 1.0 as the fault approaches steady state (theta V = Dc)
 ```
 
+Each `solve_with_fault` call here is a cold start (`zero_init_guess=True` is the
+default). If its first linear solve fails, the call raises `RuntimeError`
+instead of handing `update_fault_state` a zero velocity; the fields keep the
+previous step's values.
+
 The recovered normal traction along the fault (also the quantity a
 Coulomb law reads when `sigma_n="reaction"`):
 

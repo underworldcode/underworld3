@@ -87,6 +87,10 @@ The iteration-0 fast path requires ALL of:
   the `_build()` full-rebuild branch, before the SNES/DM are destroyed).
 - A geometry-signature mismatch (different boundaries or fault registration
   on the same solver) destroys and rebuilds the workspace.
+- A solve whose outer KSP failed hard (a negative reason other than the
+  iteration cap) does not cache its workspace (#907). PCMG and PCREDUNDANT
+  never reset a failed preconditioner's reason, so a cached one would fail
+  every later solve at iteration 0. The next solve pays a full KSP set-up.
 
 The cache is forfeited entirely for direct-LU solves, prescribed-datum solves
 (the datum is re-evaluated from possibly-changed fields inside
