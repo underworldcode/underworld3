@@ -108,6 +108,20 @@ surface rather than the mesh — a coarse spherical shell where faceting, not th
 gauge, is the dominant error — and be aware that the pressure gauge is then only
 as good as the numbers above.
 
+In parallel both normals constrain the same wall nodes. Each boundary facet is
+labelled on one rank, so a rank can own a wall node whose facets all sit on
+neighbours. The geometric path finds it by summing the facet normals over the
+point SF; the analytic path sums a marker through the same scatter and then
+evaluates the normal once per node, so every rank holding a node gives it the
+same normal to the bit. Both paths are collective. Before #935 the analytic
+path took only the nodes of the facets labelled on its rank, and such a node
+got no constraint row: on coarse boxes a corner, from np 2; on a production
+annulus an arc node, from np 24. The readers that take their nodes from the same
+list (`boundary_normal_traction`, `boundary_normal_traction_integral` and the
+dynamic topography field) dropped that node too.
+`FreeSurface._surface_node_coords` completes its vertex set the same way.
+Guard: `tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py`.
+
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy
 makes the boundary condition matter), it is correct on curved/tilted/deformed
