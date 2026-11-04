@@ -1,8 +1,9 @@
 """Project or prolong MeshVariable data to a different polynomial degree.
 
-Uses a scratch PETSc DM with ``createInterpolation`` — no MeshVariable
-is created, the mesh DM is never modified, and all scratch objects are
-destroyed before returning.
+Uses a scratch PETSc DM and the interpolation matrix between it and the
+variable's sub-DM (UW3's copy of PETSc's ``createInterpolation``, #902) — no
+MeshVariable is created, the mesh DM is never modified, and all scratch
+objects are destroyed before returning.
 
 Typical use cases
 -----------------
@@ -81,9 +82,19 @@ def project_to_degree(
     iset, subdm_src = mesh.dm.createSubDM(mesh_var.field_id)
 
     # --- interpolation matrix ---
-    # PETSc: source_subdm.createInterpolation(target_dm) returns a matrix
-    # whose mult() maps source global vec → target global vec.
-    interp, _scale = subdm_src.createInterpolation(dm_scratch)
+    # Its mult() maps source global vec → target global vec. UW3's copy of
+    # PETSc's nested interpolator: PETSc's own (createInterpolation) cannot be
+    # assembled on a rank that holds cells but owns none of their DOFs (#902).
+    from underworld3.cython.petsc_discretisation import (
+        petsc_dm_create_interpolation_within_plex,
+    )
+    interp = petsc_dm_create_interpolation_within_plex(subdm_src, dm_scratch)
+
+    # TODO(BUG): a discontinuous source projected to a continuous target sums
+    # the adjacent cells' values at each shared node (2-7x at P1 vertices): the
+    # matrix inserts one entry per cell into different source columns. The
+    # XDMF writer is not affected (it projects a discontinuous field to DG0).
+    # See issue #905.
 
     # --- apply ---
     g_src = subdm_src.createGlobalVec()
@@ -103,8 +114,6 @@ def project_to_degree(
     # --- cleanup ---
     for obj in (interp, g_src, g_dst, dm_scratch, fe_target, subdm_src, iset):
         obj.destroy()
-    if _scale is not None:
-        _scale.destroy()
 
     return result
 

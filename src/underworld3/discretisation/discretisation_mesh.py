@@ -2754,8 +2754,14 @@ class Mesh(Stateful, uw_object):
             # dual space without proper point subspaces, causing
             # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
             # createCoordinateSpace builds the FE internally with correct
-            # subspace initialisation.
-            self.dm.createCoordinateSpace(self.degree, False, True)
+            # subspace initialisation. The coordinates are carried across by
+            # UW3's copy of PETSc's interpolator: PETSc's own projection of a
+            # degree >= 2 space cannot be assembled on a rank that holds cells
+            # but owns none of their nodes (#902).
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            petsc_dm_create_coordinate_space_within_plex(self.dm, self.degree)
 
             # Issue #96 fix: Force coordinate field creation and strip
             # boundary labels from the coordinate DM. createCoordinateSpace
@@ -5729,24 +5735,29 @@ class Mesh(Stateful, uw_object):
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
+        """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
+        ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
+        (ghost nodes included).
+
+        The interpolation matrix comes from UW3's copy of PETSc's nested
+        interpolator, which assembles also on a rank that holds cells but owns
+        none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
         """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_interpolation_within_plex,
+        )
 
         dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
-        matInterp, vecScale = dmold.createInterpolation(dmnew)
+        matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
-        arr = coordsNewL.array
-        arrcopy = arr.reshape(-1, self.cdim).copy()
+        arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
@@ -5754,8 +5765,6 @@ class Mesh(Stateful, uw_object):
         # they accumulate until Python GC runs — noticeable in long adapt
         # loops that re-fill the coord cache per variable.
         matInterp.destroy()
-        if vecScale is not None:
-            vecScale.destroy()
         dmnew.destroy()
 
         return arrcopy
