@@ -99,6 +99,14 @@ def test_fault_solve_on_the_placed_split_runs_on_the_geometric_tail():
     stats = stokes._custom_mg["hierarchy"].level_transfer_stats
     # the finest pair is the moved one: fetched by provenance
     assert stats[-1] is not None and stats[-1]["fetched_remote"] > 0, stats
+    # the split level's patch and halo are 94 % of its rows (84 435 of 89 520
+    # serially); a 3-D split level keeps the 0.75 gate, so whole-level SOR runs.
+    # Taken at 0.98 it was one 3-D LU: 463 s and 6.3 GB against 35 s and 1.6 GB (#918)
+    gate = stokes._custom_mg["hierarchy"].fac_gate[-1]
+    assert gate is not None and not gate["taken"], gate
+    assert gate["subdomain_rows"] > 0.75 * gate["rows"], (
+        f"{gate}: the split level no longer sits above 0.75, so this does not pin "
+        f"the 3-D gate")
 
 
 def test_two_sheets_placed_in_turn_then_split_together():

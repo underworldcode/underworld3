@@ -333,6 +333,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/parallel/test_1133_fac_patch_summary_parallel.py
   # So is the serial reference child's environment (#922).
   batch 4 tests/parallel/test_1138_serial_reference_child_env.py
+  # So is the split level's FAC patch, taken over the old cover gate (#918).
+  batch 4 tests/parallel/test_1134_fac_cover_gate_split_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -356,6 +358,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/test_110*py
   batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
   batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
+  batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
   batch 4 tests/test_1136*py  # the rotated loop honours snes_max_it (#920)
   batch 4 tests/test_1450*py
 

@@ -232,6 +232,56 @@ awareness and quadratic exactness) and
 `tests/parallel/test_1089_fault_split_multigrid_parallel.py` (np = 2 and 4: split and
 welded tails converge with the serial slip; the thick twin extruded with its pairing).
 
+## When a level takes the FAC patch
+
+The FAC patch is a level's rows that its transfer cannot represent, plus a one-cell
+halo. It is solved with LU blocks on top of whole-level SOR. The cover gate declines
+it, and keeps whole-level smoothing, when the patch and halo exceed a fraction of the
+level's rows (`_FAC_COVER_MAX` and `_FAC_COVER_MAX_SPLIT` in `custom_mg`). On a
+uniform refinement, cut or not, the halo reaches every row.
+
+- **A level without a split: 75 %.** On a wide adapt child the patch and halo reach
+  95-98 % of the rows (a widened NVB metric), and taking them would mean one LU over
+  nearly the whole level.
+- **A 2-D level that carries a split fault: 98 %**, that is, it declines only when
+  under 2 % of its rows lie outside the patch and halo. A 3-D split level keeps
+  75 %: on test_1097's sheet (an adapt child of the 3-D base) its patch and halo are
+  84 435 of 89 520 rows (94 %), and taking them was one 3-D LU over them, 463 s and
+  6.3 GB serially against 35 s and 1.6 GB with whole-level SOR (`test_1097` asserts
+  the decline). The 3-D threshold is a placeholder until the 3-D add-on is measured:
+  that measurement decides whether 3-D needs a different threshold or a bounded
+  block (#895). The cases below are 2-D.
+  - *A placed fault level* keeps an untouched background there. On UWTN 2026-022's
+    linear fixture at h_b/S = 24, 48 and 97, the patch and halo were 62 %, 76 % and
+    86 % of the rows, with 38 %, 24 % and 14 % outside. The 75 % gate declined the
+    last two. Whole-level SOR then converged the band, 24-97 times finer than the
+    coarse level, slowly: 909 and 1487 velocity iterations summed over 17
+    applications (about 53 and 87 each), against 66 (about 4) with the patch (#918).
+  - *A fault cut into a refined base* (`add_fault` in 2-D, `split_fault` on
+    test_1095's 3-D patch box) keeps the base's coarse levels, so its finest pair is
+    a uniform refinement plus the cut, and its patch and halo are the whole level.
+    That level declines, and whole-level SOR converges it: 8 velocity iterations on
+    the 2-D `base_2d` of `tests/parallel/fault_fixtures.py`, 4 on the 3-D box.
+  - *A welded add-on* (an adapt child, then `add_fault(split_levels=False)`) is
+    split over unsplit coarse levels, and its patch and halo grow with the metric's
+    width: 30 % at width 0.08, 82 % at 0.6, 96 % at 1.0. Up to 98 % it takes the
+    patch. At 96 % that is one LU block over 96 % of the level, for 2 velocity
+    iterations against 13 with whole-level SOR.
+
+The background outside a placed band shrinks as the band refines, so a band fine
+enough would decline again. By extrapolation that happens near h_b/S = 200 on a 1/16
+base and 800 on a 1/32 base in 2-D; in 3-D the band's rows grow as (h_b/S)². Bounding
+the block's size instead of declining it is #895.
+
+The verdict is recorded per level on `hierarchy.fac_gate` (rows, patch and halo rows,
+taken), from the global counts in parallel. It is the gate's verdict: install drops
+a renumbered coarse level's patch, and the rotated path drops every coarse level's
+patch, afterwards. `set_custom_fmg(..., verbose=True)` prints it on either path. The
+mesh-owned and auto-injected hierarchies do not print, and their record is at
+`solver._custom_mg["hierarchy"].fac_gate`. Serial builds gate every level the split
+runs on, which leaves out pairs that touch a split coarse level. Parallel builds gate
+only the finest. Tests: `test_1134` in `tests/` and `tests/parallel/`.
+
 ## Not yet done
 
 - A regression test for the coarse-level wall rotation itself (a rotated free-slip
