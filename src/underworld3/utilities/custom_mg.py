@@ -224,6 +224,19 @@ def _drop_structural_zeros(P_csr, tol=1e-12):
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 
 
+class CollectiveBuildError(RuntimeError):
+    """A hierarchy-build failure raised on every rank together, from a verdict
+    every rank holds (a builder that failed on any rank, a check on allreduced
+    sizes), so the ranks can retry or degrade together (#886).
+    ``builder_failure`` says the transfer builder itself failed, the one case
+    a different builder can change; any other check failing again under
+    another builder, the build degrades at once."""
+
+    def __init__(self, message, builder_failure=False):
+        super().__init__(message)
+        self.builder_failure = builder_failure
+
+
 def _require_serial(where):
     """Custom-P transfers are serial-only (experimental). The reduced maps use
     rank-local DOF indices and the prolongations assemble as serial AIJ; at np>1
@@ -1107,6 +1120,25 @@ def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
     return builder(coarse_coords, fine_coords)
 
 
+def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
+    """The rank-local node transfer of a parallel build, with one verdict for
+    every rank: if the builder raised on any rank, :class:`CollectiveBuildError`
+    is raised on all of them. The builders do no communication, so every rank
+    reaches the verdict; a rank that kept its own error would go on to retry
+    while the others assemble the transfer, and the two would meet in different
+    collectives (#886)."""
+    problem = None
+    try:
+        Pn = _drop_structural_zeros(
+            _node_transfer_no_repair(builder, coarse_coords, fine_coords))
+    except Exception as exc:    # sanctioned: the verdict below raises it on every rank
+        Pn, problem = None, f"rank {comm.getRank()}: {exc}"
+    problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
+    if problems:
+        raise CollectiveBuildError("; ".join(problems), builder_failure=True)
+    return Pn
+
+
 def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
                             comm):
     """A node-level transfer ``Pn`` (scipy CSR, fine local nodes by coarse
@@ -1156,8 +1188,7 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
     l2g_c = coarse_layout.l2g
-    Pn = _drop_structural_zeros(
-        _node_transfer_no_repair(builder, coarse_coords, fine_coords))  # (n_f_nodes, n_c_nodes), local
+    Pn = _agreed_node_transfer(builder, coarse_coords, fine_coords, comm)  # (n_f_nodes, n_c_nodes), local
     return _assemble_node_transfer(
         Pn, np.asarray(l2g_c, dtype=np.int64).reshape(-1, ncomp), fine_layout,
         coarse_layout, ncomp, comm)
@@ -1199,8 +1230,7 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
-    Pn = _drop_structural_zeros(
-        _node_transfer_no_repair(builder, coords_u, fine_coords))   # (n_f_local, Nu)
+    Pn = _agreed_node_transfer(builder, coords_u, fine_coords, comm)   # (n_f_local, Nu)
     return _assemble_node_transfer(Pn, np.asarray(cols_u, dtype=np.int64),
                                    fine_layout, coarse_layout, ncomp, comm)
 
@@ -1743,14 +1773,15 @@ class CustomMGHierarchy:
                 level_comm = solver.dm.comm.tompi4py()
                 nodes, dofs = level_comm.allreduce(nodes), level_comm.allreduce(dofs)
             nc = dofs // nodes
-            if dofs % nodes != 0:
-                raise RuntimeError(
+            if dofs % nodes != 0:      # allreduced: every rank raises
+                raise CollectiveBuildError(
                     f"level {k}: full DOFs {dofs} not divisible by nodes {nodes}")
             coords.append(c)
             ncomp.append(nc)
 
-        if len(set(ncomp)) != 1:
-            raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
+        if len(set(ncomp)) != 1:       # from allreduced counts: every rank raises
+            raise CollectiveBuildError(
+                f"inconsistent component counts across levels: {ncomp}")
         nc = ncomp[0]
 
         # Operator-faithful check: the finest reduced map must span exactly the
@@ -2087,8 +2118,8 @@ class CustomMGHierarchy:
                 int(finest_map.rend - finest_map.rstart)))
         else:
             red_n = int(len(finest_map))             # r2f length = reduced global size
-        if red_n != op_n:
-            raise RuntimeError(
+        if red_n != op_n:               # allreduced: every rank raises
+            raise CollectiveBuildError(
                 f"custom_mg: finest reduced-map size {red_n} != assembled operator "
                 f"size {op_n}. The DM global section disagrees with the operator "
                 f"(an adapt-child section inconsistency); the finest transfer would "
@@ -2163,12 +2194,12 @@ class _DMLevelView:
         self.qdegree = fine_mesh.qdegree
 
         # The gmsh-imported BASE level carries section-only coordinates (its
-        # coordinate field is a PetscContainer, no PetscFE), and
-        # DMCreateInterpolation from such a source silently returns a ZERO
-        # matrix (measured) — _get_coords_for_basis would then hand every
-        # level-0 node the coordinate (0,0) and the transfer build collapses.
-        # refine() gives the child levels an FE coordinate space; give the
-        # clone's base the same: P1 Lagrange on the identical vertex layout.
+        # coordinate field is a PetscContainer, no PetscFE). PETSc's
+        # DMCreateInterpolation from such a source silently returned a ZERO
+        # matrix (measured), and UW3's copy, which _get_coords_for_basis now
+        # uses (#902), refuses a field that is not a PetscFE. refine() gives
+        # the child levels an FE coordinate space; give the clone's base the
+        # same: P1 Lagrange on the identical vertex layout.
         cdm = self.dm.getCoordinateDM()
         field = cdm.getField(0)
         fobj = field[0] if isinstance(field, tuple) else field
@@ -2259,7 +2290,9 @@ def build_transfers(solver, field_id=None):
     is a DEMAND (build errors raise — the user registered it explicitly); the
     other two are PREFERENCES, built through the same opportunistic arm
     (barycentric, RBF retry, degrade to the solver's default preconditioner —
-    every step recorded in ``solver.pc_fallbacks``).
+    every step recorded in ``solver.pc_fallbacks``). In parallel only a builder
+    failure every rank raises together (:class:`CollectiveBuildError`) is
+    retried or degraded; any other failure is raised where it happens (#886).
 
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
     coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
@@ -2370,6 +2403,13 @@ def build_transfers(solver, field_id=None):
     # barycentric fell back to GAMG at 23 its while RBF kept pc=mg at 2.
     # Falling back to GAMG loses the hierarchy entirely, so try the cheaper
     # degradation first. See #424.
+    # In parallel the retry and the degrade are collective decisions, so they
+    # are taken only on a verdict every rank holds (CollectiveBuildError: a
+    # builder failure, a check on allreduced sizes). Any other exception is
+    # one rank's: the others are inside the build's collectives, and a rank
+    # that caught it and retried would meet them in different ones (#886).
+    # It is raised.
+    _retryable = CollectiveBuildError if solver.dm.comm.getSize() > 1 else Exception
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
@@ -2382,9 +2422,14 @@ def build_transfers(solver, field_id=None):
         try:
             Ps = h.build(solver)
             break
-        except Exception as exc:            # pragma: no cover - defensive
+        except _retryable as exc:   # sanctioned: retried or degraded, and recorded
             import warnings
-            if _i + 1 < len(_attempts):
+            # another builder can only rescue a failure of the builder: an
+            # agreed check elsewhere (the provenance transfer, the operator
+            # sizes) would fail again after a full rebuild
+            retry = (exc.builder_failure if isinstance(exc, CollectiveBuildError)
+                     else True)
+            if retry and _i + 1 < len(_attempts):
                 solver._record_pc_fallback(
                     "custom_mg.transfer_builder",
                     requested=_b,
@@ -2404,7 +2449,7 @@ def build_transfers(solver, field_id=None):
                 continue
             solver._record_pc_fallback(
                 "custom_mg.build",
-                requested=f"custom-P geometric MG ({' -> '.join(_attempts)})",
+                requested=f"custom-P geometric MG ({' -> '.join(_attempts[:_i + 1])})",
                 installed="default preconditioner",
                 reason="build_failed",
                 detail=str(exc))

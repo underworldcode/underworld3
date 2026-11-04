@@ -70,7 +70,9 @@ def _collective_raise(problem):
     where an error was meant. COLLECTIVE — every rank must reach it.
     """
     if mpi.size > 1:
-        gathered = mpi.comm.allgather(problem)
+        # on the verdict communicator: a rank still inside a collective of
+        # the path cannot be paired with this exchange
+        gathered = mpi.verdict_comm.allgather(problem)
         problems = [p for p in gathered if p is not None]
         problem = problems[0] if problems else None
     if problem is not None:

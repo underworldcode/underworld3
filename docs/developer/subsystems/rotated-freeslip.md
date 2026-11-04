@@ -181,7 +181,12 @@ path uses**:
 2. a **mesh-owned** coarse tail (`mesh._custom_mg_coarse_meshes`, what
    `mesh.adapt()` leaves on a refinement child) is picked up opportunistically,
    with the barycentric→RBF builder fallback, so a failed build degrades to GAMG
-   rather than crashing the solve.
+   rather than crashing the solve. In parallel the retry and the degrade happen
+   on a verdict every rank holds: a builder failure, which is agreed across
+   ranks as soon as the builder returns, or a check on allreduced sizes
+   (`custom_mg.CollectiveBuildError`). Any other exception is one rank's while
+   the others are inside the build's collectives, so it is raised rather than
+   retried alone (#886).
 
 Step 2 used to be unreachable from here. The standard path's injection hook runs
 *after* the rotated dispatch has already returned, and the rotated builder
