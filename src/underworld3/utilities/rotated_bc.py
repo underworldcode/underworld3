@@ -262,10 +262,10 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     lsec = dm.getLocalSection()
     # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
     # not survive mesh adaptation); raises a clear error for an unknown boundary name.
-    # In parallel a rank may own NO part of this boundary → a null IS; guard and return
-    # no local nodes (calling getIndices() on a null IS would segfault).
-    # A rank owning no part of this boundary gets a null/empty IS and contributes
-    # nothing — but it must NOT return early: the cross-rank sum below is collective.
+    # In parallel a rank may hold NO facet of this boundary → a null IS; guard it
+    # (calling getIndices() on a null IS would segfault). Such a rank contributes
+    # nothing but must NOT return early: the cross-rank sum below is collective, and
+    # it can still return nodes, ones it owns whose facets sit on neighbours (#935).
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     facets = ([int(z) for z in sis.getIndices()]
               if (sis and sis.getSize() > 0) else [])
@@ -381,14 +381,15 @@ def _sum_node_vectors_across_ranks(solver, contribs):
             elif q in contribs:
                 # Velocity DOFs constrained out of the global vector (an essential
                 # BC meeting this boundary) come back zero. Keep this rank's own
-                # contribution so the node set is exactly what it always was.
-                # build_rotation drops these nodes (l2g < 0); boundary_normal_traction
-                # does NOT — it reads n̂·r_c at every returned node — so on such a node
-                # it reports the reaction of the ESSENTIAL constraint along a
-                # rank-locally accumulated normal. That was true before this change
-                # too, and the nodes are the corners where a rotated wall meets an
-                # essential one (measured: 2 of 75 on the test_1070 configuration, at
-                # every rank count, and never shared between ranks there).
+                # contribution, so such a node stays in the set of a rank holding one
+                # of its facets. build_rotation drops these nodes (l2g < 0);
+                # boundary_normal_traction does NOT — it reads n̂·r_c at every returned
+                # node, and at a constrained DOF that read is uninitialised (#936).
+                # The nodes are the corners where a rotated wall meets an essential
+                # one (measured: 2 of 75 on the test_1070 configuration, at every rank
+                # count, and never shared between ranks there). A marker (the analytic
+                # path) loses only the constrained components, so where one component
+                # is free such a node is kept on every rank that holds it.
                 out[q] = contribs[q]
         return out
     finally:

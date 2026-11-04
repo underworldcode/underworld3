@@ -511,10 +511,9 @@ class FreeSurface:
         resolves the facet-to-vertex map so this is exact on deformed and curved
         boundaries. A facet is labelled on one rank, so a rank can hold a surface
         vertex whose facets all sit on neighbours, which the closures of its own
-        facets miss (#935). A marker summed over the point SF, through the
-        coordinate DM's local-to-global scatter, completes the set. COLLECTIVE.
+        facets miss (#935). A marker reduced onto each vertex's owner over the
+        plex's point SF, and broadcast back, completes the set. COLLECTIVE.
         """
-        from petsc4py import PETSc
         from underworld3.utilities.boundary_flux import _boundary_stratum_is
 
         dm = self.mesh.dm
@@ -535,25 +534,22 @@ class FreeSurface:
                 vertices.update(int(p) for p in closure if v_start <= p < v_end)
 
         if dm.comm.getSize() > 1:
-            cdm = dm.getCoordinateDM()
-            lvec = cdm.getLocalVec()
-            gvec = cdm.getGlobalVec()
-            try:
-                lvec.set(0.0)
-                marks = lvec.getArray()
-                for v in vertices:
-                    marks[csec.getOffset(v)] = 1.0
-                gvec.set(0.0)
-                cdm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
-                cdm.globalToLocal(gvec, lvec)
-                marks = lvec.getArray()
-                vertices = {v for v in range(v_start, v_end)
-                            if marks[csec.getOffset(v)] != 0.0}
-            finally:
-                cdm.restoreLocalVec(lvec)
-                cdm.restoreGlobalVec(gvec)
+            # ghosts' marks added onto their owners, then the owners' totals back to
+            # every copy, over the plex's own point SF
+            sf = dm.getPointSF()
+            p0, p1 = dm.getChart()
+            mine = np.zeros(p1 - p0, dtype=np.int32)
+            for v in vertices:
+                mine[v - p0] = 1
+            total = mine.copy()
+            sf.reduceBegin(MPI.INT, mine, total, MPI.SUM)
+            sf.reduceEnd(MPI.INT, mine, total, MPI.SUM)
+            seen = total.copy()
+            sf.bcastBegin(MPI.INT, total, seen, MPI.REPLACE)
+            sf.bcastEnd(MPI.INT, total, seen, MPI.REPLACE)
+            vertices = {v for v in range(v_start, v_end) if seen[v - p0]}
 
-        rows = [csec.getOffset(v) // cdim for v in sorted(vertices)]
+        rows = [csec.getOffset(v) // cdim for v in vertices]
         return np.ascontiguousarray(cvec[rows]) if rows else np.empty((0, cdim))
 
     def _field_rows(self, field, coords):
