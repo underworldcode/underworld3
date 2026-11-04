@@ -380,14 +380,15 @@ def _sum_node_vectors_across_ranks(solver, contribs):
                 out[q] = w
             elif q in contribs:
                 # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) come back zero. Keep this rank's own
-                # contribution, so such a node stays in the set of a rank holding one
-                # of its facets. build_rotation drops these nodes (l2g < 0);
-                # boundary_normal_traction does NOT — it reads n̂·r_c at every returned
-                # node, and at a constrained DOF that read is uninitialised (#936).
-                # The nodes are the corners where a rotated wall meets an essential
-                # one (measured: 2 of 75 on the test_1070 configuration, at every rank
-                # count, and never shared between ranks there). A marker (the analytic
+                # BC meeting this boundary) are not written back: they keep this
+                # rank's own contribution, which the first branch already takes, so
+                # this one is reached only by a node whose sum is zero in every
+                # component. build_rotation builds a reduced frame on a node's free
+                # components and skips a fully constrained node; the traction
+                # readers read zero at a constrained component, so an essential
+                # wall's components contribute nothing to σ_nn (#936). The nodes are
+                # the corners where a rotated wall meets an essential one (measured:
+                # 2 of 75 on the test_1070 configuration). A marker (the analytic
                 # path) loses only the constrained components, so where one component
                 # is free such a node is kept on every rank that holds it.
                 out[q] = contribs[q]
@@ -2779,6 +2780,48 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     return op_viol < tol
 
 
+def _wall_normal_loads(solver, boundary, solve_result):
+    """The normal load the constraint reaction puts on each node of ``boundary``:
+    ``(xs, loads, owned)``, with ``loads[i] = -n̂_i·r_c`` (σ_nn's sign) and ``owned[i]``
+    whether this rank owns node i. Both readers of the reaction take it from here.
+
+    The Cartesian reaction r_c is copied into a zeroed local vector: ``globalToLocal``
+    does not write the components an essential condition constrains, so they read zero
+    and contribute nothing to σ_nn (#936). A node belongs to the rank that owns its
+    first free component; a node with none carries no load and belongs to no rank.
+    """
+    dm = solver.dm
+    dim = solver.mesh.cdim
+    # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
+    # solve driver (the final ``computeFunction`` residual; for a linear residual
+    # this equals the assembled A·u−b exactly).
+    rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
+    rstart, rend = rc.getOwnershipRange()
+    rcl = dm.getLocalVec()
+    try:
+        # a pooled vector holds whatever its last user left
+        rcl.set(0.0)
+        dm.globalToLocal(rc, rcl)
+        rca = np.asarray(rcl.getArray())
+        lsec = dm.getLocalSection()
+        l2g = dm.getLGMap()
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
+        xs, loads, owned = [], [], []
+        for q, nrm in _boundary_velocity_nodes(solver, boundary, normal=normal):
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            free = [int(g) for g in l2g.apply(list(range(lo, lo + dim))) if g >= 0]
+            xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
+            # n̂·r_c, not the rotated frame's normal row: corner-correct
+            loads.append(-float(np.dot(nrm, rca[lo:lo + dim])))
+            owned.append(bool(free) and rstart <= free[0] < rend)
+    finally:
+        dm.restoreLocalVec(rcl)
+    return np.array(xs), np.array(loads), np.array(owned, dtype=bool)
+
+
 def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     """Boundary normal traction σ_nn on `boundary` from the constraint reaction of the
     last rotated-free-slip solve (``solve_result`` is the dict returned by
@@ -2800,8 +2843,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     Projecting the Cartesian reaction onto the boundary normal (rather than reading the
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
-    normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
-    σ_nn is the boundary-mass de-smear of R.
+    normals, but n̂·r_c is the true normal traction for this boundary. At a node an
+    essential wall also constrains (a corner with a Dirichlet wall), the constrained
+    components are not in the reaction vector and read zero, so they contribute
+    nothing to σ_nn (#936). The pointwise σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
       * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles,
@@ -2832,37 +2877,12 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     scattering each rank's recovered values. The mean-removal gauge remains global. Only
     triangular P1/P2 traces are supported in 3D.
     """
-    dm = solver.dm
-    dim = solver.mesh.cdim
-    # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
-    # solve driver (the final ``computeFunction`` residual; for a linear residual
-    # this equals the assembled A·u−b exactly).
-    rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
-    rcl = dm.getLocalVec()
-    dm.globalToLocal(rc, rcl)
-    rca = np.asarray(rcl.getArray())
-
-    lsec = dm.getLocalSection()
-    csec = dm.getCoordinateSection()
-    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-    v0, v1 = dm.getDepthStratum(0)
-    normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
-    nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-    xs = []
-    Rn = []
-    for q, nrm in nodes:
-        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-        rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
-        xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-        Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
-    dm.restoreLocalVec(rcl)
-    xs = np.array(xs)
-    Rn = np.array(Rn)
+    xs, loads, _owned = _wall_normal_loads(solver, boundary, solve_result)
     # σ_nn = −(nodal reaction), de-smeared by the SHARED boundary-mass primitive and
     # mean-removed (the ρg·h gauge). partial_reaction=False: the reaction here comes from
     # the ASSEMBLED global operator Q(A·u−b), already complete at every node (ranks agree
     # at a partition-cut node — must OVERWRITE, not sum, else shared nodes double-count).
-    return xs, _desmear(solver, boundary, xs, -Rn, mass,
+    return xs, _desmear(solver, boundary, xs, loads, mass,
                         remove_mean=True, partial_reaction=False)
 
 
@@ -2889,41 +2909,13 @@ def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
     import underworld3 as uw
 
     fn = sympy.sympify(fn)
-    dm = solver.dm
-    comm = dm.comm.tompi4py()
-    dim = solver.mesh.cdim
-    rc = solve_result["reaction"]
-    rstart, rend = rc.getOwnershipRange()
-    rcl = dm.getLocalVec()
-    dm.globalToLocal(rc, rcl)
+    comm = solver.dm.comm.tompi4py()
+    # each node counted once, on its owner; the loads are boundary_normal_traction's
+    xs, loads, owned = _wall_normal_loads(solver, boundary, solve_result)
+    owned_reactions = loads[owned]
 
-    try:
-        rca = np.asarray(rcl.getArray())
-        lsec = dm.getLocalSection()
-        l2g = dm.getLGMap()
-        csec = dm.getCoordinateSection()
-        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-        v0, v1 = dm.getDepthStratum(0)
-        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(
-            boundary
-        )
-        nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-
-        owned_coords = []
-        owned_reactions = []
-        for q, nrm in nodes:
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            global_row = int(l2g.apply([lo])[0])
-            if not rstart <= global_row < rend:
-                continue
-            owned_coords.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-            # sigma_nn load = -n.r_c, matching boundary_normal_traction().
-            owned_reactions.append(-float(np.dot(nrm, rca[lo:lo + dim])))
-    finally:
-        dm.restoreLocalVec(rcl)
-
-    if owned_coords:
-        coords = np.ascontiguousarray(owned_coords, dtype=float)
+    if owned_reactions.size:
+        coords = np.ascontiguousarray(xs[owned], dtype=float)
         weights = np.asarray(uw.function.evaluate(fn, coords), dtype=float).reshape(-1)
         if weights.size == 1 and len(owned_reactions) != 1:
             weights = np.full(len(owned_reactions), float(weights[0]))

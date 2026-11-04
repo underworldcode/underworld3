@@ -370,6 +370,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
   batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
   batch 4 tests/test_1136*py  # the rotated loop honours snes_max_it (#920)
+  batch 3 tests/test_1141*py  # a constrained node adds nothing to the rotated sigma_nn (#936)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
