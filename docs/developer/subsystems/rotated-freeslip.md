@@ -389,6 +389,18 @@ the shared boundary-mass machinery in `utilities/boundary_flux.py`;
 `dynamic_topography_field` writes `h = −(σ_nn − σ̄_nn)/(Δρ g)` onto a surface
 field for the free-surface integrator.
 
+At a node an essential wall also constrains (a corner with a Dirichlet wall),
+the constrained components are not in the reaction vector. They read zero and
+contribute nothing to σ_nn; the free components keep their load (Louis's
+ruling, 2026-11-04, #936). A fully constrained corner therefore enters with
+σ_nn = 0 before the mean is removed. `boundary_normal_traction` and
+`boundary_normal_traction_integral` take the loads from one helper
+(`_wall_normal_loads`), which counts each node once, on the rank owning its
+first free component. Before #936 both read those components from an unzeroed
+pooled vector, and the integral dropped a node whose first component was
+constrained. At such a corner the rotated constraint itself still ignores a
+nonzero pinned value (#939).
+
 ### Which de-smearing mass (3-D)
 
 `mass="auto"` uses the **P1-projected** recovery on a 3-D P2 trace. The full
