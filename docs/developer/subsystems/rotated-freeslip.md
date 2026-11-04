@@ -397,8 +397,9 @@ field for the free-surface integrator.
 At a node an essential wall also constrains (a corner with a Dirichlet wall),
 the constrained components are not in the reaction vector. They read zero and
 contribute nothing to σ_nn; the free components keep their load (Louis's
-ruling, 2026-11-04, #936). A fully constrained corner therefore enters with
-σ_nn = 0 before the mean is removed. `boundary_normal_traction` and
+ruling, 2026-11-04, #936). A fully constrained corner therefore carries zero
+load; the de-smear can still give it a nonzero σ_nn from its neighbours (3-D
+P2). `boundary_normal_traction` and
 `boundary_normal_traction_integral` take the loads from one helper
 (`_wall_normal_loads`), which counts each node once, on the rank owning its
 first free component. Before #936 both read those components from an unzeroed

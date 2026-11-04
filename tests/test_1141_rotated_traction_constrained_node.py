@@ -16,8 +16,12 @@ The Left wall pins both components, v_y alone, or v_x alone:
   left them, filled with 12345, or with -777; so is its integral against 1 + x^2 where
   a component is free at the corner (the weight is not zero at x = 0, where the corner
   sits, and not constant, which the mean removal would cancel);
-- the integral of sigma_nn with no mean removed is the sum over the wall's nodes of
-  -n.r, r the reaction read from the global vector with constrained components zero.
+- each node of Top carries -n.r, r the reaction read from the global vector with the
+  constrained components zero, the corner included (the input both readers share),
+  and the fixture does constrain a component on Top;
+- the integral of sigma_nn with no mean removed is the sum of those loads.
+
+Serial: every global row is owned here, which the reads from the global vector assume.
 """
 import numpy as np
 import pytest
@@ -53,6 +57,25 @@ def solved(request):
     stokes.add_rotated_freeslip_bc(0, "Right", normal=(1.0, 0.0))
     stokes.solve()
     return stokes
+
+
+def _reaction_loads(stokes):
+    """-n.r at each Top node, r read from the global reaction with the constrained
+    components zero, and how many constrained components Top's nodes hold."""
+    dm = stokes.dm
+    lsec = dm.getLocalSection()
+    l2g = dm.getLGMap()
+    rc = stokes._rotated_freeslip_info["reaction"]
+    owned = rc.getArray(readonly=True)
+    rstart, _rend = rc.getOwnershipRange()
+    loads, constrained = [], 0
+    for q, nrm in rbc._boundary_velocity_nodes(stokes, "Top", normal=TOP_NORMAL):
+        lo = lsec.getFieldOffset(q, 0)
+        rows = l2g.apply(list(range(lo, lo + 2)))
+        constrained += sum(1 for g in rows if g < 0)
+        r = np.array([owned[g - rstart] if g >= 0 else 0.0 for g in rows])
+        loads.append(-float(np.dot(nrm, r)))
+    return np.array(loads), constrained
 
 
 def _fill_pool(dm, value, n=8):
@@ -94,19 +117,21 @@ def test_the_sigma_nn_integral_does_not_read_the_pool(solved):
 
 
 @pytest.mark.parametrize("solved", list(LEFT), indirect=True)
+def test_each_node_carries_its_reaction_with_constrained_components_zero(solved):
+    expected, constrained = _reaction_loads(solved)
+    assert constrained > 0, (
+        "no component of a Top node is constrained, so this fixture cannot see #936")
+    _xs, loads, _owned = rbc._wall_normal_loads(
+        solved, "Top", solved._rotated_freeslip_info)
+    assert np.array_equal(loads, expected), (
+        f"the Top nodes' loads {loads} are not the reaction with the constrained "
+        f"components zero, {expected} (#936)")
+
+
+@pytest.mark.parametrize("solved", list(LEFT), indirect=True)
 def test_the_wall_load_is_the_reaction_with_constrained_components_zero(solved):
-    dm = solved.dm
-    lsec = dm.getLocalSection()
-    l2g = dm.getLGMap()
-    rc = solved._rotated_freeslip_info["reaction"]
-    owned = rc.getArray(readonly=True)
-    rstart, _rend = rc.getOwnershipRange()
-    expected = 0.0
-    for q, nrm in rbc._boundary_velocity_nodes(solved, "Top", normal=TOP_NORMAL):
-        lo = lsec.getFieldOffset(q, 0)
-        rows = l2g.apply(list(range(lo, lo + 2)))
-        r = np.array([owned[g - rstart] if g >= 0 else 0.0 for g in rows])
-        expected -= float(np.dot(nrm, r))
+    loads, _constrained = _reaction_loads(solved)
+    expected = float(np.sum(loads))
     got = solved.boundary_normal_traction_integral("Top", 1, remove_mean=False)
     assert abs(got - expected) <= 1.0e-12 * max(1.0, abs(expected)), (
         f"the integral of sigma_nn over Top is {got!r}; the wall's nodes carry "

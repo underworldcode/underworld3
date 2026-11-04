@@ -380,15 +380,15 @@ def _sum_node_vectors_across_ranks(solver, contribs):
                 out[q] = w
             elif q in contribs:
                 # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) come back zero. Keep this rank's own
-                # contribution, so such a node stays in the set of a rank holding one
-                # of its facets. build_rotation drops these nodes (l2g < 0);
-                # boundary_normal_traction does NOT — it reads n̂·r_c at every returned
-                # node, and reads zero at a constrained DOF: an essential wall's
-                # components contribute nothing to σ_nn (#936).
-                # The nodes are the corners where a rotated wall meets an essential
-                # one (measured: 2 of 75 on the test_1070 configuration, at every rank
-                # count, and never shared between ranks there). A marker (the analytic
+                # BC meeting this boundary) are not written back: they keep this
+                # rank's own contribution, which the first branch already takes, so
+                # this one is reached only by a node whose sum is zero in every
+                # component. build_rotation builds a reduced frame on a node's free
+                # components and skips a fully constrained node; the traction
+                # readers read zero at a constrained component, so an essential
+                # wall's components contribute nothing to σ_nn (#936). The nodes are
+                # the corners where a rotated wall meets an essential one (measured:
+                # 2 of 75 on the test_1070 configuration). A marker (the analytic
                 # path) loses only the constrained components, so where one component
                 # is free such a node is kept on every rank that holds it.
                 out[q] = contribs[q]
