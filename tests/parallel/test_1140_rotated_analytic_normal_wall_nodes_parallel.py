@@ -23,9 +23,12 @@ a node and the regular box does not (``HOLDS_AT``).
   reaches. If a partitioner change makes this fail, the fixture has lost its power,
   not the library its fix: choose a coarse mesh on which, at that rank count, some
   rank owns a wall node that only a neighbour's facets reach.
-- A rotated free-slip solve with the constant wall normals leaves no normal flow at
-  any wall node (exactly none serially; up to 0.67 of max |v| without the fix).
-- The free surface's node list on Top holds every local vertex on Top.
+- A rotated free-slip solve with the wall normals leaves no normal flow at any wall
+  node (exactly none serially; up to 0.67 of max |v| without the fix).
+- The free surface's node list holds every local vertex of its surface, on each wall.
+
+Every normal check runs twice: with constant tuples, and as sympy matrices, which the
+library lambdifies and evaluates at each node's coordinate, as it does ``unit_r``.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py
     mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py
@@ -44,6 +47,9 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.time
 
 WALL_NORMALS = {"Top": (0.0, 1.0), "Bottom": (0.0, -1.0),
                 "Left": (-1.0, 0.0), "Right": (1.0, 0.0)}
+SPECS = {"constant": WALL_NORMALS,
+         "sympy": {w: sympy.Matrix([list(n)]) for w, n in WALL_NORMALS.items()}}
+ON_WALL = {"Top": (1, 1.0), "Bottom": (1, 0.0), "Left": (0, 0.0), "Right": (0, 1.0)}
 FIXTURES = [(False, 0.5), (True, 0.4)]     # (regular, cellSize)
 # the rank counts at which each fixture was measured to hold the case
 HOLDS_AT = {(False, 0.5): (2, 4), (True, 0.4): (2,)}
@@ -83,21 +89,25 @@ def _owned(dm):
 
 
 def _reached_by_local_facets(stokes, wall):
-    """Velocity points in the closure of a facet of ``wall`` labelled on this rank."""
+    """Velocity points in the closure of a facet of ``wall`` labelled on this rank (the
+    label also carries vertices, which are not facets)."""
     dm = stokes.dm
     lsec = dm.getLocalSection()
+    fS, fE = dm.getHeightStratum(1)
     sis = rbc._boundary_stratum_is(dm, stokes.mesh, wall)
-    facets = [int(f) for f in sis.getIndices()] if (sis and sis.getSize() > 0) else []
+    facets = ([int(f) for f in sis.getIndices() if fS <= int(f) < fE]
+              if (sis and sis.getSize() > 0) else [])
     return {int(q) for f in facets for q in dm.getTransitiveClosure(f)[0]
             if lsec.getFieldDof(int(q), 0) > 0}
 
 
 @pytest.mark.tier_b
+@pytest.mark.parametrize("kind", SPECS)
 @pytest.mark.parametrize("regular, cell_size", FIXTURES)
-def test_the_analytic_normal_finds_the_geometric_nodes(regular, cell_size):
+def test_the_analytic_normal_finds_the_geometric_nodes(regular, cell_size, kind):
     stokes = _set_up(regular, cell_size)
     differ = []
-    for wall, normal in WALL_NORMALS.items():
+    for wall, normal in SPECS[kind].items():
         geometric = {q for q, _n in rbc._boundary_velocity_nodes(stokes, wall)}
         analytic = {q for q, _n in rbc._boundary_velocity_nodes(stokes, wall, normal=normal)}
         if geometric != analytic:
@@ -127,14 +137,15 @@ def test_the_fixture_holds_an_owned_wall_node_no_local_facet_reaches(regular, ce
 
 
 @pytest.mark.tier_b
+@pytest.mark.parametrize("kind", SPECS)
 @pytest.mark.parametrize("regular, cell_size", FIXTURES)
-def test_no_normal_flow_at_any_wall_node(regular, cell_size):
+def test_no_normal_flow_at_any_wall_node(regular, cell_size, kind):
     stokes, v = _box_solver(regular, cell_size)
     x, _y = stokes.mesh.X
     # buoyancy up the left wall and down the right: one cell, which moves a corner
     # that has lost its constraint rows
     stokes.bodyforce = sympy.Matrix([[0.0, sympy.cos(sympy.pi * x)]])
-    for wall, normal in WALL_NORMALS.items():
+    for wall, normal in SPECS[kind].items():
         stokes.add_rotated_freeslip_bc(0, wall, normal=normal)
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-8
@@ -144,18 +155,16 @@ def test_no_normal_flow_at_any_wall_node(regular, cell_size):
     c = np.asarray(v.coords)
     u = np.asarray(v.array)[:, 0, :]
     scale = max(uw.mpi.comm.allgather(float(np.abs(u).max()) if u.size else 0.0))
-    tol = 1.0e-12
-    on_wall = {"Top": c[:, 1] > 1 - tol, "Bottom": c[:, 1] < tol,
-               "Left": c[:, 0] < tol, "Right": c[:, 0] > 1 - tol}
     worst = 0.0
-    for wall, mask in on_wall.items():
+    for wall, (axis, at) in ON_WALL.items():
+        mask = c[:, axis] == at
         if mask.any():
             un = u[mask] @ np.asarray(WALL_NORMALS[wall])
             worst = max(worst, float(np.abs(un).max()))
     worst = max(uw.mpi.comm.allgather(worst))
     assert scale > 0.0
-    # exactly 0 serially (axis-aligned walls); on kaiju without the fix the missed
-    # node carried 1.3e-10 to 0.67 of max |v| at np 2 and 4
+    # exactly 0 serially (axis-aligned walls); without the fix the missed node
+    # carried 1.3e-10 to 0.67 of max |v| at np 2 and 4 (Linux, ParMETIS)
     assert worst <= 1.0e-13 * scale, (
         f"np {uw.mpi.size}: normal flow {worst:.3e} at a wall node against "
         f"max |v| {scale:.3e} (#935)")
@@ -165,16 +174,20 @@ def test_no_normal_flow_at_any_wall_node(regular, cell_size):
 @pytest.mark.parametrize("regular, cell_size", FIXTURES)
 def test_the_free_surface_finds_every_surface_vertex(regular, cell_size):
     mesh = _box(regular, cell_size)
-    found = FreeSurface._surface_node_coords(SimpleNamespace(mesh=mesh, surface="Top"))
     dm = mesh.dm
     v0, v1 = dm.getDepthStratum(0)
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
     local = cvec[[csec.getOffset(q) // 2 for q in range(v0, v1)]]
-    on_top = {tuple(x) for x in local[local[:, 1] == 1.0]}
-    missed = sorted(on_top - {tuple(x) for x in found})
-    extra = sorted({tuple(x) for x in found} - on_top)
-    every = uw.mpi.comm.allgather((missed, extra))
-    assert not any(m or e for m, e in every), (
-        f"np {uw.mpi.size}: the free surface's Top vertices miss or add local "
-        f"vertices on Top, per rank (missed, extra): {every} (#935)")
+    wrong = []
+    for wall, (axis, at) in ON_WALL.items():
+        found = FreeSurface._surface_node_coords(SimpleNamespace(mesh=mesh, surface=wall))
+        on_wall = {tuple(x) for x in local[local[:, axis] == at]}
+        missed = sorted(on_wall - {tuple(x) for x in found})
+        extra = sorted({tuple(x) for x in found} - on_wall)
+        if missed or extra:
+            wrong.append((wall, missed, extra))
+    every = uw.mpi.comm.allgather(wrong)
+    assert not any(every), (
+        f"np {uw.mpi.size}: a free surface's vertices miss or add local vertices "
+        f"of its wall, per rank (wall, missed, extra): {every} (#935)")
