@@ -17,10 +17,12 @@ The test guards against a library leak appearing here.
 Two checks share one run of rebuilds:
 - every measured rebuild's mesh and solver are gone once dropped (weak references).
   A Python-held pin, #948's kind, fails this on any platform, at any size;
-- the resident set grows by less than 5 MB per rebuild on the worst rank, Linux only
+- the resident set grows by less than 10 MB per rebuild on the worst rank, Linux only
   (macOS keeps freed memory in it). This sees a PETSc-side leak too, where petsc4py
-  defers destruction in parallel. A pinned solver adds about 60 MB per rebuild of
-  this fixture in serial (wombat, 2026-11-06), about 30 MB per rank at np 2.
+  defers destruction in parallel.
+Measured at np 2 in CI's environment on hyperion (2026-11-06): 2.61 MB per rebuild
+and no object alive; with every Stokes solver held in a module-level list, as the
+hook did, 49.4 MB per rebuild and 20 objects alive, and both tests fail.
 Before each reading of the resident set a mesh is built, which empties petsc4py's
 deferred-destruction list, so both readings see the same state.
 
@@ -41,7 +43,7 @@ from underworld3.utilities import custom_mg, memprobe
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.timeout(600)]
 
 WARMUP, MEASURED = 2, 5
-BOUND_MB = 5.0               # per rebuild; a pinned solver is ~30 at np 2
+BOUND_MB = 10.0              # per rebuild: 2.6 measured, 49 with a pinned solver (np 2)
 
 
 def _resident_mb():
@@ -102,13 +104,13 @@ def rebuilds():
     return alive, worst
 
 
-@pytest.mark.tier_c
+@pytest.mark.tier_b
 def test_no_rebuild_keeps_its_mesh_or_solver_alive(rebuilds):
     alive, _ = rebuilds
     assert alive == 0, f"{alive} meshes or solvers of dropped rebuilds are still alive"
 
 
-@pytest.mark.tier_c
+@pytest.mark.tier_b
 @pytest.mark.skipif(sys.platform != "linux",
                     reason="the resident set tracks freed memory on Linux only")
 def test_rebuilding_does_not_grow_the_resident_set(rebuilds):
