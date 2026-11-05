@@ -14,8 +14,9 @@ that is singular. Contracts:
 
 - the live coarse PC carries the NONZERO shift, and the solve records the
   redundant coarse solve;
-- on the annulus and the shell, the answer is the SVD path's, at the measured
-  iterations;
+- on the annulus the answer is the SVD path's, and on the shell the shifted
+  LU's (the two agreed to 1e-10 on the shell this test used before), at the
+  measured iterations;
 - on #306's case, a coarse level that is the fine mesh itself, the rotation is
   an exact null vector of the coarse operator (an exactness property, checked
   on any host), and the solve gives the SVD path's answer to 1e-7. Plain LU
@@ -26,6 +27,11 @@ that is singular. Contracts:
 The answers and the iteration counts were recorded on gmsh meshes, which
 triangulate differently on other hosts. Those assertions are gated on the
 mesh's fingerprint (global cells, volume); the rest hold anywhere.
+
+The shell is built at cell size 0.3. At 0.5, gmsh can put all four vertices of
+a coarse cell on the inner wall, and refinement then folds that cell's children
+(#946): the velocity multigrid converged on one host's mesh and ran to its
+iteration cap on every solve on another's. A folded shell skips the case.
 """
 import numpy as np
 import pytest
@@ -33,18 +39,20 @@ import sympy
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3.meshing.smoothing.graph import _signed_volumes
 from underworld3.utilities import custom_mg, rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
-# The SVD path's answer on each fixture (development fc67b650, np 1), the
-# velocity / Schur iterations of the last outer iteration, and the fingerprint
-# (global cells, volume) of the mesh they were recorded on.
+# The answer on each fixture (np 1): the SVD path's on the annulus (development
+# fc67b650), the shifted LU's on the shell; the velocity / Schur iterations of
+# the last outer iteration; and the fingerprint (global cells, volume) of the
+# mesh they were recorded on.
 CASES = {
     "annulus": {"vrms": 4.7900648439, "rtol": 1.0e-9, "modes": 1, "its": (4, 7),
                 "fingerprint": (640, 2.3561872025)},
-    "shell": {"vrms": 1.7726841166, "rtol": 1.0e-8, "modes": 3, "its": (18, 18),
-              "fingerprint": (4912, 3.6468937399)},
+    "shell": {"vrms": 1.8237602846, "rtol": 1.0e-8, "modes": 3, "its": (5, 17),
+              "fingerprint": (8792, 3.6471643173)},
 }
 # The forced-singular annulus (cell 0.25, the coarse level a copy of the mesh):
 # the SVD path's answer (development fc67b650, np 1).
@@ -56,6 +64,18 @@ def _fingerprint(mesh):
     s, e = mesh.dm.getHeightStratum(0)
     return (uw.mpi.comm.allreduce(e - s),
             float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate()))
+
+
+def _folded_cells(mesh):
+    """Cells whose signed volume, in DMPlex vertex order, has the opposite sign
+    to the rest of the mesh: cells refinement turned inside out (#946)."""
+    dm = mesh.dm
+    cs, ce = dm.getHeightStratum(0)
+    vs, ve = dm.getDepthStratum(0)
+    tets = np.array([[q - vs for q in dm.getTransitiveClosure(c)[0] if vs <= q < ve]
+                     for c in range(cs, ce)])
+    vol = _signed_volumes(dm.getCoordinatesLocal().array.reshape(-1, 3), tets)
+    return uw.mpi.comm.allreduce(int(np.count_nonzero(np.sign(vol) != np.sign(np.median(vol)))))
 
 
 def _skip_unless_recorded(mesh, recorded):
@@ -123,8 +143,12 @@ def test_the_coarse_solve_is_shifted_lu(kind, monkeypatch, tmp_path):
         mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.4,
                                   refinement=2, qdegree=3)
     else:
-        mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
+        mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.3,
                                          refinement=1, qdegree=3)
+        folded = _folded_cells(mesh)
+        if folded:
+            pytest.skip(f"refinement folded {folded} cells of this host's gmsh shell (#946); "
+                        "the solve need not converge on it")
     v, stokes = _stokes(mesh, f"1111{kind}")
     custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)
     stokes.solve(zero_init_guess=True)
