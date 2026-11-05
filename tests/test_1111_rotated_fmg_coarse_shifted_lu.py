@@ -14,8 +14,7 @@ that is singular. Contracts:
 
 - the live coarse PC carries the NONZERO shift, and the solve records the
   redundant coarse solve;
-- on the annulus the answer is the SVD path's, and on the shell the shifted
-  LU's (the two agreed to 1e-10 on the shell this test used before), at the
+- on the annulus and the shell, the answer is the SVD path's, at the
   measured iterations;
 - on #306's case, a coarse level that is the fine mesh itself, the rotation is
   an exact null vector of the coarse operator (an exactness property, checked
@@ -33,21 +32,26 @@ a coarse cell on the inner wall, and refinement then folds that cell's children
 (#946): the velocity multigrid converged on one host's mesh and ran to its
 iteration cap on every solve on another's. A folded shell skips the case.
 """
+import contextlib
+import faulthandler
+import os
+
 import numpy as np
 import pytest
 import sympy
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.meshing.smoothing.graph import _signed_volumes
+from underworld3.meshing.smoothing import graph
 from underworld3.utilities import custom_mg, rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
-# The answer on each fixture (np 1): the SVD path's on the annulus (development
-# fc67b650), the shifted LU's on the shell; the velocity / Schur iterations of
-# the last outer iteration; and the fingerprint (global cells, volume) of the
-# mesh they were recorded on.
+# The SVD path's answer on each fixture (np 1): on the annulus from development
+# fc67b650, on the shell from a dense SVD coarse solve set by hand, which gave
+# the shifted LU's value and iterations in 604 s against 17 s. Then the velocity
+# / Schur iterations of the last outer iteration, and the fingerprint (global
+# cells, volume) of the mesh they were recorded on.
 CASES = {
     "annulus": {"vrms": 4.7900648439, "rtol": 1.0e-9, "modes": 1, "its": (4, 7),
                 "fingerprint": (640, 2.3561872025)},
@@ -67,15 +71,33 @@ def _fingerprint(mesh):
 
 
 def _folded_cells(mesh):
-    """Cells whose signed volume, in DMPlex vertex order, has the opposite sign
-    to the rest of the mesh: cells refinement turned inside out (#946)."""
+    """Owned cells whose signed volume, in DMPlex vertex order, has the opposite
+    sign to the rest of the mesh: cells refinement turned inside out (#946)."""
     dm = mesh.dm
-    cs, ce = dm.getHeightStratum(0)
-    vs, ve = dm.getDepthStratum(0)
-    tets = np.array([[q - vs for q in dm.getTransitiveClosure(c)[0] if vs <= q < ve]
-                     for c in range(cs, ce)])
-    vol = _signed_volumes(dm.getCoordinatesLocal().array.reshape(-1, 3), tets)
-    return uw.mpi.comm.allreduce(int(np.count_nonzero(np.sign(vol) != np.sign(np.median(vol)))))
+    tets = graph._tet_cells(dm)            # None on a rank with no cells
+    folded = 0
+    if tets is not None:
+        vol = graph._signed_volumes(dm.getCoordinatesLocal().array.reshape(-1, 3), tets)
+        vol = vol[graph._owned_cell_mask(dm)]
+        if vol.size:
+            folded = int(np.count_nonzero(np.sign(vol) != np.sign(np.median(vol))))
+    return uw.mpi.comm.allreduce(folded)
+
+
+@pytest.fixture(autouse=True)
+def _watchdog(request):
+    """A solve that does not converge stays inside one KSPSolve, which holds the
+    GIL, so pytest-timeout cannot stop it (test_1111[shell] ran for hours on a
+    folded mesh). faulthandler's watchdog does not need the GIL: after 10 min it
+    prints every thread's stack to the terminal's stderr (the captured one is
+    lost on exit) and exits."""
+    capture = request.config.pluginmanager.getplugin("capturemanager")
+    with capture.global_and_fixture_disabled() if capture else contextlib.nullcontext():
+        stderr = os.fdopen(os.dup(2), "w")
+    faulthandler.dump_traceback_later(600, exit=True, file=stderr)
+    yield
+    faulthandler.cancel_dump_traceback_later()
+    stderr.close()
 
 
 def _skip_unless_recorded(mesh, recorded):

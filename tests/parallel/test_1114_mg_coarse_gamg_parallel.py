@@ -7,7 +7,7 @@ else exercises it. This test keeps it from rotting, on the rotated route (an
 annulus with rotated free slip on both walls, where the rigid-body near-null
 space is carried into the wall frame) and on the standard route (a no-slip
 Stokes box). Contract: the live coarse PC is the GAMG solve; the answer is the
-gathered LU's, solved in the same run, to 1e-9; and the velocity and Schur
+gathered LU's, solved in the same run, to 1e-8; and the velocity and Schur
 iterations stay within recorded bounds (the largest measured at np 2 and 4: the
 counts move with the partition).
 
@@ -15,6 +15,10 @@ The recorded answer is a baseline, held to 1e-7. At solver tolerance 1e-6 the
 answer itself moves with the partition and the host: the standard box's gathered
 LU is 7.9e-9 from it at np 1 (wombat) and 1.2e-8 and 1.5e-8 at np 2 and 4 (CI's
 environment on kaiju), where GAMG and LU in one run agree to 4.5e-11 or better.
+That agreement is the two solves stopping well past the tolerance, not a
+guarantee: a Schur solve that stops one iteration earlier (tolerance 3e-6 on
+the rotated route) moves them 2.4e-9 apart. The same-run bound is 1e-8; a
+coarse solve that changed the problem solved would miss it by far more.
 The annulus is a gmsh mesh, so the baseline is gated on the mesh's fingerprint;
 the same-run comparison holds on any mesh.
 
@@ -40,7 +44,7 @@ CASES = {
     "rotated": {"vrms": 4.7900648436, "its": (4, 9), "fingerprint": (640, 2.3561872025)},
     "standard": {"vrms": 1.597852740266e-01, "its": (4, 16), "fingerprint": (512, 1.0)},
 }
-SAME_RUN_RTOL = 1.0e-9
+SAME_RUN_RTOL = 1.0e-8
 BASELINE_RTOL = 1.0e-7
 
 
@@ -114,6 +118,7 @@ def test_gamg_on_the_coarse_level_when_asked_for(monkeypatch, route):
 
     # the gathered LU on the same mesh and partition, in this run
     lu_mesh, lu_v, lu_stokes = _stokes(route, None)
+    assert mesh_fingerprint(lu_mesh) == mesh_fingerprint(mesh)
     lu_stokes.solve(zero_init_guess=True)
     vrms_lu = _vrms(lu_mesh, lu_v)
     assert abs(vrms - vrms_lu) <= SAME_RUN_RTOL * vrms_lu, (vrms, vrms_lu)
