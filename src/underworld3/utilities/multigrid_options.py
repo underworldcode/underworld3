@@ -300,11 +300,11 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # small-np users.
         settings["mg_coarse_pc_type"] = "redundant"
         settings["mg_coarse_redundant_pc_type"] = "lu"
-        # The nonzero factor shift acts only on a zero pivot: a nonsingular coarse
-        # level factors as without it, a singular one factors instead of failing
-        # (#901). One rule on every route; the rotated route sets the same shift
-        # on its live coarse PC, because it deletes its keys before that PC reads
-        # them.
+        # The nonzero factor shift acts only on a pivot below PETSc's zero-pivot
+        # tolerance (relative to the row's off-diagonals), then refactors with a
+        # small diagonal shift: a level whose pivots stay clear of zero factors as
+        # without it, a singular one factors instead of failing (#901). The coarse
+        # LU reads it at its set-up, on every route, the rotated one included.
         settings["mg_coarse_redundant_pc_factor_shift_type"] = "nonzero"
     elif coarse == "gamg":
         # GAMG as the coarse solve, only when asked for: a bottom level too
@@ -320,8 +320,9 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         raise ValueError(
             'coarse="svd" was removed (#901). Use the default, coarse="redundant": '
             "redundant LU with a zero-pivot shift, which also factors a singular "
-            "coarse level. A dense SVD can still be set by hand through the PETSc "
-            "option mg_coarse_pc_type=svd under the block's prefix.")
+            "coarse level. On the standard solve path a dense SVD can still be set "
+            "by hand through the PETSc option mg_coarse_pc_type=svd under the "
+            "block's prefix; the rotated free-slip route takes no coarse override.")
     else:
         raise ValueError(
             f"coarse must be one of {GEOMETRIC_MG_COARSE_SOLVERS} (got {coarse!r})")

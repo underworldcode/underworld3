@@ -598,12 +598,14 @@ live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
 
 ### The coarse solve: one rule on every route
 
-There is no per-route difference. The native, custom-P and rotated routes all
-factor the coarse level with the shared bundle's redundant LU and its nonzero
-factor shift, which acts only on a zero pivot. The rotated route sets the
-same shift on the live coarse PC after the multigrid set-up, because it deletes
-its option keys before the coarse PC would read them (the failure class of
-#892); the value does not differ. A null space is fixed on the fine operator,
+The native, custom-P and rotated routes all factor the coarse level with the
+shared bundle's redundant LU and its nonzero factor shift, which acts only on a
+pivot below PETSc's zero-pivot tolerance. The coarse level reads the shift from
+the options database at its set-up (`PCSetUp_Redundant`), so the bundle is its
+only writer on every route. One difference remains: the rotated route writes its
+bundle under a prefix unique to the solve and drops it after set-up, so a user's
+`petsc_options` override of the coarse solve reaches the native and standard
+routes only. A null space is fixed on the fine operator,
 never by the coarse solve: the Galerkin-coarsened rotated block inherits the
 rigid rotations the constraint leaves only nearly, and is near-singular, not
 singular, on every hierarchy measured (#901).

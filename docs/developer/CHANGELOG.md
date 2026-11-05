@@ -17,18 +17,22 @@ whole Stokes solve with LU at np 4, so adding ranks made the solve slower and
 capped the rollback campaign at np 16. The route also set its coarse level up
 twice per solve.
 
-Measured, the coarse operators were near-singular, never singular:
-lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the annulus and 2.8e-4 on the shell,
-and plain redundant LU gave the SVD's answer and iteration counts on every
-fixture. Louis ruled on 2026-11-05 that there is no SVD path: every route
+Measured, the coarse operators of every real hierarchy were near-singular, not
+singular: lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the annulus and 2.8e-4 on the
+shell, and plain redundant LU gave the SVD's answer and iteration counts on every
+fixture. Only a constructed case, the fine mesh used as its own coarse level, is
+singular (test_1111). Louis ruled on 2026-11-05 that there is no SVD path: every route
 factors the coarse level with the shared redundant LU and a nonzero factor
-shift, which acts only on a zero pivot, and a null space is fixed on the
+shift, which acts only on a pivot below PETSc's zero-pivot tolerance, and a null space is fixed on the
 fine operator, never by the coarse solve. GAMG remains available as the coarse
 solve, when asked for, for a bottom level too large to gather.
 
-The shift is in the shared option bundle, so it now applies on the native and
-standard custom-P routes as well as the rotated one. On a nonsingular coarse
-level it changes nothing: native and standard custom-P FMG give bitwise-identical
+The shift is in the shared option bundle, so the native and standard custom-P
+routes now carry `NONZERO` at every rank count, as the rotated route does. Before,
+they ran PETSc's own default shift (`INBLOCKS`) at np > 1, which the bundle's
+`redundant` type keeps, and no shift at np 1, where that type replaces PETSc's
+shifted `PCLU`. On a coarse level whose pivots stay clear of zero it changes
+nothing: native and standard custom-P FMG give bitwise-identical
 velocity and pressure at the same iterations with and without it. The bundle's
 `coarse="svd"` variant is removed, not deprecated: `geometric_mg_bundle(coarse="svd")`
 raises a `ValueError` that names the default. A script that sets the PETSc

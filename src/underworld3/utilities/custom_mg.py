@@ -1303,7 +1303,8 @@ class GamgCoarseSolve:
     "gamg")`` asks for it, on the rotated and the standard route alike. A
     python PC for the coarsest level, it runs FGMRES to ``rtol`` (1e-2) with
     GAMG on the Galerkin coarse operator, and a redundant LU at GAMG's own
-    base (with a nonzero shift, which acts only on an exact zero pivot). The
+    base (with a nonzero shift, which acts only on a pivot below PETSc's
+    zero-pivot tolerance). The
     coarse solve stays distributed, with no gather of the geometric bottom
     level.
 

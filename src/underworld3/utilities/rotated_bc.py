@@ -2402,10 +2402,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # nearly: on every hierarchy measured it is near-singular, not
                 # singular (lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the
                 # annulus, 2.8e-4 on the shell), and plain LU gives the SVD's
-                # answer at its iteration counts. The shift
-                # acts only on an exact zero pivot, the case behind #306 (a
-                # coarse level that is the fine operator itself), and gives
-                # the SVD's answer there too. It replaced a dense SVD of the
+                # answer at its iteration counts. The shift acts only on a
+                # pivot below PETSc's zero-pivot tolerance, the case behind
+                # #306 (a coarse level that is the fine operator itself), and
+                # gives the SVD's answer there too. The coarse LU reads it from
+                # the bundle at vel_pc.setUp(); the `finally` drops the keys. It replaced a dense SVD of the
                 # gathered matrix, O(n^3) on every rank (64 s at np 1, 102 s
                 # at np 4 to factor a 614-cell shell bottom level). GAMG on
                 # the coarse level only when asked for, for a bottom level too
@@ -2429,8 +2430,6 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 for _m in _modes + _near:
                     _m.destroy()
                 vel_pc.setUp()
-                if _coarse == "redundant":
-                    _shift_coarse_zero_pivot(vel_pc)
                 if getattr(solver, "_custom_mg_rotated_levels", False):
                     # Rotated coarse levels: a wall node keeps one tangential
                     # row beside the two-row nodes, and the inode SOR's 2x2
@@ -2451,23 +2450,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                         _A = vel_pc.getMGSmoother(_l).getOperators()[0]
                         _A.setOption(PETSc.Mat.Option.USE_INODES, False)
                         _A.assemble()
-                # The FAC blocks read their solver from the keys dropped below:
+                # The FAC blocks read their solver from the keys the `finally`
+                # drops:
                 # set them up while the keys are there (#892).
                 custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
                 if _hier is not None:
                     _hier._record_patch_summary(_rows, solver.dm.comm)
-                # The bundle went into the GLOBAL options DB under the velocity
-                # sub-PC's prefix, which is derived from `pfx` and so is unique to
-                # this solve — drop it again now it is consumed, as the `finally`
-                # below does for the KSP's own keys.
-                vopts = PETSc.Options()
-                vpfx = vel_pc.getOptionsPrefix() or ""
-                for key in multigrid_options.geometric_mg_bundle(
-                        coarse=_coarse,
-                        smoother=solver._mg_smoother_variant).settings:
-                    vopts.delValue(vpfx + key)
-                for key in _fac_keys or ():
-                    vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -2478,13 +2466,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 cns = PETSc.NullSpace().create(constant=True, comm=dm.comm)
                 S.setNullSpace(cns)
         finally:
-            # all options consumed by setFromOptions/setUp — drop them so the
-            # global database stays clean (and bounded under time-stepping).
-            for k in cfg:
-                try:
-                    opts.delValue(pfx + k)
-                except Exception:
-                    pass
+            # all options consumed by setFromOptions/setUp — the KSP's own, and
+            # the multigrid bundle and FAC keys under the velocity sub-PC's
+            # prefix, which is derived from `pfx` — drop them so the global
+            # database stays clean (and bounded under time-stepping), on the
+            # error path too.
+            _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
                "custom_Pl": custom_Pl, "pfx": pfx,
                # which preconditioner this solve actually got — reported so a model
@@ -2618,27 +2605,13 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                 for _m in _modes:
                     _m.destroy()
                 pc.setUp()
-                if _coarse == "redundant":
-                    _shift_coarse_zero_pivot(pc)
                 custom_mg._set_up_fac_smoothers(pc, _fac_keys)
                 if _hier is not None:
                     _hier._record_patch_summary(_rows, solver.dm.comm)
-                vpfx = pc.getOptionsPrefix() or ""
-                for key in multigrid_options.geometric_mg_bundle(
-                        coarse=_coarse,
-                        smoother=solver._mg_smoother_variant).settings:
-                    opts.delValue(vpfx + key)
-                for key in _fac_keys or ():
-                    opts.delValue(vpfx + key)
             else:
                 pc.setUp()
         finally:
-            for k in cfg:
-                # an option PETSc already consumed and dropped is not an error
-                try:
-                    opts.delValue(pfx + k)
-                except Exception:
-                    pass
+            _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": None, "nsp": nsp, "cns": None,
                "custom_Pl": custom_Pl, "pfx": pfx,
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
@@ -2671,12 +2644,15 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     return Uhat, ksp.getConvergedReason(), ctx
 
 
-def _shift_coarse_zero_pivot(mg_pc):
-    """Give the redundant LU at ``mg_pc``'s coarse level a nonzero factor shift,
-    which acts only on an exact zero pivot (#901). Set on the live PC after
-    ``mg_pc.setUp()``: PCREDUNDANT passes it to its inner LU, which factors at
-    the first application, and no options key is left to clean up."""
-    mg_pc.getMGCoarseSolve().getPC().setFactorShift(PETSc.Mat.FactorShiftType.NONZERO)
+def _drop_options_under(prefix):
+    """Remove every option under ``prefix`` from the global database. A rotated
+    solve writes its KSP, fieldsplit, multigrid and FAC keys under a prefix
+    unique to that solve; this runs in the solve's ``finally``, so a set-up
+    that raises leaves nothing behind either. Not collective."""
+    opts = PETSc.Options()
+    for name in list(opts.getAll()):
+        if name.startswith(prefix):
+            opts.delValue(name)
 
 
 def _rotated_rigid_body_modes(solver, Q, normal_rows, vel_is):

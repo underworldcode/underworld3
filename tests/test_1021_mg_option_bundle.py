@@ -13,7 +13,7 @@ These tests read the configuration back off the LIVE PETSc objects after setup,
 not out of the options database, so they check what actually runs.
 
 The coarse solve is the same on every route: redundant LU with a nonzero factor
-shift, which acts only on a zero pivot (#901). The rotated route used SVD
+shift, which acts only on a pivot below PETSc's zero-pivot tolerance (#901). The rotated route used SVD
 (#306): the Galerkin-coarsened rotated block inherits the rigid-rotation modes
 only nearly, and the LU gives the SVD's answer.
 
@@ -286,9 +286,11 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
 
 
 def test_a_user_set_svd_coarse_solve_still_reaches_the_standard_route():
-    """A script that sets the PETSc option itself is unaffected by the removal
-    of the bundle's svd variant (#901): the user's key is respected and the
-    live coarse PC is an SVD."""
+    """A user's own key under the velocity block's prefix reaches the standard
+    custom-P route's live coarse PC: the bundle respects keys it did not write
+    (``owned``). It fails if ``_configure_pcmg`` writes unconditionally. With
+    ``mg_coarse_pc_type=svd`` it also shows that a script setting the PETSc
+    option itself still gets an SVD after the bundle's svd variant went (#901)."""
     s = _stokes(_annulus(RES), "usv", rotated=False)
     custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
     s.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
@@ -296,6 +298,26 @@ def test_a_user_set_svd_coarse_solve_still_reaches_the_standard_route():
     assert s.snes.getConvergedReason() > 0
     config = _mg_config(s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC())
     assert config["coarse_pc"] == "svd", config
+
+
+def test_a_rotated_set_up_that_raises_leaves_no_options_behind(monkeypatch):
+    """The rotated route writes its KSP, multigrid-bundle and FAC keys into the
+    GLOBAL options database under a prefix unique to the solve, and drops them
+    in its ``finally``. A set-up that raises after the multigrid set-up used to
+    leave the bundle and FAC keys behind (11 of them on this fixture), and a
+    failed cold solve raises since #907, so a retry loop accumulated them."""
+    s = _stokes(_annulus(RES), "rfail", rotated=True)
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected set-up failure")
+
+    monkeypatch.setattr(custom_mg, "_set_up_fac_smoothers", boom)
+    before = {k for k in PETSc.Options().getAll() if k.startswith("rot")}
+    with pytest.raises(RuntimeError, match="injected set-up failure"):
+        s.solve()
+    left = {k for k in PETSc.Options().getAll() if k.startswith("rot")} - before
+    assert not left, sorted(left)
 
 
 def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_path):

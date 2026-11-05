@@ -119,24 +119,32 @@ solving the same thing everywhere. It is also np-safe, which a bare `lu` is not
 `DIVERGED_LINEAR_SOLVE` after zero iterations. In serial, `redundant` + `lu` is
 identical to `lu`.
 
-The shift acts only on a zero pivot. A nonsingular coarse matrix factors
-exactly as it would without it, and a singular one factors instead of failing:
-PETSc's manual recommends this for a singular system (*Solving Singular
-Systems*). It is the same on every route, rotated free-slip included.
+The shift acts only when the LU meets a pivot below PETSc's zero-pivot
+tolerance (2.2e-14 times the sum of the off-diagonal entries in that row); it then
+refactors with a small shift added to the diagonal. A coarse level whose pivots
+stay above that tolerance factors exactly as it would without it: native and
+standard custom-P FMG give bitwise-identical answers at the same iterations with
+and without it (test_1021's fixtures). A singular level factors instead of failing.
+PETSc's manual recommends a nonzero factor shift for a singular system (*Solving
+Singular Systems*). The same shift is set on every route, rotated free-slip
+included.
 
 This is not an Underworld idiosyncrasy, and it is worth being clear about that
 before blaming the choice for a memory problem. **PETSc makes the same choice on
-its own.** With nothing set under `mg_coarse_*`, `PCSetUp_MG` selects
+its own.** With nothing set under `mg_coarse_*`, `PCMGSetLevels_MG` selects
 `PCREDUNDANT` when the communicator has more than one rank and `PCLU` when it
 does not — its own source comment reads "coarse solve is (redundant) LU by
-default" (`src/ksp/pc/impls/mg/mg.c`). Confirmed by inspection at `np` = 1, 2
-and 4 on PETSc 3.25.
+default" (`src/ksp/pc/impls/mg/mg.c`) — and gives it a factor shift of its own,
+`MAT_SHIFT_INBLOCKS`. Confirmed by inspection at `np` = 1, 2 and 4 on PETSc 3.25.
 
 Underworld sets it explicitly rather than inheriting it, so a bundle applied
 after another cannot pick up a sibling's leftover options (#468) — but the solver
-is the one PETSc would have picked anyway, and the shift is the only addition.
-On a nonsingular coarse level, deleting these keys and letting PETSc decide
-would change nothing; the leverage is in the hierarchy, not the bottom solve.
+is the one PETSc would have picked anyway. The shift type differs: PETSc's
+default shifts in blocks, the bundle uses `NONZERO`, and it sets it at every rank
+count (in serial, replacing PETSc's `PCLU` with `redundant` drops PETSc's own
+shift). On a coarse level whose pivots stay clear of zero, deleting these keys
+and letting PETSc decide would change nothing; the leverage is in the hierarchy,
+not the bottom solve.
 
 ### The failure mode: replicated memory
 
@@ -215,10 +223,11 @@ than the DOF count, and you pay it on every rank at once.
 Some problems leave a direction free: the pressure constant, or the rigid
 rotations a closed circle (one) or a spherical shell (three) leaves under
 free slip. That gauge is fixed on the **fine** operator, by the null space
-attached there; the rotated route admits a rotation only if it satisfies both
-the constraint and the operator to a relative 1e-8. The coarse solve sits
-inside the preconditioner. A direction it handles badly costs iterations; it
-cannot change the answer.
+attached there; the rotated route admits a rotation only if it satisfies the
+constraint and, once the operator is assembled, the operator to a relative
+1e-8. The coarse solve sits inside the preconditioner. A direction it handles
+badly costs iterations; the converged answer is set by the fine operator, to
+the solver's tolerance.
 
 The Galerkin coarse operator is exactly singular only if the fine operator has
 an exact null vector **and** the transfer carries it exactly. On every hierarchy

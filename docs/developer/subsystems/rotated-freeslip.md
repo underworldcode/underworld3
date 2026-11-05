@@ -215,8 +215,10 @@ The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
 coarse solve is the shared one, a redundant LU with a nonzero factor shift that
-acts only on a zero pivot. This route sets the shift on the live coarse
-PC, because it deletes its option keys after set-up (#901). See
+acts only on a pivot below PETSc's zero-pivot tolerance (#901). This route
+writes the bundle under a prefix unique to the solve and drops it when the
+set-up is done, so its coarse solve cannot be overridden through
+`petsc_options`. See
 [the solvers subsystem doc](solvers.md) for the bundle itself.
 
 The free-slip gauge is fixed on the fine operator, by the verified rigid

@@ -40,7 +40,7 @@ class _CountingCoarse:
             self.ksp.setType("preonly")
             self.ksp.getPC().setType("redundant")
             # the closed annulus's rotation makes this coarse operator nearly
-            # singular; a shift only acts on an exact zero pivot
+            # singular; a shift only acts on a pivot below PETSc's tolerance
             self.ksp.getPC().setFactorShift(PETSc.Mat.FactorShiftType.NONZERO)
         self.ksp.setOperators(A)
         self.ksp.setUp()
