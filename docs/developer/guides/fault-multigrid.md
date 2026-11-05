@@ -180,10 +180,10 @@ one campaign and is the error to recognise.
   declines silently leaves a plausible whole-level solve, and two bugs in the
   original campaign were caught only because the probe disagreed with the
   narrative.
-- The coarsest level must be small. The free-slip annulus leaves a rotation
-  null mode, so the coarse solve is a dense SVD on one rank: 900 unknowns are
-  instant, 14,000 took over thirty minutes. Add a level rather than tolerate a
-  large bottom; the general rule is on the multigrid page.
+- The coarsest level must be small: every rank factors the whole of it. Add
+  a level rather than tolerate a large bottom. The coarse solve itself, and
+  the rule for it, are on
+  [Multigrid preconditioning](../../advanced/multigrid-preconditioning.md).
 - The augmented-Lagrangian penalty at $\gamma = 1$ shortens the pressure Schur
   loop once the velocity preconditioner is healthy (22 to 17 iterations, warm
   solve ahead of GAMG outright); $\gamma = 10$ over-stiffens the velocity block
