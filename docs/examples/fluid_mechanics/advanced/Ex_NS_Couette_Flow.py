@@ -175,7 +175,6 @@ navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
 navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
 
-navier_stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
