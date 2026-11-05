@@ -536,8 +536,10 @@ def SegmentedSphericalShell(
         gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
         gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
-        gmsh.model.addPhysicalGroup(3, wedges, 30)
-        gmsh.model.setPhysicalName(3, 30, "Elements")
+        # 99999 as the other generators: a volume tagged with a boundary's value
+        # (Upper, 30) puts interior points in that boundary's label (#946)
+        gmsh.model.addPhysicalGroup(3, wedges, 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         gmsh.model.remove_entities([(0, centre)])
 
@@ -962,8 +964,10 @@ def SegmentedSphericalBall(
         gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
         gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
-        gmsh.model.addPhysicalGroup(3, wedges, 30)
-        gmsh.model.setPhysicalName(3, 30, "Elements")
+        # 99999 as the other generators: a volume tagged with a boundary's value
+        # (Upper, 30) puts interior points in that boundary's label (#946)
+        gmsh.model.addPhysicalGroup(3, wedges, 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         # gmsh.model.remove_entities([(0, centre)])
 

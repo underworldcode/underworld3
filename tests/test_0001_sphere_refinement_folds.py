@@ -22,7 +22,10 @@ Contracts, all exactness properties that hold on any host:
 - no refined cell is inverted: one orientation throughout;
 - a callback that folds cells is held back for those vertices, with a warning, and
   leaves no inverted cell; a callback that folds nothing is applied exactly;
-- a refined ball has finite coordinates, with its wall vertices on the sphere.
+- a refined ball has finite coordinates, with its wall vertices on the sphere;
+- every vertex a wall label carries lies on that wall: the segmented shell and ball
+  tagged their volume with Upper's value, so Upper took interior vertices and the
+  callback snapped them onto the sphere.
 """
 import itertools
 import warnings
@@ -187,3 +190,35 @@ def test_a_refined_ball_keeps_finite_coordinates():
     assert _folded_cells(mesh.dm) == 0
     wall = np.unique(np.concatenate(_wall_triangles(mesh, "Upper")))
     assert np.allclose(np.linalg.norm(coords[wall], axis=1), R_OUTER, rtol=1.0e-12)
+
+
+SEGMENTED = {
+    "segmented_shell": (lambda refinement: uw.meshing.SegmentedSphericalShell(
+        radiusOuter=R_OUTER, radiusInner=0.547, cellSize=0.4, numSegments=6,
+        refinement=refinement), {"Lower": 0.547, "Upper": R_OUTER}),
+    "segmented_ball": (lambda refinement: uw.meshing.SegmentedSphericalBall(
+        radius=R_OUTER, cellSize=0.4, numSegments=6, refinement=refinement), {"Upper": R_OUTER}),
+}
+
+
+@pytest.mark.parametrize("kind", SEGMENTED)
+def test_a_wall_label_holds_only_wall_vertices(kind):
+    build, walls = SEGMENTED[kind]
+    mesh = build(None)
+    dm = mesh.dm
+    vs, ve = dm.getDepthStratum(0)
+    coords = dm.getCoordinatesLocal().array.reshape(-1, 3)
+    for name, radius in walls.items():
+        points = dm.getStratumIS(name, mesh.boundaries[name].value).getIndices()
+        wall = [p - vs for p in points if vs <= p < ve]
+        assert wall, name
+        assert np.allclose(np.linalg.norm(coords[wall], axis=1), radius, rtol=1.0e-9), name
+
+
+@pytest.mark.parametrize("kind", SEGMENTED)
+def test_a_refined_segmented_mesh_has_no_inverted_cell(kind):
+    build, _ = SEGMENTED[kind]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        mesh = build(1)
+    assert _folded_cells(mesh.dm) == 0
