@@ -51,6 +51,13 @@ def test_every_bundle_sets_the_smoother_iteration_count():
         assert "pc_type" in bundle.settings
 
 
+def test_the_removed_svd_variant_names_its_replacement():
+    """``coarse="svd"`` was removed, not deprecated (#901): asking for it is an
+    error that names the shifted-LU default, never a silent fallback."""
+    with pytest.raises(ValueError, match=r'coarse="svd" was removed.*coarse="redundant"'):
+        multigrid_options.geometric_mg_bundle(coarse="svd")
+
+
 def test_the_geometric_bundle_pairs_krylov_smoothing_with_a_flexible_outer():
     """#514: a Krylov smoother makes the preconditioner VARY between
     applications, and a plain-gmres outer's recurrence then has no guarantee.
@@ -276,6 +283,19 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     # test_rotated_coarse_is_redundant_lu_with_a_rotation_mode.
     assert native["coarse_pc"] == "redundant"
     assert native["coarse_shift"]
+
+
+def test_a_user_set_svd_coarse_solve_still_reaches_the_standard_route():
+    """A script that sets the PETSc option itself is unaffected by the removal
+    of the bundle's svd variant (#901): the user's key is respected and the
+    live coarse PC is an SVD."""
+    s = _stokes(_annulus(RES), "usv", rotated=False)
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+    s.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+    s.solve()
+    assert s.snes.getConvergedReason() > 0
+    config = _mg_config(s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC())
+    assert config["coarse_pc"] == "svd", config
 
 
 def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_path):

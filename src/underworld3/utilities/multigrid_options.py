@@ -312,6 +312,16 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # custom_mg.GamgCoarseSolve, which attaches the restricted rigid-body
         # near-null space.
         settings["mg_coarse_pc_type"] = "python"
+    elif coarse == "svd":
+        # Removed, not deprecated (#901): the variant existed for the rotated
+        # route, whose coarse levels are near-singular, not singular, and the
+        # shifted LU above gives the SVD's answer at a fraction of its O(n^3)
+        # cost on every rank.
+        raise ValueError(
+            'coarse="svd" was removed (#901). Use the default, coarse="redundant": '
+            "redundant LU with a zero-pivot shift, which also factors a singular "
+            "coarse level. A dense SVD can still be set by hand through the PETSc "
+            "option mg_coarse_pc_type=svd under the block's prefix.")
     else:
         raise ValueError(
             f"coarse must be one of {GEOMETRIC_MG_COARSE_SOLVERS} (got {coarse!r})")

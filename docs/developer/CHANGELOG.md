@@ -26,6 +26,15 @@ shift, which acts only on a zero pivot, and a null space is fixed on the
 fine operator, never by the coarse solve. GAMG remains available as the coarse
 solve, when asked for, for a bottom level too large to gather.
 
+The shift is in the shared option bundle, so it now applies on the native and
+standard custom-P routes as well as the rotated one. On a nonsingular coarse
+level it changes nothing: native and standard custom-P FMG give bitwise-identical
+velocity and pressure at the same iterations with and without it. The bundle's
+`coarse="svd"` variant is removed, not deprecated: `geometric_mg_bundle(coarse="svd")`
+raises a `ValueError` that names the default. A script that sets the PETSc
+option `mg_coarse_pc_type svd` itself is unaffected; on the standard path the
+user's key is respected as before (test_1021).
+
 ### CI test batches sharded across parallel jobs (October 2026, #730)
 
 The test workflow ran as a single job whose wall-clock tracked the total cost
