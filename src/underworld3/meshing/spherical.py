@@ -17,7 +17,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
-from underworld3.meshing._sphere_surface import _flip_creased_sphere_edges
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -212,10 +212,7 @@ def SphericalShell(
 
         gmsh.model.occ.synchronize()
 
-        # the volume mesh is built on convex-hull triangulations of the spheres (#946)
-        gmsh.model.mesh.generate(2)
-        _flip_creased_sphere_edges()
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -716,10 +713,7 @@ def SphericalShellInternalBoundary(
 
         gmsh.model.addPhysicalGroup(shell_vol[0], [shell_vol[1]], 99999, "Elements")
 
-        # the volume mesh is built on convex-hull triangulations of the spheres (#946)
-        gmsh.model.mesh.generate(2)
-        _flip_creased_sphere_edges()
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -1034,10 +1028,7 @@ def SegmentofSphere(
 
         gmsh.model.occ.synchronize()
 
-        # the volume mesh is built on convex-hull triangulations of the spheres (#946)
-        gmsh.model.mesh.generate(2)
-        _flip_creased_sphere_edges()
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres(centre=centroid)
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -1047,6 +1038,9 @@ def SegmentofSphere(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
+    # TODO(BUG): the callback snaps the walls onto spheres about the origin, not
+    # about ``centroid``; with a centroid off the origin, refinement moves the wall
+    # vertices off their sphere (and the hierarchy holds some back, #946).
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -1309,10 +1303,7 @@ def CubedSphere(
                 gmsh.model.mesh.set_recombine(3, volume)
 
         # Generate Mesh
-        # the volume mesh is built on convex-hull triangulations of the spheres (#946)
-        gmsh.model.mesh.generate(2)
-        _flip_creased_sphere_edges()
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 

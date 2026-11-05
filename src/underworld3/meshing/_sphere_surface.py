@@ -17,10 +17,12 @@ def _flip_creased_sphere_edges(centre=(0.0, 0.0, 0.0)):
 
     An edge is creased when the far vertex of one of its triangles lies outside the
     plane of the other, on the side away from the centre. Flipping the edge to the other
-    diagonal removes the crease. Repeating until no edge is creased leaves the convex hull
-    of the nodes, which for points on a sphere is their spherical Delaunay triangulation;
+    diagonal removes the crease. On a closed sphere, repeating until no edge is creased
+    leaves the convex hull of the nodes, their spherical Delaunay triangulation;
     the flips terminate as Lawson's do. Four nodes on one circle tie and are left alone.
-    Edges of curves embedded in a surface are never flipped.
+    Edges of curves embedded in a surface are never flipped. An edge on a curve that
+    bounds the surface has one triangle in it and is not flipped either, so a wall
+    made of patches is locally convex inside each patch, not necessarily across them.
 
     The surfaces flipped are those whose triangle nodes are all at one distance from
     ``centre``. Call it on gmsh's current model between ``generate(2)`` and
@@ -55,6 +57,18 @@ def _flip_creased_sphere_edges(centre=(0.0, 0.0, 0.0)):
             pass
         gmsh.model.mesh.removeElements(2, surface)
         gmsh.model.mesh.addElementsByType(surface, 2, [], np.ravel(triangles))
+
+
+def _generate_volume_on_convex_spheres(centre=(0.0, 0.0, 0.0)):
+    """Mesh gmsh's current model: the surfaces, then every spherical surface flipped
+    to the convex hull of its nodes (:func:`_flip_creased_sphere_edges`), then the
+    volume on them (#946). Call it in place of ``gmsh.model.mesh.generate(3)`` in a
+    generator whose walls are spheres about ``centre``."""
+    import gmsh
+
+    gmsh.model.mesh.generate(2)
+    _flip_creased_sphere_edges(centre)
+    gmsh.model.mesh.generate(3)
 
 
 def _flip_creased_edges_once(triangles, coords, centre, fixed):

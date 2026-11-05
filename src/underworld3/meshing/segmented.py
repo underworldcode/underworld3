@@ -17,7 +17,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
-from underworld3.meshing._sphere_surface import _flip_creased_sphere_edges
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -543,10 +543,7 @@ def SegmentedSphericalShell(
 
         gmsh.model.remove_entities([(0, centre)])
 
-        # the volume mesh is built on convex-hull triangulations of the spheres (#946)
-        gmsh.model.mesh.generate(2)
-        _flip_creased_sphere_edges()
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
 
         write_gmsh(uw_filename)
         gmsh.finalize()
@@ -971,10 +968,7 @@ def SegmentedSphericalBall(
 
         # gmsh.model.remove_entities([(0, centre)])
 
-        # the volume mesh is built on convex-hull triangulations of the spheres (#946)
-        gmsh.model.mesh.generate(2)
-        _flip_creased_sphere_edges()
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
 
         write_gmsh(uw_filename)
         gmsh.finalize()

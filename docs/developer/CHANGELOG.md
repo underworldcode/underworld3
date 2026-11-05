@@ -19,20 +19,24 @@ every velocity multigrid solve of a rotated free-slip Stokes problem ran to its
 iteration cap. A macOS mesh with the same fold, built from another gmsh seed, did
 the same with an LU or an SVD coarse solve and with either wall normal.
 
-- Every spherical gmsh generator now flips creased wall edges to the convex hull
-  before the volume mesh. The generators are SphericalShell,
-  SphericalShellInternalBoundary, SegmentofSphere, CubedSphere, the segmented
-  shell and ball, and both regional boxes.
+- Every gmsh generator with spherical walls now flips creased wall edges before the
+  volume mesh, so each wall patch is triangulated as its convex hull. The
+  generators are SphericalShell, SphericalShellInternalBoundary, SegmentofSphere,
+  CubedSphere, the segmented shell and ball, and RegionalSphericalBox. The flips
+  are pure Python on rank 0, about 1 s per 12,000 surface triangles.
 - The mesh hierarchy applies any refinement callback through a guard. A vertex
-  whose move turns a cell inside out goes back where refinement placed it, with a
-  warning. The guard covers meshes that do not come from gmsh. It costs about 1 s
-  on a 0.4-0.9 million cell mesh, at construction.
+  whose move turns a triangle or tetrahedron inside out goes back where refinement
+  placed it, and one warning gives the total. The guard covers meshes that do not
+  come from gmsh. It costs about 1 s on a 0.4-0.9 million cell mesh, at
+  construction.
+- A crease on a curve between two wall patches is not flipped:
+  CubedSphere(simplex=True, numElements=3) still holds one vertex back.
 - The segmented shell and ball tagged their volume with Upper's value, so the
   Upper label took interior vertices and the callback dragged them onto the
   sphere. The volume is now 99999, as elsewhere.
-- A label missing from a DM now yields no points, where it yielded vertex 0. A
-  refined ball (radiusInner=0) had moved that vertex to the origin and then
-  divided by its zero radius (#903).
+- A label missing from a DM now yields no points, where it yielded vertex 0, in
+  both copies of the lookup. A refined ball (radiusInner=0) had moved that vertex
+  to the origin and then divided by its zero radius (#903).
 
 Most spherical meshes change, by the flips, and recorded answers on them move with
 them. test_1111's shell is re-recorded on its new mesh: the shifted LU and a dense

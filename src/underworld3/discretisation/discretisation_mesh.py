@@ -369,11 +369,12 @@ def _apply_refinement_callback(dm, refinement_callback):
     the cells between them inside out: on a concave wall, a snapped midpoint can overtake
     an interior vertex that is not snapped (#946). Of each cell the callback inverted,
     the vertex it moved furthest goes back where refinement placed it, until no cell is
-    inverted, and a warning gives the number put back: those vertices are not where the
-    callback meant them to be.
+    inverted. Returns the number put back, over all ranks: those vertices are not where
+    the callback meant them to be.
 
     Cells are checked when they are simplices of the coordinate dimension; a manifold
-    mesh is not checked. Collective: a vertex is put back on every rank that holds it.
+    mesh or a mesh of quadrilaterals or hexahedra is not checked. Collective: a vertex is
+    put back on every rank that holds it.
     """
     from underworld3.utilities._plex_topology import closure_points, section_offsets
 
@@ -381,7 +382,7 @@ def _apply_refinement_callback(dm, refinement_callback):
     refined = dm.getCoordinatesLocal().array.reshape(-1, cdim).copy()
     refinement_callback(dm)
     if dim != cdim:
-        return
+        return 0
 
     coordinates = dm.getCoordinatesLocal()
     moved_to = coordinates.array.reshape(-1, cdim).copy()
@@ -414,16 +415,7 @@ def _apply_refinement_callback(dm, refinement_callback):
     if total:
         coordinates.array[...] = numpy.where(held[:, None], refined, moved_to).ravel()
         dm.setCoordinatesLocal(coordinates)
-        with uw.selective_ranks(0) as selected:
-            if selected:
-                import warnings
-
-                warnings.warn(
-                    f"The refinement callback would have turned cells inside out. "
-                    f"{total} of the vertices it moved stay where refinement placed "
-                    f"them instead (#946).",
-                    UserWarning,
-                )
+    return total
 
 
 def _flag_on_every_sharer(dm, flags):
@@ -1301,9 +1293,23 @@ class Mesh(Stateful, uw_object):
         self.dm_h.setName("uw_hierarchical_dm")
 
         # Is this needed here, after the above calls ?
+        # The second pass re-applies the callback to every level from the state the
+        # first left, so it holds back again every vertex that needs it: its sum is
+        # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            for dm in self.dm_hierarchy:
-                _apply_refinement_callback(dm, refinement_callback)
+            held = sum(_apply_refinement_callback(dm, refinement_callback)
+                       for dm in self.dm_hierarchy)
+            if held:
+                with uw.selective_ranks(0) as selected:
+                    if selected:
+                        import warnings
+
+                        warnings.warn(
+                            f"The refinement callback would have turned cells inside "
+                            f"out. {held} of the vertices it moved stay where refinement "
+                            f"placed them instead (#946).",
+                            UserWarning,
+                        )
 
         # Single level equivalent dm (needed for aux vars ?? Check this - LM)
         self.dm = self.dm_h.clone()
@@ -7326,6 +7332,8 @@ class Mesh(Stateful, uw_object):
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
+    # TODO(BUG): MeshVariable is not imported in this module, so this method raises
+    # NameError when called.
     def meshVariable_mask_from_label(self, label_name, label_value):
         """Extract single label value and make a point mask - note: this produces a mask on the mesh points and
         assumes a 1st order mesh. Cell labels are not respected in this function."""
@@ -10573,8 +10581,10 @@ def petsc_dm_find_labeled_points_local(
 
     label = dm.getLabel(label_name)
     if not label:
+        # no points: callers index coordinates with the result, and [0] would
+        # move vertex 0 (#903); the Cython copy of this lookup does the same
         print(f"{uw.mpi.rank} Label {label_name} is not present on the dm", flush=True)
-        return np.array([0])
+        return np.array([], dtype=np.int64)
 
     pointIS = dm.getStratumIS("depth", 0)
     edgeIS = dm.getStratumIS("depth", 1)

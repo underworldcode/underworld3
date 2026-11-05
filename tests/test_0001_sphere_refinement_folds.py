@@ -183,8 +183,11 @@ def test_a_callback_that_folds_nothing_is_applied_exactly():
 def test_a_refined_ball_keeps_finite_coordinates():
     """A ball has no inner wall. The callback's lookup of the missing label returned
     vertex 0, which it moved to the origin and then divided by its zero radius (#903)."""
-    mesh = uw.meshing.SphericalShell(radiusOuter=R_OUTER, radiusInner=0.0, cellSize=0.5,
-                                     refinement=1, qdegree=2)
+    with warnings.catch_warnings():
+        # the hierarchy would hold the moved vertex back and hide the lookup's error
+        warnings.simplefilter("error", UserWarning)
+        mesh = uw.meshing.SphericalShell(radiusOuter=R_OUTER, radiusInner=0.0, cellSize=0.5,
+                                         refinement=1, qdegree=2)
     coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, 3)
     assert np.all(np.isfinite(coords))
     assert _folded_cells(mesh.dm) == 0
