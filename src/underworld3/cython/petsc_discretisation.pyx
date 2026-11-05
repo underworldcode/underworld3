@@ -236,8 +236,10 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         label = dm.getLabel(label_name)
         if not label:
+                # no points: callers index coordinates with the result, and [0]
+                # would move vertex 0 (#903)
                 uw.pprint(f"Label {label_name} is not present on the dm")
-                return np.array([0])
+                return np.array([], dtype=np.int64)
 
         pointIS = dm.getStratumIS("depth",0)
         edgeIS = dm.getStratumIS("depth",1)

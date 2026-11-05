@@ -360,6 +360,91 @@ def _compose_prolongations(fine, coarse):
     width = int(cols.max()) + 1
     return (uniq // width, uniq % width, summed)
 
+def _apply_refinement_callback(dm, refinement_callback):
+    r"""Apply a refinement callback to a refined DM without letting it invert a cell.
+
+    A refinement callback moves vertices of a freshly refined mesh, typically the new
+    boundary vertices onto a curved boundary. Regular refinement subdivides every cell,
+    so before the callback no cell is inverted. A vertex moved past its neighbours turns
+    the cells between them inside out: on a concave wall, a snapped midpoint can overtake
+    an interior vertex that is not snapped (#946). Of each cell the callback inverted,
+    the vertex it moved furthest goes back where refinement placed it, until no cell is
+    inverted, and a warning gives the number put back: those vertices are not where the
+    callback meant them to be.
+
+    Cells are checked when they are simplices of the coordinate dimension; a manifold
+    mesh is not checked. Collective: a vertex is put back on every rank that holds it.
+    """
+    from underworld3.utilities._plex_topology import closure_points, section_offsets
+
+    dim, cdim = dm.getDimension(), dm.getCoordinateDim()
+    refined = dm.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+    refinement_callback(dm)
+    if dim != cdim:
+        return
+
+    coordinates = dm.getCoordinatesLocal()
+    moved_to = coordinates.array.reshape(-1, cdim).copy()
+    vs, ve = dm.getDepthStratum(0)
+    cs, ce = dm.getHeightStratum(0)
+    rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
+    cells = closure_points(dm, numpy.arange(cs, ce), 0)
+    if cells.shape[1] == dim + 1 and (cells >= 0).all():
+        cells = rows[cells - vs]
+    else:
+        cells = numpy.empty((0, dim + 1), dtype=numpy.int64)
+
+    def orientation(x):
+        return numpy.sign(numpy.linalg.det(x[cells[:, 1:]] - x[cells[:, :1]]))
+
+    reference = orientation(refined)
+    shift = numpy.linalg.norm(moved_to - refined, axis=1)
+    held = numpy.zeros(len(refined), dtype=bool)
+    while True:
+        inverted = cells[orientation(numpy.where(held[:, None], refined, moved_to)) != reference]
+        reach = numpy.where(held[inverted], 0.0, shift[inverted])
+        culprits = numpy.zeros(len(refined), dtype=bool)
+        culprits[inverted[numpy.arange(len(inverted)), reach.argmax(axis=1)]] = True
+        culprits, count = _flag_on_every_sharer(dm, culprits)
+        if count == 0:
+            break
+        held |= culprits
+
+    _, total = _flag_on_every_sharer(dm, held)
+    if total:
+        coordinates.array[...] = numpy.where(held[:, None], refined, moved_to).ravel()
+        dm.setCoordinatesLocal(coordinates)
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                import warnings
+
+                warnings.warn(
+                    f"The refinement callback would have turned cells inside out. "
+                    f"{total} of the vertices it moved stay where refinement placed "
+                    f"them instead (#946).",
+                    UserWarning,
+                )
+
+
+def _flag_on_every_sharer(dm, flags):
+    """A vertex flagged on any rank that holds it, flagged on every rank that holds it,
+    and the global number of flagged vertices. ``flags`` is indexed like the rows of
+    the local coordinate array. Collective."""
+    cdm = dm.getCoordinateDM()
+    cdim = dm.getCoordinateDim()
+    local, glob = cdm.createLocalVec(), cdm.createGlobalVec()
+    local.array[...] = numpy.repeat(flags.astype(float), cdim)
+    glob.set(0.0)
+    cdm.localToGlobal(local, glob, addv=PETSc.InsertMode.ADD_VALUES)
+    glob.array[...] = glob.array > 0.0
+    count = int(round(glob.sum() / cdim))
+    cdm.globalToLocal(glob, local, addv=PETSc.InsertMode.INSERT_VALUES)
+    shared = local.array.reshape(-1, cdim)[:, 0] > 0.0
+    local.destroy()
+    glob.destroy()
+    return shared, count
+
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -1208,7 +1293,7 @@ class Mesh(Stateful, uw_object):
             dm_refined.setCoarseDM(self.dm_hierarchy[i])
 
             if callable(refinement_callback):
-                refinement_callback(dm_refined)
+                _apply_refinement_callback(dm_refined, refinement_callback)
 
             self.dm_hierarchy.append(dm_refined)
 
@@ -1218,7 +1303,7 @@ class Mesh(Stateful, uw_object):
         # Is this needed here, after the above calls ?
         if callable(refinement_callback):
             for dm in self.dm_hierarchy:
-                refinement_callback(dm)
+                _apply_refinement_callback(dm, refinement_callback)
 
         # Single level equivalent dm (needed for aux vars ?? Check this - LM)
         self.dm = self.dm_h.clone()
