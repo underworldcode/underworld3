@@ -120,11 +120,12 @@ solving the same thing everywhere. It is also np-safe, which a bare `lu` is not
 identical to `lu`.
 
 The shift acts only when the LU meets a pivot below PETSc's zero-pivot
-tolerance (2.2e-14 times the sum of the off-diagonal entries in that row); it then
+tolerance (2.2e-14 times the sum of the magnitudes of the off-diagonal entries in
+that row); it then
 refactors with a small shift added to the diagonal. A coarse level whose pivots
 stay above that tolerance factors exactly as it would without it: native and
 standard custom-P FMG give bitwise-identical answers at the same iterations with
-and without it (test_1021's fixtures). A singular level factors instead of failing.
+and without it (measured on test_1021's fixtures). A singular level factors instead of failing.
 PETSc's manual recommends a nonzero factor shift for a singular system (*Solving
 Singular Systems*). The same shift is set on every route, rotated free-slip
 included.
