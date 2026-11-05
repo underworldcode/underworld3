@@ -1,18 +1,21 @@
 """Rebuilding a faulted mesh solved by rotated free slip and the custom FMG does not
-grow memory, in parallel (#948).
+grow memory, in parallel.
 
-The zg95 fault runs (rotated free-slip walls, the custom FMG, a split fault with its
-FAC patch) grew about 190 MB per rank at every fault rebuild on development f631ce42,
-and stayed flat between rebuilds. #882's rebuild test (test_0078) covers a plain
-Stokes solve with Dirichlet walls, and passes on that build: it does not reach the
-rotated solve, the custom FMG or the FAC patch. This test is its fixture on that path.
-Each rebuild cuts a new fault into one refined base, as a driver's rebuild does, and
-solves with rotated free slip on every wall, the fault's own constraint, and the
+#882's rebuild test (test_0078) covers a plain Stokes solve with Dirichlet walls. This
+test is its fixture on the path the zg95 fault runs take, which test_0078 does not
+reach. Each rebuild cuts a new fault into one refined base, as a driver's rebuild does,
+and solves with rotated free slip on every wall, the fault's own constraint, and the
 custom FMG on the child's coarse levels with the FAC patch keyed on the fault's cells.
 
-In serial nothing is left behind on this path: PETSc's object table balances at any
-rebuild count. A parallel leak lives where petsc4py defers destruction, so the measure
-is the resident set, which tracks freed memory on Linux only, as in test_0078.
+Written for #948. Those runs grew about 190 MB per rank at every fault rebuild, but the
+cause was outside the library: a monitoring hook kept every rebuild's solver in a
+module-level list. On this path the library keeps nothing per rebuild, at any rank
+count measured: in CI's environment, 1.0 MB per rebuild at np 2 and 0.7 MB at np 4.
+The test guards against a library leak appearing here.
+
+In serial, PETSc's object table balances on this path at any rebuild count. A parallel
+leak would live where petsc4py defers destruction, so the measure is the resident set,
+which tracks freed memory on Linux only, as in test_0078.
 
 Run with at least two ranks.
 """
