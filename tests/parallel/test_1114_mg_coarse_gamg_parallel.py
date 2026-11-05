@@ -6,11 +6,17 @@ coarse_solve="gamg")``. It is never a default and never automatic, so nothing
 else exercises it. This test keeps it from rotting, on the rotated route (an
 annulus with rotated free slip on both walls, where the rigid-body near-null
 space is carried into the wall frame) and on the standard route (a no-slip
-Stokes box). Contract: the live coarse PC is the GAMG solve, the answer is the
-gathered LU's recorded one, and the velocity and Schur iterations stay within
-recorded bounds (the largest measured at np 2 and 4: the counts move with the
-partition). The annulus is a gmsh mesh, so its answer is gated on the mesh's
-fingerprint.
+Stokes box). Contract: the live coarse PC is the GAMG solve; the answer is the
+gathered LU's, solved in the same run, to 1e-9; and the velocity and Schur
+iterations stay within recorded bounds (the largest measured at np 2 and 4: the
+counts move with the partition).
+
+The recorded answer is a baseline, held to 1e-7. At solver tolerance 1e-6 the
+answer itself moves with the partition and the host: the standard box's gathered
+LU is 7.9e-9 from it at np 1 (wombat) and 1.2e-8 and 1.5e-8 at np 2 and 4 (CI's
+environment on kaiju), where GAMG and LU in one run agree to 4.5e-11 or better.
+The annulus is a gmsh mesh, so the baseline is gated on the mesh's fingerprint;
+the same-run comparison holds on any mesh.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1114_mg_coarse_gamg_parallel.py
 """
@@ -29,11 +35,18 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier
 # The gathered-LU answer at np 2 (redundant LU; on the rotated route the SVD
 # coarse solve gave it too), the most velocity / Schur iterations with GAMG on
 # the coarse level at np 2 and 4, and the mesh's fingerprint (owned cells,
-# volume).
+# volume). GAMG against the same run's gathered LU, and against the baseline:
 CASES = {
     "rotated": {"vrms": 4.7900648436, "its": (4, 9), "fingerprint": (640, 2.3561872025)},
     "standard": {"vrms": 1.597852740266e-01, "its": (4, 16), "fingerprint": (512, 1.0)},
 }
+SAME_RUN_RTOL = 1.0e-9
+BASELINE_RTOL = 1.0e-7
+
+
+def _vrms(mesh, v):
+    vol = float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate())
+    return float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate() / vol))
 
 
 def _stokes(route, coarse_solve):
@@ -70,9 +83,6 @@ def _stokes(route, coarse_solve):
     return mesh, v, stokes
 
 
-
-
-
 @pytest.mark.parametrize("route", ["rotated", "standard"])
 def test_gamg_on_the_coarse_level_when_asked_for(monkeypatch, route):
     seen = {}
@@ -100,10 +110,16 @@ def test_gamg_on_the_coarse_level_when_asked_for(monkeypatch, route):
         vel_ksp, pres_ksp = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()
         its = (vel_ksp.getIterationNumber(), pres_ksp.getIterationNumber())
     assert its[0] <= case["its"][0] and its[1] <= case["its"][1], its
-    vol = float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate())
-    vrms = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate() / vol))
+    vrms = _vrms(mesh, v)
+
+    # the gathered LU on the same mesh and partition, in this run
+    lu_mesh, lu_v, lu_stokes = _stokes(route, None)
+    lu_stokes.solve(zero_init_guess=True)
+    vrms_lu = _vrms(lu_mesh, lu_v)
+    assert abs(vrms - vrms_lu) <= SAME_RUN_RTOL * vrms_lu, (vrms, vrms_lu)
+
     cells, volume = mesh_fingerprint(mesh)
     if cells != case["fingerprint"][0] or abs(volume - case["fingerprint"][1]) > 1.0e-9:
         pytest.skip(f"this host built a different mesh ({cells}, {volume:.10f}; "
                     f"recorded {case['fingerprint']}): the recorded answer does not apply")
-    assert abs(vrms - case["vrms"]) <= 1.0e-8 * case["vrms"], vrms
+    assert abs(vrms - case["vrms"]) <= BASELINE_RTOL * case["vrms"], vrms
