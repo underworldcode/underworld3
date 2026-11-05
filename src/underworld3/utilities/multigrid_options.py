@@ -78,8 +78,8 @@ def _user_owns(opts, name, owned):
     return opts.getString(name) != owned.get(name)
 
 
-#: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
-#: is the default and is np-safe; ``"gamg"`` is a distributed coarse solve, only
+#: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU,
+#: zero-pivot shift) is the default and is np-safe; ``"gamg"`` is a distributed coarse solve, only
 #: when asked for — see :func:`geometric_mg_bundle`.
 GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "gamg")
 
@@ -190,7 +190,7 @@ def _geometric_mg_settings(coarse, smoother="robust"):
     The smoother variants set the SAME keys, only the values differ: this is why
     ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap. The
     coarse variants do not: only ``"redundant"`` sets
-    ``mg_coarse_redundant_pc_type``. A key one variant sets and another does not is
+    ``mg_coarse_redundant_pc_type`` and its factor shift. A key one variant sets and another does not is
     in the other's stale list (:func:`_bundle`), so switching variants clears it."""
     settings = {
         # The KSP this preconditioner serves must be FLEXIBLE, for both
@@ -300,6 +300,12 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # small-np users.
         settings["mg_coarse_pc_type"] = "redundant"
         settings["mg_coarse_redundant_pc_type"] = "lu"
+        # The nonzero factor shift acts only on a zero pivot: a nonsingular coarse
+        # level factors as without it, a singular one factors instead of failing
+        # (#901). One rule on every route; the rotated route sets the same shift
+        # on its live coarse PC, because it deletes its keys before that PC reads
+        # them.
+        settings["mg_coarse_redundant_pc_factor_shift_type"] = "nonzero"
     elif coarse == "gamg":
         # GAMG as the coarse solve, only when asked for: a bottom level too
         # large for every rank to factor. The caller installs
@@ -391,8 +397,8 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
         ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
         ``solver.strategy``, not usually here.
     coarse : {"redundant", "gamg"}
-        The coarse-level solve. ``"redundant"`` (redundant+LU) is the default,
-        the rotated route's included (it adds a zero-pivot shift). ``"gamg"``
+        The coarse-level solve. ``"redundant"`` (redundant+LU with a zero-pivot
+        shift) is the default on every route. ``"gamg"``
         is a distributed coarse solve for a bottom level too large to gather
         (the caller installs ``custom_mg.GamgCoarseSolve``).
 

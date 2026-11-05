@@ -12,15 +12,18 @@ on the standard path, PETSc's own default of 2 on the rotated path).
 These tests read the configuration back off the LIVE PETSc objects after setup,
 not out of the options database, so they check what actually runs.
 
-The coarse solve is the same redundant LU on every route. The rotated route
-adds a nonzero factor shift for a coarse level that is singular (#901), where
-it used SVD (#306): the Galerkin-coarsened rotated block inherits the
-rigid-rotation modes only nearly, and plain LU gives the SVD's answer.
+The coarse solve is the same on every route: redundant LU with a nonzero factor
+shift, which acts only on a zero pivot (#901). The rotated route used SVD
+(#306): the Galerkin-coarsened rotated block inherits the rigid-rotation modes
+only nearly, and the LU gives the SVD's answer.
 
 Also here: the rotated path must pick up a MESH-OWNED hierarchy (the coarse tail
 an ``adapt()`` child carries), which it previously ignored, silently solving on
 GAMG (#467).
 """
+import os
+import tempfile
+
 import pytest
 import sympy
 from petsc4py import PETSc
@@ -179,7 +182,19 @@ def _mg_config(vel_pc):
         "smoother_norm": str(smoother.getNormType()),
         "coarse_ksp": coarse.getType(),
         "coarse_pc": coarse.getPC().getType(),
+        "coarse_shift": _coarse_shift_is_nonzero(coarse),
     }
+
+
+def _coarse_shift_is_nonzero(coarse):
+    """The coarse LU's factor shift, read off the live KSP's view (#901)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "coarse_ksp.txt")
+        viewer = PETSc.Viewer().createASCII(path, comm=coarse.getComm())
+        coarse.view(viewer)
+        viewer.destroy()
+        with open(path) as f:
+            return "[NONZERO]" in f.read()
 
 
 def _annulus(cell_size):
@@ -233,14 +248,15 @@ def _custom_rotated_config(monkeypatch, strategy=None):
 
 def test_all_three_routes_share_one_bundle(monkeypatch):
     """Native, standard custom-P and rotated custom-P must smooth identically —
-    same Krylov smoother, same preconditioner, same iteration count, same cycle.
-    Only the coarse solve legitimately differs."""
+    same Krylov smoother, same preconditioner, same iteration count, same cycle —
+    and solve the coarse level the same way: redundant LU with a zero-pivot
+    shift (#901)."""
     native = _native_config()
     standard = _custom_standard_config()
     rotated = _custom_rotated_config(monkeypatch)
 
     shared = ("mg_type", "smoother_ksp", "smoother_pc", "smoother_max_it",
-              "smoother_norm", "coarse_ksp")
+              "smoother_norm", "coarse_ksp", "coarse_pc", "coarse_shift")
     for key in shared:
         assert native[key] == standard[key] == rotated[key], (
             f"route drift on {key!r}: native={native[key]!r} "
@@ -252,15 +268,14 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     assert native["smoother_pc"] == "sor"
     assert native["smoother_max_it"] == 4
 
-    # The rotated coarse solve is GATED (#629 revision of the #306 rule):
-    # it was a blanket svd (measured as most of ~0.8 s per V-cycle, #622),
-    # then svd only with a VERIFIED rigid-rotation null mode; it is redundant
-    # LU now, the rotated route adding a zero-pivot shift (#901). This
-    # fixture PINS the inner boundary, so no rotation mode survives; the case
-    # with one is test_rotated_coarse_is_redundant_lu_with_a_rotation_mode.
+    # The rotated coarse solve was a blanket svd (measured as most of ~0.8 s
+    # per V-cycle, #622), then svd only with a VERIFIED rigid-rotation null
+    # mode (#629); it is the shared redundant LU with a zero-pivot shift now,
+    # as on every route (#901). This fixture PINS the inner boundary, so no
+    # rotation mode survives; the case with one is
+    # test_rotated_coarse_is_redundant_lu_with_a_rotation_mode.
     assert native["coarse_pc"] == "redundant"
-    assert standard["coarse_pc"] == "redundant"
-    assert rotated["coarse_pc"] == "redundant"
+    assert native["coarse_shift"]
 
 
 def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_path):
@@ -268,8 +283,8 @@ def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_pa
     as a genuine null mode, and the null-space builder must verify and record
     it. The coarse solve stays redundant LU (#901): the inherited rotation
     leaves the coarse operator near-singular, not singular, and LU gives the
-    SVD's answer; the rotated route adds a zero-pivot shift for a coarse level
-    that is singular (test_1111). It was a dense SVD here (#306)."""
+    SVD's answer; the zero-pivot shift every route carries is for a coarse
+    level that is singular (test_1111). It was a dense SVD here (#306)."""
     mesh = _annulus(RES)
     x, y = mesh.X
     r = sympy.sqrt(x**2 + y**2)

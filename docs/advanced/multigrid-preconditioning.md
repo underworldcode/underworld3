@@ -215,8 +215,8 @@ than the DOF count, and you pay it on every rank at once.
 Some problems leave a direction free: the pressure constant, or the rigid
 rotations a closed circle (one) or a spherical shell (three) leaves under
 free slip. That gauge is fixed on the **fine** operator, by the null space
-attached there; the rotated route admits a rotation only if it is null to
-round-off against both the constraint and the operator. The coarse solve sits
+attached there; the rotated route admits a rotation only if it satisfies both
+the constraint and the operator to a relative 1e-8. The coarse solve sits
 inside the preconditioner. A direction it handles badly costs iterations; it
 cannot change the answer.
 
@@ -278,11 +278,14 @@ stokes.preconditioner = "auto"
 stokes.petsc_options["fieldsplit_velocity_mg_coarse_redundant_pc_factor_shift_type"] = "none"
 ```
 
-Taking the shift off is the override worth knowing: a coarse level that is
-genuinely singular then stops the solve at its first factorisation with a
-zero pivot (`DIVERGED_PC_FAILED`), where the default factors through it. Any
-other PETSc coarse solver can be set the same way, an SVD included, but nothing
-in Underworld sets one and none is needed.
+This restores plain LU. Do not read a clean factorisation without the shift as
+proof that the coarse level is nonsingular: plain LU stops at a zero pivot
+(`DIVERGED_PC_FAILED`) only when round-off leaves that pivot below PETSc's
+zero-pivot tolerance. On the one singular coarse level measured, the fine mesh
+used as its own coarse level, it did not stop, and the solve converged 5e-7 from
+the shifted answer (test_1111). Any other PETSc coarse solver can be set the
+same way, an SVD included, but nothing in Underworld sets one and none is
+needed.
 
 ```{note}
 `PCTELESCOPE` — the usual PETSc answer to "replicating onto every rank is too
