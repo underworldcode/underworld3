@@ -101,6 +101,38 @@ class _SphericalGapNormPreconditioner:
             self.closed = True
 
 
+def _velocity_norm_graph(matrix, velocity_size, local_velocity_size):
+    """Copy only the distributed velocity graph into the field's ownership.
+
+    The mixed matrix and velocity field have different row partitions. PETSc's
+    general submatrix extraction consequently retains a global column index
+    set on every rank. Route owned graph rows through a preallocator instead;
+    temporary storage is one sparse row and no numeric mixed entries are copied.
+    Explicit zero connections, including curtain couplings, are preserved.
+    """
+    graph = PETSc.Mat().create(comm=matrix.comm)
+    try:
+        sizes = ((local_velocity_size, velocity_size),) * 2
+        graph.setSizes(sizes)
+        graph.setType(PETSc.Mat.Type.PREALLOCATOR)
+        graph.setUp()
+        lower, upper = matrix.getOwnershipRange()
+        for row in range(lower, min(upper, velocity_size)):
+            columns, _ = matrix.getRow(row)
+            columns = columns[columns < velocity_size]
+            graph.setValues(row, columns, np.zeros(len(columns), dtype=PETSc.ScalarType))
+        graph.assemble()
+        result = PETSc.Mat().create(comm=matrix.comm)
+        result.setSizes(sizes)
+        result.setType(PETSc.Mat.Type.AIJ)
+        graph.preallocatorPreallocate(result, fill=True)
+    finally:
+        graph.destroy()
+    result.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, True)
+    result.setOption(PETSc.Mat.Option.NEW_NONZERO_LOCATION_ERR, True)
+    return result
+
+
 class _SphericalGapNormBlocks:
     """Own active-background norm blocks without boundary replication.
 
@@ -118,7 +150,7 @@ class _SphericalGapNormBlocks:
         layout.destroy(); field_dm.destroy(); field_is.destroy()
         self.velocity_is = PETSc.IS().createStride(hi-lo, first=lo, step=1, comm=matrix.comm)
         matrix.assemble()
-        self.h = matrix.createSubMatrix(self.velocity_is, self.velocity_is)
+        self.h = _velocity_norm_graph(matrix, nu, hi-lo)
         self.pressure = PETSc.Vec().createMPI(npres, comm=matrix.comm); self.pressure.set(0)
         self.multiplier = PETSc.Vec().createMPI(multiplier_count, comm=matrix.comm); self.multiplier.set(0)
         lo, hi = self.pressure.getOwnershipRange()
