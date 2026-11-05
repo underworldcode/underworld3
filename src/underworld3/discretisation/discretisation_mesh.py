@@ -2754,8 +2754,14 @@ class Mesh(Stateful, uw_object):
             # dual space without proper point subspaces, causing
             # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
             # createCoordinateSpace builds the FE internally with correct
-            # subspace initialisation.
-            self.dm.createCoordinateSpace(self.degree, False, True)
+            # subspace initialisation. The coordinates are carried across by
+            # UW3's copy of PETSc's interpolator: PETSc's own projection of a
+            # degree >= 2 space cannot be assembled on a rank that holds cells
+            # but owns none of their nodes (#902).
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            petsc_dm_create_coordinate_space_within_plex(self.dm, self.degree)
 
             # Issue #96 fix: Force coordinate field creation and strip
             # boundary labels from the coordinate DM. createCoordinateSpace
@@ -5729,24 +5735,29 @@ class Mesh(Stateful, uw_object):
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
+        """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
+        ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
+        (ghost nodes included).
+
+        The interpolation matrix comes from UW3's copy of PETSc's nested
+        interpolator, which assembles also on a rank that holds cells but owns
+        none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
         """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_interpolation_within_plex,
+        )
 
         dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
-        matInterp, vecScale = dmold.createInterpolation(dmnew)
+        matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
-        arr = coordsNewL.array
-        arrcopy = arr.reshape(-1, self.cdim).copy()
+        arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
@@ -5754,8 +5765,6 @@ class Mesh(Stateful, uw_object):
         # they accumulate until Python GC runs — noticeable in long adapt
         # loops that re-fill the coord cache per variable.
         matInterp.destroy()
-        if vecScale is not None:
-            vecScale.destroy()
         dmnew.destroy()
 
         return arrcopy
@@ -7339,6 +7348,61 @@ class Mesh(Stateful, uw_object):
             self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
         return cached
+
+    @property
+    def multigrid_levels(self):
+        """The levels of this mesh's multigrid hierarchy, coarsest first, with
+        this mesh itself last.
+
+        When this mesh owns a coarse tail, as an ``adapt()`` child does (the
+        levels of the mesh it was made from, which its solvers pick up without a
+        ``set_custom_fmg`` call), the levels are that tail followed by this mesh.
+        Otherwise they are the mesh's own hierarchy: ``n + 1`` levels for
+        ``refinement=n`` or ``coarsening=n``, and the mesh alone when it was
+        built with neither.
+
+        The coarse levels of a refinement hierarchy are meshes in their own
+        right, carrying this mesh's boundary labels; those of a coarsening
+        hierarchy do not carry them. They are built on the first access, which
+        is collective (every rank must make it), and reused: every access
+        returns the same objects, and they are not rebuilt when this mesh is
+        later deformed or remeshed.
+
+        A solver on this mesh takes every level but the last, its own mesh being
+        the finest level. A solver on a mesh placed on this one takes them all,
+        followed by any intermediate levels of its own.
+
+        Returns
+        -------
+        tuple of Mesh
+            The levels, coarsest first; the last entry is this mesh.
+
+        Examples
+        --------
+        >>> base = uw.meshing.UnstructuredSimplexBox(cellSize=1 / 8, refinement=2)
+        >>> len(base.multigrid_levels)          # cell sizes 1/8, 1/16, 1/32
+        3
+        >>> poisson = uw.systems.Poisson(base)
+        >>> poisson.set_custom_fmg(base.multigrid_levels[:-1])
+
+        A fault ribbon placed in a 3-D base, with its unsplit intermediate level:
+
+        >>> from underworld3.utilities.place_surface import place_fault_ribbon
+        >>> base = uw.meshing.UnstructuredSimplexBox(
+        ...     minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=1 / 4, refinement=1)
+        >>> mesh, mid, info = place_fault_ribbon(base, sheet_grid, width=0.06)
+        >>> stokes = uw.systems.Stokes(mesh)
+        >>> stokes.set_custom_fmg(base.multigrid_levels + (mid,), field_id=0)
+        """
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        if own_tail is not None:
+            return tuple(own_tail) + (self,)
+        # a single-level mesh is its own hierarchy: wrapping it would build a
+        # duplicate mesh and re-tag one that may already be a level of another
+        # hierarchy, which loses that pair its exact nested transfer
+        if len(self.dm_hierarchy) < 2:
+            return (self,)
+        return tuple(self._coarse_level_meshes()[:-1]) + (self,)
 
     def redistribute_nodes(self, metric, *, verbose=False, **kwargs):
         r"""Move this mesh's nodes so cell sizes follow ``metric``, with

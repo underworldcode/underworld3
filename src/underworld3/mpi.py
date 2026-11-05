@@ -55,6 +55,14 @@ comm = _MPI.COMM_WORLD
 size = comm.size
 rank = comm.rank
 
+# The communicator of collective error verdicts, and of nothing else. A verdict
+# exchanged on ``comm`` can pair with a collective of the same kind that
+# another rank is still inside (a rank that raised before it, the others in
+# it): the two then trade unrelated data, and the ranks leave with different
+# results. On its own communicator a verdict meets only verdicts, and a rank
+# that never reaches it leaves the others waiting at a known place (#886).
+verdict_comm = comm.Dup()
+
 # State tracking for selective execution
 _in_selective_ranks = False
 _selective_executing_ranks = None

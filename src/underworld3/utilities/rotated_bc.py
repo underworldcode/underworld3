@@ -76,6 +76,15 @@ def _warn_if_ksp_diverged(ksp, kind):
                f"proceeding with the last iterate.")
 
 
+def _hard_linear_failure(ksp):
+    """True when an outer rotated linear solve failed hard: a preconditioner
+    that failed, a breakdown, a NaN, a residual that grew. The iteration cap
+    (-3, petsc4py's DIVERGED_MAX_IT) is not one: it leaves an increment the line
+    search can still use. The reason is a global quantity of the KSP."""
+    reason = int(ksp.getConvergedReason())
+    return reason < 0 and reason != -3
+
+
 # --------------------------------------------------------------------------- #
 #  Rotation construction
 # --------------------------------------------------------------------------- #
@@ -157,13 +166,18 @@ def _manifold_velocity_nodes(solver, normal):
     for q in range(pStart, pEnd):
         if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
             continue
-        if sym_fn is not None:
-            ne = np.asarray(sym_fn(*_point_coord(dm, cdim, cvec, csec, v0, v1, q)),
-                            dtype=float).ravel()
-        else:
-            ne = const_normal.copy()
-        nodes.append((q, ne / (np.linalg.norm(ne) + 1e-30)))
+        x = (_point_coord(dm, cdim, cvec, csec, v0, v1, q)
+             if sym_fn is not None else None)
+        nodes.append((q, _unit_normal(sym_fn, const_normal, x)))
     return nodes
+
+
+def _unit_normal(sym_fn, const_normal, x):
+    """The analytic normal ``sym_fn`` at ``x``, or the constant one, to unit length
+    (``sym_fn, const_normal`` from :func:`_normal_source`)."""
+    ne = (np.asarray(sym_fn(*x), dtype=float).ravel() if sym_fn is not None
+          else np.array(const_normal, dtype=float).ravel())
+    return ne / (np.linalg.norm(ne) + 1e-30)
 
 
 def _boundary_velocity_nodes(solver, boundary, normal=None):
@@ -233,9 +247,12 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     every rank ends with a bit-identical normal at a shared node. The reduction is
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
 
-    The analytic-normal path is NOT reduced: it evaluates a function of the node
-    coordinate, so every rank already computes the same value and summing copies would
-    only rescale it (and by a rank-count-dependent factor).
+    The analytic-normal path does not sum the normal: it is a function of the node
+    coordinate, evaluated once per node after the node set is complete, so every rank
+    holding the node computes the same value to the bit. It does complete the node SET
+    across ranks, summing a marker by the same scatter: a rank can own a node whose
+    labelled facets all sit on neighbours, and that node would otherwise get no
+    constraint row (#935). Both paths are therefore collective.
     """
     dm = solver.dm
     dim = solver.mesh.cdim
@@ -245,10 +262,10 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     lsec = dm.getLocalSection()
     # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
     # not survive mesh adaptation); raises a clear error for an unknown boundary name.
-    # In parallel a rank may own NO part of this boundary → a null IS; guard and return
-    # no local nodes (calling getIndices() on a null IS would segfault).
-    # A rank owning no part of this boundary gets a null/empty IS and contributes
-    # nothing — but it must NOT return early: the cross-rank sum below is collective.
+    # In parallel a rank may hold NO facet of this boundary → a null IS; guard it
+    # (calling getIndices() on a null IS would segfault). Such a rank contributes
+    # nothing but must NOT return early: the cross-rank sum below is collective, and
+    # it can still return nodes, ones it owns whose facets sit on neighbours (#935).
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     facets = ([int(z) for z in sis.getIndices()]
               if (sis and sis.getSize() > 0) else [])
@@ -267,12 +284,14 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     # the curvilinear symbol by bare name and dies with a NameError at call time.
     sym_fn, const_normal = _normal_source(solver, normal, boundary)
 
-    nacc = {}                                    # velocity node → Σ_f measure · n̂_f
+    # velocity node → Σ_f measure · n̂_f (geometric), or a marker per facet (analytic,
+    # whose normal does not come from the facet)
+    nacc = {}
+    marker = np.ones(dim)
     for f in facets:
         if not (fS <= f < fE):
             continue
-        # facet outward normal, and the measure the boundary term is integrated over
-        # (1.0 on the analytic path, whose normal does not come from the facet).
+        # facet outward normal, and the measure the boundary term is integrated over.
         #
         # The orientation rule lives in ONE place, `facet_measure_and_normal`:
         # outward = away from the one cell this boundary facet belongs to, which is
@@ -289,36 +308,38 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         # exactly as given and is NOT reoriented, so ``X/|X|`` on an inner arc points
         # into the domain and disagrees in sign with the default — see "Which normal
         # to use" in ``docs/developer/subsystems/rotated-freeslip.md``.
-        wgt = 1.0
         if normal is None:
             vol, ne, _exterior = facet_measure_and_normal(dm, f)
-            wgt = vol
+            contribution = vol * ne
+        else:
+            contribution = marker
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
                 continue
-            if normal is not None:
-                if sym_fn is not None:
-                    cq = coord(q)
-                    ne = np.asarray(sym_fn(*cq), dtype=float).ravel()
-                else:
-                    ne = const_normal.copy()
-                ne = ne / (np.linalg.norm(ne) + 1e-30)
-            nacc[q] = nacc.get(q, np.zeros(dim)) + wgt * ne
+            nacc[q] = nacc.get(q, np.zeros(dim)) + contribution
 
-    if normal is None:
-        nacc = _sum_facet_normals_across_ranks(solver, nacc)
+    # The geometric sum, or the analytic path's node set, completed across ranks: a
+    # rank can own a node whose labelled facets all sit on neighbours, and without
+    # it the node gets no constraint row (#935). The analytic normal is then taken
+    # once per node, so every rank holding the node computes the same value.
+    nacc = _sum_node_vectors_across_ranks(solver, nacc)
+    if normal is not None:
+        nacc = {q: _unit_normal(sym_fn, const_normal,
+                                coord(q) if sym_fn is not None else None)
+                for q in nacc}
 
     return [(q, v / (np.linalg.norm(v) + 1e-30))
             for q, v in sorted(nacc.items())
             if np.linalg.norm(v) > 0.0]
 
 
-def _sum_facet_normals_across_ranks(solver, contribs):
-    """Complete the per-node facet sum across ranks: ``{point: Σ_f |f| n̂_f}`` restricted
-    to this rank's facets in, the sum over EVERY rank's facets out — the same value on
-    every rank that holds the node.
+def _sum_node_vectors_across_ranks(solver, contribs):
+    """Complete a per-node sum over boundary facets across ranks: ``{point: vector}``
+    restricted to this rank's facets in, the sum over EVERY rank's facets out — the same
+    value on every rank that holds the node. The geometric normal sums
+    ``Σ_f |f| n̂_f``; the analytic normal sums a marker, to complete its node set.
 
     Each boundary facet is labelled on exactly one rank, and on the rank that owns it
     (measured: no facet is labelled twice and none is labelled away from its owner), so
@@ -359,15 +380,17 @@ def _sum_facet_normals_across_ranks(solver, contribs):
                 out[q] = w
             elif q in contribs:
                 # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) come back zero. Keep this rank's own
-                # contribution so the node set is exactly what it always was.
-                # build_rotation drops these nodes (l2g < 0); boundary_normal_traction
-                # does NOT — it reads n̂·r_c at every returned node — so on such a node
-                # it reports the reaction of the ESSENTIAL constraint along a
-                # rank-locally accumulated normal. That was true before this change
-                # too, and the nodes are the corners where a rotated wall meets an
-                # essential one (measured: 2 of 75 on the test_1070 configuration, at
-                # every rank count, and never shared between ranks there).
+                # BC meeting this boundary) are not written back: they keep this
+                # rank's own contribution, which the first branch already takes, so
+                # this one is reached only by a node whose sum is zero in every
+                # component. build_rotation builds a reduced frame on a node's free
+                # components and skips a fully constrained node; the traction
+                # readers read zero at a constrained component, so an essential
+                # wall's components contribute nothing to σ_nn (#936). The nodes are
+                # the corners where a rotated wall meets an essential one (measured:
+                # 2 of 75 on the test_1070 configuration). A marker (the analytic
+                # path) loses only the constrained components, so where one component
+                # is free such a node is kept on every rank that holds it.
                 out[q] = contribs[q]
         return out
     finally:
@@ -389,7 +412,7 @@ def _local_boundary_candidates(dm, lsec):
     measured they are 13-27% of what this returns. The caller is what makes the result
     correct — those points receive no contribution from any labelled facet, so their
     summed normal is exactly zero and the ``w.any()`` test in
-    :func:`_sum_facet_normals_across_ranks` drops them. That test is load-bearing, not
+    :func:`_sum_node_vectors_across_ranks` drops them. That test is load-bearing, not
     an aside; do not remove it while over-collecting here.
     """
     fS, fE = dm.getHeightStratum(1)
@@ -656,11 +679,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
                         normal_rows.append(gp[2])
                         if sheet_dspec is not None:
                             xq = _point_coord(dm, dim, pcvec, pcsec, pv0, pv1, q_plus)
-                            if sheet_normal_fn is not None:
-                                ne = np.asarray(sheet_normal_fn(*xq), dtype=float).ravel()
-                            else:
-                                ne = np.asarray(sheet_normal_const, dtype=float).ravel()
-                            ne = ne / (np.linalg.norm(ne) + 1e-30)
+                            ne = _unit_normal(sheet_normal_fn, sheet_normal_const, xq)
                             sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
                             # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
                             datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
@@ -891,6 +910,7 @@ def _destroy_rotated_linear_cache(cache):
 # the point of use.
 _SNES_CONVERGED_FNORM_RELATIVE = 2
 _SNES_CONVERGED_SNORM_RELATIVE = 4
+_SNES_DIVERGED_LINEAR_SOLVE = -3
 _SNES_DIVERGED_MAX_IT = -5
 _SNES_DIVERGED_LINE_SEARCH = -6
 
@@ -1115,7 +1135,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"reaction"`` — the converged Cartesian residual F(u), stashed as the
           constraint reaction for σ_nn recovery (for a linear residual this equals
           the assembled ``A·u − b`` exactly);
-        * ``"U"`` — the Cartesian solution;
+        * ``"U"`` — the Cartesian solution (the zero guess when ``"linear_failure"``
+          is set);
+        * ``"linear_failure"`` — ``None``, or the message the caller raises: a
+          cold start whose first linear solve failed, with no opt-out (#907). The
+          fields are then not written, and ``"rotation_gauge"`` is ``None``;
         * ``"normal_rows"`` — global rows of the constrained normal components;
         * ``"boundaries"`` — the boundary specs the rotation was built from;
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
@@ -1142,6 +1166,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ``force_operator_refresh=True`` disables the iteration-0 fast path for this
     solve (used by ``time=`` solves: the DM time reaches the kernels through
     ``petsc_t``, which no state counter or constants value can see).
+
+    ``max_it`` caps the Newton increments; the solver passes a user-set
+    ``snes_max_it``, else 50 (#920). The pass after the last increment only
+    measures the residual, so a solve that converges in ``max_it`` reports
+    converged, and ``max_it=0`` is one residual evaluation (a cold datum lift
+    is then not applied). A negative cap carries PETSc's meaning: -3
+    (``PETSC_UNLIMITED``) lifts the cap to PETSc's function-count limit of
+    10000, and -1 and -2 are the default of 50.
+    Staged Picard steps count against the cap, unlike the standard path's
+    warm-up.
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -1165,6 +1199,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     solver._update_constants(record=False)
     if rtol is None:
         rtol = float(solver.tolerance)
+    # A negative cap carries PETSc's meaning. PETSC_UNLIMITED lifts the cap;
+    # PETSc still stops at its function-count limit (snes_max_funcs, 10000),
+    # and this loop evaluates one residual per increment, so it stops there
+    # too. PETSC_DETERMINE and PETSC_CURRENT are the default of 50 (PETSc
+    # refuses anything lower when it reads the option).
+    if max_it == PETSc.UNLIMITED:
+        max_it = 10000
+    elif max_it < 0:
+        max_it = 50
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
     # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
@@ -1346,6 +1389,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         u.set(0.0)
     else:
         u = _gather_fields_to_global(solver)
+    # a zero initial guess, read before the datum is imposed on it: a failed
+    # first step would leave nothing (#907)
+    cold_start = zero_init_guess or u.norm() == 0.0
     if not lift_datum:
         _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
 
@@ -1501,9 +1547,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # reads ``snes.getConvergedReason() > 0``, so leaving it unset reports every
     # rotated solve as unconverged — including ones that converged at rel 1e-8.
     exit_reason = _SNES_DIVERGED_MAX_IT
+    linear_failure = None
+    # a failed preconditioner stays latched in the KSP (PCMG and PCREDUNDANT
+    # never reset it): a workspace that failed hard is not cached
+    failed_hard = False
     phase = "picard" if continuation else "newton"
     switch_iteration = None
-    for iters in range(max_it):
+    # max_it increments, then one more pass that only measures the residual,
+    # as PETSc's SNES tests after its max_it-th update: a cap of N then
+    # reports a solve that converged in N as converged, and a cap of 0 is one
+    # residual evaluation (#920)
+    for iters in range(max_it + 1):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
         rnorm_history.append(float(rnorm))
@@ -1523,6 +1577,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # zero residual at u = 0 is not convergence until it has been applied)
             converged = True
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+            Fhat.destroy()
+            break
+        if iters == max_it:
             Fhat.destroy()
             break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
@@ -1559,20 +1616,32 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # rates) and added to a COPY: the ptap-with-result refresh above
         # owns Ahat's structure, and injected entries would be
         # stale-or-doubled on the next refresh.
+        #
+        # The copy is made once and refreshed IN PLACE after that, so the KSP
+        # is handed the same Mat with the same nonzero pattern at every
+        # iterate, as on the contact path. A new Mat each iterate left the
+        # multigrid smoothing with iterate 0's operator (#894), even with an
+        # identical pattern: a new Pmat object resets the PC's nonzero state,
+        # so the fieldsplit builds a new velocity block, and PCSetUp_MG keeps
+        # the finest smoother's operator unless it is the PC's own.
+        # The tangent's pattern is fixed by the fault facets, and Ahat's by
+        # the ptap, so both stay inside the pattern of the first copy.
+        # The direct-LU path still takes a fresh sum each iterate: its pressure
+        # pin (zeroRows) drops the pinned row's entries from the pattern, and
+        # it has no multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
-            if Atot is not None:
-                Atot.destroy()
-            Atot = Ahat.copy()
-            Atot.axpy(1.0, Khat,
-                      structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            if Atot is None or use_lu:
+                if Atot is not None:
+                    Atot.destroy()
+                Atot = Ahat.copy()
+                Atot.axpy(1.0, Khat,
+                          structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            else:
+                Ahat.copy(Atot, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+                Atot.axpy(1.0, Khat,
+                          structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
             Khat.destroy()
-            # A recreated operator loses the null space the first solve
-            # attached; re-attach for iterations after the first (a nonlinear
-            # interface law is what reaches them).
-            if ctx is not None and ctx.get("nsp") is not None:
-                Atot.setNullSpace(ctx["nsp"])
-                Atot.setTransposeNullSpace(ctx["nsp"])
             Aop = Atot
         else:
             Aop = Ahat
@@ -1618,7 +1687,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             dhat.set(0.0)
             ctx["ksp"].solve(bhat, dhat)
             last_reason = ctx["ksp"].getConvergedReason()
-            _warn_if_ksp_diverged(ctx["ksp"], kind="rotated direct-LU")
+            hard, kind = _hard_linear_failure(ctx["ksp"]), "rotated direct-LU"
+            if not hard:
+                _warn_if_ksp_diverged(ctx["ksp"], kind)
             # parity with the iterative path's exact v_n cleanup (LU is exact only
             # to factorisation round-off at the decoupled constraint rows)
             _zero_rows_local(dhat, normal_rows)
@@ -1627,13 +1698,39 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
                 refresh_operator=assemble)
+            hard, kind = ctx["hard_failure"], "rotated fieldsplit-Schur"
         else:
             dhat, last_reason, ctx = _solve_rotated_vector(
                 solver, Aop, bhat, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, ctx=ctx, refresh_operator=assemble)
+            hard, kind = ctx["hard_failure"], "rotated vector"
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
+        failed_hard = failed_hard or hard
+        if hard:
+            # A cold start with no step accepted has produced nothing: raise
+            # (#907), after the normal teardown below, and leave the fields as
+            # they were. A warm start keeps the caller's own state, and an
+            # accepted step keeps that iterate: those warn, the line search
+            # rejects the failed increment, and the loop's verdict stands.
+            if (cold_start and not any(a > 0 for a in line_search_alpha)
+                    and not solver.tolerate_linear_failure):
+                reason = int(ctx["ksp"].getConvergedReason())
+                from underworld3.systems.solve_report import ksp_reason_string
+                linear_failure = (
+                    f"[rotated_bc] the {kind} linear solve failed on the first Newton "
+                    f"step of a cold start: {ksp_reason_string(reason)} (reason "
+                    f"{reason}) after {int(ctx['ksp'].getIterationNumber())} "
+                    f"iterations. No solution was produced and the fields were not "
+                    f"written. Set solver.tolerate_linear_failure = True to warn and "
+                    f"continue instead.")
+                exit_reason = _SNES_DIVERGED_LINEAR_SOLVE
+                dhat.destroy()
+                bhat.destroy()
+                Fhat.destroy()
+                break
+            _warn_if_ksp_diverged(ctx["ksp"], kind)
         d = dm.createGlobalVec()
         Qt.mult(dhat, d)
         # step-norm convergence (SNES_CONVERGED_SNORM): a tiny Newton step means we
@@ -1656,7 +1753,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                            f"{rnorm / (ref + 1e-300):.2e} of the reference "
                            f"residual — stagnation-or-crawl, continuing to iterate.")
         improved = False
-        if lift_datum and iters == 0:
+        if lift_datum and iters == 0 and not hard:
             # accept the lift step unconditionally (it is the smooth rest-state
             # response — the standard first-Picard warmup; a line search against
             # ‖F̂(0)‖, which ignores the datum mismatch, would be meaningless) and
@@ -1692,8 +1789,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     # The true outer-iteration COUNT is the number of Newton increments solved — one
     # linear solve per increment, so len(lin_its). The loop index `iters` undercounts
-    # by one on the step-norm / line-search-stall / max_it exits (the increment of the
-    # final pass is solved before the break) and matches only on the residual exit.
+    # by one on the step-norm / line-search-stall exits (the increment of the final
+    # pass is solved before the break) and matches on the residual and cap exits.
     newton_its = len(lin_its)
 
     # Publish the loop's verdict on the SNES, so that reading the converged
@@ -1703,7 +1800,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # The loop can exhaust max_it or stall in the line search (`not improved`) without
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
     # on divergence — so an unconverged iterate left in the fields is not silent.
-    if not converged:
+    if not converged and not linear_failure:      # a raise follows otherwise
         rel = (rnorm / (ref + 1e-300)) if ref is not None else float("nan")
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
                    f"in {newton_its} iterations (rel |F̂| = {rel:.2e} of the reference "
@@ -1738,7 +1835,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
-    if cache_allowed and ctx is not None and Ahat is not None and not use_lu:
+    if (cache_allowed and ctx is not None and Ahat is not None and not use_lu
+            and not failed_hard):
         # Persist the workspace for the next solve. The stored key describes
         # the operator values Ahat now holds; linear_hint records whether
         # this solve behaved linearly (<= 1 increment), which is what
@@ -1773,14 +1871,19 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Atot.destroy()                       # rotated operator + interface term
     if xhat is not None:
         xhat.destroy()                       # unused lift vector (loop exited before it)
-    removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
+    # on a raised failure the fields keep what they held (the caller raises)
+    removed = (False if linear_failure
+               else _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge))
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
+            # the message the solver raises, after recording this result (#907)
+            "linear_failure": linear_failure,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed,
             # per-mode record of the gauge decision (offered / accepted / the
             # violations that decided it) — see _finalize_rotated_solution
-            "rotation_gauge": getattr(solver, "_rotated_gauge_report", None),
+            "rotation_gauge": (None if linear_failure
+                               else getattr(solver, "_rotated_gauge_report", None)),
             "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
@@ -1972,6 +2075,8 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
             solver, AhatT, bhat, Q, Qt, normal_rows, verbose=verbose,
             custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, ctx=None)
         reason = int(reason)
+        if ctx["hard_failure"]:      # the adjoint reports it; it does not raise
+            _warn_if_ksp_diverged(ctx["ksp"], kind="rotated adjoint fieldsplit-Schur")
         _destroy_rotated_ksp_ctx(ctx)
         if null_modes_before is None:
             if hasattr(solver, "_rotated_velocity_null_modes"):
@@ -2315,10 +2420,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # velocity-block reduced numbering on both paths, and the split
                 # is per-node so the per-node rotation Q does not disturb it.
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _rows = getattr(_hier, "level_patch_rows", None)
                 _fac_keys = custom_mg._configure_pcmg(
                     vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
-                    patch_rows=getattr(_hier, "level_patch_rows", None),
+                    patch_rows=_rows,
                     null_modes=_modes, near_null=_near)
                 for _m in _modes + _near:
                     _m.destroy()
@@ -2345,15 +2451,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                         _A = vel_pc.getMGSmoother(_l).getOperators()[0]
                         _A.setOption(PETSc.Mat.Option.USE_INODES, False)
                         _A.assemble()
-                # Force the FAC levels' smoother setup NOW: PCASM creates its
-                # sub-KSP (which reads mg_levels_<l>_sub_* from the DB) lazily
-                # at first application, which on this path is AFTER the key
-                # cleanup below — the sub options would silently never apply
-                # (measured: a sub_pc_type override had no effect).
-                for _l in range(1, vel_pc.getMGLevels()):
-                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
-                                         for k in _fac_keys):
-                        vel_pc.getMGSmoother(_l).setUp()
+                # The FAC blocks read their solver from the keys dropped below:
+                # set them up while the keys are there (#892).
+                custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
+                if _hier is not None:
+                    _hier._record_patch_summary(_rows, solver.dm.comm)
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
                 # this solve — drop it again now it is consumed, as the `finally`
@@ -2427,7 +2529,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
-    _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
+    # a hard failure is the caller's to judge (raise, or warn and go on)
+    ctx["hard_failure"] = _hard_linear_failure(ksp)
+    if not ctx["hard_failure"]:
+        _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
     # An identity constraint row in an ITERATIVE solve only drives its residual
     # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
@@ -2451,7 +2556,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # A velocity FGMRES that exhausts its cap returns KSP_DIVERGED_ITS, which
     # KSPCheckSolve deliberately does NOT escalate — so without this it degrades
     # silently. (`preonly` could never fail, which is why the check is new.)
-    _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
+    if not ctx["hard_failure"]:     # a hard outer failure is the caller's to report
+        _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
     if verbose:
         mpi.pprint(f"[rotated_bc] velocity block = {ctx['velocity_pc']} "
                    f"(PC {ctx['velocity_pc_type']}); Schur pre = {ctx['schur_pre']}; "
@@ -2503,20 +2609,20 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                 _coarse = "gamg" if _gamg else "redundant"
                 _modes = _velocity_null_modes(nsp) if _gamg else []
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _rows = getattr(_hier, "level_patch_rows", None)
                 _fac_keys = custom_mg._configure_pcmg(
                     pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
-                    patch_rows=getattr(_hier, "level_patch_rows", None),
+                    patch_rows=_rows,
                     null_modes=_modes)
                 for _m in _modes:
                     _m.destroy()
                 pc.setUp()
                 if _coarse == "redundant":
                     _shift_coarse_zero_pivot(pc)
-                for _l in range(1, pc.getMGLevels()):
-                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
-                                         for k in _fac_keys):
-                        pc.getMGSmoother(_l).setUp()
+                custom_mg._set_up_fac_smoothers(pc, _fac_keys)
+                if _hier is not None:
+                    _hier._record_patch_summary(_rows, solver.dm.comm)
                 vpfx = pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
                         coarse=_coarse,
@@ -2556,7 +2662,9 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
-    _warn_if_ksp_diverged(ksp, kind="rotated vector")
+    ctx["hard_failure"] = _hard_linear_failure(ksp)
+    if not ctx["hard_failure"]:
+        _warn_if_ksp_diverged(ksp, kind="rotated vector")
     # exact at the decoupled constraint rows, independent of the iterative tolerance
     _zero_rows_local(Uhat, normal_rows)
     ctx["velocity_pc_type"] = ksp.getPC().getType()
@@ -2744,6 +2852,48 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     return op_viol < tol
 
 
+def _wall_normal_loads(solver, boundary, solve_result):
+    """The normal load the constraint reaction puts on each node of ``boundary``:
+    ``(xs, loads, owned)``, with ``loads[i] = -n̂_i·r_c`` (σ_nn's sign) and ``owned[i]``
+    whether this rank owns node i. Both readers of the reaction take it from here.
+
+    The Cartesian reaction r_c is copied into a zeroed local vector: ``globalToLocal``
+    does not write the components an essential condition constrains, so they read zero
+    and contribute nothing to σ_nn (#936). A node belongs to the rank that owns its
+    first free component; a node with none carries no load and belongs to no rank.
+    """
+    dm = solver.dm
+    dim = solver.mesh.cdim
+    # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
+    # solve driver (the final ``computeFunction`` residual; for a linear residual
+    # this equals the assembled A·u−b exactly).
+    rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
+    rstart, rend = rc.getOwnershipRange()
+    rcl = dm.getLocalVec()
+    try:
+        # a pooled vector holds whatever its last user left
+        rcl.set(0.0)
+        dm.globalToLocal(rc, rcl)
+        rca = np.asarray(rcl.getArray())
+        lsec = dm.getLocalSection()
+        l2g = dm.getLGMap()
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
+        xs, loads, owned = [], [], []
+        for q, nrm in _boundary_velocity_nodes(solver, boundary, normal=normal):
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            free = [int(g) for g in l2g.apply(list(range(lo, lo + dim))) if g >= 0]
+            xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
+            # n̂·r_c, not the rotated frame's normal row: corner-correct
+            loads.append(-float(np.dot(nrm, rca[lo:lo + dim])))
+            owned.append(bool(free) and rstart <= free[0] < rend)
+    finally:
+        dm.restoreLocalVec(rcl)
+    return np.array(xs), np.array(loads), np.array(owned, dtype=bool)
+
+
 def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     """Boundary normal traction σ_nn on `boundary` from the constraint reaction of the
     last rotated-free-slip solve (``solve_result`` is the dict returned by
@@ -2765,8 +2915,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     Projecting the Cartesian reaction onto the boundary normal (rather than reading the
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
-    normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
-    σ_nn is the boundary-mass de-smear of R.
+    normals, but n̂·r_c is the true normal traction for this boundary. At a node an
+    essential wall also constrains (a corner with a Dirichlet wall), the constrained
+    components are not in the reaction vector and read zero, so they contribute
+    nothing to σ_nn (#936). The pointwise σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
       * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles,
@@ -2797,37 +2949,12 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     scattering each rank's recovered values. The mean-removal gauge remains global. Only
     triangular P1/P2 traces are supported in 3D.
     """
-    dm = solver.dm
-    dim = solver.mesh.cdim
-    # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
-    # solve driver (the final ``computeFunction`` residual; for a linear residual
-    # this equals the assembled A·u−b exactly).
-    rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
-    rcl = dm.getLocalVec()
-    dm.globalToLocal(rc, rcl)
-    rca = np.asarray(rcl.getArray())
-
-    lsec = dm.getLocalSection()
-    csec = dm.getCoordinateSection()
-    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-    v0, v1 = dm.getDepthStratum(0)
-    normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
-    nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-    xs = []
-    Rn = []
-    for q, nrm in nodes:
-        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-        rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
-        xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-        Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
-    dm.restoreLocalVec(rcl)
-    xs = np.array(xs)
-    Rn = np.array(Rn)
+    xs, loads, _owned = _wall_normal_loads(solver, boundary, solve_result)
     # σ_nn = −(nodal reaction), de-smeared by the SHARED boundary-mass primitive and
     # mean-removed (the ρg·h gauge). partial_reaction=False: the reaction here comes from
     # the ASSEMBLED global operator Q(A·u−b), already complete at every node (ranks agree
     # at a partition-cut node — must OVERWRITE, not sum, else shared nodes double-count).
-    return xs, _desmear(solver, boundary, xs, -Rn, mass,
+    return xs, _desmear(solver, boundary, xs, loads, mass,
                         remove_mean=True, partial_reaction=False)
 
 
@@ -2854,41 +2981,13 @@ def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
     import underworld3 as uw
 
     fn = sympy.sympify(fn)
-    dm = solver.dm
-    comm = dm.comm.tompi4py()
-    dim = solver.mesh.cdim
-    rc = solve_result["reaction"]
-    rstart, rend = rc.getOwnershipRange()
-    rcl = dm.getLocalVec()
-    dm.globalToLocal(rc, rcl)
+    comm = solver.dm.comm.tompi4py()
+    # each node counted once, on its owner; the loads are boundary_normal_traction's
+    xs, loads, owned = _wall_normal_loads(solver, boundary, solve_result)
+    owned_reactions = loads[owned]
 
-    try:
-        rca = np.asarray(rcl.getArray())
-        lsec = dm.getLocalSection()
-        l2g = dm.getLGMap()
-        csec = dm.getCoordinateSection()
-        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-        v0, v1 = dm.getDepthStratum(0)
-        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(
-            boundary
-        )
-        nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-
-        owned_coords = []
-        owned_reactions = []
-        for q, nrm in nodes:
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            global_row = int(l2g.apply([lo])[0])
-            if not rstart <= global_row < rend:
-                continue
-            owned_coords.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-            # sigma_nn load = -n.r_c, matching boundary_normal_traction().
-            owned_reactions.append(-float(np.dot(nrm, rca[lo:lo + dim])))
-    finally:
-        dm.restoreLocalVec(rcl)
-
-    if owned_coords:
-        coords = np.ascontiguousarray(owned_coords, dtype=float)
+    if owned_reactions.size:
+        coords = np.ascontiguousarray(xs[owned], dtype=float)
         weights = np.asarray(uw.function.evaluate(fn, coords), dtype=float).reshape(-1)
         if weights.size == 1 and len(owned_reactions) != 1:
             weights = np.full(len(owned_reactions), float(weights[0]))

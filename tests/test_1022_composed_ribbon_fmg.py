@@ -19,9 +19,9 @@ signature of a specific failure when violated:
 
 * **Native-like level densities** (nnz/row bounded): structural-zero
   weights in the transfers fatten the Galerkin chain 3–5x per level.
-* **A strong finest ASM patch**: the patch smoother replaces whole-level
-  smoothing, so a finest level missing the cut/split rows leaves them
-  smoothed nowhere and the velocity sub-solve caps on every application.
+* **A strong finest ASM patch**: the patch's LU blocks sit on top of
+  whole-level SOR, so a finest level missing the cut/split rows leaves them
+  to SOR alone and the velocity sub-solve slows.
 * **Few velocity/pressure iterations** (recorded: vel 8–9, pres 13
   against GAMG 82): a silently declined patch stalls or caps.
 * **Slip/leak invariants** (recorded: slip 0.2223, leak ~2e-17): the
@@ -119,9 +119,9 @@ def _solve_and_probe(stokes):
 
 
 def _patch_pc(spc):
-    """The ASM patch of a level: the level PC itself in the replacing form,
-    the second member of the composite in the default form (the whole-level
-    smoother first, the fault blocks on top — #670)."""
+    """The ASM patch of a FAC level, the second member of its composite smoother
+    (the whole-level smoother first, the fault blocks on top — #670); a level
+    without a patch returns its own PC."""
     if spc.getType() == "composite":
         return spc.getCompositePC(1)
     return spc
@@ -184,15 +184,9 @@ def test_fac_zone_key_installs_union_block(composed_stack):
 
     spc = _patch_pc(velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC())
     assert spc.getType() == "asm"
-    level_pc = velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC()
-    if level_pc.getType() == "composite":
-        # the default form (#670): the whole-level smoother covers the
-        # structural rows, and the zone block stands alone on top of it
-        assert len(spc.getASMSubKSP()) >= 1, "zone key must install the zone block"
-    else:
-        assert len(spc.getASMSubKSP()) >= 2, (
-            "zone key must install the zone block plus the automatic "
-            "structural-union block")
+    # the whole-level smoother covers the rows the zone leaves out, and the
+    # zone block sits on top of it (#670)
+    assert len(spc.getASMSubKSP()) >= 1, "zone key must install the zone block"
 
     # The retired spelling must fail LOUDLY, never decline silently.
     stokes2 = _contact_stokes(mesh, "C")

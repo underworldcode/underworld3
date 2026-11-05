@@ -224,6 +224,19 @@ def _drop_structural_zeros(P_csr, tol=1e-12):
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 
 
+class CollectiveBuildError(RuntimeError):
+    """A hierarchy-build failure raised on every rank together, from a verdict
+    every rank holds (a builder that failed on any rank, a check on allreduced
+    sizes), so the ranks can retry or degrade together (#886).
+    ``builder_failure`` says the transfer builder itself failed, the one case
+    a different builder can change; any other check failing again under
+    another builder, the build degrades at once."""
+
+    def __init__(self, message, builder_failure=False):
+        super().__init__(message)
+        self.builder_failure = builder_failure
+
+
 def _require_serial(where):
     """Custom-P transfers are serial-only (experimental). The reduced maps use
     rank-local DOF indices and the prolongations assemble as serial AIJ; at np>1
@@ -584,9 +597,81 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
         return None
     return P
 
+# The FAC cover gate (#918): patch plus halo above this fraction of a level's
+# rows keeps whole-level smoothing; a uniform pair's halo reaches every row.
+# Without a split the gate is 0.75: a wide adapt child's patch and halo reach
+# 95-98 % of its rows, an LU over nearly the whole level. A placed fault
+# level keeps a background outside its patch and halo (38, 24 and 14 % at
+# h_b/S = 24, 48 and 97 on UWTN 2026-022's fixture), and whole-level SOR
+# converges its band slowly (909 and 1487 velocity iterations over 17
+# applications against 66 when the 0.75 gate declined it), so a split level
+# declines only when under 2 % of its rows lie outside: a cut uniform pair,
+# whose patch and halo are the whole level and which SOR converges. That is
+# 2-D only: a 3-D split level keeps 0.75. On test_1097's sheet its patch and
+# halo are 94 % of the level, and taking them was one 3-D LU over 84 435 rows,
+# 463 s and 6.3 GB serially against 35 s and 1.6 GB declined.
+_FAC_COVER_MAX = 0.75
+_FAC_COVER_MAX_SPLIT = 0.98
+
+
+def _fac_patch_summary(patch_rows, comm):
+    """The FAC patch on each PCMG level, summed over the ranks.
+
+    Collective: one allgather, and every rank returns the same list. Read it
+    in place of ``CustomMGHierarchy.level_patch_rows``, which is rank-local and
+    whose form differs between ranks. A level is None, one ``(owned,
+    subdomain)`` pair of reduced-row arrays, or a list of pairs (one per ASM
+    block), and a rank holding no part of a zone carries an empty pair. A
+    caller that sums it itself must make the same collectives on every rank
+    whatever its own entry is. One that loops a reduction over its own blocks
+    hangs, as the add-on matrix's row 5 driver did at np 4.
+
+    Parameters
+    ----------
+    patch_rows : list or None
+        The per-level patch rows handed to the installer (:func:`_configure_pcmg`).
+    comm : PETSc.Comm
+        The solver's communicator.
+
+    Returns
+    -------
+    list
+        One entry per level: None where no rank has a patch, else a dict with
+        ``blocks`` (ASM subdomains over all ranks, empty ones included),
+        ``owned_rows`` (the patch rows; each block is held by one rank, so
+        the total does not depend on the partition, #925),
+        ``subdomain_rows`` (the patch plus its halo, summed over the ranks),
+        ``block_rows_max``, and ``block_rows_per_rank`` (each rank's block
+        sizes, in rank order: a block goes whole to the rank that owns most
+        of its rows, so the structural LU sits on one rank).
+    """
+    mine = []
+    for entry in (patch_rows or []):
+        if entry is None:
+            mine.append(None)
+            continue
+        blocks = entry if isinstance(entry, list) else [entry]
+        mine.append(([int(len(sub)) for _own, sub in blocks],
+                     int(sum(len(own) for own, _sub in blocks))))
+    every = comm.tompi4py().allgather(mine)
+    out = []
+    for level in range(max((len(m) for m in every), default=0)):
+        parts = [m[level] if level < len(m) else None for m in every]
+        if all(part is None for part in parts):
+            out.append(None)
+            continue
+        sizes = [part[0] if part is not None else [] for part in parts]
+        out.append({"blocks": sum(len(rank) for rank in sizes),
+                    "owned_rows": sum(part[1] for part in parts if part is not None),
+                    "subdomain_rows": sum(sum(rank) for rank in sizes),
+                    "block_rows_max": max((max(rank) for rank in sizes if rank),
+                                          default=0),
+                    "block_rows_per_rank": sizes})
+    return out
+
 
 def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
-                     w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+                     w_tol=1e-8, x_tol=1e-9, cover_max=_FAC_COVER_MAX, gate=None):
     """FAC patch/background split of one level's reduced fine DOFs (#629).
 
     A locally-refined hierarchy is a COMPOSITE grid: levels differ only in
@@ -596,6 +681,8 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     on its patch plus an interface halo, with the background smoothed once at
     the level that owns it. This function finds that patch algebraically from
     the level's own transfer — builder-agnostic, so placed levels work too.
+    The smoother that ships applies the patch's blocks on top of whole-level
+    SOR (:func:`_configure_pcmg`): the patch alone starved what it left out.
 
     A fine reduced DOF is BACKGROUND when its transfer row is an identity row
     (one effective weight-1 entry) AND its node coincides with the referenced
@@ -610,15 +697,15 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     Returns ``(owned_rows, subdomain_rows)`` — reduced fine row indices of
     the patch and of patch+halo — or ``None`` when patch+halo covers more
     than ``cover_max`` of the level: a uniform pair refines everywhere, and
-    whole-level smoothing is then the right configuration.
+    whole-level smoothing is then the right configuration. The hierarchy
+    passes 0.75, or 0.98 on a 2-D level that carries a split fault
+    (``_FAC_COVER_MAX``, ``_FAC_COVER_MAX_SPLIT``). A dict passed as
+    ``gate`` receives the verdict: ``rows``, ``subdomain_rows`` and ``taken``.
     """
     P = P_csr.tocsr()
     n = P.shape[0]
     if n == 0:
         return None
-    # TODO(MEASURE): #629 campaign knob for the whole-level gate; remove
-    # once the cover threshold is settled.
-    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
     map_f = np.asarray(map_f, dtype=np.int64)
     map_c = np.asarray(map_c, dtype=np.int64)
     node_f = map_f // nc
@@ -662,7 +749,7 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     # structure: the smooth refined bulk stays on whole-level smoothing (it
     # is well served by ordinary multigrid), and only the fault trace gets
     # the subdomain solve. The halo comes from ASM overlap through the
-    # operator sparsity (set UW_FAC_OVERLAP). Remove when settled.
+    # operator sparsity (one layer). Remove when settled.
     if os.environ.get("UW_FAC_PATCH") == "slit":
         # The fault trace = COINCIDENT FINE PAIRS — the split's plus/minus
         # nodes at bit-identical coordinates. Detected in the fine cloud
@@ -713,7 +800,10 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     node_in_sub[node_f[halo_rows]] = True
 
     sub = np.flatnonzero(node_in_sub[node_f])
-    if sub.size > cover_max * n:
+    taken = sub.size <= cover_max * n
+    if gate is not None:
+        gate.update(rows=int(n), subdomain_rows=int(sub.size), taken=bool(taken))
+    if not taken:
         return None
     owned = np.flatnonzero(row_is_patch)
     return owned.astype(np.int64), sub.astype(np.int64)
@@ -757,20 +847,138 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
+def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
+    """The finest level's FAC blocks in parallel, built from every rank's rows.
+
+    COLLECTIVE. Rank 0 gathers every rank's rows and cuts them into the serial
+    branch's blocks: each mask is one band, segmented along its strike by
+    :func:`_segment_block`, and the structural rows outside every mask are one
+    more block; with no zone keyed, the structural patch is one block. Each
+    block goes whole to the rank that owns most of its rows, so the structural
+    block is one LU on one rank, as in serial. The blocks are therefore the
+    same at any rank count, except that the structural halo is
+    :func:`_fac_patch_split_parallel`'s, which can differ by a few rows where a
+    partition boundary runs along the band. A segmented piece's cut can fall
+    a node away from the serial one: the serial branch orders a split pair's
+    two nodes separately, this one keeps them as one site.
+
+    Cut rank by rank, a rank's blocks held the seam rows its neighbour's blocks
+    also held, and rank boundaries cut the band and the structural block (#925).
+
+    Parameters
+    ----------
+    zones : list of (ndarray, ndarray)
+        Per ``fac_zone`` mask, this rank's rows of the mask's cells (global,
+        ghost rows resolved to their owners') and each row's node coordinates.
+        An empty list where no zone is keyed; the same length on every rank.
+    structural : (ndarray, ndarray) or None
+        This rank's structural patch and subdomain rows (global, owned), or
+        None where the split level's gate declined them or the level has no
+        split.
+    max_rows : int
+        The cap on a zone piece's rows (``fac_block_rows``).
+    rstart : int
+        The first global row this rank owns.
+    comm : mpi4py communicator
+
+    Returns
+    -------
+    list of (ndarray, ndarray)
+        This rank's blocks as ``(owned, subdomain)`` pairs: ``(rows, rows)``
+        for a zone piece and for the structural rows beside a zone, the patch
+        and its halo for the structural patch alone. A row is in one block of
+        each mask; masks that overlap share their common rows by design.
+    """
+    everyone = comm.gather((rstart, zones, structural), root=0)
+    per_rank = None
+    if comm.rank == 0:
+        starts = np.array([e[0] for e in everyone])
+        blocks, covered = [], []
+        for k in range(len(zones)):
+            rows = np.concatenate([e[1][k][0] for e in everyone]).astype(np.int64)
+            xy = np.concatenate([e[1][k][1] for e in everyone])
+            rows, first = np.unique(rows, return_index=True)
+            # nodes by coordinate: the segmentation sees the same points in the
+            # same order at any rank count, and the two nodes of a split pair
+            # stay in one piece
+            site_xy, site = np.unique(xy[first], axis=0, return_inverse=True)
+            for piece in _segment_block(rows, site.ravel(), site_xy, max_rows):
+                if piece.size:
+                    piece = np.unique(piece)
+                    blocks.append((piece, piece))
+            covered.append(rows)
+        held = [e[2] for e in everyone if e[2] is not None]
+        if held:
+            sub = np.unique(np.concatenate([s for _o, s in held]).astype(np.int64))
+            if zones:
+                extra = np.setdiff1d(sub, np.concatenate(covered))
+                if extra.size:
+                    blocks.append((extra, extra))
+            elif sub.size:
+                owned = np.unique(np.concatenate([o for o, _s in held]).astype(np.int64))
+                blocks.append((owned, sub))
+        per_rank = [[] for _ in everyone]
+        for owned, sub in blocks:
+            owner = np.searchsorted(starts, sub, side="right") - 1
+            per_rank[int(np.bincount(owner, minlength=len(everyone)).argmax())].append(
+                (owned, sub))
+    return comm.scatter(per_rank, root=0)
+
+
+def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
+    """Append the coarse nodes of the global rows ``remote``, held on other
+    ranks, to this rank's node table. COLLECTIVE: one scatter from the rows'
+    owners, each row carrying its node's coordinates, its component and a key
+    unique to its node (owner rank and local node), so the two nodes of a split
+    pair stay two nodes. Returns the extended coordinates and
+    ``{global row: local DOF index}`` for ``remote``, the appended nodes
+    numbered after the held ones and their DOFs as ``node * nc + component``."""
+    cdim = coords_c.shape[1]
+    k = cdim + 2
+    rstart, rend = lay_c.rstart, lay_c.rend
+    own = np.flatnonzero((l2g_c >= rstart) & (l2g_c < rend))
+    node = own // nc
+    vals = np.zeros((rend - rstart, k))
+    vals[l2g_c[own] - rstart, :cdim] = coords_c[node]
+    vals[l2g_c[own] - rstart, cdim] = own % nc
+    vals[l2g_c[own] - rstart, cdim + 1] = comm.getRank() * 2.0 ** 32 + node
+    src = PETSc.Vec().createMPI((k * (rend - rstart), PETSc.DECIDE), comm=comm)
+    src.getArray()[:] = vals.ravel()
+    idx = (np.asarray(remote, dtype=np.int64)[:, None] * k + np.arange(k)).ravel()
+    dst = PETSc.Vec().createSeq(idx.size, comm=PETSc.COMM_SELF)
+    from_is = PETSc.IS().createGeneral(idx.astype(PETSc.IntType), comm=PETSc.COMM_SELF)
+    scatter = PETSc.Scatter().create(src, from_is, dst, None)
+    scatter.scatter(src, dst, PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
+    got = dst.getArray().reshape(-1, k).copy()
+    for obj in (scatter, from_is, dst, src):
+        obj.destroy()
+    if not len(remote):
+        return coords_c, {}
+    _keys, first, slot = np.unique(got[:, cdim + 1], return_index=True,
+                                   return_inverse=True)
+    local = (coords_c.shape[0] + slot) * nc + np.rint(got[:, cdim]).astype(np.int64)
+    return (np.vstack([coords_c, got[first, :cdim]]),
+            dict(zip(np.asarray(remote).tolist(), local.tolist())))
+
+
 def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
-                              w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+                              w_tol=1e-8, x_tol=1e-9, cover_max=_FAC_COVER_MAX,
+                              gate=None):
     """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
 
     This rank's owned rows of ``P`` are classified as in the serial split
     (an identity row onto a coincident coarse node is background, anything
-    else is patch, split duplicates are patch); a coarse column this rank
-    does not hold locally counts as patch. The halo is the background rows
-    whose coarse node some patch row of THIS rank references. The cover
+    else is patch, split duplicates are patch); a coarse node this rank does
+    not hold is fetched from its owner first, so the patch is the same rows
+    at any rank count (#896). The duplicate test is rank-local: both copies
+    of a split pair are owned by one rank (ptest_0865 pins that for a split
+    through a seam). The halo is the background rows whose coarse node some
+    patch row of THIS rank references, so it can differ from the serial halo
+    where a partition boundary runs along the band. The cover
     gate is decided on the global counts, so every rank returns the same
-    verdict. Returns ``(owned_global_rows, subdomain_global_rows)`` or
-    ``None``.
+    verdict, and ``gate`` receives the same record on every rank. Returns
+    ``(owned_global_rows, subdomain_global_rows)`` or ``None``.
     """
-    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
     fstart, fend = lay_f.rstart, lay_f.rend
     n = fend - fstart
     indptr, cols, data = P.getValuesCSR()
@@ -782,6 +990,14 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     l2g_c = np.asarray(lay_c.l2g)
     held_c = np.flatnonzero(l2g_c >= 0)
     c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
+    # The fine and coarse levels need not share a partition (a placed fault
+    # level takes the add-on partition, the coarse levels the base's), so a
+    # row's coarse node may be held elsewhere. Every column is classified
+    # against its node all the same: those nodes are fetched from their owners.
+    remote = np.unique(cols[~np.isin(cols, l2g_c[held_c])])
+    coords_c, fetched = _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc,
+                                                    P.getComm())
+    c_local_of_global.update(fetched)
 
     bg_cnode = np.full(n, -1, dtype=np.int64)
     patch_row = np.zeros(n, dtype=bool)
@@ -797,14 +1013,9 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
         j = int(np.argmax(aw))
         if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
             patch_row[r] = True
-            ref_cnodes += [c_local_of_global.get(int(g), -1) // nc
-                           for g in cols[sl]]
+            ref_cnodes += [c_local_of_global[int(g)] // nc for g in cols[sl]]
             continue
-        cl = c_local_of_global.get(int(cols[sl][j]), -1)
-        if cl < 0:
-            patch_row[r] = True
-            continue
-        cnode = cl // nc
+        cnode = c_local_of_global[int(cols[sl][j])] // nc
         if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
             patch_row[r] = True
             ref_cnodes.append(cnode)
@@ -824,7 +1035,7 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
             node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
     row_is_patch = node_is_patch[node_of_row] if n else np.zeros(0, dtype=bool)
     csel = np.zeros(coords_c.shape[0], dtype=bool)
-    ref = np.asarray([c for c in ref_cnodes if c >= 0], dtype=np.int64)
+    ref = np.asarray(ref_cnodes, dtype=np.int64)
     if ref.size:
         csel[ref] = True
     # Index csel only where a row has a background coarse node: a rank can
@@ -838,7 +1049,10 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
     n_sub = comm.allreduce(int(sub_local.size), op=MPI.SUM)
     n_all = comm.allreduce(int(n), op=MPI.SUM)
-    if n_sub > cover_max * n_all:
+    taken = n_sub <= cover_max * n_all
+    if gate is not None:
+        gate.update(rows=int(n_all), subdomain_rows=int(n_sub), taken=bool(taken))
+    if not taken:
         return None
     owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
     sub = (sub_local + fstart).astype(np.int64)
@@ -906,6 +1120,25 @@ def _node_transfer_no_repair(builder, coarse_coords, fine_coords):
     return builder(coarse_coords, fine_coords)
 
 
+def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
+    """The rank-local node transfer of a parallel build, with one verdict for
+    every rank: if the builder raised on any rank, :class:`CollectiveBuildError`
+    is raised on all of them. The builders do no communication, so every rank
+    reaches the verdict; a rank that kept its own error would go on to retry
+    while the others assemble the transfer, and the two would meet in different
+    collectives (#886)."""
+    problem = None
+    try:
+        Pn = _drop_structural_zeros(
+            _node_transfer_no_repair(builder, coarse_coords, fine_coords))
+    except Exception as exc:    # sanctioned: the verdict below raises it on every rank
+        Pn, problem = None, f"rank {comm.getRank()}: {exc}"
+    problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
+    if problems:
+        raise CollectiveBuildError("; ".join(problems), builder_failure=True)
+    return Pn
+
+
 def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
                             comm):
     """A node-level transfer ``Pn`` (scipy CSR, fine local nodes by coarse
@@ -955,8 +1188,7 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
     l2g_c = coarse_layout.l2g
-    Pn = _drop_structural_zeros(
-        _node_transfer_no_repair(builder, coarse_coords, fine_coords))  # (n_f_nodes, n_c_nodes), local
+    Pn = _agreed_node_transfer(builder, coarse_coords, fine_coords, comm)  # (n_f_nodes, n_c_nodes), local
     return _assemble_node_transfer(
         Pn, np.asarray(l2g_c, dtype=np.int64).reshape(-1, ncomp), fine_layout,
         coarse_layout, ncomp, comm)
@@ -998,8 +1230,7 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
-    Pn = _drop_structural_zeros(
-        _node_transfer_no_repair(builder, coords_u, fine_coords))   # (n_f_local, Nu)
+    Pn = _agreed_node_transfer(builder, coords_u, fine_coords, comm)   # (n_f_local, Nu)
     return _assemble_node_transfer(Pn, np.asarray(cols_u, dtype=np.int64),
                                    fine_layout, coarse_layout, ncomp, comm)
 
@@ -1164,7 +1395,7 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     the same bundle the native (DMPlex-refinement) route applies — so custom-P
     and native multigrid cannot be configured differently (#468). ``coarse``
     selects the coarse-solve variant: ``"redundant"`` (gathered LU, the
-    default; the rotated route adds a zero-pivot shift), or ``"gamg"`` only
+    default, with a zero-pivot shift), or ``"gamg"`` only
     when asked for (``set_custom_fmg(..., coarse_solve="gamg")``), which
     installs :class:`GamgCoarseSolve` with ``near_null`` and ``null_modes``
     (vectors of the finest operator: the near-null space and the exact null
@@ -1189,14 +1420,15 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
 
     ``patch_rows`` is the FAC configuration (#629): per PCMG level, ``None``
     (whole-level smoothing, the classical setup) or ``(owned, subdomain)``
-    reduced-row index arrays from :func:`_fac_patch_split`. A level with a
-    patch gets its smoother PC switched to ASM with that ONE user subdomain
-    — the smoother relaxes only the refined patch plus its interface halo,
-    the background falls through to the level that owns it, and the V-cycle's
-    smoothing cost follows the patch sizes' geometric series instead of
-    levels-times-whole-mesh. Residual and transfer work stay global. The
-    per-level ``mg_levels_<l>_pc_type`` keys written here are returned so a
-    per-solve caller (the rotated path) can drop them from the DB."""
+    reduced-row index arrays from :func:`_fac_patch_split`, or a list of such
+    pairs, one per block. A level with a patch gets a multiplicative composite
+    smoother PC: the level's SOR, then a basic ASM over the blocks (patch plus
+    halo, one operator-sparsity overlap layer), each block solved by LU with a
+    nonzero shift. The SOR smooths the whole level; the blocks correct the rows
+    the coarse level cannot represent. The keys written here (each FAC level's
+    ``pc_type`` and its blocks' ``pc_type`` and factor shift) are returned so a
+    per-solve caller (the rotated path) can drop them from the DB, once
+    :func:`_set_up_fac_smoothers` has set the FAC levels up from them."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
     opts = PETSc.Options()
@@ -1211,19 +1443,14 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     # generic mg_levels_pc_type from the bundle, and having it in the DB keeps
     # any later setFromOptions from reverting the live setType below.
     fac_keys = []
-    _only = os.environ.get("UW_FAC_LEVELS")            # TODO(MEASURE): #629 knob
-    _only = {int(t) for t in _only.split(",")} if _only else None
     if patch_rows:
         for l in range(1, nlev):
-            if (l < len(patch_rows) and patch_rows[l] is not None
-                    and (_only is None or l in _only)):
+            if l < len(patch_rows) and patch_rows[l] is not None:
+                # The whole-level smoother stays and the fault blocks apply ON
+                # TOP of it (a multiplicative composite): replacing it starves
+                # whatever the blocks leave out (#670).
                 key = f"mg_levels_{l}_pc_type"
-                # TODO(MEASURE): #670 knob — UW_FAC_MODE=composite keeps the
-                # whole-level smoother and applies the fault blocks ON TOP
-                # (multiplicative composite), instead of replacing it; the
-                # replacement form starves whatever the blocks leave out.
-                opts[prefix + key] = ("composite" if os.environ.get(
-                    "UW_FAC_MODE", "composite") == "composite" else "asm")
+                opts[prefix + key] = "composite"
                 fac_keys.append(key)
     # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
     # between applications, so its KSP must judge convergence flexibly), but on
@@ -1259,82 +1486,108 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     # options DB. setFromOptions above has already pushed the bundle (and the
     # per-level asm keys) into the level KSPs, so the objects are stable now.
     if patch_rows:
-        # TODO(MEASURE): #629 campaign knobs — ASM variant and subdomain
-        # solver for the FAC smoother; remove once the configuration settles.
-        # BASIC, not restricted, ASM: the correction must land on the halo
-        # too. Measured (banded Poisson, 4-level tail): restrict stalls the
-        # outer KSP at 80-375 iterations where basic runs 6 against a
-        # whole-level baseline of 4 — discarding the subdomain solve's halo
-        # correction breaks the interface error systematically.
-        _asm_type = os.environ.get("UW_FAC_ASM_TYPE", "basic")
-        # The measured default (fine S-fault rig, TI 1e-3, 4 September):
-        # whole-level SOR then the fault blocks with an exact LU sub-solve
-        # and one overlap layer — 10 velocity iterations against 44 with
-        # no patch and 60 with the replacing patch; 11 against 57 at np=2.
-        _sub_pc = os.environ.get("UW_FAC_SUB_PC", "lu")
-        _whole = os.environ.get("UW_FAC_WHOLE")        # asm WITHOUT subdomain
+        # The configuration, measured on the fine S-fault rig (TI 1e-3,
+        # 4 September): whole-level SOR, then the fault blocks with an exact
+        # LU sub-solve and one overlap layer — 10 velocity iterations against
+        # 44 with no patch and 60 with blocks replacing the SOR; 11 against 57
+        # at np=2. LU over an inexact block solve: on the add-on matrix's box
+        # (experiment 1, 2026-11) the fastest inexact block solve, ILU(2) at
+        # five steps, took 1.48 to 3.2 times LU's solve time for the same
+        # Newton counts and slip.
         for l in range(1, nlev):
             entry = patch_rows[l] if l < len(patch_rows) else None
-            if entry is None or (_only is not None and l not in _only):
-                continue
-            if _whole:
-                pc.getMGSmoother(l).getPC().setType("asm")
+            if entry is None:
                 continue
             # An entry is one (owned, subdomain) pair, or a LIST of them —
             # one ASM subdomain per block (the segmented-fault shape).
             blocks = entry if isinstance(entry, list) else [entry]
-            sm = pc.getMGSmoother(l)
-            spc = sm.getPC()
-            _composite = os.environ.get("UW_FAC_MODE", "composite") == "composite"
-            if _composite:
-                # whole-level SOR first, then the fault blocks: the blocks
-                # correct the band the level smoother cannot, and the level
-                # smoother keeps everything the blocks leave out
-                spc.setType("composite")
-                spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
-                spc.addCompositePCType("sor")
-                spc.addCompositePCType("asm")
-                lvl_pc = spc
-                spc = spc.getCompositePC(1)
+            # whole-level SOR first, then the fault blocks: the blocks correct
+            # the band the level smoother cannot, and the level smoother keeps
+            # everything the blocks leave out
+            # TODO(BUG): the composite's first member is SOR whatever the
+            # smoother variant; smoother="bulletproof" (mg_levels_pc_type asm,
+            # multigrid_options) is not applied on FAC levels.
+            spc = pc.getMGSmoother(l).getPC()
+            spc.setType("composite")
+            spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
+            spc.addCompositePCType("sor")
+            spc.addCompositePCType("asm")
+            spc = spc.getCompositePC(1)
             spc.setType("asm")
             is_subs = [PETSc.IS().createGeneral(
                 np.asarray(sub_rows, dtype=PETSc.IntType),
                 comm=PETSc.COMM_SELF) for _own, sub_rows in blocks]
-            is_owns = [PETSc.IS().createGeneral(
-                np.asarray(own_rows, dtype=PETSc.IntType),
-                comm=PETSc.COMM_SELF) for own_rows, _sub in blocks]
-            # Subdomain = patch + halo; BASIC applies corrections on the
-            # whole subdomain (restricted stalls — see the class note).
-            # Overlap 0: the transfer-graph halo is the overlap; the env
-            # knob adds operator-sparsity layers at PCSetUp instead.
-            if _asm_type == "basic":
-                spc.setASMType(PETSc.PC.ASMType.BASIC)
-                spc.setASMLocalSubdomains(len(blocks), is_subs)
-            else:
-                spc.setASMLocalSubdomains(len(blocks), is_subs, is_owns)
-            # Extra operator-sparsity overlap layers on top of the transfer
-            # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
-            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "1")))
-            # Subdomain solver: SOR, the patch-restricted twin of the
-            # whole-level smoother — no factorization, so no pivot to hit.
-            # PCASM's default sub-solve (ILU-0) takes a NUMERIC_ZEROPIVOT on
+            # Subdomain = patch + halo. BASIC, not restricted, ASM: the
+            # correction must land on the halo too. Measured (banded Poisson,
+            # 4-level tail): restrict stalls the outer KSP at 80-375
+            # iterations where basic runs 6 against a whole-level baseline
+            # of 4 — discarding the halo correction breaks the interface
+            # error systematically.
+            spc.setASMType(PETSc.PC.ASMType.BASIC)
+            spc.setASMLocalSubdomains(len(blocks), is_subs)
+            # one operator-sparsity overlap layer on top of the transfer halo
+            # (PCASM extends it via MatIncreaseOverlap at PCSetUp)
+            spc.setASMOverlap(1)
+            # Subdomain solver: FAC blocks are LU (with the nonzero shift
+            # below); ILU there is a regression (#892). PCASM's default
+            # sub-solve is unshifted ILU(0): it takes a NUMERIC_ZEROPIVOT on
             # the rotated Galerkin patch block (measured: min |diag| 8e-5 near
-            # the constraint; PC_FAILED -11 before the first iteration).
-            _sub_key = (f"mg_levels_{l}_sub_1_sub_pc_type" if _composite
-                        else f"mg_levels_{l}_sub_pc_type")
-            opts[prefix + _sub_key] = _sub_pc or "sor"
+            # the constraint; PC_FAILED -11 before the first iteration), and
+            # where it survives it is no band solve (UWTN 2026-022's linear
+            # fault fixture at band ratio 24: 344 velocity iterations
+            # against 67).
+            # The block KSPs read these keys when the ASM sets up, which as
+            # the composite's second member is its first application: a
+            # caller that drops the keys after set-up calls
+            # _set_up_fac_smoothers first.
+            _sub_key = f"mg_levels_{l}_sub_1_sub_pc_type"
+            opts[prefix + _sub_key] = "lu"
             fac_keys.append(_sub_key)
-            if (_sub_pc or "sor") in ("lu", "ilu", "cholesky"):
-                # The rotated Galerkin patch block carries near-zero pivots
-                # (constraint-zeroed transfer rows leave weakly-attached
-                # coarse DOFs, min diag ~1e-5); an unshifted factorization
-                # takes NUMERIC_ZEROPIVOT even as exact LU.
-                key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
-                opts[prefix + key] = "nonzero"
-                fac_keys.append(key)
-            for _is in is_subs + is_owns:   # the PC holds its own references
+            # The rotated Galerkin patch block carries near-zero pivots
+            # (constraint-zeroed transfer rows leave weakly-attached coarse
+            # DOFs, min diag ~1e-5); an unshifted factorization takes
+            # NUMERIC_ZEROPIVOT even as exact LU.
+            key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
+            opts[prefix + key] = "nonzero"
+            fac_keys.append(key)
+            for _is in is_subs:   # the PC holds its own references
                 _is.destroy()
     return fac_keys
+
+
+def _set_up_fac_smoothers(pc, fac_keys):
+    """Set up every FAC level's smoother of the PCMG ``pc`` now, its ASM blocks
+    included, and put the configured block solver on the live block KSPs.
+
+    Call it after ``pc.setUp()``, with ``fac_keys`` as :func:`_configure_pcmg`
+    returned them and before anything drops those keys from the options
+    database. PCASM creates its block KSPs at its own set-up, and they read
+    ``..._sub_pc_type`` and the factor shift from the database then. The ASM
+    is the composite's second member, and the composite's set-up only hands its
+    members their operators, so the ASM sets up at its first application. The rotated path drops its per-solve keys straight after
+    set-up, so its blocks ran PCASM's default, unshifted ILU(0) where LU was
+    configured (#892).
+
+    The block solver is also set on each block's PC from the database, so the
+    blocks run it even where the ASM had already set up before this call; the
+    keys must still be in the database when it runs. FAC blocks are LU: ILU
+    there is a regression."""
+    if not fac_keys:
+        return
+    opts = PETSc.Options()
+    for l in range(1, pc.getMGLevels()):
+        if not any(k.startswith(f"mg_levels_{l}_") for k in fac_keys):
+            continue
+        smoother = pc.getMGSmoother(l)
+        smoother.setUp()
+        asm = smoother.getPC().getCompositePC(1)
+        asm.setUp()
+        for block in asm.getASMSubKSP():
+            prefix = block.getOptionsPrefix() or ""
+            block_pc = block.getPC()
+            block_pc.setType(opts.getString(prefix + "pc_type"))
+            block_pc.setFactorShift(
+                shift_type=opts.getString(prefix + "pc_factor_shift_type"))
 
 
 def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
@@ -1439,12 +1692,14 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False,
     vel_pc.reset()
     vel_pc.setOperators(A_vv, P_vv)
     near = _velocity_rigid_body_modes(solver) if coarse == "gamg" else []
-    _configure_pcmg(vel_pc, Ps, coarse=coarse, smoother=solver._mg_smoother_variant,
-                    owned=solver._managed_pc_options, patch_rows=patch_rows,
-                    near_null=near)
+    fac_keys = _configure_pcmg(vel_pc, Ps, coarse=coarse,
+                               smoother=solver._mg_smoother_variant,
+                               owned=solver._managed_pc_options,
+                               patch_rows=patch_rows, near_null=near)
     for m in near:
         m.destroy()
     vel_pc.setUp()
+    _set_up_fac_smoothers(vel_pc, fac_keys)
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
     solver._attach_stokes_nullspace()
@@ -1485,9 +1740,13 @@ class CustomMGHierarchy:
         smoother (#629): a boolean mask over the finest mesh's cells — the
         painted / placed band the modeler authored — or a LIST of masks for
         one ASM block per fault segment (masks may overlap; a junction cell
-        in two masks sits inside both blocks). The structural patch (the
-        cut/split-inserted rows the transfer cannot represent) is unioned in
-        automatically. ``None`` keys the patch on the structural rows alone.
+        in two masks sits inside both blocks). When the finest level carries
+        a split fault, its structural patch (the rows the transfer cannot
+        represent) is added as one more block, unless the split level's cover
+        gate declines it; a level without a split keys the patch on the masks
+        alone (#921). ``None`` keys the patch on the structural rows alone.
+        Pass a mask on every rank, all-False where a rank holds no zone cell,
+        or None on every rank.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
@@ -1511,6 +1770,9 @@ class CustomMGHierarchy:
         # cost is bounded by the cap however long the band grows.
         self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
+        # the FAC patch per level as installed, summed over the ranks
+        # (_fac_patch_summary); set where the patch goes onto the smoothers
+        self.patch_summary = None
         # Split-level multigrid (utilities.fault_mg): a COARSE level carrying a
         # split-node fault takes the side-aware cell-located transfer, and its
         # unreached unknowns are dropped at install rather than repaired.
@@ -1532,12 +1794,28 @@ class CustomMGHierarchy:
         Validated against the FINEST level's cell count at construction —
         a mask of the wrong length would otherwise surface as a silently
         empty (or wrong) patch, which is exactly the declining-quietly
-        failure mode the ASM probe discipline exists to catch."""
-        if fac_zone is None:
-            return None
-        masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
-                 else [fac_zone])
+        failure mode the ASM probe discipline exists to catch.
+
+        Collective: the keying must be the same on every rank, a mask on
+        every rank (all-False where the rank holds no zone cell) or None on
+        every rank. The parallel finest level gathers the masks' rows, so a
+        rank keyed differently would wait in another collective (#925)."""
+        masks = None
+        if fac_zone is not None:
+            masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
+                     else [fac_zone])
         finest = self.level_meshes[-1]
+        counts = finest.dm.comm.tompi4py().allgather(
+            -1 if masks is None else len(masks))
+        if len(set(counts)) > 1:
+            raise ValueError(
+                f"fac_zone: the ranks pass {counts} masks (-1 for None); pass "
+                f"a mask on every rank, all-False where a rank holds no zone "
+                f"cell, or None on every rank.")
+        if masks is None:
+            return None
+        if not masks:
+            raise ValueError("fac_zone holds no mask; pass None for no zone.")
         cS, cE = finest.dm.getHeightStratum(0)
         out = []
         for k, mk in enumerate(masks):
@@ -1649,14 +1927,15 @@ class CustomMGHierarchy:
                 level_comm = solver.dm.comm.tompi4py()
                 nodes, dofs = level_comm.allreduce(nodes), level_comm.allreduce(dofs)
             nc = dofs // nodes
-            if dofs % nodes != 0:
-                raise RuntimeError(
+            if dofs % nodes != 0:      # allreduced: every rank raises
+                raise CollectiveBuildError(
                     f"level {k}: full DOFs {dofs} not divisible by nodes {nodes}")
             coords.append(c)
             ncomp.append(nc)
 
-        if len(set(ncomp)) != 1:
-            raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
+        if len(set(ncomp)) != 1:       # from allreduced counts: every rank raises
+            raise CollectiveBuildError(
+                f"inconsistent component counts across levels: {ncomp}")
         nc = ncomp[0]
 
         # Operator-faithful check: the finest reduced map must span exactly the
@@ -1672,6 +1951,13 @@ class CustomMGHierarchy:
         # patch is read off its own transfer ``Ps[l-1]``, in the level
         # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
+        # per level, the cover gate's verdict where it ran (#918): rows,
+        # patch+halo rows and taken, global counts, the same on every rank.
+        # It is the gate's verdict: install can still drop a renumbered
+        # coarse level's patch afterwards.
+        self.fac_gate = [None] * nlev
+        # the record of the previous install no longer describes these rows
+        self.patch_summary = None
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
@@ -1774,62 +2060,64 @@ class CustomMGHierarchy:
                                     f"the co-partitioned transfer (#671).")
                 # an orphan coarse DOF (no fine image) is dropped at install
                 # (restrict_unreached), never injected — see drop_orphans
-                # FAC in parallel (#670): the same blocks as the serial branch
-                # below, in GLOBAL row numbering — the layout's ghost-resolved
-                # l2g puts a masked cell's off-rank nodes into this rank's
-                # subdomain, which is the seam halo; the structural split
-                # reads this rank's owned rows of the distributed transfer;
-                # the cover gate is one collective verdict.
+                # FAC in parallel (#670): the serial branch's blocks, in GLOBAL
+                # row numbering. The structural split reads this rank's owned
+                # rows of the distributed transfer, under one collective cover
+                # verdict. A zone's rows are gathered from every rank (the
+                # layout's ghost-resolved l2g names a masked cell's off-rank
+                # nodes by their owner's rows), and the zone and the structural
+                # rows are cut into blocks from what every rank holds, so the
+                # blocks do not depend on the partition (#925).
                 if (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
                         and l == nlev - 1):
                     lay = maps[l]
                     blocks = []
-                    covered = set()
+                    zones = []
                     if self.fac_zone is not None:
                         cn = self.level_meshes[l]._cell_node_indices(
                             degree, continuous)
                         for mk in self.fac_zone:
                             nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
-                            full = (nodes[:, None] * nc
-                                    + np.arange(nc)[None, :]).ravel()
-                            rows = lay.l2g[full]
-                            keep = rows >= 0
-                            rows, node_r = rows[keep], full[keep] // nc
-                            # TODO(MEASURE): #670 knob — rows per block;
-                            # the default comes from the size sweep.
-                            cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
-                                                     self.fac_block_rows))
-                            for piece in _segment_block(rows, node_r,
-                                                        coords[l], cap):
-                                piece = np.unique(piece).astype(np.int64)
-                                if piece.size:
-                                    blocks.append((piece, piece))
-                                    covered.update(piece.tolist())
-                    # TODO(MEASURE): #670 knob — UW_FAC_STRUCTURAL=0 keeps the
-                    # fault-zone blocks alone, without the structural
-                    # (non-nested transfer) rows; remove when settled.
+                            rows = lay.l2g[nodes[:, None] * nc
+                                           + np.arange(nc)[None, :]]
+                            n, c = np.nonzero(rows >= 0)
+                            zones.append((rows[n, c], coords[l][nodes[n]]))
+                    # A placed split fault's structural rows (its band, the
+                    # split duplicates and the fill around them) are rows the
+                    # coarse level cannot represent, and whole-level SOR
+                    # converges them slowly: with a TI zone keyed beside a
+                    # split fault at h_b/S = 24, leaving them out took 820
+                    # velocity iterations over 17 applications against 94
+                    # (#921). They join the zone's blocks whatever the zone
+                    # covers, under the split level's gate (#918). A level
+                    # without a split keeps the zone's blocks alone, the
+                    # default #670 measured on a placed weak plane. The split
+                    # marker is the same on every rank.
+                    # A keyed zone beats detection, as in the serial branch,
+                    # even where its masks hold no cell on any rank. The
+                    # split marker and the keying are the same on every rank,
+                    # so the cover gate's collectives run on all or none.
                     split = None
-                    # the split's cover gate is collective: decide whether
-                    # to take it from what ANY rank holds, not this rank
+                    split_level = fault_mg.is_split_level(self.level_meshes[l])
+                    keyed = self.fac_zone is not None
                     mpi_comm = comm.tompi4py()
-                    zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
-                                                       op=MPI.LOR)
-                    if (os.environ.get("UW_FAC_STRUCTURAL", "0") != "0"
-                            or not zone_anywhere):
+                    if split_level or not keyed:
+                        gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
                             mpi_comm,
-                            cover_max=(1.01 if zone_anywhere else 0.75))
-                    if split is not None:
-                        _own, sub = split
-                        extra = np.asarray([g for g in sub if g not in covered],
-                                           dtype=np.int64)
-                        if blocks:
-                            if extra.size:
-                                blocks.append((extra, extra))
-                        else:
-                            blocks.append((np.asarray(_own, dtype=np.int64),
-                                           np.asarray(sub, dtype=np.int64)))
+                            cover_max=self._fac_cover_max(l),
+                            gate=gate)
+                        self.fac_gate[l] = gate or None
+                    # split is None on every rank or on none: the gate's
+                    # verdict is collective
+                    if keyed or split is not None:
+                        # TODO(MEASURE): #670 knob — rows per block; the
+                        # default comes from the size sweep.
+                        cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                 self.fac_block_rows))
+                        blocks = _gathered_patch_blocks(
+                            zones, split, cap, lay.rstart, mpi_comm)
                     # every rank installs the patch, or none does: a rank with
                     # no rows of its own still sets the smoother type
                     n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
@@ -1907,19 +2195,19 @@ class CustomMGHierarchy:
                                 if piece.size:
                                     blocks.append((piece, piece))
                                     covered[piece] = True
-                        # The patch smoother REPLACES whole-level smoothing,
-                        # so it inherits every row the coarse level cannot
-                        # represent — the STRUCTURAL (non-identity) transfer
-                        # patch — whether or not the physics zone covers it.
-                        # A zone away from the cut/split leaves those rows
-                        # smoothed nowhere and the velocity solve stalls at
-                        # its cap (measured: any off-cut zone, #629). Add
-                        # the uncovered structural rows as one more block.
+                        # A split level's structural rows join the zone's
+                        # blocks as one more block under the split level's
+                        # gate, as in the parallel branch (#921, #918); a
+                        # level without a split keeps the zone's blocks alone
+                        # (#670).
                         split = None
-                        if os.environ.get("UW_FAC_STRUCTURAL", "0") != "0":
+                        if fault_mg.is_split_level(self.level_meshes[l]):
+                            gate = {}
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
-                                maps[l], nc, cover_max=1.01)
+                                maps[l], nc, cover_max=self._fac_cover_max(l),
+                                gate=gate)
+                            self.fac_gate[l] = gate or None
                         if split is not None:
                             _own, sub = split
                             extra = sub[~covered[sub]].astype(np.int64)
@@ -1929,12 +2217,32 @@ class CustomMGHierarchy:
                             None if not blocks
                             else blocks[0] if len(blocks) == 1 else blocks)
                     else:
+                        gate = {}
                         self.level_patch_rows[l] = _fac_patch_split(
                             Pr, coords[l - 1], coords[l], maps[l - 1],
-                            maps[l], nc)
+                            maps[l], nc, cover_max=self._fac_cover_max(l),
+                            gate=gate)
+                        self.fac_gate[l] = gate or None
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
+        if (solver._custom_mg or {}).get("verbose"):
+            verdicts = [f"level {l} {'taken' if g['taken'] else 'declined'} "
+                        f"({g['subdomain_rows']} of {g['rows']} rows in patch+halo)"
+                        for l, g in enumerate(self.fac_gate) if g]
+            mpi.pprint(f"[{solver.name}] FAC cover gate: "
+                       + ("; ".join(verdicts) or "not run"))
         return Ps
+
+    def _fac_cover_max(self, l):
+        """The FAC cover gate's threshold on level ``l`` (#918): 0.98 on a 2-D
+        level that carries a split fault, 0.75 on any other. A 3-D split level
+        keeps 0.75: the 0.98 evidence is 2-D, and in 3-D a 94 % patch taken was
+        one LU at 4x the memory and 13x the time of whole-level SOR (test_1097's
+        sheet)."""
+        from underworld3.utilities.fault_mg import is_split_level
+        mesh = self.level_meshes[l]
+        return (_FAC_COVER_MAX_SPLIT if mesh.dim == 2 and is_split_level(mesh)
+                else _FAC_COVER_MAX)
 
     @staticmethod
     def _assert_finest_matches_operator(solver, finest_map, parallel):
@@ -1964,14 +2272,28 @@ class CustomMGHierarchy:
                 int(finest_map.rend - finest_map.rstart)))
         else:
             red_n = int(len(finest_map))             # r2f length = reduced global size
-        if red_n != op_n:
-            raise RuntimeError(
+        if red_n != op_n:               # allreduced: every rank raises
+            raise CollectiveBuildError(
                 f"custom_mg: finest reduced-map size {red_n} != assembled operator "
                 f"size {op_n}. The DM global section disagrees with the operator "
                 f"(an adapt-child section inconsistency); the finest transfer would "
                 f"be rectangular and the Galerkin PtAP would abort (PETSc error 60). "
                 f"Rebuild the solver so its DM section matches the operator before "
                 f"installing custom-P.")
+
+    def _record_patch_summary(self, patch_rows, comm):
+        """Set :attr:`patch_summary` from the patch rows handed to the installer.
+
+        Collective (see :func:`_fac_patch_summary`). Each install route calls
+        it with the rows it installed, once the PC is configured (and set up,
+        on the velocity-block routes), after the orphan restriction has
+        dropped the rows of every coarse level it renumbered; ``build``
+        clears the previous record. Each block is
+        recorded as handed over, before PCASM adds its overlap layer at
+        set-up. Reading :attr:`patch_summary` afterwards makes no collective
+        call, so any rank can read it alone."""
+        self.patch_summary = _fac_patch_summary(patch_rows, comm)
+        return self.patch_summary
 
     def install(self, solver, verbose=False):
         if self.transfers is None:
@@ -1992,6 +2314,7 @@ class CustomMGHierarchy:
                     for level, rows in enumerate(patch_rows)]
             Ps = restricted
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
+        self._record_patch_summary(patch_rows, solver.dm.comm)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed).
         solver._custom_mg_live = {"h": id(self),
@@ -2025,12 +2348,12 @@ class _DMLevelView:
         self.qdegree = fine_mesh.qdegree
 
         # The gmsh-imported BASE level carries section-only coordinates (its
-        # coordinate field is a PetscContainer, no PetscFE), and
-        # DMCreateInterpolation from such a source silently returns a ZERO
-        # matrix (measured) — _get_coords_for_basis would then hand every
-        # level-0 node the coordinate (0,0) and the transfer build collapses.
-        # refine() gives the child levels an FE coordinate space; give the
-        # clone's base the same: P1 Lagrange on the identical vertex layout.
+        # coordinate field is a PetscContainer, no PetscFE). PETSc's
+        # DMCreateInterpolation from such a source silently returned a ZERO
+        # matrix (measured), and UW3's copy, which _get_coords_for_basis now
+        # uses (#902), refuses a field that is not a PetscFE. refine() gives
+        # the child levels an FE coordinate space; give the clone's base the
+        # same: P1 Lagrange on the identical vertex layout.
         cdm = self.dm.getCoordinateDM()
         field = cdm.getField(0)
         fobj = field[0] if isinstance(field, tuple) else field
@@ -2106,16 +2429,22 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     zone (#629): a boolean mask over the solver mesh's cells — e.g.
     ``mesh.cells_labelled("Band")`` for a placed ribbon, or
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
-    list of masks for per-segment ASM blocks. The structural (cut/split)
-    rows are unioned in automatically; the patch is solved strongly once
-    per smoother application (basic ASM, shifted factorization).
+    list of masks for per-segment ASM blocks. On a split finest level the
+    structural rows are added as one more block, unless its gate declines
+    them; without a split the masks alone key the patch (#921). The patch is
+    solved strongly once per smoother application (basic ASM, shifted
+    factorization). In parallel pass a mask on every rank, all-False where a
+    rank holds no zone cell, or None on every rank.
 
     ``coarse_solve="gamg"`` makes the coarse level a GAMG solve
     (:class:`GamgCoarseSolve`) instead of the gathered direct solve. Use it
     only when the coarsest mesh that can be built is too large for every rank
     to factor: where both fit it costs 1.7-4x a gathered LU's coarse work
     (measured at np 4 on 600-cell bottom levels), at the same answer. ``None``
-    (the default) keeps the gathered LU."""
+    (the default) keeps the gathered LU.
+
+    ``verbose`` prints the installed transfer sizes and the FAC cover gate's
+    verdict per level (``hierarchy.fac_gate``, #918)."""
     if coarse_solve not in (None, "gamg"):
         raise ValueError(f"coarse_solve must be None or 'gamg' (got {coarse_solve!r})")
     solver._custom_mg = {
@@ -2147,7 +2476,9 @@ def build_transfers(solver, field_id=None):
     is a DEMAND (build errors raise — the user registered it explicitly); the
     other two are PREFERENCES, built through the same opportunistic arm
     (barycentric, RBF retry, degrade to the solver's default preconditioner —
-    every step recorded in ``solver.pc_fallbacks``).
+    every step recorded in ``solver.pc_fallbacks``). In parallel only a builder
+    failure every rank raises together (:class:`CollectiveBuildError`) is
+    retried or degraded; any other failure is raised where it happens (#886).
 
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
     coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
@@ -2258,6 +2589,13 @@ def build_transfers(solver, field_id=None):
     # barycentric fell back to GAMG at 23 its while RBF kept pc=mg at 2.
     # Falling back to GAMG loses the hierarchy entirely, so try the cheaper
     # degradation first. See #424.
+    # In parallel the retry and the degrade are collective decisions, so they
+    # are taken only on a verdict every rank holds (CollectiveBuildError: a
+    # builder failure, a check on allreduced sizes). Any other exception is
+    # one rank's: the others are inside the build's collectives, and a rank
+    # that caught it and retried would meet them in different ones (#886).
+    # It is raised.
+    _retryable = CollectiveBuildError if solver.dm.comm.getSize() > 1 else Exception
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
@@ -2270,9 +2608,14 @@ def build_transfers(solver, field_id=None):
         try:
             Ps = h.build(solver)
             break
-        except Exception as exc:            # pragma: no cover - defensive
+        except _retryable as exc:   # sanctioned: retried or degraded, and recorded
             import warnings
-            if _i + 1 < len(_attempts):
+            # another builder can only rescue a failure of the builder: an
+            # agreed check elsewhere (the provenance transfer, the operator
+            # sizes) would fail again after a full rebuild
+            retry = (exc.builder_failure if isinstance(exc, CollectiveBuildError)
+                     else True)
+            if retry and _i + 1 < len(_attempts):
                 solver._record_pc_fallback(
                     "custom_mg.transfer_builder",
                     requested=_b,
@@ -2292,7 +2635,7 @@ def build_transfers(solver, field_id=None):
                 continue
             solver._record_pc_fallback(
                 "custom_mg.build",
-                requested=f"custom-P geometric MG ({' -> '.join(_attempts)})",
+                requested=f"custom-P geometric MG ({' -> '.join(_attempts[:_i + 1])})",
                 installed="default preconditioner",
                 reason="build_failed",
                 detail=str(exc))

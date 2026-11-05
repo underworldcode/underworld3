@@ -108,6 +108,20 @@ surface rather than the mesh — a coarse spherical shell where faceting, not th
 gauge, is the dominant error — and be aware that the pressure gauge is then only
 as good as the numbers above.
 
+In parallel both normals constrain the same wall nodes. Each boundary facet is
+labelled on one rank, so a rank can own a wall node whose facets all sit on
+neighbours. The geometric path finds it by summing the facet normals over the
+point SF; the analytic path sums a marker through the same scatter and then
+evaluates the normal once per node, so every rank holding a node gives it the
+same normal to the bit. Both paths are collective. Before #935 the analytic
+path took only the nodes of the facets labelled on its rank, and such a node
+got no constraint row: on coarse boxes a corner, from np 2; on a production
+annulus an arc node, from np 24. The readers that take their nodes from the same
+list (`boundary_normal_traction`, `boundary_normal_traction_integral` and the
+dynamic topography field) dropped that node too.
+`FreeSurface._surface_node_coords` completes its vertex set the same way.
+Guard: `tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py`.
+
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy
 makes the boundary condition matter), it is correct on curved/tilted/deformed
@@ -181,7 +195,12 @@ path uses**:
 2. a **mesh-owned** coarse tail (`mesh._custom_mg_coarse_meshes`, what
    `mesh.adapt()` leaves on a refinement child) is picked up opportunistically,
    with the barycentric→RBF builder fallback, so a failed build degrades to GAMG
-   rather than crashing the solve.
+   rather than crashing the solve. In parallel the retry and the degrade happen
+   on a verdict every rank holds: a builder failure, which is agreed across
+   ranks as soon as the builder returns, or a check on allreduced sizes
+   (`custom_mg.CollectiveBuildError`). Any other exception is one rank's while
+   the others are inside the build's collectives, so it is raised rather than
+   retried alone (#886).
 
 Step 2 used to be unreachable from here. The standard path's injection hook runs
 *after* the rotated dispatch has already returned, and the rotated builder
@@ -269,8 +288,13 @@ sub-KSPs at all and both fields record `None`.
 The manual loop exists because the rotated operator `Q A Qᵀ` carries no DM
 field information, so PETSc's DM-coupled fieldsplit cannot precondition it;
 the increment is solved by an IS-built fieldsplit instead, driven from the
-loop. The loop honours `zero_init_guess`, `picard`, and the solver's
-`consistent_jacobian` tangent policy (frozen / Newton / continuation).
+loop. The loop honours `zero_init_guess`, `picard`, the solver's
+`consistent_jacobian` tangent policy (frozen / Newton / continuation), and a
+user-set `snes_max_it` as its cap on Newton increments, 50 otherwise
+(`_rotated_max_it`; #920, `test_1136`). As in PETSc's SNES, the residual is
+tested after the last increment, so `snes_max_it = 0` is one residual
+evaluation. Unlike the standard path's Picard warm-up, staged Picard steps count
+against the cap.
 
 ### How the datum passes through Newton
 
@@ -299,7 +323,45 @@ Newton step) is *verified* against the same reference before it may report
 convergence — a stiff tangent also produces tiny steps far from the solution,
 and an unverified tiny step goes back through the line search (a slow crawl
 continues; a genuine stall ends the loop with an explicit warning). An
-unconverged exit always warns; the fields hold the last iterate.
+unconverged exit warns and leaves the last iterate in the fields, except for the
+one case that raises, below.
+
+A **cold start whose first linear solve fails** raises on every rank (#907). The
+outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can fail hard:
+a preconditioner that failed (reason −11), a breakdown, a NaN, or a residual that
+grew. On the first step of a solve from a zero guess (a warm request on zero fields
+counts, with or without a datum), nothing has been produced.
+With a preconditioner failing at iteration 0, the route used to write the zero
+guess into the fields as if it were a solution.
+
+The exception names the reason. `Stokes.solve` and `fault_contact.solve_with_fault`
+(and so `FaultNetwork.solve`) raise it after the result is recorded: a caller
+that catches it reads `converged = False`, the KSP reason in
+`_rotated_freeslip_info`, and a negative SNES reason. The fields are not written.
+Set `solver.tolerate_linear_failure = True` to warn and continue instead, as the
+route used to; the fields then hold the zero guess. A cold datum lift whose solve
+failed is not applied.
+
+Elsewhere a hard failure only warns, and the line search rejects the failed
+increment:
+- on a warm start, the fields keep the caller's state;
+- after an accepted step, they keep that iterate, and the loop's convergence
+  verdict stands. A solve driven past round-off can fail its last linear solve
+  this way with Newton already at 2e-10 of the reference residual, and a warm
+  re-solve of such a state fails its first one.
+
+**A workspace whose KSP failed hard is never cached**, whether the failure raised
+or warned. PCMG and PCREDUNDANT do not reset a failed preconditioner's reason at
+set-up, so a cached workspace fails every later solve at iteration 0, even after
+the cause is gone. The next solve builds its workspace afresh, which costs one
+full KSP set-up. On a 39k-dof FMG fixture that doubles the solve, 38.7 s to
+76.5 s. A time loop driven past round-off fails its last increment every step,
+so it pays that set-up every step.
+
+An iteration cap (reason −3, petsc4py's `DIVERGED_MAX_IT`) only warns. So does
+the velocity sub-solve's own reason, because the outer FGMRES absorbs an inexact
+inner solve; when the outer solve failed hard, only the outer failure is
+reported. The standard SNES path only warns on divergence.
 
 ### Null-space handling
 
@@ -341,6 +403,19 @@ nodal reaction onto the boundary normal (corner-correct) and de-smears it with
 the shared boundary-mass machinery in `utilities/boundary_flux.py`;
 `dynamic_topography_field` writes `h = −(σ_nn − σ̄_nn)/(Δρ g)` onto a surface
 field for the free-surface integrator.
+
+At a node an essential wall also constrains (a corner with a Dirichlet wall),
+the constrained components are not in the reaction vector. They read zero and
+contribute nothing to σ_nn; the free components keep their load (Louis's
+ruling, 2026-11-04, #936). A fully constrained corner therefore carries zero
+load; the de-smear can still give it a nonzero σ_nn from its neighbours (3-D
+P2). `boundary_normal_traction` and
+`boundary_normal_traction_integral` take the loads from one helper
+(`_wall_normal_loads`), which counts each node once, on the rank owning its
+first free component. Before #936 both read those components from an unzeroed
+pooled vector, and the integral dropped a node whose first component was
+constrained. At such a corner the rotated constraint itself still ignores a
+nonzero pinned value (#939).
 
 ### Which de-smearing mass (3-D)
 
