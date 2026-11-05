@@ -577,6 +577,21 @@ mesh = uw.discretisation.Mesh(
 )
 ```
 
+The mesh applies the callback through `_apply_refinement_callback`
+(`discretisation_mesh.py`). Of each cell the callback turned inside out, the vertex it
+moved furthest goes back where refinement placed it, until none is inverted, with a
+warning (#946). A callback that only snaps boundary vertices onto their curve never
+triggers it on a sound coarse mesh.
+
+A generator that meshes a sphere with gmsh should call
+`underworld3.meshing._sphere_surface._flip_creased_sphere_edges()` between
+`gmsh.model.mesh.generate(2)` and `generate(3)`. gmsh triangulates a sphere in a
+parameter plane and can join four wall nodes along the long diagonal, creasing the
+wall toward the centre. On an inner or internal wall the pocket under the crease is
+meshed as one cell with all four vertices on the sphere, and snapping folds its
+children. The call flips every creased edge to the convex hull of the nodes before
+the volume is meshed.
+
 ### Return Coords to Bounds Callback
 
 Restore particles that escape the domain (important for inflow boundaries):
