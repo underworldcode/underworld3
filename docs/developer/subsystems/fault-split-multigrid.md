@@ -95,10 +95,8 @@ zero). Two further rules came out of the same case:
   not yet identified (a row-level inspection is in the driver's history);
 - the free-slip gauge mode must verify for the rotation to be removed, which on
   a faceted circle needs the exact radial normal
-  (`normal=mesh.CoordinateSystem.unit_e_0`). The coarse solve was then a dense
-  SVD, which needed a small coarsest level (14k unknowns took over 30 minutes,
-  900 was instant). It is redundant LU with a zero-pivot shift now, which
-  factors sparsely (#901).
+  (`normal=mesh.CoordinateSystem.unit_e_0`). The coarse solve is the shared
+  redundant LU with a zero-pivot shift (#901).
 
 ## Parallel
 

@@ -6,6 +6,26 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### The multigrid coarse solve: one rule on every route (November 2026, #901)
+
+The rotated free-slip route solved its coarse level with a dense SVD whenever
+the problem left rigid rotations free, on the grounds that the Galerkin coarse
+operator inherits them and a plain LU meets a zero pivot (#306). The SVD is
+O(n^3) and was run on every rank: one factorisation of a 614-cell spherical
+shell bottom level took 64 s at np 1 and 102 s at np 4, against 7 s for the
+whole Stokes solve with LU at np 4, so adding ranks made the solve slower and
+capped the rollback campaign at np 16. The route also set its coarse level up
+twice per solve.
+
+Measured, the coarse operators were near-singular, never singular:
+lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the annulus and 2.8e-4 on the shell,
+and plain redundant LU gave the SVD's answer and iteration counts on every
+fixture. Louis ruled on 2026-11-05 that there is no SVD path: every route
+factors the coarse level with the shared redundant LU and a nonzero factor
+shift, which acts only on a zero pivot, and a null space is fixed on the
+fine operator, never by the coarse solve. GAMG remains available as the coarse
+solve, when asked for, for a bottom level too large to gather.
+
 ### CI test batches sharded across parallel jobs (October 2026, #730)
 
 The test workflow ran as a single job whose wall-clock tracked the total cost

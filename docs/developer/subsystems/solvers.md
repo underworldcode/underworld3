@@ -596,21 +596,21 @@ comment warning against changing it, while never once taking effect (measured: t
 live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
 ```
 
-### The one per-route difference
+### The coarse solve: one rule on every route
 
-The coarse solve, and only slightly. The Galerkin-coarsened **rotated** velocity
-block inherits the rigid rotations the constraint leaves (a closed circle: one
-mode; a spherical shell: three), but only nearly: it is near-singular, not
-singular, on every hierarchy measured, and the shared redundant LU solves it at
-the SVD's iteration counts and answer. The rotated route adds a nonzero factor
-shift, set on the live coarse PC after the multigrid set-up, which acts only on an
-exact zero pivot (#901).
+There is no per-route difference. The native, custom-P and rotated routes all
+factor the coarse level with the shared bundle's redundant LU and its nonzero
+factor shift, which acts only on a zero pivot. The rotated route sets the
+same shift on the live coarse PC after the multigrid set-up, because it deletes
+its option keys before the coarse PC would read them (the failure class of
+#892); the value does not differ. A null space is fixed on the fine operator,
+never by the coarse solve: the Galerkin-coarsened rotated block inherits the
+rigid rotations the constraint leaves only nearly, and is near-singular, not
+singular, on every hierarchy measured (#901).
 
-The route used a dense SVD coarse solve until then (#306), O(n^3) on every
-rank: 64 s at np 1 and 102 s at np 4 to factor a 614-cell shell bottom level.
-That variant is gone. `coarse="gamg"` is a distributed coarse solve, only when
-asked for. Both are named variants of the shared bundle, not call-site
-overrides, so they are visible in the same place as everything else.
+`coarse="gamg"` is a distributed coarse solve, only when asked for, for a bottom
+level too large to gather. It is a named variant of the shared bundle, not a
+call-site override, so it is visible in the same place as everything else.
 
 The other native/custom-P asymmetry — that native FMG is unusable for
 single-field solvers because `DMCreateInjection` cannot reliably be built on a
