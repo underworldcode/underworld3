@@ -367,6 +367,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
   batch 3 tests/test_110*py
   batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
+  batch 4 tests/test_1111*py tests/test_1113*py  # rotated FMG coarse solve (#901)
   batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
   batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
   batch 4 tests/test_1136*py  # the rotated loop honours snes_max_it (#920)

@@ -214,10 +214,22 @@ it composes with transverse isotropy.
 The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
-single deliberate difference is the coarse solve: `coarse="svd"`, because the
-Galerkin-coarsened rotated block inherits the rigid-rotation null space where
-`redundant`/LU hits a zero pivot. See
+coarse solve is the shared one, a redundant LU with a nonzero factor shift that
+acts only on a pivot below PETSc's zero-pivot tolerance (#901). This route
+writes the bundle under a prefix unique to the solve and drops it when the
+set-up is done, so its coarse solve cannot be overridden through
+`petsc_options`. See
 [the solvers subsystem doc](solvers.md) for the bundle itself.
+
+The free-slip gauge is fixed on the fine operator, by the verified rigid
+rotations, never by the coarse solve. The Galerkin-coarsened rotated block
+inherits those rotations only nearly: the coarse operator is near-singular, not
+singular. lambda_min/lambda_max is 2.0e-5 to 2.4e-8 on the annulus with 40 to 600
+bottom cells, and 2.8e-4 on the spherical shell. The LU factors those levels at
+the same answer and iteration counts as the solve it replaced, and also on a
+faulted annulus with rotated coarse levels. The shift matters only on a singular
+level, such as one that is the fine operator itself (#306's situation,
+test_1111).
 
 The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
 2026-10-14): each takes the per-node wall frame on its own nodes and loses its
