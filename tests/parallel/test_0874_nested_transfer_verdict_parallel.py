@@ -10,8 +10,9 @@ reduced over all ranks. On every rank:
 - a vertex transfer spoiled on rank 0 only gives ``None`` for the cell-parent map;
 - the transfer recovered from a regular refinement, and its cell-parent map, are found;
 - a rank that owns no cells returns an empty transfer, not ``None``, so it does not veto
-  the others. A box of two triangles leaves a rank empty at np 3 and more; at np 2 every
-  rank owns one, and the case is not exercised.
+  the others. A box of two triangles leaves a rank empty from np 2. On development that
+  rank's early return hung the job rather than failing it, which the CI supervisor
+  reports as a failure.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_0874_nested_transfer_verdict_parallel.py
 """
@@ -55,8 +56,9 @@ def test_a_transfer_spoiled_on_one_rank_gives_no_map_on_any():
 
 
 def test_a_rank_that_owns_nothing_does_not_veto_the_transfer():
-    # a box of two triangles: at np 3 and more some rank owns no cell. On development
-    # that rank returned None ("no coarse edges") and the others the transfer
+    # a box of two triangles: from np 2 some rank owns no cell (cells per rank [0, 2] at
+    # np 2, hyperion). On development that rank left its peers waiting in the fine
+    # coordinates' first read, which is collective, and the job hung
     base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=1.0, regular=True, qdegree=2)
     coarse = base.dm
@@ -65,7 +67,6 @@ def test_a_rank_that_owns_nothing_does_not_veto_the_transfer():
     empty = uw.mpi.comm.allgather(ce == cs)
     transfer = nvb.nested_prolongation_from_dms(coarse, fine)
     found = uw.mpi.comm.allgather(transfer is not None)
-    if uw.mpi.size >= 3:
-        assert any(empty), ("no rank owns nothing at this rank count: the case has lost "
-                            "its power", empty)
+    assert any(empty), ("no rank owns nothing at this rank count: the case has lost its "
+                        "power", empty)
     assert all(found), (found, empty)
