@@ -30,7 +30,9 @@ Contracts, all exactness properties:
   answer carries no rotation;
 - a no-slip wall rejects a declared mode; a box declares none and finds none;
 - the setter refuses a field that is not a rigid rotation, and an add_fault child
-  inherits the declaration.
+  inherits the declaration, written in its own coordinates;
+- a shell in a units model solves and keeps its three modes (#877: the modes were
+  built from dimensional coordinates, and development raised TypeError).
 """
 import warnings
 
@@ -279,3 +281,36 @@ def test_an_add_fault_child_inherits_the_declaration():
     c = np.asarray(child.X.coords)
     field = rotated_bc._declared_rotation_fields(child, c)[0]
     assert np.allclose(field, np.column_stack([-c[:, 1], c[:, 0]]), rtol=0, atol=1.0e-14)
+
+
+def test_a_units_model_shell_solves_with_its_declared_modes():
+    # #877: the modes were built from the dimensional coordinates, a UnitAwareArray in a
+    # units model, on which np.zeros_like raised TypeError in 3-D (rotated_bc.py:3023 on
+    # development eddab707); they are built from coords_nd now
+    uw.reset_default_model()
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1000, "km"), viscosity=uw.quantity(1e21, "Pa*s"),
+        time=uw.quantity(1, "Myr"))
+    try:
+        mesh = uw.meshing.SphericalShell(radiusOuter=2.0, radiusInner=1.0, cellSize=0.5,
+                                         refinement=1, qdegree=3)
+        v = uw.discretisation.MeshVariable("V1131u", mesh, 3, degree=2)
+        p = uw.discretisation.MeshVariable("P1131u", mesh, 1, degree=1)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        x, y, z = mesh.X
+        r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
+        stokes.bodyforce = (sympy.cos(4 * sympy.atan2(y, x)) * (z / r)
+                            * sympy.Matrix([x / r, y / r, z / r]).T)
+        for wall in ("Lower", "Upper"):
+            stokes.add_rotated_freeslip_bc(0, wall)
+        stokes.petsc_use_pressure_nullspace = True
+        stokes.solve()
+        info = stokes._rotated_freeslip_info
+        assert info["converged"], info
+        assert info["declared_modes_kept"] == [True, True, True]
+        assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
+        assert _normal_velocity(info) < 1.0e-12
+    finally:
+        uw.reset_default_model()
