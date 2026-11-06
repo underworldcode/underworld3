@@ -369,15 +369,23 @@ reported. The standard SNES path only warns on divergence.
 
 The rigid-rotation candidates are the modes the mesh **declares** in
 `mesh.nullspace_rotations` (#906): one on an annulus, three on a spherical shell
-or a sheet on a sphere, none on a box. The mesh factories declare them, and the
+or a sheet on a sphere. A box declares nothing; detection then finds no mode. The mesh factories declare them, and the
 standard Stokes path reads the same list for `petsc_use_nullspace`. A mesh built
 without them (a gmsh import, a wrapped DM) declares its modes by assignment,
 `mesh.nullspace_rotations = [sympy.Matrix([-y, x])]`. Assigning `[]` declares
-that it has none.
+that it has none. The setter refuses a field that is not a rigid rotation. A mesh
+adapted or cut from a declaring mesh inherits its modes.
 
-A declared mode is not tested against the constraint rows. Its constrained rows
-are zeroed, in the null space and in the gauge removal alike, which makes it
-exactly compatible with `v·n = 0`. A test against the rows would reject the
+A declared mode that leaves every rotated wall in place is not tested against
+the constraint rows. A rotation leaves a wall in place only if the wall is a
+sphere (a circle in 2-D) about its centre. `_declared_mode_flags` reads that off
+the wall's vertices, which faceting keeps on the sphere: their distances from the
+centre must agree to 1e-9 relative. A deformed wall fails this, a free surface
+after its first step for example. The mode then takes the constraint test like an
+undeclared one, and the solve warns once and records the verdict per mode in its
+`declared_modes_kept` entry. An admitted declared mode has its constrained rows
+zeroed, in the null space and in the gauge removal alike, which makes it exactly
+compatible with `v·n = 0`. A test against the rows would reject the
 modes on a faceted sphere: there the facet-averaged normal leaves each declared
 rotation a violation of the order of the discretisation error (0.008-0.016 on
 #906's shell, against a 1e-8 tolerance). Under the analytic normal the modes
@@ -389,7 +397,8 @@ residual, which means the forcing has a net torque that free-slip walls cannot
 balance. A declared mode with violation $s$ also carries a component of a
 torque-free forcing, about $s^2/3$ of the forcing scale, so the guard warns only
 above $10 s^2$ of the convergence reference. On #906's shell that component was
-8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$. A torque of 1 %
+8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$ (the shells at
+cell sizes 0.5 and 0.25). A torque of 1 %
 of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
 the guard is unchanged.
 
@@ -507,7 +516,8 @@ because each one is a place the wiring could be wrong and still look plausible:
   operators carry in the same block. `_rotated_nullspace` therefore serves the
   adjoint as it does the forward — measured, not argued: on a free-slip annulus
   with a power-law TI tangent the admitted modes give `‖Â v‖` = 4.8e-17 / 2.3e-10
-  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10.
+  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10. Those are exact modes; a declared mode on a
+  faceted wall is near-null, and leaves `‖Â v‖` of the order of its slack.
 
 **Where there is a null space, the multiplier is returned modulo it.** Pinning
 one boundary with an essential condition removes it — `_rotated_nullspace` then

@@ -103,6 +103,10 @@ Once the free surface DEFORMS, do NOT attach it to the held/consistent solves (â
 strip the gauge with the exact post-solve projection `_project_out_rotation` on `v`,
 `v_cons` (drives advection) AND `v_h` (one consistent non-rotating frame). The undeformed
 free-slip *reference* (`--surface freeslip`) is fine WITH the nullspace attached.
+Rotated free slip enforces this on its own (#906): a rotation the mesh declares keeps
+its exemption from the constraint test only while the wall's vertices stay on their
+circle. Once the surface deforms, the mode must pass the constraint test, which it
+fails, and the solve warns once.
 
 ### 4. Graded / higher-order meshes (drive node movement consistently)
 - **Surface-ring detection**: tie the tolerance to the FINEST cell

@@ -1,40 +1,55 @@
 """The rotated free-slip path takes its rigid-rotation modes from the mesh (#906).
 
-A spherical shell with rotated free slip on both walls and the default normal
-(the facet-averaged mesh normal) used to solve with an arbitrary rigid rotation
-in its answer. The rotated path built every Cartesian rotation and kept those
-that passed a 1e-8 test against the discrete constraints; on the faceted sphere
-the facet-averaged normal is not radial at the nodes, so all three rotations
-failed (violations 0.0140, 0.0164 and 0.0075) and none was removed. Measured on
-the shell below with FMG: a rigid rotation of rate 6.2e-3 in an answer of v_rms
-4.62e-3, against 1.81e-3 under the analytic radial normal.
+A spherical shell with rotated free slip on both walls and the default normal (the
+facet-averaged mesh normal) used to solve with an arbitrary rigid rotation in its
+answer. The rotated path built every Cartesian rotation and kept those that passed a
+1e-8 test against the discrete constraints. On the faceted sphere the facet-averaged
+normal is not radial at the nodes, so all three rotations failed (violations
+0.0075-0.0164), none was removed, and the answer carried a rotation: rate 4.66 in a
+v_rms of 3.93 on the shell below, against 1.81 under the analytic radial normal.
 
-The modes are now declared by the geometry, ``mesh.nullspace_rotations``, as the
-standard Stokes path already reads them. A declared mode is made exactly
-compatible with v.n = 0 by zeroing its constrained rows, and is still tested
-against the assembled operator, so a no-slip wall that pins it rejects it. A mesh
-that declares nothing keeps the detection (a box finds no mode, as before), and
-a mesh without the metadata declares its modes through the public setter.
+The modes are now the ones the mesh declares, ``mesh.nullspace_rotations``, as the
+standard Stokes path already reads them. A declared mode skips the constraint test
+only while it leaves every rotated wall in place: the wall's vertices must be
+equidistant from the rotation's centre, to 1e-9 relative. Faceting keeps them on the
+sphere; a deformed wall (a free surface) does not, and the mode then has to pass the
+constraint test like an undeclared one, with a warning. An admitted declared mode
+has its constrained rows zeroed, so v.n = 0 stays exact. It is still tested against
+the assembled operator, so a no-slip wall that pins it rejects it. A mesh that
+declares nothing keeps the detection (a box finds no mode). A mesh without the
+metadata declares its modes through the public setter, and meshes cut from a
+declaring mesh inherit them.
+
+Contracts, all exactness properties:
+- on the shell, under either normal, three modes are removed, the answer's rigid
+  rotation is at round-off, and v.n is zero on every constrained row;
+- an annulus as built keeps its declared mode; one whose outer wall is pushed off its
+  circle by 1e-6, as a free surface moves it, loses it, with a warning, and the
+  constraint test then rejects it; one moved the way an MMPDE mover moves it (wall
+  vertices sliding along their circles, the interior moving) keeps it, and its
+  answer carries no rotation;
+- a no-slip wall rejects a declared mode; a box declares none and finds none;
+- the setter refuses a field that is not a rigid rotation, and an add_fault child
+  inherits the declaration.
 """
+import warnings
+
 import numpy as np
 import pytest
 import sympy
+from mpi4py import MPI
+from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3.utilities import custom_mg
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
-
-# v_rms of #906's shell under the default normal over v_rms under the analytic
-# one, recorded on macOS arm64: 1.88497e-3 / 1.81167e-3. Development gave 2.55,
-# the spurious rotation included. A ratio, because both solves share the mesh
-# and CI's gmsh need not build this one.
-VRMS_RATIO_MESH_OVER_RADIAL = 1.04046
 
 
 def _rotation_rates(v):
     """Least-squares rigid rotation of the nodal velocity: the omega minimising
     sum |v_i - omega x r_i|^2 over the velocity nodes, summed over the ranks."""
-    X = np.asarray(v.coords)
+    X = np.asarray(v.coords_nd)
     V = np.asarray(v.array).reshape(X.shape)
     A = np.einsum("ij,ij->", X, X) * np.eye(3) - X.T @ X
     b = np.cross(X, V).sum(axis=0)
@@ -43,11 +58,24 @@ def _rotation_rates(v):
     return np.linalg.solve(A, b)
 
 
+def _normal_velocity(info):
+    """The largest |v.n| on the constrained rows (rows of Q·U), over |U|, over ranks."""
+    Q, U, rows = info["Q"], info["U"], info["normal_rows"]
+    Uhat = U.duplicate()
+    Q.mult(U, Uhat)
+    rs, re = Uhat.getOwnershipRange()
+    a = Uhat.getArray()
+    local = [g - rs for g in rows if rs <= g < re]
+    vn = float(np.abs(a[local]).max()) if local else 0.0
+    Uhat.destroy()
+    return uw.mpi.comm.allreduce(vn, op=MPI.MAX) / U.norm(PETSc.NormType.NORM_INFINITY)
+
+
 def _shell_stokes(name, radial=False, torque=0.0):
-    """#906's shell: P2/P1, isoviscous, a cos(4 theta) buoyancy, rotated free slip
-    on both walls, with the default (facet-averaged) normal or the analytic one;
-    ``torque`` adds an azimuthal push about z of that size, a net torque."""
-    mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
+    """P2/P1, isoviscous, a cos(4 theta) buoyancy, rotated free slip on both walls
+    with the default normal or the analytic one, and the custom FMG on the shell's
+    levels; ``torque`` adds an azimuthal push about z of that size, a net torque."""
+    mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.3,
                                      refinement=1, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{name}", mesh, 3, degree=2)
     p = uw.discretisation.MeshVariable(f"P{name}", mesh, 1, degree=1)
@@ -57,19 +85,20 @@ def _shell_stokes(name, radial=False, torque=0.0):
     x, y, z = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
     th = sympy.atan2(y, x)
-    stokes.bodyforce = (sympy.cos(4 * th) * (z / r) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
+    stokes.bodyforce = (1.0e3 * sympy.cos(4 * th) * (z / r) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
                         * sympy.Matrix([x / r, y / r, z / r]).T
-                        + torque * sympy.Matrix([-y, x, 0]).T)
+                        + torque * 1.0e3 * sympy.Matrix([-y, x, 0]).T)
     normal = mesh.CoordinateSystem.unit_e_0 if radial else None
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall, normal=normal)
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-6
+    custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)
     return mesh, v, stokes
 
 
-def _annulus_stokes(name, inner="Lower"):
-    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+def _annulus_stokes(name, mesh=None):
+    mesh = mesh or uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{name}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P{name}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -90,48 +119,104 @@ def _v_rms(v):
                    / uw.mpi.comm.allreduce(V.shape[0]))
 
 
-@pytest.fixture(scope="module")
-def radial_shell():
-    mesh, v, stokes = _shell_stokes("1131r", radial=True)
-    stokes.solve()
-    return stokes, _v_rms(v)
-
-
-def test_a_shell_with_the_default_normal_returns_no_rigid_rotation(radial_shell, capsys):
-    mesh, v, stokes = _shell_stokes("1131a")
+@pytest.mark.parametrize("radial", [False, True], ids=["default_normal", "analytic_normal"])
+def test_the_shell_returns_no_rigid_rotation(radial, capsys):
+    mesh, v, stokes = _shell_stokes(f"1131{int(radial)}", radial=radial)
     assert len(mesh.nullspace_rotations) == 3
     capsys.readouterr()
     stokes.solve()
-    # the forcing is radial: the gauge component is faceting, 8.8e-5 of the
-    # forcing scale, and the net-torque guard stays quiet
+    # the forcing is radial: the net-torque guard stays quiet
     assert "net torque" not in capsys.readouterr().out
     info = stokes._rotated_freeslip_info
-    assert info["converged"], info
+    assert info["converged"] and info["velocity_pc"] == "custom-FMG", info
+    assert info["declared_modes_kept"] == [True, True, True]
     assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
-    vrms = _v_rms(v)
-    # the gauge removes the rotation to round-off; development left 6.2e-3
-    assert np.abs(_rotation_rates(v)).max() < 1e-10 * vrms
-    # near-null, not null (0.0164 here)
-    assert 1e-3 < stokes._rotated_null_mode_slack < 0.05
-    assert vrms / radial_shell[1] == pytest.approx(VRMS_RATIO_MESH_OVER_RADIAL, rel=0.01)
+    assert stokes._rotated_velocity_null_modes == 3
+    # the gauge removes the rotation to round-off; without the declared modes the
+    # default normal left a rate of 4.66 here
+    assert np.abs(_rotation_rates(v)).max() < 1.0e-10 * _v_rms(v)
+    # the admitted modes were zeroed on the constrained rows, so v.n stays exact
+    assert _normal_velocity(info) < 1.0e-12
+    if radial:
+        assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1.0e-14
+        assert stokes._rotated_null_mode_slack == 0.0
+    else:
+        assert 1.0e-3 < stokes._rotated_null_mode_slack < 0.05    # near-null, not null
 
 
 def test_a_net_torque_still_warns_under_the_default_normal(capsys):
-    # 1% of the forcing: the gauge component is 1.7e-2 of the forcing scale,
-    # against 8.8e-5 from the faceting alone
     mesh, v, stokes = _shell_stokes("1131t", torque=0.01)
     capsys.readouterr()
     stokes.solve()
     assert "net torque" in capsys.readouterr().out
 
 
-def test_the_analytic_normal_makes_the_declared_modes_exact(radial_shell):
-    stokes = radial_shell[0]
+def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
+    mesh, v, stokes = _annulus_stokes("1131k")
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    assert stokes._rotated_freeslip_info["declared_modes_kept"] == [True]
+    assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 1
+
+    # push the outer wall off its circle by 1e-6 of its radius
+    deformed = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+    X = np.array(deformed.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    outer = np.isclose(r, 1.0, atol=1.0e-9)
+    theta = np.arctan2(X[:, 1], X[:, 0])
+    X[outer] *= (1.0 + 1.0e-6 * np.cos(3.0 * theta[outer]))[:, None]
+    deformed.deform(X)
+    mesh, v, stokes = _annulus_stokes("1131d", mesh=deformed)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["declared_modes_kept"] == [False]
+    with uw.selective_ranks(0) as selected:
+        if selected:
+            assert any("rotation modes the mesh declares" in str(w.message) for w in record)
+    # the facet-averaged normal leaves the rotation a violation well above 1e-8
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+    assert _normal_velocity(info) < 1.0e-12
+
+
+def _rotation_rate_2d(v):
+    """Least-squares rigid rotation rate of a 2-D nodal velocity, over the ranks."""
+    X = np.asarray(v.coords_nd)
+    V = np.asarray(v.array).reshape(X.shape)
+    num = uw.mpi.comm.allreduce(float(np.sum(X[:, 0] * V[:, 1] - X[:, 1] * V[:, 0])))
+    den = uw.mpi.comm.allreduce(float(np.sum(X * X)))
+    return num / den
+
+
+def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
+    # an MMPDE-style move: every vertex slides along its circle, and the interior
+    # vertices also move radially by an amount that vanishes at both walls. The
+    # detection route drops the mode here (violation 0.0037 against 1e-8) and leaves
+    # a rotation of rate 2.5e-6 in a v_rms of 5.0e-3
+    moved = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+    X = np.array(moved.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    theta = np.arctan2(X[:, 1], X[:, 0])
+    theta = theta + 0.05 * np.sin(3.0 * theta)
+    r = r + 0.02 * np.sin(np.pi * (r - 0.5) / 0.5) * np.cos(2.0 * theta)
+    moved.deform(np.column_stack([r * np.cos(theta), r * np.sin(theta)]))
+    mesh, v, stokes = _annulus_stokes("1131m", mesh=moved)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
-    assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
-    assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1e-14
-    assert stokes._rotated_null_mode_slack == 0.0
+    assert info["declared_modes_kept"] == [True]
+    assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
+    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
+    assert _normal_velocity(info) < 1.0e-12
 
 
 def test_a_box_declares_no_mode_and_finds_none():
@@ -149,6 +234,7 @@ def test_a_box_declares_no_mode_and_finds_none():
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
     stokes.solve()
+    assert stokes._rotated_freeslip_info["declared_modes_kept"] is None
     assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 0
 
 
@@ -161,7 +247,7 @@ def test_a_declared_rotation_pinned_by_a_no_slip_wall_is_rejected():
     assert gauge["offered"] == 1 and gauge["orthonormal"] == 0, gauge
 
 
-def test_a_mesh_without_the_metadata_declares_it_through_the_setter():
+def test_the_setter_declares_only_rigid_rotations():
     source = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
     mesh = uw.discretisation.Mesh(source.dm.clone(), simplex=True, qdegree=3,
                                   boundaries=source.boundaries,
@@ -170,7 +256,21 @@ def test_a_mesh_without_the_metadata_declares_it_through_the_setter():
     x, y = mesh.X
     with pytest.raises(ValueError):
         mesh.nullspace_rotations = [sympy.Matrix([-y, x, 0])]   # three components in 2-D
+    with pytest.raises(ValueError):
+        mesh.nullspace_rotations = [sympy.Matrix([1, 0])]       # a translation
+    with pytest.raises(ValueError):
+        mesh.nullspace_rotations = [sympy.Matrix([x, y])]       # a dilation
+    mesh.nullspace_rotations = [sympy.Matrix([-(y - 0.1), x - 0.2])]   # about (0.2, 0.1)
+    assert len(mesh.nullspace_rotations) == 1
     mesh.nullspace_rotations = [sympy.Matrix([-y, x])]
     assert len(mesh.nullspace_rotations) == 1
     mesh.nullspace_rotations = []
     assert mesh.nullspace_rotations == []
+
+
+def test_an_add_fault_child_inherits_the_declaration():
+    base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1,
+                              qdegree=2)
+    child = base.add_fault([("Flt", np.array([[0.62, 0.10], [0.85, 0.30]]))])
+    assert child.nullspace_rotations == base.nullspace_rotations
+    assert len(child.nullspace_rotations) == 1

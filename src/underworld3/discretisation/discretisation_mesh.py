@@ -4638,9 +4638,12 @@ class Mesh(Stateful, uw_object):
         rotated free slip takes its rotation modes from them (#906). A mesh
         built without them (a gmsh import, a wrapped DM) declares its modes by
         assignment, ``mesh.nullspace_rotations = [sympy.Matrix([-y, x])]``;
-        assigning ``[]`` declares that it has none. Until a mesh declares,
-        rotated free slip detects the rotations that satisfy the discrete
-        constraints, as it always has.
+        assigning ``[]`` declares that it has none. A mesh that does not declare
+        has its rotations detected: rotated free slip keeps those that satisfy the
+        discrete constraints. A declared mode is exempt from that test only while
+        every rotated wall's vertices are equidistant from the rotation's centre;
+        a deformed wall, such as a free surface, loses the exemption. Meshes
+        adapted or cut from a declaring mesh inherit its modes.
 
         Returns
         -------
@@ -4656,6 +4659,12 @@ class Mesh(Stateful, uw_object):
         """
         return list(self._nullspace_rotations or [])
 
+    def _inherit_rotation_modes(self, parent):
+        """Take ``parent``'s declared rotation modes. A mesh derived from it (adapted,
+        cut, split, placed into) keeps its walls, and rotated free slip checks at
+        each solve that a mode still leaves every wall in place (#906)."""
+        self._nullspace_rotations = getattr(parent, "_nullspace_rotations", None)
+
     @nullspace_rotations.setter
     def nullspace_rotations(self, modes):
         modes = [sympy.Matrix(m) for m in modes]
@@ -4669,6 +4678,10 @@ class Mesh(Stateful, uw_object):
                 raise ValueError(
                     f"a rotation mode is a field of the mesh coordinates {tuple(self.X)} "
                     f"only, got {m.T}")
+            grad = m.jacobian(list(self.X))
+            if grad.free_symbols or grad.norm() == 0 or (grad + grad.T).norm() != 0:
+                raise ValueError(f"a rotation mode is a rigid rotation, omega x (r - c): "
+                                 f"affine with an antisymmetric gradient, got {m.T}")
         self._nullspace_rotations = modes
 
     @property
@@ -8017,6 +8030,7 @@ class Mesh(Stateful, uw_object):
         child._refine_dofs_coincide = False
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
+        child._inherit_rotation_modes(self)
         child._surface_info = info
         if getattr(self, "_embedded_surfaces", None):
             child._embedded_surfaces = set(self._embedded_surfaces)
@@ -9414,6 +9428,7 @@ class Mesh(Stateful, uw_object):
         child._relationship_kind = "refinement"
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
+        child._inherit_rotation_modes(self)
         # Markers per refinement level (in each level's cell numbering) — the
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
