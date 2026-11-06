@@ -391,6 +391,52 @@ fi
 # costs ~4:38 and is the shard's smallest component, but running it four times
 # would quadruple the only part of the suite that holds several MPI ranks at
 # once, which is also the part most likely to contend on a shared runner.
+# The ptest_* files that run under pytest and pass (#900): named, in their own loop,
+# owned by shard 2. Shard 4 is at its cap, and a loop of their own moves no test_* batch
+# boundary, whatever is added to either list: a hang has followed a batch boundary
+# before. The others are listed with their reason in scripts/check_test_coverage.py,
+# which fails on a file in neither place.
+PTEST_FILES=(
+  tests/parallel/ptest_0762_read_timestep_swarm_routed.py
+  tests/parallel/ptest_0843_edge_split_parallel.py
+  tests/parallel/ptest_0844_line_cut_parallel.py
+  tests/parallel/ptest_0845_fault_split_parallel.py
+  tests/parallel/ptest_0845_relax_pinned_band_parallel.py
+  tests/parallel/ptest_0852_place_split_contact.py
+  tests/parallel/ptest_0853_place_lines_parallel.py
+  tests/parallel/ptest_0854_place_sheet_parallel.py
+  tests/parallel/ptest_0855_place_thin_volume_parallel.py
+  tests/parallel/ptest_0856_remove_embedded_parallel.py
+  tests/parallel/ptest_0857_gather_regions_parallel.py
+  tests/parallel/ptest_0859_fault_network_parallel.py
+  tests/parallel/ptest_0864_split_checkpoint_parallel.py
+  tests/parallel/ptest_jit_cache.py
+)
+# These fail at np 4 (#956), so the --full-parallel pass leaves them out.
+PTEST_NOT_AT_4=(
+  tests/parallel/ptest_0864_seam_ligament_parallel.py
+  tests/parallel/ptest_0865_seam_split_parallel.py
+)
+if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 2 && command -v mpirun &> /dev/null; then
+  echo "Parallel ptest_* files ($PARALLEL_RANKS ranks), on shard 2"
+  PTEST_SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
+  if [ "$PARALLEL_RANKS" -eq 4 ]; then
+    PTEST_RUN=("${PTEST_FILES[@]}")
+  else
+    PTEST_RUN=("${PTEST_FILES[@]}" "${PTEST_NOT_AT_4[@]}")
+  fi
+  for ((i = 0; i < ${#PTEST_RUN[@]}; i += ${PARALLEL_BATCH:-6})); do
+    $PTEST_SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+      "${PTEST_RUN[@]:i:${PARALLEL_BATCH:-6}}" || status=1
+  done
+  if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
+    for ((i = 0; i < ${#PTEST_FILES[@]}; i += ${PARALLEL_BATCH:-6})); do
+      $PTEST_SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+        "${PTEST_FILES[@]:i:${PARALLEL_BATCH:-6}}" || status=1
+    done
+  fi
+fi
+
 if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
   if command -v mpirun &> /dev/null; then
     echo ""
