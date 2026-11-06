@@ -6,7 +6,8 @@ in its answer. The rotated path built every Cartesian rotation and kept those
 that passed a 1e-8 test against the discrete constraints; on the faceted sphere
 the facet-averaged normal is not radial at the nodes, so all three rotations
 failed (violations 0.0140, 0.0164 and 0.0075) and none was removed. Measured on
-the shell below: rotation rates (-5.98, -1.00, -1.15) in an answer of v_rms 4.47.
+the shell below with FMG: a rigid rotation of rate 6.2e-3 in an answer of v_rms
+4.62e-3, against 1.81e-3 under the analytic radial normal.
 
 The modes are now declared by the geometry, ``mesh.nullspace_rotations``, as the
 standard Stokes path already reads them. A declared mode is made exactly
@@ -23,6 +24,12 @@ import underworld3 as uw
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
+# v_rms of #906's shell under the default normal over v_rms under the analytic
+# one, recorded on macOS arm64: 1.88497e-3 / 1.81167e-3. Development gave 2.55,
+# the spurious rotation included. A ratio, because both solves share the mesh
+# and CI's gmsh need not build this one.
+VRMS_RATIO_MESH_OVER_RADIAL = 1.04046
+
 
 def _rotation_rates(v):
     """Least-squares rigid rotation of the nodal velocity: the omega minimising
@@ -36,9 +43,9 @@ def _rotation_rates(v):
     return np.linalg.solve(A, b)
 
 
-def _shell_stokes(name, normal=None):
+def _shell_stokes(name, radial=False):
     """#906's shell: P2/P1, isoviscous, a cos(4 theta) buoyancy, rotated free slip
-    on both walls."""
+    on both walls, with the default (facet-averaged) normal or the analytic one."""
     mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
                                      refinement=1, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{name}", mesh, 3, degree=2)
@@ -51,6 +58,7 @@ def _shell_stokes(name, normal=None):
     th = sympy.atan2(y, x)
     stokes.bodyforce = (sympy.cos(4 * th) * (z / r) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
                         * sympy.Matrix([x / r, y / r, z / r]).T)
+    normal = mesh.CoordinateSystem.unit_e_0 if radial else None
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall, normal=normal)
     stokes.petsc_use_pressure_nullspace = True
@@ -74,16 +82,38 @@ def _annulus_stokes(name, inner="Lower"):
     return mesh, v, stokes
 
 
-def test_a_shell_with_the_default_normal_returns_no_rigid_rotation():
+def _v_rms(v):
+    V = np.asarray(v.array).reshape(-1, v.mesh.cdim)
+    return np.sqrt(uw.mpi.comm.allreduce(float(np.sum(V * V)))
+                   / uw.mpi.comm.allreduce(V.shape[0]))
+
+
+@pytest.fixture(scope="module")
+def radial_shell():
+    mesh, v, stokes = _shell_stokes("1131r", radial=True)
+    stokes.solve()
+    return stokes, _v_rms(v)
+
+
+def test_a_shell_with_the_default_normal_returns_no_rigid_rotation(radial_shell):
     mesh, v, stokes = _shell_stokes("1131a")
     assert len(mesh.nullspace_rotations) == 3
     stokes.solve()
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
     assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
-    omega = _rotation_rates(v)
-    # radial-normal reference on this shell: |omega| <= 0.012 (#906)
-    assert np.abs(omega).max() < 0.05, omega
+    vrms = _v_rms(v)
+    # the gauge removes the rotation to round-off; development left 6.2e-3
+    assert np.abs(_rotation_rates(v)).max() < 1e-10 * vrms
+    assert vrms / radial_shell[1] == pytest.approx(VRMS_RATIO_MESH_OVER_RADIAL, rel=0.01)
+
+
+def test_the_analytic_normal_makes_the_declared_modes_exact(radial_shell):
+    stokes = radial_shell[0]
+    info = stokes._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
+    assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1e-14
 
 
 def test_a_box_declares_no_mode_and_finds_none():
