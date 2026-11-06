@@ -14,8 +14,9 @@ Sandybridge at np 1, Core2 and Prescott at both.
 The velocity preconditioner is now ``z = P M (P r)`` with ``P`` projecting out the exact
 modes, and the answer is unchanged to 13 digits.
 
-- The analytic-normal annulus projects one mode, converges, and gives the recorded
-  answer.
+- The analytic-normal annulus projects one mode, its inner velocity solve converges in
+  a few cycles (without the projection it ran to its cap of 200 on macOS arm64 too, where
+  the outer solve happened to converge anyway), and it gives the recorded answer.
 - Under the default (facet-averaged) normal the rotation is near-null, not null, and
   nothing is projected.
 - On x86, the same solve under ``OPENBLAS_CORETYPE=Nehalem``, a kernel that stalled at
@@ -84,6 +85,10 @@ def test_an_exact_rotation_is_projected_out_of_the_velocity_preconditioner():
     info, L2 = _annulus_fmg("1142a", radial=True)
     assert info["ksp_reason"] > 0 and info["velocity_pc"] == "custom-FMG", info
     assert info["velocity_pc_type"] == "mg", info
+    # the inner velocity solve converges in a few cycles; without the projection it ran
+    # to its cap of 200 on every host (macOS arm64 included), and only whether the outer
+    # solve then converged depended on the kernel
+    assert max(info["vel_its_last"]) <= 10, info["vel_its_last"]
     assert info["projected_null_modes"] == 1, info
     assert L2 == pytest.approx(L2_ANALYTIC, rel=1.0e-8)
 
