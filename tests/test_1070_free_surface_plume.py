@@ -261,6 +261,20 @@ def test_freesurface_prescribed_rate_is_flux_free():
     assert ratio < 5.0e-3, f"prescribed rate carries {ratio:.2e} of net flux (nodal demean?)"
 
 
+def _record_flux_before_each_deform(fs, net, gross):
+    """Net/gross flux on the geometry the consistent solve ran on: advance then moves
+    the surface and remaps the velocity onto it, which the constraint says nothing about."""
+    readings = []
+    carry_and_deform = fs._carry_and_deform
+
+    def measure_then_deform(*args, **kwargs):
+        readings.append(abs(float(net.evaluate())) / abs(float(gross.evaluate())))
+        return carry_and_deform(*args, **kwargs)
+
+    fs._carry_and_deform = measure_then_deform
+    return readings
+
+
 @pytest.fixture(scope="module")
 def constraint_measurements():
     """Datum error and net/gross surface flux for each constraint, measured once.
@@ -275,6 +289,7 @@ def constraint_measurements():
                                   boundary="Upper")
         gross = uw.maths.BdIntegral(mesh=mesh, fn=sympy.Abs(fs._adv_velocity.sym.dot(rhat)),
                                     boundary="Upper")
+        readings = _record_flux_before_each_deform(fs, net, gross)
         for _ in range(4):
             fs.solve()
             fs.advance(fs.estimate_dt(advect_scale=10.0))
@@ -285,7 +300,7 @@ def constraint_measurements():
             * normal[:, i] for i in range(mesh.dim))
         target = np.asarray(fs._un_target.array[fs._un_target_rows, 0, 0]).flatten()
         errors[constraint] = np.abs(realised - target).max() / np.abs(target).max()
-        leaks[constraint] = abs(float(net.evaluate())) / abs(float(gross.evaluate()))
+        leaks[constraint] = readings[-1]
     return errors, leaks
 
 

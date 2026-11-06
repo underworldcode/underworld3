@@ -1,15 +1,14 @@
-"""A move is decided over all ranks, and the mesh vector is marked stale on every
-rank, so a solve after a move sees the remapped field at any rank count, including
-when some ranks' nodes did not move. See tests/test_0766_mover_refreshes_mesh_vector.py.
+"""A mesh move is agreed over all ranks and a solve after it sees the remapped field,
+including when some ranks' nodes did not move or a rank holds nothing at all.
+See tests/test_0766_mover_refreshes_mesh_vector.py.
 """
 import numpy as np
-from mpi4py import MPI
 import pytest
 import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_a, pytest.mark.timeout(120)]
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.timeout(120)]
 
 
 def _annulus_with_a_layer(name):
@@ -25,7 +24,14 @@ def _annulus_with_a_layer(name):
 
 def _largest_change_over_ranks(array, start):
     change = np.abs(np.array(array) - start)
-    return uw.mpi.comm.allreduce(float(change.max()) if change.size else 0.0, op=MPI.MAX)
+    return uw.mpi.comm.allreduce(float(change.max()) if change.size else 0.0, op=uw.MPI.MAX)
+
+
+def _assert_a_solve_sees_the_remapped_field(mesh, T):
+    seen_by_a_solve = float(uw.maths.Integral(mesh, T.sym[0]).evaluate())
+    T.array[:, 0, 0] = np.array(T.array[:, 0, 0])       # a write the mesh vector does notice
+    remapped = float(uw.maths.Integral(mesh, T.sym[0]).evaluate())
+    assert seen_by_a_solve == pytest.approx(remapped, rel=1.0e-12)
 
 
 @pytest.mark.mpi(min_size=2)
@@ -36,25 +42,43 @@ def test_integral_after_a_move_sees_the_remapped_field():
     uw.meshing.node_redistribution(mesh, density, slip_surfaces=True, skip_threshold=None,
                                    method_kwargs=dict(accel="none", n_outer=20))
     assert _largest_change_over_ranks(T.array, start) > 1.0e-3
-
-    assert all(uw.mpi.comm.allgather(bool(mesh._stale_lvec)))
-    seen_by_a_solve = float(uw.maths.Integral(mesh, T.sym[0]).evaluate())
-    T.array[:, 0, 0] = np.array(T.array[:, 0, 0])
-    remapped = float(uw.maths.Integral(mesh, T.sym[0]).evaluate())
-    assert seen_by_a_solve == pytest.approx(remapped, rel=1.0e-12)
+    _assert_a_solve_sees_the_remapped_field(mesh, T)
 
 
 @pytest.mark.mpi(min_size=2)
 def test_a_rank_whose_nodes_stay_put_joins_the_transfer():
-    """Only rank 0 moves its nodes. Every other rank must still enter the collective
-    remap and mark its mesh vector stale; deciding the move per rank left them outside
-    while rank 0 waited for them."""
+    """Only vertices no other rank holds move, and only on rank 0, so on every other
+    rank the coordinates are bitwise unchanged. Those ranks must still enter the
+    collective remap; deciding the move per rank left them outside while rank 0 waited."""
     mesh, T, _r = _annulus_with_a_layer("T0766b")
     coords = np.array(mesh.X.coords)
+    held_elsewhere = uw.mpi.comm.allgather(coords.round(12))
+    moved_here = np.zeros(coords.shape[0], dtype=bool)
     if uw.mpi.rank == 0:
-        radius = np.linalg.norm(coords, axis=1)
-        inside = (radius > 0.6) & (radius < 0.9)
-        coords[inside] *= 1.01
-    assert mesh.deform(coords) is True
-    assert all(uw.mpi.comm.allgather(bool(mesh._stale_lvec)))
-    float(uw.maths.Integral(mesh, T.sym[0]).evaluate())     # a collective read completes
+        others = {tuple(p) for rank, held in enumerate(held_elsewhere) if rank != 0 for p in held}
+        moved_here = np.array([tuple(p) not in others for p in coords.round(12)])
+    assert uw.mpi.comm.allreduce(int(moved_here.sum())) > 0
+    start = np.array(coords)
+    coords[moved_here] *= 1.0 + 1.0e-3
+    assert all(uw.mpi.comm.allgather(mesh.deform(coords)))
+    if uw.mpi.rank != 0:
+        assert np.array_equal(np.array(mesh.X.coords), start)   # this rank really stayed put
+    _assert_a_solve_sees_the_remapped_field(mesh, T)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_a_rank_with_no_cells_joins_the_transfer():
+    """A 1 x 2 box leaves a rank without cells (measured [0, 2] at np 2, [0, 0, 0, 2] at
+    np 4). That rank still enters global_evaluate: skipping it for an empty target left
+    the populated ranks waiting. T is linear so a stale mesh vector changes the integral."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(1, 2))
+    start, end = mesh.dm.getHeightStratum(0)
+    assert 0 in uw.mpi.comm.allgather(end - start)
+    T = uw.discretisation.MeshVariable("T0766c", mesh, 1, degree=1)
+    dof = np.asarray(T.coords)
+    T.array[:, 0, 0] = dof[:, 0] + 2.0 * dof[:, 1]      # on every rank: update_lvec is collective
+    mesh.update_lvec()
+    coords = np.array(mesh.X.coords)
+    coords[:, 1] *= 1.0 + 0.05 * coords[:, 0]
+    assert all(uw.mpi.comm.allgather(mesh.deform(coords)))
+    _assert_a_solve_sees_the_remapped_field(mesh, T)
