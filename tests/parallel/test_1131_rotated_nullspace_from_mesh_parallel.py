@@ -112,11 +112,28 @@ def test_a_wall_deformed_on_some_ranks_drops_the_mode_on_every_rank():
                                        "lost its power at this rank count", out)
 
 
-def test_an_add_fault_child_keeps_the_declaration_on_every_rank():
+# the rank counts at which the add-on partition was measured to move the level the
+# fault is cut on (hyperion, 2026-11-06: not at np 2 or 6)
+MOVES_AT = (3, 4, 5, 8)
+
+
+def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
+    from underworld3.utilities import addon_partition
+    calls = []
+    wrap = addon_partition._moved_wrap
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return wrap(*args, **kwargs)
+
+    monkeypatch.setattr(addon_partition, "_moved_wrap", spy)
     base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, refinement=1,
                               qdegree=2)
     child = base.add_fault([("Flt", np.array([[0.62, 0.10], [0.85, 0.30]]))])
-    moved = bool(uw.mpi.comm.allreduce(int(getattr(child, "parent", base) is not base), op=MPI.MAX))
+    moved = bool(uw.mpi.comm.allreduce(len(calls), op=MPI.MAX))
+    if uw.mpi.size in MOVES_AT:
+        assert moved, ("the partition no longer moves this level at this rank count: the "
+                       "case has lost its power, not the library its fix")
     declared = uw.mpi.comm.allgather(None if child._nullspace_rotations is None
                                      else len(child._nullspace_rotations))
     v = uw.discretisation.MeshVariable("Vf", child, 2, degree=2)

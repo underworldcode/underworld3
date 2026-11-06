@@ -159,7 +159,7 @@ def test_a_net_torque_still_warns_under_the_default_normal(capsys):
     assert "net torque" in capsys.readouterr().out
 
 
-def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
+def test_an_annulus_as_built_keeps_its_declared_mode():
     mesh, v, stokes = _annulus_stokes("1131k")
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall)
@@ -167,16 +167,24 @@ def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
     stokes.solve()
     assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [True]
     assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 1
+    # a re-solve reuses the cached workspace, and reports the verdict it was built with
+    stokes.solve()
+    assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [True]
 
-    # push the outer wall off its circle by 1e-6 of its radius
+
+@pytest.mark.parametrize("amplitude, exempt", [(1.0e-6, False), (1.0e-8, False), (1.0e-10, True)],
+                         ids=["1e-6", "1e-8", "1e-10"])
+def test_a_wall_moved_off_its_circle_loses_the_exemption(amplitude, exempt):
+    # the outer wall pushed off its circle by `amplitude` of its radius, against the
+    # 1e-9 tolerance on the spread of the wall's vertices
     deformed = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
     X = np.array(deformed.X.coords)
     r = np.linalg.norm(X, axis=1)
     outer = np.isclose(r, 1.0, atol=1.0e-9)
     theta = np.arctan2(X[:, 1], X[:, 0])
-    X[outer] *= (1.0 + 1.0e-6 * np.cos(3.0 * theta[outer]))[:, None]
+    X[outer] *= (1.0 + amplitude * np.cos(3.0 * theta[outer]))[:, None]
     deformed.deform(X)
-    mesh, v, stokes = _annulus_stokes("1131d", mesh=deformed)
+    mesh, v, stokes = _annulus_stokes(f"1131d{int(-np.log10(amplitude))}", mesh=deformed)
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
@@ -184,14 +192,34 @@ def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
         warnings.simplefilter("always")
         stokes.solve()
     info = stokes._rotated_freeslip_info
-    assert info["declared_modes_exempt"] == [False]
+    assert info["declared_modes_exempt"] == [exempt]
+    warned = any("'Upper' is not a sphere about the rotation centre" in str(w.message)
+                 for w in record)
     with uw.selective_ranks(0) as selected:
         if selected:
-            assert any("'Upper' is not a sphere about the rotation centre" in str(w.message)
-                       for w in record), [str(w.message) for w in record]
-    # the facet-averaged normal leaves the rotation a violation well above 1e-8
-    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+            assert warned != exempt, [str(w.message) for w in record]
+    # refused, the facet-averaged normal leaves the rotation a violation well above 1e-8
+    assert info["rotation_gauge"]["orthonormal"] == (1 if exempt else 0), info["rotation_gauge"]
     assert _normal_velocity(info) < 1.0e-12
+
+
+def test_mixed_given_and_default_normals_warn_that_the_rotation_stays():
+    # the exemption needs every wall on the default normal; a mix is refused, loudly,
+    # because the default-normal wall then fails the constraint test by its faceting
+    mesh, v, stokes = _annulus_stokes("1131x")
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=sympy.Matrix([[x / r, y / r]]))
+    stokes.add_rotated_freeslip_bc(0, "Upper")
+    stokes.petsc_use_pressure_nullspace = True
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [False]
+    with uw.selective_ranks(0) as selected:
+        if selected:
+            assert any("take a given normal and the others the facet-averaged one"
+                       in str(w.message) for w in record), [str(w.message) for w in record]
 
 
 def _rotation_rate_2d(v):
@@ -415,8 +443,8 @@ def test_the_declaration_is_part_of_the_cached_geometry_and_the_adjoint_record()
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
     walls = stokes._rotated_freeslip_bcs
-    before = rotated_bc._rotated_geometry_signature(stokes, walls)
     stokes.solve()
+    before = rotated_bc._rotated_geometry_signature(stokes, walls)
     names = ("_rotated_velocity_null_modes", "_rotated_null_mode_slack",
              "_rotated_declared_modes_exempt")
     forward = {name: getattr(stokes, name) for name in names}
@@ -450,3 +478,36 @@ def test_a_wall_is_read_from_its_facets_not_every_point_its_label_holds():
     label = dm.getLabel("Upper")
     label.setValue(interior, int(label.getValueIS().getIndices()[0]))
     assert rotated_bc._declared_mode_flags(stokes) == ([True], None)
+
+
+def test_an_undeclared_box_in_a_units_model_offers_the_cartesian_rotations():
+    # #877's other path: a mesh that declares nothing is offered the Cartesian
+    # rotations, built with np.zeros_like on the velocity coordinates. In a units model
+    # the dimensional ones are a UnitAwareArray, on which that raised TypeError
+    uw.reset_default_model()
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1000, "km"), viscosity=uw.quantity(1e21, "Pa*s"),
+        time=uw.quantity(1, "Myr"))
+    try:
+        mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0),
+                                                 maxCoords=(1.0, 1.0, 1.0), cellSize=0.5,
+                                                 qdegree=3)
+        mesh._nullspace_rotations = None        # undeclared: detection, as before #906
+        v = uw.discretisation.MeshVariable("V1131x", mesh, 3, degree=2)
+        p = uw.discretisation.MeshVariable("P1131x", mesh, 1, degree=1)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        x, y, z = mesh.X
+        stokes.bodyforce = sympy.Matrix([[0, 0, sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
+        for wall in ("Bottom", "Top", "Right", "Left", "Front", "Back"):
+            stokes.add_rotated_freeslip_bc(0, wall)
+        stokes.petsc_use_pressure_nullspace = True
+        stokes.solve()
+        info = stokes._rotated_freeslip_info
+        assert info["converged"], info
+        assert info["declared_modes_exempt"] is None
+        gauge = info["rotation_gauge"]
+        assert gauge["offered"] == 3 and gauge["orthonormal"] == 0, gauge
+    finally:
+        uw.reset_default_model()

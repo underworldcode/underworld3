@@ -1196,8 +1196,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Staged Picard steps count against the cap, unlike the standard path's
     warm-up.
     """
-    # this solve's verdict on the declared modes; a solve that exits before it builds
-    # its null space (a warm start already converged) reports None, not the last one's
+    # this solve's verdict on the declared modes: from the null space it builds, or from
+    # the cached one it reuses; None until either is known
     solver._rotated_declared_modes_exempt = None
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -1436,6 +1436,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Atot = None
     ctx = cache["ctx"] if cache is not None else None
     Mp = ctx["Mp"] if ctx is not None else None
+    if ctx is not None:
+        # the cached null space is this solve's, even when it exits at its first
+        # residual check, and so is the verdict on the declared modes it was built with
+        solver._rotated_declared_modes_exempt = ctx.get("declared_exempt")
     diag_scale = cache["diag_scale"] if cache is not None else None
     lin_its = []
     # per-iteration records for campaign diagnostics: |F̂| at each iteration start,
@@ -1672,8 +1676,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
                 _collect_rotation_modes(nsp)
-            elif assemble and Mp is not None:
-                Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
+            else:
+                # a cached workspace keeps its null space, and the verdict on the
+                # declared modes it was built with
+                solver._rotated_declared_modes_exempt = ctx.get("declared_exempt")
+                if assemble and Mp is not None:
+                    Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
             diag_scale = _velocity_diag_scale(Aop, solver)
         bhat = Fhat.copy()
@@ -2508,6 +2516,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # error path too.
             _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,
                # which preconditioner this solve actually got — reported so a model
                # (or a test) can assert on it instead of inferring it from timings
@@ -2648,6 +2657,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
         finally:
             _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": None, "nsp": nsp, "cns": None,
+               "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
                "coarse_solve": _coarse,
@@ -3196,7 +3206,14 @@ def _declared_mode_flags(solver):
         return [False] * (1 if cdim == 2 else 3), None
     n_modes = len(mesh._nullspace_rotations)
     specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
-    if any(normal is not None for _name, normal in specs):
+    given = [name for name, normal in specs if normal is not None]
+    if given and len(given) < len(specs):
+        return [False] * n_modes, (
+            f"rotated walls {given} take a given normal and the others the facet-averaged "
+            f"one, so the declared rotation modes take the constraint test, which the "
+            f"facet-averaged walls fail by the faceting error: the rotation is not removed. "
+            f"Give every rotated wall the analytic normal, or none")
+    if given:
         return [False] * n_modes, None
 
     centre = _declared_centre(mesh)
@@ -3207,17 +3224,22 @@ def _declared_mode_flags(solver):
 
     dm = mesh.dm
     coords = dm.getCoordinatesLocal().array.reshape(-1, cdim)
+    # every wall's nearest and furthest vertex, reduced over all ranks before any
+    # verdict, so every rank reaches every reduction
+    spread = []
     for name, _normal in specs:
         rows = (np.arange(coords.shape[0]) if name == SHEET_TANGENCY
                 else _wall_vertex_rows(dm, name))
         d = np.linalg.norm(coords[rows] - centre, axis=1)
         lo = mpi.comm.allreduce(float(d.min()) if d.size else np.inf, op=MPI.MIN)
         hi = mpi.comm.allreduce(float(d.max()) if d.size else -np.inf, op=MPI.MAX)
-        if hi > 0.0 and hi - lo > _WALL_INVARIANCE_TOL * hi:
+        spread.append((name, (hi - lo) / hi if hi > 0.0 else 0.0))
+    for name, rel in spread:
+        if rel > _WALL_INVARIANCE_TOL:
             return [False] * n_modes, (
                 f"rotated wall {name!r} is not a sphere about the rotation centre "
                 f"{np.round(centre, 12).tolist()}: its vertices' distances from it "
-                f"spread over {(hi - lo) / hi:.2g} of the radius, against "
+                f"spread over {rel:.2g} of the radius, against "
                 f"{_WALL_INVARIANCE_TOL:g}. The declared rotation modes therefore take "
                 f"the constraint test")
     return [True] * n_modes, None
