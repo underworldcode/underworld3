@@ -513,7 +513,11 @@ def _solve_circle_constraints(
             if relative > 1e-9:
                 raise ArithmeticError(f"Cylindrical gap unpinned residual failed: {checks}")
             state.assign_fields(solution)
-            return tuple(reactions), checks
+            result = (_GapResult(reactions[0], checks) if ncomponents == 1
+                      else _ZeroSlipGapResult(reactions[0], reactions[1], checks))
+            if observer is not None:
+                observer.finalized(result)
+            return result
         finally:
             for key in linear_solver_options:
                 del options[key]
@@ -539,7 +543,7 @@ def _solve_cylindrical_gap(
     quadrature,
     linear_solver_options,
 ):
-    fields, checks = _solve_circle_constraints(
+    return _solve_circle_constraints(
         stokes,
         inner_boundary,
         outer_boundary,
@@ -553,11 +557,7 @@ def _solve_cylindrical_gap(
         linear_solver_options,
         ("normal",),
     )
-    result = _GapResult(fields[0], checks)
-    observer = getattr(stokes, '_stokes_observer', None)
-    if observer is not None:
-        observer.finalized(result)
-    return result
+
 
 
 def _solve_cylindrical_gap_zero_slip(
@@ -573,7 +573,7 @@ def _solve_cylindrical_gap_zero_slip(
     quadrature,
     linear_solver_options,
 ):
-    fields, checks = _solve_circle_constraints(
+    return _solve_circle_constraints(
         stokes,
         inner_boundary,
         outer_boundary,
@@ -587,8 +587,4 @@ def _solve_cylindrical_gap_zero_slip(
         linear_solver_options,
         ("normal", "tangent"),
     )
-    result = _ZeroSlipGapResult(fields[0], fields[1], checks)
-    observer = getattr(stokes, '_stokes_observer', None)
-    if observer is not None:
-        observer.finalized(result)
-    return result
+

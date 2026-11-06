@@ -15,13 +15,18 @@ pytestmark = pytest.mark.level_2
 class _GradientObserver(uw.diagnostics.StokesObserver):
     def solve_started(self, ksp, state):
         self.started = True
+        self.state, self.ksp = state, ksp
     def solve_finished(self, ksp, vector, state):
+        self.solution = vector
         physical = state.gauged_copy(vector)
         try:
             assert state.residual(physical)['original_relative_residual'] < 1e-10
         finally:
             physical.destroy()
     def finalized(self, result):
+        # Borrowed state is valid through finalization in both geometries.
+        assert self.state.rhs.handle and self.ksp.handle
+        assert self.state.residual(self.solution)['original_relative_residual'] < 1e-10
         self.result = result
 
 
