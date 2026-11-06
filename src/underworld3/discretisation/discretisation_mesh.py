@@ -360,6 +360,113 @@ def _compose_prolongations(fine, coarse):
     width = int(cols.max()) + 1
     return (uniq // width, uniq % width, summed)
 
+def _apply_refinement_callback(dm, refinement_callback):
+    r"""Apply a refinement callback to a refined DM without letting it invert a cell.
+
+    A refinement callback moves vertices of a freshly refined mesh, typically the new
+    boundary vertices onto a curved boundary. Regular refinement subdivides every cell,
+    so before the callback no cell is inverted. A vertex moved past its neighbours turns
+    the cells between them inside out: on a concave wall, a snapped midpoint can overtake
+    an interior vertex that is not snapped (#946). Of each cell the callback inverted,
+    the vertex it moved furthest goes back where refinement placed it, until no cell is
+    inverted. Returns the number put back, over all ranks: those vertices are not where
+    the callback meant them to be.
+
+    In parallel the copies of one vertex can disagree after the callback. A callback
+    finds the vertices it moves through the labels a rank holds, and a rank can hold a
+    shared vertex without holding every labelled facet around it. The copy that moved is
+    the intended one, so every copy takes it before any cell is checked. Copies that
+    moved agree, because the callback is a function of the vertex's position.
+
+    Cells are checked when they are simplices of the coordinate dimension; a manifold
+    mesh or a mesh of quadrilaterals or hexahedra is not checked. A callback that writes
+    a non-finite coordinate raises. Collective: every rank sees the same verdicts.
+    """
+    from underworld3.utilities._plex_topology import closure_points, section_offsets
+
+    dim, cdim = dm.getDimension(), dm.getCoordinateDim()
+    refined = dm.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+    refinement_callback(dm)
+
+    coordinates = dm.getCoordinatesLocal()
+    moved_to = coordinates.array.reshape(-1, cdim).copy()
+    moved = numpy.any(moved_to != refined, axis=1)
+    shifts, _ = _sum_over_sharers(dm, numpy.where(moved[:, None], moved_to - refined, 0.0))
+    movers, _ = _sum_over_sharers(dm, numpy.repeat(moved[:, None].astype(float), cdim, axis=1))
+    movers = movers[:, 0]
+    moved_to = numpy.where((movers > 0.0)[:, None],
+                           refined + shifts / numpy.maximum(movers, 1.0)[:, None], refined)
+    _, broken = _flag_on_every_sharer(dm, ~numpy.isfinite(moved_to).all(axis=1))
+    if broken:
+        raise RuntimeError(f"The refinement callback wrote non-finite coordinates at "
+                           f"{broken} vertices.")
+
+    total = 0
+    if dim == cdim:
+        vs, ve = dm.getDepthStratum(0)
+        cs, ce = dm.getHeightStratum(0)
+        rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
+        cells = closure_points(dm, numpy.arange(cs, ce), 0)
+        if cells.shape[1] == dim + 1 and (cells >= 0).all():
+            cells = rows[cells - vs]
+        else:
+            cells = numpy.empty((0, dim + 1), dtype=numpy.int64)
+
+        def orientation(x):
+            return numpy.sign(numpy.linalg.det(x[cells[:, 1:]] - x[cells[:, :1]]))
+
+        reference = orientation(refined)
+        shift = numpy.linalg.norm(moved_to - refined, axis=1)
+        held = numpy.zeros(len(refined), dtype=bool)
+        while True:
+            current = numpy.where(held[:, None], refined, moved_to)
+            inverted = cells[orientation(current) != reference]
+            reach = numpy.where(held[inverted], 0.0, shift[inverted])
+            culprits = numpy.zeros(len(refined), dtype=bool)
+            culprits[inverted[numpy.arange(len(inverted)), reach.argmax(axis=1)]] = True
+            culprits, count = _flag_on_every_sharer(dm, culprits & ~held)
+            if count == 0:
+                break
+            held |= culprits
+        _, total = _flag_on_every_sharer(dm, held)
+        moved_to = numpy.where(held[:, None], refined, moved_to)
+
+    coordinates.array[...] = moved_to.ravel()
+    dm.setCoordinatesLocal(coordinates)
+    return total
+
+
+def _sum_over_sharers(dm, values):
+    """The sum, over every rank's copy of each vertex, of ``values``, an array indexed
+    like the local coordinate array; each copy gets the sum. Also returns how many
+    vertices have a nonzero sum, over all ranks. Collective."""
+    cdm = dm.getCoordinateDM()
+    cdim = dm.getCoordinateDim()
+    local, glob = cdm.createLocalVec(), cdm.createGlobalVec()
+    local.array[...] = numpy.asarray(values, dtype=float).ravel()
+    glob.set(0.0)
+    cdm.localToGlobal(local, glob, addv=PETSc.InsertMode.ADD_VALUES)
+    marks = glob.duplicate()
+    marks.array[...] = numpy.repeat(
+        numpy.any(glob.array.reshape(-1, cdim) != 0.0, axis=1).astype(float), cdim)
+    count = int(round(marks.sum() / cdim))
+    marks.destroy()
+    cdm.globalToLocal(glob, local, addv=PETSc.InsertMode.INSERT_VALUES)
+    summed = local.array.reshape(-1, cdim).copy()
+    local.destroy()
+    glob.destroy()
+    return summed, count
+
+
+def _flag_on_every_sharer(dm, flags):
+    """A vertex flagged on any rank that holds it, flagged on every rank that holds it,
+    and the global number of flagged vertices. ``flags`` is indexed like the rows of
+    the local coordinate array. Collective."""
+    cdim = dm.getCoordinateDim()
+    summed, count = _sum_over_sharers(dm, numpy.repeat(flags[:, None].astype(float), cdim, axis=1))
+    return summed[:, 0] > 0.0, count
+
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -1208,7 +1315,7 @@ class Mesh(Stateful, uw_object):
             dm_refined.setCoarseDM(self.dm_hierarchy[i])
 
             if callable(refinement_callback):
-                refinement_callback(dm_refined)
+                _apply_refinement_callback(dm_refined, refinement_callback)
 
             self.dm_hierarchy.append(dm_refined)
 
@@ -1216,9 +1323,24 @@ class Mesh(Stateful, uw_object):
         self.dm_h.setName("uw_hierarchical_dm")
 
         # Is this needed here, after the above calls ?
+        # The second pass re-applies the callback to every level from the state the
+        # first left, so it holds back again every vertex that needs it: its sum is
+        # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            for dm in self.dm_hierarchy:
-                refinement_callback(dm)
+            held = sum(_apply_refinement_callback(dm, refinement_callback)
+                       for dm in self.dm_hierarchy)
+            if held:
+                with uw.selective_ranks(0) as selected:
+                    if selected:
+                        import warnings
+
+                        warnings.warn(
+                            f"The refinement callback would have turned cells inside "
+                            f"out. {held} vertices it moved, over the hierarchy's "
+                            f"{len(self.dm_hierarchy)} levels, stay where refinement "
+                            f"placed them instead (#946).",
+                            UserWarning,
+                        )
 
         # Single level equivalent dm (needed for aux vars ?? Check this - LM)
         self.dm = self.dm_h.clone()
@@ -7241,6 +7363,8 @@ class Mesh(Stateful, uw_object):
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
+    # TODO(BUG): MeshVariable is not imported in this module, so this method raises
+    # NameError when called.
     def meshVariable_mask_from_label(self, label_name, label_value):
         """Extract single label value and make a point mask - note: this produces a mask on the mesh points and
         assumes a 1st order mesh. Cell labels are not respected in this function."""
@@ -10488,8 +10612,10 @@ def petsc_dm_find_labeled_points_local(
 
     label = dm.getLabel(label_name)
     if not label:
+        # no points: callers index coordinates with the result, and [0] would
+        # move vertex 0 (#903); the Cython copy of this lookup does the same
         print(f"{uw.mpi.rank} Label {label_name} is not present on the dm", flush=True)
-        return np.array([0])
+        return np.array([], dtype=np.int64)
 
     pointIS = dm.getStratumIS("depth", 0)
     edgeIS = dm.getStratumIS("depth", 1)
