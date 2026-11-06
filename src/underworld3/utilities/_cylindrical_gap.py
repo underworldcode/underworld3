@@ -587,4 +587,3 @@ def _solve_cylindrical_gap_zero_slip(
         linear_solver_options,
         ("normal", "tangent"),
     )
-
