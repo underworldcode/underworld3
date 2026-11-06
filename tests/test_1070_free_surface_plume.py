@@ -261,14 +261,22 @@ def test_freesurface_prescribed_rate_is_flux_free():
     assert ratio < 5.0e-3, f"prescribed rate carries {ratio:.2e} of net flux (nodal demean?)"
 
 
-def _record_flux_before_each_deform(fs, net, gross):
-    """Net/gross flux on the geometry the consistent solve ran on: advance then moves
-    the surface and remaps the velocity onto it, which the constraint says nothing about."""
+def _record_constraint_before_each_deform(fs, net, gross, dim):
+    """Datum error and net/gross flux on the geometry the consistent solve ran on: advance
+    then moves the surface and remaps the velocity onto it, which the constraint says
+    nothing about."""
     readings = []
     carry_and_deform = fs._carry_and_deform
 
     def measure_then_deform(*args, **kwargs):
-        readings.append(abs(float(net.evaluate())) / abs(float(gross.evaluate())))
+        coords = fs._ring_coords                       # LIVE surface nodes, ring order
+        normal = fs._normal_direction(coords)
+        realised = sum(
+            np.asarray(uw.function.evaluate(fs._adv_velocity.sym[i], coords)).flatten()
+            * normal[:, i] for i in range(dim))
+        target = np.asarray(fs._un_target.array[fs._un_target_rows, 0, 0]).flatten()
+        readings.append((np.abs(realised - target).max() / np.abs(target).max(),
+                         abs(float(net.evaluate())) / abs(float(gross.evaluate()))))
         return carry_and_deform(*args, **kwargs)
 
     fs._carry_and_deform = measure_then_deform
@@ -289,18 +297,11 @@ def constraint_measurements():
                                   boundary="Upper")
         gross = uw.maths.BdIntegral(mesh=mesh, fn=sympy.Abs(fs._adv_velocity.sym.dot(rhat)),
                                     boundary="Upper")
-        readings = _record_flux_before_each_deform(fs, net, gross)
+        readings = _record_constraint_before_each_deform(fs, net, gross, mesh.dim)
         for _ in range(4):
             fs.solve()
             fs.advance(fs.estimate_dt(advect_scale=10.0))
-        coords = fs._ring_coords                       # LIVE surface nodes, ring order
-        normal = fs._normal_direction(coords)
-        realised = sum(
-            np.asarray(uw.function.evaluate(fs._adv_velocity.sym[i], coords)).flatten()
-            * normal[:, i] for i in range(mesh.dim))
-        target = np.asarray(fs._un_target.array[fs._un_target_rows, 0, 0]).flatten()
-        errors[constraint] = np.abs(realised - target).max() / np.abs(target).max()
-        leaks[constraint] = readings[-1]
+        errors[constraint], leaks[constraint] = readings[-1]
     return errors, leaks
 
 
@@ -336,14 +337,13 @@ def test_freesurface_strong_constraint_tracks_the_prescribed_rate(constraint_mea
     break later somewhere harder to read — which is how the Nitsche penalty
     regression in #734 stayed hidden for two months.
 
-    The bound is loose enough to hold across platform triangulations (measured
-    2026-09-14: 1.06e-2 on macOS, 1.73e-2 on the Linux CI runner, where the
-    annulus triangulates differently) and tight enough to fail if the rotated
-    constraint stops tracking the datum.
+    Measured on the geometry its solve ran on, where the strong constraint meets the
+    datum to round-off (1e-15, the same on macOS and Linux). Read after the deform it
+    was 1.7e-2, which is the velocity remapped onto the moved surface, not the constraint.
     """
     errors, _ = constraint_measurements
     print(f"datum error: strong={errors['strong']:.2e} penalty={errors['penalty']:.2e}")
-    assert errors["strong"] < 5.0e-2, (
+    assert errors["strong"] < 1.0e-10, (
         f"the strong constraint misses the prescribed wall-normal rate by "
         f"{errors['strong']:.2e}"
     )
