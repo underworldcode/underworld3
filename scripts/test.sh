@@ -435,6 +435,26 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # of minutes. So the enumeration is chunked rather than passed in one go.
     PARALLEL_BATCH=${PARALLEL_BATCH:-6}
     PARALLEL_FILES=(tests/parallel/test_*.py)
+    # The ptest_* files that pass at np 2 and 4 under pytest (#900). Named, and
+    # after the test_* files so that adding one here does not move a test_* batch:
+    # a hang has followed a batch boundary before. The others are listed with their
+    # reason in scripts/check_test_coverage.py, which fails on a file in neither place.
+    PARALLEL_FILES+=(
+      tests/parallel/ptest_0762_read_timestep_swarm_routed.py
+      tests/parallel/ptest_0843_edge_split_parallel.py
+      tests/parallel/ptest_0844_line_cut_parallel.py
+      tests/parallel/ptest_0845_fault_split_parallel.py
+      tests/parallel/ptest_0845_relax_pinned_band_parallel.py
+      tests/parallel/ptest_0852_place_split_contact.py
+      tests/parallel/ptest_0853_place_lines_parallel.py
+      tests/parallel/ptest_0854_place_sheet_parallel.py
+      tests/parallel/ptest_0855_place_thin_volume_parallel.py
+      tests/parallel/ptest_0856_remove_embedded_parallel.py
+      tests/parallel/ptest_0857_gather_regions_parallel.py
+      tests/parallel/ptest_0859_fault_network_parallel.py
+      tests/parallel/ptest_0864_split_checkpoint_parallel.py
+      tests/parallel/ptest_jit_cache.py
+    )
     echo "Testing parallel operations, swarms and solvers"
     echo "  ${#PARALLEL_FILES[@]} files in batches of $PARALLEL_BATCH"
     for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
