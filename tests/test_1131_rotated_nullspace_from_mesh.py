@@ -41,7 +41,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.utilities import custom_mg
+from underworld3.utilities import custom_mg, rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -273,5 +273,9 @@ def test_an_add_fault_child_inherits_the_declaration():
     base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1,
                               qdegree=2)
     child = base.add_fault([("Flt", np.array([[0.62, 0.10], [0.85, 0.30]]))])
-    assert child.nullspace_rotations == base.nullspace_rotations
     assert len(child.nullspace_rotations) == 1
+    # written in the child's own coordinate symbols, so it evaluates on the child
+    assert child.nullspace_rotations[0].free_symbols <= set(child.X)
+    c = np.asarray(child.X.coords)
+    field = rotated_bc._declared_rotation_fields(child, c)[0]
+    assert np.allclose(field, np.column_stack([-c[:, 1], c[:, 0]]), rtol=0, atol=1.0e-14)

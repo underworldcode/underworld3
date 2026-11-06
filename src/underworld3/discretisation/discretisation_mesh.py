@@ -4660,10 +4660,15 @@ class Mesh(Stateful, uw_object):
         return list(self._nullspace_rotations or [])
 
     def _inherit_rotation_modes(self, parent):
-        """Take ``parent``'s declared rotation modes. A mesh derived from it (adapted,
-        cut, split, placed into) keeps its walls, and rotated free slip checks at
-        each solve that a mode still leaves every wall in place (#906)."""
-        self._nullspace_rotations = getattr(parent, "_nullspace_rotations", None)
+        """Take ``parent``'s declared rotation modes, rewritten in this mesh's
+        coordinates (each mesh has its own coordinate symbols). A mesh derived from
+        it (adapted, cut, split, placed into) keeps its walls, and rotated free slip
+        checks at each solve that a mode still leaves every wall in place (#906)."""
+        modes = getattr(parent, "_nullspace_rotations", None)
+        if modes is not None:
+            to_self = dict(zip(parent.X, self.X))
+            modes = [sympy.Matrix(m).xreplace(to_self) for m in modes]
+        self._nullspace_rotations = modes
 
     @nullspace_rotations.setter
     def nullspace_rotations(self, modes):
