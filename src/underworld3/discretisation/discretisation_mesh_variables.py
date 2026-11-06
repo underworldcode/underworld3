@@ -907,10 +907,10 @@ class _BaseMeshVariable(Stateful, uw_object):
         if (
             not hasattr(self, "_kdtree")
             or self._kdtree is None
-            or getattr(self, "_kdtree_mesh_version", -1) != self.mesh._mesh_version
+            or getattr(self, "_kdtree_geometry_version", -1) != self.mesh._geometry_version
         ):
             self._kdtree = uw.kdtree.KDTree(self.coords_nd)
-            self._kdtree_mesh_version = self.mesh._mesh_version
+            self._kdtree_geometry_version = self.mesh._geometry_version
 
         return self._kdtree
 
