@@ -191,6 +191,24 @@ def pytest_make_collect_report(collector):
     report.result = []
 
 
+@pytest.fixture
+def jit_bundles(monkeypatch):
+    """The source bundles the JIT generates while a test runs, one dict per bundle
+    (``setup.py``, ``cy_ext.h``, ``cy_ext.pyx``), captured from ``generate_c_source``."""
+    import underworld3.utilities._jitextension as jx
+
+    bundles = []
+    generate = jx.generate_c_source
+
+    def capture(*args, **kwargs):
+        result = generate(*args, **kwargs)
+        bundles.append(dict(result[1]))
+        return result
+
+    monkeypatch.setattr(jx, "generate_c_source", capture)
+    return bundles
+
+
 @pytest.fixture(scope="module", autouse=True)
 def isolate_module_state():
     """Reset the global model BEFORE a module's own fixtures are built.

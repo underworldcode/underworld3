@@ -66,6 +66,35 @@ every nonlinear solver; layers 2–3 build on it.
 
 ### Layer 1 — automatic warm-start (all nonlinear solvers)
 
+```{warning}
+**Implementation status (#791, 2026-09-26).** As originally landed, this layer did not do what
+it specifies: the warm-up and `solve(picard=N)` ran SNES `nrichardson` with no nonlinear
+preconditioner — `x <- x - lambda F(x)`, a residual step with no linear solve — which is not a
+Picard step and is nearly inert. It is now implemented as specified:
+
+- `consistent_jacobian=True`: `solve(picard=N)` takes exactly N Picard steps, then Newton, and a
+  cold start takes one automatically (`picard=-1` disables it). The Jacobian is compiled in the
+  blended form J_p + alpha (J_n - J_p); alpha = 0 is the Picard step, alpha = 1 Newton, no
+  recompile to switch.
+- `"continuation"`: ONE solve with alpha keyed on the residual. alpha leaves 0 at
+  F = 0.1 F_ref and reaches 1 at F = 5e-4 F_ref, linear in log F, never decreasing, with
+  F_ref = ||F(u=0)|| (one residual evaluation). `l2` line search for that solve; stop at
+  `tolerance` x F_ref. `picard=N` holds alpha = 0 for the first N iterations. A warm start
+  enters the ramp at the alpha its residual calls for — keyed on the solve's own starting
+  residual instead, a warm start re-ran the whole Picard phase (763 vs 10 iterations on the
+  hard notch). Measured on the notch and a power-law variant, this converges cases where pure
+  Newton and the former two-stage continuation both fail (eta_bg 5e24; power law n = 5); it
+  still stalls where the blended iteration oscillates at intermediate alpha (refinement 2;
+  power law n = 3 with yield). The rotated-free-slip path keeps its own two-phase loop.
+- `False`: every iteration is already a Picard step.
+
+Measured on a boundary-driven sheared box: without the warm-up, pure Newton stalls on step size
+(CONVERGED_SNORM_RELATIVE at ||F|| = 4.5e-5, whatever the tolerance); with it, Newton converges on
+the residual to machine precision in fewer iterations (`tests/test_1068_picard_warmup_is_a_frozen_tangent_step.py`).
+Measurements quoted elsewhere for "opening Picard steps" before 2026-09-26 were of the nrichardson
+sweep.
+```
+
 A single **Picard (frozen-coefficient) step is a general cold-start warm-up**. It is
 defect-correction iteration 1: contractive, moves a cold guess into the Newton
 basin. UW3 already exposes it (`solve(picard=N)`) and already has the Picard tangent
@@ -168,9 +197,15 @@ domain in the softened region. The cost of `"yield"` is stiffened unyielded mate
 bounded by 2 for the sqrt family and by $2^{\delta}$ for the power mean; that bound is
 why the power mean's entry δ is O(1) while the sqrt family's is O(10).
 
-The default is `"onset"` because it is the historical law, not because it is the better
-one. Changing it alters results for every existing `yield_mode="softmin"` user, so it is
-a separate maintainer decision.
+The default is `"onset"`, and since 2026-10-05 it is also the default for the default
+`"softmin"` law. `"yield"` was tried as that default and refused in review (PR #794):
+for the sqrt family the stiffening is not confined to the corner — every unyielded cell
+is $1/(1-\delta/2)$ stiffer (5 % at δ = 0.1, so a model that never yields changes its
+answer) — and above yield the stress falls back to $\tau_y$ from $1.033\,\tau_y$, a
+negative yielded tangent (−0.029 of the viscous slope). Under `"onset"` both limits are
+exact and the yielded tangent is $\ge -10^{-4}$ of the viscous one. The approach from
+above that `"yield"` was meant to provide is the declared `plastic_rate_strengthening`
+ladder (`solve(homotopy="rate_strengthening")`).
 
 ### Layer 3 — smoother as a consistent-Newton consequence
 

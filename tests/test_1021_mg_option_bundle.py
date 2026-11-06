@@ -12,18 +12,21 @@ on the standard path, PETSc's own default of 2 on the rotated path).
 These tests read the configuration back off the LIVE PETSc objects after setup,
 not out of the options database, so they check what actually runs.
 
-The one legitimate per-route difference is the coarse solve: the
-Galerkin-coarsened *rotated* velocity block inherits the rigid-rotation null
-space, so redundant/LU hits a zero pivot there and it uses SVD (the #306 fix).
-That difference is asserted, not tolerated — if it disappears, the rotated coarse
-solve has silently reverted.
+The coarse solve is the same on every route: redundant LU with a nonzero factor
+shift, which acts only on a pivot below PETSc's zero-pivot tolerance (#901). The rotated route used SVD
+(#306): the Galerkin-coarsened rotated block inherits the rigid-rotation modes
+only nearly, and the LU gives the SVD's answer.
 
 Also here: the rotated path must pick up a MESH-OWNED hierarchy (the coarse tail
 an ``adapt()`` child carries), which it previously ignored, silently solving on
 GAMG (#467).
 """
+import os
+import tempfile
+
 import pytest
 import sympy
+from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.utilities import custom_mg, multigrid_options, rotated_bc
@@ -46,6 +49,13 @@ def test_every_bundle_sets_the_smoother_iteration_count():
     for bundle in bundles:
         assert "mg_levels_ksp_max_it" in bundle.settings
         assert "pc_type" in bundle.settings
+
+
+def test_the_removed_svd_variant_names_its_replacement():
+    """``coarse="svd"`` was removed, not deprecated (#901): asking for it is an
+    error that names the shifted-LU default, never a silent fallback."""
+    with pytest.raises(ValueError, match=r'coarse="svd" was removed.*coarse="redundant"'):
+        multigrid_options.geometric_mg_bundle(coarse="svd")
 
 
 def test_the_geometric_bundle_pairs_krylov_smoothing_with_a_flexible_outer():
@@ -179,7 +189,19 @@ def _mg_config(vel_pc):
         "smoother_norm": str(smoother.getNormType()),
         "coarse_ksp": coarse.getType(),
         "coarse_pc": coarse.getPC().getType(),
+        "coarse_shift": _coarse_shift_is_nonzero(coarse),
     }
+
+
+def _coarse_shift_is_nonzero(coarse):
+    """The coarse LU's factor shift, read off the live KSP's view (#901)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "coarse_ksp.txt")
+        viewer = PETSc.Viewer().createASCII(path, comm=coarse.getComm())
+        coarse.view(viewer)
+        viewer.destroy()
+        with open(path) as f:
+            return "[NONZERO]" in f.read()
 
 
 def _annulus(cell_size):
@@ -233,14 +255,15 @@ def _custom_rotated_config(monkeypatch, strategy=None):
 
 def test_all_three_routes_share_one_bundle(monkeypatch):
     """Native, standard custom-P and rotated custom-P must smooth identically —
-    same Krylov smoother, same preconditioner, same iteration count, same cycle.
-    Only the coarse solve legitimately differs."""
+    same Krylov smoother, same preconditioner, same iteration count, same cycle —
+    and solve the coarse level the same way: redundant LU with a zero-pivot
+    shift (#901)."""
     native = _native_config()
     standard = _custom_standard_config()
     rotated = _custom_rotated_config(monkeypatch)
 
     shared = ("mg_type", "smoother_ksp", "smoother_pc", "smoother_max_it",
-              "smoother_norm", "coarse_ksp")
+              "smoother_norm", "coarse_ksp", "coarse_pc", "coarse_shift")
     for key in shared:
         assert native[key] == standard[key] == rotated[key], (
             f"route drift on {key!r}: native={native[key]!r} "
@@ -252,24 +275,58 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     assert native["smoother_pc"] == "sor"
     assert native["smoother_max_it"] == 4
 
-    # The rotated coarse solve is GATED (#629 revision of the #306 rule):
-    # svd ONLY when the rotated problem carries a VERIFIED rigid-rotation
-    # null mode — blanket svd was measured as most of ~0.8 s per V-cycle
-    # (#622). This fixture PINS the inner boundary, so no rotation mode
-    # survives and all three routes legitimately share the redundant/LU
-    # coarse solve. The svd arm of the gate is asserted by
-    # test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode.
+    # The rotated coarse solve was a blanket svd (measured as most of ~0.8 s
+    # per V-cycle, #622), then svd only with a VERIFIED rigid-rotation null
+    # mode (#629); it is the shared redundant LU with a zero-pivot shift now,
+    # as on every route (#901). This fixture PINS the inner boundary, so no
+    # rotation mode survives; the case with one is
+    # test_rotated_coarse_is_redundant_lu_with_a_rotation_mode.
     assert native["coarse_pc"] == "redundant"
-    assert standard["coarse_pc"] == "redundant"
-    assert rotated["coarse_pc"] == "redundant"
+    assert native["coarse_shift"]
 
 
-def test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode(monkeypatch):
-    """The svd arm of the coarse-solve gate (#306, as revised by #629):
-    rotated free-slip on BOTH annulus boundaries leaves the rigid rotation
-    as a genuine null mode, the null-space builder must verify and record
-    it, and only then is the svd coarse solve required — redundant/LU
-    would hit its zero pivot exactly here."""
+def test_a_user_set_svd_coarse_solve_still_reaches_the_standard_route():
+    """A user's own key under the velocity block's prefix reaches the standard
+    custom-P route's live coarse PC: the bundle respects keys it did not write
+    (``owned``). It fails if ``_configure_pcmg`` writes unconditionally. With
+    ``mg_coarse_pc_type=svd`` it also shows that a script setting the PETSc
+    option itself still gets an SVD after the bundle's svd variant went (#901)."""
+    s = _stokes(_annulus(RES), "usv", rotated=False)
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+    s.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+    s.solve()
+    assert s.snes.getConvergedReason() > 0
+    config = _mg_config(s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC())
+    assert config["coarse_pc"] == "svd", config
+
+
+def test_a_rotated_set_up_that_raises_leaves_no_options_behind(monkeypatch):
+    """The rotated route writes its KSP, multigrid-bundle and FAC keys into the
+    GLOBAL options database under a prefix unique to the solve, and drops them
+    in its ``finally``. A set-up that raises after the multigrid set-up used to
+    leave the bundle and FAC keys behind (11 of them on this fixture), and a
+    failed cold solve raises since #907, so a retry loop accumulated them."""
+    s = _stokes(_annulus(RES), "rfail", rotated=True)
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected set-up failure")
+
+    monkeypatch.setattr(custom_mg, "_set_up_fac_smoothers", boom)
+    before = {k for k in PETSc.Options().getAll() if k.startswith("rot")}
+    with pytest.raises(RuntimeError, match="injected set-up failure"):
+        s.solve()
+    left = {k for k in PETSc.Options().getAll() if k.startswith("rot")} - before
+    assert not left, sorted(left)
+
+
+def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_path):
+    """Rotated free-slip on BOTH annulus boundaries leaves the rigid rotation
+    as a genuine null mode, and the null-space builder must verify and record
+    it. The coarse solve stays redundant LU (#901): the inherited rotation
+    leaves the coarse operator near-singular, not singular, and LU gives the
+    SVD's answer; the zero-pivot shift every route carries is for a coarse
+    level that is singular (test_1111). It was a dense SVD here (#306)."""
     mesh = _annulus(RES)
     x, y = mesh.X
     r = sympy.sqrt(x**2 + y**2)
@@ -296,14 +353,22 @@ def test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode(monkeypatch):
         result = real_solve(solver, Ahat, bhat, Q, Qt, normal_rows, **kw)
         captured.setdefault("config", _mg_config(
             result[2]["pc"].getFieldSplitSubKSP()[0].getPC()))
+        captured.setdefault("vel_pc", result[2]["pc"].getFieldSplitSubKSP()[0].getPC())
         return result
 
     monkeypatch.setattr(rotated_bc, "_solve_rotated_iterative", capture)
     s.solve()
     assert s._rotated_velocity_null_modes == 1, (
-        "the free-slip annulus rotation mode was not verified/recorded — "
-        "the gate would silently choose the zero-pivot coarse solve")
-    assert captured["config"]["coarse_pc"] == "svd"
+        "the free-slip annulus rotation mode was not verified/recorded, so "
+        "the rotation would not be removed from the answer")
+    assert captured["config"]["coarse_pc"] == "redundant"
+    assert s._rotated_freeslip_info["coarse_solve"] == "redundant"
+    # and its LU carries the zero-pivot shift, read off the live KSP's view
+    path = tmp_path / "coarse_ksp.txt"
+    viewer = PETSc.Viewer().createASCII(str(path), comm=PETSc.COMM_WORLD)
+    captured["vel_pc"].getMGCoarseSolve().view(viewer)
+    viewer.destroy()
+    assert "[NONZERO]" in path.read_text()
 
 
 def test_rotated_picks_up_a_mesh_owned_hierarchy():
@@ -433,7 +498,7 @@ def test_strategy_reaches_every_route(monkeypatch):
         assert config[:2] == ("richardson", 3), (
             f"strategy='fast' not honoured on the {route} route: {config}")
     # Gated (#629): the fixture pins the inner boundary — no rotation
-    # mode, so the strategy must NOT drag the coarse solve back to svd.
+    # mode, so the strategy must NOT drag the coarse solve off redundant.
     assert rotated[2] == "redundant", (
         "no verified rotation mode here; the coarse solve must stay "
         "redundant under a strategy change")

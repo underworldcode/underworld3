@@ -285,6 +285,20 @@ coverage is established.
 These are not in the automated checklist but should be done within a week of
 the production tag landing on `main`.
 
+### Issues fixed in the release
+
+An issue whose fix has merged to `development` stays open, labelled
+`fixed-in-development`, until the fix is released (see
+[Planning on GitHub](planning-on-github.md)). Once the tag is on `main`, close them
+all with a comment naming the release:
+
+```bash
+gh issue list --label fixed-in-development --state open --limit 500 --json number --jq '.[].number' |
+  while read n; do
+    gh issue close "$n" --comment "Released in <tag>."
+  done
+```
+
 ### Container image
 
 The Docker workflow (`.github/workflows/docker-image.yaml`) fires on pushes to

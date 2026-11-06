@@ -15,7 +15,7 @@ symmetry) exposed them:
 2. ``TransverseIsotropicFlowModel._build_c_tensor`` baked the UNWRAPPED
    ``.sym`` contents of its viscosity Parameters into the c-tensor, exposing
    the strain-rate dependence to ``sympy.diff`` and silently un-freezing the
-   default (Picard) tangent. Tests 2/3 pin the freezing contract: coefficients
+   frozen (Picard) tangent. Tests 2/3 pin the freezing contract: coefficients
    hide inside UWexpression atoms under Picard; only the Newton unwrap sees
    through them.
 
@@ -166,7 +166,7 @@ def test_stokes_uu_g3_matches_fd_oracle():
 @pytest.mark.level_1
 @pytest.mark.tier_a
 def test_ti_picard_tangent_is_frozen():
-    """Under the default (Picard) tangent the TI viscosity coefficients must
+    """Under the frozen (Picard) tangent the TI viscosity coefficients must
     stay hidden inside UWexpression atoms: no raw velocity-gradient
     (Derivative) atoms may appear in the assembled uu_G3. The Newton build of
     the same problem MUST expose them (positive control that the dependence
@@ -188,7 +188,7 @@ def test_ti_picard_tangent_is_frozen():
     ]
     assert not picard_live, (
         "Picard uu_G3 depends on the velocity gradient — the TI c-tensor "
-        "build has un-frozen the default tangent (issue #457): first hits "
+        "build has un-frozen the Picard tangent (issue #457): first hits "
         f"{picard_live[:4]}"
     )
 
@@ -371,7 +371,7 @@ def test_ti_vep_viscosity_property_reports_yield_limited_eta1():
 def test_vep_c_tensor_coefficients_are_frozen():
     """Isotropic VEP with yield active: same freezing contract as the TI
     classes (the .sym tidy deferred on PR #493) — the c-tensor coefficients
-    must live inside UWexpression atoms so the default (Picard) tangent stays
+    must live inside UWexpression atoms so the frozen (Picard) tangent stays
     frozen; only the Newton unwrap sees the yield law's strain-rate
     dependence."""
     import itertools

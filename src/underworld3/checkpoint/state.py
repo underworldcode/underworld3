@@ -75,3 +75,17 @@ class Snapshottable(Protocol):
 
     @property
     def state(self) -> SnapshottableState: ...
+
+
+@dataclass
+class SolverStepState(SnapshottableState):
+    """What a solve leaves on its solver that steers the next solve.
+
+    A snapshot carries one per solver and a restore puts it back, so a
+    regretted step cannot change how the steps after it run. Solvers that
+    carry more (the last step length, a rate of change read by
+    ``estimate_dt``) extend it next to their class.
+    """
+
+    _schema_version: int = 1
+    has_solution: bool = False

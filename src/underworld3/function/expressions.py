@@ -169,10 +169,13 @@ def _unwrap_expression_once(expr, mode='nondimensional'):
         Expression with UW atoms substituted
     """
     from underworld3.coordinates import UWCoordinate
+    from underworld3.utilities import _jit_graph
 
     # Handle non-expression types directly
     if isinstance(expr, UWQuantity) and not isinstance(expr, UWexpression):
         return _unwrap_atom(expr, mode)
+
+    expr = _jit_graph.expand_nodes(expr)
 
     if isinstance(expr, UWCoordinate):
         return _unwrap_atom(expr, mode)
@@ -197,6 +200,88 @@ def _unwrap_expression_once(expr, mode='nondimensional'):
     if substitutions:
         return expr.subs(substitutions)
     return expr
+
+
+def _unwrap_expression_complete(expr, mode):
+    r"""Complete expansion of every UW atom in ``expr`` (the ``depth=None`` case).
+
+    Each UW atom is expanded ONCE, memoised by identity, with the same rule as
+    :func:`_unwrap_atom`, including the same truly-constant predicate for
+    ``'symbolic_keep_constants'``, also memoised. Each expression is then rebuilt in
+    ONE ``xreplace`` pass. The result is the fixed point that repeated
+    :func:`_unwrap_expression_once` passes reach, structurally identical, with two
+    exceptions where the passes were wrong. An unevaluated ``Derivative`` of a UW
+    atom whose content depends on the differentiation variable: ``subs`` returned
+    ``Subs(Derivative(a*T, x), a, x**2)``, i.e. :math:`x^2\,\partial T/\partial x`,
+    where this returns ``Derivative(x**2*T, x)``, the derivative of the content, as
+    ``uw.function.derivative`` does. And a cyclic expression: the passes stopped
+    after 100 with a meaningless result, where this raises ``ValueError``.
+
+    Why not repeated ``subs`` passes (#823): each pass traverses and re-canonicalises
+    the whole growing tree, and in keep-constants mode every atom on every pass ran
+    ``_is_truly_constant``, itself a full unwrap. On the Spiegelman notch viscosity, a
+    130-node graph with 18 named sub-expressions that expands to a 9,913-node tree,
+    that took 563 s; this takes 0.11 s. Repeated sub-expressions in the result are the
+    same Python object, which identity-memoised walks downstream exploit.
+    """
+    from underworld3.coordinates import UWCoordinate
+    from underworld3.utilities import _jit_graph
+
+    # a block lowered onto the JIT's graph holds node applications: each is one more
+    # atom, whose expansion is its body (#823)
+    expr = _jit_graph.expand_nodes(expr)
+
+    uw_types = (UWexpression, UWQuantity, UWCoordinate)
+    expanded = {}       # id(atom) -> (atom, expansion); the atom is held so its id stays valid
+    constant = {}       # id(atom) -> (atom, bool)
+    in_progress = set()
+
+    def is_truly_constant(atom):
+        hit = constant.get(id(atom))
+        if hit is None:
+            from underworld3.utilities._jitextension import _is_truly_constant
+            hit = constant[id(atom)] = (atom, _is_truly_constant(atom, UWexpression))
+        return hit[1]
+
+    def expand_atom(atom):
+        hit = expanded.get(id(atom))
+        if hit is not None:
+            return hit[1]
+        if id(atom) in in_progress:
+            raise ValueError(f"cyclic expression: {atom} contains itself")
+        in_progress.add(id(atom))
+        try:
+            if (mode == 'symbolic_keep_constants' and isinstance(atom, UWexpression)
+                    and not isinstance(atom, UWCoordinate)):
+                # _unwrap_atom's keep-constants rule, with the predicate memoised
+                result = atom if is_truly_constant(atom) else expand(atom.sym)
+            else:
+                one_level = _unwrap_atom(atom, mode)
+                result = atom if one_level is atom else expand(one_level)
+        finally:
+            in_progress.discard(id(atom))
+        expanded[id(atom)] = (atom, result)
+        return result
+
+    def expand(e):
+        if isinstance(e, UWQuantity) and not isinstance(e, UWexpression):
+            return _unwrap_atom(e, mode)
+        if isinstance(e, uw_types):
+            return expand_atom(e)
+        if not hasattr(e, 'free_symbols'):
+            return e
+        mapping = {}
+        for sym in e.free_symbols:
+            if isinstance(sym, uw_types):
+                replacement = expand_atom(sym)
+                if replacement is not sym:
+                    # as subs() did: a value that cannot be sympified (a units
+                    # quantity in 'symbolic' mode) raises SympifyError here; a sympy
+                    # object comes back as the same object, so sharing is kept
+                    mapping[sym] = sympy.sympify(replacement)
+        return e.xreplace(mapping) if mapping else e
+
+    return expand(expr)
 
 
 def unwrap_expression(expr, mode='nondimensional', depth=None):
@@ -228,17 +313,8 @@ def unwrap_expression(expr, mode='nondimensional', depth=None):
     else:
         return sympy.sympify(expr)
 
-    # Fixed-point iteration (or depth-limited)
     if depth is None:
-        result = working
-        result_next = _unwrap_expression_once(result, mode)
-        iteration = 0
-        max_iterations = 100  # Safety limit
-        while result is not result_next and iteration < max_iterations:
-            result = result_next
-            result_next = _unwrap_expression_once(result, mode)
-            iteration += 1
-        return result
+        return _unwrap_expression_complete(working, mode)
     else:
         result = working
         for _ in range(depth):
@@ -551,6 +627,10 @@ def unwrap_for_evaluate(expr, scaling_active=None):
     else:
         sym_expr = expr
 
+    # a block lowered onto the JIT's graph: nodes expand to their bodies (#823)
+    from underworld3.utilities import _jit_graph
+    sym_expr = _jit_graph.expand_nodes(sym_expr)
+
     # Step 4: Process composite expressions - TYPE-BASED DISPATCH
     if isinstance(sym_expr, sympy.Expr):
         substitutions = {}
@@ -624,6 +704,17 @@ def live_expressions():
     same state read the same way.
     """
     return [UWexpression._expr_names[k] for k in sorted(UWexpression._expr_names)]
+
+
+def _quantity_as_expression(quantity):
+    """Wrap a bare UWQuantity as its own UWexpression atom, so that a sum or
+    difference with a symbolic operand keeps it in the tree and unwrap
+    non-dimensionalises it by its own units rather than by its magnitude."""
+    if quantity._pint_qty is not None:
+        latex_name = f"{quantity._pint_qty:~L}"
+    else:
+        latex_name = str(quantity.value)
+    return UWexpression(latex_name, quantity, _unique_name_generation=True)
 
 
 class UWexpression(MathematicalMixin, uw_object, Symbol):
@@ -1403,33 +1494,12 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
                     result_qty,  # Pass full UWQuantity - Transparent Container stores it
                     _unique_name_generation=True,
                 )
-            elif isinstance(self._sym, UWQuantity):
-                # self has units, other doesn't - convert other to UWQuantity
-                other_qty = UWQuantity(other.value, self.units) if self.units else other.value
-                if isinstance(other_qty, UWQuantity):
-                    result_qty = self._sym + other_qty
-                    return UWexpression(
-                        f"({self.name}+{other.name})",
-                        result_qty,
-                        _unique_name_generation=True,
-                    )
-                else:
-                    result_value = self.value + other.value
-                    return UWexpression(
-                        f"({self.name}+{other.name})",
-                        result_value,
-                        _unique_name_generation=True,
-                        units=self.units
-                    )
-            else:
-                # Neither has UWQuantity in _sym - use simple value arithmetic
-                result_value = self.value + other.value
-                return UWexpression(
-                    f"({self.name}+{other.name})",
-                    result_value,
-                    _unique_name_generation=True,
-                    units=self.units or other.units
-                )
+            # Otherwise keep both symbols in the tree, as __sub__ does, so that
+            # unwrap non-dimensionalises each operand by its own units. Adding the
+            # operands' .value eagerly mixed systems: a quantity's .value is its
+            # dimensional magnitude (0.35 for 0.35 MPa), which then entered a
+            # non-dimensional sum unscaled (#758).
+            return Symbol.__add__(self, other)
 
         # Handle UWexpression + UWQuantity
         if isinstance(other, UWQuantity):
@@ -1442,25 +1512,8 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
                     result_qty,
                     _unique_name_generation=True,
                 )
-            else:
-                # self.sym is not UWQuantity - convert and add
-                if self.units is not None:
-                    self_qty = UWQuantity(self.value, self.units)
-                    result_qty = self_qty + other
-                    return UWexpression(
-                        f"({self.name}+qty)",
-                        result_qty,
-                        _unique_name_generation=True,
-                    )
-                else:
-                    # No units on self - just add values
-                    result_value = self.value + other.value
-                    return UWexpression(
-                        f"({self.name}+qty)",
-                        result_value,
-                        _unique_name_generation=True,
-                        units=other.units
-                    )
+            # self is symbolic: keep the quantity as its own atom (#758), as above
+            return Symbol.__add__(self, _quantity_as_expression(other))
         return Symbol.__add__(self, other)
 
     def __radd__(self, other):
@@ -1495,18 +1548,7 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         # Handle UWexpression - UWQuantity: Wrap in UWexpression first (LAZY)
         if isinstance(other, UWQuantity):
-            # Wrap the UWQuantity in a UWexpression to preserve it as a symbol
-            # This allows unwrap_for_evaluate to find and nondimensionalize it
-            if other._pint_qty is not None:
-                latex_name = f"{other._pint_qty:~L}"
-            else:
-                latex_name = str(other.value)
-            wrapped_other = UWexpression(
-                latex_name,
-                other,  # Store the full UWQuantity - Transparent Container
-                _unique_name_generation=True
-            )
-            return Symbol.__sub__(self, wrapped_other)
+            return Symbol.__sub__(self, _quantity_as_expression(other))
 
         return Symbol.__sub__(self, other)
 
@@ -1514,32 +1556,16 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         """Right subtraction - handle UWQuantity specially."""
         from .quantities import UWQuantity
         if isinstance(other, UWQuantity):
-            # UWQuantity - UWexpression → UWexpression
-            # Convert self to other's units (other is the "base" unit here)
-            self_units = self.units
-            other_units = other.units
-
-            if self_units is not None and other_units is not None:
-                # Convert self's value to other's units for correct subtraction
-                # other - self: result is in other's units
-                try:
-                    from ..scaling import units as ureg
-                    self_in_other_units = (self.value * self_units).to(other_units).magnitude
-                except Exception:
-                    self_in_other_units = self.value
-                result_value = other.value - self_in_other_units
-                result_units = other_units
-            else:
-                # Use self.value (not self.sym) for arithmetic
-                result_value = other.value - self.value
-                result_units = self_units or other_units
-
-            return UWexpression(
-                f"(qty-{self.name})",
-                result_value,
-                _unique_name_generation=True,
-                units=result_units
-            )
+            # Both are quantities: Pint handles the unit conversion
+            if isinstance(self._sym, UWQuantity):
+                return UWexpression(
+                    f"(qty-{self.name})",
+                    other - self._sym,
+                    _unique_name_generation=True,
+                )
+            # self is symbolic: keep the quantity as its own atom (#758), as in
+            # __add__ — converting self.value by Pint scaled a symbolic magnitude
+            return Symbol.__sub__(_quantity_as_expression(other), self)
         return Symbol.__rsub__(self, other)
 
     def __pow__(self, other):

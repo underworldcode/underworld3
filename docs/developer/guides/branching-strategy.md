@@ -51,9 +51,14 @@ feature/Z ────────────────────┘
 
 ### `feature/*` — long-lived feature work
 
-- Branch from `development`. PR back to `development` when ready.
+- Branch from `development`, **current** `development`: fetch first, and read the open
+  and recently merged PRs that touch the subsystem before starting (the session
+  bootstrap in `CLAUDE.md` spells out the check). A branch cut from a stale base or
+  from another feature branch re-does work that is already in a PR.
+- PR back to `development` when ready.
 - Reviewed by human + Copilot. CI runs on the PR.
-- Periodically incorporate changes from `development` (merge or rebase, developer's choice).
+- Incorporate `development` whenever a related PR merges, not only periodically
+  (merge or rebase, developer's choice).
 - No direct API changes — see next section.
 
 ### Retired: `uw3-release-candidate`

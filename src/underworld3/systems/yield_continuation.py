@@ -54,6 +54,301 @@ class YieldHomotopyControl:
     delta0: float = 1.0
 
 
+@dataclass(frozen=True)
+class RateStrengtheningControl:
+    """How to ladder one constitutive model's declared plastic rate strengthening.
+
+    Built by ``constitutive_model._rate_strengthening_control()``; ``None`` when the model
+    states no ``plastic_rate_strengthening``. The model owns the meaning (``eta_pl ->
+    tau_y/(2 edot_II) + m eta_reg``); the solver only moves ``m``, from the viscous limit
+    down to 1, and never past 1 — the end of the ladder is the problem as stated.
+
+    Attributes
+    ----------
+    set_scale
+        Sets the multiplier ``m`` (a ``constants[]`` atom: no recompile).
+    tangent
+        The ``consistent_jacobian`` value the model pairs with its yield law.
+    scale, parameter
+        The ``m`` atom and the ``eta_reg`` parameter, for diagnostics.
+    probe_terms
+        Cell-wise expressions the ladder reads to place its first rungs (see
+        ``ViscousFlowModel._rate_strengthening_probe_terms``), or ``None`` when the
+        model does not provide them; the ladder then needs an explicit ``scale0``.
+    """
+    set_scale: Callable[[float], None]
+    tangent: Any
+    scale: Optional[Any] = None
+    parameter: Optional[Any] = None
+    probe_terms: Optional[dict] = None
+
+
+def rate_strengthening_continuation(
+    solver,
+    control=None,
+    scale0=None,
+    scale_big=None,
+    entry_factor=1.0e3,
+    down=0.5,
+    rung_tangent="continuation",
+    entry_maxit=60,
+    step_maxit=80,
+    retries=2,
+    max_steps=40,
+    solve_kwargs=None,
+    verbose=True,
+):
+    r"""Ladder the declared plastic rate strengthening from the viscous limit to the
+    stated problem (``m`` from ``scale0`` down to 1), each rung a full solve warm-started
+    from the previous one.
+
+    Measured on the Spiegelman notch (2026-10-04): the equivalent ``xi`` ladder keeps the
+    velocity block healthy on every rung (~14 multigrid cycles per Krylov iteration) and
+    reaches a converged state on a case no single solve could; the blend
+    (``consistent_jacobian="continuation"``) on every rung is 3-4x cheaper than Newton
+    with a blend fallback, which is why it is the rung tangent here.
+
+    ViscoPlasticFlowModel only: the elastic models advance a stress history on every
+    solve, so a ladder of solves has to be driven around one history update by hand.
+
+    Parameters
+    ----------
+    solver
+        A configured Stokes solver whose model states ``plastic_rate_strengthening``.
+    control : RateStrengtheningControl, optional
+        Defaults to ``solver.constitutive_model._rate_strengthening_control()``.
+    scale0 : float, optional
+        First rung. Default: the viscous limit found from the fields — one solve at the
+        entry multiplier (``scale_big``), at which nothing yields, then ``0.95 *`` the
+        largest ``m`` at which a cell still yields there. If that is ``<= 1`` the stated
+        problem does not yield beyond its onset and the ladder is one solve.
+    scale_big : float, optional
+        The entry multiplier. Default ``entry_factor * max(eta_ve / eta_reg)`` over the
+        domain, so that ``m * eta_reg`` exceeds the viscous branch everywhere whatever the
+        model's own ratio of the two scales.
+    down : float
+        Multiplicative step in ``m`` per rung (adapted: a cheap rung widens it, a
+        laboured one narrows it); the last rung is clamped to exactly 1.
+    rung_tangent
+        ``consistent_jacobian`` for the rungs where the model's tangent is Newton;
+        ``None`` keeps the model's own.
+    entry_maxit, step_maxit, retries, max_steps, solve_kwargs, verbose
+        As for :func:`yield_continuation`.
+
+    Returns
+    -------
+    dict
+        ``scale0``, ``rungs`` (list of ``(m, reason, its)``), ``reached_one``,
+        ``converged``, ``reason``, ``message``. A ladder that stops above ``m = 1`` leaves
+        the model at ``m = 1`` (as stated), the fields at the last converged rung, and
+        warns.
+    """
+    import math
+    import warnings
+
+    if not (0.0 < down < 1.0):
+        raise ValueError(f"down must satisfy 0 < down < 1, got {down}")
+    if getattr(getattr(solver, "Unknowns", None), "DFDt", None) is not None:
+        raise NotImplementedError(
+            "the rate-strengthening ladder runs several solves and would advance a stress "
+            "history each time; drive it yourself around one history update")
+    cm = getattr(solver, "constitutive_model", None)
+    if control is None:
+        control = cm._rate_strengthening_control() if cm is not None and hasattr(cm, "_rate_strengthening_control") else None
+    if control is None:
+        raise TypeError(
+            "rate_strengthening_continuation needs a constitutive model that STATES a "
+            "plastic_rate_strengthening (Parameters.plastic_rate_strengthening > 0); the "
+            "scale is the model's, not a solver default.")
+    if scale0 is None and control.probe_terms is None:
+        raise NotImplementedError(
+            f"{type(cm).__name__} does not provide the terms the ladder reads to find the "
+            f"viscous limit; pass scale0 explicitly")
+
+    import numpy as np
+
+    saved_probe = solver._difficulty_probe
+    saved_probe_maxit = solver._difficulty_max_it
+    saved_resume = solver._resume_abs_target
+    saved_tangent = solver.consistent_jacobian
+    saved_scale = cm.rate_strengthening_scale
+    saved_has_solution = bool(solver.has_solution)
+    u, p = solver.Unknowns.u, solver.Unknowns.p
+    # The state the ladder started from: restored if no rung converges, so a failed
+    # ladder never leaves a non-solution in the fields marked as one.
+    u_start, p_start = np.array(u.array), np.array(p.array)
+    if rung_tangent is not None:
+        solver.consistent_jacobian = rung_tangent if control.tangent is True else control.tangent
+    rungs = []
+    state = dict(reason=0, reached_one=False, message=None, scale0=scale0)
+
+    def _solve_rung(m, first, budget):
+        control.set_scale(m)
+        if first:
+            solver.is_setup = False
+        else:
+            solver._update_constants()
+        solver._difficulty_probe = True
+        solver._difficulty_max_it = budget
+        solver._resume_abs_target = None
+        solver.solve(zero_init_guess=not solver.has_solution, **dict(solve_kwargs or {}))
+        reason = int(solver.snes.getConvergedReason())
+        rungs.append((float(m), reason, int(solver.snes.getIterationNumber())))
+        return reason
+
+    def _ladder():
+        # returns with state["message"] set when it stops above m = 1
+        nonlocal scale_big
+        if state["scale0"] is None:
+            terms = control.probe_terms
+            if scale_big is None:
+                visc, reg = _cell_values(solver, (terms["viscous"], terms["eta_reg"]))
+                scale_big = entry_factor * _masked_max_ratio(visc, reg)
+            if not (math.isfinite(float(scale_big)) and float(scale_big) > 0.0):
+                state["message"] = f"the entry multiplier is not a positive finite number (m = {scale_big})"
+                return
+            # the viscous limit, found from the fields rather than from the problem
+            state["reason"] = _solve_rung(float(scale_big), True, entry_maxit)
+            if state["reason"] <= 0:
+                state["message"] = (f"the viscous-limit solve (m={float(scale_big):g}) failed "
+                                    f"(reason={state['reason']})")
+                return
+            num, den = _cell_values(solver, (terms["onset_num"], terms["onset_den"]))
+            m_star = _masked_max_ratio(num, den)
+            if math.isnan(m_star) or m_star == math.inf:
+                state["message"] = f"the viscous limit could not be read from the fields (m* = {m_star})"
+                return
+            state["scale0"] = 0.95 * m_star if m_star > 1.0 else 1.0
+            if verbose:
+                uw.pprint(f"  [rate-strengthening] viscous limit m*={m_star:.4g}; "
+                          f"ladder starts at m={state['scale0']:.4g}")
+        m = max(float(state["scale0"]), 1.0)
+        step = float(down)
+        u_good, p_good = None, None
+        if rungs and rungs[-1][1] > 0:
+            u_good, p_good = np.array(u.array), np.array(p.array)
+        failures = 0
+        first = not rungs
+        while len(rungs) < max_steps:
+            budget = entry_maxit if first else step_maxit
+            reason = state["reason"] = _solve_rung(m, first, budget)
+            nit = rungs[-1][2]
+            first = False
+            if reason > 0:
+                u_good, p_good = np.array(u.array), np.array(p.array)
+                if verbose:
+                    uw.pprint(f"  [rate-strengthening] m={m:<10.4g} its={nit:3d} -> converged")
+                if m <= 1.0:
+                    state["reached_one"] = True
+                    return
+                if nit <= max(2, budget // 5):
+                    step = max(step * step, 0.05)
+                elif nit >= 0.8 * budget:
+                    step = min(step ** 0.5, 0.95)
+                m = max(m * step, 1.0)
+                continue
+            # a failed rung: back to the last converged state (or the start)
+            back_u, back_p = (u_good, p_good) if u_good is not None else (u_start, p_start)
+            with uw.synchronised_array_update("rate_strengthening revert"):
+                u.array[...] = back_u
+                p.array[...] = back_p
+            solver._record_convergence_status(
+                converged=True if u_good is not None else saved_has_solution)
+            failures += 1
+            if failures > retries:
+                state["message"] = f"m={m:.4g} failed (reason={reason}) after {retries} retries"
+                return
+            step = min(step ** 0.5, 0.95)
+            # retry from the LAST converged rung — the state just restored
+            last_ok = next((r[0] for r in reversed(rungs) if r[1] > 0), m / step)
+            m = max(last_ok * step, 1.0)
+            if verbose:
+                uw.pprint(f"  [rate-strengthening] failed (reason={reason}); retrying at m={m:.4g}")
+        state["message"] = (f"max_steps={max_steps} rungs used, last converged m="
+                            f"{next((r[0] for r in reversed(rungs) if r[1] > 0), float('nan')):.4g}")
+
+    try:
+        _ladder()
+    finally:
+        solver._difficulty_probe = saved_probe
+        solver._difficulty_max_it = saved_probe_maxit
+        solver._resume_abs_target = saved_resume
+        solver.consistent_jacobian = saved_tangent
+        if not state["reached_one"]:
+            # leave the model as it was stated, never at an intermediate m; the next
+            # solve repacks the constant, so no repack is attempted here (it would
+            # mask the exception that brought us to this block)
+            control.set_scale(saved_scale)
+    if not state["reached_one"]:
+        if not any(r[1] > 0 for r in rungs):
+            # nothing converged: the fields go back to where the ladder started
+            with uw.synchronised_array_update("rate_strengthening restore"):
+                u.array[...] = u_start
+                p.array[...] = p_start
+            solver._record_convergence_status(converged=saved_has_solution)
+        message = state["message"] or "the ladder stopped above m = 1"
+        state["message"] = message
+        if verbose:
+            uw.pprint(f"  [rate-strengthening] {message}; the model is back at m={saved_scale:g}")
+        warnings.warn(
+            f"[{solver.name}] rate-strengthening ladder did not reach the stated problem: "
+            f"{message}. The fields are the last converged rung's (or the starting state if "
+            f"none converged); the model is back at m={saved_scale:g}.",
+            RuntimeWarning, stacklevel=2)
+    return dict(scale0=state["scale0"], rungs=rungs, reached_one=state["reached_one"],
+                converged=bool(state["reached_one"] and state["reason"] > 0),
+                reason=state["reason"], message=state["message"])
+
+
+def _cell_values(solver, exprs):
+    """Cell averages (P0 projections) of ``exprs`` on this rank's cells.
+
+    One P0 variable and one projector per solver, created on first use and reused, so
+    every rank creates the same objects in the same order. Raises if a projection
+    fails rather than returning the previous contents of the variable.
+    """
+    import numpy as np
+    probe = getattr(solver, "_rate_strengthening_probe", None)
+    if probe is None:
+        mesh = solver.mesh
+        var = uw.discretisation.MeshVariable(
+            f"rs_probe_{solver.instance_number}", mesh, 1, degree=0, continuous=False)
+        proj = uw.systems.Projection(mesh, var)
+        proj.petsc_options.delValue("ksp_monitor")
+        probe = solver._rate_strengthening_probe = (var, proj)
+    var, proj = probe
+    # the probe compiles on its solver's JIT route, so "expanded" rules the graph out
+    # of the entry multiplier as well as of the solve
+    proj.jit_route = solver.jit_route
+    values = []
+    for expr in exprs:
+        proj.uw_function = expr
+        proj.solve()
+        if proj.snes.getConvergedReason() <= 0:
+            raise RuntimeError(
+                f"rate-strengthening probe projection failed "
+                f"(reason={proj.snes.getConvergedReason()}) for {expr}")
+        values.append(np.asarray(var.array).reshape(-1).copy())
+    return values
+
+
+def _masked_max_ratio(num, den):
+    """Global ``max(num / den)`` over cells with ``den > 0`` (collective).
+
+    ``-inf`` when no cell on any rank qualifies; NaN if any qualifying value is NaN.
+    """
+    import numpy as np
+    from mpi4py import MPI
+    num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
+    ok = den > 0.0
+    ratio = num[ok] / den[ok]
+    # NaN is reduced as its own flag: MPI.MAX compares with >, which drops a NaN
+    if int(uw.mpi.comm.allreduce(int(np.isnan(ratio).any()), op=MPI.MAX)):
+        return float("nan")
+    local = float(np.max(ratio)) if ratio.size else -np.inf
+    return float(uw.mpi.comm.allreduce(local, op=MPI.MAX))
+
+
 def yield_continuation(
     solver,
     control=None,
@@ -107,9 +402,12 @@ def yield_continuation(
         ``ViscousFlowModel.yield_anchor``. Applies to BOTH families. Default (``None``)
         leaves the model's own choice. ``"yield"`` keeps the stress exact at the yield
         point for every δ and puts the law on or above the exact one throughout;
-        ``"onset"`` (the historical default) is exact on the unyielded branch but sits
+        ``"onset"`` (the model default) is exact on the unyielded branch but sits
         BELOW the exact law at and above the yield point, which makes the entry problem
-        WEAKER than the sharp problem it is supposed to lead to.
+        WEAKER than the sharp problem it is supposed to lead to. The march therefore
+        runs under ``"onset"`` unless ``anchor="yield"`` is passed; for an approach
+        from above, pass it (or use the declared ``plastic_rate_strengthening``
+        ladder, ``solve(homotopy="rate_strengthening")``).
     delta0 : float, optional
         Starting (smooth) δ. Defaults to the family's own entry (``control.delta0``),
         because δ is NOT the same parameter in the two families — see

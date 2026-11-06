@@ -228,6 +228,17 @@ def _orient2d(pa, pb, pc):
 
     Returns ``_UNCERTAIN`` when the filter cannot resolve the sign.
     """
+    if len(pa) == 3:
+        # A triangle of a surface mesh in three dimensions, anticlockwise as
+        # seen from outside: the outward direction is the centroid's, the
+        # surface being a sphere about the origin.
+        n = np.cross(np.asarray(pa) - np.asarray(pc), np.asarray(pb) - np.asarray(pc))
+        c = np.asarray(pa) + np.asarray(pb) + np.asarray(pc)
+        det = float(n @ c)
+        bound = float(np.linalg.norm(n) * np.linalg.norm(c))
+        if det == 0.0 or abs(det) < _ORIENT_BOUND * bound:
+            return _UNCERTAIN
+        return 1 if det > 0.0 else -1
     acx, acy = pa[0] - pc[0], pa[1] - pc[1]
     bcx, bcy = pb[0] - pc[0], pb[1] - pc[1]
     left, right = acx * bcy, acy * bcx
@@ -766,22 +777,6 @@ def rebuild_cavities(dm, victims, drop_cells, new_cells, placed_coords=()):
     if uw.mpi.size > 1:
         _rebuild_point_sf(new, dm, point_map, next_point - pStart)
     return new, point_map, placed_points
-
-
-def _install_point_sf(new, new_sf):
-    """Install a rebuilt star-forest on the plex AND its coordinate DM.
-
-    The coordinate DM is created when the rebuilt chart's coordinates
-    are written — BEFORE any point SF exists — so it snapshots an empty
-    one. The solve never notices (field sections are created later,
-    from the plex SF), but a parallel HDF5 save then writes every
-    shared vertex as owned on every rank, and the serial reload of such
-    a checkpoint dies in ``coordinatesLoad`` (measured: a split mesh
-    written at np = 4 carried owned+shared = 7121 vertex rows where the
-    true owned count is 6334).
-    """
-    new.setPointSF(new_sf)
-    new.getCoordinateDM().setPointSF(new_sf)
 
 
 def _install_point_sf(new, new_sf):

@@ -11,9 +11,10 @@ Contract under test (design:
     cold-starts rather than warming off a stale iterate.
   * It survives a coefficient-only change (a new viscosity value), so parameter
     continuation and time-stepping warm-start correctly.
-  * The cold-start Picard warm-up runs under the consistent-Newton tangent
-    without breaking convergence, and leaves the default (frozen) tangent path
-    untouched.
+  * A cold start under the consistent-Newton tangent converges and sets the
+    flag; a LINEAR flux takes no automatic Picard step (a nonlinear one takes one). (Before #791 that step was an
+    nrichardson residual sweep; the Picard contract itself is tested in
+    test_1068.)
 
 These are cheap serial checks on the public API — the hard-case δ-continuation
 that motivates the design is validated separately against the Spiegelman study.
@@ -186,8 +187,10 @@ def test_repeated_default_solve_agrees_to_solver_tolerance():
 
 
 def test_cold_warmstart_under_consistent_newton_converges():
-    """A cold consistent-Newton Stokes solve exercises the automatic
-    single-Picard warm-up branch — it must converge and set has_solution."""
+    """A cold consistent-Newton Stokes solve converges and sets has_solution. Since
+    2026-10-05 the automatic Picard warm-up is taken only when the flux's coefficient
+    depends on the unknowns; this viscosity is constant, so no warm-up runs (the frozen
+    and consistent tangents coincide). The nonlinear case is pinned in test_1068."""
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
     )
@@ -202,6 +205,8 @@ def test_cold_warmstart_under_consistent_newton_converges():
     stokes.add_essential_bc((0.0, None), "Right")
 
     stokes.consistent_jacobian = True
-    stokes.solve()  # cold (zero_init_guess default True) → warm-up branch taken
+    stokes.solve()  # cold, linear flux: Newton directly, no Picard step
+    assert stokes._picard_stages is None, (
+        f"a linear flux took an automatic Picard step: {stokes._picard_stages}")
     assert stokes.snes.getConvergedReason() > 0
     assert stokes.has_solution is True

@@ -146,6 +146,61 @@ insists that it is.** The signature requires a `dt`, so there is no container
 for "the next task". If the event clock is the general thing, the timestep is
 the common case rather than the definition.
 
+## Where the adjoint lives, and where it stops
+
+The transcript now supplies two of the three things a discrete adjoint needs:
+the ordered operator list, and the state each operator was linearised about
+(a snapshot before the operator, bit-exact on restore). The third — the
+linearisation itself — is a contract on each operator, not a pass over the
+record: an operator provides it or declines with a reason.
+
+The declining is recorded first. Every `solve`, `history_shift` and
+`swarm_advect` event carries `adjoint: {supported, reason}`, written when it
+ran. The verdicts are structural: an implicit step is a residual (Jacobian
+transpose for the state, symbolic derivative for a parameter); a rotated
+constraint solves inside its own Krylov loop with no transpose path; an
+unconverged solve is linearised about a state it never reached; a
+semi-Lagrangian trace is differentiable in the velocity but its interpolation
+at the departure points is not materialised; a particle step is adjointable
+exactly when the particle set is fixed across it, which `swarm.advection`
+checks by counting.
+
+Read back, the verdicts partition the run (`transcript_adjoint_segments`).
+That partition is what data assimilation needs rather than perfect
+invertibility: strong-constraint adjoint within a segment where every operator
+is smooth, and across a refusal a control variable with an error covariance —
+weak-constraint 4D-Var, with the joins chosen by the run. The optimiser needs
+a descent direction that is the same inexact direction each iteration, not an
+exact gradient; the exact discrete adjoint is the verification anchor where
+the operators admit it, and the segments say where that anchor holds.
+
+Two things follow from the residual being symbolic. First, every first
+derivative is always available: ∂R/∂u and ∂R/∂m are differentiated, not
+approximated, so the gradient is never in question — and the tangent the
+forward *iteration* used is irrelevant to it. Picard iterations spoil
+nothing; the converged state is the same, and the adjoint assembles ∂R/∂u at
+that state itself. Second, the same is not automatically true at second
+order. A Hessian — for posterior covariance, or a Newton step on the outer
+optimisation — needs ∂²R/∂u², ∂²R/∂u∂m, and a yield law written with `Min`
+or a softmin has a second derivative that is a distribution at the yield
+surface. Those terms exist symbolically, but they have to be handled with
+care rather than differentiated and trusted.
+
+What follows from it, in order: `adjoint_solve`, `dual_of` and
+`sensitivity` on the solvers — landed, checked against finite differences
+on Poisson, on a non-symmetric SUPG step, and on Stokes with a linear and a
+strain-rate-dependent viscosity, with the consistent tangent assembled for
+the adjoint whichever tangent the forward iteration used; the reverse driver
+(`uw.adjoint.TranscriptAdjoint`) — landed: it walks the transcript backwards,
+restores each step's snapshot, replays each solve to its own input state, and
+reads what each solve depends on from its residual, checked to 1e-7 against
+finite differences on a two-solver run, including a field read through its
+gradient (the Crank–Nicolson old flux), assembled as a FEM load rather than
+by parts; the two transport operators materialised — interpolation at
+departure points and ∂X_dep/∂v, which lift the semi-Lagrangian refusal; and
+a Taylor test in the library (`test_0020`, and the sinker example through
+the library at 1.00000).
+
 ## Inferred plan, then declared plan
 
 The plan is **inferred** today — the figure takes the most common step as the

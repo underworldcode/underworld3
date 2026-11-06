@@ -282,6 +282,15 @@ a labelled edge, so a placed surface comes through any later repair with the
 facets it was placed with. The fill itself rarely needs repair (see above),
 but the composition remains sound.
 
+```{note}
+Since October 2026 the Mesh API (`add_conforming_sheet`, `add_fault`) and the band
+routes (`FaultNetwork.build`, `place_fault_ribbon_2d` in gather mode) partition the
+add-on for the surface before placing it, so the gather below finds the region
+rank-interior and moves nothing (`info["n_gathered"]` is then zero). The gather is
+what a direct call to `place_sheet` or `place_thin_volume` still does. See
+[parallel-addon-distribution-2026-10](../design/parallel-addon-distribution-2026-10.md).
+```
+
 The 3-D forms are **parallel** by gather-first: the surface's region is
 redistributed onto one rank, the serial carve-and-fill runs there, and every
 rank rebuilds its chart collectively (uninterpolate + `DMPlexInterpolate`).
@@ -290,6 +299,75 @@ is shared, and the result is partition-independent by construction — measured
 bit-identical over np = 1..5. Every refusal is collective: all ranks raise
 the same error, or none does. The 2-D forms are serial; a parallel call is
 refused rather than returning a mesh whose star-forest is silently wrong.
+
+What the gather moves, and why, is base mesh — never the surface. The
+surgery deletes base cells around the surface and creates new ones in the
+cavity, and the rebuild carries the old star forest over by renumbering, so
+no point the surgery deletes or creates may be shared. That needs exactly
+three layers of base cells on one rank: the cells the carve drops, their
+vertex star (the ring the fill attaches to), and one more layer so the
+ring's own points are unshared. The mark covers the dropped cells (the
+victims within the clearance plus the crossed cells' vertices, within one
+cell diameter of the surface) and `_gather_region` grows the star and the
+layer from it. The result is a shell about three cells thick around the
+surface; a region whose shell is already interior to one rank is placed
+there with nothing moved. The moved count is reported as
+`info["n_gathered"]`, and `ptest_0855` bounds it by the cells within three
+median cell diameters of the zone.
+
+The gather is one-way: the moved cells stay on the surgery rank, together
+with the cells the fill creates, so that rank carries the shell plus the
+band as extra load. That is the accepted trade (extra load on one rank in
+exchange for no communication during the solve), and it is proportional to
+the surface, not the domain.
+
+A network is gathered per region, not as a whole. The assembly's connected
+components (zones fused through shared faces are one component; zones a
+domain apart are separate ones) are marked as separate regions, regions
+whose shells touch are merged, and each region goes to the rank that
+already holds most of it, or stays where it is when its shell is already
+interior to one. The surgeries then run concurrently, each owning rank
+carving and filling its own components; the collective rebuild sews them
+all at once. Two patches a domain apart at np=2 move 304 cells this way
+where one region for the pair moved 8451, and `info["n_regions"]` and
+`info["n_moved"]` report it. The split's own redistribution follows the
+same regions (`split_faults(..., groups=...)`, which the network passes
+from `info["embedded_regions"]`), so what the placement kept apart is not
+gathered together afterwards. The outcrop and ladder paths keep one
+region: their bowl, cap and extrusion machinery is single-rank.
+
+The 2-D ribbon has two more modes that gather nothing. `seams="conform"`
+meshes the band through the seam: every band cell is made by the rank
+whose cavity holds its centroid, so the seam inside the band runs along
+band edges; each rank's fill boundary is its ring with the crossed seam
+spans replaced by connectors to the skin and the skin on its side; and the
+band vertices both sides use become shared points of the rebuild's star
+forest. The band keeps its own resolution everywhere, and the weak plane's
+answer is the gathered one to the fill's noise (the S-fault rig at fine
+width: within 0.1% on three strands, 2% on the crossing one) with the cells
+balanced. `seams="ligament"` butts the band up to the seam instead and
+gathers nothing either. Every rank carves its own cavities and each stops one cell short
+of the seam: a base cell with a shared vertex is never dropped. The band
+assembly is clipped to what each cavity holds, and the base cells the
+clipped band cells covered are left as the LIGAMENT, labelled as zone and
+as `<label>_ligament`. Across the seam the band is therefore base mesh at
+the base's resolution, and the band's weak plane is what carries the fault
+there (`FaultNetwork.apply` paints it on the ligament cells in both
+realisations). The split runs rank-local: `add_fault(cut=False)` labels
+the embedded spine edges outside the ligament, and a fault that crosses a
+rank in and out is split as several sub-chains. In serial the two modes
+give the same mesh. Measured at h = 0.02 on a 35-cell fault, the weak
+plane loses 1.5% of peak slip per crossing and the cells stay balanced;
+the split loses about 13% per crossing, because a sub-chain's tip is
+pinned — see the design note for the numbers and what follows.
+
+One limit remains: a small domain cannot hold a shell at all (three base
+cells reaching the walls is the whole box, which is what the
+crossing-patches test fixture does), so that fixture measures correctness
+only, never balance. The measurements, the design decision on cutting long
+faults, and the layout throughput test are recorded in
+`../design/fault-parallel-placement-2026-09.md`, the governing note for
+parallel placement.
 
 ## The thin volume: finite-width zones, junctions in the volume
 
@@ -367,6 +445,27 @@ deforming surface; precision matters only at (re)placement.
 Refusals, stated: one flat wall per object (box-edge outcrops and
 multi-wall contact refuse); curved or deformed tops refuse (the cap's
 manifold-prep slot); removal of an outcropping object is not yet wired.
+
+### The ladder through the wall
+
+The structured ladder (`mesher="ladder"`: rungs on the spine's samples, one element
+either side, nothing snapped) used to be refused wherever it protruded past the
+domain, in either realisation. It now outcrops: the ladder runs on the sample rows
+inside the domain to one rung short of the wall, and a small unstructured cap,
+clipped against the domain polygon exactly as the default band is, closes it to
+the outcrop (`_ladder_outcrop_assembly_2d`). The spine keeps its rung vertices up
+to the last rung, so a split walks them; the cap's cells are where a weak layer
+bridges a split that must stop blind of the surface. On the ribbon placer give the
+polyline that reaches past the wall as the `spines` entry and the samples at least
+three spacings inside as the trace (a trace nearer the wall meets a wall vertex in
+the end-vertex pull). Two defects on curved walls were fixed with it: the domain
+tool now winds every boundary loop counter-clockwise (a hole loop wound against the
+exterior was added as area, so an annulus at some cell sizes met nothing), and the
+2-D outcrop frame groups the wall's chords into smooth walls as the 3-D rule does,
+keeping the curve's own vertices through the splice (a dipping band's clearance
+cavity spans a few chords beside the one it crosses, and chording across the kept
+vertices lost the sagitta the area guard refuses).
+`tests/test_1091_place_outcrop_curved_wall.py`.
 
 ## Limitations
 * **An essential boundary condition on the surface is not sound** under the

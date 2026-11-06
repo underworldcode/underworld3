@@ -99,19 +99,20 @@ double result = constants[0] * velocity_gradient;  // update via PetscDSSetConst
 
 ### What Happens Automatically
 
-1. **Constant detection** — Before JIT compilation, `_extract_constants()`
-   scans all expression trees for `UWexpression` atoms whose fully-unwrapped
-   value is a pure number. This works at any nesting depth (user expression →
-   constitutive model parameter → solver template).
+1. **Constant detection** — The JIT lowers every callback onto the graph of
+   named quantities (`_jit_graph`, #823). A `UWexpression` whose fully-unwrapped
+   value is a pure number is a *leaf* of that graph, at any nesting depth (user
+   expression → constitutive model parameter → solver template); every constant
+   leaf the kernels read gets a `constants[i]` slot, ordered by name, then
+   creation order.
 
-2. **Structural hashing** — The JIT cache key is computed from the
-   *structural* form of expressions (constants replaced with placeholders).
-   Changing a constant value produces the same hash → cache hit → no
-   recompilation.
+2. **Structural hashing** — The JIT cache key is computed from the generated C,
+   in which each constant is written as its slot. Changing a constant value
+   produces the same hash → cache hit → no recompilation.
 
-3. **Two-phase unwrap** — During code generation:
-   - Phase 1: constant UWexpressions → `_JITConstant` symbols (render as `constants[i]`)
-   - Phase 2: remaining UWexpressions → numerical values (baked into C code)
+3. **Lowering** — During code generation, each non-constant `UWexpression`
+   becomes one C temporary, computed from field values, coordinates, the
+   `constants[i]` slots and other temporaries; a number is written as a literal.
 
 4. **Runtime update** — Before every `snes.solve()`, the solver calls
    `_update_constants()` which packs current values from the manifest
@@ -147,8 +148,13 @@ underlying values. Two modes are used internally:
 
 | Mode | Purpose | Used by |
 |------|---------|---------|
-| `nondimensional` | Numeric values for JIT/evaluate | `_createext()`, `evaluate()` |
+| `nondimensional` | Numeric values for constants and evaluate | `_pack_constants()`, `evaluate()` |
 | `dimensional` | Display values with units | `print()`, notebooks |
+
+The JIT does not unwrap whole kernels: it lowers each named quantity to a node of its
+own (`_jit_graph`, #823). A solver's Newton Jacobian blocks (`_uu_G3`, ...) hold those
+nodes; both `unwrap_expression` and `unwrap_for_evaluate` expand a node to its body, so
+code that evaluates a block sees the expanded expression.
 
 ```python
 # Nested expressions

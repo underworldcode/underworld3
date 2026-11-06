@@ -22,6 +22,8 @@ AdvDiffusion : class
     manager, EulerianSUPG, assembles implicit advection with SUPG).
 AdvDiffusionSLCN : class
     Advection-diffusion with semi-Lagrangian transport (flux history).
+LevelSetSolver : class
+    Conservative level-set transport (advection, reinitialisation, mass correction).
 NavierStokes : class
     Navier-Stokes composed from a DDt transport manager (EulerianSUPG default).
 NavierStokesSLCN : class
@@ -54,6 +56,7 @@ from underworld3.cython.generic_solvers import (
 from .solvers import SNES_Poisson as Poisson
 from .solvers import SNES_Darcy as SteadyStateDarcy
 from .solvers import SNES_Stokes as Stokes
+from .thin_sheet import SNES_ThinSheet as ThinSheet
 from .solvers import SNES_Stokes_Constrained as Stokes_Constrained
 from .solvers import SNES_VE_Stokes as VE_Stokes
 from .solvers import SNES_Projection as Projection
@@ -69,6 +72,7 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
+from .solvers import SNES_AdvectionDiffusion_Swarm as AdvDiffusionSwarm
 # The generic names are the composing solvers: the transport (assembled SUPG
 # advection, or a semi-Lagrangian history) is the DDt manager they hold.
 from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_Composed as AdvDiffusion
@@ -94,10 +98,19 @@ from .solver_health import SubSolveReport
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
 from .ddt import IntegrationPointSemiLagrangian as IntegrationPointSemiLagrangian_DDt
+from .ddt import ForwardSemiLagrangian as ForwardSemiLagrangian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
 from .ddt import EulerianSUPG as EulerianSUPG_DDt
 
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
-from .yield_continuation import yield_continuation, YieldHomotopyControl
+from .yield_continuation import (yield_continuation, YieldHomotopyControl,
+                                 rate_strengthening_continuation, RateStrengtheningControl)
 from .solve_report import SolveReport
+
+# level_set lives at the package top level, not under systems: the Crameri
+# examples reach uw.level_set.MaterialCLS and free_surface.py imports
+# underworld3.level_set. It imports `systems` itself, so this import sits
+# last, after the names it needs are bound.
+from .. import level_set
+from ..level_set import LevelSetSolver

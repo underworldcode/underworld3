@@ -37,10 +37,15 @@ same topic are reference or historical material subordinate to the governing doc
 | Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
 | Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
+| Thin sheet (plane stress, sphere, faults) | [subsystems/thin-sheet.md](subsystems/thin-sheet.md) |
+| Fault multigrid (split-level hierarchy, parallel pairing) | [subsystems/fault-split-multigrid.md](subsystems/fault-split-multigrid.md) |
+| Fault networks in parallel (placement, split, tail) | [design/fault-parallel-placement-2026-09.md](design/fault-parallel-placement-2026-09.md) (subsystem reference: [conforming-surfaces-and-fault-zones.md](subsystems/conforming-surfaces-and-fault-zones.md)) |
+| The add-on's partition in parallel (one partition for the add-on hierarchy) | [design/parallel-addon-distribution-2026-10.md](design/parallel-addon-distribution-2026-10.md) |
 | Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
 | Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
+| Planning (GitHub Project, issues, discussions, wiki) | [guides/planning-on-github.md](guides/planning-on-github.md) |
 | Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
 | Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
 
@@ -61,8 +66,10 @@ pages, never copies. A change to a family is reviewed against its guides.
 | [Plasticity solvers](guides/plasticity-solvers.md) | viscoplastic and VEP Stokes |
 | [Adaptive meshing](guides/adaptive-meshing.md) | moving-mesh convection |
 | [Adapt-on-top faults](guides/adapt-on-top-faults.md) | fault models on adapted meshes |
+| [Faults in convection](guides/faults-in-convection.md) | split-node faults in time-dependent Stokes |
 | [Free-surface convection](guides/free-surface-convection.md) | free-surface Stokes |
 | [Visualisation](guides/uw-visualisation.md), [CeTZ figures](guides/cetz-figures.md) | figures |
+| [Line diagrams](guides/uw-line-diagrams.md) | drawn figures |
 
 ## Documentation Structure
 
@@ -156,6 +163,7 @@ guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
+guides/planning-on-github
 guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
@@ -169,6 +177,7 @@ guides/adapt-on-top-faults
 guides/free-surface-convection
 guides/uw-visualisation
 guides/cetz-figures
+guides/uw-line-diagrams
 ```
 
 ```{toctree}
@@ -186,6 +195,7 @@ design/mesh-adaptation-formulation
 design/LAYER2_SBR_ADAPT_ON_TOP
 design/NVB_GRADED_ADAPT
 design/MULTIGRID_MINIMAL_CONTROL_2026-07
+design/FAULT_MULTIGRID_HIERARCHIES
 design/solver-wall-clock-guard
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
@@ -199,6 +209,8 @@ design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
 design/eulerian-supg-transport
+design/jit-shared-graph-codegen
+design/fault-parallel-placement-2026-09
 ```
 
 ```{toctree}
@@ -226,10 +238,13 @@ subsystems/integration-point-variables
 subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing
 subsystems/rotated-freeslip
+subsystems/thin-sheet
+subsystems/fault-split-multigrid
 subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
 subsystems/constitutive-models-anisotropy
+subsystems/stress-transport
 subsystems/swarm-system
 subsystems/data-access
 subsystems/interpolation

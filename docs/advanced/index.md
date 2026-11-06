@@ -134,6 +134,7 @@ performance
 multigrid-preconditioning
 solver-iteration-callbacks
 complex-rheologies
+listric-fault-extension
 vep-transverse-isotropy-faults
 split-node-faults
 fault-networks
@@ -149,6 +150,7 @@ particle-population-and-materials
 semi-lagrangian-time-integration
 eulerian-advection-diffusion
 eulerian-navier-stokes
+level-set-transport
 porous-flow
 snapshot-restore
 troubleshooting

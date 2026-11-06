@@ -16,6 +16,7 @@ import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
+from underworld3.utilities._io import _short_io_path
 from underworld3.utilities.nd_array_callback import (
     fire_canonical_callbacks,
     register_collective_flush,
@@ -150,9 +151,10 @@ def _gmsh_to_h5(
             from underworld3.meshing._mesh_files import _scratch_name
 
             scratch = _scratch_name(h5_filename)
-            viewer = PETSc.ViewerHDF5().create(str(scratch), "w", comm=PETSc.COMM_SELF)
-            viewer(plex_0)
-            viewer.destroy()
+            with _short_io_path(str(scratch)) as io_filename:
+                viewer = PETSc.ViewerHDF5().create(io_filename, "w", comm=PETSc.COMM_SELF)
+                viewer(plex_0)
+                viewer.destroy()
             os.replace(scratch, h5_filename)
     finally:
         # The gmsh import options are import-time scratch — meaningful only for
@@ -213,18 +215,19 @@ def _from_plexh5(
     if comm == None:
         comm = PETSc.COMM_WORLD
 
-    viewer = PETSc.ViewerHDF5().create(filename, "r", comm=comm)
-    h5plex = PETSc.DMPlex().create(comm=comm)
-    h5plex.setName("uw_mesh")
-    viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-    try:
-        sf0 = h5plex.topologyLoad(viewer)
-        h5plex.coordinatesLoad(viewer, sf0)
-        h5plex.labelsLoad(viewer, sf0)
-        h5plex.markBoundaryFaces("All_Boundaries", 1001)
-    finally:
-        viewer.popFormat()
-        viewer.destroy()
+    with _short_io_path(filename) as io_filename:
+        viewer = PETSc.ViewerHDF5().create(io_filename, "r", comm=comm)
+        h5plex = PETSc.DMPlex().create(comm=comm)
+        h5plex.setName("uw_mesh")
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        try:
+            sf0 = h5plex.topologyLoad(viewer)
+            h5plex.coordinatesLoad(viewer, sf0)
+            h5plex.labelsLoad(viewer, sf0)
+            h5plex.markBoundaryFaces("All_Boundaries", 1001)
+        finally:
+            viewer.popFormat()
+            viewer.destroy()
 
     if not return_sf:
         return h5plex
@@ -434,6 +437,15 @@ class Mesh(Stateful, uw_object):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
+        # Building a mesh is collective over its DM's communicator, so it is
+        # where the PETSc objects of meshes dropped since the last one are
+        # destroyed in parallel. A file is read on the communicator the
+        # reader below takes (``comm=``, else COMM_WORLD).
+        from underworld3.mpi import _free_petsc_garbage
+        _free_petsc_garbage(plex_or_meshfile.getComm()
+                            if isinstance(plex_or_meshfile, PETSc.DM)
+                            else kwargs.get("comm", PETSc.COMM_WORLD))
+
         # Coordinate units come from the model (not a user parameter):
         # the model owns the unit system so all meshes and variables agree.
         import underworld3 as uw
@@ -603,8 +615,10 @@ class Mesh(Stateful, uw_object):
         populated_families = [family for family in cell_families if family is not None]
         self.isSimplex = all(populated_families) if populated_families else simplex
 
-        # Using WeakValueDictionary to prevent circular references
-        self._vars = weakref.WeakValueDictionary()
+        # The mesh owns its variables (a variable created and not kept lives as
+        # long as its mesh). Each variable holds its mesh back; the cycle is
+        # collected with the mesh once nothing else holds either.
+        self._vars = {}
         self._block_vars = {}
 
         # a list of equation systems that will
@@ -649,8 +663,11 @@ class Mesh(Stateful, uw_object):
         self.qdegree = qdegree
 
         # Populate the element information for this mesh. This is intended to be
-        # human readable because the mesh is quite simple: either quads / tris in 2D
-        # tetrahedra / hexahedra in 3D
+        # human readable because the mesh is quite simple: lines in 1D (a surface
+        # submesh of a 2-D domain), quads / tris in 2D, tetrahedra / hexahedra
+        # in 3D. ``entities[k]`` counts a cell's points of codimension k
+        # (entities[1] its faces, entities[dim] its vertices); face_entities[dim]
+        # counts a face's vertices.
 
         from dataclasses import dataclass
 
@@ -660,7 +677,12 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
-        if self.isSimplex:
+        if self.dim == 1:
+            # A line cell, simplex or not: two faces, which are its two
+            # vertices. Without this a 1-D mesh fell through to the
+            # tetrahedron entry and read 4 faces and 4 vertices per cell.
+            self._element = ElementInfo("line", (1, 2), (0, 1))
+        elif self.isSimplex:
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
             else:
@@ -2732,8 +2754,14 @@ class Mesh(Stateful, uw_object):
             # dual space without proper point subspaces, causing
             # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
             # createCoordinateSpace builds the FE internally with correct
-            # subspace initialisation.
-            self.dm.createCoordinateSpace(self.degree, False, True)
+            # subspace initialisation. The coordinates are carried across by
+            # UW3's copy of PETSc's interpolator: PETSc's own projection of a
+            # degree >= 2 space cannot be assembled on a rank that holds cells
+            # but owns none of their nodes (#902).
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            petsc_dm_create_coordinate_space_within_plex(self.dm, self.degree)
 
             # Issue #96 fix: Force coordinate field creation and strip
             # boundary labels from the coordinate DM. createCoordinateSpace
@@ -3523,7 +3551,8 @@ class Mesh(Stateful, uw_object):
         * **analytic** (default) — the closure installed by the mesh constructor
           (radial on an annulus/sphere, face clamps on a box). Cheap and exact **while
           the boundary keeps the shape it was written for**.
-        * **general facet restore** (once :meth:`deform` has moved the geometry) — the
+        * **general facet restore** (once :meth:`deform` has moved the geometry, and for
+          any mesh with no analytic closure at all — every mesh read from a file) — the
           nearest point on the mesh's CURRENT boundary facets, with an outward-normal
           side test (:meth:`_facet_return_coords_to_bounds`).
 
@@ -3538,7 +3567,14 @@ class Mesh(Stateful, uw_object):
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
         """
-        if getattr(self, "_geometry_deformed", False):
+        if (getattr(self, "_geometry_deformed", False)
+                or self._analytic_return_coords_to_bounds is None):
+            # No analytic closure means a mesh built from a file (every gmsh mesh), which
+            # is where the benchmark geometries live. Without this they returned None and
+            # a trace-back foot leaving through an inlet was never restored: it fell
+            # through to the evaluator's distance-weighted fallback, which is both slow
+            # and wrong. The general restore already handles that case, and returns
+            # interior points untouched, so it is the right fallback rather than nothing.
             return self._facet_return_coords_to_bounds
         return self._analytic_return_coords_to_bounds
 
@@ -3558,7 +3594,13 @@ class Mesh(Stateful, uw_object):
             return cache[1], cache[2]
 
         cdim = self.cdim
-        facets, opp = _boundary_facets(self, cdim)
+        # The DM's boundary label separates domain faces from partition faces;
+        # the topological search (a facet in exactly one local cell) cannot, and
+        # on a distributed mesh would restore every foot crossing a rank seam to
+        # that seam. Only a mesh without the label falls back to the search.
+        facets, opp = self._labelled_boundary_facets()
+        if facets is None:
+            facets, opp = _boundary_facets(self, cdim)
         if facets is None:                      # non-simplicial: no general restore
             self._bnd_restore_cache = (stamp, None, None)
             return None, None
@@ -3575,6 +3617,31 @@ class Mesh(Stateful, uw_object):
         n[flip] *= -1.0
         self._bnd_restore_cache = (stamp, fpts, n)
         return fpts, n
+
+    def _labelled_boundary_facets(self):
+        """Boundary facets and the opposite cell vertex from the DM's own
+        ``All_Boundaries`` label: ``(facets, opp)`` as :func:`_boundary_facets`
+        returns them (vertex indices in point order), or ``(None, None)`` when
+        the label is absent or the mesh is not simplicial."""
+        dm = self.dm
+        if not dm.hasLabel("All_Boundaries"):
+            return None, None
+        label = dm.getLabel("All_Boundaries")
+        d = self.dim
+        f0, f1 = dm.getHeightStratum(1)
+        v0, v1 = dm.getDepthStratum(0)
+        facets, opp = [], []
+        for f in range(f0, f1):
+            if dm.getSupportSize(f) != 1 or label.getValue(f) == -1:
+                continue
+            fverts = [p for p in dm.getTransitiveClosure(f)[0] if v0 <= p < v1]
+            cverts = [p for p in dm.getTransitiveClosure(dm.getSupport(f)[0])[0] if v0 <= p < v1]
+            if len(fverts) != d or len(cverts) != d + 1:
+                return None, None
+            facets.append([p - v0 for p in fverts])
+            opp.append([p for p in cverts if p not in fverts][0] - v0)
+        return (numpy.array(facets, dtype=int).reshape(-1, d),
+                numpy.array(opp, dtype=int).reshape(-1))
 
     def _facet_return_coords_to_bounds(self, coords):
         """General restore: snap points lying OUTSIDE the current boundary to just inside
@@ -3599,8 +3666,10 @@ class Mesh(Stateful, uw_object):
         owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
         nvec = nrm[owner]
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
+        # get_min_radius is collective: read it on every rank, not only on the
+        # ranks that have a point to restore
+        eps = 1.0e-3 * float(self.get_min_radius())
         if numpy.any(outside):
-            eps = 1.0e-3 * float(self.get_min_radius())
             pts[outside] = closest[outside] - eps * nvec[outside]
         return pts
 
@@ -4845,31 +4914,35 @@ class Mesh(Stateful, uw_object):
 
         - one mesh HDF5 file, shared across timesteps unless ``meshUpdates=True``
         - one HDF5 file per mesh variable
-        - raw coordinate/value datasets under ``/fields`` for coordinate-based
-          reload with ``MeshVariable.read_timestep()``
+        The variable-file payloads are controlled explicitly:
 
-        The optional payloads are controlled explicitly:
-
-        - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
-          receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
-          and rank 0 writes the companion ``.xdmf`` file.
-        - ``petsc_reload=True`` writes PETSc DMPlex section/local-vector
-          metadata and an in-place global-vector payload into the same
-          per-variable HDF5 files. These files can then be loaded with
-          ``MeshVariable.read_checkpoint()`` for exact restart.
+        - ``create_xdmf=True`` writes a companion XDMF file that reads the
+          dimensional ``/fields`` datasets directly for P1, P2 triangles and
+          tetrahedra, DG0, and simplex DG1. All simplex DG1 variables share one
+          disconnected-corner geometry in the mesh file; each variable stores
+          one exact corner-nodal value array. Continuous P3+ fields receive one
+          compact P1 visualization dataset; discontinuous DG2+ fields receive
+          DG0.
+        - ``petsc_reload=True`` writes native nondimensional PETSc DMPlex
+          section/global-vector data under ``/restart/petsc``.
+          Load that optional payload with ``MeshVariable.read_checkpoint()``
+          for an exact solver restart. When XDMF is disabled, this is the only
+          variable payload; no duplicate ``/fields`` values are written.
+        - With both flags disabled, the established low-level native
+          ``/fields`` output is retained for compatibility.
 
         Common choices are:
 
         - visualisation/remap only:
           ``create_xdmf=True, petsc_reload=False``
-        - PETSc-native reload only:
+        - PETSc-native reload only (no duplicate ``/fields`` values):
           ``create_xdmf=False, petsc_reload=True``
         - unified visualisation/remap and PETSc reload:
           ``create_xdmf=True, petsc_reload=True``
 
-        With both flags enabled, the same variable HDF5 file can be used by
-        ``MeshVariable.read_timestep()`` for coordinate/KDTree remapping and by
-        ``MeshVariable.read_checkpoint()`` for exact PETSc-native reload.
+        With both flags enabled, the same variable HDF5 file supports
+        dimensional analysis, XDMF visualization, coordinate remapping, and
+        exact PETSc-native restart without duplicate P1 field copies.
 
         Parameters
         ----------
@@ -4889,32 +4962,32 @@ class Mesh(Stateful, uw_object):
             If ``False``, reuse ``<filename>.mesh.00000.h5`` when it already
             exists. If ``True``, write an indexed mesh file for this timestep.
         create_xdmf
-            Write ParaView/XDMF-compatible datasets and companion XDMF file.
-            DG1 on full-dimensional triangles/tetrahedra uses a separate grid
-            with independent vertices per cell, preserving jumps without
-            smoothing. Visualization-only arrays live under ``/dg1`` in the
-            variable files; native checkpoint and reload data are unchanged.
-            Higher-order discontinuous and non-simplex DG visualization are
-            not supported (use ``create_xdmf=False`` for native-only output).
+            Write ParaView/XDMF-compatible dimensional datasets and the
+            companion XDMF file. DG1 on full-dimensional triangles/tetrahedra
+            uses independent vertices per cell, preserving jumps without
+            smoothing. Continuous P2 triangles and tetrahedra use their exact
+            quadratic connectivity. Higher-order fields use compact P1 or DG0
+            visualization reductions while their exact dimensional values
+            remain in ``/fields``.
         petsc_reload
             Write PETSc DMPlex section/vector metadata for reload with
             ``MeshVariable.read_checkpoint()``.
 
+        Notes
+        -----
+        Field and coordinate units and model-to-physical conversion factors
+        are saved for dimensional output. ``index`` is an output identifier,
+        not physical elapsed time; this writer does not record a simulation
+        time scale or FreeSurface time metadata.
+
         """
         if create_xdmf:
             for var in meshVars or []:
-                integration_point = getattr(var, "is_integration_point", False)
-                if integration_point or (not var.continuous and var.degree > 0):
-                    if (
-                        var.degree != 1 or not self.isSimplex
-                        or self.dim not in (2, 3) or self.cdim != self.dim
-                        or integration_point
-                    ):
-                        raise NotImplementedError(
-                            "DG XDMF supports degree-one fields on full-dimensional "
-                            "triangle/tetrahedron meshes only; use create_xdmf=False "
-                            "for native-only checkpoints."
-                        )
+                if getattr(var, "is_integration_point", False):
+                    raise NotImplementedError(
+                        "Integration-point XDMF output is not supported; use "
+                        "create_xdmf=False for native-only output."
+                    )
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
@@ -4943,24 +5016,36 @@ class Mesh(Stateful, uw_object):
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
             self.write(mesh_file)
 
-        variables = []
+        if create_xdmf:
+            _write_visualisation_geometry(self, mesh_file)
+
+        checkpoint_variables = []
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
-                var.write(save_location)
                 if create_xdmf:
-                    _write_compat_groups(self, var, save_location)
-                variables.append((var, save_location))
+                    var.write(save_location)
+                    if petsc_reload:
+                        self._write_petsc_reload_file(save_location, [var], mode="a")
+                    _write_xdmf_field(self, var, save_location, mesh_file)
+                elif petsc_reload:
+                    # Exact-restart-only output needs the PETSc section/vector
+                    # payload, not a second native /fields copy of the values.
+                    self._write_petsc_reload_file(save_location, [var], mode="w")
+                else:
+                    # Preserve the established low-level native output when no
+                    # optional visualization or restart payload was requested.
+                    var.write(save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
                 save_location = output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 svar.write_proxy(save_location)
                 if petsc_reload:
-                    variables.append((svar._meshVar, save_location))
+                    checkpoint_variables.append((svar._meshVar, save_location))
 
         if petsc_reload:
-            for var, save_location in variables:
+            for var, save_location in checkpoint_variables:
                 self._write_petsc_reload_file(save_location, [var], mode="a")
 
         if create_xdmf and uw.mpi.rank == 0:
@@ -4985,9 +5070,8 @@ class Mesh(Stateful, uw_object):
 
         This is a convenience wrapper around ``write_timestep()`` that
         provides the simpler interface used by earlier Underworld3 code.
-        Output uses the same per-variable file layout and XDMF generation
-        (including vertex/cell compatibility groups, field projection, and
-        tensor repacking) as ``write_timestep()``.
+        Output uses the same compact dimensional ``/fields`` layout and XDMF
+        generation as ``write_timestep()``.
 
         Parameters
         ----------
@@ -5038,59 +5122,53 @@ class Mesh(Stateful, uw_object):
 
         if var._lvec is None:
             var._set_vec(available=True)
+        var._sync_lvec_to_gvec()
 
         iset, subdm = self.dm.createSubDM(var.field_id)
         subdm.setName(var.clean_name)
         old_lvec_name = var._lvec.getName()
+        old_gvec_name = var._gvec.getName()
 
         try:
             var._lvec.setName(var.clean_name)
+            var._gvec.setName(var.clean_name)
             self.dm.sectionView(viewer, subdm)
-            self.dm.localVectorView(viewer, subdm, var._lvec)
+            self.dm.globalVectorView(viewer, subdm, var._gvec)
         finally:
             var._lvec.setName(old_lvec_name)
+            var._gvec.setName(old_gvec_name)
             iset.destroy()
             subdm.destroy()
 
     def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
-        """Write DMPlex reload metadata and in-place vector payloads."""
+        """Write compact DMPlex reload metadata and native global vectors."""
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
 
-        viewer = PETSc.ViewerHDF5().create(
-            checkpoint_file, mode, comm=PETSc.COMM_WORLD
-        )
-        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-        try:
-            self.dm.sectionView(viewer, self.dm)
+        with _short_io_path(checkpoint_file) as io_filename:
+            viewer = PETSc.ViewerHDF5().create(
+                io_filename, mode, comm=PETSc.COMM_WORLD
+            )
+            viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+            viewer.pushGroup("/restart/petsc")
+            try:
+                # PETSc needs the complete source section to construct the
+                # migration SF when the checkpoint is read with a different MPI
+                # ownership ordering. This is metadata only; owned field values are
+                # stored once in each variable's global-vector payload.
+                self.dm.sectionView(viewer, self.dm)
 
-            for var in variables:
-                self._write_petsc_reload_variable(viewer, var)
+                for var in variables:
+                    self._write_petsc_reload_variable(viewer, var)
 
-            uw.mpi.barrier()
-        finally:
-            viewer.popFormat()
-            viewer.destroy()
-            if old_dm_name is not None:
-                self.dm.setName(old_dm_name)
-
-        viewer = PETSc.ViewerHDF5().create(
-            checkpoint_file, "a", comm=PETSc.COMM_WORLD
-        )
-        try:
-            viewer.pushGroup("/uw_checkpoint")
-            for var in variables:
-                var._sync_lvec_to_gvec()
-                checkpoint_vec = PETSc.Vec().createWithArray(
-                    var._gvec.array_r, comm=PETSc.COMM_WORLD
-                )
-                checkpoint_vec.setName(var.clean_name)
-                viewer(checkpoint_vec)
-                checkpoint_vec.destroy()
-            viewer.popGroup()
-        finally:
-            viewer.destroy()
+                uw.mpi.barrier()
+            finally:
+                viewer.popGroup()
+                viewer.popFormat()
+                viewer.destroy()
+                if old_dm_name is not None:
+                    self.dm.setName(old_dm_name)
 
     @timing.routine_timer_decorator
     def write_checkpoint(
@@ -5137,8 +5215,8 @@ class Mesh(Stateful, uw_object):
             into one file: ``<base>.checkpoint.<index>.h5``.
         create_xdmf
             If ``True``, route through ``write_timestep()`` and write XDMF,
-            vertex/cell compatibility groups, coordinate/KDTree remap data,
-            and PETSc reload metadata. The output uses the timestep filename
+            dimensional field/remap data, and PETSc reload metadata. The output
+            uses the timestep filename
             convention ``<base>.mesh.<variable>.<index>.h5``. This mode does
             not support ``unique_id=True`` or ``separate_variable_files=False``.
         """
@@ -5308,8 +5386,15 @@ class Mesh(Stateful, uw_object):
             )
         # Snapshot restore: variables are reloaded just below, so this is a
         # sanctioned internal coordinate move (no live-state transfer needed).
-        with self._coord_mutation():
-            self._deform_mesh(coords)
+        # Only when the geometry actually moved: a move bumps the mesh version
+        # and makes every solver on the mesh rebuild, and a rebuilt solver starts
+        # from a different place, so a restore of an undeformed mesh would no
+        # longer be invisible. Decided on every rank together, since the move
+        # is collective.
+        moved = int(not numpy.array_equal(coords, numpy.asarray(self._coords)))
+        if self.dm.comm.tompi4py().allreduce(moved):
+            with self._coord_mutation():
+                self._deform_mesh(coords)
 
         current_vars = {var.clean_name: var for var in self.vars.values()}
         for var_clean_name, saved_array in payload["vars"].items():
@@ -5369,20 +5454,21 @@ class Mesh(Stateful, uw_object):
             # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
 
-        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-        try:
-            if petsc_format is not None:
-                viewer_format = (
-                    PETSc.Viewer.Format.HDF5_PETSC
-                    if petsc_format
-                    else PETSc.Viewer.Format.HDF5_VIZ
-                )
-                viewer.pushFormat(viewer_format)
-            viewer(self.dm)
-        finally:
-            if petsc_format is not None:
-                viewer.popFormat()
-            viewer.destroy()
+        with _short_io_path(filename) as io_filename:
+            viewer = PETSc.ViewerHDF5().create(io_filename, "w", comm=PETSc.COMM_WORLD)
+            try:
+                if petsc_format is not None:
+                    viewer_format = (
+                        PETSc.Viewer.Format.HDF5_PETSC
+                        if petsc_format
+                        else PETSc.Viewer.Format.HDF5_VIZ
+                    )
+                    viewer.pushFormat(viewer_format)
+                viewer(self.dm)
+            finally:
+                if petsc_format is not None:
+                    viewer.popFormat()
+                viewer.destroy()
 
         ## Add boundary metadata to the file
 
@@ -5459,16 +5545,17 @@ class Mesh(Stateful, uw_object):
         if len(self.dm_hierarchy) > 1:
             coarse_dm = self.dm_hierarchy[0]
             sidecar = _hierarchy_sidecar_name(filename)
-            cviewer = PETSc.ViewerHDF5().create(sidecar, "w", comm=PETSc.COMM_WORLD)
-            cviewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-            saved_name = coarse_dm.getName()
-            coarse_dm.setName("uw_mesh")  # _from_plexh5 loads the DM named "uw_mesh"
-            try:
-                cviewer(coarse_dm)
-            finally:
-                coarse_dm.setName(saved_name)
-                cviewer.popFormat()
-                cviewer.destroy()
+            with _short_io_path(sidecar) as io_filename:
+                cviewer = PETSc.ViewerHDF5().create(io_filename, "w", comm=PETSc.COMM_WORLD)
+                cviewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+                saved_name = coarse_dm.getName()
+                coarse_dm.setName("uw_mesh")  # _from_plexh5 loads the DM named "uw_mesh"
+                try:
+                    cviewer(coarse_dm)
+                finally:
+                    coarse_dm.setName(saved_name)
+                    cviewer.popFormat()
+                    cviewer.destroy()
 
     def vtk(self, filename: str):
         """
@@ -5623,56 +5710,54 @@ class Mesh(Stateful, uw_object):
         if key in self._cell_node_array:
             return self._cell_node_array[key]
 
-        dmnew = self._basis_coordinate_dm(degree, continuous)
-        section = dmnew.getLocalSection()
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        cdim = self.cdim
+        from underworld3.utilities._plex_topology import closure_dof_rows
 
-        rows = []
-        for cell in range(cStart, cEnd):
-            cell_rows = []
-            for point in dmnew.getTransitiveClosure(cell)[0]:
-                ndof = section.getDof(point) // cdim
-                if ndof:
-                    offset = section.getOffset(point) // cdim
-                    cell_rows.extend(range(offset, offset + ndof))
-            rows.append(cell_rows)
+        dmnew = self._basis_coordinate_dm(degree, continuous)
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        rows = closure_dof_rows(dmnew, dmnew.getLocalSection(),
+                                numpy.arange(cStart, cEnd), self.cdim)
         dmnew.destroy()
 
         expected = comb(degree + self.dim, self.dim)
-        if not self.isSimplex or any(len(r) != expected for r in rows):
+        counts = (rows >= 0).sum(axis=1)
+        if not self.isSimplex or (counts != expected).any():
             # A tensor-product Q_k cell carries (k+1)^dim nodes, so the monomial
             # basis of total degree <= k would not be square against them and
             # the dual-basis construction does not apply. Say so here rather
             # than return a ragged array the caller has to second-guess.
-            got = sorted({len(r) for r in rows})
+            got = sorted(set(counts.tolist()))
             raise NotImplementedError(
                 f"_cell_node_indices needs a simplex mesh: expected "
                 f"{expected} nodes per cell for degree {degree} in {self.dim}D, "
                 f"got {got}")
 
-        self._cell_node_array[key] = numpy.asarray(rows, dtype=numpy.int64)
+        self._cell_node_array[key] = rows.reshape(cEnd - cStart, expected)
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
+        """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
+        ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
+        (ghost nodes included).
+
+        The interpolation matrix comes from UW3's copy of PETSc's nested
+        interpolator, which assembles also on a rank that holds cells but owns
+        none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
         """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_interpolation_within_plex,
+        )
 
         dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
-        matInterp, vecScale = dmold.createInterpolation(dmnew)
+        matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
-        arr = coordsNewL.array
-        arrcopy = arr.reshape(-1, self.cdim).copy()
+        arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
@@ -5680,8 +5765,6 @@ class Mesh(Stateful, uw_object):
         # they accumulate until Python GC runs — noticeable in long adapt
         # loops that re-fill the coord cache per variable.
         matInterp.destroy()
-        if vecScale is not None:
-            vecScale.destroy()
         dmnew.destroy()
 
         return arrcopy
@@ -5700,13 +5783,10 @@ class Mesh(Stateful, uw_object):
         so the rows returned here are bit-identical to the previous affine
         indexing (verified) and serial navigation is unchanged.
         """
-        coord_section = nav_dm.getCoordinateSection()
-        cdim = self.cdim
-        return numpy.fromiter(
-            (coord_section.getOffset(p) // cdim for p in points),
-            dtype=numpy.int64,
-            count=len(points),
-        )
+        from underworld3.utilities._plex_topology import section_offsets
+
+        return section_offsets(nav_dm.getCoordinateSection(),
+                               numpy.asarray(points, dtype=numpy.int64)) // self.cdim
 
     def _navigation_coords_from_dm(self, nav_dm):
         """Section-consistent LOCAL coordinate rows for a navigation DM.
@@ -5744,84 +5824,45 @@ class Mesh(Stateful, uw_object):
         nav_coords = self._nav_coords
 
         cStart, cEnd = nav_dm.getHeightStratum(0)
-        fStart, fEnd = nav_dm.getHeightStratum(1)
-        pStart, pEnd = nav_dm.getDepthStratum(0)
-        cell_num_faces = self.element.entities[1]
-        cell_num_points = self.element.entities[self.dim]
-        face_num_points = self.element.face_entities[self.dim]
 
-        control_points_list = []
-        control_points_cell_list = []
-        centroids_list = []
+        from underworld3.utilities._plex_topology import closure_points
+
+        # Each cell's vertices in closure order, read as one table. The count
+        # is the closure's own: the element table's vertex count does not
+        # describe a 1-D surface mesh (it gave 4 for a line cell, and the
+        # earlier per-cell slice then took the edge point itself as a vertex).
+        cells = numpy.arange(cStart, cEnd)
+        verts = closure_points(nav_dm, cells, 0)
+        if (verts < 0).any():
+            raise RuntimeError(
+                "_build_kd_tree_index: the cells do not all have the same "
+                "number of vertices")
+        cell_num_points = verts.shape[1]
+        n_cells = cEnd - cStart
+        # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
+        P = nav_coords[self._coord_rows_for_points(nav_dm, verts.ravel())].reshape(
+            n_cells, cell_num_points, self.cdim)
+        centroids = P.mean(axis=1)
         # Largest distance from a cell centroid to one of that cell's own
         # vertices, maximised over local cells. A convex cell is the convex
         # hull of its vertices, so every point of it lies within this distance
         # of its centroid — which makes it the rejection radius the locator
         # needs (see _get_closest_local_cells_internal).
-        cell_reach = 0.0
-
-        for cell, cell_id in enumerate(range(cStart, cEnd)):
-
-            cell_faces = nav_dm.getCone(cell_id)
-            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
-            # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
-            cell_centroid = cell_point_coords.mean(axis=0)
-            centroids_list.append(cell_centroid)
-            cell_reach = max(cell_reach, float(numpy.linalg.norm(
-                cell_point_coords - cell_centroid, axis=1).max()))
-
-            # for face in range(cell_num_faces):
-
-            #     points = self.dm.getTransitiveClosure(cell_faces[face])[0][
-            #         -face_num_points:
-            #     ]
-            #     point_coords = self.data[points - pStart]
-
-            #     face_centroid = point_coords.mean(axis=0)
-            #     cell_centroid = cell_point_coords.mean(axis=0)
-
-            #     # 2D case
-            #     if self.dim == 2:
-            #         vector = point_coords[1] - point_coords[0]
-            #         normal = numpy.array((-vector[1], vector[0]))
-
-            #     # 3D simplex case (probably also OK for hexes)
-            #     else:
-            #         normal = numpy.cross(
-            #             (point_coords[1] - point_coords[0]),
-            #             (point_coords[2] - point_coords[0]),
-            #         )
-
-            #     inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
-            #     normal *= inward_outward / numpy.sqrt(normal.dot(normal))
-
-            #     inside_control_point = -1e-3 * normal + face_centroid
-
-            #     control_points_list.append(inside_control_point)
-            #     control_points_cell_list.append(cell_id)
-            #     control_points_list.append(cell_centroid)
-            #     control_points_cell_list.append(cell_id)
-
-            # Add points near the cell vertices
-
-            for i in range(cell_point_coords.shape[0]):
-                control_points_list.append(0.99 * cell_point_coords[i] + 0.01 * cell_centroid)
-                control_points_cell_list.append(cell_id)
-
-            # Add centroid
-            control_points_list.append(cell_centroid)
-            control_points_cell_list.append(cell_id)
+        cell_reach = (float(numpy.linalg.norm(P - centroids[:, None, :],
+                                              axis=2).max())
+                      if n_cells else 0.0)
+        # Control points: each cell's vertices pulled 1% toward its centroid,
+        # then the centroid itself, cell by cell.
+        control = numpy.concatenate(
+            [0.99 * P + 0.01 * centroids[:, None, :], centroids[:, None, :]], axis=1)
 
         # A rank can own zero cells (small mesh / imbalanced partition):
-        # shape the point arrays explicitly so an empty list becomes a
-        # well-formed (0, cdim) array rather than a 1-D numpy.array([]),
-        # which crashed the KDTree construction (issue #399).
-        self._indexCoords = numpy.array(
-            control_points_list, dtype=numpy.float64).reshape(-1, self.cdim)
+        # shape the point arrays explicitly so an empty table is a
+        # well-formed (0, cdim) array, which the KDTree accepts (issue #399).
+        self._indexCoords = numpy.ascontiguousarray(
+            control, dtype=numpy.float64).reshape(-1, self.cdim)
         self._index = uw.kdtree.KDTree(self._indexCoords)
-        # self._index.build_index()
-        self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
+        self._indexMap = numpy.repeat(cells, cell_num_points + 1).astype(numpy.int64)
 
         # Cell-centroid kdtree, built from the nav-DM cells in the
         # same enumeration order as _indexMap, so the indices it
@@ -5829,8 +5870,8 @@ class Mesh(Stateful, uw_object):
         # We keep _nav_centroids separate from _centroids (which is
         # the main-DM cell centroids set in __init__) so the FE-side
         # ``_centroids`` semantics are unchanged on manifold meshes.
-        self._nav_centroids = numpy.array(
-            centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
+        self._nav_centroids = numpy.ascontiguousarray(
+            centroids, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
@@ -7302,9 +7343,66 @@ class Mesh(Stateful, uw_object):
             token = object()
             for k, w in enumerate(cached):
                 w._refine_slot = (token, k)
+                # the static background: never cut by a fault (add-on principle)
+                w._mg_static = True
             self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
         return cached
+
+    @property
+    def multigrid_levels(self):
+        """The levels of this mesh's multigrid hierarchy, coarsest first, with
+        this mesh itself last.
+
+        When this mesh owns a coarse tail, as an ``adapt()`` child does (the
+        levels of the mesh it was made from, which its solvers pick up without a
+        ``set_custom_fmg`` call), the levels are that tail followed by this mesh.
+        Otherwise they are the mesh's own hierarchy: ``n + 1`` levels for
+        ``refinement=n`` or ``coarsening=n``, and the mesh alone when it was
+        built with neither.
+
+        The coarse levels of a refinement hierarchy are meshes in their own
+        right, carrying this mesh's boundary labels; those of a coarsening
+        hierarchy do not carry them. They are built on the first access, which
+        is collective (every rank must make it), and reused: every access
+        returns the same objects, and they are not rebuilt when this mesh is
+        later deformed or remeshed.
+
+        A solver on this mesh takes every level but the last, its own mesh being
+        the finest level. A solver on a mesh placed on this one takes them all,
+        followed by any intermediate levels of its own.
+
+        Returns
+        -------
+        tuple of Mesh
+            The levels, coarsest first; the last entry is this mesh.
+
+        Examples
+        --------
+        >>> base = uw.meshing.UnstructuredSimplexBox(cellSize=1 / 8, refinement=2)
+        >>> len(base.multigrid_levels)          # cell sizes 1/8, 1/16, 1/32
+        3
+        >>> poisson = uw.systems.Poisson(base)
+        >>> poisson.set_custom_fmg(base.multigrid_levels[:-1])
+
+        A fault ribbon placed in a 3-D base, with its unsplit intermediate level:
+
+        >>> from underworld3.utilities.place_surface import place_fault_ribbon
+        >>> base = uw.meshing.UnstructuredSimplexBox(
+        ...     minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=1 / 4, refinement=1)
+        >>> mesh, mid, info = place_fault_ribbon(base, sheet_grid, width=0.06)
+        >>> stokes = uw.systems.Stokes(mesh)
+        >>> stokes.set_custom_fmg(base.multigrid_levels + (mid,), field_id=0)
+        """
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        if own_tail is not None:
+            return tuple(own_tail) + (self,)
+        # a single-level mesh is its own hierarchy: wrapping it would build a
+        # duplicate mesh and re-tag one that may already be a level of another
+        # hierarchy, which loses that pair its exact nested transfer
+        if len(self.dm_hierarchy) < 2:
+            return (self,)
+        return tuple(self._coarse_level_meshes()[:-1]) + (self,)
 
     def redistribute_nodes(self, metric, *, verbose=False, **kwargs):
         r"""Move this mesh's nodes so cell sizes follow ``metric``, with
@@ -7813,9 +7911,12 @@ class Mesh(Stateful, uw_object):
         dm = self.dm
         cS, cE = dm.getHeightStratum(0)
         zone = numpy.zeros(cE - cS, dtype=bool)
-        label = dm.getLabel(name)
-        if label is None:
+        # hasLabel, not getLabel-against-None: petsc4py hands back a
+        # wrapper around a NULL label for a missing name, and the first
+        # query on it aborts the process rather than raising.
+        if not dm.hasLabel(name):
             return zone
+        label = dm.getLabel(name)
         if value is None:
             vis = label.getValueIS()
             values = [int(v) for v in vis.getIndices()] if vis is not None else []
@@ -7893,6 +7994,10 @@ class Mesh(Stateful, uw_object):
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
         child._surface_info = info
+        if getattr(self, "_embedded_surfaces", None):
+            child._embedded_surfaces = set(self._embedded_surfaces)
+        from underworld3.utilities.addon_partition import inherit_provenance
+        inherit_provenance(child, self)
 
         # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
         # mesh, so this mesh plus everything below it is a valid coarse tail and
@@ -8221,15 +8326,50 @@ class Mesh(Stateful, uw_object):
                 "add_conforming_sheet is 3-D; in 2-D use "
                 "add_conforming_surface.")
 
-        boundaries = self._boundaries_with(name)
+        # In parallel the add-on is partitioned for the sheet first — the
+        # placement's own mask with two growth layers, on this level and on
+        # every add-on level below it — so the carve and the fill run on a
+        # rank-interior region and the placement gathers nothing; a split of
+        # the sheet later moves nothing either.
+        host = self
+        if self.dm.getComm().getSize() > 1:
+            from underworld3.utilities.addon_partition import (mark_sheets,
+                                                               partition_addon)
+            host = partition_addon(
+                self, mark_sheets([(points, triangles)], clearance), layers=2,
+                verbose=verbose)
+        boundaries = host._boundaries_with(name)
         cut_dm, info = place_sheet(
-            self.dm, points, triangles, label=name,
+            host.dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
             verbose=verbose, setback=setback, size=size)
-        return self._adopt_cut_child(cut_dm, boundaries, info,
-                                     mg_coarsening_ratio, verbose)
+        child = host._adopt_cut_child(cut_dm, boundaries, info,
+                                      mg_coarsening_ratio, verbose)
+        # a placed sheet is a fault surface to be: every later partition
+        # keeps it whole (addon_partition.embedded_surface_names)
+        child._embedded_surfaces = (
+            set(getattr(host, "_embedded_surfaces", ()) or ()) | {name})
+        return child
 
-    def add_fault(self, faults, verbose=False):
+    def extrude(self, thickness, layers=2, base="Base", surface="Surface",
+                qdegree=None, verbose=False):
+        r"""The thick twin of this sheet mesh: a layer of tetrahedra
+        ``thickness`` deep, centred on the sheet.
+
+        The sheet's boundaries become the layer's walls under the same names,
+        its two faces are ``base`` and ``surface``, and every split-node fault
+        of the sheet becomes a vertical fault through the whole layer, with its
+        side labels and pairing. A model written for ``ThinSheet`` on this mesh
+        runs as ``Stokes`` on the result by changing the mesh and the solver
+        class. See :func:`underworld3.meshing.extrude_sheet`.
+        """
+        from underworld3.meshing.extrude import extrude_sheet
+        return extrude_sheet(self, thickness, layers=layers, base=base,
+                             surface=surface, qdegree=qdegree, verbose=verbose)
+
+    def add_fault(self, faults, verbose=False, cut=True, exclude=None,
+                  blind=1, across_seams=False, split_levels=True,
+                  **place_kwargs):
         """Cut AND split one or more faults; return the split mesh.
 
         The split-node fault pipeline in one call: each fault becomes a
@@ -8247,32 +8387,65 @@ class Mesh(Stateful, uw_object):
         crossings are represented as OFFSET segments (a one-to-two-cell
         ligament). The result inherits a MESH-OWNED geometric-MG tail (the
         parent's coarse levels, the cut mesh finest — a cut is the same
-        grid re-represented); a parent without one yields a standalone
-        mesh — no tail, since
-        the coarse levels do not carry the fault (see
-        :meth:`add_conforming_surface`); solvers take their
-        algebraic-multigrid defaults.
+        grid re-represented): the parent's registered tail, or the coarse
+        levels of a parent built with ``refinement >= 1``. In parallel the
+        add-on is partitioned once for the faults before the cut
+        (``utilities.addon_partition``), so nothing moves afterwards.
 
-        Implementation and design: ``underworld3.utilities.fault_split``
-        and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
+        ``cut=False`` labels the mesh edges already on each polyline (the
+        embedded spines of a placed band); ``across_seams=True`` then
+        splits a spine THROUGH the partition seams it crosses (the band
+        meshed through them, ``seams="conform"``) instead of
+        redistributing — see ``fault_split.split_fault``.
+
+        In 3-D a fault is a triangulated sheet: a ``FaultSurface`` or a
+        ``(name, points, triangles)`` triple, placed as
+        :meth:`add_conforming_sheet` places it and split; ``place_kwargs``
+        are the placement's options (``clearance`` about 0.9 on a
+        bisection-refined mesh, where the default cavity cannot be closed).
+
+        ``split_levels`` (default True) carries the fault through the ADD-ON
+        levels of the inherited multigrid tail — every level refined from the
+        static background toward the fault is cut and split the same way, so
+        the coarse spaces contain the discontinuity and the velocity solve
+        stays mesh-independent as the fault is refined (the split-level
+        multigrid of ``utilities.fault_mg``; measured 10 -> 5 velocity
+        iterations over four halvings against 9 -> 32 with welded levels).
+        The background levels are never cut. ``False`` keeps the welded tail.
+
+        Implementation and design: ``underworld3.utilities.fault_split``,
+        ``utilities.fault_mg``,
+        ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md`` and
+        ``docs/developer/design/FAULT_MULTIGRID_HIERARCHIES.md``.
         """
         from underworld3.utilities.fault_split import add_fault
-        child = add_fault(self, faults, verbose=verbose)
+        child = add_fault(self, faults, verbose=verbose, cut=cut,
+                          exclude=exclude, blind=blind,
+                          across_seams=across_seams, **place_kwargs)
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve
-        # unchanged with the cut mesh as the finest level — the coarse
-        # levels do not need the fault (#620/#629). Without this every
-        # solver on a split mesh fell to GAMG unless it called
-        # set_custom_fmg by hand. The FAC zone is NOT inherited: a split
-        # fault needs no patch (the keying ruling).
-        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        if (own_tail is not None
-                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
-            child._custom_mg_coarse_meshes = list(own_tail)
-            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
-                                               "barycentric")
-            child._custom_mg_fac_zone = None
+        # with the cut mesh as the finest level (fault_split.add_fault hands
+        # them to the cut child — partitioned with it in parallel). The static
+        # background levels serve unchanged; the add-on levels are split too,
+        # each on its own partition, which the add-on partition made the
+        # finest's: nothing is moved here. The FAC zone is NOT inherited: a
+        # split fault needs no patch (the keying ruling).
+        tail = getattr(child, "_custom_mg_coarse_meshes", None)
+        # a placed band's spines (cut=False) have no counterpart on the
+        # levels, which were never placed: only a CUT fault is replayed
+        if tail is not None and split_levels and cut:
+            from underworld3.utilities.fault_mg import (
+                addon_level_indices, split_tail_levels)
+            tail = list(tail)
+            idx = addon_level_indices(tail)
+            if idx:
+                split = split_tail_levels([tail[k] for k in idx],
+                                          child._fault_specs,
+                                          verbose=verbose)
+                for k, m in zip(idx, split):
+                    tail[k] = m
+            child._custom_mg_coarse_meshes = tail
         return child
 
 
@@ -9259,7 +9432,9 @@ class Mesh(Stateful, uw_object):
             # the finest base level of the MG tail must carry the SAME moved
             # geometry the child was refined from; coarser levels keep their
             # original coordinates (custom-P transfers accept non-nested pairs)
-            coarse_tail = coarse_tail[:-1] + [self._wrap_coarse_level(base_finest)]
+            _moved_wrap = self._wrap_coarse_level(base_finest)
+            _moved_wrap._mg_static = True
+            coarse_tail = coarse_tail[:-1] + [_moved_wrap]
         child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 
@@ -9659,18 +9834,15 @@ class Mesh(Stateful, uw_object):
         return
 
 
-def _write_compat_groups(mesh, var, var_h5_path):
-    """Write ``/vertex_fields/`` or ``/cell_fields/`` compatibility groups.
+def _write_xdmf_field(mesh, var, var_h5_path, mesh_h5_path):
+    """Replace native remap arrays with dimensional field output for XDMF.
 
-    Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
-    ViewerHDF5) for continuous variables, and
-    ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
-    DG1 uses ``/dg1`` with disconnected simplex vertices and nodal traces,
-    never the one-value-per-cell compatibility path.
-    PETSc handles all parallel I/O natively.
-
-    Vertex coordinates are also written to ``/vertex_fields/coordinates``
-    for XDMF compatibility.
+    P1, P2 triangles/tetrahedra, DG0, and simplex DG1 are represented directly
+    under ``/fields``. DG1 uses exact element-corner values and shares one
+    disconnected geometry under ``/viz/dg1`` in the mesh file. Unsupported
+    higher-order layouts retain exact physical values under ``/fields`` and
+    receive one compact visualization reduction: continuous fields use P1 and
+    discontinuous fields use DG0.
 
     Parameters
     ----------
@@ -9680,52 +9852,191 @@ def _write_compat_groups(mesh, var, var_h5_path):
         The variable whose data has already been written to *var_h5_path*
         by ``var.write()`` (so ``var._gvec`` is up-to-date).
     var_h5_path : str
-        Path to the HDF5 file (already contains ``/fields/<name>``).
+        Path to the HDF5 file. Native restart data, when requested, has already
+        been written under ``/restart/petsc``.
+    mesh_h5_path : str
+        Path to the shared mesh HDF5 file that owns DG1 visualization geometry.
     """
-    import underworld3 as uw
-
-    is_dg1 = not var.continuous and var.degree == 1
-    is_cell = var.degree == 0
-    group = "dg1" if is_dg1 else ("cell_fields" if is_cell else "vertex_fields")
-
-    # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
-    # automatically during var.write().  Remove any pre-existing group so
-    # that our compat writer can create it afresh (otherwise PETSc error 76
-    # on duplicate dataset).
     import h5py
+    import underworld3 as uw
+    from underworld3.function.field_projection import (
+        _dg1_corner_data,
+        _physical_visualisation_values,
+        _write_index_array_to_group,
+        _write_vec_to_group,
+        write_field_coordinates_to_viewer,
+        write_field_to_viewer,
+        write_p2_simplex_topology_to_viewer,
+        write_projected_field_to_viewer,
+    )
+
+    direct_p2 = (
+        var.continuous
+        and var.degree == 2
+        and mesh.isSimplex
+        and mesh.dim in (2, 3)
+        and mesh.cdim == mesh.dim
+    )
+    direct_dg1 = (
+        not var.continuous
+        and var.degree == 1
+        and mesh.isSimplex
+        and mesh.dim in (2, 3)
+        and mesh.cdim == mesh.dim
+    )
+    needs_projection = (var.continuous and var.degree > 2) or (
+        var.continuous and var.degree == 2 and not direct_p2
+    ) or (not var.continuous and var.degree > 0 and not direct_dg1)
 
     if uw.mpi.rank == 0:
         with h5py.File(var_h5_path, "a") as f:
-            if group in f:
-                del f[group]
+            for group in ("fields", "vertex_fields", "cell_fields", "dg1", "visualization"):
+                if group in f:
+                    del f[group]
     uw.mpi.barrier()
 
-    viewer = PETSc.ViewerHDF5().create(
-        var_h5_path, "a", comm=PETSc.COMM_WORLD,
+    with _short_io_path(var_h5_path) as io_filename:
+        viewer = PETSc.ViewerHDF5().create(
+            io_filename,
+            "a",
+            comm=PETSc.COMM_WORLD,
+        )
+
+        if direct_dg1:
+            corner_rows, corner_values, corner_cells = _dg1_corner_data(
+                var, repack_tensors=False
+            )
+            _write_vec_to_group(
+                viewer, corner_values, var.clean_name, "/fields", PETSc.COMM_WORLD
+            )
+        else:
+            write_field_to_viewer(var, viewer, "/fields", var.clean_name)
+            write_field_coordinates_to_viewer(var, viewer, "/fields")
+            if direct_p2:
+                write_p2_simplex_topology_to_viewer(var, viewer, group="/fields")
+            elif needs_projection:
+                target_degree = 1 if var.continuous else 0
+                write_projected_field_to_viewer(
+                    var,
+                    viewer,
+                    target_degree=target_degree,
+                    continuous=var.continuous,
+                    group="/visualization",
+                    name=var.clean_name,
+                )
+
+        viewer.destroy()
+
+    if direct_dg1:
+        if uw.mpi.rank == 0:
+            with h5py.File(mesh_h5_path, "r") as mesh_handle:
+                has_dg1_geometry = "viz/dg1/coordinates" in mesh_handle
+        else:
+            has_dg1_geometry = None
+        has_dg1_geometry = uw.mpi.comm.bcast(has_dg1_geometry, root=0)
+        if not has_dg1_geometry:
+            with _short_io_path(mesh_h5_path) as io_filename:
+                mesh_viewer = PETSc.ViewerHDF5().create(
+                    io_filename,
+                    "a",
+                    comm=PETSc.COMM_WORLD,
+                )
+                _write_vec_to_group(
+                    mesh_viewer,
+                    corner_rows,
+                    "coordinates",
+                    "/viz/dg1",
+                    PETSc.COMM_WORLD,
+                )
+                _write_index_array_to_group(
+                    mesh_viewer,
+                    corner_cells,
+                    "cells",
+                    "/viz/dg1",
+                    PETSc.COMM_WORLD,
+                )
+                mesh_viewer.destroy()
+
+    field_scale, field_units = _physical_visualisation_values(numpy.ones(1), var.units)
+    coordinate_scale, coordinate_units = _physical_visualisation_values(numpy.ones(1), mesh.units)
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            with h5py.File(var_h5_path, "a") as handle:
+                handle.attrs["storage_frame"] = "physical"
+                field = handle[f"fields/{var.clean_name}"]
+                field.attrs["units"] = field_units or "dimensionless"
+                field.attrs["storage_frame"] = "physical"
+                field.attrs["model_to_physical_scale"] = float(field_scale[0])
+                field.attrs["degree"] = var.degree
+                field.attrs["continuous"] = var.continuous
+                field.attrs["representation"] = (
+                    "dg1_corner_nodal" if direct_dg1 else "exact"
+                )
+                if direct_dg1:
+                    handle.attrs["dg1_mesh_file"] = os.path.basename(mesh_h5_path)
+                    handle.attrs["dg1_geometry_path"] = "/viz/dg1"
+                else:
+                    coordinates = handle["fields/coordinates"]
+                    coordinates.attrs["units"] = coordinate_units or "dimensionless"
+                    coordinates.attrs["storage_frame"] = "physical"
+                    coordinates.attrs["model_to_physical_scale"] = float(coordinate_scale[0])
+                if needs_projection:
+                    projected = handle[f"visualization/{var.clean_name}"]
+                    projected.attrs["units"] = field_units or "dimensionless"
+                    projected.attrs["source_degree"] = var.degree
+                    projected.attrs["visualization_degree"] = 1 if var.continuous else 0
+                    projected.attrs["representation"] = "projection"
+            if direct_dg1:
+                with h5py.File(mesh_h5_path, "a") as mesh_handle:
+                    coordinates = mesh_handle["viz/dg1/coordinates"]
+                    coordinates.attrs["units"] = coordinate_units or "dimensionless"
+                    coordinates.attrs["storage_frame"] = "physical"
+                    coordinates.attrs["model_to_physical_scale"] = float(coordinate_scale[0])
+                    mesh_handle["viz/dg1/cells"].attrs["representation"] = (
+                        "disconnected_simplex"
+                    )
+    uw.mpi.barrier()
+
+
+def _write_visualisation_geometry(mesh, mesh_h5_path):
+    """Write physical mesh coordinates without changing restart geometry."""
+    import h5py
+    import underworld3 as uw
+    from underworld3.function.field_projection import (
+        _physical_visualisation_enabled,
+        _physical_visualisation_values,
     )
 
-    if is_dg1:
-        from underworld3.function.field_projection import _write_dg1_to_viewer
-        _write_dg1_to_viewer(var, viewer)
-    elif is_cell:
-        uw.function.write_cell_field_to_viewer(var, viewer)
-    else:
-        uw.function.write_vertices_to_viewer(var, viewer)
-        uw.function.write_coordinates_to_viewer(mesh, viewer)
+    if not _physical_visualisation_enabled(mesh.units):
+        return
 
-    viewer.destroy()
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            with h5py.File(mesh_h5_path, "a") as handle:
+                if "viz/geometry" in handle:
+                    del handle["viz/geometry"]
+    uw.mpi.barrier()
 
-    if is_dg1:
-        # Only topology is generated on rank zero; field values and vertices
-        # were written collectively by PETSc in the same owned-cell order.
-        if uw.mpi.rank == 0:
-            with h5py.File(var_h5_path, "a") as f:
-                nvertices = f["dg1/vertices"].shape[0]
-                ncorners = mesh.dim + 1
-                f["dg1"].create_dataset(
-                    "cells", data=numpy.arange(nvertices, dtype=numpy.int64).reshape(-1, ncorners)
-                )
-        uw.mpi.barrier()
+    with _short_io_path(mesh_h5_path) as io_filename:
+        viewer = PETSc.ViewerHDF5().create(io_filename, "a", comm=PETSc.COMM_WORLD)
+        uw.function.write_coordinates_to_viewer(
+            mesh,
+            viewer,
+            group="/viz/geometry",
+            name="vertices",
+        )
+        viewer.destroy()
+
+    _, unit_label = _physical_visualisation_values(numpy.ones(1), mesh.units)
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            with h5py.File(mesh_h5_path, "a") as handle:
+                handle.attrs["checkpoint_units"] = "nondimensional"
+                handle.attrs["visualisation_units"] = unit_label
+                handle["geometry/vertices"].attrs["units"] = "nondimensional"
+                physical = handle["viz/geometry/vertices"]
+                physical.attrs["units"] = unit_label
+    uw.mpi.barrier()
 
 
 def checkpoint_xdmf(
@@ -9738,6 +10049,7 @@ def checkpoint_xdmf(
     import h5py
     import os
     import warnings
+    from xml.sax.saxutils import escape
 
     """Create xdmf file for checkpoints"""
 
@@ -9773,6 +10085,7 @@ def checkpoint_xdmf(
         )
 
     vertices = geom["vertices"]
+    geometry_units = vertices.attrs.get("units")
     numVertices = vertices.shape[0]
     spaceDim = vertices.shape[1]
     cells = topo["cells"]
@@ -9814,6 +10127,17 @@ def checkpoint_xdmf(
 
     h5.close()
 
+    def units_information(units, indent):
+        """Return an XDMF Information element for an optional unit label."""
+        if units is None:
+            return ""
+        if isinstance(units, bytes):
+            units = units.decode()
+        value = escape(str(units), {'"': "&quot;"})
+        return f'\n{indent}<Information Name="Units" Value="{value}"/>'
+
+    geometry_information = units_information(geometry_units, "          ")
+
     # We only use a subset of the possible cell types
     if spaceDim == 2:
         if numCorners == 3:
@@ -9825,6 +10149,10 @@ def checkpoint_xdmf(
             topology_type = "Quadrilateral"
         geomType = "XY"
     else:
+        # TODO(BUG): a manifold mesh (triangles in three-space, e.g.
+        # SphericalManifold) lands here with numCorners == 3 and is written as
+        # Hexahedron; it should be Triangle with XYZ geometry. Found 2026-10-09
+        # (thin-sheet work), not fixed — out of that scope. See issue #869.
         if numCorners == 4:
             topology_type = "Tetrahedron"
         elif numCorners == 8:
@@ -9853,13 +10181,33 @@ def checkpoint_xdmf(
     header += """
 ]>"""
 
-    dg_vars = [var for var in meshVars if not var.continuous and var.degree == 1]
+    def direct_p2(var):
+        return (
+            var.continuous
+            and var.degree == 2
+            and var.mesh.isSimplex
+            and var.mesh.dim in (2, 3)
+            and var.mesh.cdim == var.mesh.dim
+        )
+
+    def direct_dg1(var):
+        return (
+            not var.continuous
+            and var.degree == 1
+            and var.mesh.isSimplex
+            and var.mesh.dim in (2, 3)
+            and var.mesh.cdim == var.mesh.dim
+        )
+
+    p2_vars = [var for var in meshVars if direct_p2(var)]
+    dg1_vars = [var for var in meshVars if direct_dg1(var)]
+    special_vars = p2_vars + dg1_vars
     collection_start = (
         '<Grid Name="fields" GridType="Collection" CollectionType="Spatial">'
         f'<Time Value="{index}"/>'
-        if dg_vars else ""
+        if special_vars else ""
     )
-    collection_end = "</Grid>" if dg_vars else ""
+    collection_end = "</Grid>" if special_vars else ""
     xdmf_start = f"""
 <Xdmf>
   <Domain Name="domain">
@@ -9881,56 +10229,56 @@ def checkpoint_xdmf(
         <Topology
            TopologyType="{topology_type}"
            NumberOfElements="{numCells}">
-          <DataItem Reference="XML">
-            /Xdmf/Domain/DataItem[@Name="cells"]
+          <DataItem Format="HDF" NumberType="Int"
+                    Precision="{topology_precision}"
+                    Dimensions="{numCells} {numCorners}">
+            &MeshData;:/{topoPath}/cells
           </DataItem>
         </Topology>
         <Geometry GeometryType="{geomType}">
-          <DataItem Reference="XML">
-            /Xdmf/Domain/DataItem[@Name="vertices"]
-          </DataItem>
+          <DataItem Format="HDF" NumberType="Float" Precision="8"
+                    Dimensions="{numVertices} {spaceDim}">
+            &MeshData;:/{geomPath}/vertices
+          </DataItem>{geometry_information}
         </Geometry>
 """
 
     ## The mesh Var attributes
 
-    def get_field_info(h5_filename, mesh_var, center):
-        """
-        Return (num_items, num_components, dataset_path) for a mesh variable.
-        Prefers vertex/cell compatibility groups, falls back to /fields layout.
-        """
-        compat_name = f"{mesh_var.clean_name}_{mesh_var.clean_name}"
-        candidates = []
-
-        if center == "Cell":
-            candidates = [f"cell_fields/{compat_name}", f"fields/{mesh_var.clean_name}"]
-        else:
-            candidates = [f"vertex_fields/{compat_name}", f"fields/{mesh_var.clean_name}"]
-
+    def get_field_info(h5_filename, dataset_path):
+        """Return item/component counts and units for one stored field."""
         with h5py.File(h5_filename, "r") as f:
-            for path in candidates:
-                if path in f:
-                    shp = f[path].shape
-                    if len(shp) == 1:
-                        return shp[0], 1, path
-                    return shp[0], shp[1], path
+            shp = f[dataset_path].shape
+            units = f[dataset_path].attrs.get("units")
+            if len(shp) == 1:
+                return shp[0], 1, units
+            return shp[0], shp[1], units
 
-        raise RuntimeError(
-            f"Could not locate data for variable '{mesh_var.clean_name}' in {h5_filename}"
-        )
+    def attribute_kind(var, components):
+        if var.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR) and components == 9:
+            return "Tensor"
+        if var.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR, uw.VarType.MATRIX):
+            return "Matrix"
+        return "Scalar" if components == 1 else "Vector"
 
     attributes = ""
     for var in meshVars:
-        if not var.continuous and var.degree == 1:
+        if direct_p2(var) or direct_dg1(var):
             continue
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
-
-        # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
-        if not getattr(var, "continuous") or getattr(var, "degree") == 0:
+        projected = (var.continuous and var.degree > 1) or (
+            not var.continuous and var.degree > 0
+        )
+        dataset_path = (
+            f"visualization/{var.clean_name}"
+            if projected
+            else f"fields/{var.clean_name}"
+        )
+        if not var.continuous or var.degree == 0:
             center = "Cell"
         else:
             center = "Node"
-        numItems, numComponents, dataset_path = get_field_info(var_filename, var, center)
+        numItems, numComponents, field_units = get_field_info(var_filename, dataset_path)
 
         if center == "Node" and numItems != numVertices:
             warnings.warn(
@@ -9945,17 +10293,7 @@ def checkpoint_xdmf(
                 stacklevel=2,
             )
 
-        # Use variable type when available, but reflect actual stored component count.
-        if hasattr(var, "vtype") and var.vtype in (
-            uw.VarType.TENSOR,
-            uw.VarType.SYM_TENSOR,
-            uw.VarType.MATRIX,
-        ):
-            variable_type = "Tensor"
-        elif numComponents == 1:
-            variable_type = "Scalar"
-        else:
-            variable_type = "Vector"
+        variable_type = attribute_kind(var, numComponents)
 
         data_dimensions = f"{numItems}" if numComponents == 1 else f"{numItems} {numComponents}"
         var_attribute = f"""
@@ -9968,7 +10306,7 @@ def checkpoint_xdmf(
              Dimensions="{data_dimensions}"
              Format="HDF">
             &{var.clean_name+"_Data"};:/{dataset_path}
-          </DataItem>
+          </DataItem>{units_information(field_units, "          ")}
         </Attribute>
         """
         attributes += var_attribute
@@ -10007,53 +10345,90 @@ def checkpoint_xdmf(
     """
         attributes += var_attribute
 
-    dg_grid = ""
-    if dg_vars:
-        first = dg_vars[0]
-        first_filename = filename + f".mesh.{first.clean_name}.{index:05}.h5"
-        with h5py.File(first_filename, "r") as f:
-            dg_cells = f["dg1/cells"].shape
-            dg_points = f["dg1/vertices"].shape
-        if dg_cells != (numCells, numCorners) or dg_points != (numCells * numCorners, spaceDim):
-            raise ValueError("DG1 visualization topology does not match the checkpoint mesh")
-        dg_grid = f"""
-    <Grid Name="DG1" GridType="Uniform">
-      <Topology TopologyType="{topology_type}" NumberOfElements="{numCells}">
-        <DataItem Format="HDF" NumberType="Int" Precision="8" Dimensions="{numCells} {numCorners}">
-          &{first.clean_name}_Data;:/dg1/cells
+    special_grids = ""
+    for var in p2_vars:
+        var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+        storage_group = "fields"
+        with h5py.File(var_filename, "r") as f:
+            cells_shape = f[f"{storage_group}/cells"].shape
+            points_shape = f[f"{storage_group}/coordinates"].shape
+            values_shape = f[f"{storage_group}/{var.clean_name}"].shape
+            special_geometry_units = f[f"{storage_group}/coordinates"].attrs.get(
+                "units"
+            )
+            field_units = f[f"{storage_group}/{var.clean_name}"].attrs.get("units")
+        special_topology = "Triangle_6" if var.mesh.dim == 2 else "Tetrahedron_10"
+        components = values_shape[1] if len(values_shape) == 2 else 1
+        kind = attribute_kind(var, components)
+        dimensions = " ".join(str(value) for value in values_shape)
+        special_grids += f"""
+    <Grid Name="{var.clean_name}" GridType="Uniform">
+      <Topology TopologyType="{special_topology}" NumberOfElements="{cells_shape[0]}">
+        <DataItem Format="HDF" NumberType="Int"
+                  Precision="{numpy.dtype(PETSc.IntType).itemsize}"
+                  Dimensions="{cells_shape[0]} {cells_shape[1]}">
+          &{var.clean_name}_Data;:/{storage_group}/cells
         </DataItem>
       </Topology>
       <Geometry GeometryType="{geomType}">
-        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dg_points[0]} {spaceDim}">
-          &{first.clean_name}_Data;:/dg1/vertices
-        </DataItem>
+        <DataItem Format="HDF" NumberType="Float" Precision="8"
+                  Dimensions="{points_shape[0]} {points_shape[1]}">
+          &{var.clean_name}_Data;:/{storage_group}/coordinates
+        </DataItem>{units_information(special_geometry_units, "        ")}
       </Geometry>
-"""
-        for var in dg_vars:
-            var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
-            with h5py.File(var_filename, "r") as f:
-                shape = f["dg1/values"].shape
-            if shape[0] != dg_points[0]:
-                raise ValueError(f"DG1 visualization size mismatch for {var.clean_name}")
-            components = shape[1] if len(shape) == 2 else 1
-            if var.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR):
-                kind = "Tensor"
-            elif var.vtype == uw.VarType.MATRIX:
-                kind = "Matrix"
-            else:
-                kind = "Scalar" if components == 1 else "Vector"
-            dimensions = " ".join(str(value) for value in shape)
-            dg_grid += f"""
       <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
         <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
-          &{var.clean_name}_Data;:/dg1/values
-        </DataItem>
+          &{var.clean_name}_Data;:/{storage_group}/{var.clean_name}
+        </DataItem>{units_information(field_units, "        ")}
       </Attribute>
-"""
-        dg_grid += "    </Grid>"
+    </Grid>"""
+
+    if dg1_vars:
+        with h5py.File(mesh_filename, "r") as mesh_handle:
+            dg1_cells = mesh_handle["viz/dg1/cells"]
+            dg1_coordinates = mesh_handle["viz/dg1/coordinates"]
+            dg1_cells_shape = dg1_cells.shape
+            dg1_points_shape = dg1_coordinates.shape
+            dg1_topology_precision = dg1_cells.dtype.itemsize
+            dg1_geometry_units = dg1_coordinates.attrs.get("units")
+
+        dg1_attributes = ""
+        for var in dg1_vars:
+            var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+            with h5py.File(var_filename, "r") as field_handle:
+                values = field_handle[f"fields/{var.clean_name}"]
+                values_shape = values.shape
+                field_units = values.attrs.get("units")
+            components = values_shape[1] if len(values_shape) == 2 else 1
+            kind = attribute_kind(var, components)
+            dimensions = " ".join(str(value) for value in values_shape)
+            dg1_attributes += f"""
+      <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
+          &{var.clean_name}_Data;:/fields/{var.clean_name}
+        </DataItem>{units_information(field_units, "        ")}
+      </Attribute>"""
+
+        special_grids += f"""
+    <Grid Name="DG1" GridType="Uniform">
+      <Topology TopologyType="{topology_type}" NumberOfElements="{dg1_cells_shape[0]}">
+        <DataItem Format="HDF" NumberType="Int"
+                  Precision="{dg1_topology_precision}"
+                  Dimensions="{dg1_cells_shape[0]} {dg1_cells_shape[1]}">
+          &MeshData;:/viz/dg1/cells
+        </DataItem>
+      </Topology>
+      <Geometry GeometryType="{geomType}">
+        <DataItem Format="HDF" NumberType="Float" Precision="8"
+                  Dimensions="{dg1_points_shape[0]} {dg1_points_shape[1]}">
+          &MeshData;:/viz/dg1/coordinates
+        </DataItem>{units_information(dg1_geometry_units, "        ")}
+      </Geometry>
+{dg1_attributes}
+    </Grid>"""
     xdmf_end = f"""
     </Grid>
-    {dg_grid}
+    {special_grids}
     {collection_end}
   </Domain>
 </Xdmf>

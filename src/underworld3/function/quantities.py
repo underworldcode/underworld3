@@ -385,31 +385,11 @@ class UWQuantity:
             else:
                 return UWQuantity(self._value - other._value, self._pint_unit or other._pint_unit)
 
-        # Handle UWexpression: UWQuantity - UWexpression → UWexpression
+        # Handle UWexpression: delegate to UWexpression.__rsub__, as __add__ does,
+        # which keeps a symbolic operand lazy so each side is scaled by its own
+        # units (#758)
         if isinstance(other, UWexpression):
-            from ..units import get_units
-            other_units = other.units
-
-            # For subtraction, units must be compatible - convert other to self's units
-            if self._pint_unit is not None and other_units is not None:
-                try:
-                    from ..scaling import units as ureg
-                    # Convert other's value to self's units
-                    other_converted = (other.value * other_units).to(self._pint_unit).magnitude
-                except Exception:
-                    # Units incompatible - use raw value (will be wrong but won't crash)
-                    other_converted = other.value
-            else:
-                other_converted = other.value
-
-            result_sym = self._value - other_converted
-            combined_units = self._pint_unit  # Result in self's units
-            return UWexpression(
-                f"(qty-{other.name})",
-                result_sym,
-                _unique_name_generation=True,
-                units=combined_units
-            )
+            return NotImplemented
 
         # Handle SymPy expressions - use LAZY EVALUATION like __add__
         if isinstance(other, sympy.Basic):
@@ -792,6 +772,44 @@ class UWQuantity:
             return sympy.Float(float(self._value))
         except (TypeError, ValueError):
             return sympy.sympify(self._value)
+
+    def _numeric_value(self):
+        """The value as a numpy array, or None for one numpy cannot read as a number."""
+        try:
+            value = np.asarray(self._value)
+            return value if np.iscomplexobj(value) else value.astype(float)
+        except (TypeError, ValueError):
+            # Sanctioned: a value that is not a number (a string, an object); the
+            # realness questions below then answer "unknown", as SymPy would
+            return None
+
+    @property
+    def is_extended_real(self):
+        """True when the value is real (or :math:`\\pm\\infty`), as SymPy's assumption;
+        None (unknown) for NaN or a value that is not a number.
+
+        A UW expression holding this quantity reports its realness from here. Without
+        it every constitutive parameter given with units was "not known real", and
+        SymPy evaluated each power over a sum containing one in the complex plane
+        (#823).
+        """
+        if isinstance(self._value, sympy.Basic):
+            return self._value.is_extended_real
+        value = self._numeric_value()
+        if value is None or np.any(np.isnan(value)):
+            return None
+        return bool(np.all(np.imag(value) == 0))
+
+    @property
+    def is_finite(self):
+        """True when the value is finite, as SymPy's assumption (``yield_stress = oo``
+        is real but not finite); None for NaN or a value that is not a number."""
+        if isinstance(self._value, sympy.Basic):
+            return self._value.is_finite
+        value = self._numeric_value()
+        if value is None or np.any(np.isnan(value)):
+            return None
+        return bool(np.all(np.isfinite(value)))
 
     def __float__(self):
         """Convert to float."""

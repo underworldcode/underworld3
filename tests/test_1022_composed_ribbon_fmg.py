@@ -19,9 +19,9 @@ signature of a specific failure when violated:
 
 * **Native-like level densities** (nnz/row bounded): structural-zero
   weights in the transfers fatten the Galerkin chain 3–5x per level.
-* **A strong finest ASM patch**: the patch smoother replaces whole-level
-  smoothing, so a finest level missing the cut/split rows leaves them
-  smoothed nowhere and the velocity sub-solve caps on every application.
+* **A strong finest ASM patch**: the patch's LU blocks sit on top of
+  whole-level SOR, so a finest level missing the cut/split rows leaves them
+  to SOR alone and the velocity sub-solve slows.
 * **Few velocity/pressure iterations** (recorded: vel 8–9, pres 13
   against GAMG 82): a silently declined patch stalls or caps.
 * **Slip/leak invariants** (recorded: slip 0.2223, leak ~2e-17): the
@@ -118,6 +118,15 @@ def _solve_and_probe(stokes):
     return ctx, velpc
 
 
+def _patch_pc(spc):
+    """The ASM patch of a FAC level, the second member of its composite smoother
+    (the whole-level smoother first, the fault blocks on top — #670); a level
+    without a patch returns its own PC."""
+    if spc.getType() == "composite":
+        return spc.getCompositePC(1)
+    return spc
+
+
 def test_pure_contact_structural_patch(composed_stack):
     """The benchmark of record: split contact, structural patch alone."""
     mesh, tail = composed_stack
@@ -141,7 +150,7 @@ def test_pure_contact_structural_patch(composed_stack):
         # Recorded 24-28 everywhere; structural-zero fattening measured
         # 90-481. The bound is the fat-chain tripwire, not a target.
         assert nnz_row <= 40, f"level {l}: nnz/row {nnz_row:.0f} (fat chain)"
-        spc = sm.getPC()
+        spc = _patch_pc(sm.getPC())
         if spc.getType() == "asm":
             assert not spc.getFailedReason(), f"level {l} ASM PC failed"
             if l == nlev - 1:
@@ -173,11 +182,11 @@ def test_fac_zone_key_installs_union_block(composed_stack):
     ctx, velpc = _solve_and_probe(stokes)
     assert ctx.get("vel_its_last") <= 15
 
-    spc = velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC()
+    spc = _patch_pc(velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC())
     assert spc.getType() == "asm"
-    assert len(spc.getASMSubKSP()) >= 2, (
-        "zone key must install the zone block plus the automatic "
-        "structural-union block")
+    # the whole-level smoother covers the rows the zone leaves out, and the
+    # zone block sits on top of it (#670)
+    assert len(spc.getASMSubKSP()) >= 1, "zone key must install the zone block"
 
     # The retired spelling must fail LOUDLY, never decline silently.
     stokes2 = _contact_stokes(mesh, "C")

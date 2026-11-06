@@ -1,8 +1,12 @@
 """Serial behaviour of the hang watchdog and the rank-agreement audit.
 
 The parallel half --- a rank genuinely blocked in a collective still filing a
-report --- is in ``tests/parallel/test_0778_hang_watchdog_mpi.py``, because it
-needs more than one rank to block against.
+report, with the stack it files --- is in
+``tests/parallel/test_0778_hang_watchdog_mpi.py``, because it needs more than
+one rank to block against. ``tests/test_0063_mpi_hang_supervisor.py`` covers a
+different mechanism: ``scripts/mpi_supervisor.py`` watches a job from outside
+and signals SIGUSR1, and it dumps every thread because nothing of its own is
+starting or exiting while it does so.
 
 Every test here writes to a real file rather than a buffer, and that is not
 incidental. The dump goes through :mod:`faulthandler`, which writes to a file
@@ -14,6 +18,7 @@ exists for, which is what :func:`test_a_buffer_is_refused` guards.
 """
 
 import io
+import threading
 import time
 
 import pytest
@@ -23,6 +28,9 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
 FIRED = "UW HANG WATCHDOG"
+# faulthandler's single-thread header. The all-threads walk writes
+# "Current thread 0x..." instead, once per thread state it reads.
+STACK = "Stack (most recent call first):"
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +96,61 @@ def test_report_carries_the_main_thread_stack(report):
     text = read_back()
     assert "test_report_carries_the_main_thread_stack" in text, (
         f"the dump did not include the main thread:\n{text}"
+    )
+
+
+def test_the_faulthandler_dump_walks_one_thread(report):
+    """``all_threads=False`` on the C path, which is what #793 came down to.
+
+    Two reports land in the stream and only one of them is at issue. The
+    labelled report comes from ``_stack_dump()``, is formatted in Python from
+    ``sys._current_frames()``, and carries every thread by design -- that call
+    holds the interpreter lock, so it cannot read a half-built thread state.
+    Behind it is the unlabelled :mod:`faulthandler` block, written by a C
+    signal handler with no lock, and THAT is the one that walked every thread
+    state and took the process down. Measured in isolation: 2 crashes in 8
+    runs with the all-threads walk, 0 in 8 without it.
+
+    The paths label themselves, which is the discriminator.
+    ``dump_traceback(all_threads=False)`` writes ``Stack (most recent call
+    first):``; the all-threads walk writes ``Current thread 0x...`` instead,
+    once per thread state it reads. A second thread is alive here, so the
+    all-threads walk would be visible if it came back.
+    """
+    stream, read_back = report
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def a_thread_that_is_not_the_one_we_want():
+        started.set()
+        release.wait(10.0)
+
+    other = threading.Thread(target=a_thread_that_is_not_the_one_we_want,
+                             daemon=True)
+    other.start()
+    assert started.wait(5.0), "the second thread never ran"
+
+    uw.mpi.watch(seconds=0.3, stream=stream)
+    time.sleep(0.9)
+    uw.mpi.unwatch()
+    release.set()
+    other.join(timeout=5.0)
+
+    text = read_back()
+    assert text.count(FIRED) >= 1, f"nothing to inspect:\n{text}"
+    assert STACK in text, (
+        f"no faulthandler dump at all, so this test cannot see which path "
+        f"ran:\n{text}"
+    )
+    assert "Current thread" not in text, (
+        f"the C dump walked thread states, so all_threads came back on -- "
+        f"that is the #793 segfault:\n{text}"
+    )
+    # The labelled Python report is the one that names every thread, and it
+    # should still do so: that path was never the unsafe one.
+    assert "a_thread_that_is_not_the_one_we_want" in text, (
+        f"the labelled report lost the other threads:\n{text}"
     )
 
 

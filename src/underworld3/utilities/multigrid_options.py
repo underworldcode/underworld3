@@ -78,16 +78,18 @@ def _user_owns(opts, name, owned):
     return opts.getString(name) != owned.get(name)
 
 
-#: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
-#: is the default and is np-safe; ``"svd"`` is required whenever the coarse
-#: operator inherits a null space — see :func:`geometric_mg_bundle`.
-GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd")
+#: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU,
+#: zero-pivot shift) is the default and is np-safe; ``"gamg"`` is a distributed coarse solve, only
+#: when asked for — see :func:`geometric_mg_bundle`.
+GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "gamg")
 
-#: Smoother variants. These are the two measured regimes, not a taste setting:
+#: Smoother variants. These are measured regimes, not a taste setting:
 #: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
-#: stalls, ``"fast"`` is cheaper per cycle where the operator is benign. Selected by
-#: ``solver.strategy``; see :func:`geometric_mg_bundle` for the numbers.
-GEOMETRIC_MG_SMOOTHERS = ("robust", "fast")
+#: stalls, ``"fast"`` is cheaper per cycle where the operator is benign, and
+#: ``"bulletproof"`` exists to take the linear solve OFF the list of suspects when a
+#: run misbehaves and the cause could be the solver, the transport scheme or the
+#: resolution. Selected by ``solver.strategy``; see :func:`geometric_mg_bundle`.
+GEOMETRIC_MG_SMOOTHERS = ("robust", "fast", "bulletproof")
 
 
 class MGSettings(NamedTuple):
@@ -167,6 +169,8 @@ def describe(settings, levels=None, overridden=()):
         coarse = settings.get("mg_coarse_pc_type", "?")
         if coarse == "redundant":
             coarse += f"/{settings.get('mg_coarse_redundant_pc_type', '?')}"
+        elif coarse == "python":           # the asked-for GAMG coarse solve
+            coarse = "gamg"
         text = f"{what}, {cycle} cycle, smoother {smoother}, coarse {coarse}"
     elif pc == "gamg":
         text = (f"algebraic multigrid (gamg/{settings.get('pc_gamg_type', '?')}), "
@@ -183,8 +187,11 @@ def describe(settings, levels=None, overridden=()):
 def _geometric_mg_settings(coarse, smoother="robust"):
     """The geometric-MG settings for one coarse-solve and smoother variant.
 
-    Both variants set the SAME keys — only values differ — so the derived stale-key
-    sets are variant-independent."""
+    The smoother variants set the SAME keys, only the values differ: this is why
+    ``"bulletproof"`` takes PETSc's own ASM defaults rather than tuning overlap. The
+    coarse variants do not: only ``"redundant"`` sets
+    ``mg_coarse_redundant_pc_type`` and its factor shift. A key one variant sets and another does not is
+    in the other's stale list (:func:`_bundle`), so switching variants clears it."""
     settings = {
         # The KSP this preconditioner serves must be FLEXIBLE, for both
         # variants. The "robust" smoother is a Krylov solve, so the
@@ -253,6 +260,32 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # at the cost of the regime "robust" exists for. See the docstring.
         settings["mg_levels_ksp_type"] = "richardson"
         settings["mg_levels_ksp_max_it"] = 3
+    elif smoother == "bulletproof":
+        # Additive Schwarz under the Krylov smoother: each subdomain solve inverts
+        # the LOCAL coupling directly, so the smoother does not rely on the operator
+        # being close to symmetric or elliptic. SOR does, and has no purchase once it
+        # is neither.
+        #
+        # The measurement: creeping Oldroyd-B past a confined cylinder (Wi 0.4,
+        # beta 0.59, three levels), where the viscoelastic velocity block carries
+        # upper-convected stretching terms and a cell-scale stress layer. Same
+        # problem, one key changed:
+        #
+        #   sor  -> step 15 took 26947 s and the drag reached -4642
+        #   asm  -> step 15 took 115 s and the drag stayed finite
+        #
+        # 90% of the inner velocity solves hit their iteration cap under sor against
+        # 77% under asm. It is SLOWER per sweep on a benign operator, which is why
+        # this is a third named variant and not a change to "robust".
+        #
+        # Its purpose is diagnostic as much as numerical. When a run misbehaves and
+        # the linear solve, the transport scheme and the mesh resolution are all
+        # candidates, this variant removes the first from the list: the cylinder run
+        # above survived under asm and still produced the same wrong drag at the same
+        # step, which is how we learned the fault was not in the solver.
+        settings["mg_levels_ksp_type"] = "gmres"
+        settings["mg_levels_ksp_max_it"] = 8
+        settings["mg_levels_pc_type"] = "asm"
     else:
         raise ValueError(
             f"smoother must be one of {GEOMETRIC_MG_SMOOTHERS} (got {smoother!r})")
@@ -267,14 +300,29 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # small-np users.
         settings["mg_coarse_pc_type"] = "redundant"
         settings["mg_coarse_redundant_pc_type"] = "lu"
+        # The nonzero factor shift acts only on a pivot below PETSc's zero-pivot
+        # tolerance (relative to the row's off-diagonals), then refactors with a
+        # small diagonal shift: a level whose pivots stay clear of zero factors as
+        # without it, a singular one factors instead of failing (#901). The coarse
+        # LU reads it at its set-up, on every route, the rotated one included.
+        settings["mg_coarse_redundant_pc_factor_shift_type"] = "nonzero"
+    elif coarse == "gamg":
+        # GAMG as the coarse solve, only when asked for: a bottom level too
+        # large for every rank to factor. The caller installs
+        # custom_mg.GamgCoarseSolve, which attaches the restricted rigid-body
+        # near-null space.
+        settings["mg_coarse_pc_type"] = "python"
     elif coarse == "svd":
-        # The Galerkin-coarsened ROTATED velocity block inherits every
-        # rigid-rotation null-space mode of the constrained problem (a closed
-        # circle: one; a spherical shell: three), and redundant/LU hits a zero
-        # pivot there (SUBPC_ERROR, outer reason -11 — the #306 fix). SVD is
-        # null-space robust and the coarse level is small. Same choice as the
-        # native spherical FMG setups.
-        settings["mg_coarse_pc_type"] = "svd"
+        # Removed, not deprecated (#901): the variant existed for the rotated
+        # route, whose coarse levels are near-singular, not singular, and the
+        # shifted LU above gives the SVD's answer at a fraction of its O(n^3)
+        # cost on every rank.
+        raise ValueError(
+            'coarse="svd" was removed (#901). Use the default, coarse="redundant": '
+            "redundant LU with a zero-pivot shift, which also factors a singular "
+            "coarse level. On the standard solve path a dense SVD can still be set "
+            "by hand through the PETSc option mg_coarse_pc_type=svd under the "
+            "block's prefix; the rotated free-slip route takes no coarse override.")
     else:
         raise ValueError(
             f"coarse must be one of {GEOMETRIC_MG_COARSE_SOLVERS} (got {coarse!r})")
@@ -355,15 +403,15 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
 
     Parameters
     ----------
-    smoother : {"robust", "fast"}
+    smoother : {"robust", "fast", "bulletproof"}
         Which of the two MEASURED regimes to configure. ``"robust"`` is
         ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
         ``solver.strategy``, not usually here.
-    coarse : {"redundant", "svd"}
-        The coarse-level solve. ``"redundant"`` (redundant+LU) is the default.
-        Use ``"svd"`` when the coarse operator inherits a null space — which the
-        Galerkin-coarsened *rotated* velocity block always does, because the
-        rigid rotations survive the constraint.
+    coarse : {"redundant", "gamg"}
+        The coarse-level solve. ``"redundant"`` (redundant+LU with a zero-pivot
+        shift) is the default on every route. ``"gamg"``
+        is a distributed coarse solve for a bottom level too large to gather
+        (the caller installs ``custom_mg.GamgCoarseSolve``).
 
     Returns
     -------
@@ -372,7 +420,7 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
 
     Notes
     -----
-    The two smoother variants are two measured regimes, and neither dominates.
+    The smoother variants are measured regimes, and none dominates.
 
     ``"robust"`` (``gmres``/4) survives an operator a stationary smoother stalls on.
     Spiegelman notch, :math:`\eta` contrast 1e26, nested 4-level hierarchy:

@@ -114,6 +114,8 @@ def test_yield_anchor_removes_the_power_mean_degenerate_basin():
 @pytest.mark.level_1
 @pytest.mark.tier_a
 def test_anchor_rejects_nonsense_and_defaults_to_onset():
+    # "onset" stays the default with the smooth default law (2026-10-05): "yield" made
+    # every unyielded cell 1/(1 - delta/2) stiffer and the yielded tangent negative
     c = _model()
     assert c.yield_anchor == "onset"
     with pytest.raises(ValueError):

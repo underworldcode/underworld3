@@ -1366,10 +1366,17 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     units=self._units,
                 )
             # The remesh helper calls this on REINIT vars after an
-            # adapt. Bound here so the closure captures ``self`` (the
-            # SwarmVariable) rather than the proxy MeshVariable.
-            self._meshVar._remesh_reinit_callback = (
-                lambda _self=self: setattr(_self, "_proxy_stale", True))
+            # adapt. It holds the SwarmVariable weakly: the proxy's mesh
+            # owns the proxy, and a strong capture made that mesh keep the
+            # variable, its swarm's next mesh, and that mesh's solvers.
+            variable_ref = weakref.ref(self)
+
+            def _mark_proxy_stale():
+                variable = variable_ref()
+                if variable is not None:
+                    variable._proxy_stale = True
+
+            self._meshVar._remesh_reinit_callback = _mark_proxy_stale
 
     def _update(self):
         """
@@ -3351,8 +3358,6 @@ class Swarm(Stateful, uw_object):
         self.verbose = verbose
         self._clip_to_mesh = clip_to_mesh
 
-        # Store reference to model instead of direct mesh reference
-        # This enables dynamic mesh handover while maintaining access to mesh services
         import underworld3 as uw
 
         model = uw.get_default_model()
@@ -3360,8 +3365,11 @@ class Swarm(Stateful, uw_object):
         # Register mesh with model if not already present
         model._register_mesh(mesh)
 
-        # Store reference to this swarm's specific mesh for proxy operations
-        self._mesh_id = id(mesh)
+        # The swarm holds its mesh. Found by id in the model's weak registry,
+        # a mesh nobody else held was freed under the swarm at the next
+        # collection, and an unrelated later mesh at a reused address could
+        # answer for it.
+        self._mesh = mesh
 
         self._model_ref = weakref.ref(model)
         self.dim = mesh.dim
@@ -3776,10 +3784,7 @@ class Swarm(Stateful, uw_object):
     @property
     def mesh(self):
         """The mesh this swarm operates on"""
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("Model has been garbage collected")
-        return model.get_mesh(self._mesh_id)
+        return self._mesh
 
     @mesh.setter
     def mesh(self, new_mesh):
@@ -3803,7 +3808,7 @@ class Swarm(Stateful, uw_object):
         # Register new mesh with model
         model._register_mesh(new_mesh)
 
-        if id(new_mesh) == self._mesh_id:
+        if new_mesh is self._mesh:
             # Check if swarm is already compatible with target mesh
             if self.dim == new_mesh.dim and self.cdim == new_mesh.cdim:
                 # Dimensions match, check if proxy variables need updating
@@ -3843,7 +3848,7 @@ class Swarm(Stateful, uw_object):
         model._update_mesh_for_swarm(self, new_mesh)
 
         # Update swarm's mesh reference
-        self._mesh_id = id(new_mesh)
+        self._mesh = new_mesh
 
         # Update swarm's cached dimensions
         self.dim = new_mesh.dim
@@ -5224,12 +5229,16 @@ class Swarm(Stateful, uw_object):
                 continue
             var_arrays[var.clean_name] = np.asarray(var.data).copy()
 
+        trace = getattr(self, "_characteristics", None)
         return {
             "name": self._snapshot_stable_name(),
             "mesh_name": self.mesh.name,
             "population_generation": int(self._population_generation),
             "coords": coords,
             "vars": var_arrays,
+            # the mid-time advection's trace: which velocity level is valid
+            # and the length of the step it belongs to
+            "characteristics": trace._step_state() if trace is not None else None,
         }
 
     def apply_snapshot_payload(self, payload: dict) -> None:
@@ -5348,6 +5357,12 @@ class Swarm(Stateful, uw_object):
             # of advection) silently replaced the restored values with
             # that garbage (exposed by the SWARM-01 invalidation fix).
             var.data[...] = saved
+
+        # The mid-time advection's trace: a trace built since the capture (or a
+        # payload without one) goes back to its state before any step.
+        trace = getattr(self, "_characteristics", None)
+        if trace is not None:
+            trace._restore_step_state(payload.get("characteristics"))
 
     def access(self, *writeable_vars: SwarmVariable):
         """
@@ -5484,7 +5499,9 @@ class Swarm(Stateful, uw_object):
 
         Returns
         -------
-        (added, removed) : the counts on this rank.
+        (added, removed) : the counts on this rank. New particles follow the
+            existing ones in storage order, so the last ``added`` rows of every
+            variable are the ones just created.
         """
         mesh = self.mesh
         dim = self.cdim
@@ -5531,12 +5548,22 @@ class Swarm(Stateful, uw_object):
                 surplus = int(npc[c] - max_per_cell)
                 drop.extend(idx[np.argsort(nearest_all[idx])[:surplus]].tolist())
             if drop:
+                # PETSc removes a point by copying the LAST point into its
+                # slot (DMSwarmDataBucketRemovePointAtIndex), so the survivors
+                # are reordered in storage. The reconstruction below reads
+                # values in storage order, and the tree it is built on must
+                # share it: the same moves are replayed on the local copies
+                # (#784). Descending order, so a moved point is never one
+                # still to be removed.
+                last = X.shape[0]
                 for index in sorted(drop, reverse=True):
                     self.dm.removePointAtIndex(int(index))
+                    last -= 1
+                    if index != last:
+                        X[index] = X[last]
+                        cells[index] = cells[last]
+                X, cells = X[:last], cells[:last]
                 removed = len(drop)
-                keep = np.ones(X.shape[0], dtype=bool)
-                keep[drop] = False
-                X, cells = X[keep], cells[keep]
                 npc = np.bincount(cells[cells >= 0], minlength=ncells)
                 self._invalidate_canonical_data()
 
@@ -5697,7 +5724,9 @@ class Swarm(Stateful, uw_object):
             ``uw.function.global_evaluate``. Default ``False``.
         midtime_velocity : bool, optional
             Take the mid-point velocity of the RK2 step at the mid TIME,
-            :math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, from a
+            :math:`v^n + \tfrac{r}{2}(v^n - v^{n-1})` with :math:`r` the ratio
+            of this step to the last (:math:`\tfrac32 v^n - \tfrac12 v^{n-1}`
+            for equal steps), from a
             :class:`~underworld3.systems.ddt.CharacteristicTrace` the swarm
             owns (the previous velocity is cached by evaluation at the nodes
             at the end of each call). Second order in an unsteady flow; a
@@ -5724,6 +5753,12 @@ class Swarm(Stateful, uw_object):
         import underworld3 as uw
 
         delta_t_model = uw.scaling.non_dimensionalise(delta_t)
+        # The particle arithmetic is in model units: a velocity read by
+        # global_evaluate comes back dimensional in a units model and is reduced.
+        from underworld3.systems.ddt import _to_nondim_ndarray
+
+        def _nondim_velocity(value):
+            return np.asarray(_to_nondim_ndarray(value))[:, 0, :]
 
         dt_limit = self.estimate_dt(V_fn)
 
@@ -5807,7 +5842,7 @@ class Swarm(Stateful, uw_object):
             owns_trace = True
         v_mid_matrix = V_fn_matrix
         if trace is not None and substeps == 1:
-            v_mid_matrix = trace.midtime_expr()
+            v_mid_matrix = trace.midtime_expr(delta_t_model)
 
         self._deferred_migration_suspended = True
 
@@ -5833,9 +5868,9 @@ class Swarm(Stateful, uw_object):
                 # rank-local evaluation silently extrapolates wrong values
                 # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.global_evaluate(
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(
                     V_fn_matrix, self._particle_coordinates.data
-                )[:, 0, :]
+                ))
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -5850,7 +5885,7 @@ class Swarm(Stateful, uw_object):
                 # (since the mid-points might have moved off-proc)
                 #
 
-                v_at_Vpts[...] = uw.function.global_evaluate(v_mid_matrix, mid_pt_coords)[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(v_mid_matrix, mid_pt_coords))
 
                 new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
@@ -5870,7 +5905,7 @@ class Swarm(Stateful, uw_object):
                     print(f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 v_at_Vpts = np.zeros_like(coords)
-                v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, coords[...])[:, 0, :]
+                v_at_Vpts[...] = _nondim_velocity(uw.function.global_evaluate(V_fn_matrix, coords[...]))
 
                 if self.verbose:
                     print(f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
@@ -5888,7 +5923,7 @@ class Swarm(Stateful, uw_object):
         ## End of substepping loop
         self._deferred_migration_suspended = False
         if owns_trace:
-            trace.finish_step()          # the velocity used this step becomes v^{n-1}
+            trace.finish_step(delta_t_model)   # the velocity used this step becomes v^{n-1}
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that
@@ -5917,21 +5952,43 @@ class Swarm(Stateful, uw_object):
             self._characteristics = tr
         return tr
 
+    def _adjoint_support(self, n_before, n_after):
+        """Whether this advection admits a discrete adjoint.
+
+        The Runge-Kutta step in position is an explicit ODE step and is
+        differentiable; migration is a permutation. What is not is a change
+        in the NUMBER of particles — a particle removed on leaving the domain
+        changes the dimension of the state, and there is no linear map to
+        transpose. So the rule is one line: the step is adjointable exactly
+        when the particle set is fixed across it. That is checkable, and this
+        checks it.
+        """
+        if n_after != n_before:
+            return (False,
+                    f"the particle set changed: {n_before} -> {n_after} "
+                    f"({n_before - n_after:+d} removed on leaving the domain, "
+                    f"or repopulated); the state changed dimension")
+        return (True,
+                "explicit Runge-Kutta step in position on a fixed particle set; "
+                "migration is a permutation")
+
     def _note_advection(self, dt, substeps, order, n_before):
         """Tell the model's open step that this swarm moved.
 
-        Recorded with the particle count before and after: a swarm that
-        quietly lost forty particles to the boundary is the kind of thing a
-        run should say.
+        Recorded with the particle count before and after, because that count
+        is the adjoint verdict — and because a swarm that quietly lost forty
+        particles to the boundary is the kind of thing a run should say.
         A no-op outside a ``model.step`` block.
         """
         try:
             n_after = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+            supported, why = self._adjoint_support(n_before, n_after)
             uw.get_default_model()._record_step_event(
                 "swarm_advect", f"{type(self).__name__}#{self.instance_number}",
                 part=f"{type(self).__name__}#{self.instance_number}",
                 dt=float(dt), substeps=int(substeps), order=int(order),
                 n_before=int(n_before), n_after=int(n_after),
+                adjoint={"supported": bool(supported), "reason": why},
             )
         except Exception:
             # Charter S4 — sanctioned: the same rule as the history shift in

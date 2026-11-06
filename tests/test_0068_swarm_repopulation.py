@@ -108,3 +108,32 @@ def test_population_control_keeps_cells_filled_under_rotation():
     assert T._cell_projector.n_empty == 0
     # The refilled corners carry the RBF reconstruction of x: bounded, no P2 blow-up
     assert np.abs(np.asarray(T.data[:, 0])).max() < 1.5
+
+
+def test_a_refill_after_a_removal_reads_the_right_neighbours():
+    """PETSc removes a point by copying the LAST point into its slot, so a
+    removal reorders the surviving particles in storage. The reconstruction
+    for a particle created in the same call must be built on that storage
+    order, or its neighbours' values are read from unrelated rows (#784).
+    A linear field is reproduced exactly by the linear RBF, so any mismatch
+    shows as an error of order one."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, qdegree=2)
+    swarm = uw.swarm.Swarm(mesh)
+    M = uw.swarm.SwarmVariable("M", swarm, 1)
+    swarm.populate(fill_param=3)
+    lattice = int(_census(swarm).max())
+    # The band x < 0.2 is shifted onto [0.2, 0.4): the shifted band is empty,
+    # its destination holds twice the lattice, and one call must both thin
+    # the one and refill the other.
+    X = np.array(swarm._particle_coordinates.data)
+    X[X[:, 0] < 0.2, 0] += 0.2
+    with uw.synchronised_array_update():
+        swarm._particle_coordinates.data[...] = X
+    swarm.migrate()
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        M.data[:, 0] = X[:, 0] + 2.0 * X[:, 1]
+    added, removed = swarm.repopulate(max_per_cell=lattice, order=1)
+    assert added > 0 and removed > 0
+    X = np.asarray(swarm._particle_coordinates.data)
+    assert np.abs(np.asarray(M.data[:, 0]) - (X[:, 0] + 2.0 * X[:, 1])).max() < 1.0e-8

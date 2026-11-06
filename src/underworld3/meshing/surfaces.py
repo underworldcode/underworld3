@@ -1318,6 +1318,7 @@ class Surface:
                 1,
                 degree=self.mesh.degree,
                 varsymbol=f"d_{{{self._symbol}}}",
+                units=self.mesh.units,
             )
 
         # Get mesh coordinates in model (internal) space.
@@ -1351,6 +1352,7 @@ class Surface:
                 1,
                 degree=self.mesh.degree,
                 varsymbol=f"|d_{{{self._symbol}}}|",
+                units=self.mesh.units,
             )
 
         with uw.synchronised_array_update():

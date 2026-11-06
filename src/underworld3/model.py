@@ -17,6 +17,7 @@ Design Philosophy:
 - Materials are just dictionaries of expressions/values
 """
 
+import gc
 import weakref
 import json
 from typing import Optional, Dict, Any, List
@@ -31,6 +32,7 @@ import yaml
 
 # Import the Pint-native implementation
 import os
+import re
 import sys
 
 sys.path.append(os.path.dirname(__file__))
@@ -248,6 +250,8 @@ def _operator_text(event):
         return name
     if kind == "history_shift":
         return f"shift {name}"
+    if kind == "adjoint_solve":
+        return f"adjoint {name}"
     return f"{kind}:{name}"
 
 
@@ -264,15 +268,23 @@ def _quantity_parts(value):
         return None, None
 
 
+_UNIT_SYMBOLS = {
+    "second": "s", "minute": "min", "hour": "hr", "day": "d",
+    "year": "yr", "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
+    "meter": "m", "kilometer": "km", "centimeter": "cm", "millimeter": "mm",
+    "kelvin": "K", "kilogram": "kg", "pascal": "Pa", "newton": "N",
+    "joule": "J", "watt": "W",
+}
+
+
 def _abbreviate_unit(unit):
-    """A short unit name for a column header. Falls back to the full name."""
+    """A short unit name for a column header or a scale: each unit name in a
+    pint unit string by its symbol, "pascal * second" as "Pa s" and
+    "millimeter / year" as "mm/yr". Names without a symbol stay as they are."""
     if unit is None:
         return ""
-    return {
-        "second": "s", "minute": "min", "hour": "hr", "day": "d",
-        "year": "yr", "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
-        "meter": "m", "kilometer": "km", "kelvin": "K", "kilogram": "kg",
-    }.get(str(unit), str(unit))
+    text = re.sub(r"[A-Za-z_]+", lambda m: _UNIT_SYMBOLS.get(m.group(0), m.group(0)), str(unit))
+    return text.replace(" * ", " ").replace(" / ", "/")
 
 
 def _in_units_of(value, unit):
@@ -405,8 +417,15 @@ class Model(PintNativeModelMixin, BaseModel):
     )
 
     # Declare private attributes for Pydantic v2
-    _meshes: Any = PrivateAttr(default_factory=dict)
+    # Weak, like the swarms below: a strong registry kept every mesh ever
+    # built, with its DM hierarchy, its variables' vectors and its solvers'
+    # matrices. A driver that rebuilds a faulted mesh at each fault move grew
+    # by ~0.4 GB per rank per rebuild until it was killed (kaiju, 2026-10).
+    _meshes: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _primary_mesh_id: Optional[int] = PrivateAttr(default=None)
+    # The primary mesh itself, held weakly: an id alone outlives its mesh and
+    # can be reused by an unrelated later mesh (differently on each rank).
+    _primary_mesh_ref: Any = PrivateAttr(default=None)
     # WeakValueDictionary so dropping the user's last reference to a swarm
     # actually lets it be garbage-collected. Without this, transient swarms
     # used inside functions (global expression evaluation, checkpoint reads,
@@ -418,8 +437,11 @@ class Model(PintNativeModelMixin, BaseModel):
     # traversal (summaries, snapshots) should iterate a copy such as
     # ``list(self._swarms.items())``.
     _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
-    _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
-    _solvers: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # Weak: the model indexes variables and solvers, it does not own them (a
+    # mesh owns its variables; a variable or solver holds its mesh), so a
+    # strong entry here pinned the mesh.
+    _variables: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
+    _solvers: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
 
     # State-bearing objects (DDt instances, parameter-history holders,
     # any helper that exposes a .state dataclass per the Snapshottable
@@ -454,6 +476,7 @@ class Model(PintNativeModelMixin, BaseModel):
     _transcript_dir: Any = PrivateAttr(default=None)
     _transcript_fh: Any = PrivateAttr(default=None)
     _transcript_format: Any = PrivateAttr(default=None)
+    _transcript_last_refusals: Any = PrivateAttr(default=None)
     _transcript_columns: Any = PrivateAttr(default=None)
     _announced_transcript: Any = PrivateAttr(default=None)
     # The automatic run directory carries BOTH renderings: the text one is for
@@ -467,7 +490,9 @@ class Model(PintNativeModelMixin, BaseModel):
     _parts: Dict[str, Any] = PrivateAttr(default_factory=dict)
     # part -> the live object behind it (solver, history manager), so a
     # pass over the transcript can call the operator a record names.
-    _part_objects: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # Weak: a record names its part's object while it lives; a strong entry
+    # kept every solver that ever solved in a step, and its mesh.
+    _part_objects: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     # Set while rewind() is doing its own restore, so load_state does not log a
     # second, less informative note for the same backtrack.
     _restoring: Any = PrivateAttr(default=False)
@@ -516,10 +541,9 @@ class Model(PintNativeModelMixin, BaseModel):
 
     @property
     def mesh(self):
-        """The primary mesh for this model"""
-        if self._primary_mesh_id is None:
-            return None
-        return self._meshes.get(self._primary_mesh_id)
+        """The primary mesh for this model (``None`` once it has been freed)."""
+        ref = self._primary_mesh_ref
+        return ref() if ref is not None else None
 
     def _register_mesh(self, mesh):
         """
@@ -534,9 +558,10 @@ class Model(PintNativeModelMixin, BaseModel):
         mesh_id = id(mesh)
         self._meshes[mesh_id] = mesh
 
-        # Set as primary mesh if no primary mesh exists
-        if self._primary_mesh_id is None:
+        # Set as primary mesh if there is none, or it has been freed
+        if self.mesh is None:
             self._primary_mesh_id = mesh_id
+            self._primary_mesh_ref = weakref.ref(mesh)
 
         self.version += 1
 
@@ -547,6 +572,19 @@ class Model(PintNativeModelMixin, BaseModel):
     def get_mesh(self, mesh_id: int):
         """Get a mesh by ID from the model registry"""
         return self._meshes.get(mesh_id)
+
+    def _live_meshes(self):
+        """The registered meshes, after a collection pass.
+
+        A dropped mesh with variables is a reference cycle (the mesh owns its
+        variables, each variable holds its mesh), so it stays in the weak
+        registry until the cyclic collector runs, and that runs at a different
+        moment on each rank. A traversal that makes a collective call per mesh
+        (a snapshot's checkpoint writes) takes its list from here, so every
+        rank visits the same meshes.
+        """
+        gc.collect()
+        return list(self._meshes.values())
 
     def set_primary_mesh(self, mesh):
         """
@@ -559,12 +597,11 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         mesh_id = id(mesh)
         if mesh_id not in self._meshes:
-            # Register the mesh first
             self._register_mesh(mesh)
-        else:
-            # Just update the primary mesh pointer
-            self._primary_mesh_id = mesh_id
-            self.version += 1
+        # always this mesh: registering alone keeps an existing live primary
+        self._primary_mesh_id = mesh_id
+        self._primary_mesh_ref = weakref.ref(mesh)
+        self.version += 1
 
     def _register_swarm(self, swarm):
         """
@@ -597,7 +634,7 @@ class Model(PintNativeModelMixin, BaseModel):
         except ImportError:
             return
         names_to_drop = [
-            name for name, var in self._variables.items()
+            name for name, var in list(self._variables.items())
             if isinstance(var, SwarmVariable) and getattr(var, "_swarm_ref", None) is not None
             and var._swarm_ref() is swarm
         ]
@@ -853,7 +890,7 @@ class Model(PintNativeModelMixin, BaseModel):
         str or None : Qualified name if found, None otherwise
         """
         # Search through all registered names
-        for name, registered_var in self._variables.items():
+        for name, registered_var in list(self._variables.items()):
             if registered_var is variable:
                 return name
         return None
@@ -1258,12 +1295,31 @@ class Model(PintNativeModelMixin, BaseModel):
         """The record that opens a run in the log, so the file is self-describing."""
         from datetime import datetime, timezone
 
-        scales = {}
+        # The record keeps the fundamental scales, and beside them the
+        # reference quantities as they were declared, in the units they were
+        # quoted in. The readable header reports the declaration when there is
+        # one: "domain_depth 10 km", not the fundamental length in metres.
+        scales, reference = {}, {}
         try:
             for name, scale in (self.get_fundamental_scales() or {}).items():
                 scales[str(name)] = _jsonable_quantity(scale)
         except Exception:
             scales = {}
+        try:
+            from .scaling import units as ureg
+
+            for name, quantity in (self.get_reference_quantities() or {}).items():
+                if not (isinstance(quantity, dict) and "magnitude" in quantity):
+                    continue
+                magnitude, unit = float(quantity["magnitude"]), str(quantity.get("units"))
+                # A quantity declared as an expression of others carries the
+                # raw composite of their units; in SI base units it reads.
+                if "**" in unit or unit.count("/") > 1:
+                    base = ureg.Quantity(magnitude, unit).to_base_units()
+                    magnitude, unit = float(base.magnitude), str(base.units)
+                reference[str(name)] = {"magnitude": magnitude, "units": unit}
+        except Exception:
+            reference = {}
         script = None
         try:
             entry = sys.argv[0] if sys.argv else ""
@@ -1277,6 +1333,7 @@ class Model(PintNativeModelMixin, BaseModel):
             "script": script,
             "started": datetime.now().astimezone().isoformat(timespec="seconds"),
             "scales": scales,
+            "reference": reference,
         }
 
     # ------------------------------------------------------------------
@@ -1289,7 +1346,7 @@ class Model(PintNativeModelMixin, BaseModel):
         kind = payload.get("kind")
 
         if kind == "run":
-            scales = payload.get("scales") or {}
+            scales = payload.get("reference") or payload.get("scales") or {}
             summary = " | ".join(
                 f"{name} {value['magnitude']:.4g} {_abbreviate_unit(value['units'])}"
                 for name, value in scales.items()
@@ -1309,6 +1366,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # Column names are written lazily, with the first step, because the
             # time unit is not known until a step carries one.
             self._transcript_columns = None
+            self._transcript_last_refusals = None
             return "\n".join(lines)
 
         if kind == "step":
@@ -1353,7 +1411,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
                 _operator_text(e) for e in events
-                if e.get("kind") in ("solve", "history_shift")
+                if e.get("kind") in ("solve", "history_shift", "adjoint_solve")
             ) or "(nothing)"
 
             notes = []
@@ -1386,6 +1444,29 @@ class Model(PintNativeModelMixin, BaseModel):
             if len(order) > 8:
                 notes.append(f"  ~~ ... and {len(order) - 8} more distinct warning(s) "
                              f"in the record")
+
+            # Where the adjoint breaks. Written when the set of refusals
+            # CHANGES from the previous step, not on every step — a
+            # semi-Lagrangian run refuses identically three hundred times, and
+            # a note that repeats is a note nobody reads.
+            refusals = tuple(sorted({
+                (e.get("name", "?"), e["adjoint"].get("reason", ""))
+                for e in events
+                if isinstance(e.get("adjoint"), dict)
+                and e["adjoint"].get("supported") is False
+            }))
+            previous = self._transcript_last_refusals or ()
+            if refusals != previous:
+                self._transcript_last_refusals = refusals
+                if refusals:
+                    for name, why in refusals:
+                        notes.append(f"  -- no adjoint through {name}: {why}")
+                else:
+                    # Only after a refusal has cleared. A run whose every step
+                    # admits an adjoint says nothing about it — one aligned
+                    # line per step is the format's promise.
+                    notes.append("  -- adjoint: every operator in this step "
+                                 "admits one again")
 
             return "\n".join([
                 f"{prefix}"
@@ -1705,6 +1786,38 @@ class Model(PintNativeModelMixin, BaseModel):
                 event["deadline_expired"] = True
             if getattr(report, "bounded", False):
                 event["bounded"] = True
+            # Formulation facts the solve ran under (solve_report.config, #806): the
+            # tangent in force and, for Stokes, the pressure gauge and the yield-law
+            # regularisation (yield mode, softness, anchor, the declared rate
+            # strengthening and its ladder multiplier). These are what a reader
+            # needs to debug the MODEL from the transcript alone — which pressure a
+            # pressure-dependent yield law saw, whether a mean was projected out,
+            # which tangent and which law produced the step, one ladder rung from
+            # the next — without a live process to introspect.
+            config = getattr(report, "config", None) or {}
+            for key in ("tangent", "gauge", "regularisation"):
+                facts = config.get(key)
+                if facts:
+                    event[key] = {k: v for k, v in facts.items() if not str(k).startswith("_")}
+
+            # The structural verdict was written before the solve. A solve
+            # that did not converge is linearised about a state it never
+            # reached, and that is not the adjoint of anything — so the
+            # outcome overrides it, and says why.
+            if not event["converged"]:
+                event["adjoint"] = {
+                    "supported": False,
+                    "reason": f"the solve did not converge ({event['reason']}); "
+                              f"a linearisation about an unreached state is "
+                              f"not an adjoint",
+                }
+            elif event.get("capped") and event.get("adjoint", {}).get("supported"):
+                event["adjoint"] = {
+                    "supported": True,
+                    "reason": event["adjoint"]["reason"]
+                              + "; the forward solve was inexact (a block hit "
+                                "its cap) and the adjoint inherits that",
+                }
             return
 
     def _record_warning(self, message, category, filename, lineno) -> None:
@@ -2201,12 +2314,12 @@ class Model(PintNativeModelMixin, BaseModel):
         # Enable/disable non-dimensionalization based on parameter
         import underworld3 as uw
 
-        if nondimensional_scaling:
-            uw.use_nondimensional_scaling(True)
-            uw.pprint("✓ Units system active with automatic non-dimensionalization", proc=0)
-        else:
-            uw.use_nondimensional_scaling(False)
-            uw.pprint("⚠ Expert mode: Units active WITHOUT non-dimensionalization", proc=0)
+        uw.use_nondimensional_scaling(bool(nondimensional_scaling))
+        if verbose:
+            if nondimensional_scaling:
+                uw.pprint("Units system active with automatic non-dimensionalization", proc=0)
+            else:
+                uw.pprint("Units active without non-dimensionalization", proc=0)
             uw.pprint("  (Warning: This mode may have numerical conditioning issues)", proc=0)
 
     def get_reference_quantities(self):
@@ -2300,7 +2413,7 @@ class Model(PintNativeModelMixin, BaseModel):
         results = {"valid": True, "warnings": [], "errors": []}
 
         # Check all registered variables
-        for var_name, var in self._variables.items():
+        for var_name, var in list(self._variables.items()):
             # Skip variables without units
             if not hasattr(var, "units") or var.units is None:
                 continue
@@ -2516,9 +2629,9 @@ class Model(PintNativeModelMixin, BaseModel):
         import underworld3 as uw
 
         # Informational message about missing dimensions (not an error!)
-        if missing_dims:
-            uw.pprint(f"ℹ️  Dimensional coverage: {covered_dims}", proc=0)
-            uw.pprint(f"   (Not covered: {missing_dims} - will fail only if needed)", proc=0)
+        if missing_dims and getattr(self, "_verbose_units", False):
+            uw.pprint(f"Dimensional coverage: {covered_dims}", proc=0)
+            uw.pprint(f"   (not covered: {missing_dims}; needed only if a quantity uses them)", proc=0)
 
         # Extract sub-matrix for covered dimensions only
         sub_matrix = matrix[:, covered_indices]
@@ -5645,14 +5758,14 @@ class Model(PintNativeModelMixin, BaseModel):
         facts["variables"] = len(self._variables)
         facts["swarms"] = len(self._swarms)
         facts["solvers"] = len(self._solvers) + sum(
-            1 for obj in getattr(self, "_part_objects", {}).values()
-            if not any(obj is s for s in self._solvers.values()))
+            1 for obj in list(getattr(self, "_part_objects", {}).values())
+            if not any(obj is s for s in list(self._solvers.values())))
         if self.materials:
             facts["materials"] = list(self.materials.keys())
         children = []
         if depth > 0:
             held = list(self._meshes.values()) + list(self._swarms.values()) + list(self._solvers.values())
-            for obj in getattr(self, "_part_objects", {}).values():
+            for obj in list(getattr(self, "_part_objects", {}).values()):
                 if not any(obj is h for h in held):
                     held.append(obj)
             for obj in held:

@@ -91,6 +91,7 @@ yield. Read the next paragraph before using it as glue.
 ```python
 stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
 stokes.constitutive_model.Parameters.yield_stress = net.band_yield(4.0)
+stokes.constitutive_model.Parameters.yield_stress_min = -sympy.oo  # a field, but tau_y or tau_far: positive by construction
 stokes.consistent_jacobian = True
 ```
 
@@ -292,8 +293,39 @@ gather-first, so the cells gmsh fills into the carved cavity — the
 band and its graded surround — live on one rank; only the base's far
 field is balanced. On the crossing-patches fixture that is 8012 of
 8405 cells on one rank at np=4, and the solve is not faster than
-serial: parallel is a correctness mode for this path, not a speed-up,
-until the placed region is rebalanced.
+serial. Since PR #672 the gather is per region: each zone, or
+junction-connected cluster of zones, is placed and split by the rank that
+holds it, and a zone whose shell is already interior to a rank is not
+moved at all; a single long fault is still one rank's. The design and its
+measurements are in the developer note
+`fault-parallel-placement-2026-09.md`.
+
+### What the mesh around a 3-D patch has to provide
+
+A split patch is doubled everywhere strictly inside its rim, so **every
+face of it needs a vertex that is not on the rim**. Two consequences,
+both cheaper to design for than to discover:
+
+- **A patch is at least about four cells across in each direction**, and
+  a vertical fault in a box needs more than the fault itself: a blind top
+  setback of two cells or more, four cells or more of fault depth, and
+  three cells or more of base clearance so the carve's cavity clears the
+  wall. A box shallower than about **nine cells cannot hold a splittable
+  vertical fault at all**, however finely the fault itself is
+  triangulated. Refining only the fault does not help; the budget is in
+  the background mesh.
+
+- **Triangulate corner quads on the other diagonal.** A structured
+  extrusion cuts each quad of the patch in two, and at a corner one
+  choice of diagonal produces a triangle whose three vertices all lie on
+  the rim. That face has no interior vertex and the split refuses it with
+  *"a fault face has no interior vertex, so its two copies would carry
+  the same vertex triple"*. It is a choice of diagonal, not a call for
+  refinement: flip it for any quad whose triangulation would be all-rim.
+
+Both are properties of the splitter, not of any particular model, so
+they apply to a patch built by hand as much as to one from
+`FaultSurface`.
 
 ## Limitations
 

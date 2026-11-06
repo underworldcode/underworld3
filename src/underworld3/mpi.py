@@ -55,10 +55,17 @@ comm = _MPI.COMM_WORLD
 size = comm.size
 rank = comm.rank
 
+# The communicator of collective error verdicts, and of nothing else. A verdict
+# exchanged on ``comm`` can pair with a collective of the same kind that
+# another rank is still inside (a rank that raised before it, the others in
+# it): the two then trade unrelated data, and the ranks leave with different
+# results. On its own communicator a verdict meets only verdicts, and a rank
+# that never reaches it leaves the others waiting at a known place (#886).
+verdict_comm = comm.Dup()
+
 # State tracking for selective execution
 _in_selective_ranks = False
 _selective_executing_ranks = None
-_this_rank_executes = True
 
 # get the pid of the root process
 pid0 = _os.getpid()
@@ -77,155 +84,179 @@ def barrier():
     comm.Barrier()
 
 
-def _should_rank_execute(current_rank, rank_selector, total_size):
-    """
-    Determine if a rank should execute based on rank selector.
+def _free_petsc_garbage(comm=None):
+    """Destroy the PETSc objects whose Python wrappers have been collected.
 
-    Args:
-        current_rank: The rank to check
-        rank_selector: int, slice, list, tuple, callable, str, or numpy array
-        total_size: Total number of ranks
-
-    Returns:
-        bool: True if rank should execute
+    COLLECTIVE over ``comm`` (``COMM_WORLD`` when ``None``): every rank of
+    it must call it at the same point; a mesh on ``COMM_SELF`` passes that. In parallel
+    petsc4py does not destroy an object when Python collects its wrapper --
+    ranks collect in different orders and the destroy is collective -- but
+    puts it on a deferred list that only ``PETSc.garbage_cleanup`` empties.
+    Without a call, every DM, matrix and vector of a dropped mesh lives for
+    the rest of the process (measured: 52.7 MB per faulted-mesh rebuild at
+    np = 2 with every Python object freed). The local collection first puts
+    anything just dropped on the list.
     """
+    import gc
+    from petsc4py import PETSc
+
+    gc.collect()
+    PETSc.garbage_cleanup(comm)
+
+
+def _selected_ranks(rank_selector, total_size):
+    """The ranks of a ``total_size`` communicator that ``rank_selector`` selects.
+
+    The one resolution behind both the per-rank flag (:func:`pprint`,
+    :func:`selective_ranks`) and the collective guard, so the two cannot
+    disagree. Entries outside ``range(total_size)`` select nothing.
+
+    Parameters
+    ----------
+    rank_selector : None, int, slice, list, tuple, set, range, str, callable or numpy.ndarray
+        ``None`` or ``"all"`` selects every rank. A string is one of
+        ``"first"``, ``"last"``, ``"even"``, ``"odd"`` or a percentage such as
+        ``"10%"`` (the first 10% of ranks). A callable takes a rank and
+        returns a bool. A boolean array is a mask indexed by rank; an integer
+        array lists ranks.
+    total_size : int
+        Number of ranks in the communicator.
+
+    Returns
+    -------
+    frozenset of int
+        The selected ranks.
+
+    Raises
+    ------
+    ValueError
+        For a string that is not one of the named patterns.
+    TypeError
+        For a selector of any other type.
+    """
+    import numbers
+
     import numpy as np
 
-    if rank_selector is None or rank_selector == "all":
-        return True
+    everyone = range(total_size)
 
-    if isinstance(rank_selector, int):
-        return current_rank == rank_selector
+    def _valid(ranks):
+        return frozenset(int(r) for r in ranks if 0 <= int(r) < total_size)
 
-    if isinstance(rank_selector, slice):
-        return current_rank in range(*rank_selector.indices(total_size))
-
-    if isinstance(rank_selector, (list, tuple)):
-        return current_rank in rank_selector
+    if rank_selector is None:
+        return frozenset(everyone)
 
     if isinstance(rank_selector, str):
+        if rank_selector == "all":
+            return frozenset(everyone)
         if rank_selector == "first":
-            return current_rank == 0
-        elif rank_selector == "last":
-            return current_rank == total_size - 1
-        elif rank_selector == "even":
-            return current_rank % 2 == 0
-        elif rank_selector == "odd":
-            return current_rank % 2 == 1
-        elif rank_selector.endswith("%"):
-            pct = float(rank_selector[:-1]) / 100
-            return current_rank < int(total_size * pct)
+            return _valid([0])
+        if rank_selector == "last":
+            return _valid([total_size - 1])
+        if rank_selector == "even":
+            return frozenset(range(0, total_size, 2))
+        if rank_selector == "odd":
+            return frozenset(range(1, total_size, 2))
+        if rank_selector.endswith("%"):
+            count = int(total_size * float(rank_selector[:-1]) / 100)
+            return frozenset(range(min(count, total_size)))
+        raise ValueError(f"unknown rank selector {rank_selector!r}")
 
-    if callable(rank_selector):
-        return rank_selector(current_rank)
-
-    if isinstance(rank_selector, np.ndarray):
-        if rank_selector.dtype == bool and len(rank_selector) > current_rank:
-            return bool(rank_selector[current_rank])
-        elif current_rank in rank_selector:
-            return True
-
-    return False
-
-
-def _get_executing_ranks(rank_selector, total_size):
-    """
-    Get set of ranks that will execute for a given selector.
-
-    Args:
-        rank_selector: Rank selection specification
-        total_size: Total number of ranks
-
-    Returns:
-        set: Set of rank numbers that will execute
-    """
-    import numpy as np
-
-    if rank_selector is None or rank_selector == "all":
-        return set(range(total_size))
-
-    if isinstance(rank_selector, int):
-        return {rank_selector}
+    if isinstance(rank_selector, numbers.Integral):
+        return _valid([rank_selector])
 
     if isinstance(rank_selector, slice):
-        return set(range(*rank_selector.indices(total_size)))
-
-    if isinstance(rank_selector, (list, tuple)):
-        return set(rank_selector)
-
-    if isinstance(rank_selector, str):
-        if rank_selector == "first":
-            return {0}
-        elif rank_selector == "last":
-            return {total_size - 1}
-        elif rank_selector == "even":
-            return set(range(0, total_size, 2))
-        elif rank_selector == "odd":
-            return set(range(1, total_size, 2))
-        elif rank_selector.endswith("%"):
-            pct = float(rank_selector[:-1]) / 100
-            return set(range(int(total_size * pct)))
-
-    if callable(rank_selector):
-        return {r for r in range(total_size) if rank_selector(r)}
+        return frozenset(range(*rank_selector.indices(total_size)))
 
     if isinstance(rank_selector, np.ndarray):
         if rank_selector.dtype == bool:
-            return {r for r in range(min(len(rank_selector), total_size)) if rank_selector[r]}
-        else:
-            return set(rank_selector[rank_selector < total_size])
+            mask = rank_selector.ravel()[:total_size]
+            return frozenset(int(r) for r in np.flatnonzero(mask))
+        return _valid(rank_selector.ravel())
 
-    return set()
+    if isinstance(rank_selector, (list, tuple, set, frozenset, range)):
+        return _valid(rank_selector)
+
+    if callable(rank_selector):
+        return frozenset(r for r in everyone if rank_selector(r))
+
+    raise TypeError(
+        f"unsupported rank selector of type {type(rank_selector).__name__}")
+
+
+def _should_rank_execute(current_rank, rank_selector, total_size):
+    """Whether ``current_rank`` is among the ranks ``rank_selector`` selects."""
+    return current_rank in _selected_ranks(rank_selector, total_size)
+
+
+def _get_executing_ranks(rank_selector, total_size):
+    """The set of ranks ``rank_selector`` selects (see :func:`_selected_ranks`)."""
+    return set(_selected_ranks(rank_selector, total_size))
 
 
 @_contextmanager
 def selective_ranks(ranks):
+    """Flag the selected ranks inside a block that every rank runs.
+
+    Every rank must reach the same ``with`` statement with the same selector:
+    the body runs on every rank, and the context manager yields ``True`` on
+    the selected ranks and ``False`` on the others. The body chooses on that
+    value. Because every rank is inside the block, a method marked
+    :func:`collective_operation` and called there raises
+    :class:`CollectiveOperationError` on each rank that reaches it, unless the
+    selection covers every rank.
+
+    Parameters
+    ----------
+    ranks : None, int, slice, list, tuple, str, callable or numpy.ndarray
+        The ranks to select. ``None`` or ``"all"`` selects every rank; a
+        string may also be ``"first"``, ``"last"``, ``"even"``, ``"odd"`` or a
+        percentage such as ``"10%"``. A callable takes a rank and returns a
+        bool; a boolean array is a mask indexed by rank; an integer array
+        lists ranks. Ranks outside the communicator select nothing.
+
+    Yields
+    ------
+    bool
+        ``True`` on the selected ranks.
+
+    Notes
+    -----
+    The guard does not stop the job: the ranks that reach the marked call
+    raise, and the others continue, so they can still stall at their next
+    collective. Collectives that are not marked (raw PETSc or MPI calls, file
+    writes through parallel HDF5 such as ``swarm.save`` or
+    ``mesh.write_timestep``) are not detected. A nested block replaces the
+    enclosing selection while it runs; the two are not intersected.
+
+    A selector computed from rank-local data gives each rank a different
+    selection, which the guard cannot see.
+
+    Examples
+    --------
+    >>> with uw.selective_ranks(0) as should_execute:
+    ...     if should_execute:
+    ...         import matplotlib.pyplot as plt
+    ...         plt.plot(x, y)
+    ...         plt.savefig("output.png")
+
+    Without the ``if``, every rank writes ``output.png``.
     """
-    Execute code only on selected ranks, with collective operation detection.
+    global _in_selective_ranks, _selective_executing_ranks
 
-    This context manager allows you to selectively execute code on specific MPI ranks
-    while protecting against deadlocks from collective operations.
-
-    Args:
-        ranks: Which ranks should execute the code block. Can be:
-            - int: Single rank (e.g., 0)
-            - slice: Range of ranks (e.g., slice(0, 4))
-            - list/tuple: Specific ranks (e.g., [0, 3, 7])
-            - str: Named patterns ('all', 'first', 'last', 'even', 'odd', '10%')
-            - callable: Function taking rank and returning bool
-            - numpy array: Boolean mask or integer indices
-
-    Raises:
-        CollectiveOperationError: If a collective operation is detected within
-            the selective execution block (would cause deadlock)
-
-    Example:
-        >>> with uw.mpi.selective_ranks(0):
-        ...     import matplotlib.pyplot as plt
-        ...     plt.plot(x, y)
-        ...     plt.savefig("output.png")
-    """
-    global _in_selective_ranks, _selective_executing_ranks, _this_rank_executes
-
-    should_execute = _should_rank_execute(rank, ranks, size)
+    selected = _selected_ranks(ranks, size)
 
     old_selective = _in_selective_ranks
     old_executing_ranks = _selective_executing_ranks
-    old_this_executes = _this_rank_executes
 
     _in_selective_ranks = True
-    _selective_executing_ranks = _get_executing_ranks(ranks, size)
-    _this_rank_executes = should_execute
+    _selective_executing_ranks = selected
 
     try:
-        if should_execute:
-            yield True
-        else:
-            yield False
+        yield rank in selected
     finally:
         _in_selective_ranks = old_selective
         _selective_executing_ranks = old_executing_ranks
-        _this_rank_executes = old_this_executes
 
 
 class CollectiveOperationError(RuntimeError):
@@ -250,13 +281,15 @@ def collective_operation(func):
 
     def wrapper(*args, **kwargs):
         if _in_selective_ranks:
-            # Check if all ranks are executing
-            if _selective_executing_ranks is not None and len(_selective_executing_ranks) != size:
+            # Every rank of the communicator must be selected. This compares
+            # the set, not its size: [1, ..., size] has as many entries as
+            # there are ranks but leaves out rank 0.
+            if (_selective_executing_ranks is not None
+                    and not _selective_executing_ranks.issuperset(range(size))):
                 # Not all ranks will execute - this is a collective operation error
                 func_name = func.__name__
-                executing_ranks = list(_selective_executing_ranks)
-                all_ranks = list(range(size))
-                excluded_ranks = [r for r in all_ranks if r not in executing_ranks]
+                executing_ranks = sorted(_selective_executing_ranks)
+                excluded_ranks = [r for r in range(size) if r not in _selective_executing_ranks]
 
                 error_msg = (
                     f"\n{'='*70}\n"
@@ -387,7 +420,14 @@ class _Watchdog:
         self.seconds = float(seconds)
         self.stream = stream
         self.abort = bool(abort)
-        self.timer = None
+        # One reporter thread for the life of this watchdog; arm() moves its
+        # deadline instead of starting a new one. See _rearm_timer.
+        self._reporter = None
+        self._stop_reporter = _threading.Event()
+        # Guards the pair (self._reporter, self.cancelled) against a report in
+        # flight on the reporter thread racing cancel() on the main one.
+        self._reporter_lock = _threading.Lock()
+        self._deadline = _time.monotonic() + float(seconds)
         # Set by cancel(). A report already running when the watchdog is
         # disarmed must not re-arm behind it: the caller is about to close the
         # stream, and faulthandler holds the DESCRIPTOR, so the next dump
@@ -452,8 +492,22 @@ class _Watchdog:
             # chains, so the disposition underneath has to be the default one
             # rather than whatever was there before.
             _signal.signal(_signal.SIGALRM, _signal.SIG_DFL)
+        # all_threads=False is load-bearing. With it True the dump reads
+        # EVERY thread state (_Py_DumpTracebackThreads), so a dump landing
+        # while any thread is starting or exiting reads freed memory and the
+        # process dies inside dump_traceback. Measured against a thread
+        # started and cancelled in a loop: 2 of 8 runs segfaulted with
+        # all_threads=True, 0 of 8 with it False.
+        #
+        # Nothing is lost by it. This is the C path, and it exists for the
+        # one case the Python path cannot cover: a rank blocked inside MPI,
+        # where the thread in the collective is the thread that takes the
+        # signal and the only one worth naming. The labelled report from
+        # _stack_dump() still carries every thread, through
+        # sys._current_frames(), which holds the interpreter lock and so
+        # cannot read a half-built thread state.
         _faulthandler.register(_signal.SIGALRM, file=self.stream,
-                               all_threads=True, chain=self.abort)
+                               all_threads=False, chain=self.abort)
         self._handler_installed = True
 
     def arm(self, label=None, resume=False):
@@ -475,14 +529,24 @@ class _Watchdog:
         # interval keeps it dumping once stuck: two identical stacks a minute
         # apart say "stuck", one says "slow".
         #
-        # NOT dump_traceback_later. That runs a C thread which walks every
-        # other thread's LIVE frames, and disarming it waits on that thread
-        # while holding the interpreter lock -- so unwatch() could wedge the
-        # process it exists to diagnose, or crash it (#661, and the test_0054
-        # deadlock triangle before it). Nothing here runs concurrently with
-        # the interpreter: the kernel raises SIGALRM, the handler runs on
-        # whichever thread receives it, and disarming is a syscall that cannot
-        # wait on anything.
+        # NOT dump_traceback_later. It does reach a rank blocked in MPI --
+        # 5 dumps of 5 through a 6 s allreduce, where a Python watcher thread
+        # managed 1, since that needs the GIL and a blocked rank never yields
+        # it -- and it survives a live interpreter. But
+        # cancel_dump_traceback_later() hangs against an in-flight dump, 3 of
+        # 3, to a file and to a pipe alike, so unwatch() could wedge the very
+        # process it exists to diagnose. That is #661.
+        #
+        # The signal path is safe only with the two properties below, and both
+        # were bought with a crash. The dump READS THREAD STATE, so a thread
+        # appearing or disappearing underneath it is a segfault in CPython's
+        # dump_traceback -- on the main thread, even while that thread sits in
+        # nanosleep with its own frames untouched:
+        #   * the dump takes this thread only (_install_signal_handler), and
+        #   * the reporter is one long-lived thread, not one per check-in
+        #     (_rearm_timer).
+        # With a Timer per check-in and all_threads=True, test_0053 took down
+        # about one pytest session in four. With both, 0 of 30.
         if _INTERVAL_TIMER_AVAILABLE:
             # Normally only the clock -- one syscall, safe from any thread,
             # because the handler went in when the watchdog was built. A
@@ -494,16 +558,46 @@ class _Watchdog:
         self._rearm_timer()
 
     def _rearm_timer(self):
-        # Secondary, and only for hangs that leave the interpreter lock free.
-        # It adds the checkpoint label, which faulthandler cannot know about,
-        # and it carries `abort` -- the signal handler cannot exit the process
-        # for us. A rank blocked inside MPI never reaches this; the signal
-        # dump above is what covers that case.
-        if self.timer is not None:
-            self.timer.cancel()
-        self.timer = _threading.Timer(self.seconds, self.report)
-        self.timer.daemon = True
-        self.timer.start()
+        """Push the reporter's deadline out. ONE thread, started once.
+
+        Secondary, and only for hangs that leave the interpreter lock free.
+        It adds the checkpoint label, which faulthandler cannot know about,
+        and it carries `abort` -- the signal handler cannot exit the process
+        for us. A rank blocked inside MPI never reaches this; the signal dump
+        covers that case.
+
+        Moving a deadline rather than starting a ``threading.Timer`` per
+        arm() is not tidying up. ``checkpoint()`` calls ``arm()``, so a Timer
+        per arm created and destroyed a thread on every check-in, underneath
+        a dump that reads thread state -- the other half of the crash
+        described in ``arm``.
+        """
+        self._deadline = _time.monotonic() + self.seconds
+        # Under the lock, and refusing once cancelled. A report already in
+        # flight when cancel() runs can reach here after cancel() has cleared
+        # self._reporter and stopped waiting for the thread, and would then
+        # clear the stop event and start a replacement -- a reporter nobody
+        # holds, writing into a stream the caller is about to close. The
+        # `cancelled` test in report() is not enough on its own: it is read
+        # before cancel() sets it and acted on afterwards.
+        with self._reporter_lock:
+            if self.cancelled or self._reporter is not None:
+                return
+            self._stop_reporter.clear()
+            self._reporter = _threading.Thread(
+                target=self._reporter_loop, name="uw-watchdog", daemon=True)
+            self._reporter.start()
+
+    def _reporter_loop(self):
+        """Wait out the deadline, report, wait again."""
+        while not self._stop_reporter.is_set():
+            remaining = self._deadline - _time.monotonic()
+            if remaining > 0.0:
+                if self._stop_reporter.wait(remaining):
+                    return
+                continue
+            self.report()
+            self._deadline = _time.monotonic() + self.seconds
 
     def cancel(self):
         self.cancelled = True
@@ -520,9 +614,11 @@ class _Watchdog:
             if (self._previous_sigalrm is not None
                     and _threading.current_thread() is _threading.main_thread()):
                 _signal.signal(_signal.SIGALRM, self._previous_sigalrm)
-        if self.timer is not None:
-            self.timer.cancel()
-            self.timer = None
+        self._stop_reporter.set()
+        with self._reporter_lock:
+            reporter, self._reporter = self._reporter, None
+        if reporter is not None and reporter is not _threading.current_thread():
+            reporter.join(timeout=5.0)
 
     def report(self):
         """The labelled report, when this thread can get the interpreter lock.
@@ -583,6 +679,22 @@ def watch(seconds=300, stream=None, abort=False):
 
     Warnings
     --------
+    Two reports land in *stream*, and they carry different things. The
+    labelled one, under a ``UW HANG WATCHDOG`` banner, is formatted in Python
+    from ``sys._current_frames()`` and carries EVERY thread, main thread
+    first. It needs the interpreter lock, so it is the one that goes missing
+    on a rank blocked inside MPI.
+
+    Behind it is an unlabelled ``Stack (most recent call first):`` block from
+    :mod:`faulthandler`, written by a C signal handler that needs no lock.
+    That is the report that arrives from a blocked rank, and it carries the
+    signalled thread only --- which on a stuck rank is the thread sitting in
+    the collective. It does not walk the other threads on purpose: reading
+    every thread state races any thread that is starting or exiting, and the
+    process then dies inside CPython's dump (#793). To see a whole job at
+    once, or to supervise a run from outside it, use
+    ``scripts/mpi_supervisor.py``.
+
     Call :func:`unwatch` before closing *stream*. faulthandler holds the file
     DESCRIPTOR, not the Python object, so an armed watchdog over a closed file
     writes into whatever that descriptor is reused for next. It is the default

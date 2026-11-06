@@ -19,15 +19,13 @@ Findings this test pins down (all verified, see commit message):
         restore -> K solves
     (B == C, max|d| = 0.0).
 
-  * The only residual is restore's reproducibility *floor* against a
-    never-snapshotted control (~7e-7 here): restore resyncs fields
-    through gvec->lvec rather than reproducing the solver-produced
-    lvec exactly, and the implicit diffusion operator amplifies that
-    to solver-tolerance level over steps. This is NOT contamination
-    from the discarded step (proven by B == C above); it is the cost
-    of round-tripping through the snapshot representation, within
-    solver tolerance, and consistent with the design intent that
-    auxiliary solver state is intentionally not captured.
+  * The only residual is against a never-snapshotted control (~2.5e-8
+    relative here): a restore discards each preconditioner's setup, so the
+    restored run's algebraic multigrid is built cold while the control's
+    is warm from earlier solves. Fields, histories, mesh geometry and
+    the solvers' warm-start flags all come back exactly; until 2026-10
+    a restore also moved the (unmoved) mesh, which rebuilt every solver
+    and put the floor at ~7e-7.
 
 So the honest production statement: discarding a bad step is
 bit-exact even through real solvers; recovering to a never-stashed
@@ -40,16 +38,14 @@ import pytest
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]
 
-# Restore-vs-pristine reproducibility floor for this setup.
-# The regretted-step guarantee is asserted bit-exact (np.array_equal);
-# only the never-stashed-control comparison uses this tolerance.
-#
-# The measured floor on this setup is ~7e-7 (see commit 3efc31b);
-# the assertion threshold is set ~14× looser at 1e-5 deliberately,
-# as headroom for variability across PETSc versions / BLAS libs /
-# MPI ranks on CI. Do not tighten without measuring on the target
-# environments first. (Comment added per Copilot review on #195.)
-_RESTORE_FLOOR_ATOL = 1.0e-5
+# Restore-vs-pristine reproducibility floor for this setup, relative to the
+# solution's largest value. The regretted-step guarantee is asserted
+# bit-exact (np.array_equal); only the never-stashed-control comparison uses
+# this bound. Measured 2026-10: 2.2e-8 on a solution of 0.87 (2.5e-8
+# relative) -- the restored run's multigrid is built cold, the control's is
+# warm. Before a restore stopped moving an unmoved mesh it was 8.4e-7
+# (9.6e-7 relative), which this bound rejects.
+_RESTORE_FLOOR_RTOL = 1.0e-7
 
 
 @pytest.fixture(autouse=True)
@@ -155,12 +151,13 @@ def test_realsolver_regretted_step_leaves_no_trace():
 
 
 def test_realsolver_continuation_within_solver_tolerance():
-    """Recovering to a *never-stashed* control is within solver
-    tolerance (not bit-exact): restore resyncs fields gvec->lvec
-    rather than reproducing the solver-produced lvec, and the
-    implicit operator amplifies that to ~tolerance over steps. This
-    is the documented restore floor, consistent with not capturing
-    auxiliary solver state by design."""
+    """Recovering to a *never-stashed* control is within solver tolerance, not
+    bit-exact. Everything the next solve reads comes back with the restore, but
+    the restore also discards the preconditioner's setup (so a regretted solve
+    leaves no trace and a restored run behaves as one started cold from the
+    same state). The never-stashed run keeps its algebraic multigrid warm --
+    the hierarchy and the smoother eigenvalue estimates of earlier solves -- so
+    the two agree to the multigrid's influence on the converged answer."""
     uw, model, mesh, adv_diff, T = _build()
 
     for _ in range(3):
@@ -181,15 +178,15 @@ def test_realsolver_continuation_within_solver_tolerance():
     stash = _capture(T)
 
     # Not bit-exact vs a never-stashed control (that is the floor),
-    # but well within solver tolerance and far below the solution
-    # scale (~0.04 here).
+    # but within the multigrid's influence on the converged answer.
     max_diff = float(np.max(np.abs(stash - ctrl)))
-    assert max_diff < _RESTORE_FLOOR_ATOL, (
+    bound = _RESTORE_FLOOR_RTOL * float(np.max(np.abs(ctrl)))
+    assert max_diff < bound, (
         f"continuation drifted beyond the restore floor: "
-        f"max abs diff {max_diff:.3e} >= {_RESTORE_FLOOR_ATOL:.0e}"
+        f"max abs diff {max_diff:.3e} >= {bound:.3e}"
     )
     assert not np.array_equal(stash, ctrl), (
         "continuation is unexpectedly bit-exact vs a never-stashed "
-        "control — if this starts passing, the restore floor has been "
+        "control — if this starts passing, the multigrid floor has been "
         "eliminated and this test should be tightened to np.array_equal"
     )

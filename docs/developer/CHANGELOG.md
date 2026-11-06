@@ -4,7 +4,117 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ---
 
+## 2026 Q4 (October – December)
+
+### The multigrid coarse solve: one rule on every route (November 2026, #901)
+
+The rotated free-slip route solved its coarse level with a dense SVD whenever
+the problem left rigid rotations free, on the grounds that the Galerkin coarse
+operator inherits them and a plain LU meets a zero pivot (#306). The SVD is
+O(n^3) and was run on every rank: one factorisation of a 614-cell spherical
+shell bottom level took 64 s at np 1 and 102 s at np 4, against 7 s for the
+whole Stokes solve with LU at np 4, so adding ranks made the solve slower and
+capped the rollback campaign at np 16. The route also set its coarse level up
+twice per solve.
+
+Measured, the coarse operators of every real hierarchy were near-singular, not
+singular: lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the annulus and 2.8e-4 on the
+shell, and plain redundant LU gave the SVD's answer and iteration counts on every
+fixture. Only a constructed case, the fine mesh used as its own coarse level, is
+singular (test_1111). Louis ruled on 2026-11-05 that there is no SVD path: every route
+factors the coarse level with the shared redundant LU and a nonzero factor
+shift, which acts only on a pivot below PETSc's zero-pivot tolerance, and a null space is fixed on the
+fine operator, never by the coarse solve. GAMG remains available as the coarse
+solve, when asked for, for a bottom level too large to gather.
+
+The shift is in the shared option bundle, so the native and standard custom-P
+routes now carry `NONZERO` at every rank count, as the rotated route does. Before,
+they ran PETSc's own default shift (`INBLOCKS`) at np > 1, which the bundle's
+`redundant` type keeps, and no shift at np 1, where that type replaces PETSc's
+shifted `PCLU`. On a coarse level whose pivots stay clear of zero it changes
+nothing: native and standard custom-P FMG give bitwise-identical
+velocity and pressure at the same iterations with and without it. The bundle's
+`coarse="svd"` variant is removed, not deprecated: `geometric_mg_bundle(coarse="svd")`
+raises a `ValueError` that names the default. A script that sets the PETSc
+option `mg_coarse_pc_type svd` itself is unaffected; on the standard path the
+user's key is respected as before (test_1021).
+
+### CI test batches sharded across parallel jobs (October 2026, #730)
+
+The test workflow ran as a single job whose wall-clock tracked the total cost
+of the suite. Measured on 2026-10-28, that was 91 minutes of tests in 16 serial
+batches plus the MPI phase, giving 96-minute jobs against a 120-minute cap, and
+PR #689 was cancelled at 2h00m52s having recorded no failures. The cap was
+deciding outcomes rather than bounding runaway runs.
+
+The serial batches now run as a four-way shard matrix. Each batch is assigned
+to a shard by hand from the measured per-batch times, because the batches
+differ by two orders of magnitude in cost and a round-robin assignment would
+group the three expensive ones together. The assignment and its measurements
+live in `scripts/test.sh` beside the batch definitions, and `--shard K/N`
+selects one; omitting it runs everything, which is what a local full run wants.
+
+Measured on the first sharded run (40638600008): shards of 23.6, 28.3, 17.3 and
+22.6 minutes including install and build, for a wall-clock of 28.7 minutes
+against 96 before. The estimates from the per-batch times did not transfer
+linearly -- shard 1 carried the 33-minute band and finished in 23.6, while
+shard 2 was estimated at 19 minutes of tests and became the long pole at 28.3.
+A batch costs less in a job that runs only its own batches than it did in
+sequence, by more than the assignment assumed. The split is worth revisiting,
+but on more than one sample: runner variance on a shared runner is of the same
+order as the imbalance that remains.
+
+Two parts of the workflow needed moving rather than copying. The tier C
+characterisation report, which costs about 42 minutes, became its own job: as a
+step on a matrix job it would have run once per shard to produce one report.
+The MPI phase belongs to a single shard for the same reason, and because it is
+the only part of the suite holding several ranks at once. A new aggregate check
+named `test` reports the combined result, so a single conclusion still answers
+whether the suite passed.
+
+Each shard rebuilds Underworld3 rather than downloading a shared artefact. The
+shards run concurrently, so the repeated build costs wall-clock once, and the
+repository is public, so the extra runner minutes are free. Sharing the
+artefact would add a transfer round trip and a second definition of what
+"built" means.
+
+`scripts/check_test_coverage.py` reads the batch globs out of `scripts/test.sh`
+to prove every test file is reachable, and it now recognises the sharded call
+site as well. Without that it reported all 355 files as unreachable, which is
+the right direction for the check to fail in.
+
+The remaining cost is concentrated rather than spread. The `test_106*` /
+`test_107*` band takes 33 minutes, and 48% of its 149 tests finish in the first
+two. Because the distribution is `--dist loadfile`, a file is atomic on a
+worker and the band cannot finish before its slowest file does, so splitting it
+further needs the per-file measurements and is left open on #730.
+
+---
+
 ## 2026 Q3 (July – September)
+
+### Legacy Diffusion Restart Consistency (September 2026, #708)
+
+`Diffusion` now initializes symbolic flux history before compiling its
+first residual. Previously the initial kernel embedded zero history slots;
+subsequent coefficient updates could not restore the missing symbolic terms.
+A snapshot restore rebuilt the kernel with populated slots and therefore
+changed the operator despite restoring all fields exactly. Initializing the
+slots before compilation makes cold and rebuilt operators agree. This also
+corrects affected uninterrupted legacy Diffusion trajectories; it does not
+change the composed `AdvDiffusion` or SLCN implementation. Small serial/MPI
+tests cover startup and established histories, orders 1-3 and varying steps.
+
+The general hazard is a symbolic slot compiled while it holds zero:
+simplification can remove it permanently from the kernel (for example,
+`x**0` folds to one), so later ramping cannot recover the omitted term.
+
+PR #708 review follow-up adds a fresh-process disk regression. Disk snapshots
+still skip live symbolic matrices; their replay limitation is tracked as a
+strict expected failure, not claimed fixed by the in-memory correction.
+Saving any unsupported state field now emits a warning naming the field.
+Symbolic snapshot docstrings explicitly document shared live atom references
+and their lack of isolation from subsequent mutation or disk portability.
 
 ### The Multiplier Was Not the Whole Traction (August 2026)
 

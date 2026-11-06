@@ -181,6 +181,41 @@ def petsc_dm_set_regular_refinement(dm, regular=True):
         return
 
 
+def petsc_dm_create_interpolation_within_plex(dmc, dmf):
+        """The interpolation matrix from the field of ``dmc`` to the field of
+        ``dmf``, two DMs on ONE plex (clones or sub-DMs of one mesh DM).
+
+        It is the matrix ``dmc.createInterpolation(dmf)`` returns, assembled
+        also on a rank that holds cells but owns none of their degrees of
+        freedom, where PETSc's own preallocation skips the rank and the
+        assembly fails on some ranks and hangs the others (#902; see
+        ``UW_DMCreateInterpolationWithinPlex`` in ``petsc_compat.h``).
+        Collective.
+        """
+        cdef DM c_dmc = dmc
+        cdef DM c_dmf = dmf
+        cdef Mat interp = PETSc.Mat()
+        CHKERRQ( UW_DMCreateInterpolationWithinPlex(c_dmc.dm, c_dmf.dm, &interp.mat) )
+        return interp
+
+
+def petsc_dm_create_coordinate_space_within_plex(dm, degree):
+        """Give ``dm`` a Lagrange coordinate space of ``degree``, its coordinates
+        carried across from the current space.
+
+        It is ``dm.createCoordinateSpace(degree, False, True)``, with the
+        coordinates interpolated by UW3's copy of PETSc's interpolator, so a
+        degree >= 2 space is also built on a rank that holds cells but owns
+        none of their nodes (#902; see
+        ``UW_DMPlexCreateCoordinateSpaceWithinPlex`` in ``petsc_compat.h``).
+        Isoperiodic coordinates are the exception: PETSc projects them
+        locally, with no matrix, and they keep its route. Collective.
+        """
+        cdef DM c_dm = dm
+        cdef PetscInt c_degree = degree
+        CHKERRQ( UW_DMPlexCreateCoordinateSpaceWithinPlex(c_dm.dm, c_degree) )
+
+
 
 # This is not cython, does it need to be here or in discretisation.py ?
 

@@ -235,9 +235,10 @@ Tests: `tests/test_0066_integration_point_slcn.py`.
 The RK2 trace, `x_mid = x - dt/2 v(x)`, `x_dep = x - dt v(x_mid)`, is second
 order only if `v(x_mid)` is the velocity at `t^{n+1/2}`. Both schemes now
 take it there: on the current interval by extrapolation from the two most
-recent velocity fields, `1.5 v^n - 0.5 v^{n-1}` (the velocity at `n+1` is
-not known when the history is built), and on the older segments of a
-multi-step history by the average of the two known ends. With `v^n` alone
+recent velocity fields, `v^n + (r/2)(v^n - v^{n-1})` with `r` the ratio of
+this step to the last (`1.5 v^n - 0.5 v^{n-1}` for equal steps; the velocity
+at `n+1` is not known when the history is built), and on the older segments
+of a multi-step history by the average of the two known ends. With `v^n` alone
 the foot is off by `b dt²/2` in a flow accelerating at rate `b`, first
 order in an unsteady flow; the rotating Gaussian did not show it because
 that velocity is steady. `tests/test_0066_integration_point_slcn.py`
@@ -346,6 +347,64 @@ integration-point scheme loses 45 times less of it.
 The trace-back samples twelve points per cell rather than the P2 nodes, and
 the snapshot evaluation at the moving feet misses the locator cache every
 step, so the update costs about three times the nodal one.
+
+### The low Courant number limit in practice
+
+The growth measured above sets a lower limit on the Courant number at which
+this history is useful, and the limit matters most for advection-dominated
+flow carrying a sharp interface. Two measurements bound it.
+
+On the rotating Gaussian at Courant 0.1 with the 12-point rule, pure
+advection, one revolution (503 steps), the energy finishes 0.92 % above the
+analytic value with a -3.7 % undershoot. Adding physical diffusion removes
+it: at cell diffusion number `D = κΔt/h² = 1e-3` the undershoot is -0.04 %
+and at `D = 1e-2` the energy ratio is 0.9934, below one. The two dimensionless
+numbers are not independent within a run, since `Pe = C/D` and `D` carries no
+velocity, so a cell at low Courant number sits at proportionally low Péclet
+number. A timestep taken from the Courant condition fixes
+`D = C_max/Pe_max` and cannot reach the growth region; a timestep imposed by
+something else, such as a coupled free surface or an elastic timescale, can.
+
+On the LeVeque single-vortex deformation at its standard period `T = 8`
+(unit box, `h = 1/48`, P2, tanh level set of one cell, no diffusion, no
+reinitialisation) the filament thins below the cell and the growth becomes
+visible. At Courant 2 the returned field has a relative L2 error of 1.54e-1,
+a peak of 1.080 and an undershoot of -0.068, with ringing behind the returned
+blob. Eulerian SUPG at Crank-Nicolson reaches 1.50e-1 on the same problem and
+holds the enclosed volume to 4e-5 against this scheme's 5e-3. Both are
+approaching the error the mesh can resolve at that spacing, about 1.45e-1, so
+on a sharp interface at this resolution the two schemes are equivalent in
+accuracy and SUPG is the cheaper of them.
+
+### Added diffusion does not remove the growth
+
+A stabilising diffusivity `κ = ε h²/(π² Δt)`, a cell diffusion number
+`D = ε/π²`, has been suggested for the growth. We measured it on the case
+that shows the overshoot, LeVeque `T = 8` with this history at Courant 2:
+
+| ε | D | cell Péclet | L2 rel | peak | undershoot | band mass |
+|---|---|---|---|---|---|---|
+| 0 (control) | — | — | 1.543e-1 | 1.0797 | -6.77e-2 | 1.168 |
+| 1e-3 | 1.0e-4 | 19700 | 1.684e-1 | 1.0522 | -5.35e-2 | 1.275 |
+| 1e-2 | 1.0e-3 | 1970 | 3.190e-1 | 0.8804 | -2.85e-3 | 1.896 |
+| 1e-1 | 1.0e-2 | 197 | 7.053e-1 | 0.4275 | -1.59e-7 | 3.002 |
+| 1 | 1.0e-1 | 19.7 | 9.000e-1 | 0.1619 | 0 | 3.120 |
+
+The L2 error rises with `ε` throughout, so the unstabilised run is the most
+accurate of them and the damping does not pay at any strength. At `ε = 1e-3`
+the overshoot moves a third of the way while the error and the interface
+width each grow by 9 %. There is no intermediate setting: between `1e-3` and
+`1e-2` the peak goes from 1.052 to 0.880, from overshooting to over-damped,
+and by `ε = 0.1` the field is bounded to 1.6e-7 with a peak of 0.43 and an
+interface three times its original width. The damping is applied to the whole
+field and so reaches the physically sharp interface, which is most of what
+this problem contains, more strongly than it reaches the spurious mode.
+
+The limit belongs in the choice of scheme rather than in a correction term.
+Use this history at Courant numbers of about 0.5 and above, where its error is
+flat and its conservation is good, and use the Eulerian SUPG solver for
+advection-dominated flow with sharp interfaces at small Courant number. See
+`docs/advanced/eulerian-advection-diffusion.md` for the comparison.
 
 ## Swarm proxy at the integration points
 
@@ -463,7 +522,8 @@ M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2
 ### The swarm step at the mid time
 
 `swarm.advection(V_fn, dt, order=2, midtime_velocity=True)` evaluates the
-RK2 mid-point velocity at the mid time, $\tfrac32 v^n - \tfrac12 v^{n-1}$,
+RK2 mid-point velocity at the mid time, $v^n + \tfrac{r}{2}(v^n - v^{n-1})$
+($\tfrac32 v^n - \tfrac12 v^{n-1}$ for equal steps, $r$ the step ratio),
 from a `CharacteristicTrace` the swarm owns (the previous velocity is cached
 by evaluation at the nodes at the end of each call), or from a solver's
 shared trace passed as `characteristics=`. On a rotation whose rate ramps
