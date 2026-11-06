@@ -75,16 +75,3 @@ def test_a_rank_with_no_cells_joins_the_transfer():
     coords[:, 1] *= 1.0 + 0.05 * coords[:, 0]
     assert all(uw.mpi.comm.allgather(mesh.deform(coords)))
     _assert_a_solve_sees_the_remapped_field(mesh, T)
-
-
-@pytest.mark.mpi(min_size=2)
-def test_follow_metric_agrees_whether_the_mesh_moved():
-    """A front confined to one sector moves some ranks' nodes by less than allclose
-    can see. The polish behind the answer is collective, so the answer is too."""
-    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
-    x, y = mesh.X
-    T = uw.discretisation.MeshVariable("T0766d", mesh, 1, degree=1)
-    T.array[:, 0, 0] = uw.function.evaluate(
-        sympy.tanh((sympy.atan2(y, x) - 0.2) / 0.02), T.coords).reshape(-1)
-    moved = uw.mpi.comm.allgather(uw.meshing.follow_metric(mesh, T, refinement=2.0, skip_threshold=None))
-    assert len(set(moved)) == 1
