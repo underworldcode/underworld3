@@ -426,6 +426,13 @@ def _remesh_with_field_transfer_impl(
         for var in extra_zero:
             _write_var_data(var, 0.0)
 
+    # _write_var_data writes through a plain view of var.data, which does not
+    # mark the mesh vector stale, and the remap's own evaluations have just
+    # refreshed that vector from the values before the write. Kernels and
+    # integrals read the mesh vector, so without this they see the old field
+    # on the moved nodes. Set on every rank: update_lvec is collective.
+    mesh._stale_lvec = True
+
     return True
 
 
