@@ -3,6 +3,7 @@
 This module provides functions to convert Underworld meshes, swarms,
 and variables to PyVista objects for interactive 3D visualization.
 """
+import importlib.util
 import os
 import underworld3 as uw
 
@@ -16,8 +17,9 @@ def initialise(jupyter_backend):
     Parameters
     ----------
     jupyter_backend : str or None
-        Jupyter backend to use ('trame', 'client', 'panel', etc.).
-        If None, auto-detects based on environment.
+        Jupyter backend to use ('trame', 'client', etc.); raises if it cannot be
+        had. If None, 'trame', or 'static' without trame, or no backend at all
+        without IPython, since conversions and off-screen renders need none.
     """
     import pyvista as pv
 
@@ -34,21 +36,27 @@ def initialise(jupyter_backend):
         or "JUPYTERHUB_SERVICE_PREFIX" in os.environ
     )
 
-    try:
-        if jupyter_backend is not None:
-            pv.global_theme.jupyter_backend = jupyter_backend
-        else:
-            # Use trame backend for all Jupyter environments
+    # pyvista checks for IPython before it looks at the backend's name, so without
+    # IPython it refuses every backend, static included. A conversion or off-screen
+    # render needs none, so a script that named none gets none.
+    if jupyter_backend is None and importlib.util.find_spec("IPython") is None:
+        return
+
+    if jupyter_backend is not None:
+        # Asked for by name: if it cannot be had, that is the caller's to hear.
+        pv.global_theme.jupyter_backend = jupyter_backend
+    else:
+        try:
             pv.global_theme.jupyter_backend = "trame"
+        except ImportError:
+            # IPython but no trame. Static needs nothing further.
+            pv.global_theme.jupyter_backend = "static"
 
-        # Configure trame for remote environments (binder, JupyterHub)
-        # Enable server proxy but let PyVista auto-detect the prefix
-        if is_remote:
-            pv.global_theme.trame.server_proxy_enabled = True
-            # Don't set prefix - let PyVista/trame auto-detect from environment
-
-    except RuntimeError:
-        pv.global_theme.jupyter_backend = "panel"
+    # Configure trame for remote environments (binder, JupyterHub)
+    # Enable server proxy but let PyVista auto-detect the prefix
+    if is_remote:
+        pv.global_theme.trame.server_proxy_enabled = True
+        # Don't set prefix - let PyVista/trame auto-detect from environment
 
     return
 
