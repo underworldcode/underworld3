@@ -14,7 +14,11 @@ of leaving the others waiting. Contracts, on every rank:
   y = 0.75 keeps that vertex where refinement placed it on every rank that holds it,
   and keeps the callback's harmless move of the vertex at (0.75, 1);
 - the shell as built, with convex-hull walls, refines with no inverted cell and no
-  warning.
+  warning;
+- a callback that moves vertices on one rank only leaves every copy of every vertex
+  with the moved position, on every level: copies of a shared vertex differ after a
+  callback that finds its vertices through the labels a rank holds, and the hierarchy
+  reconciles them before it checks a cell.
 
 On development eddab707 (no guard) at np 2 on Linux (hyperion, 2026-11-06), the folding
 callback leaves 2 inverted cells and the shell 5, with no warning, and those tests fail.
@@ -52,12 +56,17 @@ def _inverted_cells(dm):
     return uw.mpi.comm.allreduce(local)
 
 
-def _copies_disagree(dm):
-    """Vertex copies whose coordinates differ from their owner's, over all ranks."""
-    local = dm.getCoordinatesLocal()
-    owners = local.duplicate()
-    dm.getCoordinateDM().globalToLocal(dm.getCoordinates(), owners)
-    return uw.mpi.comm.allreduce(int(np.count_nonzero(owners.array != local.array)))
+def _copies_disagree(mesh):
+    """Vertex copies whose coordinates differ from their owner's, on every level of the
+    hierarchy and on the mesh's own DM, over all ranks."""
+    total = 0
+    for dm in list(getattr(mesh, "dm_hierarchy", None) or []) + [mesh.dm]:
+        local = dm.getCoordinatesLocal()
+        owners = local.duplicate()
+        dm.getCoordinateDM().globalToLocal(dm.getCoordinates(), owners)
+        total += int(np.count_nonzero(owners.array != local.array))
+        owners.destroy()
+    return uw.mpi.comm.allreduce(total)
 
 
 def _warned(record):
@@ -76,7 +85,7 @@ def test_a_creased_shell_refines_untangled_on_every_rank(monkeypatch):
             radiusOuter=1.0, radiusInner=0.5, cellSize=0.5, refinement=1, qdegree=2,
             filename=f"{directory}/uw_test_0001_creased_shell.msh")
     warned = _warned(record)
-    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh.dm)
+    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh)
     # no warning and nothing inverted: this host's gmsh built no pocket, so there was
     # nothing to hold back; inverted cells without a warning mean the guard is missing
     if not warned and inverted == 0:
@@ -100,7 +109,7 @@ def test_a_folding_callback_is_held_back_on_every_rank():
         mesh = uw.discretisation.Mesh(base.dm.clone(), simplex=True, boundaries=base.boundaries,
                                       refinement=1, refinement_callback=push_down)
     warned = _warned(record)
-    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh.dm)
+    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh)
     x = mesh.dm.getCoordinatesLocal().array.reshape(-1, 2)
     pushed = uw.mpi.comm.allreduce(int(np.any(np.isclose(x[:, 1], 0.55))))
     held = uw.mpi.comm.allreduce(int(np.any(np.isclose(x[:, 0], 0.25) & np.isclose(x[:, 1], 1.0))))
@@ -115,5 +124,29 @@ def test_the_shell_refines_untangled_without_a_warning():
         mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
                                          refinement=1, qdegree=2)
     warned = _warned(record)
-    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh.dm)
+    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh)
+    assert not warned and inverted == 0 and disagree == 0, (warned, inverted, disagree)
+
+
+def test_copies_of_a_vertex_take_the_move_when_one_rank_makes_it():
+    """Rank 0 alone nudges every vertex it holds, as a callback that reads only the
+    labels a rank holds can do for a shared wall vertex. The copies on the other side
+    of the partition must take the move."""
+    def nudge_on_rank_0(dm):
+        if uw.mpi.rank != 0:
+            return
+        c = dm.getCoordinatesLocal()
+        x = c.array.reshape(-1, 2)
+        x[:, 0] += 1.0e-3 * np.sin(np.pi * x[:, 0]) * np.sin(np.pi * x[:, 1])
+        c.array[...] = x.ravel()
+        dm.setCoordinatesLocal(c)
+
+    base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25, regular=True)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        mesh = uw.discretisation.Mesh(base.dm.clone(), simplex=True, boundaries=base.boundaries,
+                                      refinement=1, refinement_callback=nudge_on_rank_0)
+    warned = _warned(record)
+    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh)
     assert not warned and inverted == 0 and disagree == 0, (warned, inverted, disagree)

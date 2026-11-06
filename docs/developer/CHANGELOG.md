@@ -29,8 +29,17 @@ the same with an LU or an SVD coarse solve and with either wall normal.
   placed it, and one warning gives the total. The guard covers meshes that do not
   come from gmsh. It costs about 1 s on a 0.4-0.9 million cell mesh, at
   construction.
-- A crease on a curve between two wall patches is not flipped:
-  CubedSphere(simplex=True, numElements=3) still holds one vertex back.
+- In parallel, the copies of a vertex are reconciled before the check, the moved copy
+  winning. A callback moves only the vertices of the labelled facets a rank holds, so
+  before this a refined wall vertex could end off its wall depending on the rank count,
+  and at np 8 cells could invert where every rank saw its own copy untangled.
+- A crease on a curve between two wall patches is not flipped, so meshes built of
+  patches still hold vertices back at refinement, with a warning (#949). Measured by
+  vertices held at refinement 1 and 2:
+  - CubedSphere(simplex=True), numElements 3: 3 and 47; numElements 2: 0 and 24.
+  - SegmentedSphericalShell (cellSize 0.5, 3 segments): 2 and 61.
+  - RegionalSphericalBox (±70°, 3×3×2): 4 and 32.
+  Held vertices stay up to 4% of the radius off the wall (22% on that regional box).
 - The segmented shell and ball tagged their volume with Upper's value, so the
   Upper label took interior vertices and the callback dragged them onto the
   sphere. The volume is now 99999, as elsewhere.

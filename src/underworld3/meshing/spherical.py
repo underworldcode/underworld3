@@ -1289,8 +1289,8 @@ def CubedSphere(
             gmsh.model.mesh.setTransfiniteCurve(line, numNodes=numElements + 1)
 
         # TODO(BUG): a crease on a curve between two wall patches is not reached by
-        # the surface-by-surface flips below, so refinement holds back its midpoint
-        # (one vertex at numElements=3, simplex; #946).
+        # the surface-by-surface flips below, so refinement holds back vertices off the
+        # wall (simplex, numElements=3: 3 at refinement 1, 47 at refinement 2; #949).
         for _, surface in gmsh.model.get_entities(2):
             gmsh.model.mesh.setTransfiniteSurface(surface)
             if not simplex:

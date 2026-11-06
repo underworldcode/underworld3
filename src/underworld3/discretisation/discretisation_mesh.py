@@ -372,69 +372,99 @@ def _apply_refinement_callback(dm, refinement_callback):
     inverted. Returns the number put back, over all ranks: those vertices are not where
     the callback meant them to be.
 
+    In parallel the copies of one vertex can disagree after the callback. A callback
+    finds the vertices it moves through the labels a rank holds, and a rank can hold a
+    shared vertex without holding every labelled facet around it. The copy that moved is
+    the intended one, so every copy takes it before any cell is checked. Copies that
+    moved agree, because the callback is a function of the vertex's position.
+
     Cells are checked when they are simplices of the coordinate dimension; a manifold
-    mesh or a mesh of quadrilaterals or hexahedra is not checked. Collective: a vertex is
-    put back on every rank that holds it.
+    mesh or a mesh of quadrilaterals or hexahedra is not checked. A callback that writes
+    a non-finite coordinate raises. Collective: every rank sees the same verdicts.
     """
     from underworld3.utilities._plex_topology import closure_points, section_offsets
 
     dim, cdim = dm.getDimension(), dm.getCoordinateDim()
     refined = dm.getCoordinatesLocal().array.reshape(-1, cdim).copy()
     refinement_callback(dm)
-    if dim != cdim:
-        return 0
 
     coordinates = dm.getCoordinatesLocal()
     moved_to = coordinates.array.reshape(-1, cdim).copy()
-    vs, ve = dm.getDepthStratum(0)
-    cs, ce = dm.getHeightStratum(0)
-    rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
-    cells = closure_points(dm, numpy.arange(cs, ce), 0)
-    if cells.shape[1] == dim + 1 and (cells >= 0).all():
-        cells = rows[cells - vs]
-    else:
-        cells = numpy.empty((0, dim + 1), dtype=numpy.int64)
+    moved = numpy.any(moved_to != refined, axis=1)
+    shifts, _ = _sum_over_sharers(dm, numpy.where(moved[:, None], moved_to - refined, 0.0))
+    movers, _ = _sum_over_sharers(dm, numpy.repeat(moved[:, None].astype(float), cdim, axis=1))
+    movers = movers[:, 0]
+    moved_to = numpy.where((movers > 0.0)[:, None],
+                           refined + shifts / numpy.maximum(movers, 1.0)[:, None], refined)
+    _, broken = _flag_on_every_sharer(dm, ~numpy.isfinite(moved_to).all(axis=1))
+    if broken:
+        raise RuntimeError(f"The refinement callback wrote non-finite coordinates at "
+                           f"{broken} vertices.")
 
-    def orientation(x):
-        return numpy.sign(numpy.linalg.det(x[cells[:, 1:]] - x[cells[:, :1]]))
+    total = 0
+    if dim == cdim:
+        vs, ve = dm.getDepthStratum(0)
+        cs, ce = dm.getHeightStratum(0)
+        rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
+        cells = closure_points(dm, numpy.arange(cs, ce), 0)
+        if cells.shape[1] == dim + 1 and (cells >= 0).all():
+            cells = rows[cells - vs]
+        else:
+            cells = numpy.empty((0, dim + 1), dtype=numpy.int64)
 
-    reference = orientation(refined)
-    shift = numpy.linalg.norm(moved_to - refined, axis=1)
-    held = numpy.zeros(len(refined), dtype=bool)
-    while True:
-        inverted = cells[orientation(numpy.where(held[:, None], refined, moved_to)) != reference]
-        reach = numpy.where(held[inverted], 0.0, shift[inverted])
-        culprits = numpy.zeros(len(refined), dtype=bool)
-        culprits[inverted[numpy.arange(len(inverted)), reach.argmax(axis=1)]] = True
-        culprits, count = _flag_on_every_sharer(dm, culprits)
-        if count == 0:
-            break
-        held |= culprits
+        def orientation(x):
+            return numpy.sign(numpy.linalg.det(x[cells[:, 1:]] - x[cells[:, :1]]))
 
-    _, total = _flag_on_every_sharer(dm, held)
-    if total:
-        coordinates.array[...] = numpy.where(held[:, None], refined, moved_to).ravel()
-        dm.setCoordinatesLocal(coordinates)
+        reference = orientation(refined)
+        shift = numpy.linalg.norm(moved_to - refined, axis=1)
+        held = numpy.zeros(len(refined), dtype=bool)
+        while True:
+            current = numpy.where(held[:, None], refined, moved_to)
+            inverted = cells[orientation(current) != reference]
+            reach = numpy.where(held[inverted], 0.0, shift[inverted])
+            culprits = numpy.zeros(len(refined), dtype=bool)
+            culprits[inverted[numpy.arange(len(inverted)), reach.argmax(axis=1)]] = True
+            culprits, count = _flag_on_every_sharer(dm, culprits & ~held)
+            if count == 0:
+                break
+            held |= culprits
+        _, total = _flag_on_every_sharer(dm, held)
+        moved_to = numpy.where(held[:, None], refined, moved_to)
+
+    coordinates.array[...] = moved_to.ravel()
+    dm.setCoordinatesLocal(coordinates)
     return total
+
+
+def _sum_over_sharers(dm, values):
+    """The sum, over every rank's copy of each vertex, of ``values``, an array indexed
+    like the local coordinate array; each copy gets the sum. Also returns how many
+    vertices have a nonzero sum, over all ranks. Collective."""
+    cdm = dm.getCoordinateDM()
+    cdim = dm.getCoordinateDim()
+    local, glob = cdm.createLocalVec(), cdm.createGlobalVec()
+    local.array[...] = numpy.asarray(values, dtype=float).ravel()
+    glob.set(0.0)
+    cdm.localToGlobal(local, glob, addv=PETSc.InsertMode.ADD_VALUES)
+    marks = glob.duplicate()
+    marks.array[...] = numpy.repeat(
+        numpy.any(glob.array.reshape(-1, cdim) != 0.0, axis=1).astype(float), cdim)
+    count = int(round(marks.sum() / cdim))
+    marks.destroy()
+    cdm.globalToLocal(glob, local, addv=PETSc.InsertMode.INSERT_VALUES)
+    summed = local.array.reshape(-1, cdim).copy()
+    local.destroy()
+    glob.destroy()
+    return summed, count
 
 
 def _flag_on_every_sharer(dm, flags):
     """A vertex flagged on any rank that holds it, flagged on every rank that holds it,
     and the global number of flagged vertices. ``flags`` is indexed like the rows of
     the local coordinate array. Collective."""
-    cdm = dm.getCoordinateDM()
     cdim = dm.getCoordinateDim()
-    local, glob = cdm.createLocalVec(), cdm.createGlobalVec()
-    local.array[...] = numpy.repeat(flags.astype(float), cdim)
-    glob.set(0.0)
-    cdm.localToGlobal(local, glob, addv=PETSc.InsertMode.ADD_VALUES)
-    glob.array[...] = glob.array > 0.0
-    count = int(round(glob.sum() / cdim))
-    cdm.globalToLocal(glob, local, addv=PETSc.InsertMode.INSERT_VALUES)
-    shared = local.array.reshape(-1, cdim)[:, 0] > 0.0
-    local.destroy()
-    glob.destroy()
-    return shared, count
+    summed, count = _sum_over_sharers(dm, numpy.repeat(flags[:, None].astype(float), cdim, axis=1))
+    return summed[:, 0] > 0.0, count
 
 
 class Mesh(Stateful, uw_object):
@@ -1306,7 +1336,8 @@ class Mesh(Stateful, uw_object):
 
                         warnings.warn(
                             f"The refinement callback would have turned cells inside "
-                            f"out. {held} of the vertices it moved stay where refinement "
+                            f"out. {held} vertices it moved, over the hierarchy's "
+                            f"{len(self.dm_hierarchy)} levels, stay where refinement "
                             f"placed them instead (#946).",
                             UserWarning,
                         )
