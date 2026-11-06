@@ -10,6 +10,57 @@ import underworld3.timing as timing
 
 include "petsc_extras.pxi"
 
+from petsc4py.PETSc cimport Quad
+
+cdef extern from "petsc.h" nogil:
+    ctypedef struct _n_DMField
+    ctypedef _n_DMField* PetscDMField "DMField"
+    ctypedef enum PetscFEGeomMode:
+        PETSC_FEGEOM_BASIC
+        PETSC_FEGEOM_EMBEDDED
+    ctypedef struct PetscFEGeom:
+        PetscReal *detJ
+    PetscErrorCode DMGetCoordinateField(PetscDM, PetscDMField*)
+    PetscErrorCode DMFieldCreateFEGeom(PetscDMField, PetscIS, PetscQuadrature, PetscFEGeomMode, PetscFEGeom**)
+    PetscErrorCode PetscFEGeomDestroy(PetscFEGeom**)
+    PetscErrorCode PetscQuadratureGetData(PetscQuadrature, PetscInt*, PetscInt*, PetscInt*, const PetscReal**, const PetscReal**)
+
+
+def _check_error_code_collectively(ierr, routine, comm):
+    """Raise on every rank of ``comm`` if ``routine`` failed on any of them.
+
+    A rank that raises alone leaves the others waiting in their next collective.
+    A failing routine can also leave a rank short of collectives its peers made,
+    so this exchange runs on ``comm`` itself, not on the duplicate that PETSc
+    keeps for its own messages. COLLECTIVE: every rank must reach it.
+    """
+    codes = comm.allgather(int(ierr))
+    failed = {rank: code for rank, code in enumerate(codes) if code != 0}
+    if failed:
+        raise RuntimeError(f"{routine} failed; error code by rank: {failed}")
+
+
+cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
+    """``DMPlexComputeGeometryFVM``, which needs affine coordinates, checked on
+    every rank.
+
+    A higher-degree coordinate field is refused before the call, and the error
+    code cannot stand in for that. Such a field fails on a rank's first face, and
+    a rank with no cells has no faces: it goes on into a collective inside the
+    routine that its failed peers have left, and never reaches the check (seen
+    with cells [8, 8, 0] and [1, 0]). ``mesh.degree`` is the same on every rank,
+    so every rank refuses together.
+    """
+    if mesh.degree != 1:
+        raise ValueError(
+            f"DMPlexComputeGeometryFVM needs affine coordinates; this mesh has "
+            f"degree {mesh.degree}. Mesh._get_cell_radii handles any degree.")
+
+    cdef DM dm = mesh.dm
+    cdef PetscErrorCode ierr = DMPlexComputeGeometryFVM(dm.dm, &cellgeom.vec, &facegeom.vec)
+    _check_error_code_collectively(ierr, "DMPlexComputeGeometryFVM", mesh.dm.comm.tompi4py())
+
+
 ## This is currently wrapped in petsc4py but returns zero
 
 def petsc_fvm_get_min_radius(mesh) -> float:
@@ -23,11 +74,10 @@ def petsc_fvm_get_min_radius(mesh) -> float:
 
         cdef Vec cellgeom = Vec()
         cdef Vec facegeom = Vec()
-        cdef DM dm = mesh.dm
 
-        DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
+        _compute_geometry_fvm(mesh, cellgeom, facegeom)
 
-        min_radius = dm.getMinRadius()
+        min_radius = mesh.dm.getMinRadius()
         cellgeom.destroy()
         facegeom.destroy()
 
@@ -44,9 +94,8 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
 
         cdef Vec cellgeom = Vec()
         cdef Vec facegeom = Vec()
-        cdef DM dm = mesh.dm
 
-        DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
+        _compute_geometry_fvm(mesh, cellgeom, facegeom)
 
         # cell_geom is an array of 3D cell centroids plus the cell volume
 
@@ -58,6 +107,49 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         facegeom.destroy()
 
         return cell_radii, cell_centroids
+
+
+def petsc_fem_get_local_cell_sizes(mesh) -> np.array:
+        r"""
+        Each local cell's characteristic length :math:`V^{1/\\mathrm{dim}}`, for a
+        coordinate field of any degree, on a volume mesh or a manifold.
+
+        The volume is the integral of the coordinate map's Jacobian over the cell,
+        :math:`V = \\sum_q w_q |\\det J(\\xi_q)|`, from the geometry the assembler
+        integrates with on the mesh's own quadrature rule. No communication: a rank
+        with no cells has nothing to do, and the failure check brings it along.
+        """
+        cdef DM dm = mesh.dm
+        cdef Quad quad = mesh.petsc_fe.getQuadrature()
+        cdef PetscFEGeomMode mode = PETSC_FEGEOM_BASIC if mesh.dim == mesh.cdim else PETSC_FEGEOM_EMBEDDED
+        cdef PetscDMField coordinate_field = NULL
+        cdef PetscFEGeom *geometry = NULL
+        cdef PetscInt cell, q, Nq = 0
+        cdef const PetscReal *weights = NULL
+        cdef PetscErrorCode ierr = 0
+        CHKERRQ(PetscQuadratureGetData(quad.quad, NULL, NULL, &Nq, NULL, &weights))
+
+        cStart, cEnd = mesh.dm.getHeightStratum(0)
+        cdef PetscInt num_cells = cEnd - cStart
+        volumes = np.zeros(num_cells, dtype=np.float64)
+        cdef double[::1] volume_view = volumes
+        cdef IS cells = PETSc.IS().createStride(num_cells, first=cStart, step=1, comm=PETSc.COMM_SELF)
+
+        if num_cells > 0:
+            ierr = DMGetCoordinateField(dm.dm, &coordinate_field)
+            if ierr == 0:
+                ierr = DMFieldCreateFEGeom(coordinate_field, cells.iset, quad.quad, mode, &geometry)
+        cells.destroy()
+
+        if ierr == 0 and geometry != NULL:
+            for cell in range(num_cells):
+                for q in range(Nq):
+                    volume_view[cell] += weights[q] * abs(geometry.detJ[cell * Nq + q])
+            ierr = PetscFEGeomDestroy(&geometry)
+
+        _check_error_code_collectively(ierr, "DMFieldCreateFEGeom", mesh.dm.comm.tompi4py())
+
+        return np.power(volumes, 1 / mesh.dim)
 
 
 def petsc_dmplex_load_local_vector(dm, viewer, sectiondm, sf, data_name):
