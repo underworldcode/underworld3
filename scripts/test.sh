@@ -203,7 +203,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
 
   # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
   "${PYTEST[@]}" tests/test_110*py || status=1
-  "${PYTEST[@]}" tests/test_1110*py tests/test_111[2-7]*py tests/test_1120*py || status=1  # Annulus/spherical + vector SL
+  "${PYTEST[@]}" tests/test_1110*py tests/test_111[2-9]*py tests/test_1120*py || status=1  # Annulus/spherical + vector SL
   "${PYTEST[@]}" tests/test_1450*py || status=1
 
   # Named (un-numbered) test files - JIT, docstrings, projections

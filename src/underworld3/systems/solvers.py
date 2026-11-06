@@ -1465,6 +1465,45 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     instances = 0
 
+    def observe_spherical_stokes(self, observer):
+        """Observe one spherical solve through a scoped, collective context.
+
+        Parameters
+        ----------
+        observer : underworld3.diagnostics.SphericalStokesObserver
+            Receives borrowed solver objects. Callbacks must not mutate or destroy
+            operators, right-hand sides, settings, or iterates.
+
+        Returns
+        -------
+        contextlib.AbstractContextManager
+            Removes the observer on normal completion and exceptions.
+        """
+        from underworld3.diagnostics.observer import observe_spherical_stokes
+        return observe_spherical_stokes(self, observer)
+
+    def rotated_stokes_diagnostics(self, *, rtol):
+        """Snapshot settings and verify the finalized original rotated residual.
+
+        Parameters
+        ----------
+        rtol : float
+            Positive relative bound on the original constrained equations.
+        """
+        from underworld3.diagnostics.stokes import rotated_stokes_diagnostics
+        return rotated_stokes_diagnostics(self, rtol=rtol)
+
+    def verify_linear_stokes_residual(self, *, rtol):
+        """Verify the original linear residual without changing solved fields.
+
+        Parameters
+        ----------
+        rtol : float
+            Positive relative bound on the original native residual.
+        """
+        from underworld3.diagnostics.stokes import verify_linear_stokes_residual
+        return verify_linear_stokes_residual(self, rtol=rtol)
+
     def solve_spherical_gap(
         self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
         viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,

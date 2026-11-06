@@ -11,6 +11,10 @@ import underworld3 as uw
 from underworld3.utilities.stokes_residual import evaluate_linear_stokes_residual
 
 
+pytestmark = pytest.mark.level_1
+
+
+@pytest.mark.tier_b
 def test_no_solve_pressure_gradient_and_rejection():
     # u=0, p=x-1/2, f=(1,0,0) solves -div(2*eps(u))+grad(p)=f.
     # P2/P1 represents this exactly on every affine tetrahedron. All essential

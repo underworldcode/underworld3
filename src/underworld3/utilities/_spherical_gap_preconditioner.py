@@ -73,6 +73,9 @@ class _SphericalGapNormPreconditioner:
         self.applications, self.closed = 0, False
 
     def apply(self, pc, rhs, result):
+        observer = getattr(self, "observer", None)
+        if observer is not None:
+            observer.pc_started(self.applications+1)
         result.set(0)
         for block, index_set in enumerate(self.index_sets):
             source = rhs.getSubVector(index_set)
@@ -89,6 +92,8 @@ class _SphericalGapNormPreconditioner:
                 rhs.restoreSubVector(index_set, source)
         self.physical_nullspace.remove(result)
         self.applications += 1
+        if observer is not None:
+            observer.pc_finished(self.applications)
 
     def destroy(self, pc):
         if not self.closed:

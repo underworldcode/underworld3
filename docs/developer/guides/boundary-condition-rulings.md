@@ -192,3 +192,9 @@ given as `None` (or `sympy.oo`) are left free. Three things to know:
 - A boundary condition on a field that is not the solver's unknown (a
   pressure datum on a Stokes solver) is accepted by the solver but not by
   the adjoint, which refuses rather than drop it.
+
+## Spherical solve observations
+
+The optional [spherical diagnostics API](../subsystems/spherical-stokes-diagnostics.md)
+provides physical error/reaction integration and scoped `Stokes.observe_spherical_stokes`
+callbacks. Observations do not change wall constraints or the original equations.

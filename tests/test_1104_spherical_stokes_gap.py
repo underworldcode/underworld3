@@ -10,6 +10,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities._spherical_stokes_gap import _create_matrix, _source_values
+from underworld3.diagnostics import SphericalStokesObserver
 
 pytestmark = pytest.mark.level_2
 
@@ -45,16 +46,37 @@ def test_constant_lift_hydrostatic_gauge_and_physical_reactions(shell, zero_slip
     solve = stokes.solve_spherical_gap_zero_slip if zero_slip else stokes.solve_spherical_gap
     # MUMPS' default workspace allowance exhausted INFOG(1)=-9 in MPI8;
     # reserve 100% extra factor workspace explicitly without changing equations.
-    result = solve(
-        inner_boundary="Lower", outer_boundary="Upper",
-        radius_inner=0.55, radius_outer=1, viscosity=1,
-        pressure_jump=sp.Integer(1), pressure_jump_integral=polyhedral_volume,
-        gap_bodyforce=sp.zeros(1, 3), volume_force=None, quadrature=6, radial_quadrature=7,
-        linear_solver_options={"ksp_type": "preonly", "pc_type": "lu",
-                               "pc_factor_mat_solver_type": "mumps",
-                               "mat_mumps_icntl_14": 100},
-        batch_size=128,
-    )
+    class Observer(SphericalStokesObserver):
+        def __init__(self):
+            self.started = 0
+            self.finished = 0
+            self.final_result = None
+        def solve_started(self, ksp, state):
+            self.started += 1
+        def solve_finished(self, ksp, vector, state):
+            self.finished += 1
+            physical = state.gauged_copy(vector)
+            try:
+                assert abs(state.residual(physical)['physical_pressure_integral']) < 1e-10
+            finally:
+                physical.destroy()
+        def finalized(self, result):
+            self.final_result = result
+    observer = Observer()
+    with stokes.observe_spherical_stokes(observer):
+        result = solve(
+            inner_boundary="Lower", outer_boundary="Upper",
+            radius_inner=0.55, radius_outer=1, viscosity=1,
+            pressure_jump=sp.Integer(1), pressure_jump_integral=polyhedral_volume,
+            gap_bodyforce=sp.zeros(1, 3), volume_force=None, quadrature=6, radial_quadrature=7,
+            linear_solver_options={"ksp_type": "preonly", "pc_type": "lu",
+                                   "pc_factor_mat_solver_type": "mumps",
+                                   "mat_mumps_icntl_14": 100},
+            batch_size=128,
+        )
+    assert observer.started == observer.finished == 1
+    assert observer.final_result is result
+    assert not hasattr(stokes, '_spherical_gap_observer')
     physical_volume = 4*np.pi*(1-0.55**3)/3
     np.testing.assert_allclose(result.checks["physical_volume"], physical_volume, rtol=1e-9)
     assert max(result.checks["null_relative_residuals"]) < 1e-10

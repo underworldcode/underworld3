@@ -53,6 +53,13 @@ from underworld3.utilities._tetrahedral_gap import (
 )
 
 
+def _rss_mib(observer, phase):
+    snapshot = memory_snapshot(full=False)
+    if observer is not None and hasattr(observer, 'phase'):
+        observer.phase(phase, snapshot)
+    return snapshot['rss_mb']
+
+
 class _SphericalGapResult(NamedTuple):
     normal_reaction: object
     tangential_reaction: object
@@ -385,10 +392,10 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
     if mu.free_symbols or float(mu) != viscosity or penalty != 0 or stokes.constraints != sp.Matrix((stokes.div_u,)):
         raise ValueError("Require matching constant viscosity, zero penalty and standard continuity.")
     comm = mesh.dm.comm; mpi = comm.tompi4py()
-    resources = {"rss_start_mib": memory_snapshot(full=False)["rss_mb"]}
     # Diagnostic observers may copy borrowed operators at these two stages.
     # No extra matrix assembly or storage is incurred by ordinary solves.
     observer = getattr(stokes, "_spherical_gap_observer", None)
+    resources = {"rss_start_mib": _rss_mib(observer, "rss_start_mib")}
     vertex_rows = mesh._cell_node_indices(1, True)
     vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
     urows, prows = _canonical_rows(mesh, velocity, vertices), _canonical_rows(mesh, pressure, vertices)
@@ -432,22 +439,26 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         # An inner-wall owner need not contain the physical wall. Preallocate
         # every actual cell/multiplier connection, including remote rows.
         resources["geometry_seconds"] = time.perf_counter()-assembly_started
-        resources["rss_after_geometry_mib"] = memory_snapshot(full=False)["rss_mb"]
+        resources["rss_after_geometry_mib"] = _rss_mib(observer, "rss_after_geometry_mib")
         graph_started = time.perf_counter()
         matrix = _create_matrix(size, uid[owned], pid[owned],
                                 [(uid[w["cells"]], w["lid"]) for w in walls[1:]]+inner_graph, curtains, comm)
         cleanup.callback(matrix.destroy)
         resources["graph_seconds"] = time.perf_counter()-graph_started
         graph_baseline = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
-        resources["rss_after_graph_mib"] = memory_snapshot(full=False)["rss_mb"]
+        resources["rss_after_graph_mib"] = _rss_mib(observer, "rss_after_graph_mib")
         numeric_started = time.perf_counter()
         norm_blocks = None
         if use_norm_pc:
+            if observer is not None and hasattr(observer, "phase"):
+                _rss_mib(observer, "norm_blocks_begin")
             norm_blocks = _SphericalGapNormBlocks(
                 velocity, matrix, nu, npres, components*nboundary, components,
                 norm_preconditioner_length,
             )
             cleanup.callback(norm_blocks.destroy)
+            if observer is not None and hasattr(observer, "phase"):
+                _rss_mib(observer, "norm_blocks_end")
         rhs = matrix.createVecRight(); cleanup.callback(rhs.destroy); rhs.set(0)
         if volume_force is not None:
             if (not isinstance(volume_force, PETSc.Vec) or volume_force.getSize() != nu
@@ -639,7 +650,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         for vector in (rhs, pmean, *rotation_weights):
             vector.setValues(unsupported, np.zeros(len(unsupported))); vector.assemble()
         resources["numeric_assembly_seconds"] = time.perf_counter()-numeric_started
-        resources["rss_after_numeric_assembly_mib"] = memory_snapshot(full=False)["rss_mb"]
+        resources["rss_after_numeric_assembly_mib"] = _rss_mib(observer, "rss_after_numeric_assembly_mib")
         assembled_info = matrix.getInfo(PETSc.Mat.InfoType.LOCAL)
         graph_checks = {
             "matrix_mallocs_preallocation": mpi.allreduce(int(graph_baseline["mallocs"]), op=MPI.SUM),
@@ -739,7 +750,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             pinned_rhs.setValues(local_pins, np.zeros(len(local_pins))); pinned_rhs.assemble()
         resources["algebraic_preparation_seconds"] = time.perf_counter()-algebraic_started
         assembly_seconds = mpi.allreduce(time.perf_counter()-assembly_started, op=MPI.MAX)
-        resources["rss_before_setup_mib"] = memory_snapshot(full=False)["rss_mb"]
+        resources["rss_before_setup_mib"] = _rss_mib(observer, "rss_before_setup_mib")
         setup_started = time.perf_counter()
         ksp = PETSc.KSP().create(comm=comm); cleanup.callback(ksp.destroy); ksp.setOperators(pinned)
         prefix = f"spherical_gap_{stokes.instance_number}_"; ksp.setOptionsPrefix(prefix)
@@ -751,6 +762,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         if use_norm_pc:
             context = norm_blocks.context(umap, coordinates, nodal_rotations, physical_space, prefix+"norm_velocity_")
             cleanup.callback(context.destroy, None)
+            context.observer = observer if hasattr(observer, "pc_started") else None
             ksp.getPC().setPythonContext(context)
             ksp.setPCSide(PETSc.PC.Side.RIGHT)
             ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
@@ -758,9 +770,21 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         if use_norm_pc:
             ksp.view()  # PETSc exposes the effective restart in its view, not a Python getter.
         setup_seconds = mpi.allreduce(time.perf_counter()-setup_started, op=MPI.MAX)
-        resources["rss_after_setup_mib"] = memory_snapshot(full=False)["rss_mb"]
+        resources["rss_after_setup_mib"] = _rss_mib(observer, "rss_after_setup_mib")
         solve_started = time.perf_counter()
-        solution = rhs.duplicate(); cleanup.callback(solution.destroy); ksp.solve(pinned_rhs, solution)
+        solution = rhs.duplicate(); cleanup.callback(solution.destroy)
+        state = uw.diagnostics.SphericalSolveState(dict(
+            matrix=matrix, rhs=rhs, mpi=mpi, pressure_jump_integral=pressure_jump_integral,
+            lift_gap=lift_gap, pmean=pmean, pressure_mode=pressure_mode, modes=modes,
+            rotation_weights=rotation_weights, components=components, nu=nu, npres=npres,
+            nboundary=nboundary, umap=umap, pmap=pmap, compressed=compressed,
+            coordinates=coordinates, velocity=velocity, pressure=pressure, stokes=stokes,
+            mesh=mesh, radius_inner=radius_inner, radius_outer=radius_outer,
+        ))
+        if observer is not None and hasattr(observer, "solve_started"):
+            uw.diagnostics.solve_with_observer(ksp, pinned_rhs, solution, state, observer)
+        else:
+            ksp.solve(pinned_rhs, solution)
         if ksp.getConvergedReason() <= 0:
             pc = ksp.getPC()
             factor_details = None
@@ -773,20 +797,14 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             )
         solve_seconds = mpi.allreduce(time.perf_counter()-solve_started, op=MPI.MAX)
         initial_solve_seconds = solve_seconds
-        resources["rss_after_solve_mib"] = memory_snapshot(full=False)["rss_mb"]
-        lift_integral = float(pressure_jump_integral)+mpi.allreduce(float(lift_gap), op=MPI.SUM)
+        resources["rss_after_solve_mib"] = _rss_mib(observer, "rss_after_solve_mib")
+        lift_integral = state.lift_integral
         direct_lu = ksp.getType() == "preonly" and ksp.getPC().getType() == "lu"
         ungauged = solution.copy() if direct_lu else None
         if ungauged is not None:
             cleanup.callback(ungauged.destroy)
 
-        def restore_gauge(vector):
-            vector.axpy(-(pmean.dot(vector)+lift_integral)/pmean.sum(), pressure_mode)
-            if components == 1:
-                gram = np.array([[weight.dot(mode) for mode in modes[1:]] for weight in rotation_weights])
-                coefficients = np.linalg.solve(gram, [weight.dot(vector) for weight in rotation_weights])
-                for coefficient, mode in zip(coefficients, modes[1:], strict=True):
-                    vector.axpy(-coefficient, mode)
+        restore_gauge = state.restore_gauge
 
         restore_gauge(solution)
         direct_history = None
@@ -802,37 +820,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         relative = work.norm()/max(rhs.norm(), np.finfo(float).tiny)
         if not np.isfinite(relative) or relative > 1e-8:
             raise ArithmeticError(f"Spherical unpinned physical residual failed: {relative}")
-        velocity.array[:, 0, :] = _scatter_values(solution, umap).reshape(-1, 3)
-        pressure.array[:, 0, 0] = _scatter_values(solution, pmap+nu)
-        normal_values = np.zeros(len(coordinates)); tangent_values = np.zeros((len(coordinates), 3))
-        rows = np.flatnonzero(compressed >= 0)
-        lids = nu+npres+components*compressed[rows, None]+np.arange(components)
-        coefficients = _scatter_values(solution, lids.ravel()).reshape(-1, components)
-        distance = np.linalg.norm(coordinates[rows], axis=1)
-        is_inner = np.abs(distance-radius_inner) < np.abs(distance-radius_outer)
-        signs = np.where(is_inner, -1, 1)
-        radii = np.where(is_inner, radius_inner, radius_outer)
-        outward = signs[:, None]*coordinates[rows]/distance[:, None]
-        if components == 1:
-            normal_values[rows] = coefficients[:, 0]
-        else:
-            physical = coefficients*radii[:, None]/distance[:, None]
-            normal_values[rows] = np.einsum("ed,ed->e", physical, outward)
-            tangent_values[rows] = physical-normal_values[rows, None]*outward
-        if not hasattr(stokes, "_spherical_gap_normal_reaction"):
-            stokes._spherical_gap_normal_reaction = uw.discretisation.MeshVariable(
-                f"SphericalNormalReaction_{stokes.instance_number}", mesh, 1, degree=2,
-            )
-            stokes._spherical_gap_tangential_reaction = uw.discretisation.MeshVariable(
-                f"SphericalTangentialReaction_{stokes.instance_number}", mesh, 3, degree=2,
-            )
-        normal_field = stokes._spherical_gap_normal_reaction
-        tangent_field = stokes._spherical_gap_tangential_reaction
-        normal_field.array[:, 0, 0] = normal_values
-        tangent_field.array[:, 0, :] = tangent_values
-        for field in (velocity, pressure, normal_field, tangent_field):
-            field._sync_lvec_to_gvec()
-        mesh._stale_lvec = True
+        normal_field, tangent_field = state.assign_fields(solution)
         checks = dict(relative_residual=relative, null_relative_residuals=null_errors,
                       physical_volume=pmean.sum(), physical_pressure_integral=pmean.dot(solution)+lift_integral,
                       rotation_integrals=[weight.dot(solution) for weight in rotation_weights],
@@ -875,7 +863,10 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
                           rss_before_norm_setup_mib=checks["rss_before_setup_mib"])
         if ksp.getPC().getType() == "lu" and ksp.getPC().getFactorSolverType() == "mumps":
             checks["effective_mumps_icntl_14"] = ksp.getPC().getFactorMatrix().getMumpsIcntl(14)
-        return _SphericalGapResult(normal_field, tangent_field, checks)
+        result = _SphericalGapResult(normal_field, tangent_field, checks)
+        if observer is not None and hasattr(observer, "finalized"):
+            observer.finalized(result)
+        return result
 
 
 def _solve_spherical_gap(stokes, inner_boundary, outer_boundary, radius_inner, radius_outer,
