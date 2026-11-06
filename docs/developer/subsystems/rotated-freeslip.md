@@ -367,12 +367,68 @@ reported. The standard SNES path only warns on divergence.
 
 ### Null-space handling
 
-Rigid-rotation candidates (one mode on a closed circle, three on a spherical
-shell) are admitted to the increment null space and the post-solve gauge
-removal only if they pass **two** tests: tangential to every rotated
-constraint row (`Q·m ≈ 0` there), **and** a null vector of the assembled
-operator (`‖J·m‖ ≈ 0` against the velocity diagonal scale). The second test is
-what catches pinning the first cannot see — an essential condition on another
+The rigid-rotation candidates are the modes the mesh **declares** in
+`mesh.nullspace_rotations` (#906): one on an annulus, three on a spherical shell
+or a sheet on a sphere. A box declares nothing; detection then finds no mode. The mesh factories declare them, and the
+standard Stokes path reads the same list for `petsc_use_nullspace`. A mesh built
+without them (a gmsh import, a wrapped DM) declares its modes by assignment,
+`mesh.nullspace_rotations = [sympy.Matrix([-y, x])]`. Assigning `[]` declares
+that it has none. The setter refuses a field that is not a rigid rotation
+(affine, with a nonzero antisymmetric gradient, zero on its axis: a screw is
+refused). A mesh adapted, cut, split or placed into from a declaring mesh
+inherits its modes, rewritten in its own coordinates, at any rank count; so does
+the mesh the add-on partition moves a level into. `remesh` works in place and
+keeps them. A mesh reloaded from a file declares nothing, like a gmsh import.
+
+A declared mode is exempt from the test against the constraint rows when the
+faceting is the only reason it could fail it (`_declared_mode_flags`):
+
+- every rotated wall takes the facet-averaged normal (`normal=None`). A wall with
+  a given normal is tested, and an exact normal passes;
+- the declared modes rotate about one point, their centre (all of `A c = -m0` at
+  once; a single declared rotation in 3-D leaves a line, and is not exempt);
+- each rotated wall's vertices, the closure of its labelled facets, are
+  equidistant from that centre to 1e-9 relative: the wall is a sphere (a circle in
+  2-D) about it. Faceting keeps the vertices on the sphere and only the edge
+  midpoints off it. Any other surface of revolution is tested.
+
+A deformed wall fails the last check, a free surface after its first step for
+example, or a cut that puts chord vertices on a wall. The modes then take the
+constraint test like undeclared ones, and the solve warns once, naming the wall
+and the spread of its vertices. The verdict, the same for every mode, is in the
+solve's `declared_modes_exempt` entry; which modes were admitted is in
+`rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
+that is only near-null is not removed, and the answer carries a poorly
+determined rotation (measured on a shell, Linux: unmoved, rate 3.7e-15 in a v_rms
+of 1.79; a wall moved by 5e-10, enough to cross the threshold, rate 5.6 in 4.59,
+and the same up to a 1e-6 move). On a deformed wall, remove the rotation after the solve, as
+`free-surface-convection.md` §3 does.
+
+An exempt mode has its constrained rows zeroed, in the null space and in the
+gauge removal alike, which makes it exactly compatible with `v·n = 0`. A test
+against the rows would reject the modes on a faceted sphere: there the
+facet-averaged normal leaves each declared rotation a violation of the order of
+the discretisation error (0.0075-0.0164 on a 0.5 shell built on macOS; 0.0037-0.0054
+on a 0.3 shell built on Linux), against a 1e-8 tolerance. Under the analytic
+normal the modes are exact.
+
+The outer Newton test is measured in the quotient space of the admitted modes.
+A guard warns when the projected-out component dominates the converged
+residual, which means the forcing has a net torque that free-slip walls cannot
+balance. A declared mode with violation $s$ also carries a component of a
+torque-free forcing, about $s^2/3$ of the forcing scale, so the guard warns only
+above $10 s^2$ of the convergence reference. On #906's shell that component was
+8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$ (the shells at
+cell sizes 0.5 and 0.25). A torque of 1 %
+of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
+the guard is unchanged.
+
+A mesh that declares nothing is offered the Cartesian rotations. Each is
+admitted to the increment null space and the post-solve gauge removal only if
+it passes **two** tests: tangential to every rotated constraint row
+(`Q·m ≈ 0` there), **and** a null vector of the assembled operator (`‖J·m‖ ≈ 0`
+against the velocity diagonal scale). A declared mode takes the second test
+too. The second test is what catches pinning the first cannot see — an essential condition on another
 boundary leaves the mode tangential to the rotated wall while the eliminated
 operator is *not* null on it, and admitting it projects an irreducible
 component out of every increment (the residual then floors far above
@@ -481,7 +537,8 @@ because each one is a place the wiring could be wrong and still look plausible:
   operators carry in the same block. `_rotated_nullspace` therefore serves the
   adjoint as it does the forward — measured, not argued: on a free-slip annulus
   with a power-law TI tangent the admitted modes give `‖Â v‖` = 4.8e-17 / 2.3e-10
-  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10.
+  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10. Those are exact modes; a declared mode on a
+  faceted wall is near-null, and leaves `‖Â v‖` of the order of its slack.
 
 **Where there is a null space, the multiplier is returned modulo it.** Pinning
 one boundary with an essential condition removes it — `_rotated_nullspace` then
