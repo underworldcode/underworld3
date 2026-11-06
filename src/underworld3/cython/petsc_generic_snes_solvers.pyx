@@ -354,12 +354,24 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
-def _drop_solver_options(prefix):
+# The solver that owns each options prefix, by a token. Instance numbers restart
+# after uw_object._reset(), so a later solver can take a prefix a dropped one had.
+_SOLVER_OPTIONS_OWNER = {}
+
+
+def _drop_solver_options(prefix, token):
     """Remove every option a dropped solver left in the global database: those
     under its prefix, and the ``private_`` copies PETSc makes for its sub-objects.
-    A solver's prefix is unique (``Solver_N_``), so no live solver reads them.
-    Not collective."""
+    Only while that solver still owns the prefix, and only before PETSc is
+    finalised: the mesh and its solvers form a reference cycle, which the
+    collector can reach after PetscFinalize, where touching the options database
+    segfaults. Not collective."""
+    if _SOLVER_OPTIONS_OWNER.get(prefix) is not token:
+        return
+    del _SOLVER_OPTIONS_OWNER[prefix]
     try:
+        if PETSc.Sys.isFinalized():
+            return
         opts = PETSc.Options()
         for name in list(opts.getAll()):
             if name.startswith(prefix) or name.startswith("private_" + prefix):
@@ -490,8 +502,10 @@ class SolverBaseClass(uw_object):
         # database grew by about 25 keys per solver (49 for a Stokes and a Poisson
         # solve, #950). They go when the solver is collected; not at interpreter
         # exit, by which time PETSc may be finalised.
+        _token = object()
+        _SOLVER_OPTIONS_OWNER[self.petsc_options_prefix] = _token
         weakref.finalize(self, _drop_solver_options,
-                         self.petsc_options_prefix).atexit = False
+                         self.petsc_options_prefix, _token).atexit = False
 
         self.dm = None
         self.dm_hierarchy = []
