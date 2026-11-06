@@ -34,6 +34,7 @@ Validates four things that aren't checkable from the serial pytest suite:
 from __future__ import annotations
 
 import os
+import pytest
 import shutil
 import sys
 import tempfile
@@ -79,6 +80,23 @@ def _setup_isolated_cache():
     COMM.Barrier()
     os.environ["UW_JIT_CACHE_DIR"] = str(base)
     return base
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _isolated_cache_under_pytest():
+    """These tests delete the cache's files, so under pytest they must not see the
+    user's: only main() set the isolated directory up, and pytest never calls it."""
+    base = COMM.bcast(tempfile.mkdtemp(prefix="uw_jit_cache_ptest_") if RANK == 0 else None)
+    before = os.environ.get("UW_JIT_CACHE_DIR")
+    os.environ["UW_JIT_CACHE_DIR"] = base
+    yield
+    COMM.Barrier()
+    if before is None:
+        del os.environ["UW_JIT_CACHE_DIR"]
+    else:
+        os.environ["UW_JIT_CACHE_DIR"] = before
+    if RANK == 0:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_1_hash_agreement_and_csc_correctness():

@@ -51,20 +51,23 @@ DEFERRED_PTESTS = {
     "ptest_0848_fault_split_3d_parallel.py": SCRIPT_STYLE,
     "ptest_1020_fmg_single_field_parallel.py": SCRIPT_STYLE,
     "ptest_1079_diffusion_disk_restart.py": SCRIPT_STYLE,
-    "ptest_0844_reconnect_parallel.py": "hangs at np 2 and 4 (#900)",
+    "ptest_0844_reconnect_parallel.py": "hangs at np 2 and 4 (#961)",
     "ptest_0851_fault_network_3d_parallel.py": "fails at np 2 and 4 (#900)",
     "ptest_0863_fault_network_3d_width_parallel.py": "fails at np 2 and 4 (#956)",
-    "ptest_0864_seam_ligament_parallel.py": "passes at np 2, fails at np 4, which --full-parallel runs (#956)",
-    "ptest_0865_seam_split_parallel.py": "passes at np 2, fails at np 4, which --full-parallel runs (#956)",
     "ptest_0763_mesh_adapt_transfer.py": "its one test is skipped unconditionally: adaptMetric fails on N>1",
 }
 
 
 def dark_ptests(script_text, every):
-    """The ptest_* files in neither scripts/test.sh nor DEFERRED_PTESTS, and the stale entries."""
-    code = "\n".join(line for line in script_text.splitlines()
-                     if not line.lstrip().startswith("#"))
-    run = set(re.findall(r"tests/parallel/(ptest_[A-Za-z0-9_]+\.py)", code))
+    """The ptest_* files in neither test.sh's PTEST arrays nor DEFERRED_PTESTS, and the
+    stale entries. Only the array bodies count: a path in a comment or an echo runs nothing."""
+    run = set()
+    for body in re.findall(r"^PTEST_\w+=\(\n(.*?)^\)", script_text, re.M | re.S):
+        for line in body.splitlines():
+            line = line.split("#")[0].strip()
+            match = re.fullmatch(r"tests/parallel/(ptest_[A-Za-z0-9_]+\.py)", line)
+            if match:
+                run.add(match.group(1))
     dark = sorted(every - run - set(DEFERRED_PTESTS))
     stale = sorted(set(DEFERRED_PTESTS) - (every - run))
     return dark, stale
@@ -131,8 +134,12 @@ def main():
         print("\nRemove them: the files they name are running, or no longer exist.")
         return 1
 
+    script_text = (REPO / "scripts" / "test.sh").read_text()
+    if not re.search(r"^\s*PARALLEL_FILES=\(tests/parallel/test_\*\.py\)", script_text, re.M):
+        print("    scripts/test.sh no longer enumerates tests/parallel/test_*.py")
+        return 1
     ptests = {p.name for p in (REPO / "tests" / "parallel").glob("ptest_*.py")}
-    dark, stale = dark_ptests((REPO / "scripts" / "test.sh").read_text(), ptests)
+    dark, stale = dark_ptests(script_text, ptests)
     if dark or stale:
         for name in dark:
             print(f"    tests/parallel/{name} is in neither scripts/test.sh nor DEFERRED_PTESTS")
