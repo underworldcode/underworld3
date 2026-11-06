@@ -28,7 +28,7 @@ ap.add_argument("--transport", default="none", choices=["none", "supg", "slcn"])
 ap.add_argument("--T-analytic", type=int, default=0,
                 help="1: reset T from its formula after each move, so a v_rms change is the mesh's, not the remap's")
 ap.add_argument("--rotation-nullspace", type=int, default=0)
-ap.add_argument("--metric-eval", default="rbf", choices=["rbf", "linear"])
+ap.add_argument("--metric-eval", default="rbf", choices=["rbf", "frozen"])
 ap.add_argument("--T-touch", type=int, default=0, help="1: rewrite T with its own values after each move")
 ap.add_argument("--steps", type=int, default=0, help="time steps in the transport loop")
 ap.add_argument("--dt-mult", type=float, default=1.0)
@@ -91,8 +91,12 @@ def mover():
     uw.meshing.node_redistribution(
         mesh, rho, method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0, metric_eval=args.metric_eval),
         slip_surfaces=bool(args.slip), skip_threshold=None)
+    a = np.asarray(T.array)
     say(event="move", seconds=time.time() - t0, geometry_version=mesh._geometry_version,
-        levels=len(mesh.dm_hierarchy), **remap_error(), **quality())
+        levels=len(mesh.dm_hierarchy), vr_wall_after_remap=wall_normal_velocity(),
+        T_range=[uw.mpi.comm.allreduce(float(a.min()), op=MPI.MIN),
+                 uw.mpi.comm.allreduce(float(a.max()), op=MPI.MAX)],
+        **remap_error(), **quality())
 
 
 v = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
