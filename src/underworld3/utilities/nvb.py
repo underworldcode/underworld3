@@ -304,8 +304,14 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     cvS, cvE = coarse_dm.getDepthStratum(0)
     ceS, ceE = coarse_dm.getDepthStratum(1)
     cdim = coarse_dm.getCoordinateDim()
+    # Both coordinate vectors are collective the first time they are read: every rank
+    # reads them here, before any rank can return early (#961). A rank with no cells
+    # that returned before reading the fine coordinates left its peers waiting in that
+    # read while it went on to the verdict's reduction.
     cxyz = np.ascontiguousarray(
         coarse_dm.getCoordinatesLocal().array.reshape(-1, cdim))
+    fxyz = np.ascontiguousarray(
+        fine_dm.getCoordinatesLocal().array.reshape(-1, cdim))
 
     edges = [(c[0] - cvS, c[1] - cvS)
              for e in range(ceS, ceE)
@@ -322,8 +328,6 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
 
     fvS, fvE = fine_dm.getDepthStratum(0)
     feS, feE = fine_dm.getDepthStratum(1)
-    fxyz = np.ascontiguousarray(
-        fine_dm.getCoordinatesLocal().array.reshape(-1, cdim))
     n_f = fvE - fvS
     if fxyz.shape[0] != n_f:
         return None
