@@ -11,6 +11,12 @@ wall; a rank-local verdict would keep the mode there and drop it elsewhere.
   constrained row.
 - With 1e-6 of radial deformation near (1, 0) on its outer wall, every rank drops the
   mode, rank 0 warns, and the constraint test then rejects it on every rank.
+- The fixture has its power: at each rank count it was measured at, some rank holds no
+  deformed wall vertex. Measured on Linux (hyperion, 2026-11-06), the ranks untouched
+  were 1, 2, 2, 3, 4, 6 at np 2, 3, 4, 5, 6, 8. With the reduction made rank-local, the
+  ranks disagree and the solve hangs into the supervisor at np 2, 3, 4 and 8. If a
+  partitioner change makes the power assert fail, the fixture has lost its power, not
+  the library its fix: widen the patch's complement (raise the x > 0.9 cut).
 
 The serial file, tests/test_1131_rotated_nullspace_from_mesh.py, carries the nodal
 measurements, which read local arrays.
@@ -29,6 +35,9 @@ import underworld3 as uw
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(300)]
+
+# the rank counts at which some rank was measured to hold no deformed wall vertex
+HOLDS_AT = (2, 3, 4, 5, 6, 8)
 
 
 def _annulus(deform):
@@ -94,3 +103,6 @@ def test_a_wall_deformed_on_some_ranks_drops_the_mode_on_every_rank():
     out = _solve(deform=True)
     assert out["warned"] and set(out["verdicts"]) == {((False,), 0)}, out
     assert out["vn"] < 1.0e-12, out
+    if uw.mpi.size in HOLDS_AT:
+        assert out["untouched"] >= 1, ("no rank misses the deformation: the fixture has "
+                                       "lost its power at this rank count", out)
