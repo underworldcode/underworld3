@@ -53,20 +53,13 @@ __all__ = [
 ]
 
 
-# Monotone-limiting mode for the REMAP transfer, read ONCE at import time
-# from the ``REMESH_MONOTONE`` environment variable. On a freshly-adapted
-# mesh the NEW boundary DOFs sit a sagitta OUTSIDE the OLD boundary cell
-# (arc vs chord), so the old P2/P3 field, FE-evaluated there, overshoots
-# wildly — in parallel the migrate lands those points in a containing cell
-# on another rank and the overshoot is delivered as a "valid" (un-flagged)
-# value. That is the parallel free-slip v.n "leak": a corrupt boundary T/V
-# remap, NOT a BC bug. The default ``"clamp"`` bounds each resampled value
-# to its k-NN source-nodal range; it is bit-identical to plain FE in smooth
-# regions and parallel-safe (rank-local) — the same limiter as the
-# SemiLagrangian trace-back fix. Set REMESH_MONOTONE to "off" (or "0",
-# "none", "false", "") to disable, or to any other mode accepted by
-# ``uw.function.global_evaluate(..., monotone=...)`` (e.g. "pick").
-REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "clamp")
+# Optional limiter on the REMAP transfer, read once at import time from the
+# ``REMESH_MONOTONE`` environment variable, for diagnostics. Off by default: the
+# targets outside the old mesh it was added for are now read on the old wall (see
+# ``_targets_read_inside_old_mesh``). "clamp" bounds each value to its nearest
+# source DOFs on this rank, so on a smooth field it adds error and makes the result
+# depend on the partition. Any mode ``global_evaluate(..., monotone=...)`` accepts.
+REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "off")
 if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):
     REMESH_MONOTONE = False
 
@@ -470,6 +463,97 @@ def _iter_active_hooks(mesh):
         yield cb
 
 
+def _exterior_wall(mesh, vertex_coords):
+    """The exterior boundary at ``vertex_coords``, gathered from all ranks: facets
+    ``(n, cdim, cdim)`` and their unit outward normals ``(n, cdim)``. ``None`` where it
+    cannot be expressed as simplices (a hexahedral wall, a manifold mesh).
+
+    Taken from the boundary labels, not from local topology, where a partition seam
+    also looks like a boundary. Gathered because a target can sit beside a facet held
+    on another rank. Collective.
+    """
+    from underworld3.meshing.smoothing import _auto_pinned_labels
+
+    cdim = mesh.cdim
+    if mesh.dim != cdim or (cdim == 3 and not mesh.isSimplex):
+        return None
+    dm = mesh.dm
+    v_start, v_end = dm.getDepthStratum(0)
+    f_start, f_end = dm.getHeightStratum(1)
+    facets, inward_points = [], []
+    for name in _auto_pinned_labels(mesh):
+        internal = mesh._boundary_is_internal(name)     # collective: before any skip
+        label = dm.getLabel(name) if dm.hasLabel(name) else None
+        if internal or label is None or label.getNumValues() == 0:
+            continue
+        for value in label.getValueIS().getIndices():
+            for point in label.getStratumIS(int(value)).getIndices():
+                support = dm.getSupport(int(point)) if f_start <= point < f_end else ()
+                if len(support) == 0:
+                    continue
+                vertices = lambda p: [q - v_start for q in dm.getTransitiveClosure(int(p))[0]
+                                      if v_start <= q < v_end]
+                facets.append(vertex_coords[vertices(point)])
+                inward_points.append(vertex_coords[vertices(support[0])].mean(axis=0))
+    local_facets = (np.array(facets, dtype=float) if facets
+                    else np.empty((0, cdim, cdim), dtype=float))
+    local_inward = (np.array(inward_points, dtype=float) if inward_points
+                    else np.empty((0, cdim), dtype=float))
+    all_facets = np.concatenate(uw.mpi.comm.allgather(local_facets), axis=0)
+    all_inward = np.concatenate(uw.mpi.comm.allgather(local_inward), axis=0)
+    if all_facets.shape[0] == 0:
+        return None
+    if cdim == 2:
+        along = all_facets[:, 1] - all_facets[:, 0]
+        normals = np.column_stack([along[:, 1], -along[:, 0]])
+    else:
+        normals = np.cross(all_facets[:, 1] - all_facets[:, 0],
+                           all_facets[:, 2] - all_facets[:, 0])
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    away = all_facets.mean(axis=1) - all_inward
+    normals *= np.sign((normals * away).sum(axis=1, keepdims=True))
+    return all_facets, normals
+
+
+def _targets_read_inside_old_mesh(target, wall, reach):
+    """``target`` with every point outside the old mesh moved to the nearest point of
+    its wall, the rest unchanged.
+
+    The old field is defined on the old mesh. A wall node that slid along a convex
+    boundary sits a sagitta outside the old polygon, and a wall that moved outward takes
+    nodes further out, and past the wall the FE basis overshoots. ``reach`` bounds how
+    far outside a target can be: only targets that close are examined.
+    """
+    from underworld3.kdtree import KDTree
+    from underworld3.meshing.smoothing import (
+        _nearest_on_facets_2d, _nearest_on_facets_3d)
+
+    facets, normals = wall
+    nearest = _nearest_on_facets_2d if target.shape[1] == 2 else _nearest_on_facets_3d
+    tree = KDTree(facets.mean(axis=1))
+    size = np.linalg.norm(facets[:, 1] - facets[:, 0], axis=1).max()
+    distance, _ = tree.query(target, k=1, sqr_dists=False)
+    close = np.nonzero(distance.reshape(-1) < size + reach)[0]
+    pulled = target.copy()
+    if close.size == 0:
+        return pulled
+    k = min(8, facets.shape[0])
+    _, candidates = tree.query(target[close], k=k, sqr_dists=False)
+    candidates = candidates.reshape(close.size, k)
+    closest = np.array([nearest(target[i][None], facets[c])[0]
+                        for i, c in zip(close, candidates)])
+    # Outside any facet through the closest point. One facet is not enough at a corner:
+    # a point straight along one wall from the corner is level with that wall, and
+    # only the other wall sees it as outside. A point in the mesh is outside none.
+    outward = normals[candidates]                                   # (m, k, cdim)
+    through_closest = np.abs(((closest[:, None] - facets[candidates, 0]) * outward)
+                             .sum(axis=2)) < 1.0e-9 * size
+    beyond = ((target[close][:, None] - closest[:, None]) * outward).sum(axis=2)
+    outside = (through_closest & (beyond > 1.0e-12 * size)).any(axis=1)
+    pulled[close[outside]] = closest[outside]
+    return pulled
+
+
 def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """One-shot REMAP dance for a set of variables.
 
@@ -502,6 +586,11 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         except Exception:
             new_dof_coords[var] = None
 
+    old_wall = _exterior_wall(mesh, old_X)
+    moved_by = np.linalg.norm(new_X - old_X, axis=1)
+    reach = uw.mpi.comm.allreduce(
+        float(moved_by.max()) if moved_by.size else 0.0, op=uw.MPI.MAX)
+
     # Deform back to the old coords, restore data so global_evaluate
     # sees the old field, evaluate at each var's new DOF coords,
     # then deform forward and write the resampled values back.
@@ -515,10 +604,11 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         # A rank with no DOFs of this variable still enters the collective below.
         if target is None:
             continue
+        if old_wall is not None and target.size:
+            target = _targets_read_inside_old_mesh(target, old_wall, reach)
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
-            # REMESH_MONOTONE (module constant, see its comment) bounds the
-            # boundary-overshoot failure mode of the plain FE evaluation.
+            # REMESH_MONOTONE (module constant, see its comment) is off by default.
             try:
                 val = uw.function.global_evaluate(
                     var.sym, target, monotone=REMESH_MONOTONE)

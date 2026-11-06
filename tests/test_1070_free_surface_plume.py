@@ -254,10 +254,13 @@ def test_freesurface_prescribed_rate_is_flux_free():
     net = uw.maths.BdIntegral(mesh=mesh, fn=fs._un_target.sym[0], boundary="Upper")
     gross = uw.maths.BdIntegral(mesh=mesh, fn=sympy.Abs(fs._un_target.sym[0]),
                                 boundary="Upper")
+    readings = _record_constraint_before_each_deform(fs, net, gross, mesh.dim)
     for _ in range(3):
         fs.solve()
         fs.advance(fs.estimate_dt(advect_scale=10.0))
-    ratio = abs(float(net.evaluate())) / abs(float(gross.evaluate()))
+    # As handed to the solve: advance then remaps the rate onto the moved surface.
+    _, ratio = readings[-1]
+    print(f"net/gross of the prescribed rate before each deform: {[r[1] for r in readings]}")
     assert ratio < 5.0e-3, f"prescribed rate carries {ratio:.2e} of net flux (nodal demean?)"
 
 
