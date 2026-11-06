@@ -310,29 +310,20 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
             w /= w.sum(axis=1, keepdims=True)
             return np.einsum('nk,nkab->nab', w, M_src[idx])
-    elif metric_eval == "linear":
-        # Piecewise-linear interpolation of the nodal metric on a triangulation
-        # of the starting nodes. A convex combination, so positive like the
-        # Shepard form, and also continuous: the line search compares energies,
-        # and Shepard's nearest-neighbour switches make the energy jump.
+    elif metric_eval == "barycentric":
+        # The interpolation the multigrid transfers use. A convex combination,
+        # so positive like the Shepard form, and also continuous: the line
+        # search compares energies, and Shepard's neighbour switches make them
+        # jump, which stalls it far from the minimum.
         from scipy.spatial import Delaunay, cKDTree
+        from underworld3.utilities.custom_mg import barycentric_weights
         M_src = _eval_M_analytic(coords)
-        _tree = cKDTree(coords)
         _triangulation = Delaunay(coords)
+        _tree = cKDTree(coords)
 
         def _eval_M(pts):
-            simplex = _triangulation.find_simplex(pts)
-            T_inv = _triangulation.transform[simplex, :cdim]
-            shift = pts - _triangulation.transform[simplex, cdim]
-            b = np.einsum('nij,nj->ni', T_inv, shift)
-            weights = np.concatenate(
-                [b, 1.0 - b.sum(axis=1, keepdims=True)], axis=1)
-            out = np.einsum('nk,nkab->nab', weights,
-                            M_src[_triangulation.simplices[simplex]])
-            outside = simplex < 0
-            if outside.any():
-                out[outside] = M_src[_tree.query(pts[outside])[1]]
-            return out
+            vertices, weights = barycentric_weights(_triangulation, _tree, pts)
+            return np.einsum('nk,nkab->nab', weights, M_src[vertices])
     else:
         _eval_M = _eval_M_analytic
 

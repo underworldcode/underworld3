@@ -48,7 +48,7 @@ from petsc4py import PETSc
 from underworld3.utilities import multigrid_options
 from underworld3.utilities._petsc_tools import _fieldsplit_sub_ksps
 
-__all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
+__all__ = ["barycentric_prolongation", "barycentric_weights", "rbf_prolongation", "inject_custom_mg",
            "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
            "nvb_refine"]
 
@@ -60,6 +60,43 @@ __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
 #: (snapped to the nearest coarse node — a wrong row, not an empty one) and the
 #: orphan columns it repaired. Read by the parallel builders right after a call.
 last_builder_stats = {"outside_hull": 0, "orphans_repaired": 0}
+
+
+def barycentric_weights(triangulation, tree, points):
+    """Linear interpolation weights over a Delaunay triangulation of a point cloud.
+
+    The one definition of this interpolation: the multigrid transfers
+    (:func:`barycentric_prolongation`) and the MMPDE mover's metric evaluation
+    both use it. Weights are non-negative inside the hull, so a positive nodal
+    field stays positive, and the interpolant is continuous there. A point outside
+    the hull takes the nearest cloud point with weight one.
+
+    Parameters
+    ----------
+    triangulation : scipy.spatial.Delaunay
+        Triangulation of the source cloud.
+    tree : scipy.spatial.cKDTree
+        Tree over the same cloud, for the points outside the hull.
+    points : ndarray, shape (n, d)
+        Where to interpolate.
+
+    Returns
+    -------
+    vertices, weights : ndarray, shape (n, d + 1)
+        Source indices and their weights; each row of ``weights`` sums to one.
+    """
+    dim = points.shape[1]
+    simplex = triangulation.find_simplex(points)
+    transform = triangulation.transform[simplex]
+    bary = np.einsum("nij,nj->ni", transform[:, :dim], points - transform[:, dim])
+    weights = np.concatenate([bary, 1.0 - bary.sum(axis=1, keepdims=True)], axis=1)
+    vertices = np.array(triangulation.simplices[simplex])
+    outside = simplex < 0
+    if outside.any():
+        vertices[outside] = tree.query(points[outside])[1][:, None]
+        weights[outside] = 0.0
+        weights[outside, 0] = 1.0
+    return vertices, weights
 
 
 def barycentric_prolongation(coarse_coords, fine_coords, repair_orphans=True):
@@ -107,23 +144,15 @@ def barycentric_prolongation(coarse_coords, fine_coords, repair_orphans=True):
     tree = cKDTree(coarse_coords)
     last_builder_stats["outside_hull"] = int((simp < 0).sum())
     last_builder_stats["orphans_repaired"] = 0
-    dim = coarse_coords.shape[1]
-    rows, cols, vals = [], [], []
-    for i in range(fine_coords.shape[0]):
-        s = simp[i]
-        if s < 0:  # outside coarse hull → nearest coarse DOF
-            rows.append(i)
-            cols.append(int(tree.query(fine_coords[i])[1]))
-            vals.append(1.0)
-            continue
-        verts = tri.simplices[s]
-        T = tri.transform[s]
-        bary = T[:dim].dot(fine_coords[i] - T[dim])
-        w = np.append(bary, 1.0 - bary.sum())
-        for k in range(dim + 1):
-            rows.append(i)
-            cols.append(int(verts[k]))
-            vals.append(float(w[k]))
+    verts, weights = barycentric_weights(tri, tree, fine_coords)
+    # a point outside the hull has a single weight-one entry, the nearest DOF
+    entry = np.ones(weights.shape, dtype=bool)
+    entry[simp < 0, 1:] = False
+    fine_index = np.repeat(np.arange(fine_coords.shape[0])[:, None],
+                           weights.shape[1], axis=1)
+    rows = fine_index[entry].tolist()
+    cols = verts[entry].tolist()
+    vals = weights[entry].tolist()
     P = sp.csr_matrix((vals, (rows, cols)),
                       shape=(fine_coords.shape[0], coarse_coords.shape[0]))
 

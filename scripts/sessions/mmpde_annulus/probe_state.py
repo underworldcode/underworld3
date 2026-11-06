@@ -28,6 +28,8 @@ ap.add_argument("--transport", default="none", choices=["none", "supg", "slcn"])
 ap.add_argument("--T-analytic", type=int, default=0,
                 help="1: reset T from its formula after each move, so a v_rms change is the mesh's, not the remap's")
 ap.add_argument("--rotation-nullspace", type=int, default=0)
+ap.add_argument("--metric-eval", default="rbf", choices=["rbf", "linear"])
+ap.add_argument("--T-touch", type=int, default=0, help="1: rewrite T with its own values after each move")
 ap.add_argument("--steps", type=int, default=0, help="time steps in the transport loop")
 ap.add_argument("--dt-mult", type=float, default=1.0)
 ap.add_argument("--no-move", type=int, default=0, help="transport loop only: never move the mesh")
@@ -70,15 +72,27 @@ def quality():
     return dict(folded=folded, area_ratio=a_max / a_min, wall_radius_err=wall)
 
 
+def remap_error():
+    """How far the remapped T is from its formula, at the wall nodes and inside."""
+    exact = uw.function.evaluate(Tfield, T.coords).reshape(-1)
+    err = np.abs(np.asarray(T.array).reshape(-1) - exact)
+    rad = np.linalg.norm(np.asarray(T.coords), axis=1)
+    wall = (np.abs(rad - 1.0) < 1e-9) | (np.abs(rad - 0.5) < 1e-9)
+    e_wall = float(err[wall].max()) if wall.any() else 0.0
+    e_in = float(err[~wall].max()) if (~wall).any() else 0.0
+    return dict(T_err_wall=uw.mpi.comm.allreduce(e_wall, op=MPI.MAX),
+                T_err_interior=uw.mpi.comm.allreduce(e_in, op=MPI.MAX))
+
+
 def mover():
     t0 = time.time()
     rho = uw.meshing.metric_density_from_gradient(
         mesh, T, refinement=args.R, coarsening="auto", metric_choice="front-following")
     uw.meshing.node_redistribution(
-        mesh, rho, method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0),
+        mesh, rho, method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0, metric_eval=args.metric_eval),
         slip_surfaces=bool(args.slip), skip_threshold=None)
     say(event="move", seconds=time.time() - t0, geometry_version=mesh._geometry_version,
-        levels=len(mesh.dm_hierarchy), **quality())
+        levels=len(mesh.dm_hierarchy), **remap_error(), **quality())
 
 
 v = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
@@ -201,6 +215,8 @@ if args.transport == "none":
         mover()
         if args.T_analytic:
             T.array[:, 0, 0] = uw.function.evaluate(Tfield, T.coords).reshape(-1)
+        if args.T_touch:
+            T.array[:, 0, 0] = np.array(T.array[:, 0, 0])
         solve(f"moved{i + 1}")
 else:
     if args.transport == "supg":
