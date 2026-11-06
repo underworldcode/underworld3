@@ -8,12 +8,16 @@ of leaving the others waiting. Contracts, on every rank:
 
 - a shell whose inner wall is left creased (gmsh's triangulation, not flipped to the
   convex hull) refines with no inverted cell, and every copy of every vertex matches its
-  owner's; it is skipped on a host whose gmsh builds that shell with no pocket cell;
+  owner's; it is skipped only on a host whose gmsh builds that shell with no pocket
+  cell (no warning and nothing inverted);
 - a box whose callback pushes the new top-wall vertex at (0.25, 1) below the row at
   y = 0.75 keeps that vertex where refinement placed it on every rank that holds it,
   and keeps the callback's harmless move of the vertex at (0.75, 1);
 - the shell as built, with convex-hull walls, refines with no inverted cell and no
   warning.
+
+On development eddab707 (no guard) at np 2 on Linux (hyperion, 2026-11-06), the folding
+callback leaves 2 inverted cells and the shell 5, with no warning, and those tests fail.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_0001_sphere_refinement_folds_parallel.py
 """
@@ -29,7 +33,7 @@ from underworld3.meshing import _sphere_surface
 from underworld3.meshing._mesh_files import mesh_file_dir
 from underworld3.utilities._plex_topology import closure_points
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_c,
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(600)]
 
 
@@ -73,9 +77,11 @@ def test_a_creased_shell_refines_untangled_on_every_rank(monkeypatch):
             filename=f"{directory}/uw_test_0001_creased_shell.msh")
     warned = _warned(record)
     inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh.dm)
-    if not warned:
+    # no warning and nothing inverted: this host's gmsh built no pocket, so there was
+    # nothing to hold back; inverted cells without a warning mean the guard is missing
+    if not warned and inverted == 0:
         pytest.skip("this host's gmsh built a creased shell with no pocket cell: nothing to hold back")
-    assert inverted == 0 and disagree == 0, (inverted, disagree)
+    assert inverted == 0 and disagree == 0, (warned, inverted, disagree)
 
 
 def test_a_folding_callback_is_held_back_on_every_rank():
