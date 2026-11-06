@@ -322,7 +322,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
             boundaries=mesh.boundaries)
         _frozen_M = uw.discretisation.MeshVariable(
-            "M_frozen", _frozen_mesh, cdim * cdim, degree=1)
+            "M_frozen", _frozen_mesh, vtype=uw.VarType.TENSOR, degree=1)
         _frozen_M.array[...] = _eval_M_analytic(
             np.asarray(_frozen_M.coords)).reshape(_frozen_M.array.shape)
 

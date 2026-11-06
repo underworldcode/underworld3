@@ -3,9 +3,9 @@
 A move leaves wall nodes away from their Dirichlet values, and the next solve
 restores them by an amount that does not shrink with the timestep. estimate_dt
 counted that as a rate of change, which makes the next step proportional to the
-last: on an annulus the step fell from 1.2e-3 to 7e-6 in six steps.
+last. On this case the step falls from 8.9e-5 to 1.8e-5 over six moves when the
+constrained nodes count, and rises from 3.2e-4 to 1.7e-2 when they don't.
 """
-import numpy as np
 import pytest
 import sympy
 
@@ -32,7 +32,7 @@ def test_estimate_dt_holds_across_repeated_moves():
 
     adv.solve(timestep=1.0e-3, zero_init_guess=False)   # the walls take their data here
     steps = []
-    for _ in range(4):
+    for _ in range(6):
         density = uw.meshing.metric_density_from_gradient(
             mesh, T, refinement=5, coarsening="auto", metric_choice="front-following")
         uw.meshing.node_redistribution(
@@ -42,4 +42,4 @@ def test_estimate_dt_holds_across_repeated_moves():
         steps.append(dt)
         adv.solve(timestep=dt, zero_init_guess=False)
     steps.append(float(adv.estimate_dt()))
-    assert np.min(steps) > 0.1 * steps[0], steps
+    assert steps[-1] > steps[0], steps
