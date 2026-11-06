@@ -70,8 +70,23 @@ Three separate pieces of evidence, and each answers a different question:
   in the example above the *spinning* ranks are the innocent ones, waiting in
   the barrier, and the idle rank is the guilty one.
 
-Stacks are written to `--artifacts` so CI can keep them; a diagnosis that dies
-with the job is no better than the silence it replaced.
+Where gdb is on the path, each rank's native stack follows, because a Python
+stack stops at the C boundary: a rank in an MPI wait and a rank in a long KSP
+solve both read as `solve()` and both burn a core, so "stuck" above can only mean
+that the Python frame did not move. The report quotes the main thread's innermost
+frames and the whole stack goes to `rank_N_pid_P.native`:
+
+```
+    native: rank 1: ... < MPIR_Barrier_intra_dissemination < MPIR_Barrier_allcomm_auto < ...
+```
+
+Without gdb the report says so and the Python diagnosis stands. CI installs gdb
+for this. No root is needed to attach: the handler below allows it with
+`PR_SET_PTRACER`.
+
+Stacks are written to `--artifacts`, or to `$TMPDIR/uw-stacks-*`, and CI uploads
+those as the `hang-stacks-shard-N` artifact when a shard fails, kept five days; a
+diagnosis that dies with the job is no better than the silence it replaced.
 
 ## How the dump is armed
 

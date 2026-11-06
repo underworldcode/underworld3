@@ -41,6 +41,8 @@ import argparse
 import os
 import re
 import signal
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +66,13 @@ SECONDS_TO_DUMP = 5.0
 # Between SIGTERM and SIGKILL.
 SECONDS_TO_TERMINATE = 5.0
 
+# For gdb to attach to one rank and walk its threads. A rank with many shared
+# libraries takes seconds; a gdb that takes longer must not hold up the kill.
+SECONDS_FOR_NATIVE_STACK = 60.0
+
+# Frames of each rank's main thread quoted in the log; the file has them all.
+NATIVE_FRAMES_IN_LOG = 8
+
 
 def _dump_handler_module(dump_dir):
     """Source for the module that arms each rank to dump on request.
@@ -79,9 +88,18 @@ def _dump_handler_module(dump_dir):
     cannot reproduce underworld3#661.
     """
     return f'''"""Arm this rank to dump its stack on SIGUSR1. Written by mpi_supervisor."""
+import ctypes
 import faulthandler
 import os
 import signal
+
+# Let the supervisor's gdb attach: where the kernel restricts ptrace to a
+# process's own descendants (Yama, the Ubuntu default), it would otherwise need
+# root. PR_SET_PTRACER with "any process"; a no-op on a kernel without Yama.
+try:
+    ctypes.CDLL(None).prctl(0x59616d61, ctypes.c_ulong(-1).value, 0, 0, 0)
+except (OSError, AttributeError):
+    pass  # no prctl (not Linux): the attach fails and the report says so
 
 # Rank as the launchers advertise it, so a dump can be attributed without
 # asking mpi4py (importing it here would run before the job's own import).
@@ -204,6 +222,68 @@ def _read_dumps(dump_dir):
         if blocks:
             dumps[rank] = (int(pid), blocks)
     return dumps
+
+
+def _native_frames(text):
+    """The function names of the main thread, innermost first.
+
+    gdb lists threads highest number first, and the main thread is Thread 1:
+    the ones before it are the MPI library's and the GPU driver's helpers, all
+    sitting in poll() whatever the job is doing.
+    """
+    frames = []
+    in_main = "Thread 1 " not in text    # a single-threaded job has no headers
+    for line in text.splitlines():
+        if line.startswith("Thread "):
+            in_main = line.startswith("Thread 1 ")
+            continue
+        match = re.match(r"#\d+\s+(?:0x[0-9a-f]+ in )?([^\s(]+)", line)
+        if in_main and match:
+            frames.append(match.group(1))
+    return frames
+
+
+def _collect_native_stacks(dumps, dump_dir):
+    """Write each rank's native stack beside its Python one; return the log lines.
+
+    A Python stack stops at the C boundary. A rank in an MPI wait and a rank in a
+    long KSP solve both read as ``solve()`` and both burn a core, so only the
+    native frames tell a collective mismatch from a solve that is not converging.
+
+    Taken after the Python samples, because attaching stops the rank. Optional:
+    with no gdb the report says so and the Python diagnosis stands.
+    """
+    gdb = shutil.which("gdb")
+    if gdb is None:
+        return ["    no gdb on PATH: Python stacks only"]
+
+    def attach(rank, pid):
+        path = dump_dir / f"rank_{rank}_pid_{pid}.native"
+        try:
+            result = subprocess.run(
+                [gdb, "-p", str(pid), "-batch", "-ex", "thread apply all bt"],
+                capture_output=True, text=True, timeout=SECONDS_FOR_NATIVE_STACK)
+        except subprocess.TimeoutExpired:
+            return f"    native: rank {rank}: gdb took over {SECONDS_FOR_NATIVE_STACK:.0f} s"
+        path.write_text(result.stdout + result.stderr)
+        frames = _native_frames(result.stdout)
+        if not frames:
+            return f"    native: rank {rank}: gdb got no frames, see {path.name}"
+        return f"    native: rank {rank}: " + " < ".join(frames[:NATIVE_FRAMES_IN_LOG])
+
+    lines = {}
+
+    def attach_into_lines(rank, pid):
+        lines[rank] = attach(rank, pid)
+
+    # One at a time would stretch a large job's kill by a minute per rank.
+    threads = [threading.Thread(target=attach_into_lines, args=(rank, pid))
+               for rank, (pid, _blocks) in dumps.items()]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return [lines[rank] for rank in sorted(lines)]
 
 
 def _diagnose(dumps, cpu_by_rank):
@@ -380,6 +460,8 @@ def main():
 
         if dumps:
             for line in _diagnose(dumps, cpu_by_rank):
+                print(line, flush=True)
+            for line in _collect_native_stacks(dumps, dump_dir):
                 print(line, flush=True)
             print(f"    stacks written to {dump_dir}", flush=True)
         else:

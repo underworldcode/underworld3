@@ -130,8 +130,26 @@ jobs:
       - name: Import smoke test (faulthandler)
         run: pixi run -e dev python -u -X faulthandler -c "import faulthandler; faulthandler.enable(); import underworld3; print('import OK', underworld3.__version__)"
 
+      # For the MPI supervisor's native stacks, which tell a rank in an MPI wait
+      # from a rank in a long solve. Not worth failing a shard over: without gdb
+      # the supervisor reports Python stacks alone.
+      - name: Install gdb for hang diagnosis
+        continue-on-error: true
+        run: sudo apt-get install -y --no-install-recommends gdb
+
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2 --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+      # The supervisor's stacks are in /tmp, gone with the runner. A hang that
+      # reproduces only here cannot be diagnosed from anywhere else.
+      - name: Keep the hang stacks
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-stacks-shard-${{ matrix.shard }}
+          path: /tmp/uw-stacks-*
+          if-no-files-found: ignore
+          retention-days: 5
 
   # One check that says whether the suite passed, so a reader (and anything
   # querying statusCheckRollup for "test") gets a single answer rather than

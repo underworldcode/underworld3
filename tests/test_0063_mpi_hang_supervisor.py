@@ -88,6 +88,30 @@ def test_two_ranks_have_no_majority_and_the_report_says_so(tmp_path):
 
 
 @needs_mpirun
+@pytest.mark.skipif(shutil.which("gdb") is None, reason="no gdb on this machine")
+def test_a_hang_gets_native_stacks_that_reach_the_mpi_library(tmp_path):
+    """A Python stack stops at the C boundary, where a rank in an MPI wait and a
+    rank in a long KSP solve look the same. The native stack tells them apart.
+
+    Rank 1 waits in the barrier, so its native stack must name it, which a
+    Python frame in ``main()`` cannot.
+    """
+    completed, _elapsed = _run_supervised(PLANTED_HANG, tmp_path, ranks=2)
+    assert completed.returncode == 124, f"{completed.stdout}\n{completed.stderr}"
+
+    native = {p.name: p.read_text() for p in tmp_path.glob("rank_*_pid_*.native")}
+    assert len(native) == 2, f"expected a native stack per rank, got {sorted(native)}"
+    waiting = next(text for name, text in native.items() if name.startswith("rank_1_"))
+    assert "#0" in waiting and "barrier" in waiting.lower(), (
+        f"rank 1's native stack does not reach the barrier it waits in:\n{waiting}")
+    logged = next((line for line in completed.stdout.splitlines()
+                   if "native: rank 1:" in line), "")
+    assert "barrier" in logged.lower(), (
+        f"the log does not carry the main thread's native frames, and a log is all "
+        f"a reader may have:\n{completed.stdout}")
+
+
+@needs_mpirun
 def test_a_healthy_job_is_left_alone(tmp_path):
     """The negative control: no false positives, and the exit status passes through.
 
