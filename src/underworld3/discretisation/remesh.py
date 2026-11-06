@@ -66,6 +66,7 @@ __all__ = [
 # SemiLagrangian trace-back fix. Set REMESH_MONOTONE to "off" (or "0",
 # "none", "false", "") to disable, or to any other mode accepted by
 # ``uw.function.global_evaluate(..., monotone=...)`` (e.g. "pick").
+REMESH_WALL_PULL = os.environ.get("REMESH_WALL_PULL", "off") == "on"     # WIP toggle: being measured
 REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "clamp")
 if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):
     REMESH_MONOTONE = False
@@ -470,6 +471,62 @@ def _iter_active_hooks(mesh):
         yield cb
 
 
+def _wall_facets(mesh, vertex_coords):
+    """The exterior boundary as facets at ``vertex_coords``, gathered from all ranks:
+    ``(n, cdim, cdim)``, or ``None`` when this mesh has no simplicial exterior facets.
+
+    Taken from the boundary labels, not from local topology, where a partition
+    seam also looks like a boundary. Gathered because a rank can hold a wall DOF
+    whose facets are labelled on a neighbour. Collective.
+    """
+    from underworld3.meshing.smoothing import _auto_pinned_labels
+
+    dm = mesh.dm
+    cdim = mesh.cdim
+    if not bool(dm.isSimplex()):
+        return None
+    v_start, v_end = dm.getDepthStratum(0)
+    f_start, f_end = dm.getHeightStratum(1)
+    facets = []
+    for name in _auto_pinned_labels(mesh):
+        internal = mesh._boundary_is_internal(name)     # collective: before any skip
+        label = dm.getLabel(name)
+        if internal or label is None or label.getNumValues() == 0:
+            continue
+        for value in label.getValueIS().getIndices():
+            points = label.getStratumIS(int(value))
+            if points is None:
+                continue
+            for point in points.getIndices():
+                if f_start <= point < f_end:
+                    closure = dm.getTransitiveClosure(int(point))[0]
+                    corners = [q - v_start for q in closure if v_start <= q < v_end]
+                    facets.append(vertex_coords[corners])
+    local = (np.array(facets, dtype=float) if facets
+             else np.empty((0, cdim, cdim), dtype=float))
+    gathered = np.concatenate(uw.mpi.comm.allgather(local), axis=0)
+    return gathered if gathered.shape[0] else None
+
+
+def _pull_wall_targets_onto_old_wall(target, old_wall, new_wall):
+    """Move the DOF targets lying on the new wall to the nearest point of the old one.
+
+    The old field is defined on the old mesh. A wall node that slid along a curved
+    boundary sits a sagitta outside the old polygon, where the FE basis overshoots,
+    so its value is read on the old wall instead.
+    """
+    from underworld3.meshing.smoothing import (
+        _nearest_on_facets_2d, _nearest_on_facets_3d)
+
+    nearest = _nearest_on_facets_2d if target.shape[1] == 2 else _nearest_on_facets_3d
+    size = np.linalg.norm(new_wall[:, 1] - new_wall[:, 0], axis=1).max()
+    on_wall = np.linalg.norm(target - nearest(target, new_wall), axis=1) < 1.0e-9 * size
+    pulled = target.copy()
+    if on_wall.any():
+        pulled[on_wall] = nearest(target[on_wall], old_wall)
+    return pulled
+
+
 def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """One-shot REMAP dance for a set of variables.
 
@@ -502,6 +559,9 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         except Exception:
             new_dof_coords[var] = None
 
+    new_wall = _wall_facets(mesh, new_X) if REMESH_WALL_PULL else None
+    old_wall = _wall_facets(mesh, old_X) if REMESH_WALL_PULL else None
+
     # Deform back to the old coords, restore data so global_evaluate
     # sees the old field, evaluate at each var's new DOF coords,
     # then deform forward and write the resampled values back.
@@ -515,6 +575,8 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         # A rank with no DOFs of this variable still enters the collective below.
         if target is None:
             continue
+        if new_wall is not None and target.size:
+            target = _pull_wall_targets_onto_old_wall(target, old_wall, new_wall)
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
             # REMESH_MONOTONE (module constant, see its comment) bounds the
