@@ -58,6 +58,10 @@ def project_to_degree(
 
     For ``target_degree == mesh_var.degree`` the interpolation matrix is
     the identity and the result matches the source data exactly.
+
+    A discontinuous source projected to a continuous target takes, at a node
+    shared by several cells, the unweighted mean of those cells' values there
+    (#905).
     """
 
     mesh = mesh_var.mesh
@@ -95,8 +99,10 @@ def project_to_degree(
     # and the node took the sum of the cells' values (2 to 7 times the value at
     # P1 vertices, #905). Each cell's rows sum to 1, so dividing every row by its
     # sum averages the cells instead. A continuous source's rows already sum to 1
-    # and are left exactly as they are.
-    if not mesh_var.continuous:
+    # and are left exactly as they are, and so is a discontinuous target, whose
+    # nodes each lie in one cell (scaling would move a DG-to-DG projection in the
+    # last bit).
+    if not mesh_var.continuous and continuous:
         row_sums = interp.createVecLeft()
         interp.getRowSum(row_sums)
         sums = row_sums.getArray()
