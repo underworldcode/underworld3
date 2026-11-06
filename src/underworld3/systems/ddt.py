@@ -1110,6 +1110,11 @@ class _DDtBase(uw_object):
             indep = self._psi_star_indep_indices
             row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
             if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+                # TODO(BUG): .subs does not reach psi_star[0] held inside a
+                # UWexpression (at yield the viscosity reads E_eff_inv_II,
+                # whose .sym contains it), so that occurrence still reads the
+                # history live. No effect on the result while the snapshot
+                # equals psi_star[0] at the commit; substitute after unwrapping.
                 ps0 = self.psi_star[0]
                 psi_snapshot = self._psi_snapshot
                 substitutions = {
@@ -1125,26 +1130,27 @@ class _DDtBase(uw_object):
             return source_fn
 
     def enable_source_snapshot(self):
-        """Enable snapshot substitution in the projection's source field.
+        """Make the commit projection read a frozen copy of ``psi_star[0]``.
 
-        Call this once when the source expression (``psi_fn``) references
-        ``psi_star[0]`` itself — without it the projection's residual
-        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
-        because target and source share the same data field. With Min-mode
-        plasticity at the yield kink, the implicit projection admits two
-        fixed points (elastic and yield branches); under timestep change the
-        iteration drifts to the elastic-branch fixed point and σ violates
-        the yield surface.
+        For a flux history the source expression (``psi_fn``) contains
+        ``psi_star[0]`` itself: a viscoelastic stress is formed from an
+        effective strain rate whose elastic term is the stored stress. The
+        snapshot is a separate mesh variable of ``psi_star[0]``'s shape, vtype
+        and degree, substituted for it in the projection's compiled source.
+        ``update_pre_solve`` refreshes it (a memcpy, no recompile) once the
+        step has carried the history, so it holds the history the solve reads.
 
-        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
-        shape/vtype/degree. Each call to ``update_pre_solve`` copies
-        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
-        input for the upcoming projection. Substitution makes the
-        projection's compiled C code read from ``psi_snapshot.array``
-        instead of ``psi_star[0].array`` — there's no recompile per step,
-        just a memcpy.
+        The projection writes a separate flat variable, and nothing writes
+        ``psi_star[0]`` between that refresh and the commit, so the copy equals
+        ``psi_star[0]`` at the commit (difference 0.0 at every commit of a
+        rotating flow, nodal and Eulerian, 2026-10-22) and the projected
+        stress is the same with or without it. The order is the constraint:
+        refreshed before the carry, the copy holds the history where it was
+        made and the stored stress is rebuilt from it, so the record does not
+        move with the flow (see the warning in the stress-transport subsystem
+        notes).
 
-        Idempotent: safe to call more than once.
+        Wired for tensor histories only. Idempotent.
         """
         if not getattr(self, '_psi_star_use_multicomponent', False):
             # Currently only wired for tensor projections (the case that
@@ -1905,6 +1911,16 @@ class Eulerian(_DDtBase):
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
+    def enable_source_snapshot(self):
+        """As :meth:`_DDtBase.enable_source_snapshot`, building the projection first.
+
+        This flavour builds its projection on first use, and only then knows
+        whether it is the multi-component one the snapshot is wired for; asked
+        before that, the base method would find no projection and do nothing.
+        """
+        self._setup_projections()
+        super().enable_source_snapshot()
+
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection.
 
@@ -2032,15 +2048,23 @@ class Eulerian(_DDtBase):
             self.initialise_history()
 
         # Update coefficient values for current effective_order and dt
-        self._refresh_source_snapshot()
-
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
-        if self.V_fn is not None and dt is not None and self._advection_mode == "split":
-            self._apply_split_advection(dt, evalf)
+        self._carry_history(dt, evalf=evalf, verbose=verbose)
+
+        # Freeze the projection's source input at psi_star[0] as carried to
+        # this step, the history the solve reads. It must follow the carry:
+        # taken before it, the stored stress is rebuilt from the field that
+        # has not moved.
+        self._refresh_source_snapshot()
 
         return
+
+    def _carry_history(self, dt, evalf=False, verbose=False):
+        """Carry the stored history over the step: the explicit split correction."""
+        if self.V_fn is not None and dt is not None and self._advection_mode == "split":
+            self._apply_split_advection(dt, evalf)
 
     def _apply_split_advection(self, dt, evalf=False):
         """Explicit operator-splitting correction: ``psi_star[0] -= dt (V . grad) psi``."""
@@ -2053,6 +2077,10 @@ class Eulerian(_DDtBase):
         # psi_fn the shape is (1,1); for vector it is (1,dim).
         psi = self.psi_fn
         V = self.V_fn
+        # TODO(BUG): right for a scalar or a vector only. A 2x2 symmetric
+        # tensor has 3 stored components, but this corrects 2 data columns
+        # with the flat entries psi[0], psi[1] (xx, xy); it should walk
+        # psi_star[0]._data_layout(i, j) as EulerianSUPG._transport_history does.
         ncomp = max(psi.shape)  # number of tracked components
 
         for c in range(ncomp):
@@ -2508,12 +2536,9 @@ class EulerianSUPG(Eulerian):
                 values = np.asarray(flat.data[:, k])
                 history.data[:, history._data_layout(i, j)] = values
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True):
-        """Refresh the scheme's coefficients and, when this manager owns the
-        transport of its history, carry every level forward by one step."""
-        dt = self._nondim_timestep(dt)
-        super().update_pre_solve(dt, evalf=evalf, verbose=verbose,
-                                 store_result=store_result)
+    def _carry_history(self, dt, evalf=False, verbose=False):
+        """When this manager owns the transport of its history, carry every
+        level forward by one step."""
         if self.transport_on_update and self.V_fn is not None and dt:
             self._transport_history(dt, verbose=verbose)
 
@@ -3778,6 +3803,12 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
             # (e.g., containing derivatives — true for the NS viscous flux every step).
+            # TODO(BUG): with the source snapshot enabled this projection reads
+            # the snapshot, which update_pre_solve refreshes only after the
+            # trace-back, so it holds the previous step's carried history, not
+            # the last commit. Latent: Stokes, the one caller that enables the
+            # snapshot, passes store_result=False. Refresh before this record
+            # if a store_result=True caller ever needs it.
             # Route via _build_projection_source so the (1, Nc) row-matrix flattening
             # required by SNES_MultiComponent_Projection is applied for tensor vtypes.
             # Without this, a (dim, dim) tensor function meets a (1, Nc) solver field
@@ -3973,16 +4004,6 @@ class SemiLagrangian(_DDtBase):
                             and self._oldframe_X is not None)
         _oldframe_X = self._oldframe_X
 
-        # Refresh the source-snapshot variable so the projection's source
-        # field captures psi_star[0]'s state from BEFORE this step's solve.
-        # Per-step memcpy keeps the snapshot machinery aligned with
-        # psi_star[0] without recompiling the projection.  Routes through
-        # ``.data`` rather than ``.array`` to skip unit conversion (both
-        # variables already live in non-dimensional space) while keeping
-        # the callback sync that pushes values into the underlying PETSc
-        # local Vec.
-        self._refresh_source_snapshot()
-
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
@@ -4043,6 +4064,14 @@ class SemiLagrangian(_DDtBase):
                 i, end_pt_coords, evalf, monotone_mode,
                 _oldframe_active, _oldframe_X,
             )
+
+        # Freeze the projection's source input at psi_star[0] as carried to
+        # this step: the history the solve reads. It must follow the trace:
+        # taken before it, the stored stress is rebuilt from the field that
+        # has not moved. A memcpy, no recompile; ``.data``
+        # skips unit conversion (both variables are non-dimensional) and keeps
+        # the callback sync into the PETSc local Vec.
+        self._refresh_source_snapshot()
 
         # The velocity used this step becomes v^{n-1} for the next
         # step's mid-time extrapolation.
