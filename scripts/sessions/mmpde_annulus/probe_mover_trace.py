@@ -29,11 +29,15 @@ rho = uw.meshing.metric_density_from_gradient(
 if args.metric == "analytic":
     rho = 1 + (args.R ** 2 - 1) * sympy.exp(-(((r - 0.9) / 0.06) ** 2))
 x0 = np.array(mesh.X.coords)
+import time
+_t0 = time.time()
 uw.meshing.node_redistribution(
     mesh, rho, verbose=True,
     method_kwargs={**dict(step_frac=0.2, accel="cg", momentum=0.0, n_outer=args.n_outer),
                    **json.loads(args.kw)},
     slip_surfaces=bool(args.slip), skip_threshold=None)
+if uw.mpi.rank == 0:
+    print("mover seconds", time.time() - _t0, flush=True)
 from underworld3.meshing.smoothing import graph
 _cells = graph._tri_cells(mesh.dm)
 _area = graph._signed_areas(mesh.dm.getCoordinatesLocal().array.reshape(-1, 2), _cells)

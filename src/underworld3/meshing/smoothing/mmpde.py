@@ -326,8 +326,14 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         _frozen_M.array[...] = _eval_M_analytic(
             np.asarray(_frozen_M.coords)).reshape(_frozen_M.array.shape)
 
+        # A moved centroid can leave this rank's frozen patch, where the rank-local
+        # evaluate extrapolates: global_evaluate answers from the owning rank. Every
+        # rank reaches this collective: the energy and gradient are collective.
+        _evaluate = (uw.function.global_evaluate if parallel
+                     else uw.function.evaluate)
+
         def _eval_M(pts):
-            return np.asarray(uw.function.evaluate(
+            return np.asarray(_evaluate(
                 _frozen_M.sym, pts)).reshape(-1, cdim, cdim)
     else:
         _eval_M = _eval_M_analytic
