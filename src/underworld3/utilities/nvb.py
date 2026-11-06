@@ -211,8 +211,9 @@ def nested_cell_parents(coarse_dm, fine_dm, vertex_transfer):
     index and no orphaned coarse DOF.
 
     Returns an ``(n_fine_cells,)`` array of coarse cell points, or ``None`` if
-    any fine cell's parent is not uniquely determined (the caller should then
-    fall back rather than guess).
+    any fine cell's parent, on any rank, is not uniquely determined (the caller
+    should then fall back rather than guess). COLLECTIVE: every rank gets the same
+    verdict.
     """
     rows, cols, _ = vertex_transfer
     cvS, cvE = coarse_dm.getDepthStratum(0)
@@ -233,6 +234,7 @@ def nested_cell_parents(coarse_dm, fine_dm, vertex_transfer):
         refs[r].append(cpt)
 
     parents = np.empty(fcE - fcS, dtype=np.int64)
+    unique = True
     for k, c in enumerate(range(fcS, fcE)):
         cand = None
         for q in fine_dm.getTransitiveClosure(c)[0]:
@@ -243,12 +245,34 @@ def nested_cell_parents(coarse_dm, fine_dm, vertex_transfer):
             if cand is not None and len(cand) == 1:
                 break
         if not cand or len(cand) != 1:
-            return None
+            unique = False
+            break
         parents[k] = next(iter(cand))
+    # one verdict on every rank: a map on some ranks and None on others sends the
+    # ranks down different transfer builders, which are collective (#961)
+    if not _on_every_rank(fine_dm, unique):
+        return None
     return parents
 
 
+def _on_every_rank(dm, ok):
+    """Whether ``ok`` holds on every rank of ``dm``'s communicator. COLLECTIVE."""
+    from mpi4py import MPI
+    return bool(dm.getComm().tompi4py().allreduce(bool(ok), op=MPI.LAND))
+
+
 def nested_prolongation_from_dms(coarse_dm, fine_dm):
+    """The exact P1 prolongation of one bisection pass, or ``None`` when some rank
+    cannot recover it. COLLECTIVE: every rank gets the same verdict, so the callers'
+    fallbacks, which are collective, are taken on all ranks or none (#961). See
+    :func:`_nested_prolongation_local`."""
+    transfer = _nested_prolongation_local(coarse_dm, fine_dm)
+    if not _on_every_rank(fine_dm, transfer is not None):
+        return None
+    return transfer
+
+
+def _nested_prolongation_local(coarse_dm, fine_dm):
     """Recover a refinement pass's exact P1 prolongation from the two DMs.
 
     Every fine vertex of a bisection pass is an **inherited** coarse vertex or
@@ -288,6 +312,11 @@ def nested_prolongation_from_dms(coarse_dm, fine_dm):
              for c in (coarse_dm.getCone(e),)
              if len(c) == 2 and all(cvS <= q < cvE for q in c)]
     if not edges:
+        # a rank that owns nothing has nothing to explain: an empty transfer, so it
+        # does not veto the others' (#961)
+        if fine_dm.getDepthStratum(0)[1] == fine_dm.getDepthStratum(0)[0]:
+            empty = np.empty(0, dtype=np.int64)
+            return empty, empty.copy(), np.empty(0, dtype=float)
         return None
     edges = np.asarray(edges, dtype=np.int64)
 
