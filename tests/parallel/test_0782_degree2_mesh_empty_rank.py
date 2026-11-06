@@ -95,7 +95,7 @@ def test_an_error_code_on_one_rank_raises_on_every_rank():
     failing_rank = uw.mpi.size - 1
     ierr = 73 if uw.mpi.rank == failing_rank else 0
     try:
-        petsc_discretisation._check_error_code_collectively(ierr, "TheRoutine", uw.mpi.comm)
+        petsc_discretisation._check_error_code_collectively(ierr, "TheRoutine")
         message = "returned"
     except RuntimeError as error:
         message = str(error)

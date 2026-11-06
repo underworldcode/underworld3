@@ -26,15 +26,15 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscQuadratureGetData(PetscQuadrature, PetscInt*, PetscInt*, PetscInt*, const PetscReal**, const PetscReal**)
 
 
-def _check_error_code_collectively(ierr, routine, comm):
-    """Raise on every rank of ``comm`` if ``routine`` failed on any of them.
+def _check_error_code_collectively(ierr, routine):
+    """Raise on every rank if ``routine`` failed on any of them.
 
     A rank that raises alone leaves the others waiting in their next collective.
     A failing routine can also leave a rank short of collectives its peers made,
-    so this exchange runs on ``comm`` itself, not on the duplicate that PETSc
-    keeps for its own messages. COLLECTIVE: every rank must reach it.
+    so this exchange runs on ``uw.mpi.verdict_comm``, which no PETSc object shares.
+    COLLECTIVE on the world: every rank must reach it.
     """
-    codes = comm.allgather(int(ierr))
+    codes = uw.mpi.verdict_comm.allgather(int(ierr))
     failed = {rank: code for rank, code in enumerate(codes) if code != 0}
     if failed:
         raise RuntimeError(f"{routine} failed; error code by rank: {failed}")
@@ -58,7 +58,7 @@ cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
 
     cdef DM dm = mesh.dm
     cdef PetscErrorCode ierr = DMPlexComputeGeometryFVM(dm.dm, &cellgeom.vec, &facegeom.vec)
-    _check_error_code_collectively(ierr, "DMPlexComputeGeometryFVM", mesh.dm.comm.tompi4py())
+    _check_error_code_collectively(ierr, "DMPlexComputeGeometryFVM")
 
 
 ## This is currently wrapped in petsc4py but returns zero
@@ -147,7 +147,7 @@ def petsc_fem_get_local_cell_sizes(mesh) -> np.array:
                     volume_view[cell] += weights[q] * abs(geometry.detJ[cell * Nq + q])
             ierr = PetscFEGeomDestroy(&geometry)
 
-        _check_error_code_collectively(ierr, "DMFieldCreateFEGeom", mesh.dm.comm.tompi4py())
+        _check_error_code_collectively(ierr, "DMFieldCreateFEGeom")
 
         return np.power(volumes, 1 / mesh.dim)
 

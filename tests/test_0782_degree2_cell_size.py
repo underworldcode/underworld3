@@ -1,10 +1,11 @@
 """A cell's size does not depend on the degree of its coordinate field (#908).
 
-``Mesh._get_cell_radii`` is ``volume**(1/dim)``. On a coordinate field of degree 2
-the FVM routine read the edge midpoints as the corners, so each cell's volume came
-back :math:`2^{-\\mathrm{dim}}` of the truth and every length half of it, measured
-on simplices and on quadrilaterals before the fix, and it printed
-"Edge has 6 coordinates != 4" as it went.
+``Mesh._get_cell_radii`` is ``volume**(1/dim)``. On a coordinate field of higher
+degree the FVM routine read the wrong closure nodes as the corners, and printed
+"Edge has 6 coordinates != 4" as it went. Against the true length the old value
+was short by a factor of, at degree 2, 2 on triangles, quadrilaterals and
+tetrahedra and 3.63 on hexahedra; at degree 3, 2.59 on triangles, about 3e6 on
+quadrilaterals, 3 on tetrahedra and 4.06 on hexahedra.
 
 The parallel half of this defect is in
 ``tests/parallel/test_0782_degree2_mesh_empty_rank.py``.
