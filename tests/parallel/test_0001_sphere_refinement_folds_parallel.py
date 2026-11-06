@@ -18,7 +18,13 @@ of leaving the others waiting. Contracts, on every rank:
 - a callback that moves vertices on one rank only leaves every copy of every vertex
   with the moved position, on every level: copies of a shared vertex differ after a
   callback that finds its vertices through the labels a rank holds, and the hierarchy
-  reconciles them before it checks a cell.
+  reconciles them before it checks a cell;
+- a box whose callback kicks about a fifth of its interior vertices far enough to turn
+  a cell over refines to the serial mesh, vertex for vertex. A kicked vertex on a
+  partition interface can invert cells on one side only; the vertex is held on every
+  rank that holds it, so the mesh does not depend on the partition. Copies agreeing
+  is not enough to show this: when only one side held the vertex, the copies still
+  agreed at np 8, but 31 vertices were held instead of 24 (hyperion, 2026-11-06).
 
 On development eddab707 (no guard) at np 2 on Linux (hyperion, 2026-11-06), the folding
 callback leaves 2 inverted cells and the shell 5, with no warning, and those tests fail.
@@ -36,6 +42,8 @@ import underworld3 as uw
 from underworld3.meshing import _sphere_surface
 from underworld3.meshing._mesh_files import mesh_file_dir
 from underworld3.utilities._plex_topology import closure_points
+
+from serial_reference import emit, serial_reference
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(600)]
@@ -150,3 +158,67 @@ def test_copies_of_a_vertex_take_the_move_when_one_rank_makes_it():
     warned = _warned(record)
     inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh)
     assert not warned and inverted == 0 and disagree == 0, (warned, inverted, disagree)
+
+
+_H = 0.025     # the refined box's spacing
+
+
+def _kick(dm):
+    """Kick about a fifth of the interior vertices 1.3 h, in a direction that varies with
+    position: each kick turns a cell inside out. A function of position only, so every
+    rank and the serial run kick the same vertices the same way."""
+    c = dm.getCoordinatesLocal()
+    x = c.array.reshape(-1, 2)
+    inside = ((x > 1.0e-9) & (x < 1.0 - 1.0e-9)).all(axis=1)
+    s = np.sin(53.3 * x[:, 0] + 17.9 * x[:, 1]) * np.sin(29.1 * x[:, 0] - 61.7 * x[:, 1] + 0.5)
+    phi = 97.3 * x[:, 0] + 13.1 * x[:, 1]
+    kicked = inside & (s > 0.5)
+    x[kicked] += 1.3 * _H * np.column_stack([np.cos(phi), np.sin(phi)])[kicked]
+    c.array[...] = x.ravel()
+    dm.setCoordinatesLocal(c)
+
+
+def _kicked_box():
+    base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=2 * _H, regular=True)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        mesh = uw.discretisation.Mesh(base.dm.clone(), simplex=True, boundaries=base.boundaries,
+                                      refinement=1, refinement_callback=_kick)
+    return mesh, record
+
+
+def _owned_vertices(mesh):
+    """Every vertex once, at its owner's coordinates, sorted; on rank 0, None elsewhere."""
+    owned = np.asarray(mesh.dm.getCoordinates().array).reshape(-1, mesh.cdim)
+    gathered = uw.mpi.comm.gather(owned, root=0)
+    if uw.mpi.rank != 0:
+        return None
+    x = np.vstack(gathered)
+    return x[np.lexsort(np.round(x, 9).T[::-1])]
+
+
+def test_a_held_vertex_is_held_on_every_rank_that_holds_it():
+    mesh, record = _kicked_box()
+    warned = _warned(record)
+    inverted, disagree = _inverted_cells(mesh.dm), _copies_disagree(mesh)
+    reference = serial_reference(__file__, "kicked_box")
+    x = _owned_vertices(mesh)
+    differ = None
+    if uw.mpi.rank == 0:
+        expected = np.asarray(reference["values"]).reshape(-1, 2)
+        differ = (int(np.count_nonzero(np.abs(x - expected).max(axis=1) > 1.0e-12))
+                  if x.shape == expected.shape else f"{len(x)} vertices, serial {len(expected)}")
+    differ = uw.mpi.comm.bcast(differ, root=0)
+    assert warned and inverted == 0 and disagree == 0 and differ == 0, (
+        warned, inverted, disagree, differ)
+
+
+if __name__ == "__main__":
+    # The single-rank child of test_a_held_vertex_is_held_on_every_rank_that_holds_it
+    # (see serial_reference): `python <thisfile> kicked_box`.
+    import sys
+    assert sys.argv[1:] == ["kicked_box"], sys.argv
+    _mesh, _record = _kicked_box()
+    _x = _owned_vertices(_mesh)
+    emit(_x.ravel(), [len(_x), 0])
