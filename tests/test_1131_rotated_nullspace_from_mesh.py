@@ -43,9 +43,10 @@ def _rotation_rates(v):
     return np.linalg.solve(A, b)
 
 
-def _shell_stokes(name, radial=False):
+def _shell_stokes(name, radial=False, torque=0.0):
     """#906's shell: P2/P1, isoviscous, a cos(4 theta) buoyancy, rotated free slip
-    on both walls, with the default (facet-averaged) normal or the analytic one."""
+    on both walls, with the default (facet-averaged) normal or the analytic one;
+    ``torque`` adds an azimuthal push about z of that size, a net torque."""
     mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
                                      refinement=1, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{name}", mesh, 3, degree=2)
@@ -57,7 +58,8 @@ def _shell_stokes(name, radial=False):
     r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
     th = sympy.atan2(y, x)
     stokes.bodyforce = (sympy.cos(4 * th) * (z / r) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
-                        * sympy.Matrix([x / r, y / r, z / r]).T)
+                        * sympy.Matrix([x / r, y / r, z / r]).T
+                        + torque * sympy.Matrix([-y, x, 0]).T)
     normal = mesh.CoordinateSystem.unit_e_0 if radial else None
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall, normal=normal)
@@ -95,17 +97,32 @@ def radial_shell():
     return stokes, _v_rms(v)
 
 
-def test_a_shell_with_the_default_normal_returns_no_rigid_rotation(radial_shell):
+def test_a_shell_with_the_default_normal_returns_no_rigid_rotation(radial_shell, capsys):
     mesh, v, stokes = _shell_stokes("1131a")
     assert len(mesh.nullspace_rotations) == 3
+    capsys.readouterr()
     stokes.solve()
+    # the forcing is radial: the gauge component is faceting, 8.8e-5 of the
+    # forcing scale, and the net-torque guard stays quiet
+    assert "net torque" not in capsys.readouterr().out
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
     assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
     vrms = _v_rms(v)
     # the gauge removes the rotation to round-off; development left 6.2e-3
     assert np.abs(_rotation_rates(v)).max() < 1e-10 * vrms
+    # near-null, not null (0.0164 here)
+    assert 1e-3 < stokes._rotated_null_mode_slack < 0.05
     assert vrms / radial_shell[1] == pytest.approx(VRMS_RATIO_MESH_OVER_RADIAL, rel=0.01)
+
+
+def test_a_net_torque_still_warns_under_the_default_normal(capsys):
+    # 1% of the forcing: the gauge component is 1.7e-2 of the forcing scale,
+    # against 8.8e-5 from the faceting alone
+    mesh, v, stokes = _shell_stokes("1131t", torque=0.01)
+    capsys.readouterr()
+    stokes.solve()
+    assert "net torque" in capsys.readouterr().out
 
 
 def test_the_analytic_normal_makes_the_declared_modes_exact(radial_shell):
@@ -114,6 +131,7 @@ def test_the_analytic_normal_makes_the_declared_modes_exact(radial_shell):
     assert info["converged"], info
     assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
     assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1e-14
+    assert stokes._rotated_null_mode_slack == 0.0
 
 
 def test_a_box_declares_no_mode_and_finds_none():
