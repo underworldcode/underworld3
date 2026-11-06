@@ -24,9 +24,11 @@ def test_integral_after_a_move_sees_the_remapped_field():
         0.5 * (1 - sympy.tanh((r - 0.9) / 0.03)), T.coords).reshape(-1)
     mesh.update_lvec()      # the state a solve leaves: the mesh vector is current
 
+    start = np.array(T.array)
     density = 1 + 24 * sympy.exp(-(((r - 0.9) / 0.06) ** 2))
     uw.meshing.node_redistribution(mesh, density, slip_surfaces=True, skip_threshold=None,
                                    method_kwargs=dict(accel="none", n_outer=20))
+    assert np.abs(np.array(T.array) - start).max() > 1.0e-3      # the remap did something
 
     seen_by_a_solve = float(uw.maths.Integral(mesh, T.sym[0]).evaluate())
     T.array[:, 0, 0] = np.array(T.array[:, 0, 0])       # a write the mesh vector does notice

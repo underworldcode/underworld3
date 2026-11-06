@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
+from mpi4py import MPI
 
 import underworld3 as uw
 
@@ -314,6 +315,8 @@ def remesh_with_field_transfer(
     7. Marks REINIT vars stale (Phase 1: not strictly required because
        the only REINIT-stamped vars today are recomputed on first
        access; placeholder for future eager invalidation).
+    8. Marks the mesh vector stale, so kernels and integrals read the
+       values just written.
 
     Returns ``True`` if the mesh actually moved (``do_move`` reported
     geometry change); ``False`` if it short-circuited (caller can skip
@@ -376,7 +379,11 @@ def _remesh_with_field_transfer_impl(
     do_move()
 
     new_X = np.asarray(mesh.X.coords).copy()
-    if np.array_equal(new_X, old_X):
+    # Decided over all ranks: a rank whose own nodes stayed put (pinned, empty,
+    # or outside a local deformation) must still enter the collective transfer
+    # below with the ranks whose nodes moved.
+    moved = uw.mpi.comm.allreduce(not np.array_equal(new_X, old_X), op=MPI.LOR)
+    if not moved:
         # Mover short-circuited (skip threshold, no metric change, ...).
         # No transfer to do, no hooks to fire — caller treats this as a
         # no-op adapt.
@@ -430,7 +437,8 @@ def _remesh_with_field_transfer_impl(
     # mark the mesh vector stale, and the remap's own evaluations have just
     # refreshed that vector from the values before the write. Kernels and
     # integrals read the mesh vector, so without this they see the old field
-    # on the moved nodes. Set on every rank: update_lvec is collective.
+    # on the moved nodes. Every rank reaches this line (the move test above is
+    # collective), which update_lvec needs because it is collective.
     mesh._stale_lvec = True
 
     return True
