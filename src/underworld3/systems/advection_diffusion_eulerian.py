@@ -669,6 +669,35 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             return np.inf
         return _dimensionalise_dt(self.dt_accuracy)
 
+    def _largest_solved_change(self, before):
+        r"""Largest change of the unknown from ``before``, over the degrees of
+        freedom this solve determines.
+
+        Measured in the solver's global vector, which holds neither the
+        constrained rows nor ghost copies. A constrained value changes because
+        the boundary condition imposes it, by an amount that does not shrink
+        with the timestep: a mesh move leaves a wall node away from its datum
+        and the next solve restores it. Counting that as a rate of change makes
+        :meth:`estimate_dt` proportional to the last step, so the step decays
+        geometrically under a moving mesh.
+        """
+        from petsc4py import PETSc
+
+        dm = self._unknown_dm()
+        lvec = dm.getLocalVec()
+        gvec_before = dm.getGlobalVec()
+        gvec_after = dm.getGlobalVec()
+        lvec.array[...] = before
+        dm.localToGlobal(lvec, gvec_before)
+        lvec.array[...] = np.asarray(self.u.data).reshape(-1)
+        dm.localToGlobal(lvec, gvec_after)
+        gvec_after.axpy(-1.0, gvec_before)
+        largest = gvec_after.norm(PETSc.NormType.NORM_INFINITY)
+        dm.restoreGlobalVec(gvec_after)
+        dm.restoreGlobalVec(gvec_before)
+        dm.restoreLocalVec(lvec)
+        return largest
+
     def _advective_rate(self):
         r"""Global maximum of :math:`|\mathbf{u}\cdot\nabla\phi|` at the mesh vertices.
 
@@ -732,10 +761,7 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         # The realised rate of change of the field over this step feeds the
         # accuracy-based estimate_dt (from a copy of the unknown: the manager's
         # history may live on a swarm or carry units).
-        from mpi4py import MPI
-        change = np.abs(np.asarray(self.u.data).reshape(-1) - before)
-        local = float(change.max()) if change.size else 0.0
-        self._last_change_rate = uw.mpi.comm.allreduce(local, op=MPI.MAX) / dt
+        self._last_change_rate = self._largest_solved_change(before) / dt
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True
