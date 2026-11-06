@@ -46,15 +46,19 @@ from underworld3.utilities import custom_mg
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
+# The nodal helpers below read local arrays, which carry ghost copies at np > 1:
+# this file runs on one rank. Its parallel twin asserts only verdicts that do not
+# depend on the partition.
+
+
 def _rotation_rates(v):
     """Least-squares rigid rotation of the nodal velocity: the omega minimising
-    sum |v_i - omega x r_i|^2 over the velocity nodes, summed over the ranks."""
+    sum |v_i - omega x r_i|^2 over the velocity nodes. The gauge removes this
+    nodal component exactly; an area-weighted rate is not zero."""
     X = np.asarray(v.coords_nd)
     V = np.asarray(v.array).reshape(X.shape)
     A = np.einsum("ij,ij->", X, X) * np.eye(3) - X.T @ X
     b = np.cross(X, V).sum(axis=0)
-    A = uw.mpi.comm.allreduce(A)
-    b = uw.mpi.comm.allreduce(b)
     return np.linalg.solve(A, b)
 
 
@@ -115,8 +119,7 @@ def _annulus_stokes(name, mesh=None):
 
 def _v_rms(v):
     V = np.asarray(v.array).reshape(-1, v.mesh.cdim)
-    return np.sqrt(uw.mpi.comm.allreduce(float(np.sum(V * V)))
-                   / uw.mpi.comm.allreduce(V.shape[0]))
+    return np.sqrt(float(np.sum(V * V)) / V.shape[0])
 
 
 @pytest.mark.parametrize("radial", [False, True], ids=["default_normal", "analytic_normal"])
@@ -186,12 +189,10 @@ def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
 
 
 def _rotation_rate_2d(v):
-    """Least-squares rigid rotation rate of a 2-D nodal velocity, over the ranks."""
+    """Least-squares rigid rotation rate of a 2-D nodal velocity."""
     X = np.asarray(v.coords_nd)
     V = np.asarray(v.array).reshape(X.shape)
-    num = uw.mpi.comm.allreduce(float(np.sum(X[:, 0] * V[:, 1] - X[:, 1] * V[:, 0])))
-    den = uw.mpi.comm.allreduce(float(np.sum(X * X)))
-    return num / den
+    return float(np.sum(X[:, 0] * V[:, 1] - X[:, 1] * V[:, 0])) / float(np.sum(X * X))
 
 
 def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
