@@ -2728,17 +2728,24 @@ class Mesh(Stateful, uw_object):
         # before createDefault(). Currently only P1 coordinate meshes are used,
         # but these are needed for higher-order (curved) coordinate meshes.
         options = PETSc.Options()
-        options.setValue(f"meshproj_{self.mesh_instances}_petscspace_degree", self.degree)
-        options.setValue(f"meshproj_{self.mesh_instances}_petscdualspace_lagrange_continuity", True)
-        options.setValue(f"meshproj_{self.mesh_instances}_petscdualspace_lagrange_node_endpoints", False)
+        fe_prefix = f"meshproj_{self.mesh_instances}_"
+        fe_keys = {f"{fe_prefix}petscspace_degree": self.degree,
+                   f"{fe_prefix}petscdualspace_lagrange_continuity": True,
+                   f"{fe_prefix}petscdualspace_lagrange_node_endpoints": False}
+        for key, value in fe_keys.items():
+            options.setValue(key, value)
 
         self.petsc_fe = PETSc.FE().createDefault(
             self.dim,
             self.cdim,
             self.isSimplex,
             self.qdegree,
-            f"meshproj_{self.mesh_instances}_",
+            fe_prefix,
         )
+        # createDefault has read them; left in place they grew the global options
+        # database by three keys for every mesh ever built (#950)
+        for key in fe_keys:
+            options.delValue(key)
 
         if verbose and uw.mpi.rank == 0:
             print(

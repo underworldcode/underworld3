@@ -1,4 +1,5 @@
 import collections
+import weakref
 
 import numpy as np
 import sympy
@@ -353,6 +354,20 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
+def _drop_solver_options(prefix):
+    """Remove every option a dropped solver left in the global database: those
+    under its prefix, and the ``private_`` copies PETSc makes for its sub-objects.
+    A solver's prefix is unique (``Solver_N_``), so no live solver reads them.
+    Not collective."""
+    try:
+        opts = PETSc.Options()
+        for name in list(opts.getAll()):
+            if name.startswith(prefix) or name.startswith("private_" + prefix):
+                opts.delValue(name)
+    except Exception:
+        pass
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -471,6 +486,12 @@ class SolverBaseClass(uw_object):
         self.name = "Solver_{}_".format(self.instance_number)
         self.petsc_options_prefix = self.name
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+        # Nothing removed a solver's options when it was dropped, so the global
+        # database grew by about 25 keys per solver (49 for a Stokes and a Poisson
+        # solve, #950). They go when the solver is collected; not at interpreter
+        # exit, by which time PETSc may be finalised.
+        weakref.finalize(self, _drop_solver_options,
+                         self.petsc_options_prefix).atexit = False
 
         self.dm = None
         self.dm_hierarchy = []
