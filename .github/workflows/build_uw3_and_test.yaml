@@ -135,7 +135,12 @@ jobs:
       # the supervisor reports Python stacks alone.
       - name: Install gdb for hang diagnosis
         continue-on-error: true
-        run: sudo apt-get install -y --no-install-recommends gdb
+        run: |
+          sudo apt-get install -y --no-install-recommends gdb
+          # Which host this is: BLAS picks its kernels from the CPU, and a solve
+          # has been seen to stop finishing on some hosts only (#963).
+          lscpu | grep -E "Model name|Flags" | cut -c1-200
+          echo "ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope)"
 
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2 --shard ${{ matrix.shard }}/${{ strategy.job-total }}
