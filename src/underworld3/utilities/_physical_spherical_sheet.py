@@ -17,7 +17,7 @@ import underworld3 as uw
 from underworld3.maths.spherical_harmonics import (
     harmonic_norm, real_harmonic_values, validate_harmonic,
 )
-from underworld3.utilities._cylindrical_gap import _layout
+from underworld3.utilities._field_layout import _layout
 from underworld3.utilities._spherical_gap import _spherical_facet_quadrature
 from underworld3.utilities._spherical_interface_load import _vertex_coordinates
 from underworld3.utilities._tetrahedral_gap import _tetrahedral_p2_basis

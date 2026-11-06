@@ -39,7 +39,7 @@ class ResidualObserver(uw.diagnostics.SphericalStokesObserver):
             physical.destroy()
 
 observer = ResidualObserver()
-with stokes.observe_spherical_stokes(observer):
+with stokes.observe_stokes(observer):
     result = stokes.solve_spherical_gap(...)  # Existing explicit solve arguments.
 ```
 
@@ -65,3 +65,31 @@ fields, reaction signs/gauges, singular algebraic original residuals, monitor an
 registration ownership, shared hashes and platform memory units. Test 1104 attaches
 the public observer to actual free-slip and zero-slip hydrostatic solves. All are
 serial/MPI gates; none constitutes an inf-sup or campaign acceptance claim.
+
+## Internal ownership after the shared Stokes cleanup
+
+The solver implementations no longer depend on `uw.diagnostics`. Shared FE
+numbering/scatter operations live in `utilities/_field_layout.py`. Shared borrowed
+mixed state and residual measurements live in `_stokes_state.py`; physical gauges
+and field assignment live in `_cylindrical_stokes_state.py` and
+`_spherical_stokes_state.py`. The diagnostics namespace re-exports the historical
+spherical state/replay spellings for compatibility; it does not own their solver
+implementation.
+
+`Stokes.observe_stokes` and `uw.diagnostics.StokesObserver` provide the same scoped
+solve-start/iteration/solve-finish/finalized contract for both gap solvers. Additional
+physical/background/PC/phase events are backend-specific. The older spherical
+registration spelling and source-integrity observer remain supported. Nested
+registration across either spelling is rejected, and existing PETSc monitors
+survive exceptions.
+
+Annulus basis/cap/volume rules are separated into `_cylindrical_gap_geometry.py`;
+distributed graph allocation and insertion live in `_cylindrical_gap_assembly.py`.
+The solve module orchestrates assembly, physical gauges, verification and field
+finalization. Spherical cut-cell/trace/curtain/preconditioner mathematics retain
+their separate geometry modules. This aligns responsibilities without combining
+2D circle and 3D sphere formulas or changing integration/convergence settings.
+
+Tests 1100 and 1104 attach the common API to actual free-slip and zero-slip solves
+in both geometries. Test 1120_stokes_architecture checks exact mixed gauges,
+registration ownership and the solver-to-diagnostics dependency boundary.

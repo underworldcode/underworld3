@@ -27,7 +27,13 @@ convergence/stability theorems do not establish those properties for this space.
 No analytical Stokes solution or harmonic coefficients enter the solve.
 """
 
+from underworld3.utilities._cylindrical_stokes_state import CylindricalSolveState
+from underworld3.utilities._stokes_observer import solve_with_observer
+from contextlib import ExitStack
 from typing import NamedTuple
+from underworld3.utilities._field_layout import _layout, _scatter_values
+from underworld3.utilities._cylindrical_gap_geometry import _p2_basis, _cap_quadrature, _triangle_rule, _volume_blocks
+from underworld3.utilities._cylindrical_gap_assembly import _insert_blocks, _create_gap_matrix
 
 import numpy as np
 import sympy as sp
@@ -43,137 +49,14 @@ class _GapResult(NamedTuple):
     checks: dict
 
 
-def _p2_basis(
-    vertices: np.ndarray, points: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    inverse = np.linalg.inv(
-        np.stack(
-            (vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]), axis=-1
-        )
-    )
-    xi = np.einsum("eij,eqj->eqi", inverse, points - vertices[:, None, 0])
-    bary = np.concatenate((1 - xi.sum(axis=-1, keepdims=True), xi), axis=-1)
-    grad = np.stack((-inverse.sum(axis=1), inverse[:, 0], inverse[:, 1]), axis=1)
-    shape = np.stack(
-        [bary[..., i] * (2 * bary[..., i] - 1) for i in range(3)]
-        + [4 * bary[..., i] * bary[..., j] for i, j in ((0, 1), (1, 2), (2, 0))],
-        axis=-1,
-    )
-    derivative = np.stack(
-        [(4 * bary[..., i, None] - 1) * grad[:, None, i] for i in range(3)]
-        + [
-            4
-            * (
-                bary[..., i, None] * grad[:, None, j]
-                + bary[..., j, None] * grad[:, None, i]
-            )
-            for i, j in ((0, 1), (1, 2), (2, 0))
-        ],
-        axis=2,
-    )
-    return (shape, derivative, bary)
 
 
-def _cap_quadrature(
-    edges: np.ndarray, radius: float, angular_order: int, radial_order: int
-) -> dict:
-    """Exact circular cap parametrization, positive weights, independent of edge order."""
-    delta = np.arctan2(
-        edges[:, 0, 0] * edges[:, 1, 1] - edges[:, 0, 1] * edges[:, 1, 0],
-        np.sum(edges[:, 0] * edges[:, 1], axis=1),
-    )
-    if np.any(abs(delta) >= np.pi) or np.any(abs(delta) < 1e-14):
-        raise ValueError("Cap rule requires nonzero minor arcs")
-    a, wa = np.polynomial.legendre.leggauss(angular_order)
-    b, wb = np.polynomial.legendre.leggauss(radial_order)
-    angle0 = np.arctan2(edges[:, 0, 1], edges[:, 0, 0])
-    angle = angle0[:, None] + delta[:, None] * (a + 1) / 2
-    direction = np.stack((np.cos(angle), np.sin(angle)), axis=-1)
-    chord_radius = (
-        radius
-        * np.cos(delta[:, None] / 2)
-        / np.cos(angle - angle0[:, None] - delta[:, None] / 2)
-    )
-    gap = radius - chord_radius
-    if np.any(gap < -1e-12):
-        raise ValueError("Invalid circle/chord cap geometry")
-    radial = chord_radius[..., None] + gap[..., None] * (b + 1) / 2
-    points = radial[..., None] * direction[:, :, None, :]
-    weight = (
-        abs(delta[:, None, None])
-        * wa[None, :, None]
-        / 2
-        * gap[..., None]
-        * wb[None, None, :]
-        / 2
-        * radial
-    )
-    return dict(
-        circle_points=radius * direction,
-        circle_weight=radius * abs(delta[:, None]) * wa[None, :] / 2,
-        cap_points=points.reshape(len(edges), angular_order * radial_order, 2),
-        cap_weight=weight.reshape(len(edges), angular_order * radial_order),
-    )
 
 
-def _triangle_rule(vertices: np.ndarray, order: int) -> tuple[np.ndarray, np.ndarray]:
-    """Positive tensor-product Duffy rule on each affine triangle."""
-    x, w = np.polynomial.legendre.leggauss(order)
-    x, w = ((x + 1) / 2, w / 2)
-    a, b = np.meshgrid(x, x, indexing="ij")
-    bary = np.stack((1 - a, a * (1 - b), a * b), axis=-1).reshape(-1, 3)
-    determinant = abs(
-        np.linalg.det(
-            np.stack(
-                (vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]),
-                axis=-1,
-            )
-        )
-    )
-    return (
-        np.einsum("qj,ejd->eqd", bary, vertices),
-        determinant[:, None] * (a * w[:, None] * w[None, :]).ravel(),
-    )
 
 
-def _volume_blocks(
-    vertices: np.ndarray, points: np.ndarray, weight: np.ndarray
-) -> dict:
-    """Viscosity-one element matrices; interleaved x/y velocity components."""
-    shape, grad, bary = _p2_basis(vertices, points)
-    stiffness = np.zeros((len(vertices), 12, 12))
-    divergence = np.zeros((len(vertices), 3, 12))
-    dot = np.einsum("eq,eqid,eqjd->eij", weight, grad, grad)
-    for a in range(2):
-        divergence[:, :, a::2] = -np.einsum(
-            "eq,eql,eqi->eli", weight, bary, grad[..., a]
-        )
-        for b in range(2):
-            stiffness[:, a::2, b::2] = (a == b) * dot + np.einsum(
-                "eq,eqi,eqj->eij", weight, grad[..., b], grad[..., a]
-            )
-    rotation = np.stack((-points[..., 1], points[..., 0]), axis=-1)
-    return dict(
-        A=stiffness,
-        B=divergence,
-        pressure_mean=np.einsum("eq,eql->el", weight, bary),
-        rotation=np.einsum("eq,eqi,eqd->eid", weight, shape, rotation),
-        unit_force=np.einsum("eq,eqi->ei", weight, shape),
-    )
 
 
-def _layout(field):
-    """Independent field global numbering, including local ghost-node indices."""
-    iset, dm = field.mesh.dm.createSubDM(field.field_id)
-    global_vector = dm.createGlobalVec()
-    mapping = dm.getLGMap()
-    indices = mapping.getIndices().copy()
-    size = global_vector.getSize()
-    global_vector.destroy()
-    mapping.destroy()
-    dm.destroy()
-    iset.destroy()
-    return indices, size
 
 
 def _ordered_rows(mesh, field, vertices):
@@ -252,87 +135,10 @@ def _coordinate_values(expression, points, components, mesh):
     return np.asarray(values).reshape(*points.shape[:-1], components)
 
 
-def _insert_blocks(matrix, velocity_ids, pressure_ids, blocks, viscosity, sign):
-    for u, p, a, b in zip(
-        velocity_ids, pressure_ids, blocks["A"], blocks["B"], strict=True
-    ):
-        matrix.setValues(
-            u,
-            u,
-            np.ascontiguousarray(sign * viscosity * a),
-            addv=PETSc.InsertMode.ADD_VALUES,
-        )
-        matrix.setValues(
-            p, u, np.ascontiguousarray(sign * b), addv=PETSc.InsertMode.ADD_VALUES
-        )
-        matrix.setValues(
-            u, p, np.ascontiguousarray(sign * b.T), addv=PETSc.InsertMode.ADD_VALUES
-        )
 
 
-def _create_gap_matrix(
-    size: int,
-    velocity_ids: np.ndarray,
-    pressure_ids: np.ndarray,
-    wall_couplings: list[tuple[np.ndarray, np.ndarray]],
-    comm: PETSc.Comm,
-) -> PETSc.Mat:
-    """Preallocate the distributed mixed graph, including remote circle couplings.
-
-    PETSc's MATPREALLOCATOR routes the known cell connectivity to row owners;
-    filling the graph with zeros prevents storage growth during numeric insertion.
-    See https://petsc.org/release/manualpages/Mat/MatPreallocatorPreallocate/.
-    The graph is the same A/B/B-transpose and circle C/C-transpose pattern used
-    by the variational assembly. Stored zero diagonals support PETSc's row/column
-    pinning; they add no pressure stabilization or physical matrix term.
-    """
-    graph = PETSc.Mat().create(comm=comm)
-    graph.setSizes((size, size))
-    graph.setType(PETSc.Mat.Type.PREALLOCATOR)
-    graph.setUp()
-    zero_a = np.zeros((12, 12))
-    zero_b = np.zeros((3, 12))
-    zero_bt = np.zeros((12, 3))
-    for u, p in zip(velocity_ids, pressure_ids, strict=True):
-        graph.setValues(u, u, zero_a)
-        graph.setValues(p, u, zero_b)
-        graph.setValues(u, p, zero_bt)
-    for uids, lids in wall_couplings:
-        zero_c = np.zeros((lids.shape[1], 12))
-        zero_ct = np.zeros((12, lids.shape[1]))
-        for u, l in zip(uids, lids, strict=True):
-            graph.setValues(l, u, zero_c)
-            graph.setValues(u, l, zero_ct)
-    lo, hi = graph.getOwnershipRange()
-    for row in range(lo, hi):
-        graph.setValue(row, row, 0.0)
-    graph.assemble()
-    matrix = PETSc.Mat().create(comm=comm)
-    matrix.setSizes((size, size))
-    matrix.setType(PETSc.Mat.Type.AIJ)
-    graph.preallocatorPreallocate(matrix, fill=True)
-    graph.destroy()
-    return matrix
 
 
-def _scatter_values(vector, indices):
-    """Fetch local/ghost field values without replicating the volume solution."""
-    iset = PETSc.IS().createGeneral(
-        np.asarray(indices, dtype=PETSc.IntType), comm=PETSc.COMM_SELF
-    )
-    local = PETSc.Vec().createSeq(len(indices), comm=PETSc.COMM_SELF)
-    scatter = PETSc.Scatter().create(vector, iset, local, None)
-    scatter.scatter(
-        vector,
-        local,
-        addv=PETSc.InsertMode.INSERT_VALUES,
-        mode=PETSc.ScatterMode.FORWARD,
-    )
-    values = local.array.copy()
-    scatter.destroy()
-    local.destroy()
-    iset.destroy()
-    return values
 
 
 def _solve_circle_constraints(
@@ -665,73 +471,53 @@ def _solve_circle_constraints(
         options[key] = value
     ksp.setFromOptions()
     solution = rhs.duplicate()
-    ksp.solve(pinned_rhs, solution)
-    if ksp.getConvergedReason() <= 0:
-        raise ArithmeticError(
-            f"Cylindrical gap KSP failed: reason={ksp.getConvergedReason()}"
-        )
-    lift_integral = float(pressure_jump_integral) + uw.mpi.comm.allreduce(
-        float(lift_cap_integral), op=MPI.SUM
-    )
-    solution.axpy(-(pmean.dot(solution) + lift_integral) / pmean.sum(), pressure_mode)
-    if ncomponents == 1:
-        solution.axpy(
-            -rotation_weights.dot(solution) / rotation_weights.dot(rotation_mode),
-            rotation_mode,
-        )
-    matrix.mult(solution, work)
-    work.axpy(-1.0, rhs)
-    relative = work.norm() / max(rhs.norm(), np.finfo(float).tiny)
-    checks = dict(
-        relative_residual=relative,
-        pressure_null_relative_residual=pn,
-        rotation_null_relative_residual=rn,
-        physical_area=pmean.sum(),
-        physical_pressure_integral=pmean.dot(solution) + lift_integral,
-        rotation_integral=rotation_weights.dot(solution),
-        unknowns=size,
-        ksp_reason=int(ksp.getConvergedReason()),
-        ranks=uw.mpi.size,
-        constraint_components=constraint_components,
-        rotation_is_null=ncomponents == 1,
-    )
-    if relative > 1e-9:
-        raise ArithmeticError(f"Cylindrical gap unpinned residual failed: {checks}")
-    velocity.array[:, 0, :] = _scatter_values(solution, umap).reshape(-1, 2)
-    pressure.array[:, 0, 0] = _scatter_values(solution, pmap + nu)
-    global_node_ids = umap.reshape(-1, 2)[:, 0]
-    selected = np.isin(global_node_ids, boundary_uids)
-    for component, reaction in enumerate(reactions):
-        reaction_values = np.zeros(len(global_node_ids))
-        reaction_values[selected] = _scatter_values(
-            solution,
-            nu
-            + npres
-            + ncomponents * np.searchsorted(boundary_uids, global_node_ids[selected])
-            + component,
-        )
-        # Full canonical writes synchronize empty boundary selections too.
-        reaction.array[:, 0, 0] = reaction_values
-    for field in (velocity, pressure, *reactions):
-        field._sync_lvec_to_gvec()
-    mesh._stale_lvec = True
-    for key in linear_solver_options:
-        del options[key]
-    for obj in (
-        ksp,
-        solution,
-        pinned_rhs,
-        pinned,
-        work,
-        pressure_mode,
-        rotation_mode,
-        rhs,
-        pmean,
-        rotation_weights,
-        matrix,
-    ):
-        obj.destroy()
-    return tuple(reactions), checks
+    with ExitStack() as cleanup:
+        for obj in (ksp, solution, pinned_rhs, pinned, work, pressure_mode, rotation_mode,
+                    rhs, pmean, rotation_weights, matrix):
+            cleanup.callback(obj.destroy)
+        try:
+            state = CylindricalSolveState(dict(
+                matrix=matrix, rhs=rhs, mpi=uw.mpi.comm, pressure_jump_integral=pressure_jump_integral,
+                lift_gap=lift_cap_integral, pmean=pmean, pressure_mode=pressure_mode,
+                rotation_weight=rotation_weights, rotation_weights=[rotation_weights], rotation_mode=rotation_mode,
+                components=ncomponents, nu=nu, npres=npres, velocity=velocity, pressure=pressure,
+                mesh=mesh, umap=umap, pmap=pmap, boundary_uids=boundary_uids, reactions=reactions,
+            ))
+            observer = getattr(stokes, '_stokes_observer', None)
+            if observer is None:
+                ksp.solve(pinned_rhs, solution)
+            else:
+                solve_with_observer(ksp, pinned_rhs, solution, state, observer)
+            if ksp.getConvergedReason() <= 0:
+                raise ArithmeticError(
+                    f"Cylindrical gap KSP failed: reason={ksp.getConvergedReason()}"
+                )
+            lift_integral = state.lift_integral
+            state.restore_gauge(solution)
+            matrix.mult(solution, work)
+            work.axpy(-1.0, rhs)
+            relative = work.norm() / max(rhs.norm(), np.finfo(float).tiny)
+            checks = dict(
+                relative_residual=relative,
+                pressure_null_relative_residual=pn,
+                rotation_null_relative_residual=rn,
+                physical_area=pmean.sum(),
+                physical_pressure_integral=pmean.dot(solution) + lift_integral,
+                rotation_integral=rotation_weights.dot(solution),
+                unknowns=size,
+                ksp_reason=int(ksp.getConvergedReason()),
+                ranks=uw.mpi.size,
+                constraint_components=constraint_components,
+                rotation_is_null=ncomponents == 1,
+            )
+            if relative > 1e-9:
+                raise ArithmeticError(f"Cylindrical gap unpinned residual failed: {checks}")
+            state.assign_fields(solution)
+            return tuple(reactions), checks
+        finally:
+            for key in linear_solver_options:
+                del options[key]
+
 
 
 class _ZeroSlipGapResult(NamedTuple):
@@ -767,7 +553,11 @@ def _solve_cylindrical_gap(
         linear_solver_options,
         ("normal",),
     )
-    return _GapResult(fields[0], checks)
+    result = _GapResult(fields[0], checks)
+    observer = getattr(stokes, '_stokes_observer', None)
+    if observer is not None:
+        observer.finalized(result)
+    return result
 
 
 def _solve_cylindrical_gap_zero_slip(
@@ -797,4 +587,8 @@ def _solve_cylindrical_gap_zero_slip(
         linear_solver_options,
         ("normal", "tangent"),
     )
-    return _ZeroSlipGapResult(fields[0], fields[1], checks)
+    result = _ZeroSlipGapResult(fields[0], fields[1], checks)
+    observer = getattr(stokes, '_stokes_observer', None)
+    if observer is not None:
+        observer.finalized(result)
+    return result

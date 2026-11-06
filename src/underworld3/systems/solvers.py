@@ -1465,6 +1465,17 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     instances = 0
 
+    def observe_stokes(self, observer):
+        """Observe a cylindrical or spherical gap solve through collective hooks.
+
+        Parameters
+        ----------
+        observer : underworld3.diagnostics.StokesObserver
+            Read-only callbacks borrowing solver objects for the scoped solve.
+        """
+        from underworld3.utilities._stokes_observer import observe_stokes
+        return observe_stokes(self, observer)
+
     def observe_spherical_stokes(self, observer):
         """Observe one spherical solve through a scoped, collective context.
 

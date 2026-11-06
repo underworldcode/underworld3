@@ -1,7 +1,7 @@
 """Public numerical diagnostics and opt-in spherical Stokes observations."""
 from .runtime import collective_file_sha256, runtime_info
 from .observer import (
-    SphericalSolveState, SphericalStokesObserver, observe_spherical_stokes,
+    StokesObserver, observe_stokes, SphericalSolveState, SphericalStokesObserver, observe_spherical_stokes,
     solve_with_observer, array_sha256, assign_spherical_fields,
     prepare_spherical_replay_fields,
 )

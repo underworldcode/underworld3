@@ -12,6 +12,19 @@ import underworld3 as uw
 pytestmark = pytest.mark.level_2
 
 
+class _GradientObserver(uw.diagnostics.StokesObserver):
+    def solve_started(self, ksp, state):
+        self.started = True
+    def solve_finished(self, ksp, vector, state):
+        physical = state.gauged_copy(vector)
+        try:
+            assert state.residual(physical)['original_relative_residual'] < 1e-10
+        finally:
+            physical.destroy()
+    def finalized(self, result):
+        self.result = result
+
+
 @pytest.mark.tier_b
 @pytest.mark.parametrize("force_degree", [None, 1, 2])
 def test_cylindrical_gap_preserves_pressure_gradient_and_null_modes(force_degree):
@@ -31,22 +44,26 @@ def test_cylindrical_gap_preserves_pressure_gradient_and_null_modes(force_degree
         values[:, 0, 0] = 1.0
         force.array[:, :, :] = values
         stokes.bodyforce = force.sym
-    result = stokes.solve_cylindrical_gap(
-        inner_boundary="Lower",
-        outer_boundary="Upper",
-        radius_inner=1.22,
-        radius_outer=2.22,
-        viscosity=1.0,
-        pressure_jump=sp.S.Zero,
-        pressure_jump_integral=0.0,
-        cap_bodyforce=sp.Matrix([1, 0]),
-        quadrature=8,
-        linear_solver_options={
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-        },
-    )
+    observer = _GradientObserver()
+    with stokes.observe_stokes(observer):
+        result = stokes.solve_cylindrical_gap(
+            inner_boundary="Lower",
+            outer_boundary="Upper",
+            radius_inner=1.22,
+            radius_outer=2.22,
+            viscosity=1.0,
+            pressure_jump=sp.S.Zero,
+            pressure_jump_integral=0.0,
+            cap_bodyforce=sp.Matrix([1, 0]),
+            quadrature=8,
+            linear_solver_options={
+                "ksp_type": "preonly",
+                "pc_type": "lu",
+                "pc_factor_mat_solver_type": "mumps",
+            },
+        )
+    assert observer.started and observer.result is result
+    assert not hasattr(stokes, '_stokes_observer')
     area = uw.maths.Integral(mesh, sp.S.One).evaluate()
     velocity_rms = np.sqrt(
         uw.maths.Integral(mesh, velocity.sym.dot(velocity.sym)).evaluate() / area
@@ -178,22 +195,26 @@ def test_zero_slip_gradient_load_has_no_rotation_gauge():
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.bodyforce = sp.Matrix([1, 0])
-    result = stokes.solve_cylindrical_gap_zero_slip(
-        inner_boundary="Lower",
-        outer_boundary="Upper",
-        radius_inner=1.22,
-        radius_outer=2.22,
-        viscosity=1.0,
-        pressure_jump=sp.S.Zero,
-        pressure_jump_integral=0.0,
-        cap_bodyforce=sp.Matrix([1, 0]),
-        quadrature=8,
-        linear_solver_options={
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-        },
-    )
+    observer = _GradientObserver()
+    with stokes.observe_stokes(observer):
+        result = stokes.solve_cylindrical_gap_zero_slip(
+            inner_boundary="Lower",
+            outer_boundary="Upper",
+            radius_inner=1.22,
+            radius_outer=2.22,
+            viscosity=1.0,
+            pressure_jump=sp.S.Zero,
+            pressure_jump_integral=0.0,
+            cap_bodyforce=sp.Matrix([1, 0]),
+            quadrature=8,
+            linear_solver_options={
+                "ksp_type": "preonly",
+                "pc_type": "lu",
+                "pc_factor_mat_solver_type": "mumps",
+            },
+        )
+    assert observer.started and observer.result is result
+    assert not hasattr(stokes, '_stokes_observer')
     np.testing.assert_allclose(np.asarray(u.array), 0, atol=2e-8, rtol=0)
     np.testing.assert_allclose(
         np.asarray(p.array)[:, 0, 0], p.coords[:, 0], atol=1e-7, rtol=0

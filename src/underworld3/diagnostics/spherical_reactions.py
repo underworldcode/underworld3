@@ -18,7 +18,7 @@ import sympy as sp
 import underworld3 as uw
 from underworld3.maths.spherical_harmonics import real_harmonic_values
 from underworld3.utilities._spherical_gap import _spherical_facet_quadrature
-from underworld3.utilities._cylindrical_gap import _layout, _scatter_values
+from underworld3.utilities._field_layout import _layout, _scatter_values
 from underworld3.utilities._spherical_stokes_gap import _canonical_rows, _wall_faces
 from underworld3.utilities._tetrahedral_gap import _tetrahedral_p2_basis
 from underworld3.diagnostics.spherical import _physical_inner_surface_rules

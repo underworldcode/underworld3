@@ -28,6 +28,8 @@ inf-sup bound. Both require independent measured checks before acceptance.
 
 from contextlib import ExitStack
 from itertools import combinations
+from underworld3.utilities._spherical_stokes_state import SphericalSolveState
+from underworld3.utilities._stokes_observer import solve_with_observer
 from typing import NamedTuple
 import time
 
@@ -37,7 +39,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 import underworld3 as uw
 
-from underworld3.utilities._cylindrical_gap import _layout, _scatter_values
+from underworld3.utilities._field_layout import _layout, _scatter_values
 from underworld3.utilities._spherical_gap import _spherical_facet_quadrature
 from underworld3.utilities._spherical_cut_cell import (
     _inner_cell_relation, _spherical_cut_cell_quadrature, _spherical_cut_cell_surface,
@@ -394,7 +396,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
     comm = mesh.dm.comm; mpi = comm.tompi4py()
     # Diagnostic observers may copy borrowed operators at these two stages.
     # No extra matrix assembly or storage is incurred by ordinary solves.
-    observer = getattr(stokes, "_spherical_gap_observer", None)
+    observer = getattr(stokes, "_stokes_observer", None) or getattr(stokes, "_spherical_gap_observer", None)
     resources = {"rss_start_mib": _rss_mib(observer, "rss_start_mib")}
     vertex_rows = mesh._cell_node_indices(1, True)
     vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
@@ -773,7 +775,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
         resources["rss_after_setup_mib"] = _rss_mib(observer, "rss_after_setup_mib")
         solve_started = time.perf_counter()
         solution = rhs.duplicate(); cleanup.callback(solution.destroy)
-        state = uw.diagnostics.SphericalSolveState(dict(
+        state = SphericalSolveState(dict(
             matrix=matrix, rhs=rhs, mpi=mpi, pressure_jump_integral=pressure_jump_integral,
             lift_gap=lift_gap, pmean=pmean, pressure_mode=pressure_mode, modes=modes,
             rotation_weights=rotation_weights, components=components, nu=nu, npres=npres,
@@ -782,7 +784,7 @@ def _solve_constraints(stokes, inner_boundary, outer_boundary, radius_inner, rad
             mesh=mesh, radius_inner=radius_inner, radius_outer=radius_outer,
         ))
         if observer is not None and hasattr(observer, "solve_started"):
-            uw.diagnostics.solve_with_observer(ksp, pinned_rhs, solution, state, observer)
+            solve_with_observer(ksp, pinned_rhs, solution, state, observer)
         else:
             ksp.solve(pinned_rhs, solution)
         if ksp.getConvergedReason() <= 0:

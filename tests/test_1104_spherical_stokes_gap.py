@@ -63,7 +63,7 @@ def test_constant_lift_hydrostatic_gauge_and_physical_reactions(shell, zero_slip
         def finalized(self, result):
             self.final_result = result
     observer = Observer()
-    with stokes.observe_spherical_stokes(observer):
+    with stokes.observe_stokes(observer):
         result = solve(
             inner_boundary="Lower", outer_boundary="Upper",
             radius_inner=0.55, radius_outer=1, viscosity=1,
@@ -77,6 +77,7 @@ def test_constant_lift_hydrostatic_gauge_and_physical_reactions(shell, zero_slip
     assert observer.started == observer.finished == 1
     assert observer.final_result is result
     assert not hasattr(stokes, '_spherical_gap_observer')
+    assert not hasattr(stokes, '_stokes_observer')
     physical_volume = 4*np.pi*(1-0.55**3)/3
     np.testing.assert_allclose(result.checks["physical_volume"], physical_volume, rtol=1e-9)
     assert max(result.checks["null_relative_residuals"]) < 1e-10

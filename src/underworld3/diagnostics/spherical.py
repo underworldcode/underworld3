@@ -17,7 +17,7 @@ from mpi4py import MPI
 import sympy as sp
 import underworld3 as uw
 from underworld3.utilities._spherical_gap import _spherical_facet_quadrature
-from underworld3.utilities._cylindrical_gap import _layout
+from underworld3.utilities._field_layout import _layout
 from underworld3.utilities._spherical_cut_cell import (
     _inner_cell_relation, _spherical_cut_cell_quadrature, _spherical_cut_cell_surface,
 )

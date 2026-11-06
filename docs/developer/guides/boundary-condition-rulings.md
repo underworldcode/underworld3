@@ -196,5 +196,5 @@ given as `None` (or `sympy.oo`) are left free. Three things to know:
 ## Spherical solve observations
 
 The optional [spherical diagnostics API](../subsystems/spherical-stokes-diagnostics.md)
-provides physical error/reaction integration and scoped `Stokes.observe_spherical_stokes`
+provides physical error/reaction integration and shared cylindrical/spherical `Stokes.observe_stokes`
 callbacks. Observations do not change wall constraints or the original equations.
