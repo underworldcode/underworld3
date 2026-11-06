@@ -11,6 +11,10 @@ wall; a rank-local verdict would keep the mode there and drop it elsewhere.
   constrained row.
 - With 1e-6 of radial deformation near (1, 0) on its outer wall, every rank drops the
   mode, rank 0 warns, and the constraint test then rejects it on every rank.
+- An add_fault child keeps the declaration and the exemption on every rank. At np > 1
+  the add-on partition can move the level the fault is cut on into a new mesh, which
+  must inherit the declaration too: without that, a conforming sheet on a shell gave
+  v_rms 1.79e-3 at np 1 and 3.45e-3 at np 4 (hyperion, on b7030602).
 - The fixture has its power: at each rank count it was measured at, some rank holds no
   deformed wall vertex. Measured on Linux (hyperion, 2026-11-06), the ranks untouched
   were 1, 2, 2, 3, 4, 6 at np 2, 3, 4, 5, 6, 8. With the reduction made rank-local, the
@@ -85,8 +89,8 @@ def _solve(deform):
         warnings.simplefilter("always")
         stokes.solve()
     info = stokes._rotated_freeslip_info
-    warned = any("rotation modes the mesh declares" in str(w.message) for w in record)
-    verdicts = uw.mpi.comm.allgather((tuple(info["declared_modes_kept"]),
+    warned = any("is not a sphere about the rotation centre" in str(w.message) for w in record)
+    verdicts = uw.mpi.comm.allgather((tuple(info["declared_modes_exempt"]),
                                       info["rotation_gauge"]["orthonormal"]))
     return dict(warned=bool(uw.mpi.comm.allreduce(int(warned), op=MPI.MAX)),
                 verdicts=verdicts, vn=_normal_velocity(info),
@@ -106,3 +110,31 @@ def test_a_wall_deformed_on_some_ranks_drops_the_mode_on_every_rank():
     if uw.mpi.size in HOLDS_AT:
         assert out["untouched"] >= 1, ("no rank misses the deformation: the fixture has "
                                        "lost its power at this rank count", out)
+
+
+def test_an_add_fault_child_keeps_the_declaration_on_every_rank():
+    base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, refinement=1,
+                              qdegree=2)
+    child = base.add_fault([("Flt", np.array([[0.62, 0.10], [0.85, 0.30]]))])
+    moved = bool(uw.mpi.comm.allreduce(int(getattr(child, "parent", base) is not base), op=MPI.MAX))
+    declared = uw.mpi.comm.allgather(None if child._nullspace_rotations is None
+                                     else len(child._nullspace_rotations))
+    v = uw.discretisation.MeshVariable("Vf", child, 2, degree=2)
+    p = uw.discretisation.MeshVariable("Pf", child, 1, degree=1)
+    stokes = uw.systems.Stokes(child, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y = child.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    stokes.bodyforce = (sympy.cos(3 * sympy.atan2(y, x)) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
+                        * sympy.Matrix([x / r, y / r]).T)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-6
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    verdicts = uw.mpi.comm.allgather((info["converged"], tuple(info["declared_modes_exempt"] or ()),
+                                      info["rotation_gauge"]["orthonormal"]))
+    assert set(declared) == {1}, (declared, moved)
+    assert set(verdicts) == {(True, (True,), 1)}, (verdicts, moved)

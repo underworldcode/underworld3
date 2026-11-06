@@ -360,6 +360,27 @@ def _compose_prolongations(fine, coarse):
     width = int(cols.max()) + 1
     return (uniq // width, uniq % width, summed)
 
+def _is_rigid_rotation(mode, X):
+    """Whether the sympy field ``mode`` of the coordinates ``X`` is a rigid rotation
+    ``A (x - c)``: affine, with A antisymmetric and nonzero, and zero on its axis, so
+    that ``A c = -mode(0)`` has a solution. A screw adds a part along the axis and has
+    none. Checked numerically to a relative 1e-12, so a float coefficient with
+    round-off asymmetry or an unsimplified constant is accepted."""
+    grad = mode.jacobian(X)
+    if grad.free_symbols:
+        grad = sympy.simplify(grad)
+    if grad.free_symbols:
+        return False
+    A = numpy.array(grad.evalf(), dtype=float)
+    m0 = numpy.array(mode.subs(dict(zip(X, [0] * len(X)))).evalf(), dtype=float).ravel()
+    scale = numpy.linalg.norm(A)
+    if scale == 0.0 or numpy.linalg.norm(A + A.T) > 1.0e-12 * scale:
+        return False
+    centre = numpy.linalg.lstsq(A, -m0, rcond=None)[0]
+    return bool(numpy.linalg.norm(A @ centre + m0)
+                <= 1.0e-12 * scale * max(1.0, numpy.linalg.norm(centre)))
+
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -4683,10 +4704,10 @@ class Mesh(Stateful, uw_object):
                 raise ValueError(
                     f"a rotation mode is a field of the mesh coordinates {tuple(self.X)} "
                     f"only, got {m.T}")
-            grad = m.jacobian(list(self.X))
-            if grad.free_symbols or grad.norm() == 0 or (grad + grad.T).norm() != 0:
+            if not _is_rigid_rotation(m, list(self.X)):
                 raise ValueError(f"a rotation mode is a rigid rotation, omega x (r - c): "
-                                 f"affine with an antisymmetric gradient, got {m.T}")
+                                 f"affine, with a nonzero antisymmetric gradient, and "
+                                 f"zero on its axis (a screw is not one), got {m.T}")
         self._nullspace_rotations = modes
 
     @property

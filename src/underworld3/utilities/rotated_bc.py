@@ -965,9 +965,9 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
              "requested": bool(remove_rotation_gauge), "declared": None}
     if remove_rotation_gauge:
         live = []
-        flags = _declared_mode_flags(solver)
+        flags, _note = _declared_mode_flags(solver)
         gauge["declared"] = _rotations_declared(solver.mesh)
-        gauge["keeps_walls"] = flags
+        gauge["exempt"] = flags
         for tg, declared in zip(_rigid_rotation_modes(solver), flags):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
@@ -1196,6 +1196,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Staged Picard steps count against the cap, unlike the standard path's
     warm-up.
     """
+    # this solve's verdict on the declared modes; a solve that exits before it builds
+    # its null space (a warm start already converged) reports None, not the last one's
+    solver._rotated_declared_modes_exempt = None
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
         solver._setup_discretisation()
@@ -1931,7 +1934,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "workspace_reused": workspace_reused,
             # per declared mode, whether it kept every rotated wall in place and so
             # its exemption from the constraint test (None: the mesh declares none)
-            "declared_modes_kept": getattr(solver, "_rotated_declared_modes_kept", None)}
+            "declared_modes_exempt": getattr(solver, "_rotated_declared_modes_exempt", None)}
 
 
 
@@ -2090,7 +2093,7 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
         # the forward's null-mode record, which _rotated_nullspace rewrites and a
         # cached forward solve reads again
         record = ("_rotated_velocity_null_modes", "_rotated_null_mode_slack",
-                  "_rotated_declared_modes_kept")
+                  "_rotated_declared_modes_exempt")
         before = {name: getattr(solver, name) for name in record if hasattr(solver, name)}
         nsp = _rotated_nullspace(solver, Q, normal_rows)
         # The prolongation depends only on Q and the mesh hierarchy, so the
@@ -2765,7 +2768,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # COLLECTIVE: all ranks walk the same mode list, same order.
     n_rot = 0
     slack = 0.0
-    flags = _declared_mode_flags(solver)
+    flags, note = _declared_mode_flags(solver)
     for tg, declared in zip(_rigid_rotation_modes(solver), flags):
         report = []
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg, report=report,
@@ -2785,12 +2788,12 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # the largest constraint violation of an admitted mode: 0 when every mode
     # is exact; read by the net-torque guard after the Newton loop
     solver._rotated_null_mode_slack = slack
-    # which declared modes still keep every rotated wall in place: a deformed wall
-    # (a free-surface step) takes a mode's exemption away, and the solve says so
+    # which declared modes were exempt from the constraint test: a deformed wall (a
+    # free-surface step) takes the exemption away, and the solve says why
     declared_any = _rotations_declared(solver.mesh)
-    solver._rotated_declared_modes_kept = flags if declared_any else None
-    if declared_any and not all(flags):
-        _warn_declared_modes_lost(flags)
+    solver._rotated_declared_modes_exempt = flags if declared_any else None
+    if note is not None:
+        _warn_declared_modes_refused(note)
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -3100,79 +3103,133 @@ def _rotations_declared(mesh):
 _WALL_INVARIANCE_TOL = 1.0e-9
 
 
-def _declared_mode_flags(solver):
-    """For each mode :func:`_rigid_rotation_modes` returns, whether it is a declared
-    rotation that leaves every rotated wall in place (#906).
+def _affine_rotation(mode, X):
+    """``(A, m0)`` with ``mode(x) = A x + m0`` and A antisymmetric and nonzero, from the
+    sympy field ``mode`` of the coordinates ``X``, or None when it is not that."""
+    cdim = len(X)
+    f = sympy.lambdify(X, list(sympy.Matrix(mode)), "numpy")
+    m0 = np.asarray(f(*np.zeros(cdim)), dtype=float)
+    A = np.column_stack([np.asarray(f(*e), dtype=float) - m0 for e in np.eye(cdim)])
+    scale = np.linalg.norm(A)
+    probe = np.linspace(0.3, 1.7, cdim)
+    affine = np.allclose(np.asarray(f(*probe), dtype=float), m0 + A @ probe,
+                         rtol=1.0e-12, atol=1.0e-12 * max(scale, 1.0))
+    if scale == 0.0 or not affine or np.linalg.norm(A + A.T) > 1.0e-12 * scale:
+        return None
+    return A, m0
 
-    A declared mode is admitted without the constraint-row test, so it has to be a true
-    null mode of the walls. A rotation leaves a wall in place only if the wall is a
-    sphere (a circle in 2-D) about the rotation's centre. Faceting keeps the wall's
-    vertices on that sphere and only its edge midpoints off it, so the test reads the
-    vertices: their distances from the centre must agree to ``_WALL_INVARIANCE_TOL``.
-    A deformed wall, such as a free surface, fails, and so does a declared field that
-    is not a rigid rotation. Such a mode then takes the constraint test like an
-    undeclared one. All False when the mesh declares nothing. The coordinates are the
-    DM's, which are non-dimensional. COLLECTIVE.
+
+def _declared_centre(mesh):
+    """The one point about which every mode the mesh declares rotates, or None when
+    there is none: a mode that is not a rigid rotation (a screw has a part along its
+    axis), modes about different points, or axes that meet in a line (a single
+    declared rotation in 3-D). Each mode ``A x + m0`` vanishes on its axis, so the
+    centre solves every ``A c = -m0`` at once."""
+    X = list(mesh.X)
+    blocks = [_affine_rotation(mode, X) for mode in mesh._nullspace_rotations]
+    if not blocks or any(b is None for b in blocks):
+        return None
+    A = np.vstack([b[0] for b in blocks])
+    rhs = -np.concatenate([b[1] for b in blocks])
+    centre, _res, rank, _sv = np.linalg.lstsq(A, rhs, rcond=None)
+    if rank < mesh.cdim:
+        return None
+    misfit = np.linalg.norm(A @ centre - rhs)
+    if misfit > 1.0e-10 * np.linalg.norm(A) * max(1.0, np.linalg.norm(centre)):
+        return None
+    return centre
+
+
+def _wall_vertex_rows(dm, name):
+    """Rows of the local coordinate array for the vertices in the closure of the
+    facets labelled ``name`` on this rank: the wall rotated free slip constrains. A
+    label can also hold points off the wall (SegmentedSphericalShell's ``Upper``
+    labels interior vertices directly), so its own vertex stratum is not read."""
+    rows = set()
+    label = dm.getLabel(name)
+    if label is None:
+        return np.empty(0, dtype=np.int64)
+    fs, fe = dm.getHeightStratum(1)
+    vs, ve = dm.getDepthStratum(0)
+    csec = dm.getCoordinateSection()
+    cdim = dm.getCoordinateDim()
+    values = label.getValueIS()
+    for value in (values.getIndices() if values else ()):
+        points = label.getStratumIS(int(value))
+        if not points:
+            continue
+        for facet in points.getIndices():
+            if fs <= facet < fe:
+                for q in dm.getTransitiveClosure(int(facet))[0]:
+                    if vs <= q < ve:
+                        rows.add(csec.getOffset(int(q)) // cdim)
+    return np.fromiter(rows, dtype=np.int64, count=len(rows))
+
+
+def _declared_mode_flags(solver):
+    """For each mode :func:`_rigid_rotation_modes` returns, whether it is exempt from
+    the constraint-row test (#906), and the reason to warn when an exemption the mesh
+    asked for was refused (None otherwise). COLLECTIVE.
+
+    The test compares a mode with the normals of the constrained rows. On a faceted
+    sphere the facet-averaged normal is not radial at the nodes, so a true rotation
+    fails it by the faceting error. A declared mode is exempt when that is the only
+    reason it could fail:
+
+    - every rotated wall takes the facet-averaged normal (``normal=None``); a wall with
+      a given normal is tested, which an exact normal passes;
+    - the declared modes are rigid rotations about one point, their centre;
+    - every rotated wall's vertices, the closure of its labelled facets, are
+      equidistant from that centre to ``_WALL_INVARIANCE_TOL``: the wall is a sphere
+      (a circle in 2-D) about it. Faceting keeps vertices on the sphere and only edge
+      midpoints off it. A deformed wall fails, a free surface after its first step
+      for example, and so does any other surface of revolution.
+
+    A mode that is not exempt takes the test like an undeclared one. Every mode gets
+    the same verdict. The coordinates are the DM's, which are non-dimensional.
     """
     from mpi4py import MPI
-
-    import underworld3 as uw
 
     mesh = solver.mesh
     cdim = mesh.cdim
     if not _rotations_declared(mesh):
-        return [False] * (1 if cdim == 2 else 3)
+        return [False] * (1 if cdim == 2 else 3), None
+    n_modes = len(mesh._nullspace_rotations)
+    specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
+    if any(normal is not None for _name, normal in specs):
+        return [False] * n_modes, None
+
+    centre = _declared_centre(mesh)
+    if centre is None:
+        return [False] * n_modes, (
+            "the rotation modes the mesh declares are not rigid rotations about one "
+            "point, so they are not exempt from the constraint test")
 
     dm = mesh.dm
     coords = dm.getCoordinatesLocal().array.reshape(-1, cdim)
-    names = [_boundary_spec(spec)[0] for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
-    walls = []
-    for name in names:
-        if name == SHEET_TANGENCY:
-            walls.append(np.arange(coords.shape[0]))
-        else:
-            walls.append(np.asarray(
-                uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(dm, name),
-                dtype=np.int64))
-
-    X = list(mesh.X)
-    flags = []
-    for mode in mesh._nullspace_rotations:
-        f = sympy.lambdify(X, list(sympy.Matrix(mode)), "numpy")
-        m0 = np.asarray(f(*np.zeros(cdim)), dtype=float)
-        A = np.column_stack([np.asarray(f(*e), dtype=float) - m0 for e in np.eye(cdim)])
-        scale = np.linalg.norm(A)
-        affine = np.allclose(np.asarray(f(*np.ones(cdim)), dtype=float), m0 + A.sum(axis=1))
-        rotation = (scale > 0.0 and affine
-                    and np.linalg.norm(A + A.T) <= 1.0e-12 * scale)
-        keeps = rotation
-        if rotation:
-            centre = np.linalg.lstsq(A, -m0, rcond=None)[0]
-            for verts in walls:
-                d = np.linalg.norm(coords[verts] - centre, axis=1)
-                lo = mpi.comm.allreduce(float(d.min()) if d.size else np.inf, op=MPI.MIN)
-                hi = mpi.comm.allreduce(float(d.max()) if d.size else -np.inf, op=MPI.MAX)
-                if hi > 0.0 and hi - lo > _WALL_INVARIANCE_TOL * hi:
-                    keeps = False
-        flags.append(bool(keeps))
-    return flags
+    for name, _normal in specs:
+        rows = (np.arange(coords.shape[0]) if name == SHEET_TANGENCY
+                else _wall_vertex_rows(dm, name))
+        d = np.linalg.norm(coords[rows] - centre, axis=1)
+        lo = mpi.comm.allreduce(float(d.min()) if d.size else np.inf, op=MPI.MIN)
+        hi = mpi.comm.allreduce(float(d.max()) if d.size else -np.inf, op=MPI.MAX)
+        if hi > 0.0 and hi - lo > _WALL_INVARIANCE_TOL * hi:
+            return [False] * n_modes, (
+                f"rotated wall {name!r} is not a sphere about the rotation centre "
+                f"{np.round(centre, 12).tolist()}: its vertices' distances from it "
+                f"spread over {(hi - lo) / hi:.2g} of the radius, against "
+                f"{_WALL_INVARIANCE_TOL:g}. The declared rotation modes therefore take "
+                f"the constraint test")
+    return [True] * n_modes, None
 
 
-def _warn_declared_modes_lost(flags):
-    """Say, once, that declared rotation modes lost their exemption: a rotated wall
-    no longer lies on a sphere about the rotation's centre."""
+def _warn_declared_modes_refused(note):
+    """Say, once, why the declared rotation modes are not exempt (#906)."""
     import warnings
 
-    lost = flags.count(False)
     with mpi.selective_ranks(0) as selected:
         if selected:
-            warnings.warn(
-                f"{lost} of the {len(flags)} rotation modes the mesh declares no longer "
-                f"leave every rotated wall in place: a wall's vertices are not "
-                f"equidistant from the rotation's centre, as after a free-surface step. "
-                f"Those modes are kept only if they pass the constraint test (#906).",
-                UserWarning,
-            )
+            warnings.warn(f"{note} (#906).", UserWarning)
 
 
 def _declared_rotation_fields(mesh, c):
@@ -3228,21 +3285,23 @@ def _rigid_body_modes(solver):
 
 
 def _velocity_field_modes(solver, fields):
-    """Each nodal velocity field in ``fields`` as a composite global vector,
-    through localToGlobal on the velocity sub-DM. The velocity variable is set
-    to each field in turn and restored after."""
+    """Each nodal velocity field in ``fields`` (non-dimensional, one row per local
+    velocity node, in the local vector's order) as a composite global vector, through
+    localToGlobal on the velocity sub-DM."""
     dm = solver.dm
-    v = solver.Unknowns.u
-    vis = solver._subdict["velocity"][0]
-    saved = np.array(v.array, copy=True)
+    vis, sub = solver._subdict["velocity"][0], solver._subdict["velocity"][1]
+    local = sub.createLocalVec()
     modes = []
     for f in fields:
-        v.array[...] = f.reshape(saved.shape)
+        # the fields are non-dimensional (from coords_nd), as the vectors are; going
+        # through the velocity variable's .array would scale them, or refuse a plain
+        # array when the variable carries units (#877)
+        local.array[...] = np.asarray(f, dtype=float).ravel()
         tg = dm.getGlobalVec()
         tg.set(0.0)
         sg = tg.getSubVector(vis)
-        solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
+        sub.localToGlobal(local, sg)
         tg.restoreSubVector(vis, sg)
         modes.append(tg)
-    v.array[...] = saved
+    local.destroy()
     return modes

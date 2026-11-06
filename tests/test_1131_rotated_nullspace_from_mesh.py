@@ -43,6 +43,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3.adjoint import misfit_duals
 from underworld3.utilities import custom_mg, rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -134,7 +135,9 @@ def test_the_shell_returns_no_rigid_rotation(radial, capsys):
     assert "net torque" not in capsys.readouterr().out
     info = stokes._rotated_freeslip_info
     assert info["converged"] and info["velocity_pc"] == "custom-FMG", info
-    assert info["declared_modes_kept"] == [True, True, True]
+    # exempt from the constraint test under the facet-averaged normal; a given normal
+    # is tested, and the exact radial one passes
+    assert info["declared_modes_exempt"] == [not radial] * 3
     assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
     assert stokes._rotated_velocity_null_modes == 3
     # the gauge removes the rotation to round-off; without the declared modes the
@@ -162,7 +165,7 @@ def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
     stokes.solve()
-    assert stokes._rotated_freeslip_info["declared_modes_kept"] == [True]
+    assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [True]
     assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 1
 
     # push the outer wall off its circle by 1e-6 of its radius
@@ -181,10 +184,11 @@ def test_an_annulus_keeps_its_declared_mode_and_a_deformed_one_loses_it():
         warnings.simplefilter("always")
         stokes.solve()
     info = stokes._rotated_freeslip_info
-    assert info["declared_modes_kept"] == [False]
+    assert info["declared_modes_exempt"] == [False]
     with uw.selective_ranks(0) as selected:
         if selected:
-            assert any("rotation modes the mesh declares" in str(w.message) for w in record)
+            assert any("'Upper' is not a sphere about the rotation centre" in str(w.message)
+                       for w in record), [str(w.message) for w in record]
     # the facet-averaged normal leaves the rotation a violation well above 1e-8
     assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
     assert _normal_velocity(info) < 1.0e-12
@@ -216,7 +220,7 @@ def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
     stokes.solve()
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
-    assert info["declared_modes_kept"] == [True]
+    assert info["declared_modes_exempt"] == [True]
     assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
     assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
     assert _normal_velocity(info) < 1.0e-12
@@ -237,7 +241,7 @@ def test_a_box_declares_no_mode_and_finds_none():
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
     stokes.solve()
-    assert stokes._rotated_freeslip_info["declared_modes_kept"] is None
+    assert stokes._rotated_freeslip_info["declared_modes_exempt"] is None
     assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 0
 
 
@@ -265,6 +269,15 @@ def test_the_setter_declares_only_rigid_rotations():
         mesh.nullspace_rotations = [sympy.Matrix([x, y])]       # a dilation
     mesh.nullspace_rotations = [sympy.Matrix([-(y - 0.1), x - 0.2])]   # about (0.2, 0.1)
     assert len(mesh.nullspace_rotations) == 1
+    # round-off asymmetry and an unsimplified constant are still rotations
+    mesh.nullspace_rotations = [sympy.Matrix([-0.1 * 3 * y, 0.3 * x])]
+    mesh.nullspace_rotations = [sympy.Matrix([-(sympy.sin(1) ** 2 + sympy.cos(1) ** 2) * y, x])]
+    box = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0),
+                                            maxCoords=(1.0, 1.0, 1.0), cellSize=0.5)
+    bx, by, bz = box.X
+    with pytest.raises(ValueError):
+        box.nullspace_rotations = [sympy.Matrix([-by, bx, 1])]   # a screw about z
+    box.nullspace_rotations = [sympy.Matrix([-by, bx, 0])]
     mesh.nullspace_rotations = [sympy.Matrix([-y, x])]
     assert len(mesh.nullspace_rotations) == 1
     mesh.nullspace_rotations = []
@@ -281,12 +294,26 @@ def test_an_add_fault_child_inherits_the_declaration():
     c = np.asarray(child.X.coords)
     field = rotated_bc._declared_rotation_fields(child, c)[0]
     assert np.allclose(field, np.column_stack([-c[:, 1], c[:, 0]]), rtol=0, atol=1.0e-14)
+    # and a solve on the child, with the fault a traction-free crack, keeps it exempt
+    mesh, v, stokes = _annulus_stokes("1131f", mesh=child)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["declared_modes_exempt"] == [True]
+    assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
+    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
 
 
-def test_a_units_model_shell_solves_with_its_declared_modes():
+@pytest.mark.parametrize("velocity_units", [None, "cm/year"], ids=["plain_velocity", "unit_velocity"])
+def test_a_units_model_shell_solves_with_its_declared_modes(velocity_units):
     # #877: the modes were built from the dimensional coordinates, a UnitAwareArray in a
     # units model, on which np.zeros_like raised TypeError in 3-D (rotated_bc.py:3023 on
-    # development eddab707); they are built from coords_nd now
+    # development eddab707); they are built from coords_nd now. With a velocity that
+    # carries units they were then written through its .array, which refuses a plain
+    # array ("Cannot assign plain array", hyperion on d992064d)
     uw.reset_default_model()
     uw.get_default_model().set_reference_quantities(
         length=uw.quantity(1000, "km"), viscosity=uw.quantity(1e21, "Pa*s"),
@@ -294,8 +321,10 @@ def test_a_units_model_shell_solves_with_its_declared_modes():
     try:
         mesh = uw.meshing.SphericalShell(radiusOuter=2.0, radiusInner=1.0, cellSize=0.5,
                                          refinement=1, qdegree=3)
-        v = uw.discretisation.MeshVariable("V1131u", mesh, 3, degree=2)
-        p = uw.discretisation.MeshVariable("P1131u", mesh, 1, degree=1)
+        v = uw.discretisation.MeshVariable(f"V1131u{velocity_units is not None:d}", mesh, 3,
+                                           degree=2, units=velocity_units)
+        p = uw.discretisation.MeshVariable(f"P1131u{velocity_units is not None:d}", mesh, 1,
+                                           degree=1)
         stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
         stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
         stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
@@ -309,8 +338,115 @@ def test_a_units_model_shell_solves_with_its_declared_modes():
         stokes.solve()
         info = stokes._rotated_freeslip_info
         assert info["converged"], info
-        assert info["declared_modes_kept"] == [True, True, True]
+        assert info["declared_modes_exempt"] == [True, True, True]
         assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
         assert _normal_velocity(info) < 1.0e-12
     finally:
         uw.reset_default_model()
+
+
+def test_a_given_normal_is_tested_not_exempt():
+    # a circular wall with a given normal that is not radial: the rotation is not
+    # tangent to it, so it must take the constraint test and fail it. Exempted, the
+    # solve diverged to a v_rms of 2e7 (hyperion, on c6c2668a)
+    mesh, v, stokes = _annulus_stokes("1131n")
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    tilted = sympy.Matrix([[x / r + 0.1, y / r]]) / sympy.sqrt((x / r + 0.1) ** 2 + (y / r) ** 2)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall, normal=tilted)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["declared_modes_exempt"] == [False]
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+    assert _normal_velocity(info) < 1.0e-12
+
+
+def test_a_segmented_shell_keeps_its_modes():
+    # its Upper label also holds interior vertices (r down to 0.62); the walls are
+    # read from the closure of the labelled facets, which lie on the sphere
+    mesh = uw.meshing.SegmentedSphericalShell(radiusOuter=1.0, radiusInner=0.5,
+                                              cellSize=0.4, numSegments=4, qdegree=3)
+    v = uw.discretisation.MeshVariable("V1131s", mesh, 3, degree=2)
+    p = uw.discretisation.MeshVariable("P1131s", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y, z = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
+    stokes.bodyforce = (sympy.cos(4 * sympy.atan2(y, x)) * (z / r)
+                        * sympy.Matrix([x / r, y / r, z / r]).T)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["declared_modes_exempt"] == [True, True, True]
+    assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
+    assert np.abs(_rotation_rates(v)).max() < 1.0e-10 * _v_rms(v)
+
+
+def test_a_sphere_off_the_origin_is_exempt_about_its_own_centre():
+    mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
+                                     qdegree=2)
+    mesh.deform(np.array(mesh.X.coords) + np.array([0.0, 0.0, 0.5]))
+    x, y, z = mesh.X
+    zc = z - 0.5
+    mesh.nullspace_rotations = [sympy.Matrix([0, -zc, y]), sympy.Matrix([zc, 0, -x]),
+                                sympy.Matrix([-y, x, 0])]
+    assert np.allclose(rotated_bc._declared_centre(mesh), [0.0, 0.0, 0.5], atol=1.0e-12)
+    v = uw.discretisation.MeshVariable("V1131o", mesh, 3, degree=2)
+    p = uw.discretisation.MeshVariable("P1131o", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    assert rotated_bc._declared_mode_flags(stokes) == ([True, True, True], None)
+    # a single declared rotation in 3-D leaves its centre a line: no exemption
+    mesh.nullspace_rotations = [sympy.Matrix([-y, x, 0])]
+    assert rotated_bc._declared_centre(mesh) is None
+
+
+def test_the_declaration_is_part_of_the_cached_geometry_and_the_adjoint_record():
+    mesh, v, stokes = _annulus_stokes("1131g")
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    walls = stokes._rotated_freeslip_bcs
+    before = rotated_bc._rotated_geometry_signature(stokes, walls)
+    stokes.solve()
+    names = ("_rotated_velocity_null_modes", "_rotated_null_mode_slack",
+             "_rotated_declared_modes_exempt")
+    forward = {name: getattr(stokes, name) for name in names}
+    assert forward["_rotated_declared_modes_exempt"] == [True]
+    # a changed declaration changes the geometry the workspace was built from
+    mesh.nullspace_rotations = []
+    assert rotated_bc._rotated_geometry_signature(stokes, walls) != before
+    # the adjoint builds its own null space (none, now) and puts the forward's
+    # record back, which a cached forward solve reads again
+    dual = misfit_duals(sympy.Rational(1, 2) * (v.sym[0] ** 2 + v.sym[1] ** 2), [v])[v]
+    mu = uw.discretisation.MeshVariable("mu1131g", mesh, 2, degree=2)
+    lam = uw.discretisation.MeshVariable("lam1131g", mesh, 1, degree=1)
+    stokes.adjoint_solve((dual, None), target=(mu, lam))
+    assert {name: getattr(stokes, name) for name in names} == forward
+
+
+def test_a_wall_is_read_from_its_facets_not_every_point_its_label_holds():
+    # a label can hold points off the wall: Linux's gmsh labels interior vertices
+    # SegmentedSphericalShell's "Upper" directly (r down to 0.62; hyperion), while the
+    # labelled facets lie on the sphere. Label an interior vertex by hand, so the case
+    # is the same on every host
+    mesh, v, stokes = _annulus_stokes("1131l")
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    dm = mesh.dm
+    vs, ve = dm.getDepthStratum(0)
+    csec = dm.getCoordinateSection()
+    X = dm.getCoordinatesLocal().array.reshape(-1, 2)
+    r = np.array([np.linalg.norm(X[csec.getOffset(q) // 2]) for q in range(vs, ve)])
+    interior = vs + int(np.argmin(np.abs(r - 0.75)))
+    label = dm.getLabel("Upper")
+    label.setValue(interior, int(label.getValueIS().getIndices()[0]))
+    assert rotated_bc._declared_mode_flags(stokes) == ([True], None)

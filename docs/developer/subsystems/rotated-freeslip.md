@@ -373,23 +373,44 @@ or a sheet on a sphere. A box declares nothing; detection then finds no mode. Th
 standard Stokes path reads the same list for `petsc_use_nullspace`. A mesh built
 without them (a gmsh import, a wrapped DM) declares its modes by assignment,
 `mesh.nullspace_rotations = [sympy.Matrix([-y, x])]`. Assigning `[]` declares
-that it has none. The setter refuses a field that is not a rigid rotation. A mesh
-adapted or cut from a declaring mesh inherits its modes.
+that it has none. The setter refuses a field that is not a rigid rotation
+(affine, with a nonzero antisymmetric gradient, zero on its axis: a screw is
+refused). A mesh adapted, cut, split or placed into from a declaring mesh
+inherits its modes, rewritten in its own coordinates, at any rank count; so does
+the mesh the add-on partition moves a level into. `remesh` works in place and
+keeps them. A mesh reloaded from a file declares nothing, like a gmsh import.
 
-A declared mode that leaves every rotated wall in place is not tested against
-the constraint rows. A rotation leaves a wall in place only if the wall is a
-sphere (a circle in 2-D) about its centre. `_declared_mode_flags` reads that off
-the wall's vertices, which faceting keeps on the sphere: their distances from the
-centre must agree to 1e-9 relative. A deformed wall fails this, a free surface
-after its first step for example. The mode then takes the constraint test like an
-undeclared one, and the solve warns once and records the verdict per mode in its
-`declared_modes_kept` entry. An admitted declared mode has its constrained rows
-zeroed, in the null space and in the gauge removal alike, which makes it exactly
-compatible with `v·n = 0`. A test against the rows would reject the
-modes on a faceted sphere: there the facet-averaged normal leaves each declared
-rotation a violation of the order of the discretisation error (0.008-0.016 on
-#906's shell, against a 1e-8 tolerance). Under the analytic normal the modes
-are exact.
+A declared mode is exempt from the test against the constraint rows when the
+faceting is the only reason it could fail it (`_declared_mode_flags`):
+
+- every rotated wall takes the facet-averaged normal (`normal=None`). A wall with
+  a given normal is tested, and an exact normal passes;
+- the declared modes rotate about one point, their centre (all of `A c = -m0` at
+  once; a single declared rotation in 3-D leaves a line, and is not exempt);
+- each rotated wall's vertices, the closure of its labelled facets, are
+  equidistant from that centre to 1e-9 relative: the wall is a sphere (a circle in
+  2-D) about it. Faceting keeps the vertices on the sphere and only the edge
+  midpoints off it. Any other surface of revolution is tested.
+
+A deformed wall fails the last check, a free surface after its first step for
+example, or a cut that puts chord vertices on a wall. The modes then take the
+constraint test like undeclared ones, and the solve warns once, naming the wall
+and the spread of its vertices. The verdict, the same for every mode, is in the
+solve's `declared_modes_exempt` entry; which modes were admitted is in
+`rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
+that is only near-null is not removed, and the answer carries a poorly
+determined rotation (measured on a shell, Linux: unmoved, rate 3.7e-15 in a v_rms
+of 1.79; a wall moved by 5e-10, enough to cross the threshold, rate 5.6 in 4.59,
+and the same up to a 1e-6 move). On a deformed wall, remove the rotation after the solve, as
+`free-surface-convection.md` §3 does.
+
+An exempt mode has its constrained rows zeroed, in the null space and in the
+gauge removal alike, which makes it exactly compatible with `v·n = 0`. A test
+against the rows would reject the modes on a faceted sphere: there the
+facet-averaged normal leaves each declared rotation a violation of the order of
+the discretisation error (0.0075-0.0164 on a 0.5 shell built on macOS; 0.0037-0.0054
+on a 0.3 shell built on Linux), against a 1e-8 tolerance. Under the analytic
+normal the modes are exact.
 
 The outer Newton test is measured in the quotient space of the admitted modes.
 A guard warns when the projected-out component dominates the converged

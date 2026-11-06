@@ -13,21 +13,24 @@ returned an answer with an arbitrary rigid rotation in it. The rotated route
 built the Cartesian rotations and kept only those that passed a 1e-8 test
 against the discrete constraints. On a faceted sphere the facet-averaged normal
 is not radial at the nodes, so every rotation failed the test by 0.0075 to
-0.0164, and none was removed. On a 0.3 shell the answer carried a rotation of
-rate 4.66 in a v_rms of 3.93, against 1.81 under the analytic radial normal.
+0.0164 (a 0.5 shell built on macOS), and none was removed. On a 0.3 shell built on
+macOS the answer carried a rotation of rate 4.66 in a v_rms of 3.93, against 1.81
+under the analytic radial normal.
 
 The modes now come from `mesh.nullspace_rotations`, which the mesh factories
 fill and the standard Stokes path already read. A declared mode has its
 constrained rows zeroed, so v·n = 0 stays exact, and it is still tested against
 the assembled operator, so a no-slip wall rejects it. It skips the constraint
-test only while every rotated wall's vertices are equidistant from the
-rotation's centre, to 1e-9 relative. A free surface that has deformed fails
-that check; the mode then takes the constraint test like an undeclared one,
-and the solve warns. On the 0.3 shell the rotation left has rate 1.1e-15
-and v_rms is 1.807, against 1.806 under the analytic normal.
-Meshes adapted, cut, split or placed into inherit the declaration, and the
-setter refuses a field that is not a rigid rotation. A mesh that declares
-nothing keeps the old detection.
+test only where faceting is the only reason it could fail it: every rotated wall
+takes the default normal, the modes rotate about one centre, and each wall's
+vertices are equidistant from it to 1e-9 relative. A free surface that has
+deformed fails that check; the mode then takes the constraint test like an
+undeclared one, and the solve warns. On the macOS 0.3 shell the rotation left has
+rate 1.1e-15 and v_rms is 1.807, against 1.806 under the analytic normal.
+Meshes adapted, cut, split, placed into or moved by the add-on partition inherit
+the declaration, and the setter refuses a field that is not a rigid rotation.
+A mesh that declares nothing keeps the old detection. The modes are built from
+non-dimensional coordinates, which also fixes a units-model solve (#877).
 
 ### The multigrid coarse solve: one rule on every route (November 2026, #901)
 
