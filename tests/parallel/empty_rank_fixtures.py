@@ -15,7 +15,7 @@ def cells_along_a_side_leaving_one_rank_empty(size):
     return 1 if size == 2 else 4
 
 
-def right_triangle_of_cells(n, ranks_with_cells, dm_class=PETSc.DMPlex):
+def right_triangle_of_cells(n, ranks_with_cells):
     r"""The triangle with corners (0,0), (1,0), (0,1), split into :math:`n^2` equal
     cells of area :math:`1/(2 n^2)`, shared among the first ``ranks_with_cells``
     ranks by a shell partition. Collective.
@@ -39,7 +39,7 @@ def right_triangle_of_cells(n, ranks_with_cells, dm_class=PETSc.DMPlex):
                         [vertex[i + 1, j], vertex[i + 1, j + 1], vertex[i, j + 1]])
         cells = np.asarray(triangles, dtype=PETSc.IntType)
 
-    dm = dm_class().createFromCellList(2, cells, coords, interpolate=True, comm=comm)
+    dm = PETSc.DMPlex().createFromCellList(2, cells, coords, interpolate=True, comm=comm)
     part = dm.getPartitioner()
     part.setType(PETSc.Partitioner.Type.SHELL)
     if rank == 0:

@@ -101,7 +101,7 @@ def test_an_error_code_on_one_rank_raises_on_every_rank():
         message = str(error)
     messages = uw.mpi.comm.allgather(message)
 
-    expected = f"TheRoutine failed; error code by rank: {{{failing_rank}: 73}}"
+    expected = f"TheRoutine failed on rank {failing_rank} with error code 73"
     assert messages == [expected] * uw.mpi.size, messages
 
 

@@ -24,20 +24,28 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMFieldCreateFEGeom(PetscDMField, PetscIS, PetscQuadrature, PetscFEGeomMode, PetscFEGeom**)
     PetscErrorCode PetscFEGeomDestroy(PetscFEGeom**)
     PetscErrorCode PetscQuadratureGetData(PetscQuadrature, PetscInt*, PetscInt*, PetscInt*, const PetscReal**, const PetscReal**)
+    PetscErrorCode PetscQuadratureDestroy(PetscQuadrature*)
+    PetscErrorCode PetscDTStroudConicalQuadrature(PetscInt, PetscInt, PetscInt, PetscReal, PetscReal, PetscQuadrature*)
+    PetscErrorCode PetscDTGaussTensorQuadrature(PetscInt, PetscInt, PetscInt, PetscReal, PetscReal, PetscQuadrature*)
+
+
+# Geometry holds 22 doubles a point in 3-D, so this bounds it near 35 MB a block.
+_POINTS_PER_GEOMETRY_BLOCK = 200000
 
 
 def _check_error_code_collectively(ierr, routine):
-    """Raise on every rank if ``routine`` failed on any of them.
+    """Raise on every rank if ``routine`` failed on any of them, naming the first
+    rank that did. COLLECTIVE on the world: every rank must reach it.
 
-    A rank that raises alone leaves the others waiting in their next collective.
-    A failing routine can also leave a rank short of collectives its peers made,
-    so this exchange runs on ``uw.mpi.verdict_comm``, which no PETSc object shares.
-    COLLECTIVE on the world: every rank must reach it.
+    A separate communicator keeps this exchange from pairing with a PETSc message.
+    It does not prevent a hang: if a routine fails on some ranks and the others wait
+    in its closing collective, neither group arrives here.
     """
-    codes = uw.mpi.verdict_comm.allgather(int(ierr))
-    failed = {rank: code for rank, code in enumerate(codes) if code != 0}
-    if failed:
-        raise RuntimeError(f"{routine} failed; error code by rank: {failed}")
+    from underworld3.utilities.fault_contact import _collective_raise
+
+    _collective_raise(
+        None if ierr == 0
+        else f"{routine} failed on rank {uw.mpi.rank} with error code {int(ierr)}")
 
 
 cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
@@ -54,7 +62,7 @@ cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
     if mesh.degree != 1:
         raise ValueError(
             f"DMPlexComputeGeometryFVM needs affine coordinates; this mesh has "
-            f"degree {mesh.degree}. Mesh._get_cell_radii handles any degree.")
+            f"degree {mesh.degree}. Mesh.get_min_radius handles any degree.")
 
     cdef DM dm = mesh.dm
     cdef PetscErrorCode ierr = DMPlexComputeGeometryFVM(dm.dm, &cellgeom.vec, &facegeom.vec)
@@ -85,8 +93,8 @@ def petsc_fvm_get_min_radius(mesh) -> float:
 
 def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         """
-        This method returns the minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine.
+        Each local cell's ``volume**(1/dim)`` and its centroid, from
+        ``DMPlexComputeGeometryFVM``. Degree 1 only.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
@@ -109,44 +117,75 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         return cell_radii, cell_centroids
 
 
+def _quadrature_points_per_edge(dim, degree, simplex, manifold):
+    """Points per edge that integrate the area element of a cell of this coordinate
+    degree exactly, at 2n - 1 for n Gauss points.
+
+    On a simplex :math:`\\det J` has total degree ``dim * (degree - 1)``. On a tensor
+    cell it has degree ``dim * degree - 1`` in each variable. On a manifold the area
+    element is the root of a determinant of twice that degree, which no rule integrates
+    exactly unless the cell is straight sided, so the rule takes the determinant's.
+    """
+    polynomial = dim * (degree - 1) if simplex else dim * degree - 1
+    if manifold:
+        polynomial *= 2
+    return polynomial // 2 + 1
+
+
 def petsc_fem_get_local_cell_sizes(mesh) -> np.array:
         r"""
-        Each local cell's characteristic length :math:`V^{1/\\mathrm{dim}}`, for a
+        Each local cell's characteristic length :math:`V^{1/\mathrm{dim}}`, for a
         coordinate field of any degree, on a volume mesh or a manifold.
 
         The volume is the integral of the coordinate map's Jacobian over the cell,
-        :math:`V = \\sum_q w_q |\\det J(\\xi_q)|`, from the geometry the assembler
-        integrates with on the mesh's own quadrature rule. No communication: a rank
-        with no cells has nothing to do, and the failure check brings it along.
+        :math:`V = \sum_q w_q |\det J(\xi_q)|`. The rule is set by the coordinate
+        degree and not by the mesh's ``qdegree``, because a size is a property of the
+        coordinates, and the geometry is built a bounded block of cells at a time,
+        because this runs on every coordinate rebuild.
+
+        COLLECTIVE: the failure check needs every rank, including one with no cells.
         """
         cdef DM dm = mesh.dm
-        cdef Quad quad = mesh.petsc_fe.getQuadrature()
         cdef PetscFEGeomMode mode = PETSC_FEGEOM_BASIC if mesh.dim == mesh.cdim else PETSC_FEGEOM_EMBEDDED
         cdef PetscDMField coordinate_field = NULL
         cdef PetscFEGeom *geometry = NULL
-        cdef PetscInt cell, q, Nq = 0
+        cdef PetscQuadrature rule = NULL
+        cdef PetscInt dim = mesh.dim
+        cdef PetscInt points_per_edge = _quadrature_points_per_edge(
+            mesh.dim, mesh.degree, mesh.isSimplex, mesh.dim != mesh.cdim)
+        cdef PetscInt cell, q, start = 0, stop, Nq = 0
         cdef const PetscReal *weights = NULL
         cdef PetscErrorCode ierr = 0
-        CHKERRQ(PetscQuadratureGetData(quad.quad, NULL, NULL, &Nq, NULL, &weights))
+        cdef IS cells
 
         cStart, cEnd = mesh.dm.getHeightStratum(0)
         cdef PetscInt num_cells = cEnd - cStart
         volumes = np.zeros(num_cells, dtype=np.float64)
         cdef double[::1] volume_view = volumes
-        cdef IS cells = PETSc.IS().createStride(num_cells, first=cStart, step=1, comm=PETSc.COMM_SELF)
 
-        if num_cells > 0:
+        if mesh.isSimplex:
+            ierr = PetscDTStroudConicalQuadrature(dim, 1, points_per_edge, -1.0, 1.0, &rule)
+        else:
+            ierr = PetscDTGaussTensorQuadrature(dim, 1, points_per_edge, -1.0, 1.0, &rule)
+        if ierr == 0:
+            ierr = PetscQuadratureGetData(rule, NULL, NULL, &Nq, NULL, &weights)
+        if ierr == 0:
             ierr = DMGetCoordinateField(dm.dm, &coordinate_field)
+
+        cdef PetscInt cells_per_block = max(1, _POINTS_PER_GEOMETRY_BLOCK // max(1, Nq))
+        while ierr == 0 and start < num_cells:
+            stop = min(start + cells_per_block, num_cells)
+            cells = PETSc.IS().createStride(stop - start, first=cStart + start, step=1, comm=PETSc.COMM_SELF)
+            ierr = DMFieldCreateFEGeom(coordinate_field, cells.iset, rule, mode, &geometry)
+            cells.destroy()
             if ierr == 0:
-                ierr = DMFieldCreateFEGeom(coordinate_field, cells.iset, quad.quad, mode, &geometry)
-        cells.destroy()
+                for cell in range(stop - start):
+                    for q in range(Nq):
+                        volume_view[start + cell] += weights[q] * abs(geometry.detJ[cell * Nq + q])
+                ierr = PetscFEGeomDestroy(&geometry)
+            start = stop
 
-        if ierr == 0 and geometry != NULL:
-            for cell in range(num_cells):
-                for q in range(Nq):
-                    volume_view[cell] += weights[q] * abs(geometry.detJ[cell * Nq + q])
-            ierr = PetscFEGeomDestroy(&geometry)
-
+        PetscQuadratureDestroy(&rule)
         _check_error_code_collectively(ierr, "DMFieldCreateFEGeom")
 
         return np.power(volumes, 1 / mesh.dim)
