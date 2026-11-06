@@ -20,8 +20,9 @@ modes, and the answer is unchanged to 13 digits.
   and on most x86 kernels; under SkylakeX it took 4 (hyperion). So this bound catches a
   regression on arm64 and those kernels, and the forced-kernel child below catches it on
   any x86 host.
-- Under the default (facet-averaged) normal the rotation is near-null, not null, and
-  nothing is projected.
+- Under the default (facet-averaged) normal no rotation is admitted, and nothing is
+  projected.
+- Destroying the solve's workspace destroys the multigrid the projection wraps.
 - On x86, the same solve under ``OPENBLAS_CORETYPE=Nehalem``, a kernel that stalled at
   np 1 before the fix, finishes in a child process. macOS arm64 cannot force an x86
   kernel and skips it.
@@ -36,15 +37,15 @@ import pytest
 import sympy
 
 import underworld3 as uw
-from underworld3.utilities import custom_mg
+from underworld3.utilities import custom_mg, rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 RI, RO = 0.5, 1.0
-# the velocity L2 of the analytic-normal solve, recorded serially on macOS arm64 before
-# the fix (0.019069617599505716) and on hyperion under SkylakeX after it
-# (0.01906961745108); the projection changes the answer by less than the solve tolerance
-L2_ANALYTIC = 0.0190696176
+# the velocity L2 of the analytic-normal solve: 0.0190696175990617 on macOS arm64 and
+# 0.01906961745108 on Linux (hyperion, every kernel), whose gmsh builds a slightly
+# different annulus; the band is centred between them
+L2_ANALYTIC = 0.019069617525
 
 
 def _wrap(dm, m0):
@@ -81,11 +82,11 @@ def _annulus_fmg(name, radial):
     custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
     s.solve()
     L2 = float(np.sqrt(uw.maths.Integral(fine, v.sym.dot(v.sym)).evaluate()))
-    return s._rotated_freeslip_info, L2
+    return s._rotated_freeslip_info, L2, s
 
 
 def test_an_exact_rotation_is_projected_out_of_the_velocity_preconditioner():
-    info, L2 = _annulus_fmg("1142a", radial=True)
+    info, L2, _s = _annulus_fmg("1142a", radial=True)
     assert info["ksp_reason"] > 0 and info["velocity_pc"] == "custom-FMG", info
     assert info["velocity_pc_type"] == "mg", info
     # the inner velocity solve converges in a few cycles; without the projection it ran
@@ -93,13 +94,30 @@ def test_an_exact_rotation_is_projected_out_of_the_velocity_preconditioner():
     # whether the outer solve then converged depended on the kernel
     assert max(info["vel_its_last"]) <= 10, info["vel_its_last"]
     assert info["projected_null_modes"] == 1, info
+    # exact to round-off, eight orders below the 1e-10 at which a mode is projected
+    assert max(info["null_mode_ratios"]) < 1.0e-14, info["null_mode_ratios"]
     assert L2 == pytest.approx(L2_ANALYTIC, rel=1.0e-8)
 
 
-def test_a_near_null_rotation_is_left_to_the_multigrid():
-    info, _L2 = _annulus_fmg("1142d", radial=False)
+def test_the_default_normal_admits_no_rotation_and_projects_none():
+    # under the facet-averaged normal the rotation fails the 1e-8 constraint test, so
+    # nothing is admitted and nothing projected. A declared rotation admitted on a
+    # faceted wall (#906) is near-null, not null, and is left to the multigrid
+    info, _L2, _s = _annulus_fmg("1142d", radial=False)
     assert info["ksp_reason"] > 0, info
-    assert info["projected_null_modes"] == 0, info
+    assert info["projected_null_modes"] == 0 and info["null_mode_ratios"] == [], info
+
+
+def test_the_projection_releases_the_multigrid_it_wraps():
+    # the sub-KSP gives up the multigrid when the projection takes its place, so the
+    # projection must destroy it: at np 2, where petsc4py defers destruction, the whole
+    # hierarchy outlived every solve, 19 MB an adjoint solve (hyperion)
+    _info, _L2, s = _annulus_fmg("1142r", radial=True)
+    ctx = s._rotated_linear_cache["ctx"]
+    inner = ctx["pc"].getFieldSplitSubKSP()[0].getPC().getPythonContext().inner
+    assert inner.handle
+    rotated_bc._destroy_rotated_ksp_ctx(ctx)
+    assert not inner.handle
 
 
 @pytest.mark.skipif(platform.machine().lower() not in ("x86_64", "amd64"),
@@ -123,5 +141,5 @@ def test_the_solve_finishes_under_a_kernel_that_stalled():
 if __name__ == "__main__":
     # the child of test_the_solve_finishes_under_a_kernel_that_stalled
     assert sys.argv[1:] == ["stall_probe"], sys.argv
-    _info, _L2 = _annulus_fmg("1142s", radial=True)
+    _info, _L2, _s = _annulus_fmg("1142s", radial=True)
     print(f"STALLPROBE {_info['ksp_reason']} {_info['projected_null_modes']} {_L2!r}", flush=True)
