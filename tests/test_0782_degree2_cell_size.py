@@ -92,29 +92,36 @@ def test_a_curved_cell_has_the_integral_of_its_jacobian():
     assert np.allclose(_radii(mesh) ** 2, (1.0 / 32.0) * (1.0 + c * xbar), rtol=1e-11, atol=0.0)
 
 
+def _warped_volume(mesh, a, warp):
+    nodes = np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, 3)
+    mesh._deform_mesh(warp(a, *nodes.T.copy()).T)
+    return (_radii(mesh) ** 3).sum()
+
+
 @pytest.mark.parametrize("qdegree", [1, 2, 5])
-@pytest.mark.parametrize("make_mesh", [
-    pytest.param(lambda q: uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=0.5, regular=True,
-        qdegree=q, degree=2), id="tetrahedra"),
-    pytest.param(lambda q: uw.meshing.StructuredQuadBox(
-        elementRes=(3, 3, 3), degree=2, qdegree=q), id="hexahedra"),
-])
-def test_a_curved_cell_size_does_not_depend_on_the_solver_quadrature(make_mesh, qdegree):
+def test_a_curved_tetrahedral_size_does_not_depend_on_the_solver_quadrature(qdegree):
     r"""A cell's size is a property of its coordinates, so it reads no solver's
     ``qdegree``, whether low enough to be wrong or high enough to be costly. The map
     :math:`x' = x + a y^2,\ y' = y + a z^2,\ z' = z + a x^2` lies in the degree-2
     space with :math:`\det J = 1 + 8 a^3 x y z`, so the cube's volume is
-    :math:`1 + a^3`, and it needs more than a low rule."""
-    a = 0.5
-    mesh = make_mesh(qdegree)
-    nodes = np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, 3)
-    x, y, z = nodes.T.copy()
-    nodes[:, 0] = x + a * y**2
-    nodes[:, 1] = y + a * z**2
-    nodes[:, 2] = z + a * x**2
-    mesh._deform_mesh(nodes)
-    assert np.isclose((_radii(mesh) ** 3).sum(), 1.0 + a**3, rtol=1e-13, atol=0.0)
+    :math:`1 + a^3`, and a one-point rule does not reach it."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=0.5, regular=True,
+        qdegree=qdegree, degree=2)
+    volume = _warped_volume(mesh, 0.5, lambda a, x, y, z: np.array(
+        [x + a * y**2, y + a * z**2, z + a * x**2]))
+    assert np.isclose(volume, 1.0 + 0.5**3, rtol=1e-13, atol=0.0)
+
+
+@pytest.mark.parametrize("qdegree", [1, 2, 5])
+def test_a_curved_hexahedral_size_does_not_depend_on_the_solver_quadrature(qdegree):
+    r"""The map :math:`x' = x + a y^2 z^2` and its cyclic partners lie in the
+    biquadratic space, and :math:`\det J` has degree 4 in each variable: two points a side leave 5.8e-5, three are exact. The cube's volume is
+    :math:`1 - 3 a^2 / 5 + a^3 / 4`, which at :math:`a = 1/2` is 0.88125."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(3, 3, 3), degree=2, qdegree=qdegree)
+    volume = _warped_volume(mesh, 0.5, lambda a, x, y, z: np.array(
+        [x + a * y**2 * z**2, y + a * z**2 * x**2, z + a * x**2 * y**2]))
+    assert np.isclose(volume, 0.88125, rtol=1e-13, atol=0.0)
 
 
 def test_taking_the_cells_in_blocks_does_not_change_the_answer(monkeypatch):

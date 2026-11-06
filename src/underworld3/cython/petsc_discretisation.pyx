@@ -62,7 +62,7 @@ cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
     if mesh.degree != 1:
         raise ValueError(
             f"DMPlexComputeGeometryFVM needs affine coordinates; this mesh has "
-            f"degree {mesh.degree}. Mesh.get_min_radius handles any degree.")
+            f"degree {mesh.degree}. Mesh.get_min_radius and Mesh.cell_size handle any degree.")
 
     cdef DM dm = mesh.dm
     cdef PetscErrorCode ierr = DMPlexComputeGeometryFVM(dm.dm, &cellgeom.vec, &facegeom.vec)
