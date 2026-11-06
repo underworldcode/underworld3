@@ -17,9 +17,14 @@ def initialise(jupyter_backend):
     Parameters
     ----------
     jupyter_backend : str or None
-        Jupyter backend to use ('trame', 'client', etc.); raises if it cannot be
-        had. If None, 'trame', or 'static' without trame, or no backend at all
-        without IPython, since conversions and off-screen renders need none.
+        Jupyter backend to use ('trame', 'client', 'none', etc.). If None, 'trame',
+        or 'static' without trame. Without IPython, None and 'none' set nothing:
+        conversions and off-screen renders need no backend.
+
+    Raises
+    ------
+    ImportError
+        If a backend named here cannot be had.
     """
     import pyvista as pv
 
@@ -37,9 +42,9 @@ def initialise(jupyter_backend):
     )
 
     # pyvista checks for IPython before it looks at the backend's name, so without
-    # IPython it refuses every backend, static included. A conversion or off-screen
-    # render needs none, so a script that named none gets none.
-    if jupyter_backend is None and importlib.util.find_spec("IPython") is None:
+    # IPython it refuses every backend, static and "none" included. A conversion or
+    # off-screen render needs none, so a script that asked for none gets none.
+    if jupyter_backend in (None, "none") and importlib.util.find_spec("IPython") is None:
         return
 
     if jupyter_backend is not None:

@@ -12,6 +12,8 @@ answers:
 A backend asked for by name is another matter: if it cannot be had, that raises.
 """
 import importlib.util
+import subprocess
+import sys
 
 import pytest
 
@@ -19,7 +21,7 @@ import underworld3 as uw
 import underworld3.visualisation as vis
 from underworld3.visualisation.visualisation import initialise
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 pv = pytest.importorskip("pyvista")
 
@@ -78,6 +80,44 @@ def test_a_remote_host_gets_the_server_proxy(backend, monkeypatch):
     monkeypatch.setattr(pv.global_theme.trame, "server_proxy_enabled", False)
     initialise(backend)
     assert pv.global_theme.trame.server_proxy_enabled
+
+
+def test_a_mesh_converts_with_the_notebook_stack_really_absent():
+    """In a fresh process with IPython and trame not importable: the fixtures above fake
+    how pyvista checks for them, so a new hard import on this path would pass them."""
+    script = """
+import importlib.abc, sys
+HIDDEN = ("IPython", "ipykernel", "ipywidgets", "jupyter", "comm", "trame")
+class Hide(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0].startswith(HIDDEN):
+            raise ModuleNotFoundError(name)
+        return None
+sys.meta_path.insert(0, Hide())
+import underworld3 as uw
+import underworld3.visualisation as vis
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+pvmesh = vis.mesh_to_pv_mesh(mesh)
+start, end = mesh.dm.getHeightStratum(0)
+assert pvmesh.n_cells == end - start
+print("CONVERTED")
+"""
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                          timeout=300)
+    assert done.returncode == 0 and "CONVERTED" in done.stdout, done.stdout + done.stderr
+
+
+def test_the_notebook_default_is_trame_where_it_can_be_had():
+    pytest.importorskip("IPython")
+    pytest.importorskip("trame")
+    initialise(None)
+    assert pv.global_theme.jupyter_backend == "trame"
+
+
+def test_asking_for_no_backend_without_ipython_sets_nothing(ipython_missing):
+    before = pv.global_theme._jupyter_backend
+    initialise("none")
+    assert pv.global_theme._jupyter_backend == before
 
 
 def test_initialise_falls_back_to_static_without_trame(trame_missing):
