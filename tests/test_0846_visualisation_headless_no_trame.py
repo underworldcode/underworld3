@@ -86,14 +86,19 @@ def test_a_mesh_converts_with_the_notebook_stack_really_absent():
     """In a fresh process with IPython and trame not importable: the fixtures above fake
     how pyvista checks for them, so a new hard import on this path would pass them."""
     script = """
-import importlib.abc, sys
-HIDDEN = ("IPython", "ipykernel", "ipywidgets", "jupyter", "comm", "trame")
-class Hide(importlib.abc.MetaPathFinder):
+import sys
+def hidden(name):
+    top = name.split(".")[0]
+    return top.startswith("trame") or top in ("IPython", "ipykernel", "ipywidgets", "jupyter_client", "jupyter_core", "comm")
+class Absent:
+    # Every finder answers None for these names: what a module not installed looks like.
+    def __init__(self, finder):
+        self.finder = finder
     def find_spec(self, name, path=None, target=None):
-        if name.split(".")[0].startswith(HIDDEN):
-            raise ModuleNotFoundError(name)
-        return None
-sys.meta_path.insert(0, Hide())
+        return None if hidden(name) else self.finder.find_spec(name, path, target)
+    def __getattr__(self, attribute):
+        return getattr(self.finder, attribute)
+sys.meta_path[:] = [Absent(finder) for finder in sys.meta_path]
 import underworld3 as uw
 import underworld3.visualisation as vis
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
