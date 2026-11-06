@@ -310,20 +310,25 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
             w /= w.sum(axis=1, keepdims=True)
             return np.einsum('nk,nkab->nab', w, M_src[idx])
-    elif metric_eval == "barycentric":
-        # The interpolation the multigrid transfers use. A convex combination,
-        # so positive like the Shepard form, and also continuous: the line
-        # search compares energies, and Shepard's neighbour switches make them
-        # jump, which stalls it far from the minimum.
-        from scipy.spatial import Delaunay, cKDTree
-        from underworld3.utilities.custom_mg import barycentric_weights
-        M_src = _eval_M_analytic(coords)
-        _triangulation = Delaunay(coords)
-        _tree = cKDTree(coords)
+    elif metric_eval == "frozen":
+        # The metric is a function of space, so it lives on a copy of the mesh
+        # that does not move and uw.function.evaluate reads it there. Evaluated
+        # on the moving mesh, a metric built from a mesh variable rides the
+        # nodes, and the energy the line search compares changes under it.
+        _frozen_dm = mesh.dm.clone()
+        _frozen_dm.setCoordinatesLocal(mesh.dm.getCoordinatesLocal().copy())
+        _frozen_mesh = uw.discretisation.Mesh(
+            _frozen_dm, simplex=True, qdegree=mesh.qdegree,
+            coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
+            boundaries=mesh.boundaries)
+        _frozen_M = uw.discretisation.MeshVariable(
+            "M_frozen", _frozen_mesh, cdim * cdim, degree=1)
+        _frozen_M.array[...] = _eval_M_analytic(
+            np.asarray(_frozen_M.coords)).reshape(_frozen_M.array.shape)
 
         def _eval_M(pts):
-            vertices, weights = barycentric_weights(_triangulation, _tree, pts)
-            return np.einsum('nk,nkab->nab', weights, M_src[vertices])
+            return np.asarray(uw.function.evaluate(
+                _frozen_M.sym, pts)).reshape(-1, cdim, cdim)
     else:
         _eval_M = _eval_M_analytic
 
