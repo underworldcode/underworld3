@@ -192,6 +192,7 @@ design/WHY_UNITS_NOT_DIMENSIONALITY
 design/SYMBOL_DISAMBIGUATION_2025-12
 design/ADAPTIVE_MESHING_DESIGN
 design/mesh-adaptation-formulation
+design/ddt-solver-sequencing
 design/LAYER2_SBR_ADAPT_ON_TOP
 design/NVB_GRADED_ADAPT
 design/MULTIGRID_MINIMAL_CONTROL_2026-07
