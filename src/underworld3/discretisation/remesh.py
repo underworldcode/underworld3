@@ -53,20 +53,14 @@ __all__ = [
 ]
 
 
-# Monotone-limiting mode for the REMAP transfer, read ONCE at import time
-# from the ``REMESH_MONOTONE`` environment variable. On a freshly-adapted
-# mesh the NEW boundary DOFs sit a sagitta OUTSIDE the OLD boundary cell
-# (arc vs chord), so the old P2/P3 field, FE-evaluated there, overshoots
-# wildly — in parallel the migrate lands those points in a containing cell
-# on another rank and the overshoot is delivered as a "valid" (un-flagged)
-# value. That is the parallel free-slip v.n "leak": a corrupt boundary T/V
-# remap, NOT a BC bug. The default ``"clamp"`` bounds each resampled value
-# to its k-NN source-nodal range; it is bit-identical to plain FE in smooth
-# regions and parallel-safe (rank-local) — the same limiter as the
-# SemiLagrangian trace-back fix. Set REMESH_MONOTONE to "off" (or "0",
-# "none", "false", "") to disable, or to any other mode accepted by
-# ``uw.function.global_evaluate(..., monotone=...)`` (e.g. "pick").
-REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "clamp")
+# Optional limiter on the REMAP transfer, read once at import time from the
+# ``REMESH_MONOTONE`` environment variable, for diagnostics. Off by default. A target
+# outside the old mesh, such as a wall node that slid along a convex boundary, takes
+# the location fallback in ``global_evaluate`` instead of the FE basis. "clamp" bounds
+# each value to its nearest source DOFs on this rank, so on a smooth field it adds
+# error and makes the result depend on the partition. Any mode
+# ``global_evaluate(..., monotone=...)`` accepts.
+REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "off")
 if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):
     REMESH_MONOTONE = False
 
@@ -517,8 +511,7 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
             continue
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
-            # REMESH_MONOTONE (module constant, see its comment) bounds the
-            # boundary-overshoot failure mode of the plain FE evaluation.
+            # REMESH_MONOTONE (module constant, see its comment) is off by default.
             try:
                 val = uw.function.global_evaluate(
                     var.sym, target, monotone=REMESH_MONOTONE)
