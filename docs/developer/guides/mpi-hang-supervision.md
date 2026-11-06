@@ -73,19 +73,23 @@ Three separate pieces of evidence, and each answers a different question:
 Where gdb is on the path, each rank's native stack follows, because a Python
 stack stops at the C boundary: a rank in an MPI wait and a rank in a long KSP
 solve both read as `solve()` and both burn a core, so "stuck" above can only mean
-that the Python frame did not move. The report quotes the main thread's innermost
-frames and the whole stack goes to `rank_N_pid_P.native`:
+that no Python frame moved. The report quotes the main thread's frames, from the
+first MPI routine if there is one, and the whole stacks go to
+`rank_N_pid_P.native`. It samples twice, a few seconds apart:
 
 ```
-    native: rank 1: ... < MPIR_Barrier_intra_dissemination < MPIR_Barrier_allcomm_auto < ...
+    native: rank 0: MatMultTransposeAdd_SeqAIJ < MatMultTranspose_SeqAIJ < MatMultTranspose_MPIAIJ < ...
+    native: rank 1: MPIR_Waitall_state < MPIR_Waitall < ...
+    native frames moved between samples on rank(s) 0: still working in C, whatever the Python frames say
 ```
 
-Without gdb the report says so and the Python diagnosis stands. CI installs gdb
-for this. No root is needed to attach: the handler below allows it with
-`PR_SET_PTRACER`.
+Frames that moved are a rank still working, such as a KSP iterating without
+converging, as in #963. Frames that match are not proof of a hang, only a reason
+to look. Without gdb the report says so and the Python diagnosis stands. CI
+installs gdb for this.
 
 Stacks are written to `--artifacts`, or to `$TMPDIR/uw-stacks-*`, and CI uploads
-those as the `hang-stacks-shard-N` artifact when a shard fails, kept five days; a
+those as the `hang-stacks-shard-N` artifact when a shard fails or hits its cap, kept five days; a
 diagnosis that dies with the job is no better than the silence it replaced.
 
 ## How the dump is armed
@@ -99,6 +103,11 @@ Registering a *signal handler* is the important difference from
 only when the supervisor asks, and never walks live frames from a concurrent
 thread — so arming it costs a healthy run nothing and it cannot reproduce
 [#661].
+
+The module also calls `prctl(PR_SET_PTRACER, <supervisor pid>)`, because where Yama
+restricts ptrace to a process's descendants (the Ubuntu default), the supervisor's
+gdb could otherwise not attach without root. It admits the supervisor and its
+children for the life of the rank, and nothing outside that tree.
 
 ## Killing the tree, and checking
 

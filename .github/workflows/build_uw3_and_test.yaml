@@ -89,8 +89,9 @@ jobs:
     # 120-minute cap and #689 was cancelled at 2h00m52s with zero failures, so
     # the cap was deciding outcomes. The slowest shard is ~33 min of tests plus
     # ~5 min of install and build; 60 leaves room for a slow runner while still
-    # being a real signal when a shard doubles.
-    timeout-minutes: 60
+    # being a real signal when a shard doubles. A hung batch costs shard 4 about 5
+    # minutes more, and its stacks must still be uploaded: hence 70 (#954).
+    timeout-minutes: 70
 
     steps:
       - uses: actions/checkout@v4
@@ -136,11 +137,18 @@ jobs:
       - name: Install gdb for hang diagnosis
         continue-on-error: true
         run: |
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends gdb
-          # Which host this is: BLAS picks its kernels from the CPU, and a solve
-          # has been seen to stop finishing on some hosts only (#963).
-          lscpu | grep -E "Model name|Flags" | cut -c1-200
           echo "ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope)"
+
+      # Which host this is, and what it does with it. BLAS picks its kernels from the
+      # CPU, and one solve stops finishing under some kernels only (#963).
+      - name: Report the CPU and the BLAS kernel
+        continue-on-error: true
+        run: |
+          lscpu | grep -E "Model name|^CPU\(s\)|Flags" | cut -c1-400
+          env | grep -E "^(OMP|OPENBLAS)_" || true
+          OPENBLAS_VERBOSE=2 pixi run -e dev python -c "import numpy; numpy.ones((9, 9)).dot(numpy.ones((9, 9))); numpy.show_config()" 2>&1 | grep -iE "core:|openblas|openmp|name:" | head -12
 
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2 --shard ${{ matrix.shard }}/${{ strategy.job-total }}
@@ -148,13 +156,14 @@ jobs:
       # The supervisor's stacks are in /tmp, gone with the runner. A hang that
       # reproduces only here cannot be diagnosed from anywhere else.
       - name: Keep the hang stacks
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: hang-stacks-shard-${{ matrix.shard }}
           path: /tmp/uw-stacks-*
           if-no-files-found: ignore
           retention-days: 5
+          overwrite: true
 
   # One check that says whether the suite passed, so a reader (and anything
   # querying statusCheckRollup for "test") gets a single answer rather than

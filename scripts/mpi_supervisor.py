@@ -41,7 +41,6 @@ import argparse
 import os
 import re
 import signal
-import re
 import shutil
 import subprocess
 import sys
@@ -73,6 +72,12 @@ SECONDS_FOR_NATIVE_STACK = 60.0
 # Frames of each rank's main thread quoted in the log; the file has them all.
 NATIVE_FRAMES_IN_LOG = 8
 
+# Between the two native samples: a solve still iterating has moved on by then.
+SECONDS_BETWEEN_NATIVE_SAMPLES = 5.0
+
+# gdbs at once: each loads every shared library's symbols, on the node running the job.
+MAX_GDBS_AT_ONCE = 8
+
 
 def _dump_handler_module(dump_dir):
     """Source for the module that arms each rank to dump on request.
@@ -93,14 +98,6 @@ import faulthandler
 import os
 import signal
 
-# Let the supervisor's gdb attach: where the kernel restricts ptrace to a
-# process's own descendants (Yama, the Ubuntu default), it would otherwise need
-# root. PR_SET_PTRACER with "any process"; a no-op on a kernel without Yama.
-try:
-    ctypes.CDLL(None).prctl(0x59616d61, ctypes.c_ulong(-1).value, 0, 0, 0)
-except (OSError, AttributeError):
-    pass  # no prctl (not Linux): the attach fails and the report says so
-
 # Rank as the launchers advertise it, so a dump can be attributed without
 # asking mpi4py (importing it here would run before the job's own import).
 _rank = (os.environ.get("OMPI_COMM_WORLD_RANK")
@@ -114,6 +111,16 @@ _rank = (os.environ.get("OMPI_COMM_WORLD_RANK")
 _path = os.path.join({str(dump_dir)!r}, "rank_%s_pid_%d.stack" % (_rank, os.getpid()))
 _stream = open(_path, "w")
 faulthandler.register(signal.SIGUSR1, file=_stream, all_threads=True, chain=False)
+
+# Let the supervisor's gdb attach: where the kernel restricts ptrace to a process's
+# own descendants (Yama, the Ubuntu default), it would otherwise need root.
+# PR_SET_PTRACER names the supervisor, which admits its children and nothing outside
+# its tree, and is a no-op on a kernel without Yama. After the handler: this one is
+# optional, and a failure here must not cost the Python stacks.
+try:
+    ctypes.CDLL(None).prctl(0x59616d61, ctypes.c_ulong({os.getpid()}), 0, 0, 0)
+except (OSError, AttributeError):
+    pass  # no prctl (not Linux): the attach fails and the report says so
 '''
 
 
@@ -243,47 +250,90 @@ def _native_frames(text):
     return frames
 
 
+def _quoted_frames(frames):
+    """The frames worth a log line: from the first MPI routine outward if there is one,
+    since an attach can land several frames deep in the progress engine."""
+    for i, frame in enumerate(frames):
+        if frame.startswith(("PMPI_", "MPIR_", "MPI_")):
+            return frames[i:i + NATIVE_FRAMES_IN_LOG]
+    return frames[:NATIVE_FRAMES_IN_LOG]
+
+
+def _native_sample(gdb, rank, pid, path):
+    """One attach. Returns ``(frames, problem)``, with the whole output added to *path*."""
+    command = [gdb, "-p", str(pid), "-batch", "-ex", "thread apply all bt"]
+    problem = None
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, errors="replace",
+                                timeout=SECONDS_FOR_NATIVE_STACK)
+        out, err = result.stdout, result.stderr
+    except subprocess.TimeoutExpired as expired:
+        out = (expired.stdout or b"").decode(errors="replace")
+        err = (expired.stderr or b"").decode(errors="replace")
+        problem = f"gdb took over {SECONDS_FOR_NATIVE_STACK:.0f} s"
+    with open(path, "a") as stream:
+        stream.write(out + err + "\n")
+    frames = _native_frames(out)
+    if not frames and problem is None:
+        last = err.strip().splitlines()[-1] if err.strip() else "no output"
+        problem = f"gdb got no frames: {last}"
+    return frames, problem
+
+
 def _collect_native_stacks(dumps, dump_dir):
-    """Write each rank's native stack beside its Python one; return the log lines.
+    """Write each rank's native stacks beside its Python one; return the log lines.
 
-    A Python stack stops at the C boundary. A rank in an MPI wait and a rank in a
-    long KSP solve both read as ``solve()`` and both burn a core, so only the
-    native frames tell a collective mismatch from a solve that is not converging.
+    A Python stack stops at the C boundary, so "stuck" from Python frames means only
+    that no Python frame moved. The native frames say where in C a rank is: an MPI wait
+    or a solve. Two samples, because one cannot tell a loop in one routine from a KSP
+    iterating without converging: frames that differ are a rank still working. Frames
+    that match are not proof of the opposite, only a reason to look at the rank.
 
-    Taken after the Python samples, because attaching stops the rank. Optional:
-    with no gdb the report says so and the Python diagnosis stands.
+    Taken after the Python samples, because attaching stops the rank. Optional: with no
+    gdb the report says so and the Python diagnosis stands.
     """
     gdb = shutil.which("gdb")
     if gdb is None:
         return ["    no gdb on PATH: Python stacks only"]
 
-    def attach(rank, pid):
-        path = dump_dir / f"rank_{rank}_pid_{pid}.native"
-        try:
-            result = subprocess.run(
-                [gdb, "-p", str(pid), "-batch", "-ex", "thread apply all bt"],
-                capture_output=True, text=True, timeout=SECONDS_FOR_NATIVE_STACK)
-        except subprocess.TimeoutExpired:
-            return f"    native: rank {rank}: gdb took over {SECONDS_FOR_NATIVE_STACK:.0f} s"
-        path.write_text(result.stdout + result.stderr)
-        frames = _native_frames(result.stdout)
-        if not frames:
-            return f"    native: rank {rank}: gdb got no frames, see {path.name}"
-        return f"    native: rank {rank}: " + " < ".join(frames[:NATIVE_FRAMES_IN_LOG])
+    def sample_all():
+        results = {}
+        ranks = list(dumps.items())
+        for start in range(0, len(ranks), MAX_GDBS_AT_ONCE):
+            def attach(rank, pid):
+                try:
+                    results[rank] = _native_sample(
+                        gdb, rank, pid, dump_dir / f"rank_{rank}_pid_{pid}.native")
+                except Exception as error:       # this must not cost the kill or the report
+                    results[rank] = ([], f"{type(error).__name__}: {error}")
+            threads = [threading.Thread(target=attach, args=(rank, pid))
+                       for rank, (pid, _blocks) in ranks[start:start + MAX_GDBS_AT_ONCE]]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        return results
 
-    lines = {}
+    first = sample_all()
+    time.sleep(SECONDS_BETWEEN_NATIVE_SAMPLES)
+    second = sample_all()
 
-    def attach_into_lines(rank, pid):
-        lines[rank] = attach(rank, pid)
-
-    # One at a time would stretch a large job's kill by a minute per rank.
-    threads = [threading.Thread(target=attach_into_lines, args=(rank, pid))
-               for rank, (pid, _blocks) in dumps.items()]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    return [lines[rank] for rank in sorted(lines)]
+    lines = []
+    moved = []
+    for rank in sorted(dumps):
+        frames, problem = first[rank]
+        if problem:
+            lines.append(f"    native: rank {rank}: {problem}")
+            continue
+        lines.append(f"    native: rank {rank}: " + " < ".join(_quoted_frames(frames)))
+        if second[rank][0] and second[rank][0] != frames:
+            moved.append(str(rank))
+    if moved:
+        lines.append(f"    native frames moved between samples on rank(s) {', '.join(moved)}: "
+                     "still working in C, whatever the Python frames say")
+    elif any(frames for frames, _problem in first.values()):
+        lines.append("    native frames did not move between samples")
+    return lines
 
 
 def _diagnose(dumps, cpu_by_rank):
