@@ -775,7 +775,8 @@ def follow_metric(
             verbose=verbose,
         )
         _new_X = np.asarray(mesh.X.coords)
-        _state["moved"] = not np.allclose(_new_X, _old_X)
+        # Over all ranks: the polish below is collective.
+        _state["moved"] = bool(_global_max(float(not np.allclose(_new_X, _old_X))))
         _polish(_state["moved"])
 
     def _polish(moved):
@@ -823,7 +824,7 @@ def follow_metric(
                     V = np.abs(_signed_volumes(X, cells_polish))
                     ebar = np.sqrt(e2sum / n_edges)
                     q = 6.0 * np.sqrt(2.0) * V / (ebar ** 3 + 1.0e-30)
-                q_min = _global_min(q.min())
+                q_min = _global_min(q.min(initial=np.inf))
                 if verbose:
                     uw.pprint(
                         f"  follow_metric polish iter {_polish_iter}: "

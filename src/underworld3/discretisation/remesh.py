@@ -38,7 +38,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
-from mpi4py import MPI
 
 import underworld3 as uw
 
@@ -316,12 +315,12 @@ def remesh_with_field_transfer(
        the only REINIT-stamped vars today are recomputed on first
        access; placeholder for future eager invalidation).
     8. Marks the mesh vector stale, so kernels and integrals read the
-       values just written.
+       values just written, and bumps ``_mesh_version`` for the swarms.
 
     Returns ``True`` if the mesh actually moved (``do_move`` reported
     geometry change); ``False`` if it short-circuited (caller can skip
     transfer too). Detection: compares ``mesh.X.coords`` before and
-    after ``do_move``.
+    after ``do_move``, and any rank that moved counts for all.
 
     Parallel: ``global_evaluate`` resolves off-rank target points
     correctly, so the transfer is partition-agnostic — the rank that
@@ -382,7 +381,7 @@ def _remesh_with_field_transfer_impl(
     # Decided over all ranks: a rank whose own nodes stayed put (pinned, empty,
     # or outside a local deformation) must still enter the collective transfer
     # below with the ranks whose nodes moved.
-    moved = uw.mpi.comm.allreduce(not np.array_equal(new_X, old_X), op=MPI.LOR)
+    moved = uw.mpi.comm.allreduce(not np.array_equal(new_X, old_X), op=uw.MPI.LOR)
     if not moved:
         # Mover short-circuited (skip threshold, no metric change, ...).
         # No transfer to do, no hooks to fire — caller treats this as a
@@ -440,6 +439,12 @@ def _remesh_with_field_transfer_impl(
     # on the moved nodes. Every rank reaches this line (the move test above is
     # collective), which update_lvec needs because it is collective.
     mesh._stale_lvec = True
+
+    # Swarms compare this at solve entry to migrate, and their proxy operators are
+    # keyed on it, so every mover needs it, not only Mesh.deform. Not in
+    # _deform_mesh: that also runs on snapshot restore, whose integrity check
+    # treats a changed version as invalidation and would refuse its own recovery.
+    mesh._mesh_version += 1
 
     return True
 
@@ -513,7 +518,8 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     resampled = {}
     for var in vars_:
         target = new_dof_coords.get(var, None)
-        if target is None or target.size == 0:
+        # A rank with no DOFs of this variable still enters the collective below.
+        if target is None:
             continue
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
