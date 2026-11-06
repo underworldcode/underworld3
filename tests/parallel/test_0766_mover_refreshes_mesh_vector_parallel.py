@@ -58,19 +58,26 @@ def test_a_rank_whose_nodes_stay_put_joins_the_transfer():
         others = {tuple(p) for rank, held in enumerate(held_elsewhere) if rank != 0 for p in held}
         moved_here = np.array([tuple(p) not in others for p in coords.round(12)])
     assert uw.mpi.comm.allreduce(int(moved_here.sum())) > 0
+    start = np.array(coords)
     coords[moved_here] *= 1.0 + 1.0e-3
     assert all(uw.mpi.comm.allgather(mesh.deform(coords)))
+    if uw.mpi.rank != 0:
+        assert np.array_equal(np.array(mesh.X.coords), start)   # this rank really stayed put
     _assert_a_solve_sees_the_remapped_field(mesh, T)
 
 
 @pytest.mark.mpi(min_size=2)
 def test_a_rank_with_no_cells_joins_the_transfer():
-    """A 1 x 2 box leaves a rank without cells from np 3, and at np 2 the partition can
-    do the same. That rank still enters global_evaluate: skipping it for an empty
-    target left the populated ranks waiting."""
+    """A 1 x 2 box leaves a rank without cells (measured [0, 2] at np 2, [0, 0, 0, 2] at
+    np 4). That rank still enters global_evaluate: skipping it for an empty target left
+    the populated ranks waiting. T is linear so a stale mesh vector changes the integral."""
     mesh = uw.meshing.StructuredQuadBox(elementRes=(1, 2))
+    start, end = mesh.dm.getHeightStratum(0)
+    assert 0 in uw.mpi.comm.allgather(end - start)
     T = uw.discretisation.MeshVariable("T0766c", mesh, 1, degree=1)
-    T.array[...] = 1.0
+    dof = np.asarray(T.coords)
+    T.array[:, 0, 0] = dof[:, 0] + 2.0 * dof[:, 1]      # on every rank: update_lvec is collective
+    mesh.update_lvec()
     coords = np.array(mesh.X.coords)
     coords[:, 1] *= 1.0 + 0.05 * coords[:, 0]
     assert all(uw.mpi.comm.allgather(mesh.deform(coords)))

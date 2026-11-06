@@ -37,25 +37,24 @@ def test_integral_after_a_move_sees_the_remapped_field():
     assert seen_by_a_solve == pytest.approx(remapped, rel=1.0e-12)
 
 
-def test_a_swarm_proxy_after_a_move_is_evaluated_at_the_moved_nodes():
-    """The proxy's interpolation operator is keyed on the mesh version, which only
-    Mesh.deform bumped: after a mover it stayed at the old node positions, even once
-    the swarm variable was rewritten."""
+def test_a_snapshot_taken_before_a_move_restores_after_it():
+    """model.rewind() and the adjoint restore across a mover. The restore refuses if
+    _mesh_version has moved, so a mover must not bump it."""
+    model = uw.get_default_model()
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
     x, y = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2)
-    swarm = uw.swarm.Swarm(mesh)
-    s = uw.swarm.SwarmVariable("s0766", swarm, 1, proxy_degree=1)
-    swarm.populate(fill_param=3)
-    s.array[:, 0, 0] = swarm._particle_coordinates.data[:, 0]
-    mesh.update_lvec()      # the proxy has been evaluated before the move
+    T = uw.discretisation.MeshVariable("T0766s", mesh, 1, degree=2)
+    T.array[:, 0, 0] = uw.function.evaluate(
+        0.5 * (1 - sympy.tanh((r - 0.9) / 0.03)), T.coords).reshape(-1)
+    coords_before, field_before = np.array(mesh.X.coords), np.array(T.array)
 
+    token = model.save_state()
     density = 1 + 24 * sympy.exp(-(((r - 0.9) / 0.06) ** 2))
     uw.meshing.node_redistribution(mesh, density, slip_surfaces=True, skip_threshold=None,
                                    method_kwargs=dict(accel="none", n_outer=20))
+    assert np.abs(np.array(mesh.X.coords) - coords_before).max() > 1.0e-3
+    model.load_state(token)
 
-    s.array[:, 0, 0] = swarm._particle_coordinates.data[:, 0]
-    mesh.update_lvec()      # what a solve does first: refreshes stale proxies
-    proxy = s._meshVar
-    error = np.abs(np.asarray(proxy.array).reshape(-1) - np.asarray(proxy.coords)[:, 0])
-    assert error.max() < 1.0e-6
+    assert np.array_equal(np.array(mesh.X.coords), coords_before)
+    assert np.array_equal(np.array(T.array), field_before)

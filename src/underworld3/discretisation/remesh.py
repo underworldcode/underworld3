@@ -315,7 +315,7 @@ def remesh_with_field_transfer(
        the only REINIT-stamped vars today are recomputed on first
        access; placeholder for future eager invalidation).
     8. Marks the mesh vector stale, so kernels and integrals read the
-       values just written, and bumps ``_mesh_version`` for the swarms.
+       values just written.
 
     Returns ``True`` if the mesh actually moved (``do_move`` reported
     geometry change); ``False`` if it short-circuited (caller can skip
@@ -439,12 +439,6 @@ def _remesh_with_field_transfer_impl(
     # on the moved nodes. Every rank reaches this line (the move test above is
     # collective), which update_lvec needs because it is collective.
     mesh._stale_lvec = True
-
-    # Swarms compare this at solve entry to migrate, and their proxy operators are
-    # keyed on it, so every mover needs it, not only Mesh.deform. Not in
-    # _deform_mesh: that also runs on snapshot restore, whose integrity check
-    # treats a changed version as invalidation and would refuse its own recovery.
-    mesh._mesh_version += 1
 
     return True
 

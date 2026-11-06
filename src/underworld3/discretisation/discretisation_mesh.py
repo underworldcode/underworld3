@@ -4148,6 +4148,15 @@ class Mesh(Stateful, uw_object):
         result = remesh_with_field_transfer(
             self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
 
+        # Notify registered swarms: solve-entry sync compares this version
+        # and marks them for deferred migration (#379 item 1 retired the
+        # read-trigger that consumed this channel). The bump lives HERE,
+        # not in _deform_mesh: the internal primitive also runs on
+        # snapshot restore, whose integrity check treats a moved version
+        # as invalidation and would refuse its own recovery.
+        if result:
+            self._mesh_version += 1
+
         # Refresh deformation-tracking per-boundary normals so Nitsche/penalty
         # BCs that captured ``boundary_normal(...).sym`` at setup read the new
         # geometry (the JIT reads the variable's .data, which would otherwise
