@@ -15,8 +15,11 @@ The velocity preconditioner is now ``z = P M (P r)`` with ``P`` projecting out t
 modes, and the answer is unchanged to 13 digits.
 
 - The analytic-normal annulus projects one mode, its inner velocity solve converges in
-  a few cycles (without the projection it ran to its cap of 200 on macOS arm64 too, where
-  the outer solve happened to converge anyway), and it gives the recorded answer.
+  a few cycles, and it gives the recorded answer. Without the projection the inner solve
+  ran to its cap of 200 on macOS arm64, where the outer solve happened to converge anyway,
+  and on most x86 kernels; under SkylakeX it took 4 (hyperion). So this bound catches a
+  regression on arm64 and those kernels, and the forced-kernel child below catches it on
+  any x86 host.
 - Under the default (facet-averaged) normal the rotation is near-null, not null, and
   nothing is projected.
 - On x86, the same solve under ``OPENBLAS_CORETYPE=Nehalem``, a kernel that stalled at
@@ -86,8 +89,8 @@ def test_an_exact_rotation_is_projected_out_of_the_velocity_preconditioner():
     assert info["ksp_reason"] > 0 and info["velocity_pc"] == "custom-FMG", info
     assert info["velocity_pc_type"] == "mg", info
     # the inner velocity solve converges in a few cycles; without the projection it ran
-    # to its cap of 200 on every host (macOS arm64 included), and only whether the outer
-    # solve then converged depended on the kernel
+    # to its cap of 200 on macOS arm64 and most x86 kernels (4 under SkylakeX), and only
+    # whether the outer solve then converged depended on the kernel
     assert max(info["vel_its_last"]) <= 10, info["vel_its_last"]
     assert info["projected_null_modes"] == 1, info
     assert L2 == pytest.approx(L2_ANALYTIC, rel=1.0e-8)
