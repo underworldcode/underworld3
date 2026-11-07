@@ -1226,7 +1226,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         if array_data.size == 0:
             return array_data.reshape(array_data.shape[0], self.num_components)
 
-        if array_data.ndim < 3 or array_data.shape[1] * array_data.shape[2] == self.num_components:
+        if array_data.ndim < 3:
             return array_data.reshape(array_data.shape[0], -1)
 
         packed = np.empty(

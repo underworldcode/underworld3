@@ -464,6 +464,21 @@ def _iter_active_hooks(mesh):
         yield cb
 
 
+def _values_in_data_layout(var, values):
+    """Evaluated ``values``, one ``var.shape`` array per node, in the layout of ``var.data``.
+
+    The layout is the variable's own: a symmetric tensor holds only its independent
+    components, and a matrix is stored by columns.
+    """
+    data_shape = np.asarray(var.data).shape
+    per_node = np.asarray(values).reshape((data_shape[0], *var.shape))
+    out = np.empty(data_shape, dtype=per_node.dtype)
+    for i in range(var.shape[0]):
+        for j in range(var.shape[1]):
+            out[:, var._data_layout(i, j)] = per_node[:, i, j]
+    return out
+
+
 def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """One-shot REMAP dance for a set of variables.
 
@@ -525,8 +540,7 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
                     f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
-        resampled[var] = np.asarray(val).reshape(
-            np.asarray(var.data).shape)
+        resampled[var] = _values_in_data_layout(var, val)
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
