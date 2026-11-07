@@ -4090,7 +4090,7 @@ class Mesh(Stateful, uw_object):
         intermediate meshes are genuinely ephemeral — only the final
         committed move (via :meth:`deform`) updates fields + history.
         """
-        saved = numpy.asarray(self.X.coords).copy()
+        saved = numpy.asarray(self._coords).reshape(-1, self.cdim).copy()
         self._coord_mutation_depth += 1
         try:
             yield
@@ -4113,7 +4113,8 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         new_coords : ndarray
-            Target vertex coordinates (shape of ``mesh.X.coords``).
+            Target vertex coordinates, in the shape and frame of ``mesh.X.coords``:
+            physical units in a model with reference quantities.
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
@@ -4129,7 +4130,11 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.discretisation.remesh import remesh_with_field_transfer
 
+        # In the frame of mesh.X.coords, which is physical in a units model; the DM
+        # holds model coordinates, which is what _deform_mesh writes.
         _nc = numpy.asarray(new_coords)
+        if getattr(self.CoordinateSystem, "_scaled", False):
+            _nc = _nc / self.CoordinateSystem._length_scale
 
         # The geometry is about to move, so any ANALYTIC return_coords_to_bounds closure
         # (captured with the original radii/extent) no longer describes the boundary:

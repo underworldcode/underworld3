@@ -361,7 +361,9 @@ def _remesh_with_field_transfer_impl(
     reinit_vars = buckets["reinit"]
     managed_vars = buckets["managed"]
 
-    old_X = np.asarray(mesh.X.coords).copy()
+    # In the frame _deform_mesh writes: mesh.X.coords is physical in a units model,
+    # and the DM holds model coordinates.
+    old_X = np.asarray(mesh._coords).reshape(-1, mesh.cdim).copy()
     old_data = _snapshot_var_data(remap_vars)
     # Snapshot managed vars too — needed when a hook opts out of ALE
     # for this adapt and falls back to REMAP (see RemeshContext docs).
@@ -371,7 +373,7 @@ def _remesh_with_field_transfer_impl(
     # is untouched by _deform_mesh, so REMAP snapshots stay valid.
     do_move()
 
-    new_X = np.asarray(mesh.X.coords).copy()
+    new_X = np.asarray(mesh._coords).reshape(-1, mesh.cdim).copy()
     # Decided over all ranks: a rank whose own nodes stayed put (pinned, empty,
     # or outside a local deformation) must still enter the collective transfer
     # below with the ranks whose nodes moved.
@@ -507,7 +509,7 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     new_dof_coords = {}
     for var in vars_:
         try:
-            new_dof_coords[var] = np.asarray(var.coords).copy()
+            new_dof_coords[var] = np.asarray(var.coords_nd).copy()
         except Exception:
             new_dof_coords[var] = None
 
@@ -540,7 +542,9 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
                     f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
-        resampled[var] = _values_in_data_layout(var, val)
+        if getattr(val, "units", None) is not None:
+            val = uw.non_dimensionalise(val)    # var.data holds non-dimensional values
+        resampled[var] = _values_in_data_layout(var, getattr(val, "magnitude", val))
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
