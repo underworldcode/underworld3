@@ -1320,7 +1320,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     op_ok = False
     if cache is not None:
-        geom_ok = cache.get("geometry_sig") == geometry_sig
+        # the workspace was built for one tolerance: its KSP tolerances and which
+        # rotations it projects (_projection_threshold) follow it, so a new tolerance
+        # builds a new workspace
+        geom_ok = (cache.get("geometry_sig") == geometry_sig
+                   and cache.get("tolerance") == float(solver.tolerance))
         op_ok = (geom_ok
                  and not force_operator_refresh
                  and coefficient_states is not None
@@ -1885,6 +1889,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # GC compose.
         solver._rotated_linear_cache = {
             "geometry_sig": geometry_sig,
+            "tolerance": float(solver.tolerance),
             "Q": Q, "Qt": Qt, "normal_rows": normal_rows,
             "custom_Pl": custom_Pl,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
@@ -1939,6 +1944,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "projected_null_modes": None if use_lu else (ctx or {}).get("projected_null_modes"),
             "null_mode_ratios": None if use_lu else (ctx or {}).get("null_mode_ratios"),
+            "null_mode_threshold": None if use_lu else (ctx or {}).get("null_mode_threshold"),
             # the coarse-level solve of the custom FMG: "redundant" (LU with the
             # zero-pivot shift) or the asked-for "gamg" (None without one)
             "coarse_solve": None if use_lu else (ctx or {}).get("coarse_solve"),
@@ -2289,23 +2295,38 @@ def _destroy_rotated_ksp_ctx(ctx):
 
 
 # An admitted rotation is projected out of the velocity preconditioner (#963) when its
-# Jacobi-scaled residual, max |(D^-1 A m)_i| / max |m_i|, is at or below this. Each row
-# is scaled by its own diagonal, so the measure is local and a viscosity contrast does
-# not move it (6.2e-4 at a contrast of 1, 5.6e-4 at 1e8, same mesh). It tracks the mode's
-# constraint violation, about twice it on the annulus. Measured (#964 round 3): an exact
-# mode gives 1e-15 (analytic normal) to 4e-11 (gmsh's rounding of the circle). Forcing the
-# projection cost nothing at 6e-6, 14 times the iterations at 6e-5, and did not finish at
-# 6e-4, the faceting of walls slid 0.1 rad along their circles. Leaving a mode unprojected
-# at 7e-8 to 6e-7 (walls slid 1e-5 to 1e-4 rad) made the count depend on the BLAS kernel,
-# as an exact mode does. The Frobenius scale this replaces, |A m| / (|A|_F |m|), took its
-# size from the stiffest cells: a contrast of 1e5 put the 0.1 rad mode below its 1e-10.
+# Jacobi-scaled residual, max |(D^-1 A m)_i| / max |m_i|, is at or below
+# _projection_threshold(tol). Each row is scaled by its own diagonal, so the measure is
+# local and a viscosity contrast does not move it (6.2e-4 at a contrast of 1, 5.6e-4 at
+# 1e8, same mesh); it tracks the mode's constraint violation, 2 to 3 times it. An exact
+# mode gives 1e-15 (analytic normal) to 4e-11 (gmsh's rounding of the circle). The
+# Frobenius scale it replaced, |A m| / (|A|_F |m|), took its size from the stiffest
+# cells: a contrast of 1e5 classed a faceted rotation as exact and projected it (#964,
+# round 3).
+#
+# What projecting a near-null mode costs scales with the solve tolerance and grows with
+# the rank count (#964, round 4, hyperion, walls slid along their circles). At tol 1e-9,
+# np 2, projecting paid at 62 tol (19464 GMRES orthogonalisations against 140115 left)
+# and cost at 180 tol (49014 against 10528); at 620 tol it cost 2x at np 2 and 4.5x at
+# np 4; at tol 1e-11 a mode at 6.2e-8 projected ran the velocity solve into its cap.
+# Hence _NEAR_NULL_PER_TOL times the tolerance, capped at 1e-6 (where the loose solves
+# cost the same either way) and floored at 1e-10, so that a mode exact to rounding is
+# always projected: left unprojected it makes the count depend on the BLAS kernel.
 _EXACT_NULL_MODE_TOL = 1.0e-6
+_NEAR_NULL_PER_TOL = 100.0
+_EXACT_NULL_MODE_FLOOR = 1.0e-10
 
 
-def _exact_velocity_null_modes(A_vv, modes):
+def _projection_threshold(tol):
+    """The Jacobi-scaled residual at or below which an admitted rotation is projected
+    out of the velocity preconditioner, for a solve at tolerance ``tol``."""
+    return max(_EXACT_NULL_MODE_FLOOR, min(_EXACT_NULL_MODE_TOL, _NEAR_NULL_PER_TOL * tol))
+
+
+def _exact_velocity_null_modes(A_vv, modes, threshold=_EXACT_NULL_MODE_TOL):
     """The vectors of ``modes`` (velocity-block copies of the admitted rotations) whose
     Jacobi-scaled residual ``max |(D^-1 A_vv m)_i| / max |m_i|`` is at or below
-    ``_EXACT_NULL_MODE_TOL``, orthonormalised, and that ratio for every mode. The others
+    ``threshold``, orthonormalised, and that ratio for every mode. The others
     are destroyed. A near-null mode (a declared rotation on a faceted wall, where
     ``A_vv m`` is the faceting error) is left to the multigrid. COLLECTIVE."""
     if not modes:
@@ -2322,7 +2343,7 @@ def _exact_velocity_null_modes(A_vv, modes):
         ratio = (work.norm(PETSc.NormType.NORM_INFINITY)
                  / m.norm(PETSc.NormType.NORM_INFINITY))
         ratios.append(float(ratio))
-        if ratio <= _EXACT_NULL_MODE_TOL:
+        if ratio <= threshold:
             exact.append(m)
         else:
             m.destroy()
@@ -2382,14 +2403,15 @@ class _NullModeProjectedPC:
             self.work = None
 
 
-def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm):
+def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm, tol):
     """Wrap ``vel_ksp``'s preconditioner in :class:`_NullModeProjectedPC` when the
-    admitted rotations in ``nsp`` include exact null modes of its operator. Returns the
-    number of modes projected, and the Jacobi-scaled residual of each admitted mode.
-    COLLECTIVE."""
+    admitted rotations in ``nsp`` include modes its operator annihilates to
+    :func:`_projection_threshold` of the solve tolerance ``tol``. Returns the number of
+    modes projected, and the Jacobi-scaled residual of each admitted mode. COLLECTIVE."""
     inner = vel_ksp.getPC()
     A_vv, P_vv = inner.getOperators()
-    modes, ratios = _exact_velocity_null_modes(A_vv, _velocity_null_modes(nsp, vel_is))
+    modes, ratios = _exact_velocity_null_modes(A_vv, _velocity_null_modes(nsp, vel_is),
+                                               threshold=_projection_threshold(tol))
     if not modes:
         return 0, ratios
     shell = PETSc.PC().createPython(_NullModeProjectedPC(inner, modes), comm=comm)
@@ -2627,7 +2649,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             n_projected, mode_ratios = 0, []
             if custom_Pl is not None:
                 n_projected, mode_ratios = _project_exact_null_modes(
-                    pc.getFieldSplitSubKSP()[0], nsp, vel_is, dm.comm)
+                    pc.getFieldSplitSubKSP()[0], nsp, vel_is, dm.comm, tol)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -2653,7 +2675,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                "coarse_solve": _coarse,
                "schur_pre": "1/mu-mass" if Mp is not None else "selfp",
                "projected_null_modes": n_projected,
-               "null_mode_ratios": mode_ratios}
+               "null_mode_ratios": mode_ratios,
+               "null_mode_threshold": (_projection_threshold(tol) if custom_Pl is not None
+                                       else None)}
         # Mirror the degraded arms into the solver-wide fallback record (#484):
         # the ctx keys above stay authoritative for this path's own tests, but
         # "was anything substituted?" must be answerable in ONE place for any

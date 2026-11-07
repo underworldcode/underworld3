@@ -299,15 +299,29 @@ the job hung.
 
 On the custom-FMG route the velocity sub-PC is therefore a projection around the
 multigrid, `z = P M (P r)`. `P` removes every admitted rotation whose Jacobi-scaled
-residual is at or below 1e-6, orthonormalised; the inner solve then takes about 4
-cycles. Each row is scaled by its own diagonal, so the measure is local: a
-viscosity contrast does not move it, and it tracks the mode's constraint violation
-(about twice it). The scale it replaced, |A m| / (|A|_F |m|), took its size from
-the stiffest cells, and a contrast of 1e5 or more then classed a faceted rotation as
-exact and projected it, at 2 to 4 times the cost (#964, round 3). Forcing the
-projection cost nothing at 6e-6 and did not finish at 6e-4; leaving a mode
-unprojected at 7e-8 to 6e-7 made the iteration count depend on the BLAS kernel, as
-an exact mode does. The threshold sits between the two.
+residual is at or below `max(1e-10, min(1e-6, 100 tol))`, orthonormalised; the
+inner solve then takes about 4 cycles. Each row is scaled by its own diagonal, so
+the measure is local: a viscosity contrast does not move it, and it tracks the
+mode's constraint violation (2 to 3 times it). The scale it replaced,
+|A m| / (|A|_F |m|), took its size from the stiffest cells, and a contrast of 1e5
+or more then classed a faceted rotation as exact and projected it, at 2 to 4 times
+the cost (#964, round 3).
+
+The threshold follows the tolerance because what projecting a near-null mode costs
+does (#964, round 4, hyperion). On walls slid along their circles, at tol 1e-9 and
+np 2:
+- projecting paid at 62 tol: 19464 GMRES orthogonalisations against 140115 left
+  unprojected;
+- it cost at 180 tol: 49014 against 10528;
+- at 620 tol it cost 2 times at np 2 and 4.5 times at np 4.
+
+At tol 1e-11, a mode at 6.2e-8 projected ran the velocity solve into its cap. At
+tol 1e-6 the cases from 6e-7 to 6e-6 cost the same either way, hence the cap at
+1e-6. The floor keeps a mode exact to rounding projected at any tolerance. Left
+unprojected, such a mode makes the count depend on the BLAS kernel (#963). The
+workspace is rebuilt when the tolerance changes, because its KSP tolerances and its
+projection were set for the old one. The record carries the threshold as
+`null_mode_threshold`.
 
 A rotation above the threshold is near-null and is left to the multigrid: a declared
 rotation on a faceted sphere (6e-3 to 2e-2 on test_1131's shell), or on a circle

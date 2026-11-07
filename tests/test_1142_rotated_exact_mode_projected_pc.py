@@ -29,6 +29,10 @@ modes, and the answer is unchanged to 13 digits.
   contrast of 1e5 classed the faceted rotation as exact, projected it, and the solve
   took 2 to 4 times as long. The slid annulus pins the threshold from both sides, at a
   contrast of 1 and of 1e6.
+- The threshold follows the tolerance, max(1e-10, min(1e-6, 100 tol)): what projecting
+  a near-null mode costs grows as the tolerance tightens (#964, round 4). At tol 1e-9 a
+  mode at 6.2e-8 is projected and one at 1.8e-7 is not, and a re-solve at a new
+  tolerance re-decides.
 - The projection acts on both sides of the multigrid and removes every mode, after
   orthonormalising them.
 - Destroying the solve's workspace destroys the multigrid the projection wraps.
@@ -131,7 +135,7 @@ def test_the_projection_releases_the_multigrid_it_wraps():
     assert not inner.handle
 
 
-def _slid_annulus_fmg(name, slide, contrast):
+def _slid_annulus_fmg(name, slide, contrast, tolerance=1.0e-5, solve=True):
     """The factory annulus on its two refinements with the custom FMG, every vertex slid
     along its circle by ``slide * sin(3 theta)`` as an MMPDE mover slides it, and the
     viscosity 1 at both walls and ``contrast`` mid-shell. The walls stay circles, so the
@@ -158,8 +162,10 @@ def _slid_annulus_fmg(name, slide, contrast):
     for wall in ("Lower", "Upper"):
         s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
-    s.tolerance = 1.0e-5
+    s.tolerance = tolerance
     custom_mg.set_custom_fmg(s, mesh._coarse_level_meshes()[:-1], field_id=0)
+    if not solve:
+        return s
     s.solve()
     return s._rotated_freeslip_info
 
@@ -186,7 +192,46 @@ def test_whether_a_rotation_is_exact_does_not_depend_on_the_viscosity(slide, con
     assert info["declared_modes_exempt"] == [True], info
     (ratio,) = info["null_mode_ratios"]
     assert band[0] < ratio < band[1], (ratio, band)
+    assert info["null_mode_threshold"] == 1.0e-6
     assert info["projected_null_modes"] == projected, info["null_mode_ratios"]
+
+
+def test_the_threshold_follows_the_tolerance():
+    threshold = rotated_bc._projection_threshold
+    assert threshold(1.0e-5) == 1.0e-6          # capped
+    assert threshold(1.0e-9) == pytest.approx(1.0e-7, rel=1.0e-12)
+    assert threshold(1.0e-11) == pytest.approx(1.0e-9, rel=1.0e-12)
+    assert threshold(1.0e-14) == 1.0e-10        # floored: a mode exact to rounding (4e-11)
+
+
+# slid 1e-5 and 3e-5 rad: 6.2e-8 and 1.8e-7 (macOS arm64 and hyperion agree to 3 digits)
+@pytest.mark.parametrize("slide, projected, band", [(1.0e-5, 1, (3.0e-8, 1.0e-7)),
+                                                    (3.0e-5, 0, (1.0e-7, 4.0e-7))],
+                         ids=["slide1e-05", "slide3e-05"])
+def test_a_tight_tolerance_projects_only_what_pays(slide, projected, band):
+    info = _slid_annulus_fmg(f"1142t{projected}", slide, 1.0, tolerance=1.0e-9)
+    assert info["ksp_reason"] > 0, info
+    (ratio,) = info["null_mode_ratios"]
+    assert band[0] < ratio < band[1], (ratio, band)
+    assert info["null_mode_threshold"] == pytest.approx(1.0e-7, rel=1.0e-12)
+    assert info["projected_null_modes"] == projected, info["null_mode_ratios"]
+
+
+def test_a_re_solve_at_a_new_tolerance_re_decides_the_projection():
+    # tight first: a workspace kept from a loose solve would project this mode at tol
+    # 1e-9, where projecting it ran past ten minutes on one rank
+    s = _slid_annulus_fmg("1142c", 3.0e-5, 1.0, tolerance=1.0e-9, solve=False)
+    s.solve()
+    first = dict(s._rotated_freeslip_info)
+    assert first["projected_null_modes"] == 0, first["null_mode_ratios"]   # 1.8e-7 > 1e-7
+    s.tolerance = 1.0e-5
+    # cold: warm from the tight answer it would stop at its first residual check
+    s.solve(zero_init_guess=True)
+    second = s._rotated_freeslip_info
+    assert not second["workspace_reused"], second
+    assert second["null_mode_threshold"] == 1.0e-6
+    assert second["projected_null_modes"] == 1, second["null_mode_ratios"]  # <= 1e-6
+    assert second["ksp_reason"] > 0, second
 
 
 class _AddsAMode:
