@@ -2606,9 +2606,12 @@ class Mesh(Stateful, uw_object):
         cv = getattr(child_var, "_base_var", child_var)
 
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))
-            ).reshape(cv.data.shape)
+            from underworld3.systems.ddt import _evaluated_in_storage_layout
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
+            # a symmetric tensor. The units are dropped as before: this route has
+            # its own units fault, left for later (review of #909, round 3, H2).
+            out = _evaluated_in_storage_layout(
+                cv, numpy.asarray(uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2633,9 +2636,12 @@ class Mesh(Stateful, uw_object):
         cv = getattr(child_var, "_base_var", child_var)
 
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))
-            ).reshape(pv.data.shape)
+            from underworld3.systems.ddt import _evaluated_in_storage_layout
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
+            # a symmetric tensor. The units are dropped as before: this route has
+            # its own units fault, left for later (review of #909, round 3, H2).
+            out = _evaluated_in_storage_layout(
+                pv, numpy.asarray(uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))

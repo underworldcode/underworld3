@@ -269,18 +269,33 @@ def _history_units(psi_fn, units=None):
     return units if units is not None else uw.get_units(psi_fn)
 
 
-def _write_evaluated(var, values):
-    """Write an evaluation of a store's quantity into the store.
+def _evaluated_in_storage_layout(var, values):
+    """An evaluation of a store's quantity, as its ``.data`` holds it.
 
     ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
-    when it carries units (it is reduced), non-dimensional when it does not.
-    It is written component by component into ``.data``, the store's
-    non-dimensional storage, whatever units the store is built with.
+    when it carries units (it is reduced), non-dimensional when it does not. The
+    result is ``(N, components)`` in ``_data_layout`` order. A flat reshape would
+    not do: a symmetric tensor stores fewer entries than its symbol has, and a
+    MATRIX stores by column.
     """
     shape = tuple(var.sym.shape)
     values = np.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
+    stored = np.empty(np.shape(var.data), dtype=np.float64)
     for (i, j) in _storage_components(var.vtype, shape):
-        var.data[:, var._data_layout(i, j)] = values[:, i, j]
+        stored[:, var._data_layout(i, j)] = values[:, i, j]
+    return stored
+
+
+def _write_evaluated(var, values):
+    """Write an evaluation of a store's quantity into the store.
+
+    It is written column by column into ``.data``, the store's non-dimensional
+    storage, whatever units the store is built with.
+    """
+    stored = _evaluated_in_storage_layout(var, values)
+    for (i, j) in _storage_components(var.vtype, tuple(var.sym.shape)):
+        column = var._data_layout(i, j)
+        var.data[:, column] = stored[:, column]
 
 
 def _to_nondim_ndarray(value, units=None):

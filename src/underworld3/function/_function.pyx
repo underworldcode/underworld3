@@ -624,7 +624,14 @@ def global_evaluate_nd(   expr,
     values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
 
     if local_coords.shape[0] > 0:
-        data_container.array[...] = values[...]
+        # Into storage by _data_layout, which keeps a MATRIX by column: the read
+        # below goes through the same layout. The array view's write went by row,
+        # so a non-symmetric result came back transposed.
+        stored = np.empty((values.shape[0], data_container.num_components))
+        for i in range(expr_shape[0]):
+            for j in range(expr_shape[1]):
+                stored[:, data_container._data_layout(i, j)] = values[:, i, j]
+        data_container.data[...] = stored
         is_extrapolated.array[:,0,0] = extrapolated[:]
 
     # set rank to old values and migrate back
@@ -1813,6 +1820,11 @@ def rbf_evaluate(  expr,
     interpolated_results = {}
     for varfn in varfns:
         parent, component = uw.discretisation.meshVariable_lookup_by_symbol(mesh, varfn)
+        # The lookup gives the position in the symbol, which is not the stored
+        # column for a MATRIX; the function records its stored column. A scalar's
+        # records none.
+        if varfn.func.component is not None:
+            component = varfn.func.component
         values = parent.rbf_interpolate(coords, nnn=mesh.dim+1)[:, component]
         interpolated_results[varfn] = values
         if verbose:
