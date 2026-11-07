@@ -3901,16 +3901,33 @@ class SolverBaseClass(uw_object):
             f"  to investigate.\n"
         )
 
+    def _reference_residual(self, gvec):
+        """The norm of the residual this equation measures its convergence against:
+        the residual a cold start would see, ``||F(0)||`` with the boundary data in
+        place. It depends on the forcing and the boundary data, not on the guess
+        ``gvec``. The equation owns this declaration. An equation whose ``F(0)``
+        carries something no iterate measures overrides it: a nonzero velocity
+        imposed weakly (its term scales with the viscosity at rest), a prescribed
+        datum lift, a projected null space. COLLECTIVE."""
+        zero = gvec.duplicate()
+        zero.set(0.0)
+        F = gvec.duplicate()
+        self.snes.computeFunction(zero, F)
+        norm = F.norm()
+        zero.destroy()
+        F.destroy()
+        return norm
+
     def _apply_convergence_reference(self, gvec):
         """Set this solve's absolute targets from one reference residual.
 
-        ``F_ref = max(||F(x0)||, ||F(0)||)``, where ``x0`` is the guess the solve
-        starts from and ``F(0)`` is the residual a cold start would have measured.
-        It depends on the forcing and the boundary data, not on the guess, so a warm
-        start is held to the same target as a cold start of the same problem. The
-        SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear solves at the
-        floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton). The tolerances in
-        force are returned for the caller to restore. Design:
+        ``F_ref = max(||F(x0)||, R)``: ``x0`` is the guess the solve starts from, and
+        ``R`` is the equation's declared reference, :meth:`_reference_residual`. A warm
+        start is therefore held to the same target as a cold start of the same
+        problem. The SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear
+        solves at the floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton). The
+        rules are applied the same way on every route; the tolerances in force are
+        returned for the caller to restore. Design:
         docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md. COLLECTIVE.
         """
         saved = (self.snes.getTolerances(), self.snes.getKSP().getTolerances())
@@ -3918,12 +3935,8 @@ class SolverBaseClass(uw_object):
         F = gvec.duplicate()
         self.snes.computeFunction(gvec, F)
         F_x0 = F.norm()
-        zero = gvec.duplicate()
-        zero.set(0.0)
-        self.snes.computeFunction(zero, F)
-        F_0 = F.norm()
-        zero.destroy()
         F.destroy()
+        F_0 = self._reference_residual(gvec)
         F_ref = max(F_x0, F_0)
         target = max(rtol * F_ref, atol)
         self.snes.setTolerances(atol=target)
