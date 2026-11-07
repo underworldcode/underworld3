@@ -32,6 +32,51 @@ the declaration, and the setter refuses a field that is not a rigid rotation.
 A mesh that declares nothing keeps the old detection. The modes are built from
 non-dimensional coordinates, which also fixes a units-model solve (#877).
 
+### Refining a spherical mesh no longer folds cells (November 2026, #946, #903)
+
+gmsh meshes a sphere in its (longitude, latitude) parameter plane. Near a pole it can
+join four wall nodes along the long diagonal of their quadrilateral, which creases
+the wall toward the centre. On a shell's inner wall the pocket under such a crease
+is meshed as one cell with all four vertices on the sphere. Regular refinement only
+subdivides it, but the refinement callback then snaps the midpoint of the creased
+edge outward past the unsnapped midpoint of the other diagonal, and the children
+fold. A 0.5-cell shell folded 3 cells on macOS and 5 on Linux. On the Linux mesh,
+every velocity multigrid solve of a rotated free-slip Stokes problem ran to its
+iteration cap. A macOS mesh with the same fold, built from another gmsh seed, did
+the same with an LU or an SVD coarse solve and with either wall normal.
+
+- Every gmsh generator with spherical walls now flips creased wall edges before the
+  volume mesh, so each wall patch is triangulated as its convex hull. The
+  generators are SphericalShell, SphericalShellInternalBoundary, SegmentofSphere,
+  CubedSphere, the segmented shell and ball, and RegionalSphericalBox. The flips
+  are pure Python on rank 0, about 1 s per 12,000 surface triangles.
+- The mesh hierarchy applies any refinement callback through a guard. A vertex
+  whose move turns a triangle or tetrahedron inside out goes back where refinement
+  placed it, and one warning gives the total. The guard covers meshes that do not
+  come from gmsh. It costs about 1 s on a 0.4-0.9 million cell mesh, at
+  construction.
+- In parallel, the copies of a vertex are reconciled before the check, the moved copy
+  winning. A callback moves only the vertices of the labelled facets a rank holds, so
+  before this a refined wall vertex could end off its wall depending on the rank count,
+  and at np 8 cells could invert where every rank saw its own copy untangled.
+- A crease on a curve between two wall patches is not flipped, so meshes built of
+  patches still hold vertices back at refinement, with a warning (#949). Measured by
+  vertices held at refinement 1 and 2:
+  - CubedSphere(simplex=True), numElements 3: 3 and 47; numElements 2: 0 and 24.
+  - SegmentedSphericalShell (cellSize 0.5, 3 segments): 2 and 61.
+  - RegionalSphericalBox (±70°, 3×3×2): 4 and 32.
+  Held vertices stay up to 4% of the radius off the wall (22% on that regional box).
+- The segmented shell and ball tagged their volume with Upper's value, so the
+  Upper label took interior vertices and the callback dragged them onto the
+  sphere. The volume is now 99999, as elsewhere.
+- A label missing from a DM now yields no points, where it yielded vertex 0, in
+  both copies of the lookup. A refined ball (radiusInner=0) had moved that vertex
+  to the origin and then divided by its zero radius (#903).
+
+Most spherical meshes change, by the flips, and recorded answers on them move with
+them. test_1111's shell is re-recorded on its new mesh: the shifted LU and a dense
+SVD coarse solve agree on it to every printed digit.
+
 ### The multigrid coarse solve: one rule on every route (November 2026, #901)
 
 The rotated free-slip route solved its coarse level with a dense SVD whenever

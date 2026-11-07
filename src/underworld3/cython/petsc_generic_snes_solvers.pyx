@@ -1,4 +1,5 @@
 import collections
+import weakref
 
 import numpy as np
 import sympy
@@ -353,6 +354,32 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
+# The solver that owns each options prefix, by a token. Instance numbers restart
+# after uw_object._reset(), so a later solver can take a prefix a dropped one had.
+_SOLVER_OPTIONS_OWNER = {}
+
+
+def _drop_solver_options(prefix, token):
+    """Remove every option a dropped solver left in the global database: those
+    under its prefix, and the ``private_`` copies PETSc makes for its sub-objects.
+    Only while that solver still owns the prefix, and only before PETSc is
+    finalised: the mesh and its solvers form a reference cycle, which the
+    collector can reach after PetscFinalize, where touching the options database
+    segfaults. Not collective."""
+    if _SOLVER_OPTIONS_OWNER.get(prefix) is not token:
+        return
+    del _SOLVER_OPTIONS_OWNER[prefix]
+    try:
+        if PETSc.Sys.isFinalized():
+            return
+        opts = PETSc.Options()
+        for name in list(opts.getAll()):
+            if name.startswith(prefix) or name.startswith("private_" + prefix):
+                opts.delValue(name)
+    except Exception:
+        pass
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -471,6 +498,14 @@ class SolverBaseClass(uw_object):
         self.name = "Solver_{}_".format(self.instance_number)
         self.petsc_options_prefix = self.name
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+        # Nothing removed a solver's options when it was dropped, so the global
+        # database grew by about 25 keys per solver (49 for a Stokes and a Poisson
+        # solve, #950). They go when the solver is collected; not at interpreter
+        # exit, by which time PETSc may be finalised.
+        _token = object()
+        _SOLVER_OPTIONS_OWNER[self.petsc_options_prefix] = _token
+        weakref.finalize(self, _drop_solver_options,
+                         self.petsc_options_prefix, _token).atexit = False
 
         self.dm = None
         self.dm_hierarchy = []
