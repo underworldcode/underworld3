@@ -353,6 +353,12 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
+# A linear solve inside Newton stops once its residual is this fraction of the Newton
+# target (inexact Newton): the next nonlinear residual is then inside the target, and no
+# linear solve chases a relative reduction of an already small residual (#911).
+_LINEAR_TARGET_FRACTION = 0.1
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -3895,6 +3901,38 @@ class SolverBaseClass(uw_object):
             f"  to investigate.\n"
         )
 
+    def _apply_convergence_reference(self, gvec):
+        """Set this solve's absolute targets from one reference residual.
+
+        ``F_ref = max(||F(x0)||, ||F(0)||)``, where ``x0`` is the guess the solve
+        starts from and ``F(0)`` is the residual a cold start would have measured.
+        It depends on the forcing and the boundary data, not on the guess, so a warm
+        start is held to the same target as a cold start of the same problem. The
+        SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear solves at the
+        floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton). The tolerances in
+        force are returned for the caller to restore. Design:
+        docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md. COLLECTIVE.
+        """
+        saved = (self.snes.getTolerances(), self.snes.getKSP().getTolerances())
+        rtol, atol, _stol, _max_it = saved[0]
+        F = gvec.duplicate()
+        self.snes.computeFunction(gvec, F)
+        F_x0 = F.norm()
+        zero = gvec.duplicate()
+        zero.set(0.0)
+        self.snes.computeFunction(zero, F)
+        F_0 = F.norm()
+        zero.destroy()
+        F.destroy()
+        F_ref = max(F_x0, F_0)
+        target = max(rtol * F_ref, atol)
+        self.snes.setTolerances(atol=target)
+        floor = max(_LINEAR_TARGET_FRACTION * target, saved[1][1])
+        self.snes.getKSP().setTolerances(atol=floor)
+        self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
+                                       "target": target, "linear_floor": floor}
+        return saved
+
     def _snes_solve_with_retries(self, gvec, divergence_retries=0, verbose=False):
         """Call self.snes.solve(None, gvec) with warm-start retries on divergence.
 
@@ -3953,14 +3991,16 @@ class SolverBaseClass(uw_object):
         _probe = bool(self._difficulty_probe)
         _warm = int(getattr(self, "_pending_picard", 0) or 0)
         self._pending_picard = 0
-        _saved_tol = None
-        if _probe or _warm:
-            _saved_tol = self.snes.getTolerances()
+        # One reference residual for this solve, and the targets it sets (the SNES
+        # atol and the linear floor); everything below starts from them, and the
+        # tolerances in force before are restored in the finally.
+        _saved_tol, _saved_ksp_tol = self._apply_convergence_reference(gvec)
         if _probe:
             if self._difficulty_max_it is not None:
                 self.snes.setTolerances(max_it=int(self._difficulty_max_it))
             if self._resume_abs_target is not None:
-                self.snes.setTolerances(atol=float(self._resume_abs_target))
+                self.snes.setTolerances(atol=max(float(self._resume_abs_target),
+                                                 self._convergence_reference["target"]))
 
         try:
             if _warm:
@@ -3991,9 +4031,11 @@ class SolverBaseClass(uw_object):
                         self._snapshot_numerics()
                         self.snes.solve(None, gvec)
         finally:
-            if _saved_tol is not None:
-                self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
-                                        stol=_saved_tol[2], max_it=_saved_tol[3])
+            self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
+                                    stol=_saved_tol[2], max_it=_saved_tol[3])
+            self.snes.getKSP().setTolerances(rtol=_saved_ksp_tol[0], atol=_saved_ksp_tol[1],
+                                             divtol=_saved_ksp_tol[2],
+                                             max_it=_saved_ksp_tol[3])
             # Default-on difficulty report — single tail so every path is covered,
             # INCLUDING a solve that raises: the report then reflects the failed
             # attempt's SNES state rather than leaving the previous solve's converged
@@ -12406,29 +12448,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         gvec.setArray(0.0)
 
         if not zero_init_guess:
-
             if verbose and uw.mpi.rank == 0:
                 print(f"SNES pre-solve - non-zero initial guess", flush=True)
-
-
-            self._push_snes_max_it(0)
-            self.snes.setType("nrichardson")
-            self.snes.setFromOptions()
-            # PETSc may rebuild operator state after setFromOptions(), so reattach
-            # the configured Stokes nullspace before each solve path.
-            self._attach_stokes_nullspace()
-            self.snes.solve(None, gvec)
-
             for name,var in self.fields.items():
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
                 subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
                 gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
-            self.atol = self.snes.getFunctionNorm() * self.tolerance
-
-        else:
-            self.atol = 0.0
+        # The absolute target is set from this solve's reference residual where every
+        # solve is gated (_apply_convergence_reference); it used to be tolerance times
+        # the warm start's own residual, which held a warm start to a stricter target
+        # than a cold one.
+        self.atol = 0.0
 
         # ⚠️ #791. A Picard step is a Newton iteration with the FROZEN (Picard)
         # tangent — a linear Stokes solve, velocity block and Schur complement, with
