@@ -135,16 +135,25 @@ fi
 # had also put its serial run in batch 4. Those serial runs (about 6 min) moved
 # to shard 3, and test_05*/06*/07* (about 4 min) to shard 2.
 #
-# 2026-11-08: on development 37aa2a11 (run 42412307017) shards 3 and 4 were at
-# 56:28 and 55:40 of the 60-minute budget (the job's hard limit is 70), shard 1
-# at 43:11 and shard 2 at 33:11.
-# Shard 3's test_108*/test_109* batch took 25:47 and test_110* 10:08; shard 4's
-# test_00[0-4]* took 27:29, nearly all of it test_0022 (#985, #911). The
-# test_108*/test_109* batch moves to a fifth shard, which by subtraction leaves
-# shard 3 near 31 minutes and shard 5 near 31 with install and build. Shard 5
-# starts with a cold JIT and mesh cache that the batch shared on shard 3, so
-# re-measure both on the first five-shard run. test_0022 stays on shard 4
-# until #911's fix, which should shorten it; re-measure then.
+# 2026-11-08: shard times depend on the runner's CPU by up to 2x, so compare
+# like with like. Across 9 successful four-shard runs on 37aa2a11 and the PRs
+# just after it:
+#
+#   shard   AMD EPYC 7763        EPYC 9V74      EPYC 9V45      Xeon 8370C/8573C
+#   3       54:37, 54:49         41:34-51:59    31:11          56:30 (8370C)
+#   4       54:57-56:53 (6 runs) 43:58          25:17, 27:13   -
+#   1       43:13-44:49          30:47, 32:15   -              37:18, 38:25 (8573C)
+#   2       33:13-33:32          24:20-26:00    19:54          -
+#
+# On the slow runners shards 3 and 4 are within 5 minutes of the 60-minute
+# budget (the job's hard limit is 70). On run 42412307017 (shard 3 on a Xeon
+# 8370C) the test_108*/test_109* batch took 25:47 of shard 3's 56:30, and
+# test_110* 10:08; shard 4's test_00[0-4]* took 27:29 on an EPYC 7763, which
+# #985 and #911 put nearly all on test_0022. The test_108*/test_109* batch
+# moves to a fifth shard. By subtraction, on a slow runner, shard 3 falls to
+# about 31 minutes and shard 5 runs about 31 with install and build. Shard 5
+# loses the JIT cache it shared on shard 3, so re-measure both, CPU by CPU.
+# test_0022 stays on shard 4 until #911's fix, which should shorten it.
 #
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
 # 149 tests finish in the first 2 minutes, then the remainder takes 31. Since
@@ -399,8 +408,9 @@ fi
 
 # Parallel tests (run if --p N specified)
 #
-# The whole mpirun phase belongs to ONE shard (4), not to each of them. It
-# costs ~4:38 and is the shard's smallest component, but running it on every shard
+# The test_* mpirun phase belongs to ONE shard (4), not to each of them, and the
+# ptest_* loop below to shard 2. The phase costs ~4:38 and is the shard's
+# smallest component, but running it on every shard
 # would multiply the only part of the suite that holds several MPI ranks at
 # once, which is also the part most likely to contend on a shared runner.
 # The ptest_* files that run under pytest and pass (#900): named, in their own loop,
