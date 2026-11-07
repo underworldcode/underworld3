@@ -4102,6 +4102,40 @@ class Mesh(Stateful, uw_object):
             finally:
                 self._coord_mutation_depth -= 1
 
+    def _model_coordinates_from(self, coords):
+        """``coords`` as model coordinates, the frame the DM holds and _deform_mesh writes.
+
+        Coordinates with units are converted by the model's length scale, in any
+        length unit; a unit that is not a length is refused. A plain array is model
+        coordinates, as evaluate reads one. In a units model a plain array the size of
+        the physical domain is refused rather than read as model coordinates and
+        scaled up.
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        scale = (self.CoordinateSystem._length_scale
+                 if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
+        units = getattr(coords, "units", None)
+        if units is not None:
+            if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
+                raise ValueError(f"mesh coordinates must be a length, not {units}")
+            if not isinstance(coords, UnitAwareArray):        # a pint Quantity
+                coords = UnitAwareArray(numpy.asarray(coords.magnitude), units=str(units))
+            model = uw.non_dimensionalise(coords)
+            return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
+        model = numpy.asarray(coords, dtype=float)
+        if scale != 1.0 and model.size:
+            current = numpy.asarray(self._coords).reshape(-1, self.cdim)
+            extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
+                                           op=uw.MPI.MAX)
+            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()), op=uw.MPI.MAX)
+            if (extent > 0.0 and size > 0.0
+                    and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
+                raise ValueError(
+                    "mesh.deform was given a plain array the size of the physical domain. "
+                    "Pass coordinates with units, such as mesh.X.coords, or model coordinates.")
+        return model
+
     def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
         """Move the mesh to ``new_coords``, transferring all fields + history.
 
@@ -4133,12 +4167,7 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.discretisation.remesh import remesh_with_field_transfer
 
-        # The DM holds model coordinates, which is what _deform_mesh writes. Coordinates
-        # with units are converted; a plain array is read as model coordinates, as
-        # evaluate reads one.
-        if getattr(new_coords, "units", None) is not None:
-            new_coords = uw.non_dimensionalise(new_coords)
-        _nc = numpy.asarray(getattr(new_coords, "magnitude", new_coords))
+        _nc = self._model_coordinates_from(new_coords)
 
         # The geometry is about to move, so any ANALYTIC return_coords_to_bounds closure
         # (captured with the original radii/extent) no longer describes the boundary:

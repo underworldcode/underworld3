@@ -107,3 +107,48 @@ def test_a_submesh_follows_its_parent_in_its_frame(units_model):
     mesh.deform(mesh.X.coords * np.where(radius > 1.0 - 1.0e-9, 1.05, 1.0)[:, None])
     on_surface = np.linalg.norm(_dm_coords(surface), axis=1)
     assert np.abs(on_surface - 1.05).max() < 1.0e-9
+
+
+def test_deform_refuses_coordinates_it_cannot_place(units_model):
+    """A plain array the size of the physical domain would be read as model coordinates
+    and scale the mesh by the length scale; a unit that is not a length has no place."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
+    with pytest.raises(ValueError, match="physical domain"):
+        mesh.deform(np.array(mesh.X.coords))
+    with pytest.raises(ValueError, match="must be a length"):
+        mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(
+            _dm_coords(mesh), units="s"))
+    assert np.linalg.norm(_dm_coords(mesh), axis=1).max() == pytest.approx(1.0)
+
+
+def test_deform_takes_a_pint_quantity(units_model):
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
+    start = _dm_coords(mesh)
+    quantity = (start * LENGTH_SCALE * 1.0e-3) * uw.units("km")      # a pint Quantity
+    mesh.deform(quantity)
+    assert np.abs(_dm_coords(mesh) - start).max() < 1.0e-9
+
+
+def test_the_clamp_compares_in_one_frame(units_model, monkeypatch):
+    """#989: the limiter bounded a dimensional value by non-dimensional data and labelled
+    the result with units, so T at 1500 K came back as 1.5 K."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
+    T = uw.discretisation.MeshVariable("T0770c", mesh, 1, degree=1, units="K")
+    start = _dm_coords(mesh)
+    T.data[:, 0] = 0.3 + 0.2 * start[:, 0]
+    nodes = np.asarray(T.coords_nd)[:4]
+    plain = uw.function.global_evaluate(T.sym, nodes)
+    clamped = uw.function.global_evaluate(T.sym, nodes, monotone="clamp")
+    assert np.abs(np.asarray(clamped.to("K")) - np.asarray(plain.to("K"))).max() < 1.0e-9
+
+    from underworld3.discretisation import remesh
+    monkeypatch.setattr(remesh, "REMESH_MONOTONE", "clamp")
+    radius = np.linalg.norm(start, axis=1)
+    mesh.deform(mesh.X.coords * np.where((radius > 0.5 + 1.0e-9) & (radius < 1.0 - 1.0e-9),
+                                         1.02, 1.0)[:, None])
+    moved = _dm_coords(mesh)
+    interior = np.linalg.norm(moved, axis=1) < 0.99
+    raw = np.array(T.data).reshape(-1)
+    # The clamp's own error on a smooth field is 1e-3 here (see test_0768); the frame
+    # error it guards against put the raw values off by 0.1.
+    assert np.abs(raw - (0.3 + 0.2 * moved[:, 0]))[interior].max() < 1.0e-2
