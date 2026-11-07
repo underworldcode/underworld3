@@ -718,6 +718,11 @@ def _apply_monotone_limit(
     # Flatten trailing dims to compute per-coord nbr stats, then restore
     # the original shape afterwards.
     psi_data_flat = psi_data.reshape(psi_data.shape[0], -1)
+    rows, columns = var.shape
+    if psi_data_flat.shape[1] == rows * columns:
+        # Row by row, the order of ``value``: a matrix is stored by columns.
+        psi_data_flat = psi_data_flat[:, [var._data_layout(i, j)
+                                          for i in range(rows) for j in range(columns)]]
     nbr_vals = psi_data_flat[idxs]
     nbr_min = nbr_vals.min(axis=1)
     nbr_max = nbr_vals.max(axis=1)

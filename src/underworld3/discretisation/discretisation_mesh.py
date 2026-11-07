@@ -2606,9 +2606,9 @@ class Mesh(Stateful, uw_object):
         cv = getattr(child_var, "_base_var", child_var)
 
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))
-            ).reshape(cv.data.shape)
+            from underworld3.discretisation.remesh import _values_in_data_layout
+            out = _values_in_data_layout(
+                cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2633,9 +2633,9 @@ class Mesh(Stateful, uw_object):
         cv = getattr(child_var, "_base_var", child_var)
 
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))
-            ).reshape(pv.data.shape)
+            from underworld3.discretisation.remesh import _values_in_data_layout
+            out = _values_in_data_layout(
+                pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))

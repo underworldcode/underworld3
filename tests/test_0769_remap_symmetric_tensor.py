@@ -1,8 +1,9 @@
 """A remapped variable is written in its own data layout.
 
 global_evaluate returns the full array per node. A symmetric tensor stores only its
-independent components, so the remap's reshape raised and left the move part done, and a
-matrix stores by columns, so the reshape silently transposed it. See #977.
+independent components, so the remap's reshape raised and left the move part done. A
+tensor came back transposed, through global_evaluate's own swarm matrix. A matrix stores
+by columns, and was right only because those two errors cancelled. See #977.
 """
 import numpy as np
 import pytest
@@ -94,3 +95,16 @@ def test_global_evaluate_returns_a_tensor_in_the_order_evaluate_does():
     points = np.asarray(M.coords)[:3]
     assert np.array_equal(np.asarray(uw.function.global_evaluate(M.sym, points)),
                           np.asarray(uw.function.evaluate(M.sym, points)))
+
+
+def test_the_monotone_limit_bounds_each_matrix_component_by_its_own_values():
+    """A matrix is stored by columns and evaluated by rows, so the limiter has to compare
+    like with like: this one reads [[1, 2], [30, 40]] and must leave it alone."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 4, qdegree=3)
+    M = uw.discretisation.MeshVariable("M0769l", mesh, (2, 2), vtype=uw.VarType.MATRIX, degree=1)
+    values = np.zeros(np.asarray(M.array).shape)
+    values[:, 0, 0], values[:, 0, 1], values[:, 1, 0], values[:, 1, 1] = 1.0, 2.0, 30.0, 40.0
+    M.array[...] = values
+    points = np.asarray(M.coords)[:3]
+    limited = np.asarray(uw.function.evaluate(M.sym, points, monotone="clamp"))
+    assert np.abs(limited - values[:3]).max() < 1.0e-9
