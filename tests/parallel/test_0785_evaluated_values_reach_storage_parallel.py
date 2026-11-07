@@ -225,13 +225,14 @@ def _units_refinement_pair(tag, parent_units="K", child_units="K", shape=1,
 def test_the_parallel_refinement_transfers_refuse_under_reference_scales(
         reference_scales, parent_units, child_units, shape, vtype, scaled):
     """The parallel route reads dimensional coordinates as non-dimensional whenever the
-    model has reference scales, whatever the variables carry (#991). Measured at np 3:
+    model has reference quantities, whatever the variables carry (#991). Measured at np 3:
     with units, a scalar out by 968; with none, a scalar out by 2.5 and a 2 x 3 MATRIX
     by 15; with units on the child only, the restriction out by 3874. Every rank
     refuses both transfers together, and neither variable is written.
 
-    The one-sided cases switch the scaling off, so that only the variables' units can
-    refuse them: either variable carrying units must be enough."""
+    The one-sided cases switch the scaling flag off, which leaves the reference
+    quantities in place, so the model alone refuses them as well. The variables'
+    units are checked too, for a model without reference quantities."""
     previous = uw.is_nondimensional_scaling_active()
     uw.use_nondimensional_scaling(scaled)
     try:
@@ -261,6 +262,46 @@ def _check_the_refusal(parent_units, child_units, shape, vtype):
 
     assert all_outcomes == [["refused", "refused"]] * uw.mpi.size, (all_outcomes, child_error, parent_error)
     assert child_error < 1.0e-12 and parent_error < 1.0e-12, (child_error, parent_error)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_the_parallel_refinement_transfers_refuse_with_reference_quantities_and_scaling_off():
+    """``nondimensional_scaling=False`` leaves the flag off, but the coordinates are
+    still dimensional: at np 3 a scalar without units was out by 2.5 and a 2 x 3
+    MATRIX by 15. The model's reference quantities decide, not the flag."""
+    scaling_before = uw.is_nondimensional_scaling_active()
+    uw.get_default_model().set_reference_quantities(
+        nondimensional_scaling=False,
+        length=uw.quantity(1000, "km"), time=uw.quantity(1, "Myr"),
+        mass=uw.quantity(1e24, "kg"), temperature=uw.quantity(1000, "K"))
+    try:
+        _check_the_refusal(None, None, 1, uw.VarType.SCALAR)
+    finally:
+        uw.reset_default_model()
+        uw.use_nondimensional_scaling(scaling_before)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_the_parallel_refinement_transfers_proceed_after_the_model_is_reset():
+    """After ``reset_default_model`` the coordinates are non-dimensional again and the
+    parallel route is exact, though the scaling flag is still on."""
+    scaling_before = uw.is_nondimensional_scaling_active()
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1000, "km"), time=uw.quantity(1, "Myr"),
+        mass=uw.quantity(1e24, "kg"), temperature=uw.quantity(1000, "K"))
+    uw.reset_default_model()
+    try:
+        child, parent_var, child_var = _units_refinement_pair("after_reset", None, None)
+        _fill_raw(parent_var)
+        child._refine_prolongate(parent_var, child_var)
+        prolongate_error = _worst_raw_error(child_var)
+        _fill_raw(child_var)
+        parent_var.data[:] = 0.0
+        child._refine_restrict(child_var, parent_var)
+        restrict_error = _worst_raw_error(parent_var)
+    finally:
+        uw.use_nondimensional_scaling(scaling_before)
+    assert prolongate_error < 1.0e-9 and restrict_error < 1.0e-9, (prolongate_error, restrict_error)
 
 
 def test_the_serial_refinement_transfers_keep_a_variable_with_units(reference_scales):

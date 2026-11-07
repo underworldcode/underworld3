@@ -2607,16 +2607,18 @@ class Mesh(Stateful, uw_object):
     @staticmethod
     def _refuse_parallel_refinement_with_units(*variables):
         """The parallel refinement route reads the coordinates as non-dimensional, so
-        it gets every shape wrong in a model with reference scales, whether or not the
-        variables carry units, and wherever either variable carries units (#991).
-        Refuse rather than give a wrong value. The scaling, the units and the rank
-        count are the same on every rank, so every rank raises together."""
+        it gets every shape wrong when the model has reference quantities
+        (``uw.get_default_model().has_units()``), whatever the variables carry and
+        whether or not non-dimensional scaling is switched on, and when either
+        variable carries units (#991). Refuse rather than give a wrong value. These
+        facts and the rank count are the same on every rank, so every rank raises
+        together."""
         if uw.mpi.size == 1:
             return
-        scaled = uw.is_nondimensional_scaling_active()
+        referenced = uw.get_default_model().has_units()
         with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
-        if scaled or with_units:
-            reason = ("the model has reference scales" if scaled
+        if referenced or with_units:
+            reason = ("the model has reference quantities" if referenced
                       else f"{', '.join(repr(n) for n in with_units)} carry units")
             raise NotImplementedError(
                 f"Transfers between a parent and its refinement child are not yet "
