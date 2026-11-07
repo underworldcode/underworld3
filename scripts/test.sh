@@ -401,6 +401,7 @@ PTEST_FILES=(
   tests/parallel/ptest_0762_read_timestep_swarm_routed.py
   tests/parallel/ptest_0843_edge_split_parallel.py
   tests/parallel/ptest_0844_line_cut_parallel.py
+  tests/parallel/ptest_0844_reconnect_parallel.py
   tests/parallel/ptest_0845_fault_split_parallel.py
   tests/parallel/ptest_0845_relax_pinned_band_parallel.py
   tests/parallel/ptest_0852_place_split_contact.py

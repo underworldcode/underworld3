@@ -51,7 +51,6 @@ DEFERRED_PTESTS = {
     "ptest_0848_fault_split_3d_parallel.py": SCRIPT_STYLE,
     "ptest_1020_fmg_single_field_parallel.py": SCRIPT_STYLE,
     "ptest_1079_diffusion_disk_restart.py": SCRIPT_STYLE,
-    "ptest_0844_reconnect_parallel.py": "hangs at np 2 and 4 (#961)",
     "ptest_0851_fault_network_3d_parallel.py": "fails at np 2 and 4 (#900)",
     "ptest_0863_fault_network_3d_width_parallel.py": "fails at np 2 and 4 (#956)",
     "ptest_0763_mesh_adapt_transfer.py": "its one test is skipped unconditionally: adaptMetric fails on N>1",
