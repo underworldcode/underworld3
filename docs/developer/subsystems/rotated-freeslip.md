@@ -287,6 +287,26 @@ the rotated path into `SolverInstrumentation.sub_reports()` is the proper fix an
 has not been done. On the opt-in `solver._rotated_use_lu` path there are no
 sub-KSPs at all and both fields record `None`.
 
+**An exact rotation is kept out of the multigrid's directions (#963).** Take an
+analytic normal on a circle or sphere: the constraint then leaves a rotation an
+exact null vector of the rotated velocity block, |A m| / (|A| |m|) about 2e-18
+on test_1064's annulus. A multigrid cycle returns a rounding-level component along
+it in each direction it makes. The KSP's null space removes the mode from the
+right-hand side and the solution only, so the inner FGMRES floored near 1e-7
+against its 3.3e-11 and ran to its cap of 200. Whether the outer solve converged
+after that depended on rounding, so on the OpenBLAS kernel: on CI it did not, and
+the job hung.
+
+On the custom-FMG route the velocity sub-PC is therefore a projection around the
+multigrid, `z = P M (P r)`. `P` removes every admitted rotation with |A m| /
+(|A| |m|) at or below 1e-10, orthonormalised; the inner solve then takes about 4
+cycles. The record carries `projected_null_modes`, the number projected, and
+`null_mode_ratios`, that ratio for each admitted rotation. `velocity_pc_type`
+still names the multigrid. A rotation that is only near-null is left to the
+multigrid: a declared rotation on a faceted wall, where A m is the faceting error.
+The projection owns the multigrid it wraps and destroys it with itself. The GAMG
+velocity route and the rotated vector route are unchanged.
+
 The manual loop exists because the rotated operator `Q A Qᵀ` carries no DM
 field information, so PETSc's DM-coupled fieldsplit cannot precondition it;
 the increment is solved by an IS-built fieldsplit instead, driven from the
