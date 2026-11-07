@@ -66,6 +66,13 @@ def _global(x, op=MPI.SUM):
     return uw.mpi.comm.allreduce(x, op=op)
 
 
+def _everywhere(ok):
+    """Whether ``ok`` holds on every rank. An assert on a rank-local fact ahead of a
+    collective leaves the other ranks waiting in it when it fails on one rank, so the
+    failure reads as a hang (#961); reduce first, then assert."""
+    return bool(uw.mpi.comm.allreduce(bool(ok), op=MPI.LAND))
+
+
 def _owned_cells_and_area(dm):
     cS, cE = dm.getHeightStratum(0)
     owned = _owned(dm, range(cS, cE))
@@ -99,7 +106,7 @@ def test_geometry_and_conformity_survive():
 
     out, _ = reconnect.flip_to_reduce_max_angle(dm)
 
-    assert out.getChart() == chart
+    assert _everywhere(out.getChart() == chart)
     ncells_after, area_after = _owned_cells_and_area(out)
     assert _global(ncells_after) == _global(ncells)
     assert _global(area_after) == pytest.approx(_global(area), rel=1e-12)
@@ -148,8 +155,8 @@ def test_adapt_with_repair_runs_in_parallel():
     assert _global(sum(1 for f in range(fS, fE)
                        if len(child.dm.getSupport(f)) > 2)) == 0
     # Flips move no vertex, so the exact vertex prolongation must survive.
-    assert child._adapt_prolongation and all(
-        P is not None for P in child._adapt_prolongation)
+    assert _everywhere(child._adapt_prolongation and all(
+        P is not None for P in child._adapt_prolongation))
 
     # The cell-parent map must NOT survive a repair, because a flipped cell can
     # straddle two coarse cells and using it would transfer from the wrong
@@ -163,10 +170,10 @@ def test_adapt_with_repair_runs_in_parallel():
                          repair=repair, mg_coarsening_ratio=1.0)
         arms[repair] = arm._adapt_parent_cells
 
-    assert any(pc is not None for pc in arms[False]), (
+    assert _everywhere(any(pc is not None for pc in arms[False])), (
         "no parent-cell map survived WITHOUT repair, so the assertion below "
         "cannot distinguish repair from anything else")
-    assert all(pc is None for pc in arms[True]), (
+    assert _everywhere(all(pc is None for pc in arms[True])), (
         "a parent-cell map survived a repair pass; a flipped cell spans two "
         "coarse cells and the transfer would read the wrong parent")
 
