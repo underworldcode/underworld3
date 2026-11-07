@@ -148,8 +148,15 @@ def test_the_shell_returns_no_rigid_rotation(radial, capsys):
     if radial:
         assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1.0e-14
         assert stokes._rotated_null_mode_slack == 0.0
+        # exact modes of the velocity block: projected out of the multigrid (#963)
+        assert info["projected_null_modes"] == 3, info["null_mode_ratios"]
+        assert max(info["null_mode_ratios"]) < 1.0e-14
     else:
         assert 1.0e-3 < stokes._rotated_null_mode_slack < 0.05    # near-null, not null
+        # near-null on the faceted walls: left to the multigrid, well above the 1e-10
+        # at which a mode is projected (#963)
+        assert info["projected_null_modes"] == 0, info["null_mode_ratios"]
+        assert min(info["null_mode_ratios"]) > 1.0e-8, info["null_mode_ratios"]
 
 
 def test_a_net_torque_still_warns_under_the_default_normal(capsys):
