@@ -2604,6 +2604,18 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _refuse_parallel_refinement_with_units(*variables):
+        """The parallel refinement route reads the coordinates as non-dimensional
+        and so gets every shape wrong once a variable carries units (#991). Refuse
+        rather than give a wrong value. Units and the rank count are the same on
+        every rank, so every rank raises together."""
+        if uw.mpi.size > 1 and any(getattr(v, "units", None) is not None for v in variables):
+            names = ", ".join(repr(v.clean_name) for v in variables)
+            raise NotImplementedError(
+                f"Transfers between a parent and its refinement child are not yet "
+                f"right in parallel for variables with units ({names}); see #991.")
+
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
         if self._relationship_kind != "refinement":
@@ -2611,11 +2623,12 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
+        self._refuse_parallel_refinement_with_units(pv, cv)
+
         if uw.mpi.size > 1:
             from underworld3.systems.ddt import _evaluated_in_storage_layout
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
-            # a symmetric tensor. The units are dropped as before: this route has
-            # its own units fault, left for later (review of #909, round 3, H2).
+            # a symmetric tensor.
             out = _evaluated_in_storage_layout(
                 cv, numpy.asarray(uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))))
         else:
@@ -2641,11 +2654,12 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
+        self._refuse_parallel_refinement_with_units(pv, cv)
+
         if uw.mpi.size > 1:
             from underworld3.systems.ddt import _evaluated_in_storage_layout
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
-            # a symmetric tensor. The units are dropped as before: this route has
-            # its own units fault, left for later (review of #909, round 3, H2).
+            # a symmetric tensor.
             out = _evaluated_in_storage_layout(
                 pv, numpy.asarray(uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))))
         else:

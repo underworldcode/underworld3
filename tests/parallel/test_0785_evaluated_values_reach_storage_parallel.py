@@ -188,3 +188,54 @@ def test_the_refinement_transfers_keep_a_square_matrix_in_its_components():
         errors[f"restrict_{tag}"] = _worst_raw_error(parent_var)
 
     assert all(e < 1.0e-9 for e in errors.values()), errors
+
+
+def _units_refinement_pair(tag):
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, regular=True, qdegree=3,
+        refinement=1)
+    size_field = uw.discretisation.MeshVariable(f"h_{tag}", base, 1, degree=1)
+    size_field.array[:, 0, 0] = 0.1
+    child = base.adapt(size_field, max_levels=1, engine="sbr")
+    parent_var = uw.discretisation.MeshVariable(f"Tp_{tag}", base, 1, degree=1, units="K")
+    child_var = uw.discretisation.MeshVariable(f"Tc_{tag}", child, 1, degree=1, units="K")
+    return child, parent_var, child_var
+
+
+@pytest.mark.mpi(min_size=2)
+def test_the_parallel_refinement_transfers_refuse_a_variable_with_units(reference_scales):
+    """The parallel route gets units wrong on every shape (#991): a scalar in K came
+    out by 968 at np 3. It refuses on every rank together rather than give a wrong
+    value, and nothing is written."""
+    child, parent_var, child_var = _units_refinement_pair("refuse")
+    _fill_raw(parent_var, 0.5)
+    _fill_raw(child_var, 0.25)
+
+    outcomes = []
+    for transfer, source, target in ((child._refine_prolongate, parent_var, child_var),
+                                     (child._refine_restrict, child_var, parent_var)):
+        try:
+            transfer(source, target)
+            outcomes.append("returned")
+        except NotImplementedError as error:
+            outcomes.append("refused" if "#991" in str(error) else str(error))
+    all_outcomes = uw.mpi.comm.allgather(outcomes)
+    child_error = _worst_raw_error(child_var, 0.25)
+    parent_error = _worst_raw_error(parent_var, 0.5)
+
+    assert all_outcomes == [["refused", "refused"]] * uw.mpi.size, (all_outcomes, child_error, parent_error)
+    assert child_error < 1.0e-12 and parent_error < 1.0e-12, (child_error, parent_error)
+
+
+def test_the_serial_refinement_transfers_keep_a_variable_with_units(reference_scales):
+    """In serial the transfers take the custom-P route, which has no units fault."""
+    if uw.mpi.size > 1:
+        pytest.skip("the serial route")
+    child, parent_var, child_var = _units_refinement_pair("serial")
+    _fill_raw(parent_var, 0.5)
+    child._refine_prolongate(parent_var, child_var)
+    prolongate_error = _worst_raw_error(child_var, 0.5)
+    _fill_raw(child_var, 0.25)
+    child._refine_restrict(child_var, parent_var)
+    restrict_error = _worst_raw_error(parent_var, 0.25)
+    assert prolongate_error < 1.0e-9 and restrict_error < 1.0e-9, (prolongate_error, restrict_error)
