@@ -71,12 +71,16 @@ def _worst_raw_error(var, scale=1.0):
 
 @pytest.fixture
 def reference_scales():
+    """Reference scales for one test. Setting them switches non-dimensional scaling
+    on, and ``reset_default_model`` does not switch it off, so that is restored too."""
+    scaling_before = uw.is_nondimensional_scaling_active()
     model = uw.get_default_model()
     model.set_reference_quantities(
         length=uw.quantity(1000, "km"), time=uw.quantity(1, "Myr"),
         mass=uw.quantity(1e24, "kg"), temperature=uw.quantity(1000, "K"))
     yield model
     uw.reset_default_model()
+    uw.use_nondimensional_scaling(scaling_before)
 
 
 def test_remesh_keeps_the_non_dimensional_values_of_variables_with_units(reference_scales):
@@ -190,24 +194,56 @@ def test_the_refinement_transfers_keep_a_square_matrix_in_its_components():
     assert all(e < 1.0e-9 for e in errors.values()), errors
 
 
-def _units_refinement_pair(tag):
+def _units_refinement_pair(tag, parent_units="K", child_units="K", shape=1,
+                           vtype=uw.VarType.SCALAR):
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, regular=True, qdegree=3,
         refinement=1)
     size_field = uw.discretisation.MeshVariable(f"h_{tag}", base, 1, degree=1)
     size_field.array[:, 0, 0] = 0.1
     child = base.adapt(size_field, max_levels=1, engine="sbr")
-    parent_var = uw.discretisation.MeshVariable(f"Tp_{tag}", base, 1, degree=1, units="K")
-    child_var = uw.discretisation.MeshVariable(f"Tc_{tag}", child, 1, degree=1, units="K")
+
+    def units(u):
+        return {"units": u} if u else {}
+
+    parent_var = uw.discretisation.MeshVariable(f"Tp_{tag}", base, shape, degree=1, vtype=vtype,
+                                                **units(parent_units))
+    child_var = uw.discretisation.MeshVariable(f"Tc_{tag}", child, shape, degree=1, vtype=vtype,
+                                               **units(child_units))
     return child, parent_var, child_var
 
 
 @pytest.mark.mpi(min_size=2)
-def test_the_parallel_refinement_transfers_refuse_a_variable_with_units(reference_scales):
-    """The parallel route gets units wrong on every shape (#991): a scalar in K came
-    out by 968 at np 3. It refuses on every rank together rather than give a wrong
-    value, and nothing is written."""
-    child, parent_var, child_var = _units_refinement_pair("refuse")
+@pytest.mark.parametrize("parent_units, child_units, shape, vtype, scaled", [
+    ("K", "K", 1, uw.VarType.SCALAR, True),
+    (None, None, 1, uw.VarType.SCALAR, True),
+    (None, None, (2, 3), uw.VarType.MATRIX, True),
+    ("K", None, 1, uw.VarType.SCALAR, False),
+    (None, "K", 1, uw.VarType.SCALAR, False),
+], ids=["both_in_K", "no_units_scalar", "no_units_matrix",
+        "parent_in_K_unscaled", "child_in_K_unscaled"])
+def test_the_parallel_refinement_transfers_refuse_under_reference_scales(
+        reference_scales, parent_units, child_units, shape, vtype, scaled):
+    """The parallel route reads dimensional coordinates as non-dimensional whenever the
+    model has reference scales, whatever the variables carry (#991). Measured at np 3:
+    with units, a scalar out by 968; with none, a scalar out by 2.5 and a 2 x 3 MATRIX
+    by 15; with units on the child only, the restriction out by 3874. Every rank
+    refuses both transfers together, and neither variable is written.
+
+    The one-sided cases switch the scaling off, so that only the variables' units can
+    refuse them: either variable carrying units must be enough."""
+    previous = uw.is_nondimensional_scaling_active()
+    uw.use_nondimensional_scaling(scaled)
+    try:
+        _check_the_refusal(parent_units, child_units, shape, vtype)
+    finally:
+        uw.use_nondimensional_scaling(previous)
+
+
+def _check_the_refusal(parent_units, child_units, shape, vtype):
+    tag = f"refuse_{parent_units}_{child_units}_{vtype.name}"
+    child, parent_var, child_var = _units_refinement_pair(tag, parent_units, child_units,
+                                                          shape, vtype)
     _fill_raw(parent_var, 0.5)
     _fill_raw(child_var, 0.25)
 

@@ -2606,15 +2606,21 @@ class Mesh(Stateful, uw_object):
     # ------------------------------------------------------------------ #
     @staticmethod
     def _refuse_parallel_refinement_with_units(*variables):
-        """The parallel refinement route reads the coordinates as non-dimensional
-        and so gets every shape wrong once a variable carries units (#991). Refuse
-        rather than give a wrong value. Units and the rank count are the same on
-        every rank, so every rank raises together."""
-        if uw.mpi.size > 1 and any(getattr(v, "units", None) is not None for v in variables):
-            names = ", ".join(repr(v.clean_name) for v in variables)
+        """The parallel refinement route reads the coordinates as non-dimensional, so
+        it gets every shape wrong in a model with reference scales, whether or not the
+        variables carry units, and wherever either variable carries units (#991).
+        Refuse rather than give a wrong value. The scaling, the units and the rank
+        count are the same on every rank, so every rank raises together."""
+        if uw.mpi.size == 1:
+            return
+        scaled = uw.is_nondimensional_scaling_active()
+        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
+        if scaled or with_units:
+            reason = ("the model has reference scales" if scaled
+                      else f"{', '.join(repr(n) for n in with_units)} carry units")
             raise NotImplementedError(
                 f"Transfers between a parent and its refinement child are not yet "
-                f"right in parallel for variables with units ({names}); see #991.")
+                f"right in parallel when {reason}; see #991.")
 
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
