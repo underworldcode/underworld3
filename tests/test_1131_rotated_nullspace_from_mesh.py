@@ -234,6 +234,21 @@ def test_mixed_given_and_default_normals_warn_that_the_rotation_stays():
                        in str(w.message) for w in record), [str(w.message) for w in record]
 
 
+def test_the_direct_lu_route_records_its_verdict_on_the_declared_mode():
+    # the LU route builds no null space; its verdict comes from the gauge (it was None)
+    mesh, v, stokes = _annulus_stokes("1131l")
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes._rotated_use_lu = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"] and info["velocity_pc"] == "direct-LU", info
+    assert info["declared_modes_exempt"] == [True]
+    assert info["rotation_gauge"]["exempt"] == [True], info["rotation_gauge"]
+    assert info["projected_null_modes"] is None and info["null_mode_ratios"] is None
+
+
 def test_a_mesh_that_declares_no_rotation_is_not_warned_about():
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
     mesh.nullspace_rotations = []
