@@ -135,6 +135,14 @@ fi
 # had also put its serial run in batch 4. Those serial runs (about 6 min) moved
 # to shard 3, and test_05*/06*/07* (about 4 min) to shard 2.
 #
+# 2026-11-08: on development 37aa2a11 (run 42412307017) shards 3 and 4 were at
+# 56:28 and 55:40 of the 60-minute cap, shard 1 at 43:11 and shard 2 at 33:11.
+# Shard 3's test_108*/test_109* batch took 25:47 and test_110* 10:08; shard 4's
+# test_00[0-4]* took 27:29, nearly all of it test_0022 (#985, #911). The
+# test_108*/test_109* batch moves to a fifth shard, which leaves shard 3 near 31
+# minutes and shard 5 near 31 with install and build. test_0022 stays on shard 4
+# until #911's fix, which should shorten it; re-measure then.
+#
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
 # 149 tests finish in the first 2 minutes, then the remainder takes 31. Since
 # the distribution is --dist loadfile, a file is atomic on a worker, so the
@@ -354,9 +362,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
   # thick, the quadratic benchmark); the two slow sphere tests (1081, 1084) are
   # tier C, so the "not tier_c" filter leaves them out. test_109*: the fault
-  # placement and split-level multigrid tests that follow. Shard 3: the lightest
-  # measured (17.3 min on run 40638600008); not yet timed in a sharded run.
-  batch 3 tests/test_108*py tests/test_109*py
+  # placement and split-level multigrid tests that follow. Their own shard, 5:
+  # 25:47 of shard 3's 56:28 on run 42412307017 (see the header).
+  batch 5 tests/test_108*py tests/test_109*py
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign
