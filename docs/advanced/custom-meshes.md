@@ -292,6 +292,18 @@ mesh = uw.discretisation.Mesh(
 )
 ```
 
+Refinement subdivides every cell, so before the callback runs no cell is inside
+out. A callback that moves a vertex past its neighbours can turn the cells
+between them inside out: on a concave wall, a snapped midpoint can overtake an
+interior vertex that is not snapped. Underworld checks every triangle or
+tetrahedron after the callback (meshes of quadrilaterals or hexahedra, and
+surface meshes, are not checked). Where one is inverted, the vertex the callback
+moved furthest goes back where refinement put it, until no cell is inverted, and
+one warning says how many vertices were put back. Those vertices are not on the
+curve. The warning means a coarse cell spans a stretch of concave boundary that
+no snapping can bend it to: typically a cell whose vertices all lie on that
+boundary, or a crease in the boundary's triangulation.
+
 ### Return Coords to Bounds
 
 For simulations with inflow boundaries, particles may escape. Use this callback to push them back:
