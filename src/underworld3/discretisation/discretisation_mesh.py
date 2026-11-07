@@ -9103,6 +9103,9 @@ class Mesh(Stateful, uw_object):
         # is that offset; each generation's map comes back from `to_dm`.
         _nested_Ps = []
         _nested_parent_cells = []
+        # per pass: whether a repair flipped a cell (a global count, so the same on
+        # every rank); no span through such a pass has a cell-parent map (#961)
+        _repaired_passes = []
         _vS0, _vE0 = base_finest.getDepthStratum(0)
         _coarse_vmap = {i: _vS0 + i for i in range(_vE0 - _vS0)}
 
@@ -9263,6 +9266,7 @@ class Mesh(Stateful, uw_object):
                     current_dm, n_flips = reconnect.flip_to_reduce_max_angle(
                         current_dm)
                     _nested_parent_cells.append(None)
+                    _repaired_passes.append(n_flips > 0)
                     if verbose:
                         uw.pprint(0, f"[adapt] edge_split pass {level}: repaired "
                                      f"with {n_flips} flip(s)")
@@ -9275,6 +9279,7 @@ class Mesh(Stateful, uw_object):
                     # parents from the composed vertex transfer instead
                     # of falling back to the geometric builder.
                     _nested_parent_cells.append(None)
+                    _repaired_passes.append(False)
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     _mg = Mesh(current_dm.clone(),
@@ -9468,7 +9473,8 @@ class Mesh(Stateful, uw_object):
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
                 ratio=mg_coarsening_ratio, verbose=verbose,
                 resolution_hint=(_pct5_of_dm if engine == "edge_split"
-                                 else None))
+                                 else None),
+                repaired=_repaired_passes)
 
         # Exact per-generation prolongations when the engine could supply them
         # (cell-list path). Empty for the native transform path, which falls
@@ -9510,7 +9516,7 @@ class Mesh(Stateful, uw_object):
 
     def _subsample_mg_levels(self, base_finest, level_dms, nested_Ps,
                              nested_parent_cells, ratio=2.0, verbose=False,
-                             resolution_hint=None):
+                             resolution_hint=None, repaired=None):
         """Keep one multigrid level per DOUBLING OF RESOLUTION, not one per pass.
 
         A refinement engine takes as many passes as it needs to reach the size
@@ -9613,7 +9619,13 @@ class Mesh(Stateful, uw_object):
             recorded = (nested_parent_cells[i]
                         if i == start and i < len(nested_parent_cells)
                         else None)
-            if recorded is not None:
+            # A repair flips cells after the split, so a fine cell can straddle two
+            # coarse cells; the map is then dropped for the whole span, on every
+            # rank. Deriving it anyway found a parent wherever the local flips
+            # happened not to straddle, so ranks disagreed (#961).
+            if repaired is not None and any(repaired[start:i + 1]):
+                parent_cells.append(None)
+            elif recorded is not None:
                 parent_cells.append(recorded)
             elif composed[-1] is not None:
                 from underworld3.utilities.nvb import (

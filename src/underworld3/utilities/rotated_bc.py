@@ -1933,6 +1933,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
+            "projected_null_modes": None if use_lu else (ctx or {}).get("projected_null_modes"),
+            "null_mode_ratios": None if use_lu else (ctx or {}).get("null_mode_ratios"),
             # the coarse-level solve of the custom FMG: "redundant" (LU with the
             # zero-pivot shift) or the asked-for "gamg" (None without one)
             "coarse_solve": None if use_lu else (ctx or {}).get("coarse_solve"),
@@ -2265,6 +2267,12 @@ def _destroy_rotated_ksp_ctx(ctx):
     if ctx.get("ksp") is not None:
         ctx["ksp"].destroy()
         ctx["ksp"] = None
+    if ctx.get("pc") is not None:
+        # this reference alone keeps the fieldsplit PC, its sub-KSPs and the null-mode
+        # projection around the multigrid alive (#963); in parallel petsc4py defers the
+        # destruction of a dropped reference, so release it here
+        ctx["pc"].destroy()
+        ctx["pc"] = None
     if ctx.get("Mp") is not None:
         ctx["Mp"].destroy()
         ctx["Mp"] = None
@@ -2274,6 +2282,102 @@ def _destroy_rotated_ksp_ctx(ctx):
     if ctx.get("cns") is not None:
         ctx["cns"].destroy()
         ctx["cns"] = None
+
+
+# A velocity null mode is exact when the velocity operator annihilates it to this
+# relative tolerance; an exact mode is projected out of the velocity preconditioner (#963).
+_EXACT_NULL_MODE_TOL = 1.0e-10
+
+
+def _exact_velocity_null_modes(A_vv, modes):
+    """The vectors of ``modes`` (velocity-block copies of the admitted rotations) that
+    ``A_vv`` annihilates to ``_EXACT_NULL_MODE_TOL`` of ``|A_vv| |m|``, orthonormalised,
+    and that ratio for every mode. The others are destroyed. Near-null modes (a declared
+    rotation on a faceted wall, where ``A_vv m`` is the faceting error) are left to the
+    multigrid. COLLECTIVE."""
+    if not modes:
+        return [], []
+    scale = A_vv.norm(PETSc.NormType.FROBENIUS)
+    work = modes[0].duplicate()
+    exact, ratios = [], []
+    for m in modes:
+        A_vv.mult(m, work)
+        ratio = work.norm() / (scale * m.norm())
+        ratios.append(float(ratio))
+        if ratio <= _EXACT_NULL_MODE_TOL:
+            exact.append(m)
+        else:
+            m.destroy()
+    work.destroy()
+    for i, m in enumerate(exact):
+        for q in exact[:i]:
+            m.axpy(-m.dot(q), q)
+        m.normalize()
+    return exact, ratios
+
+
+class _NullModeProjectedPC:
+    """The velocity block's preconditioner with its exact null modes projected out of
+    what it is given and what it returns, ``z = P M (P r)``, ``P = I - sum m m^T`` (#963).
+
+    When the rotated constraint leaves a rotation exact (an analytic normal on a circle
+    or sphere), the velocity block is singular along it. A multigrid cycle returns a
+    rounding-level component along the mode in each direction it makes. The KSP's null
+    space does not remove that, because it acts on the right-hand side and the solution
+    only, so the inner FGMRES floors near 1e-7 against its 3.3e-11. Whether rounding
+    puts the floor above the tolerance depended on the OpenBLAS kernel: the test_1064
+    annulus stalled under Zen, Haswell and Core2 and finished under SkylakeX. The mode
+    is in the null space attached to the outer solve, so the solution loses nothing by
+    keeping it out of the preconditioned directions."""
+
+    def __init__(self, inner, modes):
+        self.inner = inner
+        self.modes = modes
+        self.work = modes[0].duplicate()
+
+    def _project(self, v):
+        for m in self.modes:
+            v.axpy(-v.dot(m), m)
+
+    def setUp(self, pc):
+        self.inner.setUp()
+
+    def apply(self, pc, x, y):
+        x.copy(self.work)
+        self._project(self.work)
+        self.inner.apply(self.work, y)
+        self._project(y)
+
+    def destroy(self, pc):
+        # the KSP gave up its reference to the wrapped multigrid when the shell took its
+        # place, so the shell owns it; in parallel petsc4py defers destruction, and the
+        # whole hierarchy outlived every solve (19 MB an adjoint solve at np 2)
+        if self.inner is not None:
+            self.inner.destroy()
+            self.inner = None
+        for m in self.modes:
+            m.destroy()
+        self.modes = []
+        if self.work is not None:
+            self.work.destroy()
+            self.work = None
+
+
+def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm):
+    """Wrap ``vel_ksp``'s preconditioner in :class:`_NullModeProjectedPC` when the
+    admitted rotations in ``nsp`` include exact null modes of its operator. Returns the
+    number of modes projected, and ``|A m| / (|A| |m|)`` for each admitted mode.
+    COLLECTIVE."""
+    inner = vel_ksp.getPC()
+    A_vv, P_vv = inner.getOperators()
+    modes, ratios = _exact_velocity_null_modes(A_vv, _velocity_null_modes(nsp, vel_is))
+    if not modes:
+        return 0, ratios
+    shell = PETSc.PC().createPython(_NullModeProjectedPC(inner, modes), comm=comm)
+    shell.setOperators(A_vv, P_vv)
+    vel_ksp.setPC(shell)
+    shell.setUp()
+    return len(modes), ratios
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
@@ -2499,6 +2603,12 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
                 if _hier is not None:
                     _hier._record_patch_summary(_rows, solver.dm.comm)
+            # an exact rotation (an analytic normal on a circle or sphere) is kept
+            # out of the velocity preconditioner's directions (#963)
+            n_projected, mode_ratios = 0, []
+            if custom_Pl is not None:
+                n_projected, mode_ratios = _project_exact_null_modes(
+                    pc.getFieldSplitSubKSP()[0], nsp, vel_is, dm.comm)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -2522,7 +2632,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                # (or a test) can assert on it instead of inferring it from timings
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
                "coarse_solve": _coarse,
-               "schur_pre": "1/mu-mass" if Mp is not None else "selfp"}
+               "schur_pre": "1/mu-mass" if Mp is not None else "selfp",
+               "projected_null_modes": n_projected,
+               "null_mode_ratios": mode_ratios}
         # Mirror the degraded arms into the solver-wide fallback record (#484):
         # the ctx keys above stay authoritative for this path's own tests, but
         # "was anything substituted?" must be answerable in ONE place for any
@@ -2583,7 +2695,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     vel_ksp, pres_ksp = ctx["pc"].getFieldSplitSubKSP()
     ctx["vel_its_last"] = vel_ksp.getIterationNumber()
     ctx["pres_its_last"] = pres_ksp.getIterationNumber()
-    ctx["velocity_pc_type"] = vel_ksp.getPC().getType()
+    vel_pc_now = vel_ksp.getPC()
+    if vel_pc_now.getType() == "python":          # the projection around the real PC (#963)
+        vel_pc_now = vel_pc_now.getPythonContext().inner
+    ctx["velocity_pc_type"] = vel_pc_now.getType()
     # A velocity FGMRES that exhausts its cap returns KSP_DIVERGED_ITS, which
     # KSPCheckSolve deliberately does NOT escalate — so without this it degrades
     # silently. (`preonly` could never fail, which is why the check is new.)
