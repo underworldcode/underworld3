@@ -18,7 +18,7 @@
 #   ./test.sh --p 2               # All serial + parallel (2 ranks)
 #   ./test.sh --p 2 --full-parallel   # ... and again at 4 ranks
 #   ./test.sh --parallel-only --p 2   # Only parallel tests (debugging)
-#   ./test.sh --p 2 --shard 1/4   # One CI shard's worth
+#   ./test.sh --p 2 --shard 1/5   # One CI shard's worth (N must match --print-shards)
 #
 # We do not run one monolithic pytest because tests produce a large number of
 # PETSc objects which we cannot always guarantee that PETSc / petsc4py will free
@@ -136,11 +136,14 @@ fi
 # to shard 3, and test_05*/06*/07* (about 4 min) to shard 2.
 #
 # 2026-11-08: on development 37aa2a11 (run 42412307017) shards 3 and 4 were at
-# 56:28 and 55:40 of the 60-minute cap, shard 1 at 43:11 and shard 2 at 33:11.
+# 56:28 and 55:40 of the 60-minute budget (the job's hard limit is 70), shard 1
+# at 43:11 and shard 2 at 33:11.
 # Shard 3's test_108*/test_109* batch took 25:47 and test_110* 10:08; shard 4's
 # test_00[0-4]* took 27:29, nearly all of it test_0022 (#985, #911). The
-# test_108*/test_109* batch moves to a fifth shard, which leaves shard 3 near 31
-# minutes and shard 5 near 31 with install and build. test_0022 stays on shard 4
+# test_108*/test_109* batch moves to a fifth shard, which by subtraction leaves
+# shard 3 near 31 minutes and shard 5 near 31 with install and build. Shard 5
+# starts with a cold JIT and mesh cache that the batch shared on shard 3, so
+# re-measure both on the first five-shard run. test_0022 stays on shard 4
 # until #911's fix, which should shorten it; re-measure then.
 #
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
@@ -397,8 +400,8 @@ fi
 # Parallel tests (run if --p N specified)
 #
 # The whole mpirun phase belongs to ONE shard (4), not to each of them. It
-# costs ~4:38 and is the shard's smallest component, but running it four times
-# would quadruple the only part of the suite that holds several MPI ranks at
+# costs ~4:38 and is the shard's smallest component, but running it on every shard
+# would multiply the only part of the suite that holds several MPI ranks at
 # once, which is also the part most likely to contend on a shared runner.
 if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
   if command -v mpirun &> /dev/null; then
