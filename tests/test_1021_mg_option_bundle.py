@@ -173,9 +173,19 @@ def _stokes(mesh, tag, rotated):
     return s
 
 
+def _multigrid(vel_pc):
+    """The multigrid inside the rotated route's velocity sub-PC: when the rotated
+    constraint leaves an exact rotation, the multigrid is wrapped in a projection that
+    keeps the rotation out of its directions (#963)."""
+    if vel_pc.getType() == "python":
+        return vel_pc.getPythonContext().inner
+    return vel_pc
+
+
 def _mg_config(vel_pc):
     """Read the multigrid configuration off a live velocity sub-PC. The finest
     smoother is representative; level 0 is the coarse solve."""
+    vel_pc = _multigrid(vel_pc)
     assert vel_pc.getType() == "mg"
     nlev = vel_pc.getMGLevels()
     smoother = vel_pc.getMGSmoother(nlev - 1)
@@ -353,7 +363,7 @@ def test_rotated_coarse_is_redundant_lu_with_a_rotation_mode(monkeypatch, tmp_pa
         result = real_solve(solver, Ahat, bhat, Q, Qt, normal_rows, **kw)
         captured.setdefault("config", _mg_config(
             result[2]["pc"].getFieldSplitSubKSP()[0].getPC()))
-        captured.setdefault("vel_pc", result[2]["pc"].getFieldSplitSubKSP()[0].getPC())
+        captured.setdefault("vel_pc", _multigrid(result[2]["pc"].getFieldSplitSubKSP()[0].getPC()))
         return result
 
     monkeypatch.setattr(rotated_bc, "_solve_rotated_iterative", capture)
