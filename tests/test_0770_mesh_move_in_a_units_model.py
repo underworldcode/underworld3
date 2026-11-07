@@ -31,16 +31,24 @@ def _dm_coords(mesh):
     return np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
 
 
-def test_deform_keeps_the_mesh_in_its_frame(units_model):
+@pytest.mark.parametrize("form", ["metres", "kilometres", "model"])
+def test_deform_keeps_the_mesh_in_its_frame(units_model, form):
+    """Coordinates with units are converted, in whatever length unit; a plain array is
+    model coordinates, as evaluate reads one."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
     start = _dm_coords(mesh)
     assert np.linalg.norm(start, axis=1).max() == pytest.approx(1.0)
 
-    physical = np.array(mesh.X.coords)
     radius = np.linalg.norm(start, axis=1)
     inside = (radius > 0.5 + 1.0e-9) & (radius < 1.0 - 1.0e-9)
-    physical[inside] *= 1.02
-    assert mesh.deform(physical) is True
+    scale = np.where(inside, 1.02, 1.0)[:, None]
+    if form == "model":
+        target = start * scale
+    else:
+        target = mesh.X.coords * scale
+        if form == "kilometres":
+            target = target.to("km")
+    assert mesh.deform(target) is True
 
     expected = start.copy()
     expected[inside] *= 1.02
@@ -54,10 +62,9 @@ def test_deform_remaps_a_field_with_units(units_model):
     start = _dm_coords(mesh)
     T.data[:, 0] = 0.3 + 0.2 * start[:, 0]      # raw values, linear in position
 
-    physical = np.array(mesh.X.coords)
     radius = np.linalg.norm(start, axis=1)
-    physical[(radius > 0.5 + 1.0e-9) & (radius < 1.0 - 1.0e-9)] *= 1.02
-    mesh.deform(physical)
+    mesh.deform(mesh.X.coords * np.where((radius > 0.5 + 1.0e-9) & (radius < 1.0 - 1.0e-9),
+                                         1.02, 1.0)[:, None])
 
     moved = _dm_coords(mesh)
     interior = np.linalg.norm(moved, axis=1) < 0.99
@@ -83,3 +90,20 @@ def test_the_mover_moves_nodes_and_remaps_in_a_units_model(units_model):
     raw = np.array(T.data).reshape(-1)
     interior = np.linalg.norm(moved, axis=1) < 0.99
     assert np.abs(raw - (0.3 + 0.2 * moved[:, 0]))[interior].max() < 1.0e-9
+
+
+def test_ephemeral_coords_restores_the_mesh_in_its_frame(units_model):
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
+    start = _dm_coords(mesh)
+    with mesh.ephemeral_coords():
+        mesh._deform_mesh(start * 1.01)
+    assert np.abs(_dm_coords(mesh) - start).max() < 1.0e-12
+
+
+def test_a_submesh_follows_its_parent_in_its_frame(units_model):
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
+    surface = mesh.extract_surface("Upper")
+    radius = np.linalg.norm(_dm_coords(mesh), axis=1)
+    mesh.deform(mesh.X.coords * np.where(radius > 1.0 - 1.0e-9, 1.05, 1.0)[:, None])
+    on_surface = np.linalg.norm(_dm_coords(surface), axis=1)
+    assert np.abs(on_surface - 1.05).max() < 1.0e-9

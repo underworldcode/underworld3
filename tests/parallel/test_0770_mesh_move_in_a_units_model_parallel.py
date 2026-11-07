@@ -21,11 +21,10 @@ def test_deform_keeps_the_mesh_in_its_frame_and_remaps_a_field_with_units():
     start = model_coords()
     T.data[:, 0] = 0.3 + 0.2 * start[:, 0]
 
-    physical = np.array(mesh.X.coords)
     radius = np.linalg.norm(start, axis=1)
     inside = (radius > 0.5 + 1.0e-9) & (radius < 1.0 - 1.0e-9)
-    physical[inside] *= 1.02
-    assert all(uw.mpi.comm.allgather(mesh.deform(physical)))
+    target = mesh.X.coords * np.where(inside, 1.02, 1.0)[:, None]
+    assert all(uw.mpi.comm.allgather(mesh.deform(target)))
 
     moved = model_coords()
     expected = start.copy()

@@ -2292,8 +2292,10 @@ class Mesh(Stateful, uw_object):
 
         sub_rows, parent_rows = self._build_vertex_map()
 
-        new_sub_coords = numpy.array(self.X.coords)
-        new_sub_coords[sub_rows] = self.parent.X.coords[parent_rows]
+        # Model coordinates, the frame _deform_mesh writes.
+        new_sub_coords = numpy.array(self._coords).reshape(-1, self.cdim)
+        parent_coords = numpy.asarray(self.parent._coords).reshape(-1, self.parent.cdim)
+        new_sub_coords[sub_rows] = parent_coords[parent_rows]
 
         # Submesh follows its parent's geometry; this is a sanctioned
         # internal coordinate move (the parent owns the transfer).
@@ -2608,7 +2610,7 @@ class Mesh(Stateful, uw_object):
         if uw.mpi.size > 1:
             from underworld3.discretisation.remesh import _values_in_data_layout
             out = _values_in_data_layout(
-                cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords)))
+                cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2635,7 +2637,7 @@ class Mesh(Stateful, uw_object):
         if uw.mpi.size > 1:
             from underworld3.discretisation.remesh import _values_in_data_layout
             out = _values_in_data_layout(
-                pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords)))
+                pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -4113,8 +4115,9 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         new_coords : ndarray
-            Target vertex coordinates, in the shape and frame of ``mesh.X.coords``:
-            physical units in a model with reference quantities.
+            Target vertex coordinates, in the shape of ``mesh.X.coords``. Coordinates
+            with units, such as ``mesh.X.coords`` itself in a model with reference
+            quantities, are converted; a plain array is read as model coordinates.
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
@@ -4130,11 +4133,12 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.discretisation.remesh import remesh_with_field_transfer
 
-        # In the frame of mesh.X.coords, which is physical in a units model; the DM
-        # holds model coordinates, which is what _deform_mesh writes.
-        _nc = numpy.asarray(new_coords)
-        if getattr(self.CoordinateSystem, "_scaled", False):
-            _nc = _nc / self.CoordinateSystem._length_scale
+        # The DM holds model coordinates, which is what _deform_mesh writes. Coordinates
+        # with units are converted; a plain array is read as model coordinates, as
+        # evaluate reads one.
+        if getattr(new_coords, "units", None) is not None:
+            new_coords = uw.non_dimensionalise(new_coords)
+        _nc = numpy.asarray(getattr(new_coords, "magnitude", new_coords))
 
         # The geometry is about to move, so any ANALYTIC return_coords_to_bounds closure
         # (captured with the original radii/extent) no longer describes the boundary:

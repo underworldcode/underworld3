@@ -110,7 +110,8 @@ class RemeshContext:
     """State passed to operator ``on_remesh`` hooks.
 
     Carries the geometric data an operator (typically a ``DuDt``) needs
-    to update its own history coherently — old/new coordinates, total
+    to update its own history coherently — old/new coordinates (model
+    coordinates, the DM's frame, also in a units model), total
     displacement across the mover sweep, ``dt``, and a scratch slot
     where an ALE-style operator stashes ``v_mesh`` for the next solve
     to consume. The framework has already handled the generic
