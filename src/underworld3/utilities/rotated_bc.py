@@ -968,6 +968,10 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
         flags, _note = _declared_mode_flags(solver)
         gauge["declared"] = _rotations_declared(solver.mesh)
         gauge["exempt"] = flags
+        # the direct-LU route builds no null space, so its verdict on the declared
+        # modes is this one
+        if gauge["declared"] and getattr(solver, "_rotated_declared_modes_exempt", None) is None:
+            solver._rotated_declared_modes_exempt = list(flags)
         for tg, declared in zip(_rigid_rotation_modes(solver), flags):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
@@ -2284,31 +2288,46 @@ def _destroy_rotated_ksp_ctx(ctx):
         ctx["cns"] = None
 
 
-# A velocity null mode is exact when the velocity operator annihilates it to this
-# relative tolerance; an exact mode is projected out of the velocity preconditioner (#963).
-_EXACT_NULL_MODE_TOL = 1.0e-10
+# An admitted rotation is projected out of the velocity preconditioner (#963) when its
+# Jacobi-scaled residual, max |(D^-1 A m)_i| / max |m_i|, is at or below this. Each row
+# is scaled by its own diagonal, so the measure is local and a viscosity contrast does
+# not move it (6.2e-4 at a contrast of 1, 5.6e-4 at 1e8, same mesh). It tracks the mode's
+# constraint violation, about twice it on the annulus. Measured (#964 round 3): an exact
+# mode gives 1e-15 (analytic normal) to 4e-11 (gmsh's rounding of the circle). Forcing the
+# projection cost nothing at 6e-6, 14 times the iterations at 6e-5, and did not finish at
+# 6e-4, the faceting of walls slid 0.1 rad along their circles. Leaving a mode unprojected
+# at 7e-8 to 6e-7 (walls slid 1e-5 to 1e-4 rad) made the count depend on the BLAS kernel,
+# as an exact mode does. The Frobenius scale this replaces, |A m| / (|A|_F |m|), took its
+# size from the stiffest cells: a contrast of 1e5 put the 0.1 rad mode below its 1e-10.
+_EXACT_NULL_MODE_TOL = 1.0e-6
 
 
 def _exact_velocity_null_modes(A_vv, modes):
-    """The vectors of ``modes`` (velocity-block copies of the admitted rotations) that
-    ``A_vv`` annihilates to ``_EXACT_NULL_MODE_TOL`` of ``|A_vv| |m|``, orthonormalised,
-    and that ratio for every mode. The others are destroyed. Near-null modes (a declared
-    rotation on a faceted wall, where ``A_vv m`` is the faceting error) are left to the
-    multigrid. COLLECTIVE."""
+    """The vectors of ``modes`` (velocity-block copies of the admitted rotations) whose
+    Jacobi-scaled residual ``max |(D^-1 A_vv m)_i| / max |m_i|`` is at or below
+    ``_EXACT_NULL_MODE_TOL``, orthonormalised, and that ratio for every mode. The others
+    are destroyed. A near-null mode (a declared rotation on a faceted wall, where
+    ``A_vv m`` is the faceting error) is left to the multigrid. COLLECTIVE."""
     if not modes:
         return [], []
-    scale = A_vv.norm(PETSc.NormType.FROBENIUS)
+    inv_diag = A_vv.getDiagonal()
+    d = np.abs(inv_diag.getArray())
+    d[d == 0.0] = 1.0
+    inv_diag.setArray(1.0 / d)
     work = modes[0].duplicate()
     exact, ratios = [], []
     for m in modes:
         A_vv.mult(m, work)
-        ratio = work.norm() / (scale * m.norm())
+        work.pointwiseMult(work, inv_diag)
+        ratio = (work.norm(PETSc.NormType.NORM_INFINITY)
+                 / m.norm(PETSc.NormType.NORM_INFINITY))
         ratios.append(float(ratio))
         if ratio <= _EXACT_NULL_MODE_TOL:
             exact.append(m)
         else:
             m.destroy()
     work.destroy()
+    inv_diag.destroy()
     for i, m in enumerate(exact):
         for q in exact[:i]:
             m.axpy(-m.dot(q), q)
@@ -2366,7 +2385,7 @@ class _NullModeProjectedPC:
 def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm):
     """Wrap ``vel_ksp``'s preconditioner in :class:`_NullModeProjectedPC` when the
     admitted rotations in ``nsp`` include exact null modes of its operator. Returns the
-    number of modes projected, and ``|A m| / (|A| |m|)`` for each admitted mode.
+    number of modes projected, and the Jacobi-scaled residual of each admitted mode.
     COLLECTIVE."""
     inner = vel_ksp.getPC()
     A_vv, P_vv = inner.getOperators()
@@ -3320,14 +3339,18 @@ def _declared_mode_flags(solver):
     if not _rotations_declared(mesh):
         return [False] * (1 if cdim == 2 else 3), None
     n_modes = len(mesh._nullspace_rotations)
+    if n_modes == 0:
+        # the mesh declares that it has no rotation: nothing to exempt or warn about
+        return [], None
     specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
     given = [name for name, normal in specs if normal is not None]
     if given and len(given) < len(specs):
         return [False] * n_modes, (
             f"rotated walls {given} take a given normal and the others the facet-averaged "
-            f"one, so the declared rotation modes take the constraint test, which the "
-            f"facet-averaged walls fail by the faceting error: the rotation is not removed. "
-            f"Give every rotated wall the analytic normal, or none")
+            f"one, so the declared rotation modes take the constraint test. Where a "
+            f"facet-averaged wall is faceted (a sphere, or a circle with unequal edges) a "
+            f"rotation fails it by the faceting error and is not removed. Give every "
+            f"rotated wall the analytic normal, or none")
     if given:
         return [False] * n_modes, None
 

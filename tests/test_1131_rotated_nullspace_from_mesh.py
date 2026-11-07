@@ -150,13 +150,13 @@ def test_the_shell_returns_no_rigid_rotation(radial, capsys):
         assert stokes._rotated_null_mode_slack == 0.0
         # exact modes of the velocity block: projected out of the multigrid (#963)
         assert info["projected_null_modes"] == 3, info["null_mode_ratios"]
-        assert max(info["null_mode_ratios"]) < 1.0e-14
+        assert max(info["null_mode_ratios"]) < 1.0e-13
     else:
         assert 1.0e-3 < stokes._rotated_null_mode_slack < 0.05    # near-null, not null
-        # near-null on the faceted walls: left to the multigrid, well above the 1e-10
-        # at which a mode is projected (#963)
+        # near-null on the faceted walls (Jacobi-scaled residuals 6e-3 to 1.7e-2): left
+        # to the multigrid, far above the 1e-6 at which a mode is projected (#963)
         assert info["projected_null_modes"] == 0, info["null_mode_ratios"]
-        assert min(info["null_mode_ratios"]) > 1.0e-8, info["null_mode_ratios"]
+        assert min(info["null_mode_ratios"]) > 1.0e-3, info["null_mode_ratios"]
 
 
 def test_a_net_torque_still_warns_under_the_default_normal(capsys):
@@ -211,9 +211,12 @@ def test_a_wall_moved_off_its_circle_loses_the_exemption(amplitude, exempt):
 
 
 def test_mixed_given_and_default_normals_warn_that_the_rotation_stays():
-    # the exemption needs every wall on the default normal; a mix is refused, loudly,
-    # because the default-normal wall then fails the constraint test by its faceting
-    mesh, v, stokes = _annulus_stokes("1131x")
+    # the exemption needs every wall on the default normal; a mix is refused, loudly.
+    # On an annulus whose vertices have slid along their circles the default-normal wall
+    # is faceted unevenly and fails the constraint test, so the rotation stays. (On the
+    # annulus as built its edges are equal, the facet-averaged normal is radial at the
+    # vertices, and the rotation passes the test.)
+    mesh, v, stokes = _annulus_stokes("1131x", mesh=_slid_annulus())
     x, y = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2)
     stokes.add_rotated_freeslip_bc(0, "Lower", normal=sympy.Matrix([[x / r, y / r]]))
@@ -222,11 +225,30 @@ def test_mixed_given_and_default_normals_warn_that_the_rotation_stays():
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         stokes.solve()
-    assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [False]
+    info = stokes._rotated_freeslip_info
+    assert info["declared_modes_exempt"] == [False]
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
     with uw.selective_ranks(0) as selected:
         if selected:
             assert any("take a given normal and the others the facet-averaged one"
                        in str(w.message) for w in record), [str(w.message) for w in record]
+
+
+def test_a_mesh_that_declares_no_rotation_is_not_warned_about():
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+    mesh.nullspace_rotations = []
+    mesh, v, stokes = _annulus_stokes("1131e", mesh=mesh)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    assert not [w for w in record if "#906" in str(w.message)], [str(w.message) for w in record]
+    info = stokes._rotated_freeslip_info
+    assert info["converged"], info
+    assert info["declared_modes_exempt"] == []
+    assert info["rotation_gauge"]["offered"] == 0, info["rotation_gauge"]
 
 
 def _rotation_rate_2d(v):
@@ -236,11 +258,9 @@ def _rotation_rate_2d(v):
     return float(np.sum(X[:, 0] * V[:, 1] - X[:, 1] * V[:, 0])) / float(np.sum(X * X))
 
 
-def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
-    # an MMPDE-style move: every vertex slides along its circle, and the interior
-    # vertices also move radially by an amount that vanishes at both walls. The
-    # detection route drops the mode here (violation 0.0037 against 1e-8) and leaves
-    # a rotation of rate 2.5e-6 in a v_rms of 5.0e-3
+def _slid_annulus():
+    """An MMPDE-style move: every vertex slides along its circle, and the interior
+    vertices also move radially by an amount that vanishes at both walls."""
     moved = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
     X = np.array(moved.X.coords)
     r = np.linalg.norm(X, axis=1)
@@ -248,7 +268,13 @@ def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
     theta = theta + 0.05 * np.sin(3.0 * theta)
     r = r + 0.02 * np.sin(np.pi * (r - 0.5) / 0.5) * np.cos(2.0 * theta)
     moved.deform(np.column_stack([r * np.cos(theta), r * np.sin(theta)]))
-    mesh, v, stokes = _annulus_stokes("1131m", mesh=moved)
+    return moved
+
+
+def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
+    # the detection route drops the mode here (violation 0.0037 against 1e-8) and leaves
+    # a rotation of rate 2.5e-6 in a v_rms of 5.0e-3
+    mesh, v, stokes = _annulus_stokes("1131m", mesh=_slid_annulus())
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
@@ -342,6 +368,22 @@ def test_an_add_fault_child_inherits_the_declaration():
     assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
 
 
+def test_a_level_the_add_on_partition_moves_inherits_the_declaration():
+    # at np 3, 4, 5 and 8 partition_addon moves the level a fault is cut on into a new
+    # mesh (the parallel twin spies on it). CI runs that file at np 2, where nothing
+    # moves, so the wrapping is exercised here, on one rank, over a copy of the DM
+    from underworld3.utilities import addon_partition
+    level = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=2)
+    n = 3
+    fields = (np.zeros(n, dtype=int), np.arange(n), np.zeros(n, dtype=int), np.arange(n))
+    moved = addon_partition._moved_wrap(level, level.dm.clone(), fields, None)
+    assert moved is not level and len(moved.nullspace_rotations) == 1
+    assert moved.nullspace_rotations[0].free_symbols <= set(moved.X)
+    c = np.asarray(moved.X.coords)
+    field = rotated_bc._declared_rotation_fields(moved, c)[0]
+    assert np.allclose(field, np.column_stack([-c[:, 1], c[:, 0]]), rtol=0, atol=1.0e-14)
+
+
 @pytest.mark.parametrize("velocity_units", [None, "cm/year"], ids=["plain_velocity", "unit_velocity"])
 def test_a_units_model_shell_solves_with_its_declared_modes(velocity_units):
     # #877: the modes were built from the dimensional coordinates, a UnitAwareArray in a
@@ -403,7 +445,7 @@ def test_a_segmented_shell_keeps_its_modes():
     # its Upper label also holds interior vertices (r down to 0.62); the walls are
     # read from the closure of the labelled facets, which lie on the sphere
     mesh = uw.meshing.SegmentedSphericalShell(radiusOuter=1.0, radiusInner=0.5,
-                                              cellSize=0.4, numSegments=4, qdegree=3)
+                                              cellSize=0.3, numSegments=6, qdegree=3)
     v = uw.discretisation.MeshVariable("V1131s", mesh, 3, degree=2)
     p = uw.discretisation.MeshVariable("P1131s", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)

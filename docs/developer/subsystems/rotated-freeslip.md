@@ -289,8 +289,8 @@ sub-KSPs at all and both fields record `None`.
 
 **An exact rotation is kept out of the multigrid's directions (#963).** Take an
 analytic normal on a circle or sphere: the constraint then leaves a rotation an
-exact null vector of the rotated velocity block, |A m| / (|A| |m|) about 2e-18
-on test_1064's annulus. A multigrid cycle returns a rounding-level component along
+exact null vector of the rotated velocity block, its Jacobi-scaled residual
+max |(D⁻¹ A m)ᵢ| / max |mᵢ| about 1e-15. A multigrid cycle returns a rounding-level component along
 it in each direction it makes. The KSP's null space removes the mode from the
 right-hand side and the solution only, so the inner FGMRES floored near 1e-7
 against its 3.3e-11 and ran to its cap of 200. Whether the outer solve converged
@@ -298,14 +298,29 @@ after that depended on rounding, so on the OpenBLAS kernel: on CI it did not, an
 the job hung.
 
 On the custom-FMG route the velocity sub-PC is therefore a projection around the
-multigrid, `z = P M (P r)`. `P` removes every admitted rotation with |A m| /
-(|A| |m|) at or below 1e-10, orthonormalised; the inner solve then takes about 4
-cycles. The record carries `projected_null_modes`, the number projected, and
-`null_mode_ratios`, that ratio for each admitted rotation. `velocity_pc_type`
-still names the multigrid. A rotation that is only near-null is left to the
-multigrid: a declared rotation on a faceted wall, where A m is the faceting error.
-The projection owns the multigrid it wraps and destroys it with itself. The GAMG
-velocity route and the rotated vector route are unchanged.
+multigrid, `z = P M (P r)`. `P` removes every admitted rotation whose Jacobi-scaled
+residual is at or below 1e-6, orthonormalised; the inner solve then takes about 4
+cycles. Each row is scaled by its own diagonal, so the measure is local: a
+viscosity contrast does not move it, and it tracks the mode's constraint violation
+(about twice it). The scale it replaced, |A m| / (|A|_F |m|), took its size from
+the stiffest cells, and a contrast of 1e5 or more then classed a faceted rotation as
+exact and projected it, at 2 to 4 times the cost (#964, round 3). Forcing the
+projection cost nothing at 6e-6 and did not finish at 6e-4; leaving a mode
+unprojected at 7e-8 to 6e-7 made the iteration count depend on the BLAS kernel, as
+an exact mode does. The threshold sits between the two.
+
+A rotation above the threshold is near-null and is left to the multigrid: a declared
+rotation on a faceted sphere (6e-3 to 2e-2 on test_1131's shell), or on a circle
+whose wall vertices are unevenly spaced, as a mover leaves them (6e-4 for walls slid
+0.1 rad along their circles). The annulus as gmsh builds it has equal edges, so its
+facet-averaged normal is radial at the vertices and its rotation is exact (4e-11):
+it is projected under either normal.
+
+The record carries `projected_null_modes`, the number projected, and
+`null_mode_ratios`, that residual for each admitted rotation, on the custom-FMG
+route. The GAMG velocity route projects nothing and records 0 and `[]`; the rotated
+vector route and the direct LU record `None`. `velocity_pc_type` still names the
+multigrid. The projection owns the multigrid it wraps and destroys it with itself.
 
 The manual loop exists because the rotated operator `Q A Qᵀ` carries no DM
 field information, so PETSc's DM-coupled fieldsplit cannot precondition it;
@@ -558,7 +573,8 @@ because each one is a place the wiring could be wrong and still look plausible:
   adjoint as it does the forward — measured, not argued: on a free-slip annulus
   with a power-law TI tangent the admitted modes give `‖Â v‖` = 4.8e-17 / 2.3e-10
   and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10. Those are exact modes; a declared mode on a
-  faceted wall is near-null, and leaves `‖Â v‖` of the order of its slack.
+  faceted sphere, or on a circle with unequal edges, is near-null, and leaves
+  `‖Â v‖` of the order of its slack.
 
 **Where there is a null space, the multiplier is returned modulo it.** Pinning
 one boundary with an essential condition removes it — `_rotated_nullspace` then
