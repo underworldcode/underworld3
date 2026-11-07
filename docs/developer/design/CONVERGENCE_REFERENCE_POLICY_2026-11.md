@@ -37,6 +37,10 @@ Three cases need a rule of their own:
 - **A null space.** The reference is measured in the same quotient space as the test. Each null mode is projected out of `F(0)` before its norm is taken, so a component that no iterate can reduce cannot enter the reference (#884).
 - **A re-solve in a time loop.** The reference is recomputed at each call, because the forcing changes between steps. Within a call it does not change.
 
+**Strain-rate-dependent rheology.** `F(0)` is the residual function evaluated at `u = 0` with the boundary data in place, not the linearised operator. At zero strain rate the viscous stress `2 eta(edot) edot` is zero for any finite `eta(0)`. That holds for a power law with a strain-rate floor, a viscosity cap, the δ-soft-min yield and Drucker-Prager alike. So the cap or regularisation that sets `eta(0)` does not enter the interior rows. What remains is the forcing: the body force, the natural tractions, the stress history of a viscoelastic step, and the residual of a strong Dirichlet lift. That last one is a real strain rate in the boundary cells, evaluated with the viscosity it implies. A cold start measures exactly this today, so for these rheologies `max(||F(x0)||, ||F(0)||)` is the cold start's reference, kept across warm starts.
+
+One term does carry the cap. A nonzero velocity imposed weakly, through Nitsche or a penalty, contributes `gamma mu(0) / h * g` at `u = 0`, and `mu(0)` is the cap. On such a model `||F(0)||` can be set by the cap rather than the physics, and the targets would then be too loose or too tight. For that case the reference leaves the weak boundary terms out of `F(0)`, and so measures the forcing alone: body force, tractions, history and strong lifts. A zero-valued weak condition, such as free slip by Nitsche, contributes nothing at `u = 0` and needs no exception. The evidence below records `||F(x0)||`, `||F(0)||` and the forcing-only norm on each fixture, so the case is seen rather than argued.
+
 ## 2. The targets
 
 The nonlinear target is `T = max(rtol * F_ref, atol)`. `rtol`, `atol` and `stol` are the user's: `tolerance`, or `snes_rtol`, `snes_atol` and `snes_stol` when the user sets them (#924).
@@ -91,7 +95,8 @@ The fixtures:
 - test_0022 (laptop, plus hyperion with Nehalem and Zen forced);
 - the rotated parallel set at np 2 and 4;
 - the zg95 rotated drivers (kaiju);
-- SolCx and the notch on the saddle-point route;
+- SolCx and the notch (Drucker-Prager, δ-soft-min) on the saddle-point route, and a zg95 viscoplastic run on the rotated route, for the strain-rate-dependent case;
+- a model with a nonzero weakly imposed velocity, for the one term that carries the viscosity cap;
 - a warm-started advection-diffusion time loop and an evaluation projector, for the Scalar and Vector routes.
 
 Each arm records Newton iterations, linear iterations at every level (outer, velocity and pressure, as totals rather than last-application samples), the answer and its difference from the current arm, and wall time.
