@@ -144,8 +144,8 @@ path.
 
 - **Quotient minimum degree.** A fault band's block is long and narrow, and under
   PETSc's default ordering (nested dissection) its fill followed the subdomain's row
-  numbering: the same block took 3.1e9 to 2.35e10 flops to factor, by rank count and
-  build. Measured on the add-on matrix's row 5 networks (kaiju, np 4 to 16, 2026-11),
+  numbering: the same block took 8.1e9 flops to factor at np 4 and 2.35e10 at np 8
+  and 16. Measured on the add-on matrix's row 5 networks (kaiju, np 4 to 16, 2026-11),
   with the same iterations and slip in every case (reverse Cuthill-McKee was worse
   than nested dissection):
 

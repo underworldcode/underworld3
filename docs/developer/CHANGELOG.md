@@ -9,9 +9,9 @@ This log tracks significant development work at a conceptual level, suitable for
 ### The fault-band patch factors in quotient minimum degree (November 2026, #895)
 
 The FAC patch smoother solves a fault band's block by LU, and under PETSc's default
-ordering the fill of that long, narrow block followed its row numbering: 3.1e9 to
+ordering the fill of that long, narrow block followed its row numbering: 8.1e9 to
 2.35e10 flops for the same block, varying with the rank count. Quotient minimum degree
-cuts the fill 25 to 58 times and makes it the same at any rank count. The block's
+cuts the fill 25 to 58 times and makes it nearly the same at any rank count. The block's
 triangular solves, which every smoother application pays, run 3.5 to 6 times faster,
 and the add-on matrix's fault-network solves 2.3 to 4 times faster, with the same
 iterations and slip.
