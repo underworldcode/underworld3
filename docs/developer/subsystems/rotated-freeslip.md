@@ -318,9 +318,13 @@ np 2:
 At tol 1e-11, a mode at 6.2e-8 projected ran the velocity solve into its cap. At
 tol 1e-6 the cases from 6e-7 to 6e-6 cost the same either way, hence the cap at
 1e-6. The floor keeps a mode exact to rounding projected at any tolerance. Left
-unprojected, such a mode makes the count depend on the BLAS kernel (#963). The
-workspace is rebuilt when the tolerance changes, because its KSP tolerances and its
-projection were set for the old one. The record carries the threshold as
+unprojected, such a mode makes the count depend on the BLAS kernel (#963). A tolerance
+change drops the workspace's KSP context, whose KSP tolerances and projection were set
+for the old one, and keeps its rotation, operator and prolongation. A warm re-solve
+already inside the new tolerance builds no context and records `None` for the
+projection; the next solve that needs one builds it. At np 4, tol 1e-11, slide 1e-5,
+projecting would have been 2.7 times cheaper (74392 against 203893): which side is
+cheaper still depends on the rank count, and the threshold does not follow it. The record carries the threshold as
 `null_mode_threshold`.
 
 A rotation above the threshold is near-null and is left to the multigrid: a declared

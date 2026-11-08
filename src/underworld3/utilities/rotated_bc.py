@@ -1320,11 +1320,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     op_ok = False
     if cache is not None:
-        # the workspace was built for one tolerance: its KSP tolerances and which
-        # rotations it projects (_projection_threshold) follow it, so a new tolerance
-        # builds a new workspace
-        geom_ok = (cache.get("geometry_sig") == geometry_sig
-                   and cache.get("tolerance") == float(solver.tolerance))
+        geom_ok = cache.get("geometry_sig") == geometry_sig
+        # the KSP context was built for one tolerance: its KSP tolerances and which
+        # rotations it projects (_projection_threshold) follow it. A new tolerance
+        # drops the context alone; the rotation, the operator and the prolongation
+        # are the geometry's, and rebuilding the prolongation costs memory (#964 r5)
+        tol_ok = cache.get("tolerance") == float(solver.tolerance)
         op_ok = (geom_ok
                  and not force_operator_refresh
                  and coefficient_states is not None
@@ -1335,16 +1336,20 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # writes, so a rank-divergent match here would desync the collective
         # assembly/PCSetUp calls the verdict gates (the np>1 deadlock class).
         if mpi.size > 1:
-            verdicts = mpi.comm.allgather((bool(geom_ok), bool(op_ok)))
+            verdicts = mpi.comm.allgather((bool(geom_ok), bool(op_ok), bool(tol_ok)))
             geom_ok = all(v[0] for v in verdicts)
             op_ok = all(v[1] for v in verdicts)
+            tol_ok = all(v[2] for v in verdicts)
         if not geom_ok:
             # Null before destroying — same double-destroy discipline as
             # _reset_rotated_solver_cache (#543 review, m4).
             solver._rotated_linear_cache = None
             stale, cache = cache, None
             _destroy_rotated_linear_cache(stale)
-        elif not op_ok:
+        elif not tol_ok:
+            _destroy_rotated_ksp_ctx(cache.get("ctx"))
+            cache["ctx"] = None
+        if cache is not None and not op_ok:
             # The operator values are about to be refreshed in place; poison
             # the stored key NOW so an exception mid-refresh cannot leave a
             # stale signature that later matches half-updated values.
@@ -1879,8 +1884,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
-    if (cache_allowed and ctx is not None and Ahat is not None and not use_lu
-            and not failed_hard):
+    # a workspace persists with no KSP context when this solve built none (a warm
+    # start already converged after a tolerance change): the next solve builds it
+    if (cache_allowed and Ahat is not None and not use_lu and not failed_hard
+            and (ctx is not None or cache is not None)):
         # Persist the workspace for the next solve. The stored key describes
         # the operator values Ahat now holds; linear_hint records whether
         # this solve behaved linearly (<= 1 increment), which is what

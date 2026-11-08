@@ -228,10 +228,31 @@ def test_a_re_solve_at_a_new_tolerance_re_decides_the_projection():
     # cold: warm from the tight answer it would stop at its first residual check
     s.solve(zero_init_guess=True)
     second = s._rotated_freeslip_info
-    assert not second["workspace_reused"], second
+    # the KSP context is rebuilt for the new tolerance; the geometry is kept
+    assert second["rotation_reused"], second
     assert second["null_mode_threshold"] == 1.0e-6
     assert second["projected_null_modes"] == 1, second["null_mode_ratios"]  # <= 1e-6
     assert second["ksp_reason"] > 0, second
+
+
+def test_a_converged_re_solve_at_a_new_tolerance_keeps_the_geometry():
+    # warm and already inside the looser tolerance, the re-solve builds no KSP. The
+    # rotation, the operator and the prolongation stay for the next solve: dropping
+    # them and rebuilding the prolongation grew RSS by about 10 MB a re-solve at np 2
+    # (hyperion, round 5)
+    s = _slid_annulus_fmg("1142k", 3.0e-5, 1.0, tolerance=1.0e-9, solve=False)
+    s.solve()
+    Q = s._rotated_linear_cache["Q"]
+    s.tolerance = 1.0e-5
+    s.solve()
+    early = s._rotated_freeslip_info
+    assert early["converged"] and early["nonlinear_iterations"] == 0, early
+    assert s._rotated_linear_cache is not None and s._rotated_linear_cache["Q"] is Q
+    s.solve(zero_init_guess=True)
+    third = s._rotated_freeslip_info
+    assert third["rotation_reused"], third
+    assert third["null_mode_threshold"] == 1.0e-6
+    assert third["projected_null_modes"] == 1, third["null_mode_ratios"]
 
 
 class _AddsAMode:
