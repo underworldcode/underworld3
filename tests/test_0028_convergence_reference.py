@@ -13,6 +13,11 @@ and it is solved again warm. Each solve must:
   evaluates through the SNES;
 - end at the FIRST iterate inside T. On development the warm solve's target was rtol of
   its own small first residual, so it continued past T.
+
+A solve with memory is the exception. A time step starts from the last step's answer and
+carries it through its history, so ``F(0)`` measures the whole field and rtol of it lets a
+step stop before it has made its change. Such an equation declares a zero reference, and a
+step is measured against its own first residual, ``T = max(rtol * ||F(x0)||, atol)``.
 """
 import numpy as np
 import pytest
@@ -37,10 +42,12 @@ def _residual_at_zero(solver):
     return norm
 
 
-def _check_stops_at_the_first_iterate_inside_the_target(solver, label):
+def _check_stops_at_the_first_iterate_inside_the_target(solver, label, reference=None):
     history, _its = solver.snes.getConvergenceHistory()
     history = np.asarray(history, dtype=float)
-    target = RTOL * max(history[0], _residual_at_zero(solver))
+    if reference is None:
+        reference = _residual_at_zero(solver)
+    target = RTOL * max(history[0], reference)
     assert solver.snes.getConvergedReason() > 0, (label, solver.snes.getConvergedReason())
     assert history[-1] <= target, (label, history, target)
     assert np.all(history[:-1] > target), (
@@ -93,3 +100,34 @@ def test_a_warm_start_stops_at_the_cold_start_target(build):
     amplitude.sym = 1.01 * float(amplitude.sym)
     solver.solve(zero_init_guess=False)
     _check_stops_at_the_first_iterate_inside_the_target(solver, "warm, forcing changed by 1 %")
+
+
+def _nonlinear_advection_diffusion():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.1, qdegree=3)
+    v = uw.discretisation.MeshVariable("U0028", mesh, 2, degree=1)
+    T = uw.discretisation.MeshVariable("C0028", mesh, 1, degree=2)
+    adv_diff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v)
+    adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
+    grad = mesh.vector.gradient(T.sym)
+    adv_diff.constitutive_model.Parameters.diffusivity = 1.0 + grad.dot(grad)
+    adv_diff.add_dirichlet_bc(0.0, "Left")
+    adv_diff.add_dirichlet_bc(0.0, "Right")
+    v.array[:, 0, 0] = 0.05
+    x, y = mesh.X
+    T.array = uw.function.evaluate(sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y), T.coords)
+    adv_diff.tolerance = RTOL
+    return adv_diff
+
+
+def test_a_time_step_is_measured_against_its_own_first_residual():
+    adv_diff = _nonlinear_advection_diffusion()
+    assert adv_diff._carries_memory()
+    # A step short against the diffusion time changes the field little: ||F(x0)|| is
+    # about 8 and ||F(0)|| about 260. The step's first residual is the reference. Under
+    # max(||F(x0)||, ||F(0)||) every step stops near 0.02, above rtol of its own first
+    # residual.
+    for step in range(3):
+        adv_diff.solve(zero_init_guess=False, timestep=1.0e-4)
+        _check_stops_at_the_first_iterate_inside_the_target(
+            adv_diff, f"time step {step}", reference=0.0)

@@ -3901,14 +3901,43 @@ class SolverBaseClass(uw_object):
             f"  to investigate.\n"
         )
 
+    # Which reference a solve measures (#911). None follows the equation: a solve with
+    # memory takes "increment", any other "stationary". Set on a solver to measure one
+    # rule against the other; the ruling between them is pending.
+    _convergence_reference_rule = None
+
+    def _carries_memory(self):
+        """Whether this equation's residual carries the last step's answer forward,
+        through a history of the unknown (``DuDt``) or of the flux (``DFDt``). The
+        guess is then the last step's answer, and a step is measured against the
+        change it makes."""
+        unknowns = getattr(self, "Unknowns", None)
+        return unknowns is not None and (getattr(unknowns, "DuDt", None) is not None
+                                         or getattr(unknowns, "DFDt", None) is not None)
+
     def _reference_residual(self, gvec):
-        """The norm of the residual this equation measures its convergence against:
-        the residual a cold start would see, ``||F(0)||`` with the boundary data in
-        place. It depends on the forcing and the boundary data, not on the guess
-        ``gvec``. The equation owns this declaration. An equation whose ``F(0)``
-        carries something no iterate measures overrides it: a nonzero velocity
-        imposed weakly (its term scales with the viscosity at rest), a prescribed
-        datum lift, a projected null space. COLLECTIVE."""
+        """The norm of the residual this equation measures its convergence against.
+
+        A stationary equation measures the residual a cold start would see,
+        ``||F(0)||`` with the boundary data in place. It depends on the forcing and the
+        boundary data, not on the guess ``gvec``. An equation with memory
+        (:meth:`_carries_memory`) returns 0, so a step is measured against its own
+        first residual, PETSc's default: ``||F(0)||`` there measures the whole field,
+        and rtol of it is 20 to 70 times looser than rtol of the step's change.
+
+        The equation owns this declaration. An equation whose ``F(0)`` carries
+        something no iterate measures overrides it: a nonzero velocity imposed weakly
+        (its term scales with the viscosity at rest), a prescribed datum lift, a
+        projected null space. COLLECTIVE when it evaluates ``F(0)``; the rule is the
+        same on every rank."""
+        rule = self._convergence_reference_rule
+        if rule is None:
+            rule = "increment" if self._carries_memory() else "stationary"
+        if rule == "increment":
+            return 0.0
+        if rule != "stationary":
+            raise ValueError(f"_convergence_reference_rule must be 'increment', "
+                             f"'stationary' or None, not {rule!r}")
         zero = gvec.duplicate()
         zero.set(0.0)
         F = gvec.duplicate()
@@ -3927,10 +3956,12 @@ class SolverBaseClass(uw_object):
         problem. The SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear
         solves at the floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton). The
         rules are applied the same way on every route; the tolerances in force are
-        returned for the caller to restore. Design:
+        returned for the caller to restore, and the caller clears the linear
+        solve's pre-solve hook. Design:
         docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md. COLLECTIVE.
         """
-        saved = (self.snes.getTolerances(), self.snes.getKSP().getTolerances())
+        ksp = self.snes.getKSP()
+        saved = (self.snes.getTolerances(), ksp.getTolerances())
         rtol, atol, _stol, _max_it = saved[0]
         F = gvec.duplicate()
         self.snes.computeFunction(gvec, F)
@@ -3940,8 +3971,23 @@ class SolverBaseClass(uw_object):
         F_ref = max(F_x0, F_0)
         target = max(rtol * F_ref, atol)
         self.snes.setTolerances(atol=target)
-        floor = max(_LINEAR_TARGET_FRACTION * target, saved[1][1])
-        self.snes.getKSP().setTolerances(atol=floor)
+        floor = _LINEAR_TARGET_FRACTION * target
+        ksp_rtol = saved[1][0]
+
+        def _floor_the_linear_solve(ksp, rhs, _x):
+            # The floor is in ||F|| units, and the KSP may measure a preconditioned
+            # norm: GMRES with left preconditioning does, and there the floor as an
+            # absolute tolerance stopped a Newton step at its first residual, 40 times
+            # under ||F||. As a reduction of the linear solve's own first residual,
+            # whose right-hand side is F(x_k), it is right in either norm. While the
+            # SNES has not converged ||F(x_k)|| > T, so the ratio is under the
+            # fraction; the cap only guards a route that stops elsewhere, and a looser
+            # rtol of the user's own still wins. COLLECTIVE.
+            bnorm = rhs.norm()
+            if bnorm > 0.0:
+                ksp.setTolerances(rtol=max(ksp_rtol, min(floor / bnorm, _LINEAR_TARGET_FRACTION)))
+
+        ksp.setPreSolve(_floor_the_linear_solve)
         self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
                                        "target": target, "linear_floor": floor}
         return saved
@@ -4049,6 +4095,7 @@ class SolverBaseClass(uw_object):
             self.snes.getKSP().setTolerances(rtol=_saved_ksp_tol[0], atol=_saved_ksp_tol[1],
                                              divtol=_saved_ksp_tol[2],
                                              max_it=_saved_ksp_tol[3])
+            self.snes.getKSP().setPreSolve(None)
             # Default-on difficulty report — single tail so every path is covered,
             # INCLUDING a solve that raises: the report then reflects the failed
             # attempt's SNES state rather than leaving the previous solve's converged
