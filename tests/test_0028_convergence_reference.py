@@ -164,3 +164,37 @@ def test_a_linear_tolerance_the_solver_did_not_derive_is_not_loosened():
     own.petsc_options["ksp_rtol"] = 1.0e-9
     own.solve(zero_init_guess=True)
     assert own._convergence_reference["linear_floor"] is None
+
+
+def test_the_rotated_loop_s_last_increment_stops_at_the_floor():
+    # #911, on test_0022's forward problem at the parameter its finite difference
+    # takes: a transversely isotropic power law in an annulus, rotated free slip on
+    # the outer wall, tolerance 1e-11. The last increment's linear solve was asked for
+    # 1e-11 of an already small residual, below round-off, and ran into its cap of
+    # 300. Each increment now stops at max(0.1 T, the round-off floor): on wombat its
+    # linear iterations are [1, 2, 1, 1, 1, 1].
+    mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.15, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    unit_r = sympy.Matrix([[x / r, y / r]])
+    th = sympy.atan2(y, x)
+    v = uw.discretisation.MeshVariable("V0028r", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P0028r", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    edot = mesh.vector.strain_tensor(v.sym)
+    eII = sympy.sqrt(sympy.Rational(1, 2) * (edot[0, 0] ** 2 + edot[1, 1] ** 2)
+                     + edot[0, 1] ** 2)
+    eta_0 = (sympy.Float(0.01) + eII) ** sympy.Rational(-1, 3)
+    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
+    stokes.constitutive_model.Parameters.shear_viscosity_1 = sympy.Float(0.2001) * eta_0
+    stokes.constitutive_model.Parameters.director = unit_r
+    stokes.bodyforce = 1.0e2 * sympy.cos(3 * th) * (r - 0.5) / 0.5 * unit_r
+    stokes.add_dirichlet_bc((0.0, 0.0), "Lower")
+    stokes.add_rotated_freeslip_bc(0.0, "Upper")
+    stokes.consistent_jacobian = True
+    stokes.tolerance = 1.0e-11
+    stokes.solve(zero_init_guess=True)
+    info = stokes._rotated_freeslip_info
+    assert stokes.snes.getConvergedReason() > 0, info["ksp_its"]
+    assert max(info["ksp_its"]) <= 5, info["ksp_its"]
