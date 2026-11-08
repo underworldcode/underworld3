@@ -307,7 +307,15 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   python3 "$(dirname "$0")/check_test_coverage.py" || status=1
 
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
-  batch 4 tests/test_00[0-4]*py
+  # test_0022 runs on a shard of its own until #911's linear floor lands. Its last Newton
+  # step solves past round-off (#985), which put shard 4's serial phase at 55:38 on a
+  # Xeon 8370C and the job over the 70-minute cap (#964), against 27:50 on an EPYC 7763.
+  # When #911 merges, drop the --deselect and the batch 6 line, and shard 6 goes with them.
+  # --deselect, not --ignore: the glob names the file on the command line, and pytest
+  # collects a named file even under --ignore. The node id is relative to tests/, the
+  # rootdir that tests/pytest.ini sets.
+  batch 4 tests/test_00[0-4]*py --deselect=test_0022_rotated_adjoint.py
+  batch 6 tests/test_0022_rotated_adjoint.py
   batch 4 tests/test_0050*py
   # test_006[2-9] and test_007x matched NO batch glob and so never ran in CI:
   # the whole integration-point suite (0064-0067), swarm repopulation,
