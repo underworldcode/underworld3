@@ -1,4 +1,4 @@
-"""Re-solving a rotated free-slip model whose body force is reassigned does not grow memory, in parallel (#1007).
+"""Re-solving a rotated free-slip model whose body force is reassigned frees what each rebuild drops, in parallel (#1007).
 
 A reassigned expression re-JITs the solver and rebuilds its DM, and ``dm.handle`` is in
 the rotated workspace's geometry signature, so every such solve rebuilds the workspace:
@@ -7,35 +7,61 @@ prolongation list and the builders' intermediate matrices were dropped, not dest
 In parallel petsc4py defers each destroy to a collective ``PETSc.garbage_cleanup``,
 which only a new mesh ran (test_0078), so each rebuild kept them: measured on
 development 15f13d0c at np 2, peak RSS rose 805, 819, 832, 847, 860, 874 MB over six
-solves, about 7 MB per rank per solve. The rebuild now empties the deferred list.
+solves, about 7 MB per rank per solve. A solve that built a new workspace now empties
+the deferred list at its end.
+
+The test reads that list itself, through ``PETSc.garbage_view``, rather than the
+resident set: a test that runs earlier in the same process can free enough heap to
+absorb the leak before the resident set moves (about 33 MB after test_1139 or
+test_1097, hyperion 2026-11-08), which made a resident-set test pass or fail by where
+CI's batches of six files fell. The deferred list is this process's own and does not
+depend on what ran before.
 
 Run with at least two ranks.
 """
+import ctypes
 import gc
+import os
 import sys
+import tempfile
 
 import pytest
 import sympy
 from mpi4py import MPI
+from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.utilities import custom_mg, memprobe
+from underworld3.utilities import custom_mg
 
-# As in test_0078: the resident set tracks freed memory on Linux only.
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
-              pytest.mark.timeout(900),
-              pytest.mark.skipif(sys.platform != "linux",
-                                 reason="the resident set tracks freed memory on Linux only")]
+              pytest.mark.timeout(900)]
 
 WARMUP, MEASURED = 2, 5
-BOUND_MB = 2.0               # per solve and rank; the leak was about 7
 
 
-def _resident_mb():
-    return memprobe.snapshot()["rss_mb"]
+def _deferred_summary(comm):
+    """The length, on this rank, of PETSc.garbage_view's summary: petsc4py's list of
+    objects whose Python wrappers are gone and whose destroy waits for a collective
+    cleanup. PETSc prints it through C's stdout, so file descriptor 1 is redirected
+    around the call and the C streams flushed. COLLECTIVE."""
+    gc.collect()
+    libc = ctypes.CDLL(None)
+    sys.stdout.flush()
+    libc.fflush(None)
+    with tempfile.TemporaryFile() as captured:
+        saved = os.dup(1)
+        try:
+            os.dup2(captured.fileno(), 1)
+            PETSc.garbage_view(comm)
+            libc.fflush(None)
+        finally:
+            os.dup2(saved, 1)
+            os.close(saved)
+        captured.seek(0)
+        return len(captured.read())
 
 
-def test_reassigning_the_body_force_does_not_grow_memory():
+def test_a_rebuild_leaves_no_deferred_destroys_behind():
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2,
                               refinement=2, qdegree=3)
     x, y = mesh.X
@@ -51,6 +77,7 @@ def test_reassigning_the_body_force_does_not_grow_memory():
     stokes.add_rotated_freeslip_bc(0.0, "Lower")
     custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)
     stokes.tolerance = 1.0e-6
+    comm = MPI.COMM_WORLD
 
     def solve(k):
         stokes.bodyforce = (-1) ** k * sympy.cos(2 * th) * unit_r   # rebuilds the DM
@@ -63,11 +90,11 @@ def test_reassigning_the_body_force_does_not_grow_memory():
 
     for k in range(WARMUP):
         solve(k)
-    gc.collect()
-    start = _resident_mb()
+    sizes = []
     for k in range(WARMUP, WARMUP + MEASURED):
         solve(k)
-    gc.collect()
-    growth = (_resident_mb() - start) / MEASURED
-    worst = MPI.COMM_WORLD.allreduce(growth, op=MPI.MAX)
-    assert worst < BOUND_MB, f"resident set grew {worst:.2f} MB per solve on the worst rank"
+        sizes.append(_deferred_summary(stokes.dm.comm))
+    # every rebuild's drops are freed at the end of its solve, so the list does not grow;
+    # unfreed, it grows by the old workspace's objects at every rebuild
+    growth = comm.allreduce(sizes[-1] - sizes[0], op=MPI.MAX)
+    assert growth <= 0, f"deferred-destroy summary grew {growth} bytes over {MEASURED - 1} rebuilds: {sizes}"
