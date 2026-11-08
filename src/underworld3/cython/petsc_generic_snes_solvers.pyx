@@ -12003,14 +12003,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 mu, reason = solve_rotated_adjoint(self, J, b, verbose=False)
                 mu.copy(x)
                 mu.destroy()
-            elif by_kernels:
-                # J IS K^T: assembled from the transposed kernels. Solve forwards.
+            else:
+                # The velocity block's custom-P hierarchy, as the forward solve
+                # installs it just before its SNES solve: switching the tangent
+                # for the adjoint resets the preconditioner, and the fieldsplit
+                # rebuilt the block as a one-level multigrid with no coarse
+                # correction and no FAC smoother (23 velocity iterations against
+                # the forward's 4, #1016).
+                from underworld3.utilities.custom_mg import auto_inject_custom_mg
                 ksp = self.snes.getKSP()
                 ksp.setOperators(J, P)
-                ksp.solve(b, x)
-                reason = int(ksp.getConvergedReason())
-            else:
-                reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+                auto_inject_custom_mg(self, field_id=0)
+                if by_kernels:
+                    # J IS K^T: assembled from the transposed kernels. Solve forwards.
+                    ksp.solve(b, x)
+                    reason = int(ksp.getConvergedReason())
+                else:
+                    reason = _solve_transposed(ksp, J, P, b, x)
         finally:
             # Teardown belongs in `finally`: the rotated path refuses by design —
             # a released rotation, a changed boundary set — and a refusal that
