@@ -1,4 +1,5 @@
 import collections
+import weakref
 
 import numpy as np
 import sympy
@@ -353,6 +354,32 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
+# The solver that owns each options prefix, by a token. Instance numbers restart
+# after uw_object._reset(), so a later solver can take a prefix a dropped one had.
+_SOLVER_OPTIONS_OWNER = {}
+
+
+def _drop_solver_options(prefix, token):
+    """Remove every option a dropped solver left in the global database: those
+    under its prefix, and the ``private_`` copies PETSc makes for its sub-objects.
+    Only while that solver still owns the prefix, and only before PETSc is
+    finalised: the mesh and its solvers form a reference cycle, which the
+    collector can reach after PetscFinalize, where touching the options database
+    segfaults. Not collective."""
+    if _SOLVER_OPTIONS_OWNER.get(prefix) is not token:
+        return
+    del _SOLVER_OPTIONS_OWNER[prefix]
+    try:
+        if PETSc.Sys.isFinalized():
+            return
+        opts = PETSc.Options()
+        for name in list(opts.getAll()):
+            if name.startswith(prefix) or name.startswith("private_" + prefix):
+                opts.delValue(name)
+    except Exception:
+        pass
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -471,6 +498,14 @@ class SolverBaseClass(uw_object):
         self.name = "Solver_{}_".format(self.instance_number)
         self.petsc_options_prefix = self.name
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+        # Nothing removed a solver's options when it was dropped, so the global
+        # database grew by about 25 keys per solver (49 for a Stokes and a Poisson
+        # solve, #950). They go when the solver is collected; not at interpreter
+        # exit, by which time PETSc may be finalised.
+        _token = object()
+        _SOLVER_OPTIONS_OWNER[self.petsc_options_prefix] = _token
+        weakref.finalize(self, _drop_solver_options,
+                         self.petsc_options_prefix, _token).atexit = False
 
         self.dm = None
         self.dm_hierarchy = []
@@ -1044,7 +1079,7 @@ class SolverBaseClass(uw_object):
         self.is_setup = False
 
     def set_custom_fmg(self, coarse_meshes, *, builder="barycentric",
-                       field_id=None, verbose=False):
+                       field_id=None, coarse_solve=None, verbose=False):
         r"""Drive geometric multigrid with a prolongation built from
         ``coarse_meshes`` — the canonical custom-MG entry point.
 
@@ -1067,6 +1102,10 @@ class SolverBaseClass(uw_object):
         field_id : int, optional
             Target field for a multi-field (saddle-point) solver; ``0`` is the
             Stokes velocity block. ``None`` (default) for single-field solvers.
+        coarse_solve : {None, "gamg"}, default None
+            The coarse-level solve. ``None`` keeps the gathered LU; ``"gamg"``
+            solves the coarse level with GAMG instead, for a coarsest mesh too
+            large for every rank to factor (it costs more where both fit).
         verbose : bool, default False
             Print the per-level DOF counts at injection.
 
@@ -1076,7 +1115,8 @@ class SolverBaseClass(uw_object):
         """
         from underworld3.utilities.custom_mg import set_custom_fmg as _set_custom_fmg
         _set_custom_fmg(self, coarse_meshes, builder=builder,
-                        field_id=field_id, verbose=verbose)
+                        field_id=field_id, coarse_solve=coarse_solve,
+                        verbose=verbose)
 
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.

@@ -570,6 +570,8 @@ def _moved_wrap(level, dm, fields, pairs):
     # finest moved by an earlier partition carries True. A base's finest moved
     # for the first time is marked by partition_addon, which knows it (#919).
     moved._mg_static = getattr(level, "_mg_static", False)
+    # the walls are the level's, so are its declared rotation modes (#906)
+    moved._inherit_rotation_modes(level)
     for attr in ("_fault_traces", "_fault_specs", "_fault_surfaces",
                  "_fault_seam_normals", "_embedded_surfaces"):
         if getattr(level, attr, None) is not None:

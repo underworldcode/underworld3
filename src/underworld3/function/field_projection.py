@@ -58,6 +58,10 @@ def project_to_degree(
 
     For ``target_degree == mesh_var.degree`` the interpolation matrix is
     the identity and the result matches the source data exactly.
+
+    A discontinuous source projected to a continuous target takes, at a node
+    shared by several cells, the unweighted mean of those cells' values there
+    (#905).
     """
 
     mesh = mesh_var.mesh
@@ -90,11 +94,22 @@ def project_to_degree(
     )
     interp = petsc_dm_create_interpolation_within_plex(subdm_src, dm_scratch)
 
-    # TODO(BUG): a discontinuous source projected to a continuous target sums
-    # the adjacent cells' values at each shared node (2-7x at P1 vertices): the
-    # matrix inserts one entry per cell into different source columns. The
-    # XDMF writer is not affected (it projects a discontinuous field to DG0).
-    # See issue #905.
+    # A discontinuous source gives a target node shared by k cells one copy of
+    # each cell's interpolant, in different source columns, so its row sums to k
+    # and the node took the sum of the cells' values (2 to 7 times the value at
+    # P1 vertices, #905). Each cell's rows sum to 1, so dividing every row by its
+    # sum averages the cells instead. A continuous source's rows already sum to 1
+    # and are left exactly as they are, and so is a discontinuous target, whose
+    # nodes each lie in one cell (scaling would move a DG-to-DG projection in the
+    # last bit).
+    if not mesh_var.continuous and continuous:
+        row_sums = interp.createVecLeft()
+        interp.getRowSum(row_sums)
+        sums = row_sums.getArray()
+        sums[...] = np.where(sums != 0.0, 1.0 / np.where(sums != 0.0, sums, 1.0), 1.0)
+        row_sums.setArray(sums)
+        interp.diagonalScale(L=row_sums)
+        row_sums.destroy()
 
     # --- apply ---
     g_src = subdm_src.createGlobalVec()

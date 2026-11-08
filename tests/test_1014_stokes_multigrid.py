@@ -160,6 +160,9 @@ def test_default_fmg_bundle_is_parallel_safe():
     vp = "fieldsplit_velocity_"
     assert stokes.petsc_options.getString(vp + "mg_coarse_pc_type") == "redundant"
     assert stokes.petsc_options.getString(vp + "mg_coarse_redundant_pc_type") == "lu"
+    # the zero-pivot shift every route carries (#901)
+    assert stokes.petsc_options.getString(
+        vp + "mg_coarse_redundant_pc_factor_shift_type") == "nonzero"
     assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "gmres"
     assert stokes.petsc_options.getString(vp + "mg_levels_pc_type") == "sor"
     # Fixed-cost V-cycle: exactly mg_levels_ksp_max_it smoother iterations, no
