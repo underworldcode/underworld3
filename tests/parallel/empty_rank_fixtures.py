@@ -2,6 +2,8 @@
 import numpy as np
 from petsc4py import PETSc
 
+ALL_BOUNDARIES_VALUE = 1001
+
 
 def cells_along_a_side_leaving_one_rank_empty(size):
     """How finely to split the fixture so that one rank stays empty.
@@ -11,11 +13,17 @@ def cells_along_a_side_leaving_one_rank_empty(size):
     the mesh has one cell, which has nowhere else to go (which rank it lands on
     is not ours to say). From np 3 up, two or more ranks share the cells and the
     partition stands.
+
+    Above np 4 the grid is finer, to keep several cells on each rank: on small
+    partitions ``global_evaluate`` extrapolates a few nodes, with or without an
+    empty rank (#976).
     """
-    return 1 if size == 2 else 4
+    if size == 2:
+        return 1
+    return 4 if size <= 4 else 8
 
 
-def right_triangle_of_cells(n, ranks_with_cells):
+def right_triangle_of_cells(n, ranks_with_cells, dm_class=PETSc.DMPlex):
     r"""The triangle with corners (0,0), (1,0), (0,1), split into :math:`n^2` equal
     cells of area :math:`1/(2 n^2)`, shared among the first ``ranks_with_cells``
     ranks by a shell partition. Collective.
@@ -39,7 +47,7 @@ def right_triangle_of_cells(n, ranks_with_cells):
                         [vertex[i + 1, j], vertex[i + 1, j + 1], vertex[i, j + 1]])
         cells = np.asarray(triangles, dtype=PETSc.IntType)
 
-    dm = PETSc.DMPlex().createFromCellList(2, cells, coords, interpolate=True, comm=comm)
+    dm = dm_class().createFromCellList(2, cells, coords, interpolate=True, comm=comm)
     part = dm.getPartitioner()
     part.setType(PETSc.Partitioner.Type.SHELL)
     if rank == 0:
@@ -51,3 +59,22 @@ def right_triangle_of_cells(n, ranks_with_cells):
         part.setShellPartition(size, [0] * size, [])
     dm.distribute()
     return dm
+
+
+class AdapterStandIn(PETSc.DMPlex):
+    """A DMPlex whose ``adaptMetric`` returns the prepared DM, with its outer faces
+    under ``bdLabel`` as a real adapter would leave them, for meshes that ``remesh``
+    in a PETSc with no parallel adapter. The metric is replaced too (#975). The
+    attribute is on the class because a variable's creation swaps the mesh's DM for
+    a clone."""
+
+    adapted = None
+
+    def metricCreateIsotropic(self, indicator, field=0):
+        return None
+
+    def adaptMetric(self, metric, bdLabel=None, rgLabel=None):
+        adapted = type(self).adapted
+        adapted.createLabel(bdLabel)
+        adapted.markBoundaryFaces(bdLabel, ALL_BOUNDARIES_VALUE)
+        return adapted
