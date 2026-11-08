@@ -214,17 +214,19 @@ parts, in this order of size:
    `partition_addon` gives the band's region to one rank and moves cells far
    from the fault to balance the rest, and the band is then placed and split on
    that rank, at any rank count. It is the contact design's accepted trade,
-   extra load on the owning rank for no communication inside the contact solve,
-   and a network's faults go to different ranks region by region, so the cost is
-   a few bands per rank rather than all on one. Measured on the production
+   extra load on the owning rank for no communication inside the contact solve.
+   A network's faults have their cells placed region by region, so their bands
+   can sit on different ranks. Measured on the production
    annulus at np 16 (`development` 25d62812, kaiju's budget): the finest-level
    patch, 3584 rows at fault depth 0.15 and 7010 rows at 0.45, each time all on
    one rank of 16, and its LU solve runs there for 21 to 28 s a step while the
    other 15 ranks wait, 5 to 6 % of the Stokes solve. At that commit the cost
-   came from the gather placement. Since #925 (merged 2026-11-03) the patch's
-   blocks are built from every rank's rows and each goes whole to the rank that
-   owns most of them, so the structural block is one LU on one rank, as in
-   serial, at any rank count and under any placement. `seams="conform"` (#670)
+   came from the gather placement. Since #934 (merged 2026-11-04, for issue
+   #925) the patch's blocks are built from every rank's rows and each goes whole
+   to the rank that owns most of them. With no zone keyed, the structural rows of
+   every fault, a whole network's included, form one block, so the structural
+   patch is one LU on one rank, as in serial, at any rank count and under any
+   placement. `seams="conform"` (#670)
    meshes the band through the partition boundaries with nothing moved; it would
    spread the band's cells across ranks, but not that block. It also cannot
    place a fault that reaches the domain wall as the library stands: it needs
@@ -235,8 +237,9 @@ parts, in this order of size:
    The 2000-row cap (`fac_block_rows`, or the `UW_FAC_BLOCK_ROWS` environment
    variable) cuts only the blocks built from `fac_zone` masks, along strike;
    the structural patch is one block, the measured 2-D choice. Its share of the
-   solve grows with the rank count or with several faults on one rank, and its
-   cost in 3-D is what #895 tracks.
+   solve grows with the rank count and with the number of faults; #934's
+   measurements are of single faults, so a network's cost is not measured. Its
+   cost in 3-D and for networks is what #895 tracks.
 
 With a band of area fraction $f$ refined $k$ halvings on $P$ ranks, for a fault
 of length $L$ in a domain of width $D$, the busiest rank sits roughly
