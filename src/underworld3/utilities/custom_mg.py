@@ -1425,9 +1425,10 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     pairs, one per block. A level with a patch gets a multiplicative composite
     smoother PC: the level's SOR, then a basic ASM over the blocks (patch plus
     halo, one operator-sparsity overlap layer), each block solved by LU with a
-    nonzero shift. The SOR smooths the whole level; the blocks correct the rows
-    the coarse level cannot represent. The keys written here (each FAC level's
-    ``pc_type`` and its blocks' ``pc_type`` and factor shift) are returned so a
+    nonzero shift and quotient minimum degree ordering. The SOR smooths the whole
+    level; the blocks correct the rows the coarse level cannot represent. The keys
+    written here (each FAC level's ``pc_type`` and its blocks' ``pc_type``, factor
+    shift and factor ordering) are returned so a
     per-solve caller (the rotated path) can drop them from the DB, once
     :func:`_set_up_fac_smoothers` has set the FAC levels up from them."""
     nlev = len(Ps) + 1
@@ -1571,6 +1572,21 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
             opts[prefix + key] = "nonzero"
             fac_keys.append(key)
+            # A fault band's block is long and narrow, and under PETSc's default
+            # ordering (nd) its fill followed the subdomain's row numbering: the
+            # add-on matrix's fault pair took 8.1e9 flops to factor at np 4 and
+            # 2.35e10 at np 8 and 16, on the same rows. Quotient minimum degree
+            # cuts it 25-58 times and makes it nearly the same at any rank count
+            # (4.1e8 at np 8 and 16); the block's triangular solves, which every
+            # smoother application pays, ran 3.5-6 times faster and the solve
+            # 2.3-4 times, with the same iterations and slip (kaiju, #895; rcm was
+            # worse than nd). On blocks that are not bands it cost nothing: 1.2 to
+            # 3 times less fill on every block measured (hyperion's review).
+            # An ordering already in the database (the user's) is left in place.
+            key = _sub_key.replace("sub_pc_type", "sub_pc_factor_mat_ordering_type")
+            if not opts.hasName(prefix + key):
+                opts[prefix + key] = "qmd"
+            fac_keys.append(key)
             for _is in is_subs:   # the PC holds its own references
                 _is.destroy()
     return fac_keys
@@ -1592,7 +1608,8 @@ def _set_up_fac_smoothers(pc, fac_keys):
     The block solver is also set on each block's PC from the database, so the
     blocks run it even where the ASM had already set up before this call; the
     keys must still be in the database when it runs. FAC blocks are LU: ILU
-    there is a regression."""
+    there is a regression. Their ordering (quotient minimum degree) comes from the
+    database alone, read when the ASM sets up."""
     if not fac_keys:
         return
     opts = PETSc.Options()
@@ -1609,6 +1626,10 @@ def _set_up_fac_smoothers(pc, fac_keys):
             block_pc.setType(opts.getString(prefix + "pc_type"))
             block_pc.setFactorShift(
                 shift_type=opts.getString(prefix + "pc_factor_shift_type"))
+            # The ordering is not set here: the blocks read it from the database at
+            # the ASM's set-up above, and the key is there then on every path. Set
+            # on a block that has already factored, it raises PETSc error 73, so it
+            # cannot serve as insurance the way the type and the shift do.
 
 
 def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
