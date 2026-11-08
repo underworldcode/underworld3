@@ -3903,7 +3903,7 @@ class SolverBaseClass(uw_object):
 
     # Which reference a solve measures (#911). None follows the equation: a solve with
     # memory takes "increment", any other "stationary". Set on a solver to measure one
-    # rule against the other; the ruling between them is pending.
+    # rule against the other on the same model.
     _convergence_reference_rule = None
 
     def _carries_memory(self):
