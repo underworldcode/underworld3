@@ -1755,3 +1755,53 @@ def test_unit_aware_array():
 
 if __name__ == "__main__":
     test_unit_aware_array()
+
+
+def _to_nondim_ndarray(value, units=None):
+    """Reduce a possibly unit-carrying array to a plain non-dimensional ndarray.
+
+    The semi-Lagrangian trace-back, the DM point-location and all variable
+    storage operate in the mesh's NON-DIMENSIONAL coordinate/value space
+    (UW3 issue #267): every array entering that arithmetic must be a plain
+    ndarray of non-dimensional values. This is the single reduction used
+    by every coordinate / velocity / forcing unwrap in ``systems.ddt``.
+
+    Parameters
+    ----------
+    value : array-like, UnitAwareArray, or Pint quantity
+        The array to reduce. A plain ndarray with ``units=None`` is
+        assumed to be non-dimensional already and is returned unchanged.
+    units : pint.Unit or str, optional
+        Units known out-of-band (e.g. from ``uw.get_units``) to attach
+        to a plain array before non-dimensionalising. Ignored when
+        ``value`` already carries units; ``None`` or ``"dimensionless"``
+        means no attachment.
+
+    Returns
+    -------
+    numpy.ndarray or original type
+        Non-dimensional plain array (unit-carrying input), or ``value``
+        unchanged (plain input with no ``units`` supplied).
+    """
+    carries_units = isinstance(value, UnitAwareArray) or hasattr(value, "magnitude")
+    if not carries_units and units and str(units) != "dimensionless":
+        value = UnitAwareArray(np.asarray(value), units=units)
+        carries_units = True
+    if not carries_units:
+        return value
+    # TODO(BUG): a raw pint.Quantity input reaches uw.non_dimensionalise(),
+    # which crashes when reference scales are active (units.py protocol 5,
+    # invalid `dimensionality=` kwarg). Pre-existing — the unified unwrap
+    # sites had the same hasattr("magnitude") gate, and the DDt data paths
+    # only ever supply UnitAwareArray/plain ndarray from uw.function
+    # evaluate/global_evaluate. Fix belongs in units.py. See #328.
+    import underworld3 as uw
+
+    nd = uw.non_dimensionalise(value)
+    if isinstance(nd, UnitAwareArray):
+        return np.array(nd)
+    if hasattr(nd, "magnitude"):
+        return nd.magnitude
+    if hasattr(nd, "value"):
+        return nd.value
+    return np.asarray(nd)

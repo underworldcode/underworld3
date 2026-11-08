@@ -18,7 +18,7 @@
 #   ./test.sh --p 2               # All serial + parallel (2 ranks)
 #   ./test.sh --p 2 --full-parallel   # ... and again at 4 ranks
 #   ./test.sh --parallel-only --p 2   # Only parallel tests (debugging)
-#   ./test.sh --p 2 --shard 1/4   # One CI shard's worth
+#   ./test.sh --p 2 --shard 1/5   # One CI shard's worth (N must match --print-shards)
 #
 # We do not run one monolithic pytest because tests produce a large number of
 # PETSc objects which we cannot always guarantee that PETSc / petsc4py will free
@@ -134,6 +134,27 @@ fi
 # Shard 4 owns the whole --p N phase, and every new file under tests/parallel/
 # had also put its serial run in batch 4. Those serial runs (about 6 min) moved
 # to shard 3, and test_05*/06*/07* (about 4 min) to shard 2.
+#
+# 2026-11-08: shard times depend on the runner's CPU by up to 2x, so compare
+# like with like. Across 9 successful four-shard runs on 37aa2a11 and the PRs
+# just after it:
+#
+#   shard   AMD EPYC 7763        EPYC 9V74      EPYC 9V45      Xeon 8370C/8573C
+#   3       54:37, 54:49         41:34-51:59    31:11          56:30 (8370C)
+#   4       54:57-56:53 (6 runs) 43:58          25:17, 27:13   -
+#   1       43:13-44:49          30:47, 32:15   -              37:18, 38:25 (8573C)
+#   2       33:13-33:32          24:20-26:00    19:54          -
+#
+# On the slow runners shards 3 and 4 are within 5 minutes of the 60-minute
+# budget (the job's hard limit is 70). On run 42412307017 (shard 3 on a Xeon
+# 8370C) the test_108*/test_109* batch took 25:47 of shard 3's 56:30, and
+# test_110* 10:08; shard 4's test_00[0-4]* took 27:29 on an EPYC 7763, which
+# #985 and #911 put nearly all on test_0022. The test_108*/test_109* batch
+# moves to a fifth shard. By subtraction, on a slow runner, shard 3 falls to
+# about 31 minutes and shard 5 runs about 31 with install and build. Shard 5
+# loses the JIT cache it shared on shard 3, so re-measure both, CPU by CPU.
+# test_0022_rotated_adjoint.py later moved to a shard of its own, 6 (see the
+# batch 6 line), until #911's fix, which should shorten it.
 #
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
 # 149 tests finish in the first 2 minutes, then the remainder takes 31. Since
@@ -287,7 +308,17 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   python3 "$(dirname "$0")/check_test_coverage.py" || status=1
 
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
-  batch 4 tests/test_00[0-4]*py
+  # test_0022_rotated_adjoint.py runs on a shard of its own until #911's linear floor
+  # lands. Its last Newton step solves past round-off (#985), and its cost varies widely:
+  # on #964's runs on a Xeon 8370C this batch took 26:37 at one commit and 55:38 at the
+  # next (the job then hit the 70-minute cap); development's took 27:50 on an EPYC 7763.
+  # The cause of that spread is not established. When #911 merges, drop the --deselect
+  # and the batch 6 line together, and shard 6 goes with them.
+  # --deselect, not --ignore: the glob names the file on the command line, and pytest
+  # collects a named file even under --ignore. The node id is relative to tests/, the
+  # rootdir that tests/pytest.ini sets.
+  batch 4 tests/test_00[0-4]*py --deselect=test_0022_rotated_adjoint.py
+  batch 6 tests/test_0022_rotated_adjoint.py
   batch 4 tests/test_0050*py
   # test_006[2-9] and test_007x matched NO batch glob and so never ran in CI:
   # the whole integration-point suite (0064-0067), swarm repopulation,
@@ -329,6 +360,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # The live multigrid configuration (#892) is the same check in serial and in
   # parallel, so it is one file under tests/parallel/ with no min_size mark too.
   batch 3 tests/parallel/test_1090_mg_live_configuration_parallel.py
+  # What global_evaluate returns reaches storage in the right place, the same
+  # question in serial and in parallel (#977).
+  batch 3 tests/parallel/test_0785_evaluated_values_reach_storage_parallel.py
   # So is the live finest-smoother operator of the rotated Newton loop (#894).
   batch 3 tests/parallel/test_1088_rotated_interface_operator_parallel.py
   # So is the band patch, the same rows at any rank count (#896).
@@ -354,9 +388,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # test_108*: thin sheet (objective step, the Newton tangent's closure, thin vs
   # thick, the quadratic benchmark); the two slow sphere tests (1081, 1084) are
   # tier C, so the "not tier_c" filter leaves them out. test_109*: the fault
-  # placement and split-level multigrid tests that follow. Shard 3: the lightest
-  # measured (17.3 min on run 40638600008); not yet timed in a sharded run.
-  batch 3 tests/test_108*py tests/test_109*py
+  # placement and split-level multigrid tests that follow. Their own shard, 5:
+  # 25:47 of shard 3's 56:28 on run 42412307017 (see the header).
+  batch 5 tests/test_108*py tests/test_109*py
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
   # band was not batched and it is the ONLY guard on the 3-D free-surface sign
@@ -372,6 +406,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
   batch 4 tests/test_1136*py  # the rotated loop honours snes_max_it (#920)
   batch 3 tests/test_1141*py  # a constrained node adds nothing to the rotated sigma_nn (#936)
+  batch 3 tests/test_1131*py  # rotated free slip takes its rotation modes from the mesh (#906), 3-4 min
   batch 3 tests/test_1142*py  # an exact rotation is projected out of the rotated velocity PC (#963)
   batch 4 tests/test_1450*py
 
@@ -388,10 +423,58 @@ fi
 
 # Parallel tests (run if --p N specified)
 #
-# The whole mpirun phase belongs to ONE shard (4), not to each of them. It
-# costs ~4:38 and is the shard's smallest component, but running it four times
-# would quadruple the only part of the suite that holds several MPI ranks at
+# The test_* mpirun phase belongs to ONE shard (4), not to each of them, and the
+# ptest_* loop below to shard 2. The phase costs ~4:38 and is the shard's
+# smallest component, but running it on every shard
+# would multiply the only part of the suite that holds several MPI ranks at
 # once, which is also the part most likely to contend on a shared runner.
+# The ptest_* files that run under pytest and pass (#900): named, in their own loop,
+# owned by shard 2. Shard 4 is at its cap, and a loop of their own moves no test_* batch
+# boundary, whatever is added to either list: a hang has followed a batch boundary
+# before. The others are listed with their reason in scripts/check_test_coverage.py,
+# which fails on a file in neither place.
+PTEST_FILES=(
+  tests/parallel/ptest_0762_read_timestep_swarm_routed.py
+  tests/parallel/ptest_0843_edge_split_parallel.py
+  tests/parallel/ptest_0844_line_cut_parallel.py
+  tests/parallel/ptest_0844_reconnect_parallel.py
+  tests/parallel/ptest_0845_fault_split_parallel.py
+  tests/parallel/ptest_0845_relax_pinned_band_parallel.py
+  tests/parallel/ptest_0852_place_split_contact.py
+  tests/parallel/ptest_0853_place_lines_parallel.py
+  tests/parallel/ptest_0854_place_sheet_parallel.py
+  tests/parallel/ptest_0855_place_thin_volume_parallel.py
+  tests/parallel/ptest_0856_remove_embedded_parallel.py
+  tests/parallel/ptest_0857_gather_regions_parallel.py
+  tests/parallel/ptest_0859_fault_network_parallel.py
+  tests/parallel/ptest_0864_split_checkpoint_parallel.py
+  tests/parallel/ptest_jit_cache.py
+)
+# These fail at np 4 (#956), so the --full-parallel pass leaves them out.
+PTEST_NOT_AT_4=(
+  tests/parallel/ptest_0864_seam_ligament_parallel.py
+  tests/parallel/ptest_0865_seam_split_parallel.py
+)
+if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 2 && command -v mpirun &> /dev/null; then
+  echo "Parallel ptest_* files ($PARALLEL_RANKS ranks), on shard 2"
+  PTEST_SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
+  if [ "$PARALLEL_RANKS" -eq 4 ]; then
+    PTEST_RUN=("${PTEST_FILES[@]}")
+  else
+    PTEST_RUN=("${PTEST_FILES[@]}" "${PTEST_NOT_AT_4[@]}")
+  fi
+  for ((i = 0; i < ${#PTEST_RUN[@]}; i += ${PARALLEL_BATCH:-6})); do
+    $PTEST_SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+      "${PTEST_RUN[@]:i:${PARALLEL_BATCH:-6}}" || status=1
+  done
+  if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
+    for ((i = 0; i < ${#PTEST_FILES[@]}; i += ${PARALLEL_BATCH:-6})); do
+      $PTEST_SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+        "${PTEST_FILES[@]:i:${PARALLEL_BATCH:-6}}" || status=1
+    done
+  fi
+fi
+
 if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
   if command -v mpirun &> /dev/null; then
     echo ""

@@ -62,18 +62,28 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(600)]
 # rtol is 1e-2 on purpose: this is not a reproducibility gate (that is `compare`, six
 # to eight orders tighter), it only has to notice that the answer became a different
 # answer. Recompute the fingerprint with `python <thisfile> <kind>`.
-_ANCHOR_MESH = [434, 2.355685412534114]         # Annulus(1.0, 0.5, cellSize=0.12)
+_ANCHOR_MESH = [434, 2.355685412534114]         # Annulus(1.0, 0.5, cellSize=0.12), macOS
+# Linux's gmsh builds that annulus with 430 cells; recorded on hyperion at np 2 with the
+# conda-forge stack CI uses (2026-11-06). One anchor per host mesh: accuracy_anchor
+# takes the one whose fingerprint matches.
+_ANCHOR_MESH_LINUX = [430, 2.355685412534116]
 ANCHORS = {
-    "iso": {"fingerprint": _ANCHOR_MESH,
-            "values": (6.194547793955e-01, 3.786068778041e+01)},
-    "ti": {"fingerprint": _ANCHOR_MESH,
-           "values": (3.925981604039e-01, 3.707799837159e+01)},
+    "iso": [{"fingerprint": _ANCHOR_MESH,
+             "values": (6.194547793955e-01, 3.786068778041e+01)},
+            {"fingerprint": _ANCHOR_MESH_LINUX,
+             "values": (6.194403143328553e-01, 3.8038815818522956e+01)}],
+    "ti": [{"fingerprint": _ANCHOR_MESH,
+            "values": (3.925981604039e-01, 3.707799837159e+01)},
+           {"fingerprint": _ANCHOR_MESH_LINUX,
+            "values": (3.926249052154835e-01, 3.773944137979907e+01)}],
 }
 # (velocity L2, mean-stripped topography). The raw mean pressure is NOT anchored: it is
 # pinned to ~0, and a relative gate on a number near machine zero measures nothing —
 # it has its own absolute assertion in the test.
-ANCHOR_GAUGE = {"fingerprint": _ANCHOR_MESH,
-                "values": (6.194547487092e-01, 3.781793823254e+01)}
+ANCHOR_GAUGE = [{"fingerprint": _ANCHOR_MESH,
+                 "values": (6.194547487092e-01, 3.781793823254e+01)},
+                {"fingerprint": _ANCHOR_MESH_LINUX,
+                 "values": (6.194402844543104e-01, 3.7996633118089264e+01)}]
 
 # Velocity reproduces to the parallel reduction order. The topography is read off
 # the multiplier, whose [p,lambda] Schur sub-block grinds into its 200-iteration cap

@@ -28,6 +28,50 @@ DEFERRED = {
 }
 
 
+# tests/parallel/ptest_* files CI does not run, each with why (#900). Shrink-only:
+# a new parallel test is named test_*, which CI picks up by itself.
+SCRIPT_STYLE = "a script with no test functions: needs a harness to report to CI"
+DEFERRED_PTESTS = {
+    "ptest_0004_checkpoint_fmg_hierarchy.py": SCRIPT_STYLE,
+    "ptest_0007_snapshot_inmemory.py": SCRIPT_STYLE,
+    "ptest_0008_mesh_radii_accessors.py": SCRIPT_STYLE,
+    "ptest_000_petsc4py.py": SCRIPT_STYLE,
+    "ptest_000a_uw.py": SCRIPT_STYLE,
+    "ptest_000b_uw_petsc4py.py": SCRIPT_STYLE,
+    "ptest_000c_uw_petsc4py_h5.py": SCRIPT_STYLE + "; reads a mesh file nothing makes",
+    "ptest_000d_uw_petsc4py_swarm.py": SCRIPT_STYLE + "; reads a mesh file nothing makes",
+    "ptest_0010_snapshot_disk.py": SCRIPT_STYLE,
+    "ptest_0011_dm_rebuild_held_handles.py": SCRIPT_STYLE,
+    "ptest_001_start_stop.py": SCRIPT_STYLE,
+    "ptest_001a_start_stop_petsc4py.py": SCRIPT_STYLE,
+    "ptest_002_projection.py": SCRIPT_STYLE,
+    "ptest_003_swarm_projection.py": SCRIPT_STYLE,
+    "ptest_0202_warmstart_homotopy_parallel.py": SCRIPT_STYLE,
+    "ptest_0203_wallclock_guard_parallel.py": SCRIPT_STYLE,
+    "ptest_0848_fault_split_3d_parallel.py": SCRIPT_STYLE,
+    "ptest_1020_fmg_single_field_parallel.py": SCRIPT_STYLE,
+    "ptest_1079_diffusion_disk_restart.py": SCRIPT_STYLE,
+    "ptest_0851_fault_network_3d_parallel.py": "fails at np 2 and 4 (#900)",
+    "ptest_0863_fault_network_3d_width_parallel.py": "fails at np 2 and 4 (#956)",
+    "ptest_0763_mesh_adapt_transfer.py": "its one test is skipped unconditionally: adaptMetric fails on N>1",
+}
+
+
+def dark_ptests(script_text, every):
+    """The ptest_* files in neither test.sh's PTEST arrays nor DEFERRED_PTESTS, and the
+    stale entries. Only the array bodies count: a path in a comment or an echo runs nothing."""
+    run = set()
+    for body in re.findall(r"^PTEST_\w+=\(\n(.*?)^\)", script_text, re.M | re.S):
+        for line in body.splitlines():
+            line = line.split("#")[0].strip()
+            match = re.fullmatch(r"tests/parallel/(ptest_[A-Za-z0-9_]+\.py)", line)
+            if match:
+                run.add(match.group(1))
+    dark = sorted(every - run - set(DEFERRED_PTESTS))
+    stale = sorted(set(DEFERRED_PTESTS) - (every - run))
+    return dark, stale
+
+
 def globs_run_by(script):
     """Every tests/... pattern the script hands to pytest, on an uncommented line.
 
@@ -40,6 +84,9 @@ def globs_run_by(script):
       does not care which one it is.
     * ``"${PYTEST[@]}" tests/...`` — the runner is a bash array.
     * ``$PYTEST tests/...`` — in case a plain one is left behind.
+
+    Returns ``(pattern, dropped)`` pairs: ``dropped`` holds the files that line
+    removes again with a whole-file ``--deselect``.
     """
     text = script.read_text().replace("\\\n", " ")
     patterns = set()
@@ -47,14 +94,19 @@ def globs_run_by(script):
         if line.lstrip().startswith("#"):
             continue
         if re.search(r"\$\{?PYTEST", line) or re.match(r"\s*batch\s+\d+\s", line):
-            patterns.update(re.findall(r"tests/[A-Za-z0-9_\[\]*.\-]+", line))
+            # A whole-file --deselect (node id relative to tests/, the rootdir) takes
+            # that file back out of THIS line's globs.
+            dropped = frozenset(re.findall(r"--deselect[= ]([^\s:\"']+)(?=\s|$)", line))
+            for pattern in re.findall(r"tests/[A-Za-z0-9_\[\]*.\-]+", line):
+                patterns.add((pattern, dropped))
     return patterns
 
 
 def main():
     covered = set()
-    for pattern in globs_run_by(REPO / "scripts" / "test.sh"):
-        covered.update(glob.glob(str(REPO / pattern)))
+    for pattern, dropped in globs_run_by(REPO / "scripts" / "test.sh"):
+        gone = {str(REPO / "tests" / d) for d in dropped}
+        covered.update(set(glob.glob(str(REPO / pattern))) - gone)
     covered = {Path(p).name for p in covered}
 
     every = {p.name for p in (REPO / "tests").glob("test_*.py")}
@@ -89,8 +141,23 @@ def main():
         print("\nRemove them: the files they name are running, or no longer exist.")
         return 1
 
+    script_text = (REPO / "scripts" / "test.sh").read_text()
+    if not re.search(r"^\s*PARALLEL_FILES=\(tests/parallel/test_\*\.py\)", script_text, re.M):
+        print("    scripts/test.sh no longer enumerates tests/parallel/test_*.py")
+        return 1
+    ptests = {p.name for p in (REPO / "tests" / "parallel").glob("ptest_*.py")}
+    dark, stale = dark_ptests(script_text, ptests)
+    if dark or stale:
+        for name in dark:
+            print(f"    tests/parallel/{name} is in neither scripts/test.sh nor DEFERRED_PTESTS")
+        for name in stale:
+            print(f"    DEFERRED_PTESTS: {name} is running, or no longer exists; remove it")
+        return 1
+
     print(f"OK: all {len(every)} test files are reachable from scripts/test.sh "
-          f"({len(deferred)} deferred by decision).")
+          f"({len(deferred)} deferred by decision); "
+          f"{len(ptests) - len(DEFERRED_PTESTS)} of {len(ptests)} ptest files run "
+          f"({len(DEFERRED_PTESTS)} deferred with a reason).")
     return 0
 
 
