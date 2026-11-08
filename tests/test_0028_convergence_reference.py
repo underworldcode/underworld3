@@ -131,3 +131,36 @@ def test_a_time_step_is_measured_against_its_own_first_residual():
         adv_diff.solve(zero_init_guess=False, timestep=1.0e-4)
         _check_stops_at_the_first_iterate_inside_the_target(
             adv_diff, f"time step {step}", reference=0.0)
+
+
+def test_the_saddle_point_route_keeps_eisenstat_walker():
+    # Eisenstat-Walker is PETSc's KSP pre-solve on this route. The floor is composed
+    # with the KSP's convergence test, so EW still sets each linear solve's rtol, and
+    # the first is EW's rtol_0. Set as a pre-solve, the floor replaced EW's.
+    stokes, _amplitude = _power_law_stokes()
+    stokes.solve(zero_init_guess=True)
+    assert stokes.snes.getUseEW()
+    rtols = []
+
+    def _record(ksp, its, rnorm):
+        if its == 0:
+            rtols.append(ksp.getTolerances()[0])
+
+    stokes.snes.getKSP().setMonitor(_record)
+    stokes.solve(zero_init_guess=True)
+    stokes.snes.getKSP().cancelMonitor()
+    assert len(rtols) >= 2, rtols
+    assert rtols[0] == pytest.approx(stokes.snes.getParamsEW()["rtol_0"]), rtols
+
+
+def test_a_linear_tolerance_the_solver_did_not_derive_is_not_loosened():
+    # The floor replaces only the ksp_rtol that ``tolerance`` derives. A linear rtol
+    # set by the user, or by the library for a solve it wants tight, stays in force.
+    derived, _ = _nonlinear_poisson()
+    derived.solve(zero_init_guess=True)
+    assert derived._convergence_reference["linear_floor"] == pytest.approx(
+        0.1 * derived._convergence_reference["target"])
+    own, _ = _nonlinear_poisson()
+    own.petsc_options["ksp_rtol"] = 1.0e-9
+    own.solve(zero_init_guess=True)
+    assert own._convergence_reference["linear_floor"] is None

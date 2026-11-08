@@ -3905,6 +3905,8 @@ class SolverBaseClass(uw_object):
     # memory takes "increment", any other "stationary". Set on a solver to measure one
     # rule against the other on the same model.
     _convergence_reference_rule = None
+    # The linear floor of the solve in progress, in ||F|| units; None outside one.
+    _linear_floor = None
 
     def _carries_memory(self):
         """Whether this equation's residual carries the last step's answer forward,
@@ -3947,6 +3949,63 @@ class SolverBaseClass(uw_object):
         F.destroy()
         return norm
 
+    def _user_sets_outer_ksp_rtol(self):
+        """Whether the outer KSP's rtol is one this solver's ``tolerance`` did not derive:
+        set by the user, or by the library for a solve it wants tight (a projection).
+        Each class's ``_TOLERANCE_DERIVED_KEYS`` says what ``tolerance`` writes; a class
+        without the table derives ``ksp_rtol = 0.1 * tolerance``, and a table without
+        the key (the saddle point, where Eisenstat-Walker owns it) derives none."""
+        if not self.petsc_options.hasName("ksp_rtol"):
+            return False
+        table = getattr(self, "_TOLERANCE_DERIVED_KEYS", None)
+        factor = 1.0e-1 if table is None else table.get("ksp_rtol")
+        if factor is None:
+            return True
+        return self.petsc_options.getReal("ksp_rtol") != float(self._tolerance) * factor
+
+    def _install_linear_floor_test(self, ksp):
+        """Compose the linear floor with the outer KSP's own convergence test, once per
+        KSP. The test is inactive outside a solve that sets ``self._linear_floor``.
+
+        The floor is in ||F|| units, and the KSP may measure a preconditioned norm:
+        GMRES with left preconditioning does, about 40 times under ||F|| on the scalar
+        route, where the floor as an absolute tolerance stopped a Newton step's linear
+        solve at its first residual. The test scales the floor into the KSP's own norm
+        by the ratio of its first residual to ||b|| = ||F(x_k)||, so it is right in
+        either norm. It is appended to PETSc's test rather than set as a pre-solve,
+        because Eisenstat-Walker is PETSc's pre-solve on the saddle-point route: EW
+        sets the rtol, and the floor bounds it from below. While the SNES has not
+        converged ||F(x_k)|| > T, so the floor asks for a reduction of at least
+        ``1 / _LINEAR_TARGET_FRACTION``; the cap guards a route that stops elsewhere.
+        The solver is held weakly: the KSP keeps the callback in a C-held context the
+        garbage collector cannot see, and a strong reference would pin the solver.
+        COLLECTIVE at its 0 (one norm)."""
+        current = ksp.getConvergenceTest()
+        if current is not None:
+            # ours already, or a test somebody else set: that one owns the KSP
+            return getattr(current[0], "_uw_linear_floor", False)
+        import weakref
+        solver_ref = weakref.ref(self)
+        threshold = [0.0]
+
+        def _below_the_floor(ksp, its, rnorm):
+            solver = solver_ref()
+            floor = None if solver is None else solver._linear_floor
+            if floor is None:
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if its == 0:
+                bnorm = ksp.getRhs().norm()
+                threshold[0] = (min(floor / bnorm, _LINEAR_TARGET_FRACTION) * rnorm
+                                if bnorm > 0.0 else 0.0)
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if rnorm <= threshold[0]:
+                return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            return PETSc.KSP.ConvergedReason.ITERATING
+
+        _below_the_floor._uw_linear_floor = True
+        ksp.addConvergenceTest(_below_the_floor)
+        return True
+
     def _apply_convergence_reference(self, gvec):
         """Set this solve's absolute targets from one reference residual.
 
@@ -3954,11 +4013,13 @@ class SolverBaseClass(uw_object):
         ``R`` is the equation's declared reference, :meth:`_reference_residual`. A warm
         start is therefore held to the same target as a cold start of the same
         problem. The SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear
-        solves at the floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton). The
-        rules are applied the same way on every route; the tolerances in force are
-        returned for the caller to restore, and the caller clears the linear
-        solve's pre-solve hook. Design:
-        docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md. COLLECTIVE.
+        solves at the floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton,
+        :meth:`_install_linear_floor_test`). The floor never loosens a linear rtol
+        the solver's ``tolerance`` did not derive (:meth:`_user_sets_outer_ksp_rtol`).
+        The rules are applied the same way on every route; the tolerances in force are
+        returned for the caller to restore, and the caller clears ``_linear_floor``.
+        Design: docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md.
+        COLLECTIVE.
         """
         ksp = self.snes.getKSP()
         saved = (self.snes.getTolerances(), ksp.getTolerances())
@@ -3971,23 +4032,10 @@ class SolverBaseClass(uw_object):
         F_ref = max(F_x0, F_0)
         target = max(rtol * F_ref, atol)
         self.snes.setTolerances(atol=target)
-        floor = _LINEAR_TARGET_FRACTION * target
-        ksp_rtol = saved[1][0]
-
-        def _floor_the_linear_solve(ksp, rhs, _x):
-            # The floor is in ||F|| units, and the KSP may measure a preconditioned
-            # norm: GMRES with left preconditioning does, and there the floor as an
-            # absolute tolerance stopped a Newton step at its first residual, 40 times
-            # under ||F||. As a reduction of the linear solve's own first residual,
-            # whose right-hand side is F(x_k), it is right in either norm. While the
-            # SNES has not converged ||F(x_k)|| > T, so the ratio is under the
-            # fraction; the cap only guards a route that stops elsewhere, and a looser
-            # rtol of the user's own still wins. COLLECTIVE.
-            bnorm = rhs.norm()
-            if bnorm > 0.0:
-                ksp.setTolerances(rtol=max(ksp_rtol, min(floor / bnorm, _LINEAR_TARGET_FRACTION)))
-
-        ksp.setPreSolve(_floor_the_linear_solve)
+        floor = None
+        if not self._user_sets_outer_ksp_rtol() and self._install_linear_floor_test(ksp):
+            floor = _LINEAR_TARGET_FRACTION * target
+        self._linear_floor = floor
         self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
                                        "target": target, "linear_floor": floor}
         return saved
@@ -4095,7 +4143,7 @@ class SolverBaseClass(uw_object):
             self.snes.getKSP().setTolerances(rtol=_saved_ksp_tol[0], atol=_saved_ksp_tol[1],
                                              divtol=_saved_ksp_tol[2],
                                              max_it=_saved_ksp_tol[3])
-            self.snes.getKSP().setPreSolve(None)
+            self._linear_floor = None
             # Default-on difficulty report — single tail so every path is covered,
             # INCLUDING a solve that raises: the report then reflects the failed
             # attempt's SNES state rather than leaving the previous solve's converged
