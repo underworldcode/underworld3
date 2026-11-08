@@ -15,6 +15,35 @@ cuts the fill 25 to 58 times and makes it nearly the same at any rank count. The
 triangular solves, which every smoother application pays, run 3.5 to 6 times faster,
 and the add-on matrix's fault-network solves 2.3 to 4 times faster, with the same
 iterations and slip.
+### One convergence reference for every solver (November 2026, #911, #985, #924)
+
+PETSc measures a nonlinear solve relative to the residual of the guess it starts
+from, so a warm start near the answer was asked for a fraction of an already small
+residual and kept iterating; and each linear solve inside Newton was asked for a
+fraction of its own right-hand side, which on the last step of a tight solve is below
+round-off (test_0022's rotated solve ran its last increment into a 300-iteration cap,
+18 to 52 minutes on CI). Every solve now measures one reference and two targets, on
+the native and the rotated routes alike
+(`docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md`):
+
+- The nonlinear target is `max(rtol * max(||F(x0)||, R), atol)` (the rotated loop adds
+  its `atol`), where `R` is what the equation declares: `||F(0)||` for a stationary equation, so a warm start is held to
+  the cold start's target; zero for a solve with memory (a time step through a DDt,
+  a viscoelastic step) or a weakly imposed nonzero datum (Nitsche or a penalty), which
+  are measured against their own first residual as before. Under the `max` a time
+  loop was 20 to 70 times less accurate, and a warm re-solve of a Nitsche-driven lid
+  up to 1300 times.
+- Each linear solve stops at a tenth of the nonlinear target, and always cuts its own
+  residual at least tenfold (inexact Newton). A linear rtol the user, or the library,
+  set explicitly is left alone, and Eisenstat-Walker still sets the rtol on the
+  saddle-point route.
+- The rotated loop honours a user-set `snes_rtol`, `snes_atol` and `snes_stol` (#924).
+
+test_0022 takes 13.6 s on wombat against 758 s. Answers are now as accurate as the
+tolerance asks, and no more: a linear solve no longer gets a second, exact Newton
+step for free. `evaluate()` of an expression with derivatives goes through a
+projection asked for `snes_rtol = 1e-6`, and returns values to that, where it was
+often near round-off before.
 
 ### Rotated free slip takes its rotation modes from the mesh (November 2026, #906)
 
