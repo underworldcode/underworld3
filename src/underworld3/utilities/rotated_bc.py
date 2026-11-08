@@ -898,7 +898,8 @@ def _destroy_rotated_linear_cache(cache):
     """Release the persistent rotated-free-slip workspace. The custom-FMG
     prolongation list is only DEREFERENCED (its coarse Mats are shared with
     the solver's registered multigrid hierarchy); in parallel what it alone held
-    is freed by the caller's collective garbage cleanup (#1007)."""
+    is freed by the collective garbage cleanup that ends a solve which built a new
+    workspace (#1007)."""
     if not cache:
         return
     _destroy_rotated_ksp_ctx(cache.get("ctx"))
@@ -1347,14 +1348,6 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             solver._rotated_linear_cache = None
             stale, cache = cache, None
             _destroy_rotated_linear_cache(stale)
-            # The workspace's prolongation list and the builders' intermediates are
-            # dropped, not destroyed: in parallel petsc4py defers each destroy to a
-            # collective PETSc.garbage_cleanup, which only a new mesh ran, so every
-            # rebuild (a reassigned expression rebuilds the DM, and dm.handle is in
-            # the geometry signature) kept about 7 MB per rank (#1007). The verdict
-            # is the same on every rank (allgathered above), so this is collective.
-            del stale
-            mpi._free_petsc_garbage(solver.dm.comm)
         elif not tol_ok:
             _destroy_rotated_ksp_ctx(cache.get("ctx"))
             cache["ctx"] = None
@@ -1893,6 +1886,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
+    if not rotation_reused:
+        # A new workspace was built: the old one, its prolongation list and the
+        # builders' intermediates were dropped, here or by the solver's own reset when
+        # a reassigned expression rebuilt its DM, which happens before this function
+        # runs. In parallel petsc4py defers each destroy to a collective
+        # PETSc.garbage_cleanup, which only a new mesh ran, so every rebuild kept
+        # about 7 MB per rank (#1007). It runs at the end of the solve, once the new
+        # workspace has replaced what the old one shared. Whether the rotation was
+        # reused is the same on every rank (the reset is collective and the cache
+        # verdict allgathered), so this is collective.
+        mpi._free_petsc_garbage(solver.dm.comm)
     # a workspace persists with no KSP context when this solve built none (a warm
     # start already converged after a tolerance change): the next solve builds it
     if (cache_allowed and Ahat is not None and not use_lu and not failed_hard
