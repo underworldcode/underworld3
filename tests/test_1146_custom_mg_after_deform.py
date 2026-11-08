@@ -1,18 +1,17 @@
 """A solver with a custom-P hierarchy and a FAC patch re-solves after ``mesh.deform`` (#1015).
 
-``mesh.deform`` rebuilds the solver's preconditioner from the options database. Two
-things then went wrong on the standard (non-rotated) paths:
+``mesh.deform`` rebuilds the solver's preconditioner from the options database. The
+hierarchy was installed again, but the FAC level's ``mg_levels_<l>_pc_type composite``
+key, which the standard paths leave in the database, came back as a composite with no
+member PCs on a level that has no patch this time, and the re-solve stopped with PETSc
+error 73. An install now drops that configuration from every level without a patch,
+and leaves a user's own smoother keys alone. The hierarchy is installed once over
+repeat solves and again after the deform, and the re-solve converges, for Poisson
+(top-level multigrid) and the Stokes velocity block.
 
-- ``_pcmg_still_installed`` took the rebuilt PC for the live hierarchy because it had
-  the same level count, so the hierarchy was never installed again;
-- the FAC level's ``mg_levels_<l>_pc_type composite`` key, which the standard paths
-  leave in the database, came back as a composite with no member PCs, and the
-  re-solve stopped with PETSc error 73.
-
-The live check now also requires the finest interpolation to be the one the install
-set, and an install drops the FAC keys of any level that has no patch this time. The
-hierarchy is installed once over repeat solves and again after the deform, and the
-re-solve converges, for Poisson (top-level multigrid) and the Stokes velocity block.
+The live check that decides a re-install now also requires the finest interpolation to
+be the one the install set. The level count alone passed a PC reset in place, which
+keeps the levels and drops the transfers, and that solve stopped with PETSc error 63.
 
 What the re-solve does not get back is the FAC patch: the coarse levels given to
 ``set_custom_fmg`` do not move with the fine mesh, so after a deform no fine node
@@ -94,4 +93,30 @@ def test_the_hierarchy_is_installed_once_and_again_after_a_deform(build, monkeyp
     pc = managed_pc()
     nlev = s._custom_mg_live["nlev"]
     assert pc.getType() == "mg" and pc.getMGLevels() == nlev
+    assert pc.getMGInterpolation(nlev - 1).handle == s._custom_mg_live["finest"].handle
+
+
+def test_a_user_smoother_key_survives_an_install():
+    # The FAC keys of a level without a patch are dropped; a smoother the user chose
+    # for that level is not (hyperion's review, M1: jacobi on level 1 became SOR).
+    s, _mesh, managed_pc = _poisson()
+    s.petsc_options["mg_levels_1_pc_type"] = "jacobi"
+    s.solve()
+    assert s.snes.getConvergedReason() > 0
+    pc = managed_pc()
+    assert pc.getMGSmoother(1).getPC().getType() == "jacobi"
+    assert pc.getMGSmoother(pc.getMGLevels() - 1).getPC().getType() == "composite"
+
+
+def test_the_hierarchy_is_installed_again_after_the_pc_is_reset():
+    # pc.reset() keeps the levels and drops the transfers; read by its level count
+    # alone the hierarchy looked live, was not installed again, and the solve
+    # stopped with PETSc error 63
+    s, _mesh, managed_pc = _poisson()
+    s.solve()
+    managed_pc().reset()
+    s.solve()
+    assert s.snes.getConvergedReason() > 0, s.snes.getConvergedReason()
+    pc = managed_pc()
+    nlev = s._custom_mg_live["nlev"]
     assert pc.getMGInterpolation(nlev - 1).handle == s._custom_mg_live["finest"].handle

@@ -1470,19 +1470,26 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
         if ksp.getType() in ("gmres", "fgmres", "lgmres", "dgmres", "pgmres", "pipefgmres") \
                 and opts.hasName(prefix + "ksp_gmres_restart"):
             ksp.setGMRESRestart(opts.getInt(prefix + "ksp_gmres_restart"))
-    # A level-indexed smoother key is written only for a FAC level (below), and on
-    # the standard path it stays in the database after the solve. A re-install
-    # whose level has no patch this time would read it back as an empty
-    # composite, which PETSc refuses (error 73 after mesh.deform, #1015), so the
-    # FAC keys of every level without a patch now are dropped first.
+    # A FAC level's smoother keys (below) stay in the database after the solve on
+    # the standard path. A re-install whose level has no patch this time read the
+    # level's "composite" back with no member PCs, which PETSc refuses (error 73
+    # after mesh.deform, #1015), so a level without a patch now loses the FAC
+    # configuration a previous install left: its pc_type when that is "composite"
+    # with no member list of its own (a composite the user built names its members
+    # in pc_composite_pcs), and that composite's block keys. Any other smoother key
+    # on the level is the user's, and stays (hyperion's review, M1).
     for l in range(1, nlev):
         if patch_rows and l < len(patch_rows) and patch_rows[l] is not None:
             continue
+        level = prefix + f"mg_levels_{l}_"
+        if not (opts.hasName(level + "pc_type")
+                and opts.getString(level + "pc_type") == "composite"
+                and not opts.hasName(level + "pc_composite_pcs")):
+            continue
         for stem in ("pc_type", "sub_1_sub_pc_type", "sub_1_sub_pc_factor_shift_type",
                      "sub_1_sub_pc_factor_mat_ordering_type"):
-            key = prefix + f"mg_levels_{l}_{stem}"
-            if opts.hasName(key):
-                opts.delValue(key)
+            if opts.hasName(level + stem):
+                opts.delValue(level + stem)
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
@@ -2767,14 +2774,17 @@ def _pcmg_still_installed(solver, h):
     the marker stale. So the marker is only the cheap first test, and the
     verdict comes from the LIVE object: the managed block must exist, be a
     PCMG with the hierarchy's level count, and carry at its finest level the very
-    interpolation the install set. The level count alone was not enough: after
-    ``mesh.deform`` rebuilt the solver's PC from the options database it had the
-    same three levels, so the hierarchy was never installed again, and the FAC
-    level's lingering ``composite`` key, with no member PCs, stopped the re-solve
-    with PETSc error 73 (#1015). The marker holds the installed Mat itself, so a
-    rebuilt PC cannot pass by reusing its address. Any doubt (unreachable PC,
-    un-set-up fieldsplit) answers False — the cost of a wrong False is one
-    redundant install, the cost of a wrong True is a solve on a stale PC.
+    interpolation the install set. The level count alone passes a PC reset in
+    place (``pc.reset()``), which keeps the levels and drops the transfers: the
+    hierarchy was not installed again and the solve stopped with PETSc error 63.
+    The marker holds the installed Mat itself, so a rebuilt PC cannot pass by
+    reusing its address; a PCMG rebuilt by hand from those same Mats would pass,
+    and nothing in the library builds one. (After ``mesh.deform`` the check
+    already answered False; the re-solve's error 73 was the FAC keys left in the
+    database, which :func:`_configure_pcmg` now drops, #1015.) Any doubt
+    (unreachable PC, un-set-up fieldsplit) answers False — the cost of a wrong
+    False is one redundant install, the cost of a wrong True is a solve on a stale
+    PC.
     """
     mark = getattr(solver, "_custom_mg_live", None)
     if not mark or mark.get("h") != id(h):
