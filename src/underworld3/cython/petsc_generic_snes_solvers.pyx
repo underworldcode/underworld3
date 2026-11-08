@@ -354,6 +354,12 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
+# A linear solve inside Newton stops once its residual is this fraction of the Newton
+# target (inexact Newton): the next nonlinear residual is then inside the target, and no
+# linear solve chases a relative reduction of an already small residual (#911).
+_LINEAR_TARGET_FRACTION = 0.1
+
+
 # The solver that owns each options prefix, by a token. Instance numbers restart
 # after uw_object._reset(), so a later solver can take a prefix a dropped one had.
 _SOLVER_OPTIONS_OWNER = {}
@@ -3930,6 +3936,255 @@ class SolverBaseClass(uw_object):
             f"  to investigate.\n"
         )
 
+    # Which reference a solve measures (#911). None follows the equation: a solve with
+    # memory takes "increment", any other "stationary". Set on a solver to measure one
+    # rule against the other on the same model.
+    _convergence_reference_rule = None
+    # The linear floor of the solve in progress, in ||F|| units; None outside one.
+    _linear_floor = None
+
+    def _carries_memory(self):
+        """Whether this equation's residual carries the last step's answer forward,
+        through a history of the unknown (``DuDt``) or of the flux (``DFDt``). The
+        guess is then the last step's answer, and a step is measured against the
+        change it makes."""
+        unknowns = getattr(self, "Unknowns", None)
+        return unknowns is not None and (getattr(unknowns, "DuDt", None) is not None
+                                         or getattr(unknowns, "DFDt", None) is not None)
+
+    def _weak_datum(self):
+        """Whether a boundary term imposes a datum weakly: it depends on the unknowns
+        and is nonzero at rest, as a Nitsche or penalty condition with a nonzero value
+        does. Its term in F(0) is the penalty times the datum, with the coefficient at
+        rest (for a shear-thinning law the viscosity at zero strain rate), so ||F(0)||
+        measures the penalty rather than the forcing: on a Nitsche-driven power-law
+        lid, a warm re-solve held to it was 70 to 1300 times less accurate than under
+        PETSc's own test.
+
+        A datum is read by its symbols, not its value: every UW expression whose value
+        is a number is held as a symbol of its own before the term is unwrapped, so a
+        lid ramped up from zero, or a Robin ambient set later, counts from the start
+        (the value can change without a rebuild; read by value, a datum that was zero
+        when first read stayed "no datum": hyperion's review, M1). An expression whose
+        value at rest cannot be decided counts too. Read once per set of boundary
+        terms, keyed on the terms' hashes: an expression re-pointed in place between
+        the unknown and a constant (``E.sym = ...``) keeps its hash, so the verdict is
+        not read again until the boundary conditions change; such a model states its
+        rule with ``_convergence_reference_rule``. The same on every rank."""
+        bcs = tuple(getattr(self, "natural_bcs", None) or ())
+
+        def _term_key(term):
+            try:
+                return hash(term)
+            except TypeError:
+                return id(term)
+
+        key = tuple((id(bc),) + tuple(_term_key(getattr(bc, name, None))
+                                      for name in ("fn_f", "fn_F", "fn_p")) for bc in bcs)
+        if getattr(self, "_weak_datum_key", None) == key:
+            return self._weak_datum_value
+        from underworld3.function.expressions import (UWexpression, unwrap_expression,
+                                                      _unwrap_for_compilation)
+
+        def _held(expr):
+            expr = sympy.sympify(expr)
+            for _depth in range(64):
+                found = expr.atoms(UWexpression)
+                if not found:
+                    break
+                swap = {}
+                for a in found:
+                    value = sympy.sympify(unwrap_expression(a, mode="nondimensional"))
+                    if not value.free_symbols and not value.atoms(sympy.Function):
+                        swap[a] = sympy.Dummy(str(a))     # a constant: held as a symbol
+                    else:
+                        swap[a] = a.sym                   # open one level
+                expr = expr.xreplace(swap)
+            return expr
+
+        X = sympy.Matrix(list(self.mesh.X))
+        at_rest = {}
+        unknowns = getattr(self, "Unknowns", None)
+        for name in ("u", "p"):
+            var = getattr(unknowns, name, None) if unknowns is not None else None
+            if var is None:
+                continue
+            field = sympy.Matrix(var.sym)
+            # the unknown and its gradient, which UW3 carries as functions of its own
+            for f in field.atoms(sympy.Function) | field.jacobian(X).atoms(sympy.Function):
+                at_rest[f] = 0
+        found = False
+        for bc in bcs:
+            for term in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                         getattr(bc, "fn_p", None)):
+                if term is None:
+                    continue
+                t = sympy.Matrix(_unwrap_for_compilation(
+                    sympy.Matrix(term).applyfunc(_held), return_self=False))
+                if not (t.atoms(sympy.Function) & set(at_rest)):
+                    continue                       # forcing: a traction, not a constraint
+                if t.subs(at_rest).doit().is_zero_matrix is not True:
+                    found = True
+                    break
+            if found:
+                break
+        self._weak_datum_key, self._weak_datum_value = key, found
+        return found
+
+    def _resolved_reference_rule(self):
+        """``"increment"`` or ``"stationary"``: the reference this solve measures, from
+        ``_convergence_reference_rule`` when set, else from the equation: a solve with
+        memory (:meth:`_carries_memory`) or a weakly imposed datum (:meth:`_weak_datum`)
+        measures its increment, where ``||F(0)||`` measures the whole field or the
+        penalty. The rotated Newton loop reads it too. The same on every rank."""
+        rule = self._convergence_reference_rule
+        if rule is None:
+            rule = ("increment" if self._carries_memory() or self._weak_datum()
+                    else "stationary")
+        if rule not in ("increment", "stationary"):
+            raise ValueError(f"_convergence_reference_rule must be 'increment', "
+                             f"'stationary' or None, not {rule!r}")
+        return rule
+
+    def _reference_residual(self, gvec):
+        """The norm of the residual this equation measures its convergence against.
+
+        A stationary equation measures the residual a cold start would see,
+        ``||F(0)||`` with the boundary data in place. It depends on the forcing and the
+        boundary data, not on the guess ``gvec``. An equation with memory
+        (:meth:`_carries_memory`) returns 0, so a step is measured against its own
+        first residual, PETSc's default: ``||F(0)||`` there measures the whole field,
+        and rtol of it is 20 to 70 times looser than rtol of the step's change.
+
+        The equation owns this declaration. An equation whose ``F(0)`` carries
+        something no iterate measures overrides it: a nonzero velocity imposed weakly
+        (its term scales with the viscosity at rest), a prescribed datum lift, a
+        projected null space. COLLECTIVE when it evaluates ``F(0)``; the rule is the
+        same on every rank."""
+        if self._resolved_reference_rule() == "increment":
+            return 0.0
+        zero = gvec.duplicate()
+        zero.set(0.0)
+        F = gvec.duplicate()
+        self.snes.computeFunction(zero, F)
+        norm = F.norm()
+        zero.destroy()
+        F.destroy()
+        return norm
+
+    def _user_sets_outer_ksp_rtol(self):
+        """Whether the outer KSP's rtol is one this solver's ``tolerance`` did not derive:
+        set by the user, or by the library for a solve it wants tight (a projection).
+        Each class's ``_TOLERANCE_DERIVED_KEYS`` says what ``tolerance`` writes; a class
+        without the table derives ``ksp_rtol = 0.1 * tolerance``, and a table without
+        the key (the saddle point, where Eisenstat-Walker owns it) derives none."""
+        if not self.petsc_options.hasName("ksp_rtol"):
+            return False
+        table = getattr(self, "_TOLERANCE_DERIVED_KEYS", None)
+        factor = 1.0e-1 if table is None else table.get("ksp_rtol")
+        if factor is None:
+            return True
+        return self.petsc_options.getReal("ksp_rtol") != float(self._tolerance) * factor
+
+    def _install_linear_floor_test(self, ksp):
+        """Compose the linear floor with the outer KSP's own convergence test, once per
+        KSP. The test is inactive outside a solve that sets ``self._linear_floor``.
+
+        The floor is in ||F|| units, and the KSP may measure a preconditioned norm:
+        GMRES with left preconditioning does, about 40 times under ||F|| on the scalar
+        route, where the floor as an absolute tolerance stopped a Newton step's linear
+        solve at its first residual. The test scales the floor into the KSP's own norm
+        by the ratio of its first residual to ||b|| = ||F(x_k)||, so it is right in
+        either norm. It runs in the KSP's convergence test rather than as a
+        pre-solve, because Eisenstat-Walker is PETSc's pre-solve on the saddle-point
+        route: EW sets the rtol, and the floor bounds it from below. It shares that
+        test with the wall-clock guard through ``utilities/ksp_convergence_tests``,
+        since petsc4py allows one Python test per KSP. While the SNES has not
+        converged ||F(x_k)|| > T, so the floor asks for a reduction of at least
+        ``1 / _LINEAR_TARGET_FRACTION``; the cap guards a route that stops elsewhere.
+        The solver is held weakly: the KSP keeps the callback in a C-held context the
+        garbage collector cannot see, and a strong reference would pin the solver.
+        COLLECTIVE at its 0 (one norm)."""
+        from underworld3.utilities import ksp_convergence_tests
+        if ksp_convergence_tests.registered(ksp, "linear_floor"):
+            return True
+        import weakref
+        solver_ref = weakref.ref(self)
+        threshold = [0.0, 0.0]        # in the KSP's norm, and in ||F|| units
+
+        def _below_the_floor(ksp, its, rnorm):
+            solver = solver_ref()
+            floor = None if solver is None else solver._linear_floor
+            norm_type = ksp.getNormType()
+            if floor is None or norm_type == PETSc.KSP.NormType.NONE:
+                # no norm to test (PETSc passes 0): the floor would stop every
+                # application at its first iteration
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if its == 0:
+                bnorm = ksp.getRhs().norm()
+                cap = min(floor / bnorm, _LINEAR_TARGET_FRACTION) if bnorm > 0.0 else 0.0
+                threshold[0] = cap * rnorm
+                threshold[1] = cap * bnorm          # the floor in ||F|| units, capped
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if rnorm > threshold[0]:
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if norm_type == PETSc.KSP.NormType.UNPRECONDITIONED:
+                return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            # A preconditioned norm is scaled by its first ratio to ||b||, which need
+            # not hold as the iteration goes; the true residual decides. Stopping on
+            # the estimate alone left the true residual above the floor and cost
+            # Newton a step (test_0009, a warm nonlinear Poisson: hyperion's review,
+            # M2). Every rank reaches this test with the same rnorm. COLLECTIVE.
+            r = ksp.buildResidual()
+            true = r.norm()
+            r.destroy()
+            if true <= threshold[1]:
+                return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            threshold[0] *= threshold[1] / true     # rescale the estimate and go on
+            return PETSc.KSP.ConvergedReason.ITERATING
+
+        # False when a convergence test the library did not set owns the KSP
+        return ksp_convergence_tests.register(ksp, "linear_floor", _below_the_floor)
+
+    def _apply_convergence_reference(self, gvec):
+        """Set this solve's absolute targets from one reference residual.
+
+        ``F_ref = max(||F(x0)||, R)``: ``x0`` is the guess the solve starts from, and
+        ``R`` is the equation's declared reference, :meth:`_reference_residual`. A warm
+        start is therefore held to the same target as a cold start of the same
+        problem. The SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear
+        solves at the floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton,
+        :meth:`_install_linear_floor_test`). The floor never loosens a linear rtol
+        the solver's ``tolerance`` did not derive (:meth:`_user_sets_outer_ksp_rtol`).
+        The rules are applied the same way on every route; the tolerances in force are
+        returned for the caller to restore, and the caller clears ``_linear_floor``.
+        Design: docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md.
+        COLLECTIVE.
+        """
+        ksp = self.snes.getKSP()
+        saved = (self.snes.getTolerances(), ksp.getTolerances())
+        rtol, atol, _stol, _max_it = saved[0]
+        F = gvec.duplicate()
+        self.snes.computeFunction(gvec, F)
+        F_x0 = F.norm()
+        F.destroy()
+        F_0 = self._reference_residual(gvec)
+        F_ref = max(F_x0, F_0)
+        target = max(rtol * F_ref, atol)
+        floor = None
+        if not np.isfinite(target):
+            # A NaN or infinite residual: PETSc refuses the tolerance (error 63), and
+            # the solve must fail on the residual itself, with its own reason.
+            target = atol
+        else:
+            self.snes.setTolerances(atol=target)
+            if not self._user_sets_outer_ksp_rtol() and self._install_linear_floor_test(ksp):
+                floor = _LINEAR_TARGET_FRACTION * target
+        self._linear_floor = floor
+        self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
+                                       "target": target, "linear_floor": floor}
+        return saved
+
     def _snes_solve_with_retries(self, gvec, divergence_retries=0, verbose=False):
         """Call self.snes.solve(None, gvec) with warm-start retries on divergence.
 
@@ -3988,14 +4243,16 @@ class SolverBaseClass(uw_object):
         _probe = bool(self._difficulty_probe)
         _warm = int(getattr(self, "_pending_picard", 0) or 0)
         self._pending_picard = 0
-        _saved_tol = None
-        if _probe or _warm:
-            _saved_tol = self.snes.getTolerances()
+        # One reference residual for this solve, and the targets it sets (the SNES
+        # atol and the linear floor); everything below starts from them, and the
+        # tolerances in force before are restored in the finally.
+        _saved_tol, _saved_ksp_tol = self._apply_convergence_reference(gvec)
         if _probe:
             if self._difficulty_max_it is not None:
                 self.snes.setTolerances(max_it=int(self._difficulty_max_it))
             if self._resume_abs_target is not None:
-                self.snes.setTolerances(atol=float(self._resume_abs_target))
+                self.snes.setTolerances(atol=max(float(self._resume_abs_target),
+                                                 self._convergence_reference["target"]))
 
         try:
             if _warm:
@@ -4026,9 +4283,12 @@ class SolverBaseClass(uw_object):
                         self._snapshot_numerics()
                         self.snes.solve(None, gvec)
         finally:
-            if _saved_tol is not None:
-                self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
-                                        stol=_saved_tol[2], max_it=_saved_tol[3])
+            self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
+                                    stol=_saved_tol[2], max_it=_saved_tol[3])
+            self.snes.getKSP().setTolerances(rtol=_saved_ksp_tol[0], atol=_saved_ksp_tol[1],
+                                             divtol=_saved_ksp_tol[2],
+                                             max_it=_saved_ksp_tol[3])
+            self._linear_floor = None
             # Default-on difficulty report — single tail so every path is covered,
             # INCLUDING a solve that raises: the report then reflects the failed
             # attempt's SNES state rather than leaving the previous solve's converged
@@ -5533,6 +5793,28 @@ class SolverBaseClass(uw_object):
             # takes the default and leaves the value for PETSc to object to.
             return 50
 
+    def _rotated_tolerance_key(self, key, default):
+        """A user-set tolerance ``key`` for the rotated loop, else ``default``. A value
+        that is not a number takes the default, as in ``_rotated_max_it``."""
+        if not self.petsc_options.hasName(key):
+            return default
+        try:
+            return float(self.petsc_options.getString(key))
+        except Exception:
+            # A bare flag holds None, and a word will not convert: this solve takes
+            # the default and leaves the value for PETSc to object to.
+            return default
+
+    def _rotated_tolerances(self):
+        """The rotated loop's ``(rtol, atol, stol)`` (#924): a user-set ``snes_rtol``,
+        ``snes_atol`` or ``snes_stol``, else ``tolerance``, 1e-11 and 1e-8, the loop's
+        own defaults. The ``tolerance`` setter writes ``snes_rtol``, so the key reads
+        as the tolerance until the user moves it; nothing in the library writes the
+        other two. ``SNES_Stokes_SaddlePt`` owns ``snes_rtol`` and overrides this."""
+        return (self._rotated_tolerance_key("snes_rtol", float(self.tolerance)),
+                self._rotated_tolerance_key("snes_atol", 1.0e-11),
+                self._rotated_tolerance_key("snes_stol", 1.0e-8))
+
     def _solve_rotated_if_registered(self, zero_init_guess, verbose, picard, time):
         """Run the rotated strong-constraint solve when a rotated free-slip
         boundary or a split-fault contact is registered, and return True; return
@@ -5580,10 +5862,11 @@ class SolverBaseClass(uw_object):
         # paid (the loop self-terminates; _residual_is_nonlinear survives as
         # a lazy guard inside the picard+pure-Newton corner).
         from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+        rtol, atol, stol = self._rotated_tolerances()
         self._rotated_freeslip_info = solve_rotated_freeslip(
             self, self._rotated_freeslip_bcs, verbose=verbose,
             zero_init_guess=zero_init_guess, picard=picard,
-            max_it=self._rotated_max_it(),
+            max_it=self._rotated_max_it(), rtol=rtol, atol=atol, stol=stol,
             # An explicit `time=` reaches the kernels through petsc_t on
             # the DM — invisible to every state counter and constant
             # value, so it must veto the cached-operator fast path.
@@ -9378,6 +9661,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._push_snes_max_it(cap)
         return cap
 
+    def _rotated_tolerances(self):
+        """The rotated loop's ``(rtol, atol, stol)`` (#924): ``snes_rtol`` through the
+        owned-option record, as ``_rotated_max_it`` takes the cap, since a rotated solve
+        returns before ``_reassert_outer_tolerances``; a user-set ``snes_atol`` or
+        ``snes_stol``, else the loop's own 1e-11 and 1e-8."""
+        rtol = self._resolve_owned_option("snes_rtol", float(self._tolerance))
+        self._push_owned_option("snes_rtol", rtol)
+        return (rtol, self._rotated_tolerance_key("snes_atol", 1.0e-11),
+                self._rotated_tolerance_key("snes_stol", 1.0e-8))
+
     def _reassert_outer_tolerances(self):
         """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
 
@@ -12441,29 +12734,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         gvec.setArray(0.0)
 
         if not zero_init_guess:
-
             if verbose and uw.mpi.rank == 0:
                 print(f"SNES pre-solve - non-zero initial guess", flush=True)
-
-
-            self._push_snes_max_it(0)
-            self.snes.setType("nrichardson")
-            self.snes.setFromOptions()
-            # PETSc may rebuild operator state after setFromOptions(), so reattach
-            # the configured Stokes nullspace before each solve path.
-            self._attach_stokes_nullspace()
-            self.snes.solve(None, gvec)
-
             for name,var in self.fields.items():
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
                 subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
                 gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
-            self.atol = self.snes.getFunctionNorm() * self.tolerance
-
-        else:
-            self.atol = 0.0
+        # The absolute target is set from this solve's reference residual where every
+        # solve is gated (_apply_convergence_reference); it used to be tolerance times
+        # the warm start's own residual, which held a warm start to a stricter target
+        # than a cold one.
+        self.atol = 0.0
 
         # ⚠️ #791. A Picard step is a Newton iteration with the FROZEN (Picard)
         # tangent — a linear Stokes solve, velocity block and Schur complement, with

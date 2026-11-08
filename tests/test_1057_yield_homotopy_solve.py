@@ -387,7 +387,9 @@ def test_a_field_dependent_yield_needs_a_residual_strength():
     stokes.u.array[:, 0, 0] = X[:, 1]
     stokes.u.array[:, 0, 1] = 0.0
     eta = np.asarray(uw.function.evaluate(cm.viscosity.sym, mesh.X.coords)).ravel()
-    assert np.abs(eta - tau_res / (2 * 0.5)).max() < 1e-10, eta
+    # evaluate() reaches the strain rate through its projector, asked for 1e-6
+    # (snes_rtol): the bound is that, relative to the value
+    assert np.abs(eta - tau_res / (2 * 0.5)).max() < 1e-6 * tau_res / (2 * 0.5), eta
 
     cm.Parameters.yield_stress_min = -sympy.oo
     cm.viscosity                                   # the opt-out is honoured
