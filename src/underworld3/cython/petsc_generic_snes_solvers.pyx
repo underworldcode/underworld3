@@ -118,20 +118,66 @@ def _solve_transposed(ksp, J, P, b, x):
     matrices are transposed explicitly and the same KSP solves the
     transposed system forwards: every preconditioner the forward solve can
     use, the adjoint can use, set up on :math:`J^T` exactly as it was on
-    :math:`J`. The forward operators are put back afterwards. A null space
+    :math:`J`. The forward values are put back afterwards. A null space
     attached to ``J`` (the pressure constant on an enclosed domain) is the
     transpose null space of ``J^T``, and is carried across.
+
+    Where the pattern is symmetric, as an assembled finite-element operator's is,
+    the transposed VALUES are copied into J's (and P's) own storage, so the
+    preconditioner chain keeps its own matrices and refreshes from the new
+    values, as at a Newton step. Handed new matrices instead, the outer KSP took
+    them but the fieldsplit's velocity block kept its last set-up: J's
+    velocity block, 9 velocity iterations against 5 on J^T (#1021), and after a
+    Picard forward the injection's assembly at u = 0, which ran the velocity
+    solve to its cap. A non-symmetric pattern takes the new matrices still.
     """
-    # Mat.transpose() with no target transposes IN PLACE; give it a new Mat.
-    Jt = PETSc.Mat()
-    J.transpose(Jt)
-    if P.handle == J.handle:
-        Pt = Jt
-    else:
-        Pt = PETSc.Mat()
-        P.transpose(Pt)
-    for source, put in ((J.getNullSpace(), Jt.setTransposeNullSpace),
-                        (J.getTransposeNullSpace(), Jt.setNullSpace),
+    SAME = PETSc.Mat.Structure.SAME_NONZERO_PATTERN
+    mats = [J] if P.handle == J.handle else [J, P]
+    transposes = []
+    for M in mats:
+        Mt = PETSc.Mat()          # Mat.transpose() with no target is IN PLACE
+        M.transpose(Mt)
+        transposes.append(Mt)
+
+    def _same_pattern(A, B):
+        # local rows with global columns, sorted within a row; the verdict is the
+        # same on every rank (COLLECTIVE)
+        ia, ja, _ = A.getValuesCSR()
+        ib, jb, _ = B.getValuesCSR()
+        local = bool(np.array_equal(ia, ib) and np.array_equal(ja, jb))
+        return A.getComm().tompi4py().allreduce(local, op=uw.MPI.LAND)
+
+    in_place = all(_same_pattern(M, Mt) for M, Mt in zip(mats, transposes))
+    nsp, tnsp = J.getNullSpace(), J.getTransposeNullSpace()
+    if in_place:
+        saved = []
+        for M, Mt in zip(mats, transposes):
+            saved.append((M, M.copy()))
+            Mt.copy(M, structure=SAME)
+            Mt.destroy()
+        if nsp is not None and nsp.handle != 0:
+            J.setTransposeNullSpace(nsp)
+        if tnsp is not None and tnsp.handle != 0:
+            J.setNullSpace(tnsp)
+        ksp.setOperators(J, P)
+        try:
+            ksp.solve(b, x)
+            reason = int(ksp.getConvergedReason())
+        finally:
+            for M, keep in saved:
+                keep.copy(M, structure=SAME)
+                keep.destroy()
+            if nsp is not None and nsp.handle != 0:
+                J.setNullSpace(nsp)
+            if tnsp is not None and tnsp.handle != 0:
+                J.setTransposeNullSpace(tnsp)
+            ksp.setOperators(J, P)
+        return reason
+
+    Jt = transposes[0]
+    Pt = Jt if len(transposes) == 1 else transposes[1]
+    for source, put in ((nsp, Jt.setTransposeNullSpace),
+                        (tnsp, Jt.setNullSpace),
                         (J.getNearNullSpace(), Jt.setNearNullSpace)):
         if source is not None and source.handle != 0:
             put(source)
@@ -12242,6 +12288,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         by_kernels = self._adjoint_by_kernels()            # before any DM vector
         tangent = (self._install_adjoint_kernels() if by_kernels
                    else self._consistent_tangent_for_adjoint())
+        if not getattr(self, "_rotated_freeslip_bcs", None):
+            # The velocity block's custom-P hierarchy, as the forward solve installs
+            # it before its SNES solve: switching the tangent for the adjoint resets
+            # the preconditioner, and the fieldsplit rebuilt the block as a
+            # one-level multigrid with no coarse correction and no FAC smoother (23
+            # velocity iterations against the forward's 4, #1016). It goes in BEFORE
+            # the tangent below is assembled at the forward state: the install
+            # assembles at a zero vector to reach the fieldsplit, and after the
+            # state's assembly it left the adjoint solving with the tangent at
+            # u = 0 (hyperion's review: a power-law adjoint 73 % off in the
+            # velocity, reported converged). The rotated route builds its own.
+            from underworld3.utilities.custom_mg import auto_inject_custom_mg
+            auto_inject_custom_mg(self, field_id=0)
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
         self._gather_fields_to_global(gvec)
