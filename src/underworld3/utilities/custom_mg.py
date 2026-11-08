@@ -1470,6 +1470,19 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
         if ksp.getType() in ("gmres", "fgmres", "lgmres", "dgmres", "pgmres", "pipefgmres") \
                 and opts.hasName(prefix + "ksp_gmres_restart"):
             ksp.setGMRESRestart(opts.getInt(prefix + "ksp_gmres_restart"))
+    # A level-indexed smoother key is written only for a FAC level (below), and on
+    # the standard path it stays in the database after the solve. A re-install
+    # whose level has no patch this time would read it back as an empty
+    # composite, which PETSc refuses (error 73 after mesh.deform, #1015), so the
+    # FAC keys of every level without a patch now are dropped first.
+    for l in range(1, nlev):
+        if patch_rows and l < len(patch_rows) and patch_rows[l] is not None:
+            continue
+        for stem in ("pc_type", "sub_1_sub_pc_type", "sub_1_sub_pc_factor_shift_type",
+                     "sub_1_sub_pc_factor_mat_ordering_type"):
+            key = prefix + f"mg_levels_{l}_{stem}"
+            if opts.hasName(key):
+                opts.delValue(key)
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
@@ -2317,9 +2330,17 @@ class CustomMGHierarchy:
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
         self._record_patch_summary(patch_rows, solver.dm.comm)
         # Record what is live on this solver's PC, so a repeat solve can
-        # skip the re-install (see _pcmg_still_installed).
-        solver._custom_mg_live = {"h": id(self),
-                                  "nlev": len(self.transfers) + 1}
+        # skip the re-install (see _pcmg_still_installed): the level count and
+        # the finest interpolation the PC now holds, kept as the Mat itself.
+        nlev = len(self.transfers) + 1
+        finest = None
+        try:
+            pc = _managed_pc(solver)
+            if pc is not None and pc.getType() == "mg" and pc.getMGLevels() == nlev:
+                finest = pc.getMGInterpolation(nlev - 1)
+        except PETSc.Error:
+            finest = None                    # an unreadable PC: the next solve re-installs
+        solver._custom_mg_live = {"h": id(self), "nlev": nlev, "finest": finest}
 
 
 class _DMLevelView:
@@ -2722,6 +2743,21 @@ def auto_inject_custom_mg(solver, field_id=None):
                          "auto_cached": True}
 
 
+def _managed_pc(solver):
+    """The PC block the custom hierarchy is installed on: the solver's own PC for a
+    scalar or single-field solve, the velocity split's for the saddle point. None
+    where it cannot be reached (an un-set-up fieldsplit, an unknown prefix)."""
+    pfx = solver._pc_option_prefix or ""
+    if pfx == "":
+        return solver.snes.getKSP().getPC()
+    if pfx == "fieldsplit_velocity_":
+        # quietly: an un-set-up split has no blocks, and asking prints a
+        # PETSc banner even when caught (#827)
+        blocks = _fieldsplit_sub_ksps(solver.snes.getKSP().getPC())
+        return blocks[0].getPC() if blocks else None
+    return None
+
+
 def _pcmg_still_installed(solver, h):
     """Is THIS hierarchy still live on the solver's managed PC block?
 
@@ -2730,7 +2766,13 @@ def _pcmg_still_installed(solver, h):
     explicit ``preconditioner=`` change, or anything that reset the PC leaves
     the marker stale. So the marker is only the cheap first test, and the
     verdict comes from the LIVE object: the managed block must exist, be a
-    PCMG, and have the hierarchy's level count. Any doubt (unreachable PC,
+    PCMG with the hierarchy's level count, and carry at its finest level the very
+    interpolation the install set. The level count alone was not enough: after
+    ``mesh.deform`` rebuilt the solver's PC from the options database it had the
+    same three levels, so the hierarchy was never installed again, and the FAC
+    level's lingering ``composite`` key, with no member PCs, stopped the re-solve
+    with PETSc error 73 (#1015). The marker holds the installed Mat itself, so a
+    rebuilt PC cannot pass by reusing its address. Any doubt (unreachable PC,
     un-set-up fieldsplit) answers False — the cost of a wrong False is one
     redundant install, the cost of a wrong True is a solve on a stale PC.
     """
@@ -2738,20 +2780,13 @@ def _pcmg_still_installed(solver, h):
     if not mark or mark.get("h") != id(h):
         return False
     try:
-        pfx = solver._pc_option_prefix or ""
-        if pfx == "":
-            pc = solver.snes.getKSP().getPC()
-        elif pfx == "fieldsplit_velocity_":
-            # quietly: an un-set-up split has no blocks, and asking prints a
-            # PETSc banner even when caught (#827)
-            blocks = _fieldsplit_sub_ksps(solver.snes.getKSP().getPC())
-            if not blocks:
-                return False
-            pc = blocks[0].getPC()
-        else:
+        pc = _managed_pc(solver)
+        if pc is None or pc.getType() != "mg" or pc.getMGLevels() != mark.get("nlev"):
             return False
-        return (pc.getType() == "mg"
-                and pc.getMGLevels() == mark.get("nlev"))
+        installed = mark.get("finest")
+        if installed is None:
+            return False
+        return pc.getMGInterpolation(mark["nlev"] - 1).handle == installed.handle
     except PETSc.Error:
         return False
 
