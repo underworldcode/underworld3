@@ -131,9 +131,9 @@ the warm-up, the reduction is measured from the cold residual, and
 The Newton stage that follows stops at `tolerance`·‖F(u_cold)‖, where one uninterrupted
 solve would.
 
-**Where a solve stops (the convergence reference).** Every solve, native or rotated,
-stops at `T = tolerance · max(‖F(u₀)‖, R) + atol`, where `R` is what the equation
-declares: ‖F(0)‖ for a stationary equation, so a warm start or a continuation step
+**Where a solve stops (the convergence reference).** Every solve stops at
+`T = max(tolerance · max(‖F(u₀)‖, R), atol)` (the rotated free-slip loop adds its `atol`
+instead: `tolerance · ref + atol`), where `R` is what the equation declares: ‖F(0)‖ for a stationary equation, so a warm start or a continuation step
 (δ, η, a BC change) is held to the cold start's target and does not chase `tolerance`
 of its own small first residual; and 0 for a time step through a DDt, a viscoelastic
 step, or a weakly imposed nonzero velocity (Nitsche or a penalty), which are measured

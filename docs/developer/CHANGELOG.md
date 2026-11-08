@@ -17,8 +17,8 @@ round-off (test_0022's rotated solve ran its last increment into a 300-iteration
 the native and the rotated routes alike
 (`docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md`):
 
-- The nonlinear target is `rtol * max(||F(x0)||, R) + atol`, where `R` is what the
-  equation declares: `||F(0)||` for a stationary equation, so a warm start is held to
+- The nonlinear target is `max(rtol * max(||F(x0)||, R), atol)` (the rotated loop adds
+  its `atol`), where `R` is what the equation declares: `||F(0)||` for a stationary equation, so a warm start is held to
   the cold start's target; zero for a solve with memory (a time step through a DDt,
   a viscoelastic step) or a weakly imposed nonzero datum (Nitsche or a penalty), which
   are measured against their own first residual as before. Under the `max` a time

@@ -3967,7 +3967,10 @@ class SolverBaseClass(uw_object):
         (the value can change without a rebuild; read by value, a datum that was zero
         when first read stayed "no datum": hyperion's review, M1). An expression whose
         value at rest cannot be decided counts too. Read once per set of boundary
-        terms. The same on every rank."""
+        terms, keyed on the terms' hashes: an expression re-pointed in place between
+        the unknown and a constant (``E.sym = ...``) keeps its hash, so the verdict is
+        not read again until the boundary conditions change; such a model states its
+        rule with ``_convergence_reference_rule``. The same on every rank."""
         bcs = tuple(getattr(self, "natural_bcs", None) or ())
 
         def _term_key(term):
