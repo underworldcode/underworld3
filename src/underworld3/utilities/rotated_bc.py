@@ -897,7 +897,9 @@ def _rotated_geometry_signature(solver, boundaries):
 def _destroy_rotated_linear_cache(cache):
     """Release the persistent rotated-free-slip workspace. The custom-FMG
     prolongation list is only DEREFERENCED (its coarse Mats are shared with
-    the solver's registered multigrid hierarchy)."""
+    the solver's registered multigrid hierarchy); in parallel what it alone held
+    is freed by the collective garbage cleanup that ends a solve which built a new
+    workspace (#1007)."""
     if not cache:
         return
     _destroy_rotated_ksp_ctx(cache.get("ctx"))
@@ -1889,6 +1891,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
+    if not rotation_reused:
+        # A new workspace was built: the old one, its prolongation list and the
+        # builders' intermediates were dropped, here or by the solver's own reset when
+        # a reassigned expression rebuilt its DM, which happens before this function
+        # runs. In parallel petsc4py defers each destroy to a collective
+        # PETSc.garbage_cleanup, which only a new mesh ran, so every rebuild kept
+        # about 7 MB per rank (#1007). It runs at the end of the solve, once the new
+        # workspace has replaced what the old one shared. Whether the rotation was
+        # reused is the same on every rank (the reset is collective and the cache
+        # verdict allgathered), so this is collective.
+        mpi._free_petsc_garbage(solver.dm.comm)
     # a workspace persists with no KSP context when this solve built none (a warm
     # start already converged after a tolerance change): the next solve builds it
     if (cache_allowed and Ahat is not None and not use_lu and not failed_hard
@@ -2129,10 +2142,9 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
         before = {name: getattr(solver, name) for name in record if hasattr(solver, name)}
         nsp = _rotated_nullspace(solver, Q, normal_rows)
         # The prolongation depends only on Q and the mesh hierarchy, so the
-        # forward's is reusable — and MUST be reused where it exists:
-        # `_build_rotated_custom_Pl` leaks the velocity submatrix and the rotated
-        # fine prolongation on every call (nothing owns them; the cache only
-        # DEREFERENCES the list), which an inversion loop would pay per adjoint.
+        # forward's is reusable, and is reused where it exists: a build per adjoint
+        # costs the prolongation each time, and in parallel the dropped list waits
+        # for the next garbage cleanup (#1007).
         cache = getattr(solver, "_rotated_linear_cache", None)
         if cache is not None and cache.get("Q") is Q and cache.get("custom_Pl"):
             custom_Pl = cache["custom_Pl"]
@@ -2215,6 +2227,7 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
     Pfine = Qv.matMult(Ps[-1])
+    Qv.destroy()                    # only the product is kept
     # The constrained rows (rotated normals, fault-pair contact rows) take
     # no coarse correction. ``g2blk`` enumerates THIS rank's entries of the
     # velocity IS, so its values are local block rows; zeroRows takes

@@ -1014,6 +1014,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
                 _owned_is(np.arange(*T.getOwnershipRangeColumn())[reached], comm))
         kept[l] = adm
         out[l] = T
+    Qv.destroy()                    # only the products are kept
     hierarchy.level_kept = kept
     # The restriction renumbers every coarse level, so any FAC patch rows the
     # builder recorded for them (keyed to the unrestricted layouts) no longer
