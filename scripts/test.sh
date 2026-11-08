@@ -310,8 +310,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
   # test_0022_rotated_adjoint.py runs on a shard of its own until #911's linear floor
   # lands. Its last Newton step solves past round-off (#985), and its cost varies widely:
-  # on #964's runs on a Xeon 8370C this batch took 55:38 once (the job then hit the
-  # 70-minute cap) and 26:37 on the next commit; development's took 27:50 on an EPYC 7763.
+  # on #964's runs on a Xeon 8370C this batch took 26:37 at one commit and 55:38 at the
+  # next (the job then hit the 70-minute cap); development's took 27:50 on an EPYC 7763.
   # The cause of that spread is not established. When #911 merges, drop the --deselect
   # and the batch 6 line together, and shard 6 goes with them.
   # --deselect, not --ignore: the glob names the file on the command line, and pytest
