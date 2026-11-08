@@ -6,6 +6,34 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### Rotated free slip takes its rotation modes from the mesh (November 2026, #906)
+
+A spherical shell with rotated free slip on both walls and the default normal
+returned an answer with an arbitrary rigid rotation in it. The rotated route
+built the Cartesian rotations and kept only those that passed a 1e-8 test
+against the discrete constraints. On a faceted sphere the facet-averaged normal
+is not radial at the nodes, so every rotation failed the test by 0.0075 to
+0.0164 (a 0.5 shell built on macOS), and none was removed. On a 0.3 shell built on
+macOS the answer carried a rotation of rate 4.66 in a v_rms of 3.93, against 1.81
+under the analytic radial normal.
+
+The modes now come from `mesh.nullspace_rotations`, which the mesh factories
+fill and the standard Stokes path already read. A declared mode has its
+constrained rows zeroed, so v·n = 0 stays exact, and it is still tested against
+the assembled operator, so a no-slip wall rejects it. It skips the constraint
+test only where faceting is the only reason it could fail it: every rotated wall
+takes the default normal, the modes rotate about one centre, and each wall's
+vertices are equidistant from it to 1e-9 relative. A free surface that has
+deformed fails that check; the mode then takes the constraint test like an
+undeclared one, and the solve warns. A rotation that is only near-null there is
+kept, not removed as a gauge, because the deformation may not eliminate the null
+space; a model that wants it gone projects it out after the solve. On the macOS 0.3 shell the rotation left has
+rate 1.1e-15 and v_rms is 1.807, against 1.806 under the analytic normal.
+Meshes adapted, cut, split, placed into or moved by the add-on partition inherit
+the declaration, and the setter refuses a field that is not a rigid rotation.
+A mesh that declares nothing keeps the old detection. The modes are built from
+non-dimensional coordinates, which also fixes a units-model solve (#877).
+
 ### Refining a spherical mesh no longer folds cells (November 2026, #946, #903)
 
 gmsh meshes a sphere in its (longitude, latitude) parameter plane. Near a pole it can

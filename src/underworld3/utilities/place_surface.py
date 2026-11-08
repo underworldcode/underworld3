@@ -9358,6 +9358,7 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         dm, simplex=True, qdegree=base_mesh.qdegree,
         coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
         boundaries=base_mesh.boundaries, verbose=False)
+    mesh._inherit_rotation_modes(base_mesh)
     from underworld3.utilities.addon_partition import inherit_provenance
     inherit_provenance(mesh, host)
     # The placed mesh OWNS the base's multigrid tail (the coarse levels do

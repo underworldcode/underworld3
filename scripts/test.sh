@@ -395,6 +395,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
   batch 4 tests/test_1136*py  # the rotated loop honours snes_max_it (#920)
   batch 3 tests/test_1141*py  # a constrained node adds nothing to the rotated sigma_nn (#936)
+  batch 3 tests/test_1131*py  # rotated free slip takes its rotation modes from the mesh (#906), 3-4 min
   batch 3 tests/test_1142*py  # an exact rotation is projected out of the rotated velocity PC (#963)
   batch 4 tests/test_1450*py
 

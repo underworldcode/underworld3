@@ -1312,9 +1312,9 @@ class GamgCoarseSolve:
     rotated into the wall frame on the rotated route. They are restricted to
     this level (:func:`_restrict_null_modes`) and attached as the coarse
     operator's near-null space, which GAMG builds its aggregates from.
-    ``null`` (optional) are exact null vectors, the verified rotations: they are
-    attached as the null space and projected out of the right-hand side and
-    the solution.
+    ``null`` (optional) are the admitted rotations, exact, or near-null where a
+    declared rotation meets a faceted wall: they are attached as the null space
+    and projected out of the right-hand side and the solution.
 
     Measured at np 4 on a 614-cell shell bottom level (2900 rows) and a 600-cell
     annulus one (2400 rows): the answer and the outer iterations are a gathered

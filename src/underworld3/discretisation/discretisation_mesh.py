@@ -360,6 +360,27 @@ def _compose_prolongations(fine, coarse):
     width = int(cols.max()) + 1
     return (uniq // width, uniq % width, summed)
 
+def _is_rigid_rotation(mode, X):
+    """Whether the sympy field ``mode`` of the coordinates ``X`` is a rigid rotation
+    ``A (x - c)``: affine, with A antisymmetric and nonzero, and zero on its axis, so
+    that ``A c = -mode(0)`` has a solution. A screw adds a part along the axis and has
+    none. Checked numerically to a relative 1e-12, so a float coefficient with
+    round-off asymmetry or an unsimplified constant is accepted."""
+    grad = mode.jacobian(X)
+    if grad.free_symbols:
+        grad = sympy.simplify(grad)
+    if grad.free_symbols:
+        return False
+    A = numpy.array(grad.evalf(), dtype=float)
+    m0 = numpy.array(mode.subs(dict(zip(X, [0] * len(X)))).evalf(), dtype=float).ravel()
+    scale = numpy.linalg.norm(A)
+    if scale == 0.0 or numpy.linalg.norm(A + A.T) > 1.0e-12 * scale:
+        return False
+    centre = numpy.linalg.lstsq(A, -m0, rcond=None)[0]
+    return bool(numpy.linalg.norm(A @ centre + m0)
+                <= 1.0e-12 * scale * max(1.0, numpy.linalg.norm(centre)))
+
+
 def _apply_refinement_callback(dm, refinement_callback):
     r"""Apply a refinement callback to a refined DM without letting it invert a cell.
 
@@ -761,10 +782,11 @@ class Mesh(Stateful, uw_object):
         self._lvec = None
         self.petsc_fe = None
 
-        # Rigid-body rotation null modes for this geometry.
-        # Mesh factories override this for closed surfaces (annulus, sphere).
-        # Each entry is a SymPy Matrix velocity field in mesh coordinates.
-        self._nullspace_rotations = []
+        # Rigid-body rotation null modes for this geometry: None until declared.
+        # Mesh factories declare them for closed surfaces (annulus, sphere); a
+        # user declares them through the nullspace_rotations setter. Each entry
+        # is a SymPy Matrix velocity field in mesh coordinates.
+        self._nullspace_rotations = None
 
         self.degree = degree
         self.qdegree = qdegree
@@ -4796,6 +4818,17 @@ class Mesh(Stateful, uw_object):
 
         Each entry represents a rigid rotation: v = omega x r.
 
+        The standard Stokes path reads these for ``petsc_use_nullspace``, and
+        rotated free slip takes its rotation modes from them (#906). A mesh
+        built without them (a gmsh import, a wrapped DM) declares its modes by
+        assignment, ``mesh.nullspace_rotations = [sympy.Matrix([-y, x])]``;
+        assigning ``[]`` declares that it has none. A mesh that does not declare
+        has its rotations detected: rotated free slip keeps those that satisfy the
+        discrete constraints. A declared mode is exempt from that test only while
+        every rotated wall's vertices are equidistant from the rotation's centre;
+        a deformed wall, such as a free surface, loses the exemption. Meshes
+        adapted or cut from a declaring mesh inherit its modes.
+
         Returns
         -------
         list of sympy.Matrix
@@ -4808,7 +4841,37 @@ class Mesh(Stateful, uw_object):
         >>> shell = uw.meshing.SphericalShell(...)
         >>> shell.nullspace_rotations   # 3 rotation matrices
         """
-        return self._nullspace_rotations
+        return list(self._nullspace_rotations or [])
+
+    def _inherit_rotation_modes(self, parent):
+        """Take ``parent``'s declared rotation modes, rewritten in this mesh's
+        coordinates (each mesh has its own coordinate symbols). A mesh derived from
+        it (adapted, cut, split, placed into) keeps its walls, and rotated free slip
+        checks at each solve that a mode still leaves every wall in place (#906)."""
+        modes = getattr(parent, "_nullspace_rotations", None)
+        if modes is not None:
+            to_self = dict(zip(parent.X, self.X))
+            modes = [sympy.Matrix(m).xreplace(to_self) for m in modes]
+        self._nullspace_rotations = modes
+
+    @nullspace_rotations.setter
+    def nullspace_rotations(self, modes):
+        modes = [sympy.Matrix(m) for m in modes]
+        coords = set(self.X)
+        for m in modes:
+            if len(m) != self.cdim:
+                raise ValueError(
+                    f"a rotation mode needs {self.cdim} components on this mesh, "
+                    f"got {len(m)}: {m.T}")
+            if not m.free_symbols <= coords:
+                raise ValueError(
+                    f"a rotation mode is a field of the mesh coordinates {tuple(self.X)} "
+                    f"only, got {m.T}")
+            if not _is_rigid_rotation(m, list(self.X)):
+                raise ValueError(f"a rotation mode is a rigid rotation, omega x (r - c): "
+                                 f"affine, with a nonzero antisymmetric gradient, and "
+                                 f"zero on its axis (a screw is not one), got {m.T}")
+        self._nullspace_rotations = modes
 
     @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
@@ -8165,6 +8228,7 @@ class Mesh(Stateful, uw_object):
         child._refine_dofs_coincide = False
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
+        child._inherit_rotation_modes(self)
         child._surface_info = info
         if getattr(self, "_embedded_surfaces", None):
             child._embedded_surfaces = set(self._embedded_surfaces)
@@ -9567,6 +9631,7 @@ class Mesh(Stateful, uw_object):
         child._relationship_kind = "refinement"
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
+        child._inherit_rotation_modes(self)
         # Markers per refinement level (in each level's cell numbering) — the
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
