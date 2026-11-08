@@ -153,7 +153,8 @@ fi
 # moves to a fifth shard. By subtraction, on a slow runner, shard 3 falls to
 # about 31 minutes and shard 5 runs about 31 with install and build. Shard 5
 # loses the JIT cache it shared on shard 3, so re-measure both, CPU by CPU.
-# test_0022 stays on shard 4 until #911's fix, which should shorten it.
+# test_0022_rotated_adjoint.py later moved to a shard of its own, 6 (see the
+# batch 6 line), until #911's fix, which should shorten it.
 #
 # The floor is test_106*/test_107*, and it is a TAIL, not a volume: 48% of its
 # 149 tests finish in the first 2 minutes, then the remainder takes 31. Since
@@ -307,7 +308,17 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   python3 "$(dirname "$0")/check_test_coverage.py" || status=1
 
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
-  batch 4 tests/test_00[0-4]*py
+  # test_0022_rotated_adjoint.py runs on a shard of its own until #911's linear floor
+  # lands. Its last Newton step solves past round-off (#985), and its cost varies widely:
+  # on #964's runs on a Xeon 8370C this batch took 26:37 at one commit and 55:38 at the
+  # next (the job then hit the 70-minute cap); development's took 27:50 on an EPYC 7763.
+  # The cause of that spread is not established. When #911 merges, drop the --deselect
+  # and the batch 6 line together, and shard 6 goes with them.
+  # --deselect, not --ignore: the glob names the file on the command line, and pytest
+  # collects a named file even under --ignore. The node id is relative to tests/, the
+  # rootdir that tests/pytest.ini sets.
+  batch 4 tests/test_00[0-4]*py --deselect=test_0022_rotated_adjoint.py
+  batch 6 tests/test_0022_rotated_adjoint.py
   batch 4 tests/test_0050*py
   # test_006[2-9] and test_007x matched NO batch glob and so never ran in CI:
   # the whole integration-point suite (0064-0067), swarm repopulation,
