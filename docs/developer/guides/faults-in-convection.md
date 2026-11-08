@@ -48,7 +48,7 @@ derive the rung spacing $S$ as one base cell and take the band $2S$ wide (recipe
 every measurement so far used a $2S$ band, and the band ratio below is the base's
 finest cell size over the rung spacing.
 Measured on UWTN 2026-022's fixtures in the tail sweep and reproduced on #912's build
-(velocity iterations as the rotated loop reports them):
+(velocity iterations as the rotated loop reports them; the table is Louis's, on #892):
 
 | | band ratio | welded base + LU patch | lean split chain |
 |---|---|---|---|
@@ -70,7 +70,7 @@ change with the fix, and with the LU blocks it costs 3 to 16 times the welded ta
 iterations on the same states. It stays in the drivers as the measured alternative,
 for the case where the LU patch is unavailable or its block too large (the block grows
 with the band's rows; 3-D is not measured). On the production faulted annulus at
-np 16 (kaiju, `development` 25d62812, steps from a TAf checkpoint; the welded arm with
+np 16 (kaiju, `development` 25d62812, steps from a TAf checkpoint, budgeted on #892; the welded arm with
 a 3584-row patch on the one rank the default gather placement gives the band to, the
 chain with none) the two tails do the same velocity
 work, 8.65 against 8.74 F-cycles per solve, in the same Stokes time within the ±10 %

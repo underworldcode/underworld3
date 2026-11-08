@@ -80,7 +80,7 @@ profile, and of network topology. Split contact takes 6 to 7, a painted weak
 band 9 falling to 7 as the contrast rises, a painted TI band 4. GAMG on the same
 problems takes 40 to 178 and its iteration cap by $10^{6}$. In 3-D, pure
 contact on a 20,000-cell ribbon takes 7 against GAMG's 56 with identical
-physics.
+physics. (Measured in #629; the record is the design note listed under Sources.)
 
 How to get it:
 
@@ -117,12 +117,12 @@ LU patch on that finest level**, `set_custom_fmg(stokes, base.multigrid_levels,
 field_id=0)`. On UWTN 2026-022's fixtures with the LU blocks running it takes 66
 velocity iterations over a linear solve at band ratios 6, 12 and 24, and 7 per Newton
 increment on the yielding-lid box at ratios 8, 16 and 25, with the Newton path and
-the slip unchanged. The chain of split ladders (the same ladder at $2S$ placed into a
+the slip unchanged (Louis's ruling on #892, which carries the table). The chain of split ladders (the same ladder at $2S$ placed into a
 copy of the base's finest level and at $4S$ into a copy of the level below, each split
 along its rungs, the band widening with the level) is the measured alternative and
 not the production tail: its levels never carry the patch, and on the same states it
 takes 83 to 166 and 28 to 76. On the production annulus at np 16 (kaiju,
-`development` 25d62812, steps from a TAf checkpoint) the two tails do the same
+`development` 25d62812, steps from a TAf checkpoint; the budget is on #892) the two tails do the same
 velocity work, 8.65 against 8.74 F-cycles per solve, in the same time within the
 run-to-run spread, with the same Newton counts and answers; the welded arm carries a
 3584-row patch on one rank and the chain none. The welded tail is no worse there and
@@ -220,22 +220,23 @@ parts, in this order of size:
    annulus at np 16 (`development` 25d62812, kaiju's budget): the finest-level
    patch, 3584 rows at fault depth 0.15 and 7010 rows at 0.45, each time all on
    one rank of 16, and its LU solve runs there for 21 to 28 s a step while the
-   other 15 ranks wait, 5 to 6 % of the Stokes solve. That cost comes from the
-   gather placement, not from the welded tail. `seams="conform"` (#670) meshes
-   the band through the partition boundaries with nothing moved and would divide
-   the patch into one block per rank, but it cannot be used for a fault that
-   reaches the domain wall as the library stands: it needs `mesher="network"`,
-   whose cavity reaches the wall and refuses ("the ribbon's cavity reached the
-   domain wall", serial reproduction on kaiju, 2026-11-01), and the ladder, which
-   places a wall-reaching fault, takes only `"gather"`. So every surface-reaching
-   fault in 2-D runs its patch as one serial block, and whether the iteration
-   count holds with the patch divided among ranks cannot be measured in those
-   models until the network mesher places such a fault or the ladder learns
-   conform.
-   The structural patch is one block per rank with no row cap (the 2000-row
-   cap, `fac_block_rows`, cuts only the blocks built from `fac_zone` masks),
-   the measured 2-D choice; the share grows with the rank count or with several
-   faults in one partition, and is what #895 tracks.
+   other 15 ranks wait, 5 to 6 % of the Stokes solve. At that commit the cost
+   came from the gather placement. Since #925 (merged 2026-11-03) the patch's
+   blocks are built from every rank's rows and each goes whole to the rank that
+   owns most of them, so the structural block is one LU on one rank, as in
+   serial, at any rank count and under any placement. `seams="conform"` (#670)
+   meshes the band through the partition boundaries with nothing moved; it would
+   spread the band's cells across ranks, but not that block. It also cannot
+   place a fault that reaches the domain wall as the library stands: it needs
+   `mesher="network"`, which refused the trench fault in a serial reproduction on
+   kaiju (2026-11-01) with "the ribbon's cavity reached the domain wall away
+   from the outcrop; the ribbon must clear the other walls", and the ladder,
+   which places a wall-reaching fault, takes only `"gather"`.
+   The 2000-row cap (`fac_block_rows`, or the `UW_FAC_BLOCK_ROWS` environment
+   variable) cuts only the blocks built from `fac_zone` masks, along strike;
+   the structural patch is one block, the measured 2-D choice. Its share of the
+   solve grows with the rank count or with several faults on one rank, and its
+   cost in 3-D is what #895 tracks.
 
 With a band of area fraction $f$ refined $k$ halvings on $P$ ranks, for a fault
 of length $L$ in a domain of width $D$, the busiest rank sits roughly

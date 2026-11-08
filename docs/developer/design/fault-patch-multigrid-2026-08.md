@@ -3,8 +3,8 @@
 **Status:** implemented on `development` (#629: `set_custom_fmg(..., fac_zone=...)`,
 `FaultNetwork.build(width=...)`, `place_thin_volume(mesher="ladder")`). The user-facing
 rulings are in [`guides/fault-multigrid.md`](../guides/fault-multigrid.md); the
-split-level hierarchy that extends this design is on `feature/fault-split-multigrid`
-and recorded in the journal.
+split-level hierarchy that extends this design merged to `development` on 2026-10-31
+(#889, #890) and is recorded in the journal.
 
 The solver architecture for fault-system Stokes problems, settled by
 measurement on a 2-D analysis rig and ready to carry into 3-D. One
