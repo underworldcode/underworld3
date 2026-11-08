@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
+from underworld3.utilities import rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -77,7 +78,12 @@ def test_the_add_on_levels_are_split_and_the_background_is_not(base):
     assert not any(is_split_level(level) for level in welded._custom_mg_coarse_meshes)
 
 
-def test_iterations_fall_with_refinement_and_the_slip_is_unchanged(base):
+def test_iterations_fall_with_refinement_and_the_slip_is_unchanged(base, monkeypatch):
+    # The count measures the multigrid cycle, so the convergence policy's linear floor
+    # is off here: it stops the fieldsplit sub-solves at the Newton target, and their
+    # count then follows the target (4 and 6 at k = 2 and 3, with a second outer
+    # iteration at k = 3), not the cycle (5 and 5).
+    monkeypatch.setattr(rotated_bc, "_INCREMENT_TARGET_FRACTION", None)
     its, slips = {}, {}
     for k in (2, 3):
         child, trace = _adapted(base, k)

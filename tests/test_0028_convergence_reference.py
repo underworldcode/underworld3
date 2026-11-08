@@ -198,3 +198,49 @@ def test_the_rotated_loop_s_last_increment_stops_at_the_floor():
     info = stokes._rotated_freeslip_info
     assert stokes.snes.getConvergedReason() > 0, info["ksp_its"]
     assert max(info["ksp_its"]) <= 5, info["ksp_its"]
+
+
+def _weak_lid(datum):
+    # A power law driven by a lid imposed weakly (Nitsche). At rest the viscosity is
+    # eps0^(-1/3) = 21.5, and F(0) carries the penalty times the lid speed at it.
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.1, qdegree=3)
+    v = uw.discretisation.MeshVariable("V0028w", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P0028w", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    edot = mesh.vector.strain_tensor(v.sym)
+    eII2 = sympy.Rational(1, 2) * (edot[0, 0] ** 2 + edot[1, 1] ** 2) + edot[0, 1] ** 2
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = (
+        (sympy.Float(1.0e-8) + eII2) ** sympy.Rational(-1, 6))
+    x, _y = mesh.X
+    stokes.add_nitsche_bc(datum * sympy.sin(sympy.pi * x), "Top", direction=(1, 0))
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((0.0, None), "Left")
+    stokes.add_dirichlet_bc((0.0, None), "Right")
+    stokes.add_dirichlet_bc((None, 0.0), "Top")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = RTOL
+    return stokes
+
+
+def test_a_weakly_imposed_datum_is_measured_against_the_step():
+    # ||F(0)|| is about 550 here and a warm re-solve's first residual about 0.44, so
+    # under max(||F(x0)||, ||F(0)||) the re-solve stops at its first residual. A datum
+    # imposed weakly is declared (_weak_datum), and the solve measures its increment.
+    lid = uw.expression(r"U_{0028}", 1.0, "lid speed")
+    stokes = _weak_lid(lid)
+    assert stokes._weak_datum()
+    stokes.solve(zero_init_guess=True, picard=2)
+    assert stokes.snes.getConvergedReason() > 0
+    lid.sym = 1.01
+    stokes.solve(zero_init_guess=False)
+    _check_stops_at_the_first_iterate_inside_the_target(
+        stokes, "warm, lid speed changed by 1 %", reference=0.0)
+
+
+def test_a_weak_constraint_without_a_datum_and_a_traction_are_not_a_datum():
+    # free slip by Nitsche is zero at rest, and a traction does not depend on the unknown
+    stokes = _weak_lid(0.0)
+    stokes.add_natural_bc(sympy.Matrix([[0.0, -1.0]]), "Bottom")
+    assert not stokes._weak_datum()

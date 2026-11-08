@@ -2435,7 +2435,8 @@ def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm, tol):
 
 # An increment's linear solves stop once their residual is this fraction of the
 # Newton target (inexact Newton): the next residual is then inside the target. The
-# native routes use the same fraction (_LINEAR_TARGET_FRACTION in the solvers).
+# native routes use the same fraction (_LINEAR_TARGET_FRACTION in the solvers). None
+# turns the floor off, so a test can count what the cycle alone does.
 _INCREMENT_TARGET_FRACTION = 0.1
 
 
@@ -2446,6 +2447,8 @@ def _increment_target(newton_target):
     10 eps |A|_F |u|, stood here first: it overstated round-off at least 300 times on
     test_1136's power-law box, whose loop it stalled at 3.4e-9 against a target of
     1.1e-11, where development converges."""
+    if _INCREMENT_TARGET_FRACTION is None:
+        return None
     return _INCREMENT_TARGET_FRACTION * float(newton_target)
 
 

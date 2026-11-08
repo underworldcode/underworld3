@@ -3952,13 +3952,61 @@ class SolverBaseClass(uw_object):
         return unknowns is not None and (getattr(unknowns, "DuDt", None) is not None
                                          or getattr(unknowns, "DFDt", None) is not None)
 
+    def _weak_datum(self):
+        """Whether a boundary term imposes a datum weakly: it depends on the unknowns
+        and is nonzero at rest, as a Nitsche or penalty condition with a nonzero value
+        does. Its term in F(0) is the penalty times the datum, with the coefficient at
+        rest (for a shear-thinning law the viscosity at zero strain rate), so ||F(0)||
+        measures the penalty rather than the forcing: on a Nitsche-driven power-law
+        lid, a warm re-solve held to it was 70 to 1300 times less accurate than under
+        PETSc's own test. A datum held in a constant counts whatever its value, since
+        the value can change without a rebuild; an expression whose value at rest
+        cannot be decided counts too. Read once per set of boundary conditions. The
+        same on every rank."""
+        bcs = tuple(getattr(self, "natural_bcs", None) or ())
+        key = tuple(id(bc) for bc in bcs)
+        if getattr(self, "_weak_datum_key", None) == key:
+            return self._weak_datum_value
+        from underworld3.function.expressions import _unwrap_for_compilation
+        X = sympy.Matrix(list(self.mesh.X))
+        at_rest = {}
+        unknowns = getattr(self, "Unknowns", None)
+        for name in ("u", "p"):
+            var = getattr(unknowns, name, None) if unknowns is not None else None
+            if var is None:
+                continue
+            field = sympy.Matrix(var.sym)
+            # the unknown and its gradient, which UW3 carries as functions of its own
+            for f in field.atoms(sympy.Function) | field.jacobian(X).atoms(sympy.Function):
+                at_rest[f] = 0
+        found = False
+        for bc in bcs:
+            for term in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                         getattr(bc, "fn_p", None)):
+                if term is None:
+                    continue
+                t = sympy.Matrix(_unwrap_for_compilation(term, keep_constants=True,
+                                                         return_self=False))
+                if not (t.atoms(sympy.Function) & set(at_rest)):
+                    continue                       # forcing: a traction, not a constraint
+                if t.subs(at_rest).doit().is_zero_matrix is not True:
+                    found = True
+                    break
+            if found:
+                break
+        self._weak_datum_key, self._weak_datum_value = key, found
+        return found
+
     def _resolved_reference_rule(self):
         """``"increment"`` or ``"stationary"``: the reference this solve measures, from
-        ``_convergence_reference_rule`` when set, else from :meth:`_carries_memory`.
-        The rotated Newton loop reads it too. The same on every rank."""
+        ``_convergence_reference_rule`` when set, else from the equation: a solve with
+        memory (:meth:`_carries_memory`) or a weakly imposed datum (:meth:`_weak_datum`)
+        measures its increment, where ``||F(0)||`` measures the whole field or the
+        penalty. The rotated Newton loop reads it too. The same on every rank."""
         rule = self._convergence_reference_rule
         if rule is None:
-            rule = "increment" if self._carries_memory() else "stationary"
+            rule = ("increment" if self._carries_memory() or self._weak_datum()
+                    else "stationary")
         if rule not in ("increment", "stationary"):
             raise ValueError(f"_convergence_reference_rule must be 'increment', "
                              f"'stationary' or None, not {rule!r}")

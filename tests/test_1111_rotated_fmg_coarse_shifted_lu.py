@@ -51,11 +51,15 @@ pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 # fc67b650, on the shell from a dense SVD coarse solve set by hand, which gave
 # the shifted LU's value and iterations in 91 s against 10 s. Then the velocity
 # / Schur iterations of the last outer iteration, and the fingerprint (global
-# cells, volume) of the mesh they were recorded on.
+# cells, volume) of the mesh they were recorded on. The iterations were
+# re-recorded under the convergence policy's linear floor (2026-11-08), which
+# stops the fieldsplit sub-solves at the outer target: (4, 7) and (5, 17) before.
+# The shell's v_rms is asked for at the solver tolerance, 1e-6: under the floor it
+# lands 3.9e-7 from the SVD value, which it met to 1e-8 only by over-solving.
 CASES = {
-    "annulus": {"vrms": 4.7900648439, "rtol": 1.0e-9, "modes": 1, "its": (4, 7),
+    "annulus": {"vrms": 4.7900648439, "rtol": 1.0e-9, "modes": 1, "its": (3, 6),
                 "fingerprint": (640, 2.3561872025)},
-    "shell": {"vrms": 1.7753740524, "rtol": 1.0e-8, "modes": 3, "its": (5, 17),
+    "shell": {"vrms": 1.7753740524, "rtol": 1.0e-6, "modes": 3, "its": (4, 14),
               "fingerprint": (4904, 3.6466889256)},
 }
 # The forced-singular annulus (cell 0.25, the coarse level a copy of the mesh):
