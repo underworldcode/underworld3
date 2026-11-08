@@ -25,7 +25,9 @@ test only where faceting is the only reason it could fail it: every rotated wall
 takes the default normal, the modes rotate about one centre, and each wall's
 vertices are equidistant from it to 1e-9 relative. A free surface that has
 deformed fails that check; the mode then takes the constraint test like an
-undeclared one, and the solve warns. On the macOS 0.3 shell the rotation left has
+undeclared one, and the solve warns. A rotation that is only near-null there is
+kept, not removed as a gauge, because the deformation may not eliminate the null
+space; a model that wants it gone projects it out after the solve. On the macOS 0.3 shell the rotation left has
 rate 1.1e-15 and v_rms is 1.807, against 1.806 under the analytic normal.
 Meshes adapted, cut, split, placed into or moved by the add-on partition inherit
 the declaration, and the setter refuses a field that is not a rigid rotation.

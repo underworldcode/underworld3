@@ -454,8 +454,16 @@ solve's `declared_modes_exempt` entry; which modes were admitted is in
 that is only near-null is not removed, and the answer carries a poorly
 determined rotation (measured on a shell, Linux: unmoved, rate 3.7e-15 in a v_rms
 of 1.79; a wall moved by 5e-10, enough to cross the threshold, rate 5.6 in 4.59,
-and the same up to a 1e-6 move). On a deformed wall, remove the rotation after the solve, as
-`free-surface-convection.md` §3 does.
+and the same up to a 1e-6 move).
+
+That is the intended behaviour (ruling, 2026-11-08). A deformed wall's rotation is
+kept as a near-null mode and is not removed as a gauge, because "the deformation
+may not eliminate the null space". Projecting out a mode that is not exactly null
+would also remove the part of it that the operator does determine. A model that
+wants the rotation gone removes it after the solve: a least-squares projection of
+the velocity against the rotation field, as `_project_out_rotation` in the
+free-surface convection driver does (`free-surface-convection.md` §3). In parallel
+its two sums are global reductions.
 
 An exempt mode has its constrained rows zeroed, in the null space and in the
 gauge removal alike, which makes it exactly compatible with `v·n = 0`. A test
