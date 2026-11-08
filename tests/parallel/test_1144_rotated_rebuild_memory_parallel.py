@@ -10,18 +10,20 @@ development 15f13d0c at np 2, peak RSS rose 805, 819, 832, 847, 860, 874 MB over
 solves, about 7 MB per rank per solve. A solve that built a new workspace now empties
 the deferred list at its end.
 
-The test reads that list itself, through ``PETSc.garbage_view``, rather than the
-resident set: a test that runs earlier in the same process can free enough heap to
-absorb the leak before the resident set moves (about 33 MB after test_1139 or
-test_1097, hyperion 2026-11-08), which made a resident-set test pass or fail by where
-CI's batches of six files fell. The deferred list is this process's own and does not
-depend on what ran before.
+The test counts that list's entries itself, through ``PETSc.garbage_view``, rather
+than reading the resident set: a test that runs earlier in the same process can free
+enough heap to absorb the leak before the resident set moves (about 33 MB after
+test_1139 or test_1097, hyperion 2026-11-08), which made a resident-set test pass or
+fail by where CI's batches of six files fell. The deferred list is this process's own
+and does not depend on what ran before: on development it fails alone, in its CI
+batch and after either of those, and with the fix it passes in all four.
 
 Run with at least two ranks.
 """
 import ctypes
 import gc
 import os
+import re
 import sys
 import tempfile
 
@@ -39,11 +41,14 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier
 WARMUP, MEASURED = 2, 5
 
 
-def _deferred_summary(comm):
-    """The length, on this rank, of PETSc.garbage_view's summary: petsc4py's list of
-    objects whose Python wrappers are gone and whose destroy waits for a collective
-    cleanup. PETSc prints it through C's stdout, so file descriptor 1 is redirected
-    around the call and the C streams flushed. COLLECTIVE."""
+def _deferred_entries(comm):
+    """The number of entries in petsc4py's deferred-destroy list, the objects whose
+    Python wrappers are gone and whose destroy waits for a collective cleanup, read
+    from PETSc.garbage_view: rank 0 prints every rank's "Rank r:: Total entries: N"
+    line (a synchronised print), and the other ranks print nothing. PETSc prints
+    through C's stdout, so file descriptor 1 is redirected around the call and the C
+    streams flushed. Counting entries, not bytes, so names and object ids that print
+    wider cannot read as growth. COLLECTIVE."""
     gc.collect()
     libc = ctypes.CDLL(None)
     sys.stdout.flush()
@@ -58,7 +63,8 @@ def _deferred_summary(comm):
             os.dup2(saved, 1)
             os.close(saved)
         captured.seek(0)
-        return len(captured.read())
+        text = captured.read().decode(errors="replace")
+    return sum(int(n) for n in re.findall(r"Total entries:\s*(\d+)", text))
 
 
 def test_a_rebuild_leaves_no_deferred_destroys_behind():
@@ -90,11 +96,13 @@ def test_a_rebuild_leaves_no_deferred_destroys_behind():
 
     for k in range(WARMUP):
         solve(k)
-    sizes = []
+    entries = []
     for k in range(WARMUP, WARMUP + MEASURED):
         solve(k)
-        sizes.append(_deferred_summary(stokes.dm.comm))
+        entries.append(_deferred_entries(stokes.dm.comm))
     # every rebuild's drops are freed at the end of its solve, so the list does not grow;
-    # unfreed, it grows by the old workspace's objects at every rebuild
-    growth = comm.allreduce(sizes[-1] - sizes[0], op=MPI.MAX)
-    assert growth <= 0, f"deferred-destroy summary grew {growth} bytes over {MEASURED - 1} rebuilds: {sizes}"
+    # unfreed, it grows by the old workspace's objects at every rebuild (on development
+    # 06c574e8 at np 2, rank 0's summary grew by 5412 bytes a rebuild, hyperion)
+    growth = comm.allreduce(entries[-1] - entries[0], op=MPI.MAX)
+    assert growth <= 0, (f"the deferred-destroy list grew by {growth} entries over "
+                         f"{MEASURED - 1} rebuilds: {entries}")
