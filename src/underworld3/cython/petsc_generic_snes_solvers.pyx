@@ -3952,6 +3952,18 @@ class SolverBaseClass(uw_object):
         return unknowns is not None and (getattr(unknowns, "DuDt", None) is not None
                                          or getattr(unknowns, "DFDt", None) is not None)
 
+    def _resolved_reference_rule(self):
+        """``"increment"`` or ``"stationary"``: the reference this solve measures, from
+        ``_convergence_reference_rule`` when set, else from :meth:`_carries_memory`.
+        The rotated Newton loop reads it too. The same on every rank."""
+        rule = self._convergence_reference_rule
+        if rule is None:
+            rule = "increment" if self._carries_memory() else "stationary"
+        if rule not in ("increment", "stationary"):
+            raise ValueError(f"_convergence_reference_rule must be 'increment', "
+                             f"'stationary' or None, not {rule!r}")
+        return rule
+
     def _reference_residual(self, gvec):
         """The norm of the residual this equation measures its convergence against.
 
@@ -3967,14 +3979,8 @@ class SolverBaseClass(uw_object):
         (its term scales with the viscosity at rest), a prescribed datum lift, a
         projected null space. COLLECTIVE when it evaluates ``F(0)``; the rule is the
         same on every rank."""
-        rule = self._convergence_reference_rule
-        if rule is None:
-            rule = "increment" if self._carries_memory() else "stationary"
-        if rule == "increment":
+        if self._resolved_reference_rule() == "increment":
             return 0.0
-        if rule != "stationary":
-            raise ValueError(f"_convergence_reference_rule must be 'increment', "
-                             f"'stationary' or None, not {rule!r}")
         zero = gvec.duplicate()
         zero.set(0.0)
         F = gvec.duplicate()
