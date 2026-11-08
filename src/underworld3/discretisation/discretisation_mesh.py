@@ -2634,7 +2634,7 @@ class Mesh(Stateful, uw_object):
         self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
-            from underworld3.systems.ddt import _evaluated_in_storage_layout
+            from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
             # a symmetric tensor.
             out = _evaluated_in_storage_layout(
@@ -2665,7 +2665,7 @@ class Mesh(Stateful, uw_object):
         self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
-            from underworld3.systems.ddt import _evaluated_in_storage_layout
+            from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
             # a symmetric tensor.
             out = _evaluated_in_storage_layout(
@@ -9854,7 +9854,7 @@ class Mesh(Stateful, uw_object):
         for old_var in old_vars_data.values():
             self._destroy_variable_petsc_state(old_var)
 
-        from underworld3.systems.ddt import _evaluated_in_storage_layout
+        from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
 
         # Reinitialize MeshVariables on the new mesh
         # Note: Variables are reset to zero. Users should reinitialize with data.

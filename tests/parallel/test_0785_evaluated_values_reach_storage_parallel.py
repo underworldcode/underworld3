@@ -20,6 +20,7 @@ parallel route only from np 2.
 """
 import numpy as np
 import pytest
+import sympy
 from mpi4py import MPI
 
 import underworld3 as uw
@@ -148,9 +149,18 @@ def test_deform_keeps_every_tensor_shape_in_its_components():
 
 
 def test_deform_with_units_keeps_a_constant_field(reference_scales):
-    """No worse than development: a constant T of raw 0.5 K stays 0.5 through a
-    deform of a units box to 0.99 X. With the transferred values reduced by the
-    temperature scale it came out at 0.0005 (review round 3, H1)."""
+    """Pins development's number, not a correct deform: a constant T of raw 0.5 K
+    reads raw 0.5 after this call, as on development. With the transferred values
+    reduced by the temperature scale it came out at 0.0005 (review round 3, H1).
+
+    The deform itself is wrong, by two filed defects that cancel here. The target is
+    0.99 of ``mesh.X.coords`` in metres, written as raw coordinates, so the DM
+    coordinates go to 9.9e11 (#979) and every new node lies outside the old mesh.
+    The extrapolated 500 K is then clipped onto the non-dimensional bounds of its
+    neighbours, [0.5, 0.5], by the default ``REMESH_MONOTONE="clamp"`` (#989). With
+    the clamp off this test fails. It is here to catch a change in that number, and
+    fixing #979 or #989 is expected to change it.
+    """
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(uw.quantity(0, "km"), uw.quantity(0, "km")),
         maxCoords=(uw.quantity(1000, "km"), uw.quantity(1000, "km")),
@@ -316,3 +326,31 @@ def test_the_serial_refinement_transfers_keep_a_variable_with_units(reference_sc
     child._refine_restrict(child_var, parent_var)
     restrict_error = _worst_raw_error(parent_var, 0.25)
     assert prolongate_error < 1.0e-9 and restrict_error < 1.0e-9, (prolongate_error, restrict_error)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_a_matrix_valued_derivative_under_rbf_is_refused_on_every_rank():
+    """The RBF route recovers a derivative into one scalar work variable, so a
+    matrix-valued derivative came back ``(N, 1, 1)``. ``global_evaluate`` then raised
+    IndexError on the ranks holding points while a rank holding none went on into the
+    swarm's migration, and the run hung. It is refused on every rank instead, before
+    any value is written. An empty rank is in the run from np 2 up."""
+    size = uw.mpi.size
+    n = cells_along_a_side_leaving_one_rank_empty(size)
+    mesh = uw.discretisation.Mesh(right_triangle_of_cells(n, max(size - 1, 1)), degree=1, qdegree=3)
+    counts = _cells_per_rank(mesh.dm)
+    field = uw.discretisation.MeshVariable("T_rbf", mesh, 1, degree=1)
+    field.data[:, 0] = 3.0 * np.asarray(_raw_coords(field))[:, 0]
+    x, y = mesh.X
+    gradient = sympy.Matrix([[field.sym[0].diff(x), field.sym[0].diff(y)]])
+
+    points = np.array([[0.1, 0.1], [0.2, 0.3]]) if uw.mpi.rank == 0 else np.zeros((0, 2))
+    try:
+        uw.function.global_evaluate(gradient, points, mode="fast")
+        outcome = "returned"
+    except NotImplementedError as error:
+        outcome = "refused" if "rbf" in str(error) else str(error)
+    outcomes = uw.mpi.comm.allgather(outcome)
+
+    assert counts.count(0) == 1, counts
+    assert outcomes == ["refused"] * size, outcomes

@@ -1188,6 +1188,18 @@ def evaluate_nd(   expr,
                 "Use rbf=True for quick mode, or default for accurate evaluation."
             )
 
+        if rbf and not force_l2 and expr.shape != (1, 1):
+            # The decision rests on the expression and the flags alone, the same
+            # on every rank: a rank-local raise further on (global_evaluate indexes
+            # the result per component) left a rank without points waiting in the
+            # swarm's migration.
+            raise NotImplementedError(
+                "A matrix-valued expression with derivatives cannot be evaluated "
+                "with rbf=True (mode='fast'): the Clement recovery holds one scalar "
+                "work variable. Use the default mode, which projects, or evaluate "
+                "each component on its own. See #999."
+            )
+
         if rbf and not force_l2:
             # Quick path: Clement gradient recovery at nodes (no projection solve)
             # Fast but O(h) accurate - good for visualization

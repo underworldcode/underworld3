@@ -66,6 +66,9 @@ from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.unit_aware_array import UnitAwareArray
+from underworld3.utilities.unit_aware_array import _to_nondim_ndarray
+from underworld3.discretisation.discretisation_mesh_variables import (
+    _evaluated_in_storage_layout, _storage_components)
 from underworld3.checkpoint.state import SnapshottableState
 from underworld3.discretisation.remesh import RemeshPolicy, remap_var_set
 
@@ -269,23 +272,6 @@ def _history_units(psi_fn, units=None):
     return units if units is not None else uw.get_units(psi_fn)
 
 
-def _evaluated_in_storage_layout(var, values):
-    """An evaluation of a store's quantity, as its ``.data`` holds it.
-
-    ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
-    when it carries units (it is reduced), non-dimensional when it does not. The
-    result is ``(N, components)`` in ``_data_layout`` order. A flat reshape would
-    not do: a symmetric tensor stores fewer entries than its symbol has, and a
-    MATRIX stores by column.
-    """
-    shape = tuple(var.sym.shape)
-    values = np.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
-    stored = np.empty(np.shape(var.data), dtype=np.float64)
-    for (i, j) in _storage_components(var.vtype, shape):
-        stored[:, var._data_layout(i, j)] = values[:, i, j]
-    return stored
-
-
 def _write_evaluated(var, values):
     """Write an evaluation of a store's quantity into the store.
 
@@ -296,54 +282,6 @@ def _write_evaluated(var, values):
     for (i, j) in _storage_components(var.vtype, tuple(var.sym.shape)):
         column = var._data_layout(i, j)
         var.data[:, column] = stored[:, column]
-
-
-def _to_nondim_ndarray(value, units=None):
-    """Reduce a possibly unit-carrying array to a plain non-dimensional ndarray.
-
-    The semi-Lagrangian trace-back, the DM point-location and all variable
-    storage operate in the mesh's NON-DIMENSIONAL coordinate/value space
-    (UW3 issue #267): every array entering that arithmetic must be a plain
-    ndarray of non-dimensional values. This is the single reduction used
-    by every coordinate / velocity / forcing unwrap in this module.
-
-    Parameters
-    ----------
-    value : array-like, UnitAwareArray, or Pint quantity
-        The array to reduce. A plain ndarray with ``units=None`` is
-        assumed to be non-dimensional already and is returned unchanged.
-    units : pint.Unit or str, optional
-        Units known out-of-band (e.g. from ``uw.get_units``) to attach
-        to a plain array before non-dimensionalising. Ignored when
-        ``value`` already carries units; ``None`` or ``"dimensionless"``
-        means no attachment.
-
-    Returns
-    -------
-    numpy.ndarray or original type
-        Non-dimensional plain array (unit-carrying input), or ``value``
-        unchanged (plain input with no ``units`` supplied).
-    """
-    carries_units = isinstance(value, UnitAwareArray) or hasattr(value, "magnitude")
-    if not carries_units and units and str(units) != "dimensionless":
-        value = UnitAwareArray(np.asarray(value), units=units)
-        carries_units = True
-    if not carries_units:
-        return value
-    # TODO(BUG): a raw pint.Quantity input reaches uw.non_dimensionalise(),
-    # which crashes when reference scales are active (units.py protocol 5,
-    # invalid `dimensionality=` kwarg). Pre-existing — the unified unwrap
-    # sites had the same hasattr("magnitude") gate, and the DDt data paths
-    # only ever supply UnitAwareArray/plain ndarray from uw.function
-    # evaluate/global_evaluate. Fix belongs in units.py. See #328.
-    nd = uw.non_dimensionalise(value)
-    if isinstance(nd, UnitAwareArray):
-        return np.array(nd)
-    if hasattr(nd, "magnitude"):
-        return nd.magnitude
-    if hasattr(nd, "value"):
-        return nd.value
-    return np.asarray(nd)
 
 
 def _bdf_coefficients(order, dt_current, dt_history):
@@ -4949,34 +4887,6 @@ def _psi_shape_for(vtype, cdim):
     if vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR):
         return (cdim, cdim)
     return None                     # MATRIX and friends: shape is the caller's
-
-
-def _storage_components(vtype, shape):
-    """(i, j) of the symbolic matrix that each stored column holds.
-
-    A vector or tensor field stores one dof per INDEPENDENT component, which
-    is not the same as one per matrix entry: a symmetric tensor in 2-D has a
-    2x2 symbolic form and three stored columns. The order is the one the
-    variable's own ``.sym`` reconstructs from — diagonal first, then the
-    off-diagonals in row-major upper-triangular order — and
-    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
-    a change of convention fails there rather than silently transposing a
-    stress.
-
-    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
-    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
-    variable sizes its storage by the embedding dimension, which is what
-    ``.sym`` is shaped by.
-    """
-    if vtype == uw.VarType.SCALAR or shape == (1, 1):
-        return [(0, 0)]
-    if shape[0] == 1:                                    # VECTOR
-        return [(0, j) for j in range(shape[1])]
-    if vtype == uw.VarType.SYM_TENSOR:
-        dim = shape[0]
-        return ([(i, i) for i in range(dim)]
-                + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
-    return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
 
 
 class IntegrationPointSemiLagrangian(_DDtBase):

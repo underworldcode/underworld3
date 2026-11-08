@@ -479,7 +479,7 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """
     if not vars_:
         return
-    from underworld3.systems.ddt import _evaluated_in_storage_layout
+    from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
 
     # Capture target DOF coords on the NEW mesh first (we are sitting
     # on new_X right now). var.coords reads from the live mesh state.

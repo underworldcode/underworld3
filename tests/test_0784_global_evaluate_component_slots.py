@@ -100,3 +100,23 @@ def test_semi_lagrangian_history_keeps_every_component_of_a_tensor(mesh, vtype):
         local = float(np.abs(column - value).max(initial=0.0))
         worst[f"{i}{j}"] = uw.mpi.comm.allreduce(local, op=MPI.MAX)
     assert all(e < 1.0e-10 for e in worst.values()), worst
+
+
+def test_a_matrix_valued_derivative_under_rbf_is_refused(mesh):
+    """The RBF route recovers a derivative into one scalar work variable, so a
+    matrix-valued derivative came back ``(N, 1, 1)``: ``evaluate`` broadcast its first
+    entry and ``global_evaluate`` raised IndexError. It is refused by name; a scalar
+    derivative still goes this route, and is exact on a linear field."""
+    field = uw.discretisation.MeshVariable("T_rbf0784", mesh, 1, degree=1)
+    field.data[:, 0] = 3.0 * np.asarray(field.coords)[:, 0]
+    x, y = mesh.X
+    gradient = sympy.Matrix([[field.sym[0].diff(x), field.sym[0].diff(y)]])
+    points = np.array([[0.3, 0.3], [0.6, 0.2]])
+
+    for call in (lambda: uw.function.evaluate(gradient, points, rbf=True),
+                 lambda: uw.function.global_evaluate(gradient, points, mode="fast")):
+        with pytest.raises(NotImplementedError, match="rbf"):
+            call()
+
+    slope = np.asarray(uw.function.evaluate(field.sym[0].diff(x), points, rbf=True)).reshape(-1)
+    assert np.allclose(slope, 3.0, rtol=1e-12, atol=0.0), slope

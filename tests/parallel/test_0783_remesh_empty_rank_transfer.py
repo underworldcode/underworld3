@@ -32,7 +32,7 @@ import pytest
 from mpi4py import MPI
 
 import underworld3 as uw
-from underworld3.systems import ddt
+from underworld3.discretisation import discretisation_mesh_variables as storage_layout
 
 from empty_rank_fixtures import (AdapterStandIn, cells_along_a_side_leaving_one_rank_empty,
                                  right_triangle_of_cells)
@@ -201,13 +201,13 @@ def test_a_failure_on_one_rank_resets_the_variable_on_every_rank(stage, monkeypa
 
         monkeypatch.setattr(uw.function, "global_evaluate", failing_global_evaluate)
     else:
-        layout_values = ddt._evaluated_in_storage_layout
+        layout_values = storage_layout._evaluated_in_storage_layout
 
         def failing_layout_values(var, values):
             raises_on_one_rank_for_the_victim(layout_values, var.clean_name)
             return layout_values(var, values)
 
-        monkeypatch.setattr(ddt, "_evaluated_in_storage_layout", failing_layout_values)
+        monkeypatch.setattr(storage_layout, "_evaluated_in_storage_layout", failing_layout_values)
 
     AdapterStandIn.adapted = right_triangle_of_cells(NEW_CELLS_ALONG_A_SIDE, size)
     mesh.remesh(metric)

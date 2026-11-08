@@ -88,6 +88,53 @@ def _physical_dataset_model_values(dataset):
     return values / scale
 
 
+def _storage_components(vtype, shape):
+    """(i, j) of the symbolic matrix that each stored column holds.
+
+    A vector or tensor field stores one dof per INDEPENDENT component, which
+    is not the same as one per matrix entry: a symmetric tensor in 2-D has a
+    2x2 symbolic form and three stored columns. The order is the one the
+    variable's own ``.sym`` reconstructs from — diagonal first, then the
+    off-diagonals in row-major upper-triangular order — and
+    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
+    a change of convention fails there rather than silently transposing a
+    stress.
+
+    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
+    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
+    variable sizes its storage by the embedding dimension, which is what
+    ``.sym`` is shaped by.
+    """
+    if vtype == uw.VarType.SCALAR or shape == (1, 1):
+        return [(0, 0)]
+    if shape[0] == 1:                                    # VECTOR
+        return [(0, j) for j in range(shape[1])]
+    if vtype == uw.VarType.SYM_TENSOR:
+        dim = shape[0]
+        return ([(i, i) for i in range(dim)]
+                + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
+    return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
+
+
+def _evaluated_in_storage_layout(var, values):
+    """An evaluation of a store's quantity, as its ``.data`` holds it.
+
+    ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
+    when it carries units (it is reduced), non-dimensional when it does not. The
+    result is ``(N, components)`` in ``_data_layout`` order. A flat reshape would
+    not do: a symmetric tensor stores fewer entries than its symbol has, and a
+    MATRIX stores by column.
+    """
+    shape = tuple(var.sym.shape)
+    from underworld3.utilities.unit_aware_array import _to_nondim_ndarray
+
+    values = numpy.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
+    stored = numpy.empty(numpy.shape(var.data), dtype=numpy.float64)
+    for (i, j) in _storage_components(var.vtype, shape):
+        stored[:, var._data_layout(i, j)] = values[:, i, j]
+    return stored
+
+
 def extend_enum(inherited):
     def wrapper(final):
         joined = {}
