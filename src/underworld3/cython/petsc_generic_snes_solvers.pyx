@@ -4013,18 +4013,19 @@ class SolverBaseClass(uw_object):
         route, where the floor as an absolute tolerance stopped a Newton step's linear
         solve at its first residual. The test scales the floor into the KSP's own norm
         by the ratio of its first residual to ||b|| = ||F(x_k)||, so it is right in
-        either norm. It is appended to PETSc's test rather than set as a pre-solve,
-        because Eisenstat-Walker is PETSc's pre-solve on the saddle-point route: EW
-        sets the rtol, and the floor bounds it from below. While the SNES has not
+        either norm. It runs in the KSP's convergence test rather than as a
+        pre-solve, because Eisenstat-Walker is PETSc's pre-solve on the saddle-point
+        route: EW sets the rtol, and the floor bounds it from below. It shares that
+        test with the wall-clock guard through ``utilities/ksp_convergence_tests``,
+        since petsc4py allows one Python test per KSP. While the SNES has not
         converged ||F(x_k)|| > T, so the floor asks for a reduction of at least
         ``1 / _LINEAR_TARGET_FRACTION``; the cap guards a route that stops elsewhere.
         The solver is held weakly: the KSP keeps the callback in a C-held context the
         garbage collector cannot see, and a strong reference would pin the solver.
         COLLECTIVE at its 0 (one norm)."""
-        current = ksp.getConvergenceTest()
-        if current is not None:
-            # ours already, or a test somebody else set: that one owns the KSP
-            return getattr(current[0], "_uw_linear_floor", False)
+        from underworld3.utilities import ksp_convergence_tests
+        if ksp_convergence_tests.registered(ksp, "linear_floor"):
+            return True
         import weakref
         solver_ref = weakref.ref(self)
         threshold = [0.0]
@@ -4043,9 +4044,8 @@ class SolverBaseClass(uw_object):
                 return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
             return PETSc.KSP.ConvergedReason.ITERATING
 
-        _below_the_floor._uw_linear_floor = True
-        ksp.addConvergenceTest(_below_the_floor)
-        return True
+        # False when a convergence test the library did not set owns the KSP
+        return ksp_convergence_tests.register(ksp, "linear_floor", _below_the_floor)
 
     def _apply_convergence_reference(self, gvec):
         """Set this solve's absolute targets from one reference residual.
@@ -4072,10 +4072,15 @@ class SolverBaseClass(uw_object):
         F_0 = self._reference_residual(gvec)
         F_ref = max(F_x0, F_0)
         target = max(rtol * F_ref, atol)
-        self.snes.setTolerances(atol=target)
         floor = None
-        if not self._user_sets_outer_ksp_rtol() and self._install_linear_floor_test(ksp):
-            floor = _LINEAR_TARGET_FRACTION * target
+        if not np.isfinite(target):
+            # A NaN or infinite residual: PETSc refuses the tolerance (error 63), and
+            # the solve must fail on the residual itself, with its own reason.
+            target = atol
+        else:
+            self.snes.setTolerances(atol=target)
+            if not self._user_sets_outer_ksp_rtol() and self._install_linear_floor_test(ksp):
+                floor = _LINEAR_TARGET_FRACTION * target
         self._linear_floor = floor
         self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
                                        "target": target, "linear_floor": floor}
@@ -5689,6 +5694,28 @@ class SolverBaseClass(uw_object):
             # takes the default and leaves the value for PETSc to object to.
             return 50
 
+    def _rotated_tolerance_key(self, key, default):
+        """A user-set tolerance ``key`` for the rotated loop, else ``default``. A value
+        that is not a number takes the default, as in ``_rotated_max_it``."""
+        if not self.petsc_options.hasName(key):
+            return default
+        try:
+            return float(self.petsc_options.getString(key))
+        except Exception:
+            # A bare flag holds None, and a word will not convert: this solve takes
+            # the default and leaves the value for PETSc to object to.
+            return default
+
+    def _rotated_tolerances(self):
+        """The rotated loop's ``(rtol, atol, stol)`` (#924): a user-set ``snes_rtol``,
+        ``snes_atol`` or ``snes_stol``, else ``tolerance``, 1e-11 and 1e-8, the loop's
+        own defaults. The ``tolerance`` setter writes ``snes_rtol``, so the key reads
+        as the tolerance until the user moves it; nothing in the library writes the
+        other two. ``SNES_Stokes_SaddlePt`` owns ``snes_rtol`` and overrides this."""
+        return (self._rotated_tolerance_key("snes_rtol", float(self.tolerance)),
+                self._rotated_tolerance_key("snes_atol", 1.0e-11),
+                self._rotated_tolerance_key("snes_stol", 1.0e-8))
+
     def _solve_rotated_if_registered(self, zero_init_guess, verbose, picard, time):
         """Run the rotated strong-constraint solve when a rotated free-slip
         boundary or a split-fault contact is registered, and return True; return
@@ -5736,10 +5763,11 @@ class SolverBaseClass(uw_object):
         # paid (the loop self-terminates; _residual_is_nonlinear survives as
         # a lazy guard inside the picard+pure-Newton corner).
         from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+        rtol, atol, stol = self._rotated_tolerances()
         self._rotated_freeslip_info = solve_rotated_freeslip(
             self, self._rotated_freeslip_bcs, verbose=verbose,
             zero_init_guess=zero_init_guess, picard=picard,
-            max_it=self._rotated_max_it(),
+            max_it=self._rotated_max_it(), rtol=rtol, atol=atol, stol=stol,
             # An explicit `time=` reaches the kernels through petsc_t on
             # the DM — invisible to every state counter and constant
             # value, so it must veto the cached-operator fast path.
@@ -9533,6 +9561,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         cap = self._resolve_snes_max_it(50)
         self._push_snes_max_it(cap)
         return cap
+
+    def _rotated_tolerances(self):
+        """The rotated loop's ``(rtol, atol, stol)`` (#924): ``snes_rtol`` through the
+        owned-option record, as ``_rotated_max_it`` takes the cap, since a rotated solve
+        returns before ``_reassert_outer_tolerances``; a user-set ``snes_atol`` or
+        ``snes_stol``, else the loop's own 1e-11 and 1e-8."""
+        rtol = self._resolve_owned_option("snes_rtol", float(self._tolerance))
+        self._push_owned_option("snes_rtol", rtol)
+        return (rtol, self._rotated_tolerance_key("snes_atol", 1.0e-11),
+                self._rotated_tolerance_key("snes_stol", 1.0e-8))
 
     def _reassert_outer_tolerances(self):
         """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.

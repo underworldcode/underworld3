@@ -1744,13 +1744,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
                 refresh_operator=assemble,
-                abs_target=_increment_target(rtol * ref + atol, Aop, u, Q))
+                abs_target=_increment_target(rtol * ref + atol))
             hard, kind = ctx["hard_failure"], "rotated fieldsplit-Schur"
         else:
             dhat, last_reason, ctx = _solve_rotated_vector(
                 solver, Aop, bhat, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, ctx=ctx, refresh_operator=assemble,
-                abs_target=_increment_target(rtol * ref + atol, Aop, u, Q))
+                abs_target=_increment_target(rtol * ref + atol))
             hard, kind = ctx["hard_failure"], "rotated vector"
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
@@ -2439,25 +2439,31 @@ def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm, tol):
 _INCREMENT_TARGET_FRACTION = 0.1
 
 
-def _increment_target(newton_target, A, u, Q):
+def _increment_target(newton_target):
     """The absolute residual an increment's linear solves need reach: a fraction of
-    the Newton loop's target, and never below ten times the round-off floor
-    eps |A|_F |u|_2 of the rotated system, which no solve can go beneath (#911).
-    COLLECTIVE."""
-    uhat = u.duplicate()
-    Q.mult(u, uhat)
-    floor = 10.0 * np.finfo(float).eps * A.norm(PETSc.NormType.FROBENIUS) * uhat.norm()
-    uhat.destroy()
-    return max(_INCREMENT_TARGET_FRACTION * float(newton_target), floor)
+    the Newton loop's target (#911). :func:`_set_absolute_target` caps it at the same
+    fraction of each solve's own right-hand side. An estimate of the round-off floor,
+    10 eps |A|_F |u|, stood here first: it overstated round-off at least 300 times on
+    test_1136's power-law box, whose loop it stalled at 3.4e-9 against a target of
+    1.1e-11, where development converges."""
+    return _INCREMENT_TARGET_FRACTION * float(newton_target)
 
 
-def _set_absolute_target(ksp, abs_target):
+def _set_absolute_target(ksp, abs_target, bhat):
     """Give ``ksp`` and its fieldsplit sub-KSPs the absolute tolerance ``abs_target``,
-    keeping their relative tolerances and caps. Every rotated KSP is FGMRES, which
-    measures the true residual, so an absolute tolerance is in the residual's own
-    units (a left-preconditioned KSP would need it scaled into its norm). ``None``
-    leaves them as they are."""
+    capped at ``_INCREMENT_TARGET_FRACTION * |bhat|``, keeping their relative
+    tolerances and caps. The cap means every increment cuts its own residual at least
+    tenfold, so a target at or above the residual never gives a zero step; the native
+    routes cap their floor the same way. Every rotated KSP is FGMRES, which measures the
+    true residual, so an absolute tolerance is in the residual's own units (a
+    left-preconditioned KSP would need it scaled into its norm). ``None`` leaves them
+    as they are. COLLECTIVE (one norm)."""
     if abs_target is None:
+        return
+    abs_target = min(abs_target, _INCREMENT_TARGET_FRACTION * bhat.norm())
+    if not np.isfinite(abs_target):
+        # a NaN or infinite residual: PETSc refuses the tolerance (error 63), and the
+        # solve must be left to fail on the residual itself, with its own reason
         return
     ksp.setTolerances(atol=abs_target)
     pc = ksp.getPC()
@@ -2762,7 +2768,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # increment's residual, which for the last increment is far below round-off
     # (1e-11 of a 1e-9 residual, #911). The absolute floor stops each solve there,
     # outer and inner alike; early increments, whose residual is large, are untouched.
-    _set_absolute_target(ksp, abs_target)
+    _set_absolute_target(ksp, abs_target, bhat)
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
@@ -2886,7 +2892,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
             ksp.setOperators(Ahat)
     if nsp is not None:
         nsp.remove(bhat)
-    _set_absolute_target(ksp, abs_target)    # the increment floor, as the saddle route
+    _set_absolute_target(ksp, abs_target, bhat)    # the increment floor, as the saddle route
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
