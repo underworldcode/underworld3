@@ -2452,27 +2452,48 @@ def _increment_target(newton_target):
     return _INCREMENT_TARGET_FRACTION * float(newton_target)
 
 
-def _set_absolute_target(ksp, abs_target, bhat):
-    """Give ``ksp`` and its fieldsplit sub-KSPs the absolute tolerance ``abs_target``,
-    capped at ``_INCREMENT_TARGET_FRACTION * |bhat|``, keeping their relative
-    tolerances and caps. The cap means every increment cuts its own residual at least
-    tenfold, so a target at or above the residual never gives a zero step; the native
-    routes cap their floor the same way. Every rotated KSP is FGMRES, which measures the
-    true residual, so an absolute tolerance is in the residual's own units (a
-    left-preconditioned KSP would need it scaled into its norm). ``None`` leaves them
-    as they are. COLLECTIVE (one norm)."""
-    if abs_target is None:
-        return
-    abs_target = min(abs_target, _INCREMENT_TARGET_FRACTION * bhat.norm())
-    if not np.isfinite(abs_target):
-        # a NaN or infinite residual: PETSc refuses the tolerance (error 63), and the
-        # solve must be left to fail on the residual itself, with its own reason
-        return
-    ksp.setTolerances(atol=abs_target)
+def _set_absolute_target(ksp, abs_target, bhat, ctx):
+    """Hold an increment's linear solve to the Newton loop's floor ``abs_target``.
+
+    The outer KSP takes it as its absolute tolerance, capped at
+    ``_INCREMENT_TARGET_FRACTION * |bhat|``, so every increment cuts its own residual
+    at least tenfold and a target at or above the residual never gives a zero step;
+    the native routes cap their floor the same way. Every rotated KSP is FGMRES, which
+    measures the true residual, so the outer tolerance is in the residual's own units.
+
+    The fieldsplit sub-KSPs keep their configured relative tolerances, the margins
+    below the outer tolerance they were given, scaled by how far the floor has relaxed
+    the outer target: by ``(abs_target / |bhat|) / rtol``, never below 1 and capped at
+    the fraction. An absolute tolerance on them, in the outer residual's units, was
+    the first form: the pressure solve then stopped at 6 iterations in place of 15
+    on test_1087's single increment, and the fault slip moved 2.2e-4 at tolerance
+    1e-6 (hyperion's review, H1). Scaled this way an increment whose residual is far
+    above the target, a first increment above all, is solved as before, and only the
+    last increments of a tight solve relax (#911).
+
+    The configured values are kept on ``ctx`` and put back when ``abs_target`` is
+    None (the floor switched off) or not finite (a NaN residual, which the solve
+    must fail on with its own reason; PETSc refuses the tolerance, error 63).
+    COLLECTIVE (one norm)."""
     pc = ksp.getPC()
-    if pc.getType() == "fieldsplit":
-        for sub in pc.getFieldSplitSubKSP():
-            sub.setTolerances(atol=abs_target)
+    subs = list(pc.getFieldSplitSubKSP()) if pc.getType() == "fieldsplit" else []
+    base = ctx.get("floor_base")
+    if base is None:
+        rtol, atol = ksp.getTolerances()[:2]
+        base = ctx["floor_base"] = {"rtol": rtol, "atol": atol,
+                                    "sub_rtol": [sub.getTolerances()[0] for sub in subs]}
+    bnorm = bhat.norm() if abs_target is not None else 0.0
+    if abs_target is None or not np.isfinite(abs_target) or not np.isfinite(bnorm) \
+            or bnorm <= 0.0:
+        ksp.setTolerances(atol=base["atol"])
+        for sub, rtol0 in zip(subs, base["sub_rtol"]):
+            sub.setTolerances(rtol=rtol0)
+        return
+    target = min(abs_target, _INCREMENT_TARGET_FRACTION * bnorm)
+    ksp.setTolerances(atol=max(base["atol"], target))
+    relaxed = max(1.0, (target / bnorm) / max(base["rtol"], 1.0e-300))
+    for sub, rtol0 in zip(subs, base["sub_rtol"]):
+        sub.setTolerances(rtol=max(rtol0, min(rtol0 * relaxed, _INCREMENT_TARGET_FRACTION)))
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
@@ -2769,9 +2790,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # An increment of the Newton loop need only bring its residual well inside the
     # loop's own target; its relative tolerance alone asks for that fraction of THIS
     # increment's residual, which for the last increment is far below round-off
-    # (1e-11 of a 1e-9 residual, #911). The absolute floor stops each solve there,
-    # outer and inner alike; early increments, whose residual is large, are untouched.
-    _set_absolute_target(ksp, abs_target, bhat)
+    # (1e-11 of a 1e-9 residual, #911). The floor stops the outer solve there, and
+    # relaxes the sub-solves by as much; early increments, whose residual is large,
+    # are untouched.
+    _set_absolute_target(ksp, abs_target, bhat, ctx)
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
@@ -2895,7 +2917,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
             ksp.setOperators(Ahat)
     if nsp is not None:
         nsp.remove(bhat)
-    _set_absolute_target(ksp, abs_target, bhat)    # the increment floor, as the saddle route
+    _set_absolute_target(ksp, abs_target, bhat, ctx)    # the increment floor, as the saddle route
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)

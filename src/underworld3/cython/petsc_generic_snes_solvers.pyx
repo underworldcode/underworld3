@@ -3959,15 +3959,46 @@ class SolverBaseClass(uw_object):
         rest (for a shear-thinning law the viscosity at zero strain rate), so ||F(0)||
         measures the penalty rather than the forcing: on a Nitsche-driven power-law
         lid, a warm re-solve held to it was 70 to 1300 times less accurate than under
-        PETSc's own test. A datum held in a constant counts whatever its value, since
-        the value can change without a rebuild; an expression whose value at rest
-        cannot be decided counts too. Read once per set of boundary conditions. The
-        same on every rank."""
+        PETSc's own test.
+
+        A datum is read by its symbols, not its value: every UW expression whose value
+        is a number is held as a symbol of its own before the term is unwrapped, so a
+        lid ramped up from zero, or a Robin ambient set later, counts from the start
+        (the value can change without a rebuild; read by value, a datum that was zero
+        when first read stayed "no datum": hyperion's review, M1). An expression whose
+        value at rest cannot be decided counts too. Read once per set of boundary
+        terms. The same on every rank."""
         bcs = tuple(getattr(self, "natural_bcs", None) or ())
-        key = tuple(id(bc) for bc in bcs)
+
+        def _term_key(term):
+            try:
+                return hash(term)
+            except TypeError:
+                return id(term)
+
+        key = tuple((id(bc),) + tuple(_term_key(getattr(bc, name, None))
+                                      for name in ("fn_f", "fn_F", "fn_p")) for bc in bcs)
         if getattr(self, "_weak_datum_key", None) == key:
             return self._weak_datum_value
-        from underworld3.function.expressions import _unwrap_for_compilation
+        from underworld3.function.expressions import (UWexpression, unwrap_expression,
+                                                      _unwrap_for_compilation)
+
+        def _held(expr):
+            expr = sympy.sympify(expr)
+            for _depth in range(64):
+                found = expr.atoms(UWexpression)
+                if not found:
+                    break
+                swap = {}
+                for a in found:
+                    value = sympy.sympify(unwrap_expression(a, mode="nondimensional"))
+                    if not value.free_symbols and not value.atoms(sympy.Function):
+                        swap[a] = sympy.Dummy(str(a))     # a constant: held as a symbol
+                    else:
+                        swap[a] = a.sym                   # open one level
+                expr = expr.xreplace(swap)
+            return expr
+
         X = sympy.Matrix(list(self.mesh.X))
         at_rest = {}
         unknowns = getattr(self, "Unknowns", None)
@@ -3985,8 +4016,8 @@ class SolverBaseClass(uw_object):
                          getattr(bc, "fn_p", None)):
                 if term is None:
                     continue
-                t = sympy.Matrix(_unwrap_for_compilation(term, keep_constants=True,
-                                                         return_self=False))
+                t = sympy.Matrix(_unwrap_for_compilation(
+                    sympy.Matrix(term).applyfunc(_held), return_self=False))
                 if not (t.atoms(sympy.Function) & set(at_rest)):
                     continue                       # forcing: a traction, not a constraint
                 if t.subs(at_rest).doit().is_zero_matrix is not True:
@@ -4076,20 +4107,37 @@ class SolverBaseClass(uw_object):
             return True
         import weakref
         solver_ref = weakref.ref(self)
-        threshold = [0.0]
+        threshold = [0.0, 0.0]        # in the KSP's norm, and in ||F|| units
 
         def _below_the_floor(ksp, its, rnorm):
             solver = solver_ref()
             floor = None if solver is None else solver._linear_floor
-            if floor is None:
+            norm_type = ksp.getNormType()
+            if floor is None or norm_type == PETSc.KSP.NormType.NONE:
+                # no norm to test (PETSc passes 0): the floor would stop every
+                # application at its first iteration
                 return PETSc.KSP.ConvergedReason.ITERATING
             if its == 0:
                 bnorm = ksp.getRhs().norm()
-                threshold[0] = (min(floor / bnorm, _LINEAR_TARGET_FRACTION) * rnorm
-                                if bnorm > 0.0 else 0.0)
+                cap = min(floor / bnorm, _LINEAR_TARGET_FRACTION) if bnorm > 0.0 else 0.0
+                threshold[0] = cap * rnorm
+                threshold[1] = cap * bnorm          # the floor in ||F|| units, capped
                 return PETSc.KSP.ConvergedReason.ITERATING
-            if rnorm <= threshold[0]:
+            if rnorm > threshold[0]:
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if norm_type == PETSc.KSP.NormType.UNPRECONDITIONED:
                 return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            # A preconditioned norm is scaled by its first ratio to ||b||, which need
+            # not hold as the iteration goes; the true residual decides. Stopping on
+            # the estimate alone left the true residual above the floor and cost
+            # Newton a step (test_0009, a warm nonlinear Poisson: hyperion's review,
+            # M2). Every rank reaches this test with the same rnorm. COLLECTIVE.
+            r = ksp.buildResidual()
+            true = r.norm()
+            r.destroy()
+            if true <= threshold[1]:
+                return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            threshold[0] *= threshold[1] / true     # rescale the estimate and go on
             return PETSc.KSP.ConvergedReason.ITERATING
 
         # False when a convergence test the library did not set owns the KSP

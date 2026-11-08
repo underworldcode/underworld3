@@ -131,6 +131,22 @@ the warm-up, the reduction is measured from the cold residual, and
 The Newton stage that follows stops at `tolerance`·‖F(u_cold)‖, where one uninterrupted
 solve would.
 
+**Where a solve stops (the convergence reference).** Every solve, native or rotated,
+stops at `T = tolerance · max(‖F(u₀)‖, R) + atol`, where `R` is what the equation
+declares: ‖F(0)‖ for a stationary equation, so a warm start or a continuation step
+(δ, η, a BC change) is held to the cold start's target and does not chase `tolerance`
+of its own small first residual; and 0 for a time step through a DDt, a viscoelastic
+step, or a weakly imposed nonzero velocity (Nitsche or a penalty), which are measured
+against their own first residual. Each linear solve inside Newton stops at 0.1·T, and
+always cuts its own residual at least tenfold. Two consequences to plan for: an answer
+is as accurate as `tolerance` asks and no more (a linear solve no longer gets an exact
+second Newton step for free), so ask for the accuracy you need; and a stationary
+equation re-solved in a time loop under slowly changing forcing can take no step at
+all while the change stays inside T, so its answer lags the forcing by up to the
+tolerance (Stokes already did this before the policy). Override per solver with
+`solver._convergence_reference_rule = "increment"` or `"stationary"`. Design:
+`docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md`.
+
 Changing `consistent_jacobian` or `newton_pressure_coupling` after a solve recompiles the
 Jacobian on the next one; the report always describes the tangent that ran.
 

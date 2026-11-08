@@ -244,3 +244,30 @@ def test_a_weak_constraint_without_a_datum_and_a_traction_are_not_a_datum():
     stokes = _weak_lid(0.0)
     stokes.add_natural_bc(sympy.Matrix([[0.0, -1.0]]), "Bottom")
     assert not stokes._weak_datum()
+
+
+def test_a_datum_that_starts_at_zero_counts_from_the_start():
+    # Read by its value, a lid ramped up from zero, or a Robin ambient set later, was
+    # cached as "no datum" and kept the stationary rule: the ramped lid's warm
+    # re-solves were 6.4e-3 and 2.7e-3 off, against 1.1e-6 for the same lid built at
+    # speed 1 (hyperion's review of the branch, M1).
+    lid = uw.expression(r"U_{0028z}", 0.0, "lid speed, ramped from zero")
+    stokes = _weak_lid(lid)
+    assert stokes._weak_datum()
+    stokes.solve(zero_init_guess=True)
+    lid.sym = 1.0
+    stokes.solve(zero_init_guess=True, picard=2)
+    lid.sym = 1.01
+    stokes.solve(zero_init_guess=False)
+    _check_stops_at_the_first_iterate_inside_the_target(
+        stokes, "warm, ramped lid changed by 1 %", reference=0.0)
+
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25, qdegree=2)
+    T = uw.discretisation.MeshVariable("T0028r", mesh, 1, degree=1)
+    robin = uw.systems.Poisson(mesh, u_Field=T)
+    robin.constitutive_model = uw.constitutive_models.DiffusionModel
+    robin.constitutive_model.Parameters.diffusivity = 1.0
+    ambient = uw.expression(r"T_{a,0028}", 0.0, "Robin ambient, set later")
+    robin.add_natural_bc([2.0 * (T.sym[0] - ambient)], "Top")
+    assert robin._weak_datum()
