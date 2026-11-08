@@ -153,7 +153,6 @@ poisson.petsc_options.setValue("pc_mg_type", "kaskade")
 # poisson.petsc_options["mg_levels_ksp_type"] = "fgmres"
 # poisson.petsc_options["mg_levels_ksp_max_it"] = 100
 poisson.petsc_options["mg_levels_ksp_converged_maxits"] = None
-# poisson.petsc_options["mg_coarse_pc_type"] = "svd"
 
 # -
 

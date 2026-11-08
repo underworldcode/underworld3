@@ -60,7 +60,6 @@ stokes_rock.tolerance = stokes_tol
 stokes_rock.petsc_options["snes_type"] = "newtonls"
 stokes_rock.petsc_options["ksp_type"] = "fgmres"
 stokes_rock.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-stokes_rock.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
 print("Solving submesh...", flush=True)
 stokes_rock.solve(verbose=False)
@@ -116,7 +115,6 @@ stokes_nit.petsc_options["snes_type"] = "newtonls"
 stokes_nit.petsc_options["ksp_type"] = "fgmres"
 stokes_nit.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 stokes_nit.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-stokes_nit.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes_nit.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 stokes_nit.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 stokes_nit.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
