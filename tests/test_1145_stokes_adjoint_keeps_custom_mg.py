@@ -115,6 +115,16 @@ def _nonlinear_fault_box(name, law, matrix_route, picard):
     return stokes
 
 
+def _dense_copy(M):
+    """M's entries as a numpy array. Mat.convert with no target converts IN PLACE,
+    which turned the solver's own Jacobian dense; convert a copy instead."""
+    C = M.copy()
+    C.convert("dense")
+    A = C.getDenseArray().copy()
+    C.destroy()
+    return A
+
+
 def _dense_adjoint_error(stokes):
     """The adjoint's multiplier against a dense solve of K^T mu = b, K the consistent
     tangent at the forward state; the pressure constant removed where it is free."""
@@ -126,7 +136,7 @@ def _dense_adjoint_error(stokes):
     alpha = stokes._newton_alpha_for_adjoint()
     stokes.snes.computeJacobian(gvec, J, P)
     stokes._restore_newton_alpha(alpha)
-    K = J.convert("dense").getDenseArray().copy()
+    K = _dense_copy(J)
     stokes._restore_tangent(tangent)
     stokes.dm.restoreGlobalVec(gvec)
     pressure = np.asarray(stokes._subdict["pressure"][0].getIndices())
@@ -146,9 +156,13 @@ def _dense_adjoint_error(stokes):
     return error, reason
 
 
+# The dense reference indexes the global pressure numbering into one rank's rows.
+@pytest.mark.skipif(uw.mpi.size > 1, reason="the dense reference is serial")
 @pytest.mark.parametrize("law,matrix_route,picard", [
-    ("powerlaw", False, False), ("powerlaw", False, True), ("eta_vx", True, False)],
-    ids=["powerlaw_newton", "powerlaw_picard", "eta_vx_matrix_route"])
+    ("powerlaw", False, False), ("powerlaw", False, True), ("eta_vx", True, False),
+    ("powerlaw", True, True)],
+    ids=["powerlaw_newton", "powerlaw_picard", "eta_vx_matrix_route",
+         "powerlaw_picard_matrix_route"])
 def test_a_nonlinear_adjoint_is_the_transpose_of_the_tangent_at_the_state(
         law, matrix_route, picard):
     stokes = _nonlinear_fault_box(f"1145{law[0]}{int(matrix_route)}{int(picard)}",
@@ -156,8 +170,12 @@ def test_a_nonlinear_adjoint_is_the_transpose_of_the_tangent_at_the_state(
     stokes.solve()
     assert stokes.snes.getConvergedReason() > 0
     assert stokes._adjoint_by_kernels() is not matrix_route
+    forward_its = _velocity_its(stokes)
     error, reason = _dense_adjoint_error(stokes)
     assert reason > 0, reason
     # 1e-10 measured; with the tangent left at u = 0 it was 2e-1 to 1.6
     assert error < 1.0e-6, error
     assert _velocity_pc(stokes).getMGLevels() == 3
+    # on the matrix route the velocity block took J's values, not J^T's (#1021):
+    # 9 to 11 iterations against 5 to 6, and after a Picard forward the cap of 200
+    assert _velocity_its(stokes) <= forward_its + 2, (_velocity_its(stokes), forward_its)
