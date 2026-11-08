@@ -507,28 +507,48 @@ class FreeSurface:
         r"""Coordinates of the vertices on ``surface``, from the DMPlex boundary
         stratum (label-based, parallel-correct) — not a radial ``|y-H|`` heuristic.
 
-        Each rank returns its local surface vertices; the stratum closure resolves
-        the facet-to-vertex map so this is exact on deformed and curved boundaries.
+        Each rank returns every local vertex on the surface; the stratum closure
+        resolves the facet-to-vertex map so this is exact on deformed and curved
+        boundaries. A facet is labelled on one rank, so a rank can hold a surface
+        vertex whose facets all sit on neighbours, which the closures of its own
+        facets miss (#935). A marker reduced onto each vertex's owner over the
+        plex's point SF, and broadcast back, completes the set. COLLECTIVE.
         """
         from underworld3.utilities.boundary_flux import _boundary_stratum_is
 
         dm = self.mesh.dm
-        facet_is = _boundary_stratum_is(dm, self.mesh, self.surface)
-        # In parallel a rank may own NO surface facets → a NULL-handle IS; any
-        # method call on it segfaults (the house guard every other stratum-IS
-        # call site carries — see rotated_bc._boundary_velocity_nodes). Return
-        # no local surface nodes; every consumer already handles the empty case.
-        if not (facet_is and facet_is.getSize() > 0):
-            return np.empty((0, self.mesh.cdim))
+        cdim = self.mesh.cdim
         v_start, v_end = dm.getDepthStratum(0)
         csec = dm.getCoordinateSection()
-        cdim = self.mesh.cdim
         cvec = dm.getCoordinatesLocal().array.reshape(-1, cdim)
 
+        facet_is = _boundary_stratum_is(dm, self.mesh, self.surface)
         vertices = set()
-        for facet in facet_is.getIndices():
-            closure = dm.getTransitiveClosure(facet)[0]
-            vertices.update(p for p in closure if v_start <= p < v_end)
+        # In parallel a rank may own NO surface facets → a NULL-handle IS; any
+        # method call on it segfaults (the house guard every other stratum-IS
+        # call site carries — see rotated_bc._boundary_velocity_nodes). Such a
+        # rank still takes part in the scatter below.
+        if facet_is and facet_is.getSize() > 0:
+            for facet in facet_is.getIndices():
+                closure = dm.getTransitiveClosure(facet)[0]
+                vertices.update(int(p) for p in closure if v_start <= p < v_end)
+
+        if dm.comm.getSize() > 1:
+            # ghosts' marks added onto their owners, then the owners' totals back to
+            # every copy, over the plex's own point SF
+            sf = dm.getPointSF()
+            p0, p1 = dm.getChart()
+            mine = np.zeros(p1 - p0, dtype=np.int32)
+            for v in vertices:
+                mine[v - p0] = 1
+            total = mine.copy()
+            sf.reduceBegin(MPI.INT, mine, total, MPI.SUM)
+            sf.reduceEnd(MPI.INT, mine, total, MPI.SUM)
+            seen = total.copy()
+            sf.bcastBegin(MPI.INT, total, seen, MPI.REPLACE)
+            sf.bcastEnd(MPI.INT, total, seen, MPI.REPLACE)
+            vertices = {v for v in range(v_start, v_end) if seen[v - p0]}
+
         rows = [csec.getOffset(v) // cdim for v in vertices]
         return np.ascontiguousarray(cvec[rows]) if rows else np.empty((0, cdim))
 

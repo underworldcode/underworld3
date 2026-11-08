@@ -598,6 +598,7 @@ class FaultNetwork:
             dm, simplex=True, qdegree=qdegree,
             coordinate_system_type=base.CoordinateSystem.coordinate_type,
             boundaries=Enum("boundaries", members), verbose=False)
+        mesh._inherit_rotation_modes(base)
         from underworld3.utilities.addon_partition import inherit_provenance
         inherit_provenance(mesh, host)
         band = mesh.cells_labelled("Band", 71)

@@ -360,6 +360,134 @@ def _compose_prolongations(fine, coarse):
     width = int(cols.max()) + 1
     return (uniq // width, uniq % width, summed)
 
+def _is_rigid_rotation(mode, X):
+    """Whether the sympy field ``mode`` of the coordinates ``X`` is a rigid rotation
+    ``A (x - c)``: affine, with A antisymmetric and nonzero, and zero on its axis, so
+    that ``A c = -mode(0)`` has a solution. A screw adds a part along the axis and has
+    none. Checked numerically to a relative 1e-12, so a float coefficient with
+    round-off asymmetry or an unsimplified constant is accepted."""
+    grad = mode.jacobian(X)
+    if grad.free_symbols:
+        grad = sympy.simplify(grad)
+    if grad.free_symbols:
+        return False
+    A = numpy.array(grad.evalf(), dtype=float)
+    m0 = numpy.array(mode.subs(dict(zip(X, [0] * len(X)))).evalf(), dtype=float).ravel()
+    scale = numpy.linalg.norm(A)
+    if scale == 0.0 or numpy.linalg.norm(A + A.T) > 1.0e-12 * scale:
+        return False
+    centre = numpy.linalg.lstsq(A, -m0, rcond=None)[0]
+    return bool(numpy.linalg.norm(A @ centre + m0)
+                <= 1.0e-12 * scale * max(1.0, numpy.linalg.norm(centre)))
+
+
+def _apply_refinement_callback(dm, refinement_callback):
+    r"""Apply a refinement callback to a refined DM without letting it invert a cell.
+
+    A refinement callback moves vertices of a freshly refined mesh, typically the new
+    boundary vertices onto a curved boundary. Regular refinement subdivides every cell,
+    so before the callback no cell is inverted. A vertex moved past its neighbours turns
+    the cells between them inside out: on a concave wall, a snapped midpoint can overtake
+    an interior vertex that is not snapped (#946). Of each cell the callback inverted,
+    the vertex it moved furthest goes back where refinement placed it, until no cell is
+    inverted. Returns the number put back, over all ranks: those vertices are not where
+    the callback meant them to be.
+
+    In parallel the copies of one vertex can disagree after the callback. A callback
+    finds the vertices it moves through the labels a rank holds, and a rank can hold a
+    shared vertex without holding every labelled facet around it. The copy that moved is
+    the intended one, so every copy takes it before any cell is checked. Copies that
+    moved agree, because the callback is a function of the vertex's position.
+
+    Cells are checked when they are simplices of the coordinate dimension; a manifold
+    mesh or a mesh of quadrilaterals or hexahedra is not checked. A callback that writes
+    a non-finite coordinate raises. Collective: every rank sees the same verdicts.
+    """
+    from underworld3.utilities._plex_topology import closure_points, section_offsets
+
+    dim, cdim = dm.getDimension(), dm.getCoordinateDim()
+    refined = dm.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+    refinement_callback(dm)
+
+    coordinates = dm.getCoordinatesLocal()
+    moved_to = coordinates.array.reshape(-1, cdim).copy()
+    moved = numpy.any(moved_to != refined, axis=1)
+    shifts, _ = _sum_over_sharers(dm, numpy.where(moved[:, None], moved_to - refined, 0.0))
+    movers, _ = _sum_over_sharers(dm, numpy.repeat(moved[:, None].astype(float), cdim, axis=1))
+    movers = movers[:, 0]
+    moved_to = numpy.where((movers > 0.0)[:, None],
+                           refined + shifts / numpy.maximum(movers, 1.0)[:, None], refined)
+    _, broken = _flag_on_every_sharer(dm, ~numpy.isfinite(moved_to).all(axis=1))
+    if broken:
+        raise RuntimeError(f"The refinement callback wrote non-finite coordinates at "
+                           f"{broken} vertices.")
+
+    total = 0
+    if dim == cdim:
+        vs, ve = dm.getDepthStratum(0)
+        cs, ce = dm.getHeightStratum(0)
+        rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
+        cells = closure_points(dm, numpy.arange(cs, ce), 0)
+        if cells.shape[1] == dim + 1 and (cells >= 0).all():
+            cells = rows[cells - vs]
+        else:
+            cells = numpy.empty((0, dim + 1), dtype=numpy.int64)
+
+        def orientation(x):
+            return numpy.sign(numpy.linalg.det(x[cells[:, 1:]] - x[cells[:, :1]]))
+
+        reference = orientation(refined)
+        shift = numpy.linalg.norm(moved_to - refined, axis=1)
+        held = numpy.zeros(len(refined), dtype=bool)
+        while True:
+            current = numpy.where(held[:, None], refined, moved_to)
+            inverted = cells[orientation(current) != reference]
+            reach = numpy.where(held[inverted], 0.0, shift[inverted])
+            culprits = numpy.zeros(len(refined), dtype=bool)
+            culprits[inverted[numpy.arange(len(inverted)), reach.argmax(axis=1)]] = True
+            culprits, count = _flag_on_every_sharer(dm, culprits & ~held)
+            if count == 0:
+                break
+            held |= culprits
+        _, total = _flag_on_every_sharer(dm, held)
+        moved_to = numpy.where(held[:, None], refined, moved_to)
+
+    coordinates.array[...] = moved_to.ravel()
+    dm.setCoordinatesLocal(coordinates)
+    return total
+
+
+def _sum_over_sharers(dm, values):
+    """The sum, over every rank's copy of each vertex, of ``values``, an array indexed
+    like the local coordinate array; each copy gets the sum. Also returns how many
+    vertices have a nonzero sum, over all ranks. Collective."""
+    cdm = dm.getCoordinateDM()
+    cdim = dm.getCoordinateDim()
+    local, glob = cdm.createLocalVec(), cdm.createGlobalVec()
+    local.array[...] = numpy.asarray(values, dtype=float).ravel()
+    glob.set(0.0)
+    cdm.localToGlobal(local, glob, addv=PETSc.InsertMode.ADD_VALUES)
+    marks = glob.duplicate()
+    marks.array[...] = numpy.repeat(
+        numpy.any(glob.array.reshape(-1, cdim) != 0.0, axis=1).astype(float), cdim)
+    count = int(round(marks.sum() / cdim))
+    marks.destroy()
+    cdm.globalToLocal(glob, local, addv=PETSc.InsertMode.INSERT_VALUES)
+    summed = local.array.reshape(-1, cdim).copy()
+    local.destroy()
+    glob.destroy()
+    return summed, count
+
+
+def _flag_on_every_sharer(dm, flags):
+    """A vertex flagged on any rank that holds it, flagged on every rank that holds it,
+    and the global number of flagged vertices. ``flags`` is indexed like the rows of
+    the local coordinate array. Collective."""
+    cdim = dm.getCoordinateDim()
+    summed, count = _sum_over_sharers(dm, numpy.repeat(flags[:, None].astype(float), cdim, axis=1))
+    return summed[:, 0] > 0.0, count
+
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -654,10 +782,11 @@ class Mesh(Stateful, uw_object):
         self._lvec = None
         self.petsc_fe = None
 
-        # Rigid-body rotation null modes for this geometry.
-        # Mesh factories override this for closed surfaces (annulus, sphere).
-        # Each entry is a SymPy Matrix velocity field in mesh coordinates.
-        self._nullspace_rotations = []
+        # Rigid-body rotation null modes for this geometry: None until declared.
+        # Mesh factories declare them for closed surfaces (annulus, sphere); a
+        # user declares them through the nullspace_rotations setter. Each entry
+        # is a SymPy Matrix velocity field in mesh coordinates.
+        self._nullspace_rotations = None
 
         self.degree = degree
         self.qdegree = qdegree
@@ -1208,7 +1337,7 @@ class Mesh(Stateful, uw_object):
             dm_refined.setCoarseDM(self.dm_hierarchy[i])
 
             if callable(refinement_callback):
-                refinement_callback(dm_refined)
+                _apply_refinement_callback(dm_refined, refinement_callback)
 
             self.dm_hierarchy.append(dm_refined)
 
@@ -1216,9 +1345,24 @@ class Mesh(Stateful, uw_object):
         self.dm_h.setName("uw_hierarchical_dm")
 
         # Is this needed here, after the above calls ?
+        # The second pass re-applies the callback to every level from the state the
+        # first left, so it holds back again every vertex that needs it: its sum is
+        # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            for dm in self.dm_hierarchy:
-                refinement_callback(dm)
+            held = sum(_apply_refinement_callback(dm, refinement_callback)
+                       for dm in self.dm_hierarchy)
+            if held:
+                with uw.selective_ranks(0) as selected:
+                    if selected:
+                        import warnings
+
+                        warnings.warn(
+                            f"The refinement callback would have turned cells inside "
+                            f"out. {held} vertices it moved, over the hierarchy's "
+                            f"{len(self.dm_hierarchy)} levels, stay where refinement "
+                            f"placed them instead (#946).",
+                            UserWarning,
+                        )
 
         # Single level equivalent dm (needed for aux vars ?? Check this - LM)
         self.dm = self.dm_h.clone()
@@ -2333,6 +2477,12 @@ class Mesh(Stateful, uw_object):
         var._setup_ds()
         var._set_vec(available=True)
 
+    @staticmethod
+    def _any_rank_failed(failure):
+        """Whether ``failure`` is set on any rank, the same answer on all of them.
+        COLLECTIVE, on the communicator no PETSc object shares."""
+        return any(uw.mpi.verdict_comm.allgather(failure is not None))
+
     def _idw_transfer_to_var(self, old_coords, old_data, var):
         """Inverse-distance-weighted transfer of backed-up DOF values.
 
@@ -2598,6 +2748,26 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _refuse_parallel_refinement_with_units(*variables):
+        """The parallel refinement route reads the coordinates as non-dimensional, so
+        it gets every shape wrong when the model has reference quantities
+        (``uw.get_default_model().has_units()``), whatever the variables carry and
+        whether or not non-dimensional scaling is switched on, and when either
+        variable carries units (#991). Refuse rather than give a wrong value. These
+        facts and the rank count are the same on every rank, so every rank raises
+        together."""
+        if uw.mpi.size == 1:
+            return
+        referenced = uw.get_default_model().has_units()
+        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
+        if referenced or with_units:
+            reason = ("the model has reference quantities" if referenced
+                      else f"{', '.join(repr(n) for n in with_units)} carry units")
+            raise NotImplementedError(
+                f"Transfers between a parent and its refinement child are not yet "
+                f"right in parallel when {reason}; see #991.")
+
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
         if self._relationship_kind != "refinement":
@@ -2605,10 +2775,14 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
+        self._refuse_parallel_refinement_with_units(pv, cv)
+
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))
-            ).reshape(cv.data.shape)
+            from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
+            # a symmetric tensor.
+            out = _evaluated_in_storage_layout(
+                cv, numpy.asarray(uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2632,10 +2806,14 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
+        self._refuse_parallel_refinement_with_units(pv, cv)
+
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))
-            ).reshape(pv.data.shape)
+            from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
+            # a symmetric tensor.
+            out = _evaluated_in_storage_layout(
+                pv, numpy.asarray(uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2728,17 +2906,24 @@ class Mesh(Stateful, uw_object):
         # before createDefault(). Currently only P1 coordinate meshes are used,
         # but these are needed for higher-order (curved) coordinate meshes.
         options = PETSc.Options()
-        options.setValue(f"meshproj_{self.mesh_instances}_petscspace_degree", self.degree)
-        options.setValue(f"meshproj_{self.mesh_instances}_petscdualspace_lagrange_continuity", True)
-        options.setValue(f"meshproj_{self.mesh_instances}_petscdualspace_lagrange_node_endpoints", False)
+        fe_prefix = f"meshproj_{self.mesh_instances}_"
+        fe_keys = {f"{fe_prefix}petscspace_degree": self.degree,
+                   f"{fe_prefix}petscdualspace_lagrange_continuity": True,
+                   f"{fe_prefix}petscdualspace_lagrange_node_endpoints": False}
+        for key, value in fe_keys.items():
+            options.setValue(key, value)
 
         self.petsc_fe = PETSc.FE().createDefault(
             self.dim,
             self.cdim,
             self.isSimplex,
             self.qdegree,
-            f"meshproj_{self.mesh_instances}_",
+            fe_prefix,
         )
+        # createDefault has read them; left in place they grew the global options
+        # database by three keys for every mesh ever built (#950)
+        for key in fe_keys:
+            options.delValue(key)
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -2754,8 +2939,14 @@ class Mesh(Stateful, uw_object):
             # dual space without proper point subspaces, causing
             # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
             # createCoordinateSpace builds the FE internally with correct
-            # subspace initialisation.
-            self.dm.createCoordinateSpace(self.degree, False, True)
+            # subspace initialisation. The coordinates are carried across by
+            # UW3's copy of PETSc's interpolator: PETSc's own projection of a
+            # degree >= 2 space cannot be assembled on a rank that holds cells
+            # but owns none of their nodes (#902).
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            petsc_dm_create_coordinate_space_within_plex(self.dm, self.degree)
 
             # Issue #96 fix: Force coordinate field creation and strip
             # boundary labels from the coordinate DM. createCoordinateSpace
@@ -4627,6 +4818,17 @@ class Mesh(Stateful, uw_object):
 
         Each entry represents a rigid rotation: v = omega x r.
 
+        The standard Stokes path reads these for ``petsc_use_nullspace``, and
+        rotated free slip takes its rotation modes from them (#906). A mesh
+        built without them (a gmsh import, a wrapped DM) declares its modes by
+        assignment, ``mesh.nullspace_rotations = [sympy.Matrix([-y, x])]``;
+        assigning ``[]`` declares that it has none. A mesh that does not declare
+        has its rotations detected: rotated free slip keeps those that satisfy the
+        discrete constraints. A declared mode is exempt from that test only while
+        every rotated wall's vertices are equidistant from the rotation's centre;
+        a deformed wall, such as a free surface, loses the exemption. Meshes
+        adapted or cut from a declaring mesh inherit its modes.
+
         Returns
         -------
         list of sympy.Matrix
@@ -4639,7 +4841,37 @@ class Mesh(Stateful, uw_object):
         >>> shell = uw.meshing.SphericalShell(...)
         >>> shell.nullspace_rotations   # 3 rotation matrices
         """
-        return self._nullspace_rotations
+        return list(self._nullspace_rotations or [])
+
+    def _inherit_rotation_modes(self, parent):
+        """Take ``parent``'s declared rotation modes, rewritten in this mesh's
+        coordinates (each mesh has its own coordinate symbols). A mesh derived from
+        it (adapted, cut, split, placed into) keeps its walls, and rotated free slip
+        checks at each solve that a mode still leaves every wall in place (#906)."""
+        modes = getattr(parent, "_nullspace_rotations", None)
+        if modes is not None:
+            to_self = dict(zip(parent.X, self.X))
+            modes = [sympy.Matrix(m).xreplace(to_self) for m in modes]
+        self._nullspace_rotations = modes
+
+    @nullspace_rotations.setter
+    def nullspace_rotations(self, modes):
+        modes = [sympy.Matrix(m) for m in modes]
+        coords = set(self.X)
+        for m in modes:
+            if len(m) != self.cdim:
+                raise ValueError(
+                    f"a rotation mode needs {self.cdim} components on this mesh, "
+                    f"got {len(m)}: {m.T}")
+            if not m.free_symbols <= coords:
+                raise ValueError(
+                    f"a rotation mode is a field of the mesh coordinates {tuple(self.X)} "
+                    f"only, got {m.T}")
+            if not _is_rigid_rotation(m, list(self.X)):
+                raise ValueError(f"a rotation mode is a rigid rotation, omega x (r - c): "
+                                 f"affine, with a nonzero antisymmetric gradient, and "
+                                 f"zero on its axis (a screw is not one), got {m.T}")
+        self._nullspace_rotations = modes
 
     @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
@@ -5729,24 +5961,29 @@ class Mesh(Stateful, uw_object):
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
+        """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
+        ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
+        (ghost nodes included).
+
+        The interpolation matrix comes from UW3's copy of PETSc's nested
+        interpolator, which assembles also on a rank that holds cells but owns
+        none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
         """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_interpolation_within_plex,
+        )
 
         dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
-        matInterp, vecScale = dmold.createInterpolation(dmnew)
+        matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
         coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
         dmnew.globalToLocal(coordsNewG, coordsNewL)
 
-        arr = coordsNewL.array
-        arrcopy = arr.reshape(-1, self.cdim).copy()
+        arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
@@ -5754,8 +5991,6 @@ class Mesh(Stateful, uw_object):
         # they accumulate until Python GC runs — noticeable in long adapt
         # loops that re-fill the coord cache per variable.
         matInterp.destroy()
-        if vecScale is not None:
-            vecScale.destroy()
         dmnew.destroy()
 
         return arrcopy
@@ -6387,7 +6622,7 @@ class Mesh(Stateful, uw_object):
         # cell set that does not exist.
         cStart, cEnd = self.dm.getHeightStratum(0)
         if cEnd == cStart:
-            return numpy.zeros(model_points.shape[0], dtype=bool)
+            return numpy.zeros(model_points.shape[0], dtype=bool), cells
 
         # Cd-1 surface mesh: no boundary-face control points exist
         # (see _mark_local_boundary_faces_inside_and_out). Per the
@@ -7027,10 +7262,17 @@ class Mesh(Stateful, uw_object):
         one finite positive value per local cell and is bit-identical across
         rank counts in every case. (The note also named ``DMPlexGetMinRadius``,
         which is a different call and is not used here.)
+
+        The FVM routine needs affine coordinates. On a coordinate field of higher
+        degree it reads the edge midpoints as corners and then fails, so there the
+        volume comes from integrating the coordinate map's Jacobian (#908).
         """
         from underworld3.cython import petsc_discretisation
 
-        radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+        if self.degree == 1:
+            radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+        else:
+            radii = petsc_discretisation.petsc_fem_get_local_cell_sizes(self)
 
         # The FVM centroids are discarded: `_get_coords_for_basis(0, False)` is
         # the degree-0 coordinate array the rest of the mesh indexes by cell,
@@ -7232,6 +7474,8 @@ class Mesh(Stateful, uw_object):
 
         return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
 
+    # TODO(BUG): MeshVariable is not imported in this module, so this method raises
+    # NameError when called.
     def meshVariable_mask_from_label(self, label_name, label_value):
         """Extract single label value and make a point mask - note: this produces a mask on the mesh points and
         assumes a 1st order mesh. Cell labels are not respected in this function."""
@@ -7984,6 +8228,7 @@ class Mesh(Stateful, uw_object):
         child._refine_dofs_coincide = False
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
+        child._inherit_rotation_modes(self)
         child._surface_info = info
         if getattr(self, "_embedded_surfaces", None):
             child._embedded_surfaces = set(self._embedded_surfaces)
@@ -9030,6 +9275,9 @@ class Mesh(Stateful, uw_object):
         # is that offset; each generation's map comes back from `to_dm`.
         _nested_Ps = []
         _nested_parent_cells = []
+        # per pass: whether a repair flipped a cell (a global count, so the same on
+        # every rank); no span through such a pass has a cell-parent map (#961)
+        _repaired_passes = []
         _vS0, _vE0 = base_finest.getDepthStratum(0)
         _coarse_vmap = {i: _vS0 + i for i in range(_vE0 - _vS0)}
 
@@ -9190,6 +9438,7 @@ class Mesh(Stateful, uw_object):
                     current_dm, n_flips = reconnect.flip_to_reduce_max_angle(
                         current_dm)
                     _nested_parent_cells.append(None)
+                    _repaired_passes.append(n_flips > 0)
                     if verbose:
                         uw.pprint(0, f"[adapt] edge_split pass {level}: repaired "
                                      f"with {n_flips} flip(s)")
@@ -9202,6 +9451,7 @@ class Mesh(Stateful, uw_object):
                     # parents from the composed vertex transfer instead
                     # of falling back to the geometric builder.
                     _nested_parent_cells.append(None)
+                    _repaired_passes.append(False)
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     _mg = Mesh(current_dm.clone(),
@@ -9381,6 +9631,7 @@ class Mesh(Stateful, uw_object):
         child._relationship_kind = "refinement"
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
+        child._inherit_rotation_modes(self)
         # Markers per refinement level (in each level's cell numbering) — the
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
@@ -9394,7 +9645,8 @@ class Mesh(Stateful, uw_object):
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
                 ratio=mg_coarsening_ratio, verbose=verbose,
                 resolution_hint=(_pct5_of_dm if engine == "edge_split"
-                                 else None))
+                                 else None),
+                repaired=_repaired_passes)
 
         # Exact per-generation prolongations when the engine could supply them
         # (cell-list path). Empty for the native transform path, which falls
@@ -9436,7 +9688,7 @@ class Mesh(Stateful, uw_object):
 
     def _subsample_mg_levels(self, base_finest, level_dms, nested_Ps,
                              nested_parent_cells, ratio=2.0, verbose=False,
-                             resolution_hint=None):
+                             resolution_hint=None, repaired=None):
         """Keep one multigrid level per DOUBLING OF RESOLUTION, not one per pass.
 
         A refinement engine takes as many passes as it needs to reach the size
@@ -9539,7 +9791,13 @@ class Mesh(Stateful, uw_object):
             recorded = (nested_parent_cells[i]
                         if i == start and i < len(nested_parent_cells)
                         else None)
-            if recorded is not None:
+            # A repair flips cells after the split, so a fine cell can straddle two
+            # coarse cells; the map is then dropped for the whole span, on every
+            # rank. Deriving it anyway found a parent wherever the local flips
+            # happened not to straddle, so ranks disagreed (#961).
+            if repaired is not None and any(repaired[start:i + 1]):
+                parent_cells.append(None)
+            elif recorded is not None:
                 parent_cells.append(recorded)
             elif composed[-1] is not None:
                 from underworld3.utilities.nvb import (
@@ -9651,6 +9909,11 @@ class Mesh(Stateful, uw_object):
                                 rg.setValue(c, region.value)
                 rgLabel_name = "_CellRegions_"
 
+        # TODO(BUG): after metricCreateIsotropic on a rank with no cells, the next
+        # dm.distribute hangs, with cells [8, 8, 0] and not with cells on every rank.
+        # A clone, createGlobalVector, a norm, a barrier and a new variable all pass.
+        # No PETSc we build adapts on more than one rank yet, so nothing reaches
+        # it. See issue #975.
         # Create the metric from the field
         hvec = metric_field._lvec
         metric_vec = self.dm.metricCreateIsotropic(hvec, metric_field.field_id)
@@ -9696,13 +9959,19 @@ class Mesh(Stateful, uw_object):
             boundaries=self.boundaries,
         )
 
-        # Transfer variable data from old mesh to new mesh via evaluate.
+        # Transfer variable data from old mesh to new mesh via global_evaluate.
         # The old variables are still on ``self`` (old DM). Evaluate each old
         # variable's symbol at the *new mesh's DOF coords for that variable's
         # degree/continuity*, not at the new mesh's vertex set. The vertex
         # set only matches degree-1 continuous variables; for degree>=2 or
         # discontinuous variables the DOF count differs and the resulting
         # array would not fit into ``new_var.data``.
+        #
+        # Every rank takes part whether or not it holds DOFs of the old
+        # variable. The new node coordinates and the evaluation are both
+        # collective, and a rank's new nodes need not lie in its old cells: it
+        # may have had no old cells at all, so each node has to be evaluated on
+        # whichever rank holds it (#909).
         #
         # Cache target coords by (degree, continuous) so meshes with many
         # variables of the same basis don't pay for repeated cloned
@@ -9711,22 +9980,40 @@ class Mesh(Stateful, uw_object):
         target_coords_cache = {}
 
         for var_name, old_var in old_vars_data.items():
+            if old_var._lvec is None:
+                continue
+            failure = None
             try:
-                if old_var._lvec is not None and old_var.data.size > 0:
-                    if verbose:
-                        print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
-                    basis_key = (old_var.degree, old_var.continuous)
-                    if basis_key not in target_coords_cache:
-                        target_coords_cache[basis_key] = (
-                            temp_mesh._get_coords_for_basis(*basis_key)
-                        )
-                    target_coords = target_coords_cache[basis_key]
-                    transferred_data[var_name] = uw.function.evaluate(
-                        old_var.sym, target_coords
+                if verbose:
+                    print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
+                basis_key = (old_var.degree, old_var.continuous)
+                if basis_key not in target_coords_cache:
+                    target_coords_cache[basis_key] = (
+                        temp_mesh._get_coords_for_basis(*basis_key)
                     )
+                target_coords = target_coords_cache[basis_key]
+                # TODO(BUG): global_evaluate extrapolates a few nodes at np 8 on strip
+                # partitions, with or without an empty rank and with no flag here:
+                # worst on the wall x = 0 at 2 to 8 cells per rank (5 of 138 nodes,
+                # error 3.6e-2 on a field with values up to 3), and at interior
+                # points up to 50 cells per rank (error 1.1e-2). See issue #976.
+                transferred_data[var_name] = uw.function.global_evaluate(
+                    old_var.sym, target_coords
+                )
             except Exception as e:
+                # Sanctioned swallow (verbose-only report): a variable that
+                # cannot be transferred comes back zeroed, which the reset path
+                # below reports, rather than losing the adaptation.
+                failure = e
                 if verbose:
                     print(f"[{uw.mpi.rank}] Warning: transfer of '{var_name}' failed: {e}", flush=True)
+
+            # Restoring a variable below is collective, so every rank has to make
+            # the same choice: a raise on any rank after the collectives above
+            # resets the variable on all of them. A raise on one rank BEFORE them
+            # still hangs its peers there, since this exchange is never reached.
+            if self._any_rank_failed(failure):
+                transferred_data.pop(var_name, None)
 
         del temp_mesh
 
@@ -9756,24 +10043,34 @@ class Mesh(Stateful, uw_object):
         for old_var in old_vars_data.values():
             self._destroy_variable_petsc_state(old_var)
 
+        from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+
         # Reinitialize MeshVariables on the new mesh
         # Note: Variables are reset to zero. Users should reinitialize with data.
         for var_name, old_var in old_vars_data.items():
             try:
                 self._reinit_variable_on_new_dm(old_var)
 
-                # Restore transferred data if available
+                # Restore transferred data if available. Packing is collective, so
+                # whether to pack is agreed first: laying out the values can fail
+                # where a rank has nodes and succeed where it has none.
                 if var_name in transferred_data:
+                    failure = None
                     try:
-                        data = transferred_data[var_name]
-                        # evaluate returns (N, a, b) shaped array; pack to (N, ncomp)
-                        data_flat = data.reshape(old_var.data.shape)
+                        data_flat = _evaluated_in_storage_layout(
+                            old_var, transferred_data[var_name])
+                    except Exception as e2:
+                        # Sanctioned swallow (verbose-only report): as for the
+                        # transfer above, the variable comes back zeroed.
+                        failure = e2
+
+                    if self._any_rank_failed(failure):
+                        if verbose:
+                            print(f"[{uw.mpi.rank}] Variable '{var_name}' reset (transfer failed: {failure})", flush=True)
+                    else:
                         old_var.pack_raw_data_to_petsc(data_flat, sync=True)
                         if verbose:
                             print(f"[{uw.mpi.rank}] Variable '{var_name}' transferred to adapted mesh", flush=True)
-                    except Exception as e2:
-                        if verbose:
-                            print(f"[{uw.mpi.rank}] Variable '{var_name}' reset (transfer failed: {e2})", flush=True)
                 else:
                     if verbose:
                         print(f"[{uw.mpi.rank}] Variable '{var_name}' reset on adapted mesh", flush=True)
@@ -10479,8 +10776,10 @@ def petsc_dm_find_labeled_points_local(
 
     label = dm.getLabel(label_name)
     if not label:
+        # no points: callers index coordinates with the result, and [0] would
+        # move vertex 0 (#903); the Cython copy of this lookup does the same
         print(f"{uw.mpi.rank} Label {label_name} is not present on the dm", flush=True)
-        return np.array([0])
+        return np.array([], dtype=np.int64)
 
     pointIS = dm.getStratumIS("depth", 0)
     edgeIS = dm.getStratumIS("depth", 1)

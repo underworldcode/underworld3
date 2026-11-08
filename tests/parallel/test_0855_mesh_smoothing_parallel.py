@@ -36,7 +36,7 @@ from scipy.spatial import cKDTree
 import underworld3 as uw
 from underworld3.meshing import smooth_mesh_interior
 
-from serial_reference import _MPI_ENV_PREFIXES
+from serial_reference import _child_env
 
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(120)]
@@ -254,7 +254,7 @@ def test_parallel_matches_serial_bit_identical():
     # launcher's variables are stripped first, or the child's MPI_Init tries to
     # join THIS mpirun's job and aborts on a descriptor it does not own.
     #
-    # The prefix list is shared with serial_reference rather than restated here:
+    # The scrub is serial_reference's (_child_env) rather than restated here:
     # a local copy that named only the Open MPI family passed on Open MPI and
     # failed under MPICH, whose variables are PMI_* (#675). One list, so a
     # launcher that is missing from it is missing everywhere and gets noticed.
@@ -262,10 +262,7 @@ def test_parallel_matches_serial_bit_identical():
     if rank == 0:
         tmpdir = tempfile.mkdtemp(prefix="winslow_ref_")
         ref_path = os.path.join(tmpdir, "ref.npz")
-        clean_env = {
-            k: v for k, v in os.environ.items()
-            if not k.startswith(_MPI_ENV_PREFIXES)
-        }
+        clean_env = _child_env(os.environ)
         proc = subprocess.run(
             [sys.executable, "-c",
              _SERIAL_REFERENCE_SCRIPT, ref_path],

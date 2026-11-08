@@ -277,10 +277,19 @@ to permit it.)
    update the star forest consistently (the known np>=3 line-cut issue;
    the independent-pass design is the template). Along-strike block
    cuts at seams are measured free (the k-ladder).
+   > [2026-11-03] Not for a zone-keyed patch: cut at rank boundaries (a TI
+   > band beside a split fault), its blocks took the velocity solve from 4
+   > iterations serially to 118 at np 2 and past 200 at np 4. The structural
+   > patch alone, cut the same way, took 67 iterations serially and 445 at
+   > np 16 (row 5, n_rungs 320). Both are now built from every rank's rows
+   > (#925, `test_1139`).
 2. **PCASM is rank-local.** Blocks become per-rank lists with local
    indices; faultless ranks carry `nsd = 0`, and every IS-building path
    must survive empty sets (the empty-stratum `getIndices()` SEGV
    family, #589).
+   > [2026-11-03] The finest level's blocks, a keyed zone's or the structural
+   > patch's, are per-rank lists of GLOBAL rows: each block goes whole to the
+   > rank owning most of its rows and may hold other ranks' rows (#925).
 3. **Pair detection must go collective or be replaced by zone keying.**
    Rank-local coordinate matching misses pairs that straddle a boundary
    and can false-match ghosts; the zone mask is rank-local by nature and

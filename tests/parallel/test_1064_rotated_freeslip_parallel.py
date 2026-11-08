@@ -83,20 +83,36 @@ _MESH_ANNULUS = [600, 2.356187202481425]       # Annulus(0.5, 1.0, cellSize=0.1)
 _MESH_ANNULUS_FMG = [2304, 2.356078287527854]  # cellSize=0.2, refined twice
 _MESH_SHELL = [1417, 3.4521585981151097]       # SphericalShell(0.55, 1.0, cs=0.25)
 _MESH_SHELL_INT = [2016, 3.4521585981151106]   # SphericalShellInternalBoundary
+# The same meshes as Linux's gmsh builds them, recorded on hyperion at np 2 with the
+# conda-forge stack CI uses (2026-11-06). The two shells are as development builds
+# them; flipping their walls to the convex hull (#946, PR #952) changes them, and a
+# skip then prints the fingerprint and values to add here.
+_MESH_ANNULUS_LINUX = [612, 2.3561872024814274]
+_MESH_SHELL_LINUX = [1395, 3.4516937511108763]
+_MESH_SHELL_INT_LINUX = [1991, 3.451693751110877]
 
 ANCHORS = {
     "box": {"fingerprint": _MESH_BOX24,
             "values": (1.275109036912e-03,)},
-    "annulus": {"fingerprint": _MESH_ANNULUS,
-                "values": (1.897011154231e-02, 4.563841e-05, 9.341699e-06)},
+    "annulus": [{"fingerprint": _MESH_ANNULUS,
+                 "values": (1.897011154231e-02, 4.563841e-05, 9.341699e-06)},
+                {"fingerprint": _MESH_ANNULUS_LINUX,
+                 "values": (1.897329151623739e-02, 4.560797713910508e-05,
+                            9.284873282001533e-06)}],
     "annulus_fmg": {"fingerprint": _MESH_ANNULUS_FMG,
                     "values": (1.906961759626e-02, 5.428193e-06, 1.177002e-06)},
-    "spherical3d": {"fingerprint": _MESH_SHELL,
-                    "values": (4.069689334228e-03,)},
-    "spherical3d_topo": {"fingerprint": _MESH_SHELL_INT,
-                         "values": (4.149689252074e-01, 3.952301937705e-01,
-                                    4.215939953379e-01, 7.932177563075e-01,
-                                    8.426041179682e-01, 7.762363224500e-01)},
+    "spherical3d": [{"fingerprint": _MESH_SHELL,
+                     "values": (4.069689334228e-03,)},
+                    {"fingerprint": _MESH_SHELL_LINUX,
+                     "values": (4.074314572473245e-03,)}],
+    "spherical3d_topo": [{"fingerprint": _MESH_SHELL_INT,
+                          "values": (4.149689252074e-01, 3.952301937705e-01,
+                                     4.215939953379e-01, 7.932177563075e-01,
+                                     8.426041179682e-01, 7.762363224500e-01)},
+                         {"fingerprint": _MESH_SHELL_INT_LINUX,
+                          "values": (4.2158909485453655e-01, 4.27759585549842e-01,
+                                     4.195180431394574e-01, 7.935572931031236e-01,
+                                     8.320331481510567e-01, 7.803487867461981e-01)}],
     "nonlinear": {"fingerprint": _MESH_BOX8,
                   "values": (8.069396188270e-04, 8)},
     "sigma": {"fingerprint": _MESH_BOX24,

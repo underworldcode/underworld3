@@ -838,7 +838,8 @@ overlap layer.
 The last row is the default now when a zone is keyed: `fac_zone` masks
 give the blocks, the structural split is off, the sub-solve is LU with a
 nonzero shift, the overlap one layer (`UW_FAC_MODE`, `UW_FAC_SUB_PC`,
-`UW_FAC_OVERLAP`, `UW_FAC_STRUCTURAL` remain as measurement knobs). One
+`UW_FAC_OVERLAP` remain as measurement knobs; `UW_FAC_STRUCTURAL`, listed here
+at the time, and `UW_FAC_COVER` were removed in 2026-11 by #921 and #918). One
 parallel trap on the way: the structural split's cover gate is a
 collective, and a rank with no band cells decided alone to take it while
 the others skipped it, a hang at np=4; the decision is now made from

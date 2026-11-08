@@ -97,3 +97,32 @@ def base_3d():
     return uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
         cellSize=0.2, regular=False, qdegree=2, refinement=1)
+
+
+def parents_contain_centroids(below, lev):
+    """Fetch each cell's parent on ``below`` by the CURRENT address that ``lev``
+    records (``lev._addon_parent``), and test that the cell's centroid lies inside
+    it. Returns the global count of cells NOT inside their parent."""
+    from mpi4py import MPI
+    from petsc4py import PETSc
+
+    from underworld3.utilities import addon_partition as ap
+    from underworld3.utilities.fault_mg import _barycentric, _cell_vertex_table
+
+    par = lev._addon_parent
+    vxy_b, cv_b = _cell_vertex_table(below)
+    nb = cv_b.shape[0]
+    verts = np.ascontiguousarray(vxy_b[cv_b].reshape(nb, -1))
+    sf = PETSc.SF().create(comm=PETSc.COMM_WORLD)
+    sf.setGraph(nb, None, np.ascontiguousarray(par, dtype=np.int32))
+    sf.setUp()
+    got = np.zeros((par.shape[0], verts.shape[1]))
+    unit = MPI.DOUBLE.Create_contiguous(verts.shape[1])
+    unit.Commit()
+    sf.bcastBegin(unit, verts, got, MPI.REPLACE)
+    sf.bcastEnd(unit, verts, got, MPI.REPLACE)
+    unit.Free()
+    sf.destroy()
+    fcent, _v, _c = ap._cell_centroids(lev)
+    lam = _barycentric(fcent, got.reshape(par.shape[0], cv_b.shape[1], -1))
+    return uw.mpi.comm.allreduce(int((lam.min(axis=1) < -1e-9).sum()))

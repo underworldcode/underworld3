@@ -1,8 +1,9 @@
 """Project or prolong MeshVariable data to a different polynomial degree.
 
-Uses a scratch PETSc DM with ``createInterpolation`` — no MeshVariable
-is created, the mesh DM is never modified, and all scratch objects are
-destroyed before returning.
+Uses a scratch PETSc DM and the interpolation matrix between it and the
+variable's sub-DM (UW3's copy of PETSc's ``createInterpolation``, #902) — no
+MeshVariable is created, the mesh DM is never modified, and all scratch
+objects are destroyed before returning.
 
 Typical use cases
 -----------------
@@ -57,6 +58,10 @@ def project_to_degree(
 
     For ``target_degree == mesh_var.degree`` the interpolation matrix is
     the identity and the result matches the source data exactly.
+
+    A discontinuous source projected to a continuous target takes, at a node
+    shared by several cells, the unweighted mean of those cells' values there
+    (#905).
     """
 
     mesh = mesh_var.mesh
@@ -81,9 +86,30 @@ def project_to_degree(
     iset, subdm_src = mesh.dm.createSubDM(mesh_var.field_id)
 
     # --- interpolation matrix ---
-    # PETSc: source_subdm.createInterpolation(target_dm) returns a matrix
-    # whose mult() maps source global vec → target global vec.
-    interp, _scale = subdm_src.createInterpolation(dm_scratch)
+    # Its mult() maps source global vec → target global vec. UW3's copy of
+    # PETSc's nested interpolator: PETSc's own (createInterpolation) cannot be
+    # assembled on a rank that holds cells but owns none of their DOFs (#902).
+    from underworld3.cython.petsc_discretisation import (
+        petsc_dm_create_interpolation_within_plex,
+    )
+    interp = petsc_dm_create_interpolation_within_plex(subdm_src, dm_scratch)
+
+    # A discontinuous source gives a target node shared by k cells one copy of
+    # each cell's interpolant, in different source columns, so its row sums to k
+    # and the node took the sum of the cells' values (2 to 7 times the value at
+    # P1 vertices, #905). Each cell's rows sum to 1, so dividing every row by its
+    # sum averages the cells instead. A continuous source's rows already sum to 1
+    # and are left exactly as they are, and so is a discontinuous target, whose
+    # nodes each lie in one cell (scaling would move a DG-to-DG projection in the
+    # last bit).
+    if not mesh_var.continuous and continuous:
+        row_sums = interp.createVecLeft()
+        interp.getRowSum(row_sums)
+        sums = row_sums.getArray()
+        sums[...] = np.where(sums != 0.0, 1.0 / np.where(sums != 0.0, sums, 1.0), 1.0)
+        row_sums.setArray(sums)
+        interp.diagonalScale(L=row_sums)
+        row_sums.destroy()
 
     # --- apply ---
     g_src = subdm_src.createGlobalVec()
@@ -103,8 +129,6 @@ def project_to_degree(
     # --- cleanup ---
     for obj in (interp, g_src, g_dst, dm_scratch, fe_target, subdm_src, iset):
         obj.destroy()
-    if _scale is not None:
-        _scale.destroy()
 
     return result
 

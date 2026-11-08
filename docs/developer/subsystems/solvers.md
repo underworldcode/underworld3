@@ -596,14 +596,22 @@ comment warning against changing it, while never once taking effect (measured: t
 live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
 ```
 
-### The one legitimate per-route difference
+### The coarse solve: one rule on every route
 
-The coarse solve. The Galerkin-coarsened **rotated** velocity block inherits the
-rigid-rotation null space of the constrained problem (a closed circle: one mode;
-a spherical shell: three), and `redundant`/LU hits a zero pivot there —
-`SUBPC_ERROR`, outer reason −11. So the rotated route asks for
-`geometric_mg_bundle(coarse="svd")`, which is null-space robust and cheap on a
-small coarse level. This is a named variant of the shared bundle, not a
+The native, custom-P and rotated routes all factor the coarse level with the
+shared bundle's redundant LU and its nonzero factor shift, which acts only on a
+pivot below PETSc's zero-pivot tolerance. The coarse level reads the shift from
+the options database at its set-up (`PCSetUp_Redundant`), so the bundle is its
+only writer on every route. One difference remains: the rotated route writes its
+bundle under a prefix unique to the solve and drops it after set-up, so a user's
+`petsc_options` override of the coarse solve reaches the native and standard
+routes only. A null space is fixed on the fine operator,
+never by the coarse solve: the Galerkin-coarsened rotated block inherits the
+rigid rotations the constraint leaves only nearly, and is near-singular, not
+singular, on every hierarchy measured (#901).
+
+`coarse="gamg"` is a distributed coarse solve, only when asked for, for a bottom
+level too large to gather. It is a named variant of the shared bundle, not a
 call-site override, so it is visible in the same place as everything else.
 
 The other native/custom-P asymmetry — that native FMG is unusable for
