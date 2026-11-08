@@ -84,6 +84,9 @@ def globs_run_by(script):
       does not care which one it is.
     * ``"${PYTEST[@]}" tests/...`` — the runner is a bash array.
     * ``$PYTEST tests/...`` — in case a plain one is left behind.
+
+    Returns ``(pattern, dropped)`` pairs: ``dropped`` holds the files that line
+    removes again with a whole-file ``--deselect``.
     """
     text = script.read_text().replace("\\\n", " ")
     patterns = set()
@@ -91,14 +94,19 @@ def globs_run_by(script):
         if line.lstrip().startswith("#"):
             continue
         if re.search(r"\$\{?PYTEST", line) or re.match(r"\s*batch\s+\d+\s", line):
-            patterns.update(re.findall(r"tests/[A-Za-z0-9_\[\]*.\-]+", line))
+            # A whole-file --deselect (node id relative to tests/, the rootdir) takes
+            # that file back out of THIS line's globs.
+            dropped = frozenset(re.findall(r"--deselect[= ]([^\s:\"']+)(?=\s|$)", line))
+            for pattern in re.findall(r"tests/[A-Za-z0-9_\[\]*.\-]+", line):
+                patterns.add((pattern, dropped))
     return patterns
 
 
 def main():
     covered = set()
-    for pattern in globs_run_by(REPO / "scripts" / "test.sh"):
-        covered.update(glob.glob(str(REPO / pattern)))
+    for pattern, dropped in globs_run_by(REPO / "scripts" / "test.sh"):
+        gone = {str(REPO / "tests" / d) for d in dropped}
+        covered.update(set(glob.glob(str(REPO / pattern))) - gone)
     covered = {Path(p).name for p in covered}
 
     every = {p.name for p in (REPO / "tests").glob("test_*.py")}
