@@ -76,6 +76,15 @@ def _warn_if_ksp_diverged(ksp, kind):
                f"proceeding with the last iterate.")
 
 
+def _hard_linear_failure(ksp):
+    """True when an outer rotated linear solve failed hard: a preconditioner
+    that failed, a breakdown, a NaN, a residual that grew. The iteration cap
+    (-3, petsc4py's DIVERGED_MAX_IT) is not one: it leaves an increment the line
+    search can still use. The reason is a global quantity of the KSP."""
+    reason = int(ksp.getConvergedReason())
+    return reason < 0 and reason != -3
+
+
 # --------------------------------------------------------------------------- #
 #  Rotation construction
 # --------------------------------------------------------------------------- #
@@ -83,7 +92,18 @@ def _warn_if_ksp_diverged(ksp, kind):
 # PETSc section field ids of the Stokes saddle unknowns (fixed by the solver's
 # DM field registration order: velocity first, pressure second).
 _VELOCITY_FIELD = 0
+
+#: Boundary spec name for the tangency constraint of a sheet on a manifold:
+#: ``(SHEET_TANGENCY, normal)`` in ``solver._rotated_freeslip_bcs`` constrains
+#: ``u . n = 0`` at EVERY velocity node, with the analytic surface normal, so a
+#: velocity carried in the embedding space stays in the tangent plane.
+SHEET_TANGENCY = "__sheet_tangency__"
 _PRESSURE_FIELD = 1
+
+# A rigid rotation counts as an EXACT null mode of the constrained problem when
+# its relative violation of the rotated v_n = 0 rows, and of the operator, is
+# below this.
+_ROTATION_MODE_TOL = 1e-8
 
 
 def _boundary_spec(spec):
@@ -102,6 +122,67 @@ def _point_coord(dm, dim, cvec, csec, v0, v1, q):
     clo = dm.getTransitiveClosure(q)[0]
     verts = [int(c) for c in clo if v0 <= c < v1]
     return np.mean([cvec[csec.getOffset(v) // dim] for v in verts], axis=0)
+
+
+def _normal_source(solver, normal, boundary):
+    """``(sym_fn, const_normal)`` for an analytic / constant normal spec: a
+    lambdified numpy callable of ``mesh.X`` for a sympy normal (unwrapped first,
+    so a curvilinear ``unit_e_0`` reduces to mesh coordinates), or the constant
+    vector; ``(None, None)`` for the geometric facet normal."""
+    cdim = solver.mesh.cdim
+    if normal is None:
+        return None, None
+    if isinstance(normal, sympy.Matrix):
+        from underworld3.function.expressions import unwrap
+        comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
+                                      return_self=False))
+                 for k in range(cdim)]
+        stray = set().union(*[c.free_symbols for c in comps]) \
+            - set(solver.mesh.X)
+        if stray:
+            raise ValueError(
+                f"analytic normal for boundary '{boundary}' contains "
+                f"symbols {sorted(map(str, stray))} that are not mesh "
+                "coordinates — express it in mesh.X (e.g. radial X/|X|).")
+        return sympy.lambdify(list(solver.mesh.X), comps, "numpy"), None
+    return None, np.asarray(normal, dtype=float).ravel()
+
+
+def _manifold_velocity_nodes(solver, normal):
+    """Every DMPlex point carrying velocity DOFs, each with the analytic unit
+    normal of the surface at its coordinate — the sheet-tangency constraint of
+    a velocity carried in the embedding space of a manifold mesh. The normal is
+    a function of the node coordinate, so every rank computes the same value
+    and nothing is reduced."""
+    if normal is None:
+        raise ValueError(
+            "the sheet-tangency constraint needs the analytic surface normal "
+            "(e.g. mesh.CoordinateSystem.unit_e_0 on a sphere); a manifold has "
+            "no facet normal to fall back on.")
+    dm = solver.dm
+    cdim = solver.mesh.cdim
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    v0, v1 = dm.getDepthStratum(0)
+    lsec = dm.getLocalSection()
+    sym_fn, const_normal = _normal_source(solver, normal, SHEET_TANGENCY)
+    pStart, pEnd = lsec.getChart()
+    nodes = []
+    for q in range(pStart, pEnd):
+        if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
+            continue
+        x = (_point_coord(dm, cdim, cvec, csec, v0, v1, q)
+             if sym_fn is not None else None)
+        nodes.append((q, _unit_normal(sym_fn, const_normal, x)))
+    return nodes
+
+
+def _unit_normal(sym_fn, const_normal, x):
+    """The analytic normal ``sym_fn`` at ``x``, or the constant one, to unit length
+    (``sym_fn, const_normal`` from :func:`_normal_source`)."""
+    ne = (np.asarray(sym_fn(*x), dtype=float).ravel() if sym_fn is not None
+          else np.array(const_normal, dtype=float).ravel())
+    return ne / (np.linalg.norm(ne) + 1e-30)
 
 
 def _boundary_velocity_nodes(solver, boundary, normal=None):
@@ -171,22 +252,25 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     every rank ends with a bit-identical normal at a shared node. The reduction is
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
 
-    The analytic-normal path is NOT reduced: it evaluates a function of the node
-    coordinate, so every rank already computes the same value and summing copies would
-    only rescale it (and by a rank-count-dependent factor).
+    The analytic-normal path does not sum the normal: it is a function of the node
+    coordinate, evaluated once per node after the node set is complete, so every rank
+    holding the node computes the same value to the bit. It does complete the node SET
+    across ranks, summing a marker by the same scatter: a rank can own a node whose
+    labelled facets all sit on neighbours, and that node would otherwise get no
+    constraint row (#935). Both paths are therefore collective.
     """
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
     lsec = dm.getLocalSection()
     # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
     # not survive mesh adaptation); raises a clear error for an unknown boundary name.
-    # In parallel a rank may own NO part of this boundary → a null IS; guard and return
-    # no local nodes (calling getIndices() on a null IS would segfault).
-    # A rank owning no part of this boundary gets a null/empty IS and contributes
-    # nothing — but it must NOT return early: the cross-rank sum below is collective.
+    # In parallel a rank may hold NO facet of this boundary → a null IS; guard it
+    # (calling getIndices() on a null IS would segfault). Such a rank contributes
+    # nothing but must NOT return early: the cross-rank sum below is collective, and
+    # it can still return nodes, ones it owns whose facets sit on neighbours (#935).
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     facets = ([int(z) for z in sis.getIndices()]
               if (sis and sis.getSize() > 0) else [])
@@ -203,31 +287,16 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     # whose UWexpressions hide the Cartesian coordinates behind ``r`` etc.) reduces
     # to pure mesh.X before lambdify — otherwise the generated function references
     # the curvilinear symbol by bare name and dies with a NameError at call time.
-    sym_fn = None
-    const_normal = None
-    if normal is not None:
-        if isinstance(normal, sympy.Matrix):
-            from underworld3.function.expressions import unwrap
-            comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
-                                          return_self=False))
-                     for k in range(dim)]
-            stray = set().union(*[c.free_symbols for c in comps]) \
-                - set(solver.mesh.X)
-            if stray:
-                raise ValueError(
-                    f"analytic normal for boundary '{boundary}' contains "
-                    f"symbols {sorted(map(str, stray))} that are not mesh "
-                    "coordinates — express it in mesh.X (e.g. radial X/|X|).")
-            sym_fn = sympy.lambdify(list(solver.mesh.X), comps, "numpy")
-        else:
-            const_normal = np.asarray(normal, dtype=float).ravel()
+    sym_fn, const_normal = _normal_source(solver, normal, boundary)
 
-    nacc = {}                                    # velocity node → Σ_f measure · n̂_f
+    # velocity node → Σ_f measure · n̂_f (geometric), or a marker per facet (analytic,
+    # whose normal does not come from the facet)
+    nacc = {}
+    marker = np.ones(dim)
     for f in facets:
         if not (fS <= f < fE):
             continue
-        # facet outward normal, and the measure the boundary term is integrated over
-        # (1.0 on the analytic path, whose normal does not come from the facet).
+        # facet outward normal, and the measure the boundary term is integrated over.
         #
         # The orientation rule lives in ONE place, `facet_measure_and_normal`:
         # outward = away from the one cell this boundary facet belongs to, which is
@@ -244,36 +313,38 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         # exactly as given and is NOT reoriented, so ``X/|X|`` on an inner arc points
         # into the domain and disagrees in sign with the default — see "Which normal
         # to use" in ``docs/developer/subsystems/rotated-freeslip.md``.
-        wgt = 1.0
         if normal is None:
             vol, ne, _exterior = facet_measure_and_normal(dm, f)
-            wgt = vol
+            contribution = vol * ne
+        else:
+            contribution = marker
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
                 continue
-            if normal is not None:
-                if sym_fn is not None:
-                    cq = coord(q)
-                    ne = np.asarray(sym_fn(*cq), dtype=float).ravel()
-                else:
-                    ne = const_normal.copy()
-                ne = ne / (np.linalg.norm(ne) + 1e-30)
-            nacc[q] = nacc.get(q, np.zeros(dim)) + wgt * ne
+            nacc[q] = nacc.get(q, np.zeros(dim)) + contribution
 
-    if normal is None:
-        nacc = _sum_facet_normals_across_ranks(solver, nacc)
+    # The geometric sum, or the analytic path's node set, completed across ranks: a
+    # rank can own a node whose labelled facets all sit on neighbours, and without
+    # it the node gets no constraint row (#935). The analytic normal is then taken
+    # once per node, so every rank holding the node computes the same value.
+    nacc = _sum_node_vectors_across_ranks(solver, nacc)
+    if normal is not None:
+        nacc = {q: _unit_normal(sym_fn, const_normal,
+                                coord(q) if sym_fn is not None else None)
+                for q in nacc}
 
     return [(q, v / (np.linalg.norm(v) + 1e-30))
             for q, v in sorted(nacc.items())
             if np.linalg.norm(v) > 0.0]
 
 
-def _sum_facet_normals_across_ranks(solver, contribs):
-    """Complete the per-node facet sum across ranks: ``{point: Σ_f |f| n̂_f}`` restricted
-    to this rank's facets in, the sum over EVERY rank's facets out — the same value on
-    every rank that holds the node.
+def _sum_node_vectors_across_ranks(solver, contribs):
+    """Complete a per-node sum over boundary facets across ranks: ``{point: vector}``
+    restricted to this rank's facets in, the sum over EVERY rank's facets out — the same
+    value on every rank that holds the node. The geometric normal sums
+    ``Σ_f |f| n̂_f``; the analytic normal sums a marker, to complete its node set.
 
     Each boundary facet is labelled on exactly one rank, and on the rank that owns it
     (measured: no facet is labelled twice and none is labelled away from its owner), so
@@ -285,7 +356,7 @@ def _sum_facet_normals_across_ranks(solver, contribs):
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
     """
     dm = solver.dm
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     if dm.comm.getSize() == 1:
         return contribs
 
@@ -314,15 +385,17 @@ def _sum_facet_normals_across_ranks(solver, contribs):
                 out[q] = w
             elif q in contribs:
                 # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) come back zero. Keep this rank's own
-                # contribution so the node set is exactly what it always was.
-                # build_rotation drops these nodes (l2g < 0); boundary_normal_traction
-                # does NOT — it reads n̂·r_c at every returned node — so on such a node
-                # it reports the reaction of the ESSENTIAL constraint along a
-                # rank-locally accumulated normal. That was true before this change
-                # too, and the nodes are the corners where a rotated wall meets an
-                # essential one (measured: 2 of 75 on the test_1070 configuration, at
-                # every rank count, and never shared between ranks there).
+                # BC meeting this boundary) are not written back: they keep this
+                # rank's own contribution, which the first branch already takes, so
+                # this one is reached only by a node whose sum is zero in every
+                # component. build_rotation builds a reduced frame on a node's free
+                # components and skips a fully constrained node; the traction
+                # readers read zero at a constrained component, so an essential
+                # wall's components contribute nothing to σ_nn (#936). The nodes are
+                # the corners where a rotated wall meets an essential one (measured:
+                # 2 of 75 on the test_1070 configuration). A marker (the analytic
+                # path) loses only the constrained components, so where one component
+                # is free such a node is kept on every rank that holds it.
                 out[q] = contribs[q]
         return out
     finally:
@@ -344,7 +417,7 @@ def _local_boundary_candidates(dm, lsec):
     measured they are 13-27% of what this returns. The caller is what makes the result
     correct — those points receive no contribution from any labelled facet, so their
     summed normal is exactly zero and the ``w.any()`` test in
-    :func:`_sum_facet_normals_across_ranks` drops them. That test is load-bearing, not
+    :func:`_sum_node_vectors_across_ranks` drops them. That test is load-bearing, not
     an aside; do not remove it while over-collecting here.
     """
     fS, fE = dm.getHeightStratum(1)
@@ -381,24 +454,50 @@ def build_rotation(solver, boundaries, datum_specs=None):
     dm = solver.dm
     lsec = dm.getLocalSection()
     l2g = dm.getLGMap()
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
 
     # gather all normals per velocity node across the boundaries (and, per node, the
     # datum of the boundary it came from — the surface's ũ_n for a prescribed-normal
     # solve; None for free-slip).
     node_normals = {}
     node_dspec = {}
+    node_specs = {}
     for spec in boundaries:
         name, normal = _boundary_spec(spec)
         dspec = None if datum_specs is None else datum_specs.get(name)
-        for q, nrm in _boundary_velocity_nodes(solver, name, normal=normal):
+        nodes = (_manifold_velocity_nodes(solver, normal) if name == SHEET_TANGENCY
+                 else _boundary_velocity_nodes(solver, name, normal=normal))
+        for q, nrm in nodes:
             node_normals.setdefault(q, []).append(nrm)
+            node_specs.setdefault(q, set()).add(name)
             if dspec is not None:
                 node_dspec.setdefault(q, dspec)
 
     # Split-fault contact pairs (fault_contact.add_frictionless_fault_bc):
     # their 2·dim mean/jump blocks widen the widest row of Q.
     fault_names = getattr(solver, "_fault_contact_faults", [])
+    # On a surface mesh every node carries the sheet-tangency constraint; a
+    # paired fault node takes it through its PAIR block instead (the mean and
+    # jump rows along the surface normal), so it leaves the wall-block set.
+    manifold = solver.mesh.dim < solver.mesh.cdim
+    pair_nodes_by_fault = {}
+    if fault_names and manifold:
+        from underworld3.utilities import fault_contact
+        # the pairing fails rank-locally (a label mismatch, a vanishing analytic
+        # normal); the verdict is exchanged before any rank goes on to the
+        # collective Q assembly, as in the pair-block assembly below
+        problem = None
+        try:
+            for fname in fault_names:
+                pair_nodes_by_fault[fname] = fault_contact._fault_pair_nodes(solver, fname)
+        except (RuntimeError, ValueError) as err:
+            problem = str(err)
+        fault_contact._collective_raise(problem)
+        for fname in fault_names:
+            for q_plus, q_minus, _nrm in pair_nodes_by_fault[fname]:
+                for q in (q_plus, q_minus):
+                    if q in node_normals and node_specs[q] <= {SHEET_TANGENCY}:
+                        del node_normals[q]
 
     # Distributed Q with the assembled operator's ROW layout. Q is identity except a
     # per-node dim×dim orthonormal block; because a node's dim velocity components
@@ -408,7 +507,14 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # rows fall outside [rstart, rend)). A fault PAIR block spans two points, but
     # both are rank-local (a seam-touching fault is redistributed onto one rank
     # before the split), so the diagonal-portion argument carries over unchanged.
+    # The row layout comes from the solver's Jacobian. _build() leaves the SNES
+    # set up only on some paths (with essential conditions registered it is;
+    # without them the matrix is never created), so set it up here rather than
+    # read a null matrix — that was a segmentation fault (test_1085).
     A = solver.snes.getJacobian()[0]
+    if A is None or A.handle == 0:
+        solver.snes.setUp()
+        A = solver.snes.getJacobian()[0]
     rstart, rend = A.getOwnershipRange()
     nloc = rend - rstart
     N = A.getSize()[0]
@@ -500,6 +606,23 @@ def build_rotation(solver, boundaries, datum_specs=None):
     if fault_names:
         from underworld3.utilities import fault_contact
         s2 = 1.0 / np.sqrt(2.0)
+        # A sheet moving along its normal (the datum of SHEET_TANGENCY): a pair
+        # node takes the tangency through its pair block, so the MEAN row along
+        # the surface normal carries the datum there, (v+ + v-)/sqrt2 . e = sqrt2 w
+        # with e the frame's surface-normal vector (sign against the analytic
+        # normal); the jump row stays at 0. Without this the fault nodes stood
+        # still while the sheet breathed (measured: a datum error of 0.018 against
+        # an amplitude of 0.1, and spurious stress along the trace).
+        sheet_dspec = None if datum_specs is None else datum_specs.get(SHEET_TANGENCY)
+        sheet_normal_fn = None
+        if manifold and sheet_dspec is not None:
+            for spec in boundaries:
+                name_s, normal_s = _boundary_spec(spec)
+                if name_s == SHEET_TANGENCY:
+                    sheet_normal_fn, sheet_normal_const = _normal_source(solver, normal_s, SHEET_TANGENCY)
+            pcsec = dm.getCoordinateSection()
+            pcvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+            pv0, pv1 = dm.getDepthStratum(0)
         # Rank-local failures in this block (a pairing/label mismatch or a
         # vanishing analytic normal inside _fault_pair_nodes, a fault node
         # shared with a wall boundary, a pair straddling ranks) must not
@@ -510,8 +633,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
         problem = None
         try:
             for fname in fault_names:
-                for q_plus, q_minus, nrm in fault_contact._fault_pair_nodes(
-                        solver, fname):
+                pairs = (pair_nodes_by_fault[fname] if fname in pair_nodes_by_fault
+                         else fault_contact._fault_pair_nodes(solver, fname))
+                for q_plus, q_minus, nrm in pairs:
                     if q_plus in node_normals or q_minus in node_normals:
                         raise ValueError(
                             f"fault {fname!r} shares a node with a rotated "
@@ -523,7 +647,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
                     # specific in-plane directions carry no physics: both
                     # slip rows are free (frictionless) or enter through
                     # |V| (laws).
-                    frame = [nrm] + fault_contact._tangent_frame(nrm)
+                    frame = fault_contact._pair_frame(solver, q_plus, nrm)
                     gp, gm = [], []
                     for q, rows in ((q_plus, gp), (q_minus, gm)):
                         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
@@ -552,6 +676,18 @@ def build_rotation(solver, boundaries, datum_specs=None):
                                 Q.setValue(row, gm[j],
                                            sgn * s2 * float(e[j]))
                     normal_rows.append(gm[0])      # [v]·n̂ = 0, datum 0
+                    if manifold:
+                        # both sides tangent to the surface: the jump and the
+                        # mean along the surface normal (the frame's last
+                        # vector) are pinned; the slip row stays free
+                        normal_rows.append(gm[2])
+                        normal_rows.append(gp[2])
+                        if sheet_dspec is not None:
+                            xq = _point_coord(dm, dim, pcvec, pcsec, pv0, pv1, q_plus)
+                            ne = _unit_normal(sheet_normal_fn, sheet_normal_const, xq)
+                            sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
+                            # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
+                            datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
         except (RuntimeError, ValueError) as err:
             problem = str(err)
         fault_contact._collective_raise(problem)
@@ -743,16 +879,18 @@ def _operator_constants_signature(solver):
 def _rotated_geometry_signature(solver, boundaries):
     """Signature of everything the GEOMETRY tier of the workspace was built
     from: the boundary specs (name + normal), the fault-contact registration
-    (names + analytic-normal overrides) and the DM identity. All entries are
-    registration state, identical across ranks."""
+    (names + analytic-normal overrides), the mesh's declared rotation modes (#906)
+    and the DM identity. All entries are registration state, identical across
+    ranks."""
     dm = solver.dm
+    sig_declared = repr(getattr(solver.mesh, "_nullspace_rotations", None))
     sig_boundaries = tuple((name, repr(normal))
                            for name, normal in map(_boundary_spec, boundaries))
     sig_faults = tuple(getattr(solver, "_fault_contact_faults", []) or [])
     sig_fault_normals = repr(sorted(
         (k, repr(v))
         for k, v in getattr(solver, "_fault_normal_overrides", {}).items()))
-    return (sig_boundaries, sig_faults, sig_fault_normals,
+    return (sig_boundaries, sig_faults, sig_fault_normals, sig_declared,
             dm.handle if dm is not None else 0)
 
 
@@ -779,6 +917,7 @@ def _destroy_rotated_linear_cache(cache):
 # the point of use.
 _SNES_CONVERGED_FNORM_RELATIVE = 2
 _SNES_CONVERGED_SNORM_RELATIVE = 4
+_SNES_DIVERGED_LINEAR_SOLVE = -3
 _SNES_DIVERGED_MAX_IT = -5
 _SNES_DIVERGED_LINE_SEARCH = -6
 
@@ -823,14 +962,30 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
     # gauge mode, and until this was recorded there was no way to see which of
     # them admitted what.
     gauge = {"offered": 0, "modes": [], "orthonormal": 0, "removed": False,
-             "requested": bool(remove_rotation_gauge)}
+             "requested": bool(remove_rotation_gauge), "declared": None}
     if remove_rotation_gauge:
         live = []
-        for tg in _rigid_rotation_modes(solver):
+        flags, _note = _declared_mode_flags(solver)
+        gauge["declared"] = _rotations_declared(solver.mesh)
+        gauge["exempt"] = flags
+        # the direct-LU route builds no null space, so its verdict on the declared
+        # modes is this one
+        if gauge["declared"] and getattr(solver, "_rotated_declared_modes_exempt", None) is None:
+            solver._rotated_declared_modes_exempt = list(flags)
+        for tg, declared in zip(_rigid_rotation_modes(solver), flags):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
-                                           report=gauge["modes"]):
-                live.append(tg.copy())          # owned copy — pool vec goes back below
+                                           report=gauge["modes"], declared=declared):
+                if declared:
+                    # the constraint-compatible mode: v_n = 0 stays exact when
+                    # it is projected out of U (#906)
+                    tr = _rotated_compatible(Q, tg, normal_rows)
+                    m = tg.duplicate()
+                    Q.multTranspose(tr, m)
+                    tr.destroy()
+                    live.append(m)
+                else:
+                    live.append(tg.copy())      # owned copy — pool vec goes back below
             dm.restoreGlobalVec(tg)
         ortho = []
         for w in live:
@@ -910,7 +1065,8 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
     and replaced by the accepted iterate. Returns ``(u, improved)``; ``improved``
     is False when no step reduced the residual below ``rnorm`` — the iteration has
     stalled (typically because it is already at the solution) and the caller should
-    stop rather than accept a non-decreasing step."""
+    stop rather than accept a non-decreasing step. Also returns the accepted step
+    length ``alpha`` (0.0 on a stall), which the loop records per increment."""
     alpha = 1.0
     for _ls in range(max_halvings):
         utry = u.copy()
@@ -921,10 +1077,10 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
         Ftry.destroy()
         if fnorm < rnorm:
             u.destroy()
-            return utry, True
+            return utry, True, alpha
         utry.destroy()
         alpha *= 0.5
-    return u, False
+    return u, False, 0.0
 
 
 def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
@@ -1002,7 +1158,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"reaction"`` — the converged Cartesian residual F(u), stashed as the
           constraint reaction for σ_nn recovery (for a linear residual this equals
           the assembled ``A·u − b`` exactly);
-        * ``"U"`` — the Cartesian solution;
+        * ``"U"`` — the Cartesian solution (the zero guess when ``"linear_failure"``
+          is set);
+        * ``"linear_failure"`` — ``None``, or the message the caller raises: a
+          cold start whose first linear solve failed, with no opt-out (#907). The
+          fields are then not written, and ``"rotation_gauge"`` is ``None``;
         * ``"normal_rows"`` — global rows of the constrained normal components;
         * ``"boundaries"`` — the boundary specs the rotation was built from;
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
@@ -1018,6 +1178,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
           (feed the solve report);
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
+        * ``"continuation_switch_iteration"`` — the iteration it fired at (``None``
+          if it did not);
         * ``"rotation_reused"`` — the GEOMETRY tier (Q/Qt/constrained rows/
           prolongation) came from the cross-solve cache;
         * ``"workspace_reused"`` — the iteration-0 operator fast path fired
@@ -1027,7 +1189,20 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ``force_operator_refresh=True`` disables the iteration-0 fast path for this
     solve (used by ``time=`` solves: the DM time reaches the kernels through
     ``petsc_t``, which no state counter or constants value can see).
+
+    ``max_it`` caps the Newton increments; the solver passes a user-set
+    ``snes_max_it``, else 50 (#920). The pass after the last increment only
+    measures the residual, so a solve that converges in ``max_it`` reports
+    converged, and ``max_it=0`` is one residual evaluation (a cold datum lift
+    is then not applied). A negative cap carries PETSc's meaning: -3
+    (``PETSC_UNLIMITED``) lifts the cap to PETSc's function-count limit of
+    10000, and -1 and -2 are the default of 50.
+    Staged Picard steps count against the cap, unlike the standard path's
+    warm-up.
     """
+    # this solve's verdict on the declared modes: from the null space it builds, or from
+    # the cached one it reuses; None until either is known
+    solver._rotated_declared_modes_exempt = None
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
         solver._setup_discretisation()
@@ -1050,6 +1225,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     solver._update_constants(record=False)
     if rtol is None:
         rtol = float(solver.tolerance)
+    # A negative cap carries PETSc's meaning. PETSC_UNLIMITED lifts the cap;
+    # PETSc still stops at its function-count limit (snes_max_funcs, 10000),
+    # and this loop evaluates one residual per increment, so it stops there
+    # too. PETSC_DETERMINE and PETSC_CURRENT are the default of 50 (PETSc
+    # refuses anything lower when it reads the option).
+    if max_it == PETSc.UNLIMITED:
+        max_it = 10000
+    elif max_it < 0:
+        max_it = 50
 
     # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
     # staged α=0 → α=1 solve. Under the consistent tangent (the default) an explicit
@@ -1100,7 +1284,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # defined as unreachable. Measured before this was hoisted: the velocity
     # residual reached 6e-12 at the first increment and the remaining |F̂| was
     # the pinned DOF alone, bit-identical for eight further no-op iterations.
-    lu_pin = _naive_pressure_pin(dm) if use_lu else None
+    lu_pin = _naive_pressure_pin(dm) if (use_lu and "pressure" in solver._subdict) else None
     interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
 
     # ---- cross-solve workspace cache (issue #417; see the block comment
@@ -1137,6 +1321,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     op_ok = False
     if cache is not None:
         geom_ok = cache.get("geometry_sig") == geometry_sig
+        # the KSP context was built for one tolerance: its KSP tolerances and which
+        # rotations it projects (_projection_threshold) follow it. A new tolerance
+        # drops the context alone; the rotation, the operator and the prolongation
+        # are the geometry's, and rebuilding the prolongation costs memory (#964 r5)
+        tol_ok = cache.get("tolerance") == float(solver.tolerance)
         op_ok = (geom_ok
                  and not force_operator_refresh
                  and coefficient_states is not None
@@ -1147,16 +1336,20 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # writes, so a rank-divergent match here would desync the collective
         # assembly/PCSetUp calls the verdict gates (the np>1 deadlock class).
         if mpi.size > 1:
-            verdicts = mpi.comm.allgather((bool(geom_ok), bool(op_ok)))
+            verdicts = mpi.comm.allgather((bool(geom_ok), bool(op_ok), bool(tol_ok)))
             geom_ok = all(v[0] for v in verdicts)
             op_ok = all(v[1] for v in verdicts)
+            tol_ok = all(v[2] for v in verdicts)
         if not geom_ok:
             # Null before destroying — same double-destroy discipline as
             # _reset_rotated_solver_cache (#543 review, m4).
             solver._rotated_linear_cache = None
             stale, cache = cache, None
             _destroy_rotated_linear_cache(stale)
-        elif not op_ok:
+        elif not tol_ok:
+            _destroy_rotated_ksp_ctx(cache.get("ctx"))
+            cache["ctx"] = None
+        if cache is not None and not op_ok:
             # The operator values are about to be refreshed in place; poison
             # the stored key NOW so an exception mid-refresh cannot leave a
             # stale signature that later matches half-updated values.
@@ -1231,11 +1424,18 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         u.set(0.0)
     else:
         u = _gather_fields_to_global(solver)
+    # a zero initial guess, read before the datum is imposed on it: a failed
+    # first step would leave nothing (#907)
+    cold_start = zero_init_guess or u.norm() == 0.0
     if not lift_datum:
         _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
 
     J, Jp = snes.getJacobian()[:2]
-    pres_is = solver._subdict["pressure"][0]
+    # A vector solver (the thin sheet) has the velocity alone: no pressure
+    # block, no Schur complement, no pressure gauge. Every pressure site below
+    # is gated on this.
+    has_pressure = "pressure" in solver._subdict
+    pres_is = solver._subdict["pressure"][0] if has_pressure else None
     Fc = dm.createGlobalVec()
     reaction = dm.createGlobalVec()          # the final (un-zeroed) Cartesian residual
 
@@ -1249,8 +1449,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Atot = None
     ctx = cache["ctx"] if cache is not None else None
     Mp = ctx["Mp"] if ctx is not None else None
+    if ctx is not None:
+        # the cached null space is this solve's, even when it exits at its first
+        # residual check, and so is the verdict on the declared modes it was built with
+        solver._rotated_declared_modes_exempt = ctx.get("declared_exempt")
     diag_scale = cache["diag_scale"] if cache is not None else None
     lin_its = []
+    # per-iteration records for campaign diagnostics: |F̂| at each iteration start,
+    # and the step accepted for each increment (0.0: not applied)
+    rnorm_history = []
+    line_search_alpha = []
     # velocity / pressure sub-KSP LAST-APPLICATION counts, one per Newton increment
     # (iterative path only — the direct-LU path has no sub-KSPs and records None)
     vel_its_last = []
@@ -1267,11 +1475,45 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # stalls against the constant offset). This mirrors PETSc's own projected
     # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
     # (σ_nn reads velocity rows only).
-    use_pnull = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+    use_pnull = has_pressure and bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
     # L2 norm of the LAST projected-out gauge component (|mean|·√N over the
     # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
     # behind the projection (see the guard after the Newton loop).
     pnull_gauge = [0.0]
+    # The rigid-rotation gauge likewise: when rotation modes are a genuine null
+    # space of the operator (a drag-free sheet on a sphere, a free-slip shell),
+    # the inner KSP cannot reduce the residual's component along them, so the
+    # outer norm is measured in that quotient space too. A viscous forcing has no
+    # such component by construction; a viscoelastic stress history on the
+    # faceted surface does (measured: the Newton loop floored at rel 1e-4 on a
+    # tidally flexed Maxwell sheet, with the linear solves converged).
+    rot_modes = []                           # orthonormal, velocity-only, rotated frame
+    rnull_gauge = [0.0]
+
+    def _collect_rotation_modes(nullspace):
+        for m in rot_modes:
+            m.destroy()
+        rot_modes.clear()
+        if nullspace is None:
+            return
+        for v in nullspace.getVecs():
+            if has_pressure:
+                sp = v.getSubVector(pres_is)
+                is_pressure = sp.norm() > 0.0
+                v.restoreSubVector(pres_is, sp)
+                if is_pressure:
+                    continue
+            m = v.copy()
+            for q in rot_modes:                      # Gram-Schmidt
+                m.axpy(-m.dot(q), q)
+            nm = m.norm()
+            if nm > 0.0:
+                m.scale(1.0 / nm)
+                rot_modes.append(m)
+            else:
+                m.destroy()
+
+    _collect_rotation_modes(nsp)
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -1306,6 +1548,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
             pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if rot_modes:
+            removed = 0.0
+            for m in rot_modes:              # project out the rotation-gauge modes
+                c = Fh.dot(m)
+                Fh.axpy(-c, m)
+                removed += c * c
+            rnull_gauge[0] = removed ** 0.5
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
@@ -1337,11 +1586,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # reads ``snes.getConvergedReason() > 0``, so leaving it unset reports every
     # rotated solve as unconverged — including ones that converged at rel 1e-8.
     exit_reason = _SNES_DIVERGED_MAX_IT
+    linear_failure = None
+    # a failed preconditioner stays latched in the KSP (PCMG and PCREDUNDANT
+    # never reset it): a workspace that failed hard is not cached
+    failed_hard = False
     phase = "picard" if continuation else "newton"
-    for iters in range(max_it):
+    switch_iteration = None
+    # max_it increments, then one more pass that only measures the residual,
+    # as PETSc's SNES tests after its max_it-th update: a cap of N then
+    # reports a solve that converged in N as converged, and a cap of 0 is one
+    # residual evaluation (#920)
+    for iters in range(max_it + 1):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
-        if r0 is None:
+        rnorm_history.append(float(rnorm))
+        if r0 is None or (lift_datum and iters == 1 and r0 == 0.0):
+            # A cold start whose only forcing is the prescribed datum (a sheet
+            # breathing with the tide, say) has a zero residual at u = 0, before
+            # the lift; the reference scale is then the lifted iterate's.
             r0 = rnorm
             ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
         if verbose:
@@ -1349,20 +1611,29 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"rel={rnorm/(ref+1e-300):.3e}  [{phase}]")
         # residual convergence (relative to the reference scale, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
-        if rnorm <= rtol * ref + atol:
+        if rnorm <= rtol * ref + atol and not (lift_datum and iters == 0):
+            # (the lift of a cold-start datum rides the first increment, so a
+            # zero residual at u = 0 is not convergence until it has been applied)
             converged = True
             exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
+            Fhat.destroy()
+            break
+        if iters == max_it:
             Fhat.destroy()
             break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
         # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
         # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
-        if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
+        # Measured against the convergence reference, not r0: a warm start is already
+        # in the basin, and against its own residual it had to shrink that a
+        # hundredfold under Picard first (12 of 13 iterations on the power-law box).
+        if continuation and phase == "picard" and rnorm <= switch_rtol * ref and iters >= picard:
             solver._set_newton_alpha(1.0)
             phase = "newton"
+            switch_iteration = iters
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
-                           f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
+                           f"(rel |F̂| {rnorm/(ref+1e-300):.2e})")
         # Iteration 0 may ride the cross-solve fast path: the cached Ahat still
         # holds the rotated, constraint-eliminated operator and the cached
         # KSP/PC is set up on it. Every LATER iteration always reassembles —
@@ -1384,29 +1655,46 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # rates) and added to a COPY: the ptap-with-result refresh above
         # owns Ahat's structure, and injected entries would be
         # stale-or-doubled on the next refresh.
+        #
+        # The copy is made once and refreshed IN PLACE after that, so the KSP
+        # is handed the same Mat with the same nonzero pattern at every
+        # iterate, as on the contact path. A new Mat each iterate left the
+        # multigrid smoothing with iterate 0's operator (#894), even with an
+        # identical pattern: a new Pmat object resets the PC's nonzero state,
+        # so the fieldsplit builds a new velocity block, and PCSetUp_MG keeps
+        # the finest smoother's operator unless it is the PC's own.
+        # The tangent's pattern is fixed by the fault facets, and Ahat's by
+        # the ptap, so both stay inside the pattern of the first copy.
+        # The direct-LU path still takes a fresh sum each iterate: its pressure
+        # pin (zeroRows) drops the pinned row's entries from the pattern, and
+        # it has no multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
-            if Atot is not None:
-                Atot.destroy()
-            Atot = Ahat.copy()
-            Atot.axpy(1.0, Khat,
-                      structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            if Atot is None or use_lu:
+                if Atot is not None:
+                    Atot.destroy()
+                Atot = Ahat.copy()
+                Atot.axpy(1.0, Khat,
+                          structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            else:
+                Ahat.copy(Atot, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+                Atot.axpy(1.0, Khat,
+                          structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
             Khat.destroy()
-            # A recreated operator loses the null space the first solve
-            # attached; re-attach for iterations after the first (a nonlinear
-            # interface law is what reaches them).
-            if ctx is not None and ctx.get("nsp") is not None:
-                Atot.setNullSpace(ctx["nsp"])
-                Atot.setTransposeNullSpace(ctx["nsp"])
             Aop = Atot
         else:
             Aop = Ahat
         if not use_lu:
             if ctx is None:
-                Mp = _pressure_mass_schur_pmat(solver)
+                Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
-            elif assemble and Mp is not None:
-                Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
+                _collect_rotation_modes(nsp)
+            else:
+                # a cached workspace keeps its null space, and the verdict on the
+                # declared modes it was built with
+                solver._rotated_declared_modes_exempt = ctx.get("declared_exempt")
+                if assemble and Mp is not None:
+                    Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
             diag_scale = _velocity_diag_scale(Aop, solver)
         bhat = Fhat.copy()
@@ -1442,18 +1730,50 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             dhat.set(0.0)
             ctx["ksp"].solve(bhat, dhat)
             last_reason = ctx["ksp"].getConvergedReason()
-            _warn_if_ksp_diverged(ctx["ksp"], kind="rotated direct-LU")
+            hard, kind = _hard_linear_failure(ctx["ksp"]), "rotated direct-LU"
+            if not hard:
+                _warn_if_ksp_diverged(ctx["ksp"], kind)
             # parity with the iterative path's exact v_n cleanup (LU is exact only
             # to factorisation round-off at the decoupled constraint rows)
             _zero_rows_local(dhat, normal_rows)
-        else:
+        elif has_pressure:
             dhat, last_reason, ctx = _solve_rotated_iterative(
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
                 refresh_operator=assemble)
+            hard, kind = ctx["hard_failure"], "rotated fieldsplit-Schur"
+        else:
+            dhat, last_reason, ctx = _solve_rotated_vector(
+                solver, Aop, bhat, normal_rows,
+                custom_Pl=custom_Pl, nsp=nsp, ctx=ctx, refresh_operator=assemble)
+            hard, kind = ctx["hard_failure"], "rotated vector"
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
+        failed_hard = failed_hard or hard
+        if hard:
+            # A cold start with no step accepted has produced nothing: raise
+            # (#907), after the normal teardown below, and leave the fields as
+            # they were. A warm start keeps the caller's own state, and an
+            # accepted step keeps that iterate: those warn, the line search
+            # rejects the failed increment, and the loop's verdict stands.
+            if (cold_start and not any(a > 0 for a in line_search_alpha)
+                    and not solver.tolerate_linear_failure):
+                reason = int(ctx["ksp"].getConvergedReason())
+                from underworld3.systems.solve_report import ksp_reason_string
+                linear_failure = (
+                    f"[rotated_bc] the {kind} linear solve failed on the first Newton "
+                    f"step of a cold start: {ksp_reason_string(reason)} (reason "
+                    f"{reason}) after {int(ctx['ksp'].getIterationNumber())} "
+                    f"iterations. No solution was produced and the fields were not "
+                    f"written. Set solver.tolerate_linear_failure = True to warn and "
+                    f"continue instead.")
+                exit_reason = _SNES_DIVERGED_LINEAR_SOLVE
+                dhat.destroy()
+                bhat.destroy()
+                Fhat.destroy()
+                break
+            _warn_if_ksp_diverged(ctx["ksp"], kind)
         d = dm.createGlobalVec()
         Qt.mult(dhat, d)
         # step-norm convergence (SNES_CONVERGED_SNORM): a tiny Newton step means we
@@ -1476,7 +1796,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                            f"{rnorm / (ref + 1e-300):.2e} of the reference "
                            f"residual — stagnation-or-crawl, continuing to iterate.")
         improved = False
-        if lift_datum and iters == 0:
+        if lift_datum and iters == 0 and not hard:
             # accept the lift step unconditionally (it is the smooth rest-state
             # response — the standard first-Picard warmup; a line search against
             # ‖F̂(0)‖, which ignores the datum mismatch, would be meaningless) and
@@ -1485,9 +1805,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
             step_converged = False
             improved = True
+            line_search_alpha.append(1.0)
         elif not step_converged:
-            u, improved = _backtracking_line_search(
+            u, improved, alpha = _backtracking_line_search(
                 u, d, rnorm, rotated_residual, Q, Qt, normal_rows, datum_map)
+            line_search_alpha.append(alpha)
+        else:
+            line_search_alpha.append(0.0)    # step-norm exit: the increment is not applied
         # every per-iteration temporary dies HERE, on all exit paths
         dhat.destroy()
         d.destroy()
@@ -1508,8 +1832,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     # The true outer-iteration COUNT is the number of Newton increments solved — one
     # linear solve per increment, so len(lin_its). The loop index `iters` undercounts
-    # by one on the step-norm / line-search-stall / max_it exits (the increment of the
-    # final pass is solved before the break) and matches only on the residual exit.
+    # by one on the step-norm / line-search-stall exits (the increment of the final
+    # pass is solved before the break) and matches on the residual and cap exits.
     newton_its = len(lin_its)
 
     # Publish the loop's verdict on the SNES, so that reading the converged
@@ -1519,7 +1843,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # The loop can exhaust max_it or stall in the line search (`not improved`) without
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
     # on divergence — so an unconverged iterate left in the fields is not silent.
-    if not converged:
+    if not converged and not linear_failure:      # a raise follows otherwise
         rel = (rnorm / (ref + 1e-300)) if ref is not None else float("nan")
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
                    f"in {newton_its} iterations (rel |F̂| = {rel:.2e} of the reference "
@@ -1531,6 +1855,21 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # incompressible domain) parks an O(forcing) constant there — and the loop
     # above would report convergence while mass conservation is violated.
     # Surface the component: readable state always, loud when it dominates.
+    # A declared mode the faceted constraints satisfy only to a violation s (the
+    # slack) carries a component of a torque-free forcing too, about s²/3 of the
+    # forcing scale; a torque of 1% of the forcing carries 1.7e-2 (#906's shell,
+    # s = 0.016 and 0.0042). An exact mode has s = 0.
+    slack = getattr(solver, "_rotated_null_mode_slack", 0.0)
+    solver._rotated_rotation_gauge_residual = rnull_gauge[0] if rot_modes else 0.0
+    if rot_modes and converged and rnull_gauge[0] > 10.0 * max(
+            rnorm, atol, slack ** 2 * (ref or 0.0)):
+        mpi.pprint(f"[rotated_bc] WARNING: converged in the rotation-gauge QUOTIENT "
+                   f"space, but the projected-out rigid-rotation component "
+                   f"({rnull_gauge[0]:.2e}) dominates the residual ({rnorm:.2e}): the "
+                   f"forcing has a net torque, which free-slip walls cannot balance.")
+    for m in rot_modes:
+        m.destroy()
+    rot_modes.clear()
     if use_pnull:
         solver._rotated_pressure_gauge_residual = pnull_gauge[0]
         if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):
@@ -1545,7 +1884,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
-    if cache_allowed and ctx is not None and Ahat is not None and not use_lu:
+    # a workspace persists with no KSP context when this solve built none (a warm
+    # start already converged after a tolerance change): the next solve builds it
+    if (cache_allowed and Ahat is not None and not use_lu and not failed_hard
+            and (ctx is not None or cache is not None)):
         # Persist the workspace for the next solve. The stored key describes
         # the operator values Ahat now holds; linear_hint records whether
         # this solve behaved linearly (<= 1 increment), which is what
@@ -1554,6 +1896,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # GC compose.
         solver._rotated_linear_cache = {
             "geometry_sig": geometry_sig,
+            "tolerance": float(solver.tolerance),
             "Q": Q, "Qt": Qt, "normal_rows": normal_rows,
             "custom_Pl": custom_Pl,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
@@ -1580,26 +1923,236 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Atot.destroy()                       # rotated operator + interface term
     if xhat is not None:
         xhat.destroy()                       # unused lift vector (loop exited before it)
-    removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
+    # on a raised failure the fields keep what they held (the caller raises)
+    removed = (False if linear_failure
+               else _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge))
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
+            # the message the solver raises, after recording this result (#907)
+            "linear_failure": linear_failure,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed,
             # per-mode record of the gauge decision (offered / accepted / the
             # violations that decided it) — see _finalize_rotated_solution
-            "rotation_gauge": getattr(solver, "_rotated_gauge_report", None),
+            "rotation_gauge": (None if linear_failure
+                               else getattr(solver, "_rotated_gauge_report", None)),
             "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
+            # the rest-state residual ‖F̂(0)‖ (warm starts only; None cold) and the
+            # reference the convergence and switch tests compare against
+            "fnorm_rest": fnorm_rest, "ref": ref,
+            "rnorm_history": rnorm_history, "line_search_alpha": line_search_alpha,
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
             # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
             # with ctx unset when a warm start is already converged at increment 0.
             "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
+            "projected_null_modes": None if use_lu else (ctx or {}).get("projected_null_modes"),
+            "null_mode_ratios": None if use_lu else (ctx or {}).get("null_mode_ratios"),
+            "null_mode_threshold": None if use_lu else (ctx or {}).get("null_mode_threshold"),
+            # the coarse-level solve of the custom FMG: "redundant" (LU with the
+            # zero-pivot shift) or the asked-for "gamg" (None without one)
+            "coarse_solve": None if use_lu else (ctx or {}).get("coarse_solve"),
             "continuation_switched": continuation and phase == "newton",
+            "continuation_switch_iteration": switch_iteration,
             "rotation_reused": rotation_reused,
-            "workspace_reused": workspace_reused}
+            "workspace_reused": workspace_reused,
+            # per declared mode, whether it kept every rotated wall in place and so
+            # its exemption from the constraint test (None: the mesh declares none)
+            "declared_modes_exempt": getattr(solver, "_rotated_declared_modes_exempt", None)}
+
+
+
+def solve_rotated_adjoint(solver, J, b, verbose=False):
+    r"""The discrete adjoint of the last rotated free-slip solve: ``Âᵀ μ̂ = b̂``.
+
+    The forward solve never runs ``snes.solve``. It rotates the Jacobian into the
+    per-node boundary frame, eliminates the wall-normal rows, and inverts
+    ``Â = Q J Qᵀ`` in its own Krylov loop (:func:`solve_rotated_freeslip`). The
+    adjoint is the transpose of THAT operator, not of ``J``: the constraint is part
+    of the system the forward solve inverted, so the adjoint carries it too.
+
+    Everything follows from ``Q`` being orthogonal. Writing ``μ̂ = Q μ`` and
+    ``b̂ = Q b``, ``⟨μ̂, Â δ̂⟩ = ⟨μ, J δ⟩`` and ``⟨b̂, δ̂⟩ = ⟨b, δ⟩``, so the rotated
+    adjoint system IS the physical one expressed in the boundary frame, and
+    ``μ = Qᵀ μ̂`` takes the answer back. ``zeroRowsColumns`` commutes with
+    transposition — it zeroes the row AND the column and puts a scalar on the
+    diagonal — so eliminating the constrained rows from ``Âᵀ`` gives exactly the
+    transpose of the operator the forward solve ran on. That is the discrete
+    statement that the dual of a strong constraint is a strong homogeneous
+    constraint on the same degrees of freedom: ``μ·n̂ = 0`` on the wall.
+
+    ``J`` must already be assembled at the state the forward solve ended in, with
+    the CONSISTENT tangent. The caller owns that choice: a forward that ran Picard
+    leaves the frozen-viscosity operator on the SNES, which is not ``∂R/∂u``, and
+    transposing it would be silently wrong.
+
+    **Where there IS a null space, it is projected out of the right-hand side**
+    (iterative path; the direct-LU path fixes the pressure gauge with the same
+    naive pin the forward solve uses and builds none). A boundary with an
+    essential condition removes it altogether — `_rotated_nullspace` then returns
+    None and the gradient is unambiguous, which is the configuration to prefer
+    when a sensitivity is what you are after. A free-slip
+    enclosed domain has an undetermined pressure level and, on an annulus or
+    shell, an undetermined rigid rotation. The forward solve fixes the gauge
+    afterwards; the adjoint cannot, because the multiplier has no rest state to
+    be fixed against. So the component of ``b`` along those modes is removed
+    (``nsp.remove``) and ``μ`` is returned modulo them. A misfit that is itself
+    invariant under a rigid rotation loses nothing to this; one that is not is
+    asking for the sensitivity of a quantity the forward problem does not
+    determine, and the projection is what says so.
+
+    Parameters
+    ----------
+    solver
+        The solver that did the forward solve, still holding
+        ``_rotated_freeslip_info`` from it.
+    J : petsc4py.PETSc.Mat
+        The Jacobian, assembled at the converged state with the consistent
+        tangent. The pressure-mass Schur block is read from the solver's Pmat, so
+        assemble both (``snes.computeJacobian(x, J, Jp)``).
+    b : petsc4py.PETSc.Vec
+        The dual right-hand side on the composite global vector, in the PHYSICAL
+        frame — the same thing ``dual_of`` builds for the unrotated path.
+
+    Returns
+    -------
+    (petsc4py.PETSc.Vec, int)
+        ``μ`` in the physical frame and the KSP converged reason (positive means
+        converged). The caller owns the vector. What is exactly zero is the
+        wall-normal COMPONENT — ``(Q μ)`` at ``normal_rows`` — not the rows of
+        ``μ`` itself, which carry the tangential multiplier once rotated back.
+    """
+    info = getattr(solver, "_rotated_freeslip_info", None)
+    if info is None:
+        raise RuntimeError(
+            "solve_rotated_adjoint: no rotated forward solve to take the adjoint "
+            "of. The rotation Q is built by solve_rotated_freeslip — call solve() "
+            "first, and take the adjoint about the state it ended in.")
+    Q, Qt = info.get("Q"), info.get("Qt")
+    # The result dict SHARES Q/Qt with the cross-solve cache, and
+    # _reset_rotated_solver_cache destroys that cache while deliberately keeping
+    # the result dict alive (its reaction vector outlives the workspace, which is
+    # what boundary_normal_traction needs). The rotation does NOT outlive it, so
+    # reading Q here after a reset would be a use-after-free rather than a wrong
+    # answer. Say what happened instead.
+    if Q is None or Qt is None or Q.handle == 0 or Qt.handle == 0:
+        raise RuntimeError(
+            "solve_rotated_adjoint: the rotation from the last rotated solve has "
+            "been released — the solver was reset or reconfigured since (see "
+            "_reset_rotated_solver_cache), and Q is shared with the workspace that "
+            "reset destroys. Re-run solve() and take the adjoint about that state.")
+    # Q covers the boundaries of the LAST solve. add_rotated_freeslip_bc appends
+    # and sets is_setup False, but the gate that would catch that in adjoint_solve
+    # is bypassed once the adjoint kernel is installed — so a boundary registered
+    # between two adjoints would silently run on a rotation that does not cover
+    # it. Compare the sets rather than trust the ordering.
+    registered = list(getattr(solver, "_rotated_freeslip_bcs", None) or [])
+    if list(info.get("boundaries") or []) != registered:
+        raise RuntimeError(
+            f"solve_rotated_adjoint: the rotated boundaries changed since the "
+            f"forward solve — the rotation covers {info.get('boundaries')}, the "
+            f"solver now carries {registered}. Re-run solve() so Q and the "
+            f"constrained rows describe the problem being differentiated.")
+    normal_rows = info["normal_rows"]
+    dm = solver.dm
+    use_lu = bool(getattr(solver, "_rotated_use_lu", False))
+
+    # Build the operator the forward solve ACTUALLY INVERTED — ptap, then the
+    # constraint elimination, then (direct path only) the gauge pin — and
+    # transpose that whole thing ONCE. Transposing at the end rather than
+    # reproducing each step in transposed form is what makes this exactly Mᵀ:
+    # ``zeroRowsColumns`` commutes with transposition, but ``zeroRows`` does NOT
+    # (its transpose is zeroCols), so a pinned operator assembled the other way
+    # round would be the transpose of a different matrix.
+    Ahat = J.ptap(Qt)
+    diag_scale = _velocity_diag_scale(Ahat, solver)
+    Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
+    pin = _naive_pressure_pin(dm) if use_lu else None
+    if pin is not None:
+        Ahat.zeroRows([pin], diag=1.0)
+    AhatT = Ahat.transpose(PETSc.Mat())
+    Ahat.destroy()
+
+    bhat = AhatT.createVecRight()
+    Q.mult(b, bhat)
+    # The constrained rows carry no equation in the forward system, so they carry
+    # no adjoint equation either; zeroing here is what makes μ·n̂ = 0 exact rather
+    # than merely converged.
+    _zero_rows_local(bhat, normal_rows)
+
+    if use_lu:
+        ksp = PETSc.KSP().create(comm=dm.comm)
+        ksp.setType("preonly")
+        pc = ksp.getPC()
+        pc.setType("lu")
+        pc.setFactorSolverType("mumps")
+        ksp.setOperators(AhatT)
+        muhat = AhatT.createVecRight()
+        muhat.set(0.0)
+        ksp.solve(bhat, muhat)
+        reason = int(ksp.getConvergedReason())
+        _warn_if_ksp_diverged(ksp, kind="rotated adjoint direct-LU")
+        _zero_rows_local(muhat, normal_rows)
+        ksp.destroy()
+    else:
+        # The saddle structure survives transposition. UW3 assembles the velocity
+        # flux as τ − p·I against +div u, so the operator is [[A, −Bᵀ], [B, 0]]
+        # and its transpose is [[Aᵀ, Bᵀ], [−B, 0]] — the OFF-DIAGONAL SIGNS SWAP,
+        # the blocks do not move. The Schur complement keeps both its sparsity and
+        # its sign (the two swapped signs cancel in B A⁻ᵀ Bᵀ), so the 1/mu pressure
+        # mass, the fieldsplit and the custom-FMG prolongation all still apply.
+        Mp = _pressure_mass_schur_pmat(solver)
+        # The rigid-body modes are null modes of Âᵀ as well as Â: a rotation has
+        # zero strain rate, so it is annihilated by ∫C:ε(·):ε(·) read from either
+        # side, whatever the symmetry of C. The same is true of the constant
+        # pressure mode, whose only coupling is through the off-diagonal block,
+        # which transposition moves but does not remove. `_mode_satisfies_constraints`
+        # verifies admission against J, not Jᵀ; the argument above is why that is
+        # the same test, and `test_0022_rotated_adjoint` measures it on a tangent
+        # with no major symmetry rather than leaving it as an argument.
+        #
+        # _rotated_nullspace records its mode count on the SOLVER, where the
+        # forward solve reports it. An adjoint must not change what the next
+        # forward solve reports, so put it back below.
+        # the forward's null-mode record, which _rotated_nullspace rewrites and a
+        # cached forward solve reads again
+        record = ("_rotated_velocity_null_modes", "_rotated_null_mode_slack",
+                  "_rotated_declared_modes_exempt")
+        before = {name: getattr(solver, name) for name in record if hasattr(solver, name)}
+        nsp = _rotated_nullspace(solver, Q, normal_rows)
+        # The prolongation depends only on Q and the mesh hierarchy, so the
+        # forward's is reusable — and MUST be reused where it exists:
+        # `_build_rotated_custom_Pl` leaks the velocity submatrix and the rotated
+        # fine prolongation on every call (nothing owns them; the cache only
+        # DEREFERENCES the list), which an inversion loop would pay per adjoint.
+        cache = getattr(solver, "_rotated_linear_cache", None)
+        if cache is not None and cache.get("Q") is Q and cache.get("custom_Pl"):
+            custom_Pl = cache["custom_Pl"]
+        else:
+            custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
+        muhat, reason, ctx = _solve_rotated_iterative(
+            solver, AhatT, bhat, Q, Qt, normal_rows, verbose=verbose,
+            custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, ctx=None)
+        reason = int(reason)
+        if ctx["hard_failure"]:      # the adjoint reports it; it does not raise
+            _warn_if_ksp_diverged(ctx["ksp"], kind="rotated adjoint fieldsplit-Schur")
+        _destroy_rotated_ksp_ctx(ctx)
+        for name in record:
+            if name in before:
+                setattr(solver, name, before[name])
+            elif hasattr(solver, name):
+                delattr(solver, name)
+
+    mu = dm.createGlobalVec()
+    Qt.mult(muhat, mu)
+
+    muhat.destroy()
+    bhat.destroy()
+    AhatT.destroy()
+    return mu, reason
 
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
@@ -1622,7 +2175,36 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     resolved = custom_mg.build_transfers(solver, field_id=0)
     h, Ps = resolved if resolved is not None else (None, None)
     if h is None or Ps is None:
+        # Loud, not silent: a GAMG velocity block on a fault or free-slip mesh is
+        # a symptom of a mesh built without its multigrid tail (a gmsh mesh with a
+        # conforming patch, a split that dropped the tail), not a configuration
+        # anyone chooses — it crawls against the sub-solve cap on 3-D fault
+        # meshes. Ruling 2026-10-17: flag the fallback every time it happens.
+        if not getattr(solver, "_rotated_gamg_fallback_warned", False):
+            mpi.pprint("[rotated_bc] WARNING: no multigrid hierarchy on this mesh "
+                       "(no adapt tail, no set_custom_fmg registration); the "
+                       "velocity block falls back to GAMG. Build the mesh through "
+                       "adapt() so the tail rides through, or register a coarse "
+                       "tail with set_custom_fmg.")
+            solver._rotated_gamg_fallback_warned = True
         return None
+    walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
+    if getattr(h, "has_split_levels", False) or \
+            (walls and getattr(h, "drop_orphans", False)):
+        # Per-level rotation: a split coarse level takes its own pair
+        # rotation and loses its opening rows; under rotated free-slip walls
+        # every coarse level takes the wall rotation and loses its normal
+        # rows (a Cartesian coarse level under a rotated finest keeps wall
+        # unknowns the fine operator barely reaches, and the smoother's
+        # nodal block inversion meets a zero pivot); the unknowns no fine
+        # unknown reaches are then dropped (utilities.fault_mg).
+        from underworld3.utilities.fault_mg import rotated_split_transfers
+        Pl = rotated_split_transfers(solver, h, Ps, Q, normal_rows)
+        solver._custom_mg_rotated_levels = True
+        if getattr(solver, "_custom_mg", None) is None:
+            solver._custom_mg = {"mode": "hierarchy", "hierarchy": h,
+                                 "verbose": False}
+        return Pl
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
@@ -1643,11 +2225,24 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     nrows_blk = sorted({rstart + g2blk[g] for g in normal_rows
                         if g in g2blk})
     Pfine.zeroRows(nrows_blk, diag=0.0)
+    Pl = list(Ps[:-1]) + [Pfine]
+    if getattr(h, "drop_orphans", False):
+        # Unreached coarse unknowns are dropped, never injected, AFTER the
+        # finest's constrained rows are zeroed: a coarse wall node's normal
+        # component is reached only through those rows (or, on an axis,
+        # through tangential rows weighted by a vanishing sine), and kept it
+        # is a zero Galerkin diagonal. The finest's layout (and its FAC
+        # patch rows) is untouched.
+        from underworld3.utilities.fault_mg import restrict_unreached
+        Pl = restrict_unreached(Pl, solver.dm.comm)
+        rows = getattr(h, "level_patch_rows", None)
+        if rows is not None:
+            h.level_patch_rows = [None] * (len(rows) - 1) + [rows[-1]]
     # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
     # (rotated or not) reuses the hierarchy instead of re-resolving it.
     if getattr(solver, "_custom_mg", None) is None:
         solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
-    return list(Ps[:-1]) + [Pfine]
+    return Pl
 
 
 def _pressure_mass_schur_pmat(solver):
@@ -1689,6 +2284,12 @@ def _destroy_rotated_ksp_ctx(ctx):
     if ctx.get("ksp") is not None:
         ctx["ksp"].destroy()
         ctx["ksp"] = None
+    if ctx.get("pc") is not None:
+        # this reference alone keeps the fieldsplit PC, its sub-KSPs and the null-mode
+        # projection around the multigrid alive (#963); in parallel petsc4py defers the
+        # destruction of a dropped reference, so release it here
+        ctx["pc"].destroy()
+        ctx["pc"] = None
     if ctx.get("Mp") is not None:
         ctx["Mp"].destroy()
         ctx["Mp"] = None
@@ -1698,6 +2299,133 @@ def _destroy_rotated_ksp_ctx(ctx):
     if ctx.get("cns") is not None:
         ctx["cns"].destroy()
         ctx["cns"] = None
+
+
+# An admitted rotation is projected out of the velocity preconditioner (#963) when its
+# Jacobi-scaled residual, max |(D^-1 A m)_i| / max |m_i|, is at or below
+# _projection_threshold(tol). Each row is scaled by its own diagonal, so the measure is
+# local and a viscosity contrast does not move it (6.2e-4 at a contrast of 1, 5.6e-4 at
+# 1e8, same mesh); it tracks the mode's constraint violation, 2 to 3 times it. An exact
+# mode gives 1e-15 (analytic normal) to 4e-11 (gmsh's rounding of the circle). The
+# Frobenius scale it replaced, |A m| / (|A|_F |m|), took its size from the stiffest
+# cells: a contrast of 1e5 classed a faceted rotation as exact and projected it (#964,
+# round 3).
+#
+# What projecting a near-null mode costs scales with the solve tolerance and grows with
+# the rank count (#964, round 4, hyperion, walls slid along their circles). At tol 1e-9,
+# np 2, projecting paid at 62 tol (19464 GMRES orthogonalisations against 140115 left)
+# and cost at 180 tol (49014 against 10528); at 620 tol it cost 2x at np 2 and 4.5x at
+# np 4; at tol 1e-11 a mode at 6.2e-8 projected ran the velocity solve into its cap.
+# Hence _NEAR_NULL_PER_TOL times the tolerance, capped at 1e-6 (where the loose solves
+# cost the same either way) and floored at 1e-10, so that a mode exact to rounding is
+# always projected: left unprojected it makes the count depend on the BLAS kernel.
+_EXACT_NULL_MODE_TOL = 1.0e-6
+_NEAR_NULL_PER_TOL = 100.0
+_EXACT_NULL_MODE_FLOOR = 1.0e-10
+
+
+def _projection_threshold(tol):
+    """The Jacobi-scaled residual at or below which an admitted rotation is projected
+    out of the velocity preconditioner, for a solve at tolerance ``tol``."""
+    return max(_EXACT_NULL_MODE_FLOOR, min(_EXACT_NULL_MODE_TOL, _NEAR_NULL_PER_TOL * tol))
+
+
+def _exact_velocity_null_modes(A_vv, modes, threshold=_EXACT_NULL_MODE_TOL):
+    """The vectors of ``modes`` (velocity-block copies of the admitted rotations) whose
+    Jacobi-scaled residual ``max |(D^-1 A_vv m)_i| / max |m_i|`` is at or below
+    ``threshold``, orthonormalised, and that ratio for every mode. The others
+    are destroyed. A near-null mode (a declared rotation on a faceted wall, where
+    ``A_vv m`` is the faceting error) is left to the multigrid. COLLECTIVE."""
+    if not modes:
+        return [], []
+    inv_diag = A_vv.getDiagonal()
+    d = np.abs(inv_diag.getArray())
+    d[d == 0.0] = 1.0
+    inv_diag.setArray(1.0 / d)
+    work = modes[0].duplicate()
+    exact, ratios = [], []
+    for m in modes:
+        A_vv.mult(m, work)
+        work.pointwiseMult(work, inv_diag)
+        ratio = (work.norm(PETSc.NormType.NORM_INFINITY)
+                 / m.norm(PETSc.NormType.NORM_INFINITY))
+        ratios.append(float(ratio))
+        if ratio <= threshold:
+            exact.append(m)
+        else:
+            m.destroy()
+    work.destroy()
+    inv_diag.destroy()
+    for i, m in enumerate(exact):
+        for q in exact[:i]:
+            m.axpy(-m.dot(q), q)
+        m.normalize()
+    return exact, ratios
+
+
+class _NullModeProjectedPC:
+    """The velocity block's preconditioner with its exact null modes projected out of
+    what it is given and what it returns, ``z = P M (P r)``, ``P = I - sum m m^T`` (#963).
+
+    When the rotated constraint leaves a rotation exact (an analytic normal on a circle
+    or sphere), the velocity block is singular along it. A multigrid cycle returns a
+    rounding-level component along the mode in each direction it makes. The KSP's null
+    space does not remove that, because it acts on the right-hand side and the solution
+    only, so the inner FGMRES floors near 1e-7 against its 3.3e-11. Whether rounding
+    puts the floor above the tolerance depended on the OpenBLAS kernel: the test_1064
+    annulus stalled under Zen, Haswell and Core2 and finished under SkylakeX. The mode
+    is in the null space attached to the outer solve, so the solution loses nothing by
+    keeping it out of the preconditioned directions."""
+
+    def __init__(self, inner, modes):
+        self.inner = inner
+        self.modes = modes
+        self.work = modes[0].duplicate()
+
+    def _project(self, v):
+        for m in self.modes:
+            v.axpy(-v.dot(m), m)
+
+    def setUp(self, pc):
+        self.inner.setUp()
+
+    def apply(self, pc, x, y):
+        x.copy(self.work)
+        self._project(self.work)
+        self.inner.apply(self.work, y)
+        self._project(y)
+
+    def destroy(self, pc):
+        # the KSP gave up its reference to the wrapped multigrid when the shell took its
+        # place, so the shell owns it; in parallel petsc4py defers destruction, and the
+        # whole hierarchy outlived every solve (19 MB an adjoint solve at np 2)
+        if self.inner is not None:
+            self.inner.destroy()
+            self.inner = None
+        for m in self.modes:
+            m.destroy()
+        self.modes = []
+        if self.work is not None:
+            self.work.destroy()
+            self.work = None
+
+
+def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm, tol):
+    """Wrap ``vel_ksp``'s preconditioner in :class:`_NullModeProjectedPC` when the
+    admitted rotations in ``nsp`` include modes its operator annihilates to
+    :func:`_projection_threshold` of the solve tolerance ``tol``. Returns the number of
+    modes projected, and the Jacobi-scaled residual of each admitted mode. COLLECTIVE."""
+    inner = vel_ksp.getPC()
+    A_vv, P_vv = inner.getOperators()
+    modes, ratios = _exact_velocity_null_modes(A_vv, _velocity_null_modes(nsp, vel_is),
+                                               threshold=_projection_threshold(tol))
+    if not modes:
+        return 0, ratios
+    shell = PETSc.PC().createPython(_NullModeProjectedPC(inner, modes), comm=comm)
+    shell.setOperators(A_vv, P_vv)
+    vel_ksp.setPC(shell)
+    shell.setUp()
+    return len(modes), ratios
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
@@ -1746,6 +2474,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     pres_is = solver._subdict["pressure"][0]
 
     if ctx is None:
+        _coarse = None                     # no custom FMG, no coarse solve of ours
         # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator —
         # built by the CALLER (the Newton loop, after the first Jacobian assembly:
         # the mode verification needs the assembled operator).
@@ -1861,57 +2590,73 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                # coarse="svd" ONLY when the rotated problem carries VERIFIED
-                # null modes (nsp): the Galerkin-coarsened ROTATED velocity
-                # block inherits every rigid-rotation mode of the constrained
-                # problem (a closed circle: one; a spherical shell: three),
-                # and the redundant/LU coarse solve hits a zero pivot there
-                # (SUBPC_ERROR, outer reason -11). When there are NO null
-                # modes — Dirichlet walls, a split-fault contact box — the
-                # blanket SVD is pure cost: a 3-D P2 coarse level is a DENSE
-                # factorisation (measured: most of ~0.8 s per V-cycle
-                # application at healthy iteration counts, #622). Everything
-                # else in the bundle is identical to the native and standard
-                # custom-P routes.
-                # nsp alone cannot discriminate: it is non-None whenever the
-                # constant-PRESSURE mode is attached (enclosed domains), which
-                # says nothing about the velocity block. The recorded count of
-                # verified ROTATION modes does.
-                _coarse = ("svd"
-                           if getattr(solver, "_rotated_velocity_null_modes",
-                                      1 if nsp is not None else 0)
-                           else "redundant")
+                # The coarse solve is the shared bundle's redundant LU with a
+                # nonzero factor shift (#901). The Galerkin-coarsened rotated
+                # block inherits the rigid rotations the constraint leaves (a
+                # closed circle: one; a spherical shell: three), but only
+                # nearly: on every hierarchy measured it is near-singular, not
+                # singular (lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the
+                # annulus, 2.8e-4 on the shell), and plain LU gives the SVD's
+                # answer at its iteration counts. The shift acts only on a
+                # pivot below PETSc's zero-pivot tolerance, the case behind
+                # #306 (a coarse level that is the fine operator itself), and
+                # gives the SVD's answer there too. The coarse LU reads it from
+                # the bundle at vel_pc.setUp(); the `finally` drops the keys. It replaced a dense SVD of the
+                # gathered matrix, O(n^3) on every rank (64 s at np 1, 102 s
+                # at np 4 to factor a 614-cell shell bottom level). GAMG on
+                # the coarse level only when asked for, for a bottom level too
+                # large to gather (set_custom_fmg(coarse_solve="gamg")).
+                _gamg = custom_mg._registered_coarse_solve(solver) == "gamg"
+                _coarse = "gamg" if _gamg else "redundant"
+                _modes = _velocity_null_modes(nsp, vel_is) if _gamg else []
+                _near = (_rotated_rigid_body_modes(solver, Q, normal_rows, vel_is)
+                         if _gamg else [])
                 # FAC patch smoothing (#629): the hierarchy that built custom_Pl
                 # recorded each level's patch/halo rows; row numbering is the
                 # velocity-block reduced numbering on both paths, and the split
                 # is per-node so the per-node rotation Q does not disturb it.
                 _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _rows = getattr(_hier, "level_patch_rows", None)
                 _fac_keys = custom_mg._configure_pcmg(
                     vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant,
-                    patch_rows=getattr(_hier, "level_patch_rows", None))
+                    patch_rows=_rows,
+                    null_modes=_modes, near_null=_near)
+                for _m in _modes + _near:
+                    _m.destroy()
                 vel_pc.setUp()
-                # Force the FAC levels' smoother setup NOW: PCASM creates its
-                # sub-KSP (which reads mg_levels_<l>_sub_* from the DB) lazily
-                # at first application, which on this path is AFTER the key
-                # cleanup below — the sub options would silently never apply
-                # (measured: a sub_pc_type override had no effect).
-                for _l in range(1, vel_pc.getMGLevels()):
-                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
-                                         for k in _fac_keys):
-                        vel_pc.getMGSmoother(_l).setUp()
-                # The bundle went into the GLOBAL options DB under the velocity
-                # sub-PC's prefix, which is derived from `pfx` and so is unique to
-                # this solve — drop it again now it is consumed, as the `finally`
-                # below does for the KSP's own keys.
-                vopts = PETSc.Options()
-                vpfx = vel_pc.getOptionsPrefix() or ""
-                for key in multigrid_options.geometric_mg_bundle(
-                        coarse=_coarse,
-                        smoother=solver._mg_smoother_variant).settings:
-                    vopts.delValue(vpfx + key)
-                for key in _fac_keys or ():
-                    vopts.delValue(vpfx + key)
+                if getattr(solver, "_custom_mg_rotated_levels", False):
+                    # Rotated coarse levels: a wall node keeps one tangential
+                    # row beside the two-row nodes, and the inode SOR's 2x2
+                    # block inversion met a zero pivot on the Galerkin
+                    # operators of a developed temperature field (four
+                    # ranks on the Zhong & Gurnis annulus, 2026-10-14) with
+                    # every scalar diagonal healthy; without the inode
+                    # grouping the same solve converged in 9 iterations to
+                    # the two-rank answer. The finest operator is untouched,
+                    # and so is level 0, which is not smoothed by SOR:
+                    # re-assembling it here moved its state, so the coarse PC
+                    # was set up a second time at its first application, and
+                    # an SVD was factored twice (#901). Its LU keeps the
+                    # inode kernel at every np now; it had it at np > 1 already,
+                    # where it factors a gathered copy, and lost it only at
+                    # np 1, where it factors this operator.
+                    for _l in range(1, vel_pc.getMGLevels() - 1):
+                        _A = vel_pc.getMGSmoother(_l).getOperators()[0]
+                        _A.setOption(PETSc.Mat.Option.USE_INODES, False)
+                        _A.assemble()
+                # The FAC blocks read their solver from the keys the `finally`
+                # drops:
+                # set them up while the keys are there (#892).
+                custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
+                if _hier is not None:
+                    _hier._record_patch_summary(_rows, solver.dm.comm)
+            # an exact rotation (an analytic normal on a circle or sphere) is kept
+            # out of the velocity preconditioner's directions (#963)
+            n_projected, mode_ratios = 0, []
+            if custom_Pl is not None:
+                n_projected, mode_ratios = _project_exact_null_modes(
+                    pc.getFieldSplitSubKSP()[0], nsp, vel_is, dm.comm, tol)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -1922,19 +2667,24 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 cns = PETSc.NullSpace().create(constant=True, comm=dm.comm)
                 S.setNullSpace(cns)
         finally:
-            # all options consumed by setFromOptions/setUp — drop them so the
-            # global database stays clean (and bounded under time-stepping).
-            for k in cfg:
-                try:
-                    opts.delValue(pfx + k)
-                except Exception:
-                    pass
+            # all options consumed by setFromOptions/setUp — the KSP's own, and
+            # the multigrid bundle and FAC keys under the velocity sub-PC's
+            # prefix, which is derived from `pfx` — drop them so the global
+            # database stays clean (and bounded under time-stepping), on the
+            # error path too.
+            _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,
                # which preconditioner this solve actually got — reported so a model
                # (or a test) can assert on it instead of inferring it from timings
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
-               "schur_pre": "1/mu-mass" if Mp is not None else "selfp"}
+               "coarse_solve": _coarse,
+               "schur_pre": "1/mu-mass" if Mp is not None else "selfp",
+               "projected_null_modes": n_projected,
+               "null_mode_ratios": mode_ratios,
+               "null_mode_threshold": (_projection_threshold(tol) if custom_Pl is not None
+                                       else None)}
         # Mirror the degraded arms into the solver-wide fallback record (#484):
         # the ctx keys above stay authoritative for this path's own tests, but
         # "was anything substituted?" must be answerable in ONE place for any
@@ -1972,7 +2722,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
-    _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
+    # a hard failure is the caller's to judge (raise, or warn and go on)
+    ctx["hard_failure"] = _hard_linear_failure(ksp)
+    if not ctx["hard_failure"]:
+        _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
     # An identity constraint row in an ITERATIVE solve only drives its residual
     # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
@@ -1992,11 +2745,15 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     vel_ksp, pres_ksp = ctx["pc"].getFieldSplitSubKSP()
     ctx["vel_its_last"] = vel_ksp.getIterationNumber()
     ctx["pres_its_last"] = pres_ksp.getIterationNumber()
-    ctx["velocity_pc_type"] = vel_ksp.getPC().getType()
+    vel_pc_now = vel_ksp.getPC()
+    if vel_pc_now.getType() == "python":          # the projection around the real PC (#963)
+        vel_pc_now = vel_pc_now.getPythonContext().inner
+    ctx["velocity_pc_type"] = vel_pc_now.getType()
     # A velocity FGMRES that exhausts its cap returns KSP_DIVERGED_ITS, which
     # KSPCheckSolve deliberately does NOT escalate — so without this it degrades
     # silently. (`preonly` could never fail, which is why the check is new.)
-    _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
+    if not ctx["hard_failure"]:     # a hard outer failure is the caller's to report
+        _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
     if verbose:
         mpi.pprint(f"[rotated_bc] velocity block = {ctx['velocity_pc']} "
                    f"(PC {ctx['velocity_pc_type']}); Schur pre = {ctx['schur_pre']}; "
@@ -2004,6 +2761,154 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                    f"{ksp.getIterationNumber()} its (last apply: vel "
                    f"{ctx['vel_its_last']}, pres {ctx['pres_its_last']})")
     return Uhat, ksp.getConvergedReason(), ctx
+
+
+def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=None,
+                          ctx=None, refresh_operator=True):
+    """Solve the rotated operator of a single-field (vector) solver — the thin
+    sheet — with one KSP on the whole matrix: geometric FMG on the custom
+    prolongation when the solver has a hierarchy, else the shared GAMG bundle
+    with the solver's block size. The saddle-point counterpart is
+    ``_solve_rotated_iterative``; this one has no Schur complement and no
+    pressure gauge. Same ``(Uhat, reason, ctx)`` contract and the same context
+    reuse across Newton iterations."""
+    from underworld3.utilities import custom_mg, multigrid_options
+    dm = solver.dm
+    if ctx is None:
+        _coarse = None                     # no custom FMG, no coarse solve of ours
+        if nsp is not None:
+            Ahat.setNullSpace(nsp)
+            Ahat.setTransposeNullSpace(nsp)
+        global _ROT_SOLVE_COUNT
+        _ROT_SOLVE_COUNT += 1
+        pfx = f"rotvec{_ROT_SOLVE_COUNT}_"
+        opts = PETSc.Options()
+        tol = float(solver.tolerance)
+        cfg = {"ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "500"}
+        if custom_Pl is None:
+            cfg.update(multigrid_options.gamg_bundle(
+                block_size=getattr(solver, "_pc_block_size", 1)).settings)
+        for k, v in cfg.items():
+            opts[pfx + k] = v
+        try:
+            ksp = PETSc.KSP().create(comm=dm.comm)
+            ksp.setOptionsPrefix(pfx)
+            ksp.setOperators(Ahat)
+            pc = ksp.getPC()
+            ksp.setFromOptions()
+            if custom_Pl is not None:
+                # redundant LU with the zero-pivot shift, as on the saddle
+                # route; asked-for GAMG takes its own near-null space here
+                # (this route has no frame rotation to carry the rigid-body
+                # modes) and the verified rotations as its null space
+                _gamg = custom_mg._registered_coarse_solve(solver) == "gamg"
+                _coarse = "gamg" if _gamg else "redundant"
+                _modes = _velocity_null_modes(nsp) if _gamg else []
+                _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _rows = getattr(_hier, "level_patch_rows", None)
+                _fac_keys = custom_mg._configure_pcmg(
+                    pc, custom_Pl, coarse=_coarse,
+                    smoother=solver._mg_smoother_variant,
+                    patch_rows=_rows,
+                    null_modes=_modes)
+                for _m in _modes:
+                    _m.destroy()
+                pc.setUp()
+                custom_mg._set_up_fac_smoothers(pc, _fac_keys)
+                if _hier is not None:
+                    _hier._record_patch_summary(_rows, solver.dm.comm)
+            else:
+                pc.setUp()
+        finally:
+            _drop_options_under(pfx)
+        ctx = {"ksp": ksp, "pc": pc, "Mp": None, "nsp": nsp, "cns": None,
+               "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
+               "custom_Pl": custom_Pl, "pfx": pfx,
+               "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
+               "coarse_solve": _coarse,
+               "schur_pre": "none"}
+        if custom_Pl is None:
+            solver._record_pc_fallback(
+                "rotated.velocity_pc",
+                requested="custom-P geometric MG on the rotated operator",
+                installed="GAMG",
+                reason="unavailable",
+                detail="no multigrid hierarchy (set_custom_fmg or a mesh-owned "
+                       "adapt tail) is available to the rotated path")
+    else:
+        ksp = ctx["ksp"]
+        nsp = ctx["nsp"]
+        if refresh_operator:
+            ksp.setOperators(Ahat)
+    if nsp is not None:
+        nsp.remove(bhat)
+    Uhat = Ahat.createVecRight()
+    Uhat.set(0.0)
+    ksp.solve(bhat, Uhat)
+    ctx["hard_failure"] = _hard_linear_failure(ksp)
+    if not ctx["hard_failure"]:
+        _warn_if_ksp_diverged(ksp, kind="rotated vector")
+    # exact at the decoupled constraint rows, independent of the iterative tolerance
+    _zero_rows_local(Uhat, normal_rows)
+    ctx["velocity_pc_type"] = ksp.getPC().getType()
+    return Uhat, ksp.getConvergedReason(), ctx
+
+
+def _drop_options_under(prefix):
+    """Remove every option under ``prefix`` from the global database. A rotated
+    solve writes its KSP, fieldsplit, multigrid and FAC keys under a prefix
+    unique to that solve; this runs in the solve's ``finally``, so a set-up
+    that raises leaves nothing behind either. Not collective."""
+    opts = PETSc.Options()
+    for name in list(opts.getAll()):
+        if name.startswith(prefix):
+            opts.delValue(name)
+
+
+def _rotated_compatible(Q, g, normal_rows):
+    """``Q·g``, a new vector, with the constrained normal rows zeroed: a mode made
+    exactly compatible with the strong v_n = 0 constraint. Collective."""
+    t = g.duplicate()
+    Q.mult(g, t)
+    _zero_rows_local(t, normal_rows)
+    return t
+
+
+def _rotated_rigid_body_modes(solver, Q, normal_rows, vel_is):
+    """Copies of the velocity parts of the rigid-body modes in the rotated
+    frame, the constrained normal rows zeroed: the near-null space of a GAMG
+    coarse solve on the rotated saddle route. Collective."""
+    out = []
+    for g in _rigid_body_modes(solver):
+        t = _rotated_compatible(Q, g, normal_rows)
+        sub = t.getSubVector(vel_is)
+        out.append(sub.copy())
+        t.restoreSubVector(vel_is, sub)
+        t.destroy()
+        solver.dm.restoreGlobalVec(g)
+    return out
+
+
+def _velocity_null_modes(nsp, vel_is=None):
+    """Copies of the nonzero velocity parts of the rotated null space ``nsp``:
+    the verified rigid rotations (the constant-pressure vector has none).
+    ``vel_is`` selects the velocity block of the saddle system; ``None`` takes
+    the vectors whole (the vector problem). Collective."""
+    if nsp is None:
+        return []
+    out = []
+    for vec in nsp.getVecs():
+        if vel_is is None:
+            m = vec.copy()
+        else:
+            sub = vec.getSubVector(vel_is)
+            m = sub.copy()
+            vec.restoreSubVector(vel_is, sub)
+        if m.norm() > 0.0:
+            out.append(m)
+        else:
+            m.destroy()
+    return out
 
 
 def _rotated_nullspace(solver, Q, normal_rows):
@@ -2037,19 +2942,33 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
     n_rot = 0
-    for tg in _rigid_rotation_modes(solver):
-        if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
+    slack = 0.0
+    flags, note = _declared_mode_flags(solver)
+    for tg, declared in zip(_rigid_rotation_modes(solver), flags):
+        report = []
+        if _mode_satisfies_constraints(solver, Q, normal_rows, tg, report=report,
+                                       declared=declared):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
             n_rot += 1
+            viol = report[-1]["viol"]
+            if viol >= _ROTATION_MODE_TOL:
+                slack = max(slack, viol)
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
-    # The VELOCITY-block null-mode count, recorded for the coarse-solve
-    # choice in _solve_rotated_iterative: only a rotation mode makes the
-    # Galerkin-coarsened velocity block singular (the constant-pressure
-    # mode lives in the pressure block), so only then is the SVD coarse
-    # solve required.
+    # The VELOCITY-block null-mode count (the constant-pressure mode lives in
+    # the pressure block): the rotations removed from the answer, reported by
+    # the solve; an asked-for GAMG coarse solve takes them as its null space.
     solver._rotated_velocity_null_modes = n_rot
+    # the largest constraint violation of an admitted mode: 0 when every mode
+    # is exact; read by the net-torque guard after the Newton loop
+    solver._rotated_null_mode_slack = slack
+    # which declared modes were exempt from the constraint test: a deformed wall (a
+    # free-surface step) takes the exemption away, and the solve says why
+    declared_any = _rotations_declared(solver.mesh)
+    solver._rotated_declared_modes_exempt = flags if declared_any else None
+    if note is not None:
+        _warn_declared_modes_refused(note)
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -2068,12 +2987,12 @@ def _rotated_nullspace(solver, Q, normal_rows):
     return PETSc.NullSpace().create(constant=False, vectors=ortho, comm=dm.comm)
 
 
-def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
-                                report=None):
+def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_TOL,
+                                report=None, declared=False):
     """True iff the rigid-body mode ``tg`` is a genuine null mode of the
     constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
-    every constrained normal row) AND it is a null vector of the assembled
-    operator (‖J·tg‖ ~0 against the velocity diagonal scale). The operator test
+    every constrained normal row; a declared mode that keeps every wall is exempt,
+    see ``declared``) AND it is a null vector of the assembled operator (‖J·tg‖ ~0 against the velocity diagonal scale). The operator test
     is what catches pinning the rotated rows cannot see — an ESSENTIAL no-slip
     on another boundary leaves the mode tangential to the rotated wall (first
     test passes) while the eliminated operator is NOT null on it; admitting it
@@ -2098,7 +3017,14 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     test already rejected the mode) and the verdict. Whether a mode is admitted
     decides whether a gauge component is projected out of the answer, so when
     two solves of the same system disagree this is the first thing to look at
-    — but nothing in the returned dict was observable before."""
+    — but nothing in the returned dict was observable before.
+
+    ``declared``: the mode is one the mesh declares (#906). Its constraint
+    violation is recorded but does not reject it: the callers zero its
+    constrained rows, which makes it exactly compatible with v_n = 0, and on a
+    faceted sphere the facet-averaged normal leaves a declared rotation a
+    discretisation-sized violation (0.008-0.016 on #906's shell). The operator
+    test still applies, so a no-slip wall that pins it rejects it."""
     tr = tg.duplicate()
     Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
@@ -2115,7 +3041,7 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     # transient duplicates
     tr.destroy()
     trc.destroy()
-    if viol >= tol:
+    if viol >= tol and not declared:
         if report is not None:
             report.append({"viol": float(viol), "op_viol": None,
                            "accepted": False, "rejected_by": "constraint"})
@@ -2142,6 +3068,48 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
     return op_viol < tol
 
 
+def _wall_normal_loads(solver, boundary, solve_result):
+    """The normal load the constraint reaction puts on each node of ``boundary``:
+    ``(xs, loads, owned)``, with ``loads[i] = -n̂_i·r_c`` (σ_nn's sign) and ``owned[i]``
+    whether this rank owns node i. Both readers of the reaction take it from here.
+
+    The Cartesian reaction r_c is copied into a zeroed local vector: ``globalToLocal``
+    does not write the components an essential condition constrains, so they read zero
+    and contribute nothing to σ_nn (#936). A node belongs to the rank that owns its
+    first free component; a node with none carries no load and belongs to no rank.
+    """
+    dm = solver.dm
+    dim = solver.mesh.cdim
+    # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
+    # solve driver (the final ``computeFunction`` residual; for a linear residual
+    # this equals the assembled A·u−b exactly).
+    rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
+    rstart, rend = rc.getOwnershipRange()
+    rcl = dm.getLocalVec()
+    try:
+        # a pooled vector holds whatever its last user left
+        rcl.set(0.0)
+        dm.globalToLocal(rc, rcl)
+        rca = np.asarray(rcl.getArray())
+        lsec = dm.getLocalSection()
+        l2g = dm.getLGMap()
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
+        xs, loads, owned = [], [], []
+        for q, nrm in _boundary_velocity_nodes(solver, boundary, normal=normal):
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            free = [int(g) for g in l2g.apply(list(range(lo, lo + dim))) if g >= 0]
+            xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
+            # n̂·r_c, not the rotated frame's normal row: corner-correct
+            loads.append(-float(np.dot(nrm, rca[lo:lo + dim])))
+            owned.append(bool(free) and rstart <= free[0] < rend)
+    finally:
+        dm.restoreLocalVec(rcl)
+    return np.array(xs), np.array(loads), np.array(owned, dtype=bool)
+
+
 def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     """Boundary normal traction σ_nn on `boundary` from the constraint reaction of the
     last rotated-free-slip solve (``solve_result`` is the dict returned by
@@ -2163,8 +3131,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     Projecting the Cartesian reaction onto the boundary normal (rather than reading the
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
-    normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
-    σ_nn is the boundary-mass de-smear of R.
+    normals, but n̂·r_c is the true normal traction for this boundary. At a node an
+    essential wall also constrains (a corner with a Dirichlet wall), the constrained
+    components are not in the reaction vector and read zero, so they contribute
+    nothing to σ_nn (#936). The pointwise σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
       * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles,
@@ -2195,37 +3165,12 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     scattering each rank's recovered values. The mean-removal gauge remains global. Only
     triangular P1/P2 traces are supported in 3D.
     """
-    dm = solver.dm
-    dim = solver.mesh.dim
-    # Cartesian nodal reaction r_c = F(u) at the converged state, stashed by the
-    # solve driver (the final ``computeFunction`` residual; for a linear residual
-    # this equals the assembled A·u−b exactly).
-    rc = solve_result["reaction"]                # owned by the result dict — do NOT destroy
-    rcl = dm.getLocalVec()
-    dm.globalToLocal(rc, rcl)
-    rca = np.asarray(rcl.getArray())
-
-    lsec = dm.getLocalSection()
-    csec = dm.getCoordinateSection()
-    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-    v0, v1 = dm.getDepthStratum(0)
-    normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
-    nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-    xs = []
-    Rn = []
-    for q, nrm in nodes:
-        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-        rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
-        xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-        Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
-    dm.restoreLocalVec(rcl)
-    xs = np.array(xs)
-    Rn = np.array(Rn)
+    xs, loads, _owned = _wall_normal_loads(solver, boundary, solve_result)
     # σ_nn = −(nodal reaction), de-smeared by the SHARED boundary-mass primitive and
     # mean-removed (the ρg·h gauge). partial_reaction=False: the reaction here comes from
     # the ASSEMBLED global operator Q(A·u−b), already complete at every node (ranks agree
     # at a partition-cut node — must OVERWRITE, not sum, else shared nodes double-count).
-    return xs, _desmear(solver, boundary, xs, -Rn, mass,
+    return xs, _desmear(solver, boundary, xs, loads, mass,
                         remove_mean=True, partial_reaction=False)
 
 
@@ -2252,41 +3197,13 @@ def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
     import underworld3 as uw
 
     fn = sympy.sympify(fn)
-    dm = solver.dm
-    comm = dm.comm.tompi4py()
-    dim = solver.mesh.dim
-    rc = solve_result["reaction"]
-    rstart, rend = rc.getOwnershipRange()
-    rcl = dm.getLocalVec()
-    dm.globalToLocal(rc, rcl)
+    comm = solver.dm.comm.tompi4py()
+    # each node counted once, on its owner; the loads are boundary_normal_traction's
+    xs, loads, owned = _wall_normal_loads(solver, boundary, solve_result)
+    owned_reactions = loads[owned]
 
-    try:
-        rca = np.asarray(rcl.getArray())
-        lsec = dm.getLocalSection()
-        l2g = dm.getLGMap()
-        csec = dm.getCoordinateSection()
-        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-        v0, v1 = dm.getDepthStratum(0)
-        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(
-            boundary
-        )
-        nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-
-        owned_coords = []
-        owned_reactions = []
-        for q, nrm in nodes:
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            global_row = int(l2g.apply([lo])[0])
-            if not rstart <= global_row < rend:
-                continue
-            owned_coords.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-            # sigma_nn load = -n.r_c, matching boundary_normal_traction().
-            owned_reactions.append(-float(np.dot(nrm, rca[lo:lo + dim])))
-    finally:
-        dm.restoreLocalVec(rcl)
-
-    if owned_coords:
-        coords = np.ascontiguousarray(owned_coords, dtype=float)
+    if owned_reactions.size:
+        coords = np.ascontiguousarray(xs[owned], dtype=float)
         weights = np.asarray(uw.function.evaluate(fn, coords), dtype=float).reshape(-1)
         if weights.size == 1 and len(owned_reactions) != 1:
             weights = np.full(len(owned_reactions), float(weights[0]))
@@ -2327,7 +3244,7 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     safe: the recovery is partition-independent and the write is local (each rank fills
     its own boundary nodes, matched by coordinate to the recovery output).
     """
-    dim = solver.mesh.dim
+    dim = solver.mesh.cdim
     xs, sig = boundary_normal_traction(solver, boundary, solve_result, mass=mass)
     # σ_nn is already mean-removed (the ρg·h gauge); topography h = -σ_nn / (Δρ g).
     def key(c):
@@ -2337,35 +3254,245 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     return write_boundary_scalar_field(solver, field, hmap, dim)
 
 
+def _rigid_rotation_fields(c, cdim):
+    """The rigid rotations at the points ``c``: ``[(-y,x)]`` in 2D, ``[e_k×r]``
+    for k=x,y,z in 3D."""
+    if cdim == 2:
+        return [np.column_stack([-c[:, 1], c[:, 0]])]
+    x, y, z = c[:, 0], c[:, 1], c[:, 2]
+    zero = np.zeros_like(x)
+    return [np.column_stack([zero, -z, y]),      # e_x × r
+            np.column_stack([z, zero, -x]),      # e_y × r
+            np.column_stack([-y, x, zero])]      # e_z × r
+
+
+def _rotations_declared(mesh):
+    """True when the mesh declares its rotation null modes (#906): a factory for
+    a closed surface did, or a user assigned ``mesh.nullspace_rotations``. An
+    empty declaration counts: the mesh has none."""
+    return getattr(mesh, "_nullspace_rotations", None) is not None
+
+
+# A declared rotation leaves a rotated wall in place when every vertex of the wall lies
+# at one distance from the rotation's centre, to this relative tolerance (#906).
+_WALL_INVARIANCE_TOL = 1.0e-9
+
+
+def _affine_rotation(mode, X):
+    """``(A, m0)`` with ``mode(x) = A x + m0`` and A antisymmetric and nonzero, from the
+    sympy field ``mode`` of the coordinates ``X``, or None when it is not that."""
+    cdim = len(X)
+    f = sympy.lambdify(X, list(sympy.Matrix(mode)), "numpy")
+    m0 = np.asarray(f(*np.zeros(cdim)), dtype=float)
+    A = np.column_stack([np.asarray(f(*e), dtype=float) - m0 for e in np.eye(cdim)])
+    scale = np.linalg.norm(A)
+    probe = np.linspace(0.3, 1.7, cdim)
+    affine = np.allclose(np.asarray(f(*probe), dtype=float), m0 + A @ probe,
+                         rtol=1.0e-12, atol=1.0e-12 * max(scale, 1.0))
+    if scale == 0.0 or not affine or np.linalg.norm(A + A.T) > 1.0e-12 * scale:
+        return None
+    return A, m0
+
+
+def _declared_centre(mesh):
+    """The one point about which every mode the mesh declares rotates, or None when
+    there is none: a mode that is not a rigid rotation (a screw has a part along its
+    axis), modes about different points, or axes that meet in a line (a single
+    declared rotation in 3-D). Each mode ``A x + m0`` vanishes on its axis, so the
+    centre solves every ``A c = -m0`` at once."""
+    X = list(mesh.X)
+    blocks = [_affine_rotation(mode, X) for mode in mesh._nullspace_rotations]
+    if not blocks or any(b is None for b in blocks):
+        return None
+    A = np.vstack([b[0] for b in blocks])
+    rhs = -np.concatenate([b[1] for b in blocks])
+    centre, _res, rank, _sv = np.linalg.lstsq(A, rhs, rcond=None)
+    if rank < mesh.cdim:
+        return None
+    misfit = np.linalg.norm(A @ centre - rhs)
+    if misfit > 1.0e-10 * np.linalg.norm(A) * max(1.0, np.linalg.norm(centre)):
+        return None
+    return centre
+
+
+def _wall_vertex_rows(dm, name):
+    """Rows of the local coordinate array for the vertices in the closure of the
+    facets labelled ``name`` on this rank: the wall rotated free slip constrains. A
+    label can also hold points off the wall (SegmentedSphericalShell's ``Upper``
+    labels interior vertices directly), so its own vertex stratum is not read."""
+    rows = set()
+    label = dm.getLabel(name)
+    if label is None:
+        return np.empty(0, dtype=np.int64)
+    fs, fe = dm.getHeightStratum(1)
+    vs, ve = dm.getDepthStratum(0)
+    csec = dm.getCoordinateSection()
+    cdim = dm.getCoordinateDim()
+    values = label.getValueIS()
+    for value in (values.getIndices() if values else ()):
+        points = label.getStratumIS(int(value))
+        if not points:
+            continue
+        for facet in points.getIndices():
+            if fs <= facet < fe:
+                for q in dm.getTransitiveClosure(int(facet))[0]:
+                    if vs <= q < ve:
+                        rows.add(csec.getOffset(int(q)) // cdim)
+    return np.fromiter(rows, dtype=np.int64, count=len(rows))
+
+
+def _declared_mode_flags(solver):
+    """For each mode :func:`_rigid_rotation_modes` returns, whether it is exempt from
+    the constraint-row test (#906), and the reason to warn when an exemption the mesh
+    asked for was refused (None otherwise). COLLECTIVE.
+
+    The test compares a mode with the normals of the constrained rows. On a faceted
+    sphere the facet-averaged normal is not radial at the nodes, so a true rotation
+    fails it by the faceting error. A declared mode is exempt when that is the only
+    reason it could fail:
+
+    - every rotated wall takes the facet-averaged normal (``normal=None``); a wall with
+      a given normal is tested, which an exact normal passes;
+    - the declared modes are rigid rotations about one point, their centre;
+    - every rotated wall's vertices, the closure of its labelled facets, are
+      equidistant from that centre to ``_WALL_INVARIANCE_TOL``: the wall is a sphere
+      (a circle in 2-D) about it. Faceting keeps vertices on the sphere and only edge
+      midpoints off it. A deformed wall fails, a free surface after its first step
+      for example, and so does any other surface of revolution.
+
+    A mode that is not exempt takes the test like an undeclared one. Every mode gets
+    the same verdict. The coordinates are the DM's, which are non-dimensional.
+    """
+    from mpi4py import MPI
+
+    mesh = solver.mesh
+    cdim = mesh.cdim
+    if not _rotations_declared(mesh):
+        return [False] * (1 if cdim == 2 else 3), None
+    n_modes = len(mesh._nullspace_rotations)
+    if n_modes == 0:
+        # the mesh declares that it has no rotation: nothing to exempt or warn about
+        return [], None
+    specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
+    given = [name for name, normal in specs if normal is not None]
+    if given and len(given) < len(specs):
+        return [False] * n_modes, (
+            f"rotated walls {given} take a given normal and the others the facet-averaged "
+            f"one, so the declared rotation modes take the constraint test. Where a "
+            f"facet-averaged wall is faceted (a sphere, or a circle with unequal edges) a "
+            f"rotation fails it by the faceting error and is not removed. Give every "
+            f"rotated wall the analytic normal, or none")
+    if given:
+        return [False] * n_modes, None
+
+    centre = _declared_centre(mesh)
+    if centre is None:
+        return [False] * n_modes, (
+            "the rotation modes the mesh declares are not rigid rotations about one "
+            "point, so they are not exempt from the constraint test")
+
+    dm = mesh.dm
+    coords = dm.getCoordinatesLocal().array.reshape(-1, cdim)
+    # every wall's nearest and furthest vertex, reduced over all ranks before any
+    # verdict, so every rank reaches every reduction
+    spread = []
+    for name, _normal in specs:
+        rows = (np.arange(coords.shape[0]) if name == SHEET_TANGENCY
+                else _wall_vertex_rows(dm, name))
+        d = np.linalg.norm(coords[rows] - centre, axis=1)
+        lo = mpi.comm.allreduce(float(d.min()) if d.size else np.inf, op=MPI.MIN)
+        hi = mpi.comm.allreduce(float(d.max()) if d.size else -np.inf, op=MPI.MAX)
+        spread.append((name, (hi - lo) / hi if hi > 0.0 else 0.0))
+    for name, rel in spread:
+        if rel > _WALL_INVARIANCE_TOL:
+            return [False] * n_modes, (
+                f"rotated wall {name!r} is not a sphere about the rotation centre "
+                f"{np.round(centre, 12).tolist()}: its vertices' distances from it "
+                f"spread over {rel:.2g} of the radius, against "
+                f"{_WALL_INVARIANCE_TOL:g}. The declared rotation modes therefore take "
+                f"the constraint test")
+    return [True] * n_modes, None
+
+
+def _warn_declared_modes_refused(note):
+    """Say, once, why the declared rotation modes are not exempt (#906)."""
+    import warnings
+
+    with mpi.selective_ranks(0) as selected:
+        if selected:
+            warnings.warn(f"{note} (#906).", UserWarning)
+
+
+def _declared_rotation_fields(mesh, c):
+    """The mesh's declared rotation modes evaluated at the points ``c``, one
+    ``(N, cdim)`` array per mode, or None when the mesh declares nothing (the
+    Cartesian rotations are then offered and detected, as before)."""
+    if not _rotations_declared(mesh):
+        return None
+    X = list(mesh.X)
+    fields = []
+    for mode in mesh._nullspace_rotations:
+        cols = []
+        for comp in sympy.Matrix(mode):
+            f = sympy.lambdify(X, comp, "numpy")
+            cols.append(np.broadcast_to(np.asarray(f(*c.T), dtype=float), (c.shape[0],)))
+        fields.append(np.column_stack(cols))
+    return fields
+
+
 def _rigid_rotation_modes(solver):
-    """The Cartesian rigid-body rotation mode(s) as composite GLOBAL vectors
-    (velocity DOFs only, zero pressure): ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
+    """The rigid-body rotation modes as composite GLOBAL vectors (velocity DOFs
+    only, zero pressure): the modes the mesh declares
+    (``mesh.nullspace_rotations``, #906), or, for a mesh that declares none, the
+    Cartesian rotations ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
     k=x,y,z in 3D — a spherical shell with free-slip on both boundaries has all
-    THREE. Parallel-safe: built via localToGlobal on the velocity sub-DM, so
+    THREE, and so does a sheet on the surface of a sphere (embedding dimension
+    three), whose tangency constraint every Killing field satisfies. Parallel-safe: built via localToGlobal on the velocity sub-DM, so
     shared nodes are handled by PETSc, not double-counted. The vectors are
     borrowed from the DM pool — every one must go back via
     ``dm.restoreGlobalVec``. COLLECTIVE: all ranks build the same mode list."""
+    # the model's own (non-dimensional) coordinates: the declared modes are written
+    # in them, and a unit-aware array would not combine with a plain offset (#877)
+    c = solver.Unknowns.u.coords_nd
+    fields = _declared_rotation_fields(solver.mesh, c)
+    if fields is None:
+        fields = _rigid_rotation_fields(c, solver.mesh.cdim)
+    return _velocity_field_modes(solver, fields)
+
+
+def _rigid_body_modes(solver):
+    """The Cartesian rigid-body modes, translations then rotations, as composite
+    GLOBAL vectors (velocity DOFs only). They are a near-null space for GAMG,
+    not a null space: no constraint is checked. Borrowed from the DM pool like
+    :func:`_rigid_rotation_modes`. COLLECTIVE."""
+    c = solver.Unknowns.u.coords_nd
+    cdim = solver.mesh.cdim
+    translations = []
+    for k in range(cdim):
+        t = np.zeros((c.shape[0], cdim))
+        t[:, k] = 1.0
+        translations.append(t)
+    return _velocity_field_modes(solver, translations + _rigid_rotation_fields(c, cdim))
+
+
+def _velocity_field_modes(solver, fields):
+    """Each nodal velocity field in ``fields`` (non-dimensional, one row per local
+    velocity node, in the local vector's order) as a composite global vector, through
+    localToGlobal on the velocity sub-DM."""
     dm = solver.dm
-    v = solver.Unknowns.u
-    c = v.coords
-    saved = v.data.copy()
-    if solver.mesh.dim == 2:
-        fields = [np.column_stack([-c[:, 1], c[:, 0]])]
-    else:
-        x, y, z = c[:, 0], c[:, 1], c[:, 2]
-        zero = np.zeros_like(x)
-        fields = [np.column_stack([zero, -z, y]),      # e_x × r
-                  np.column_stack([z, zero, -x]),      # e_y × r
-                  np.column_stack([-y, x, zero])]      # e_z × r
-    vis = solver._subdict["velocity"][0]
+    vis, sub = solver._subdict["velocity"][0], solver._subdict["velocity"][1]
+    local = sub.createLocalVec()
     modes = []
     for f in fields:
-        v.data[...] = f
+        # the fields are non-dimensional (from coords_nd), as the vectors are; going
+        # through the velocity variable's .array would scale them, or refuse a plain
+        # array when the variable carries units (#877)
+        local.array[...] = np.asarray(f, dtype=float).ravel()
         tg = dm.getGlobalVec()
         tg.set(0.0)
         sg = tg.getSubVector(vis)
-        solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
+        sub.localToGlobal(local, sg)
         tg.restoreSubVector(vis, sg)
         modes.append(tg)
-    v.data[...] = saved
+    local.destroy()
     return modes

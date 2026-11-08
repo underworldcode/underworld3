@@ -10,6 +10,65 @@ import underworld3.timing as timing
 
 include "petsc_extras.pxi"
 
+from petsc4py.PETSc cimport Quad
+
+cdef extern from "petsc.h" nogil:
+    ctypedef struct _n_DMField
+    ctypedef _n_DMField* PetscDMField "DMField"
+    ctypedef enum PetscFEGeomMode:
+        PETSC_FEGEOM_BASIC
+        PETSC_FEGEOM_EMBEDDED
+    ctypedef struct PetscFEGeom:
+        PetscReal *detJ
+    PetscErrorCode DMGetCoordinateField(PetscDM, PetscDMField*)
+    PetscErrorCode DMFieldCreateFEGeom(PetscDMField, PetscIS, PetscQuadrature, PetscFEGeomMode, PetscFEGeom**)
+    PetscErrorCode PetscFEGeomDestroy(PetscFEGeom**)
+    PetscErrorCode PetscQuadratureGetData(PetscQuadrature, PetscInt*, PetscInt*, PetscInt*, const PetscReal**, const PetscReal**)
+    PetscErrorCode PetscQuadratureDestroy(PetscQuadrature*)
+    PetscErrorCode PetscDTStroudConicalQuadrature(PetscInt, PetscInt, PetscInt, PetscReal, PetscReal, PetscQuadrature*)
+    PetscErrorCode PetscDTGaussTensorQuadrature(PetscInt, PetscInt, PetscInt, PetscReal, PetscReal, PetscQuadrature*)
+
+
+# Geometry holds 22 doubles a point in 3-D, so this bounds it near 35 MB a block.
+_POINTS_PER_GEOMETRY_BLOCK = 200000
+
+
+def _check_error_code_collectively(ierr, routine):
+    """Raise on every rank if ``routine`` failed on any of them, naming the first
+    rank that did. COLLECTIVE on the world: every rank must reach it.
+
+    A separate communicator keeps this exchange from pairing with a PETSc message.
+    It does not prevent a hang: if a routine fails on some ranks and the others wait
+    in its closing collective, neither group arrives here.
+    """
+    from underworld3.utilities.fault_contact import _collective_raise
+
+    _collective_raise(
+        None if ierr == 0
+        else f"{routine} failed on rank {uw.mpi.rank} with error code {int(ierr)}")
+
+
+cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
+    """``DMPlexComputeGeometryFVM``, which needs affine coordinates, checked on
+    every rank.
+
+    A higher-degree coordinate field is refused before the call, and the error
+    code cannot stand in for that. Such a field fails on a rank's first face, and
+    a rank with no cells has no faces: it goes on into a collective inside the
+    routine that its failed peers have left, and never reaches the check (seen
+    with cells [8, 8, 0] and [1, 0]). ``mesh.degree`` is the same on every rank,
+    so every rank refuses together.
+    """
+    if mesh.degree != 1:
+        raise ValueError(
+            f"DMPlexComputeGeometryFVM needs affine coordinates; this mesh has "
+            f"degree {mesh.degree}. Mesh.get_min_radius and Mesh.cell_size handle any degree.")
+
+    cdef DM dm = mesh.dm
+    cdef PetscErrorCode ierr = DMPlexComputeGeometryFVM(dm.dm, &cellgeom.vec, &facegeom.vec)
+    _check_error_code_collectively(ierr, "DMPlexComputeGeometryFVM")
+
+
 ## This is currently wrapped in petsc4py but returns zero
 
 def petsc_fvm_get_min_radius(mesh) -> float:
@@ -23,11 +82,10 @@ def petsc_fvm_get_min_radius(mesh) -> float:
 
         cdef Vec cellgeom = Vec()
         cdef Vec facegeom = Vec()
-        cdef DM dm = mesh.dm
 
-        DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
+        _compute_geometry_fvm(mesh, cellgeom, facegeom)
 
-        min_radius = dm.getMinRadius()
+        min_radius = mesh.dm.getMinRadius()
         cellgeom.destroy()
         facegeom.destroy()
 
@@ -35,8 +93,8 @@ def petsc_fvm_get_min_radius(mesh) -> float:
 
 def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         """
-        This method returns the minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine.
+        Each local cell's ``volume**(1/dim)`` and its centroid, from
+        ``DMPlexComputeGeometryFVM``. Degree 1 only.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
@@ -44,9 +102,8 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
 
         cdef Vec cellgeom = Vec()
         cdef Vec facegeom = Vec()
-        cdef DM dm = mesh.dm
 
-        DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
+        _compute_geometry_fvm(mesh, cellgeom, facegeom)
 
         # cell_geom is an array of 3D cell centroids plus the cell volume
 
@@ -58,6 +115,80 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         facegeom.destroy()
 
         return cell_radii, cell_centroids
+
+
+def _quadrature_points_per_edge(dim, degree, simplex, manifold):
+    """Points per edge that integrate the area element of a cell of this coordinate
+    degree exactly, at 2n - 1 for n Gauss points.
+
+    On a simplex :math:`\\det J` has total degree ``dim * (degree - 1)``. On a tensor
+    cell it has degree ``dim * degree - 1`` in each variable. On a manifold the area
+    element is the root of a determinant of twice that degree, which no rule integrates
+    exactly unless the cell is straight sided, so the rule takes the determinant's.
+    """
+    polynomial = dim * (degree - 1) if simplex else dim * degree - 1
+    if manifold:
+        polynomial *= 2
+    return polynomial // 2 + 1
+
+
+def petsc_fem_get_local_cell_sizes(mesh) -> np.array:
+        r"""
+        Each local cell's characteristic length :math:`V^{1/\mathrm{dim}}`, for a
+        coordinate field of any degree, on a volume mesh or a manifold.
+
+        The volume is the integral of the coordinate map's Jacobian over the cell,
+        :math:`V = \sum_q w_q |\det J(\xi_q)|`. The rule is set by the coordinate
+        degree and not by the mesh's ``qdegree``, because a size is a property of the
+        coordinates, and the geometry is built a bounded block of cells at a time,
+        because this runs on every coordinate rebuild.
+
+        COLLECTIVE: the failure check needs every rank, including one with no cells.
+        """
+        cdef DM dm = mesh.dm
+        cdef PetscFEGeomMode mode = PETSC_FEGEOM_BASIC if mesh.dim == mesh.cdim else PETSC_FEGEOM_EMBEDDED
+        cdef PetscDMField coordinate_field = NULL
+        cdef PetscFEGeom *geometry = NULL
+        cdef PetscQuadrature rule = NULL
+        cdef PetscInt dim = mesh.dim
+        cdef PetscInt points_per_edge = _quadrature_points_per_edge(
+            mesh.dim, mesh.degree, mesh.isSimplex, mesh.dim != mesh.cdim)
+        cdef PetscInt cell, q, start = 0, stop, Nq = 0
+        cdef const PetscReal *weights = NULL
+        cdef PetscErrorCode ierr = 0
+        cdef IS cells
+
+        cStart, cEnd = mesh.dm.getHeightStratum(0)
+        cdef PetscInt num_cells = cEnd - cStart
+        volumes = np.zeros(num_cells, dtype=np.float64)
+        cdef double[::1] volume_view = volumes
+
+        if mesh.isSimplex:
+            ierr = PetscDTStroudConicalQuadrature(dim, 1, points_per_edge, -1.0, 1.0, &rule)
+        else:
+            ierr = PetscDTGaussTensorQuadrature(dim, 1, points_per_edge, -1.0, 1.0, &rule)
+        if ierr == 0:
+            ierr = PetscQuadratureGetData(rule, NULL, NULL, &Nq, NULL, &weights)
+        if ierr == 0:
+            ierr = DMGetCoordinateField(dm.dm, &coordinate_field)
+
+        cdef PetscInt cells_per_block = max(1, _POINTS_PER_GEOMETRY_BLOCK // max(1, Nq))
+        while ierr == 0 and start < num_cells:
+            stop = min(start + cells_per_block, num_cells)
+            cells = PETSc.IS().createStride(stop - start, first=cStart + start, step=1, comm=PETSc.COMM_SELF)
+            ierr = DMFieldCreateFEGeom(coordinate_field, cells.iset, rule, mode, &geometry)
+            cells.destroy()
+            if ierr == 0:
+                for cell in range(stop - start):
+                    for q in range(Nq):
+                        volume_view[start + cell] += weights[q] * abs(geometry.detJ[cell * Nq + q])
+                ierr = PetscFEGeomDestroy(&geometry)
+            start = stop
+
+        PetscQuadratureDestroy(&rule)
+        _check_error_code_collectively(ierr, "DMFieldCreateFEGeom")
+
+        return np.power(volumes, 1 / mesh.dim)
 
 
 def petsc_dmplex_load_local_vector(dm, viewer, sectiondm, sf, data_name):
@@ -181,6 +312,41 @@ def petsc_dm_set_regular_refinement(dm, regular=True):
         return
 
 
+def petsc_dm_create_interpolation_within_plex(dmc, dmf):
+        """The interpolation matrix from the field of ``dmc`` to the field of
+        ``dmf``, two DMs on ONE plex (clones or sub-DMs of one mesh DM).
+
+        It is the matrix ``dmc.createInterpolation(dmf)`` returns, assembled
+        also on a rank that holds cells but owns none of their degrees of
+        freedom, where PETSc's own preallocation skips the rank and the
+        assembly fails on some ranks and hangs the others (#902; see
+        ``UW_DMCreateInterpolationWithinPlex`` in ``petsc_compat.h``).
+        Collective.
+        """
+        cdef DM c_dmc = dmc
+        cdef DM c_dmf = dmf
+        cdef Mat interp = PETSc.Mat()
+        CHKERRQ( UW_DMCreateInterpolationWithinPlex(c_dmc.dm, c_dmf.dm, &interp.mat) )
+        return interp
+
+
+def petsc_dm_create_coordinate_space_within_plex(dm, degree):
+        """Give ``dm`` a Lagrange coordinate space of ``degree``, its coordinates
+        carried across from the current space.
+
+        It is ``dm.createCoordinateSpace(degree, False, True)``, with the
+        coordinates interpolated by UW3's copy of PETSc's interpolator, so a
+        degree >= 2 space is also built on a rank that holds cells but owns
+        none of their nodes (#902; see
+        ``UW_DMPlexCreateCoordinateSpaceWithinPlex`` in ``petsc_compat.h``).
+        Isoperiodic coordinates are the exception: PETSc projects them
+        locally, with no matrix, and they keep its route. Collective.
+        """
+        cdef DM c_dm = dm
+        cdef PetscInt c_degree = degree
+        CHKERRQ( UW_DMPlexCreateCoordinateSpaceWithinPlex(c_dm.dm, c_degree) )
+
+
 
 # This is not cython, does it need to be here or in discretisation.py ?
 
@@ -201,8 +367,10 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         label = dm.getLabel(label_name)
         if not label:
+                # no points: callers index coordinates with the result, and [0]
+                # would move vertex 0 (#903)
                 uw.pprint(f"Label {label_name} is not present on the dm")
-                return np.array([0])
+                return np.array([], dtype=np.int64)
 
         pointIS = dm.getStratumIS("depth",0)
         edgeIS = dm.getStratumIS("depth",1)

@@ -623,7 +623,7 @@ class TranscriptAdjoint:
 
     # ------------------------------------------------------------------
     def _mesh(self):
-        return next(iter(self.model._variables.values())).mesh
+        return next(iter(list(self.model._variables.values()))).mesh
 
     def _tokens(self):
         """``{token: variable}`` — how each variable PRINTS inside a residual.
@@ -633,7 +633,7 @@ class TranscriptAdjoint:
         token is taken from the symbol's own text (:func:`_token_of`).
         Matching on the name found the user's fields and silently missed
         every history, which cut the chain at the first step."""
-        return {_token_of(var): var for var in self.model._variables.values()
+        return {_token_of(var): var for var in list(self.model._variables.values())
                 if hasattr(var, "sym")}
 
     def _reads(self, solver, unknown):

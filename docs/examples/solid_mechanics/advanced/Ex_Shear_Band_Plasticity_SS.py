@@ -182,7 +182,7 @@ C = uw.function.expression(R"C", 1000, "Cohesion")
 stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 stokes.constitutive_model.Parameters.yield_stress = mu * p_soln.sym[0] + C
-stokes.constitutive_model.Parameters.yield_min = 1000
+stokes.constitutive_model.Parameters.yield_stress_min = 1000  # residual strength (= C): the Drucker-Prager yield reads p
 stokes.penalty = 1
 
 stokes.petsc_options["ksp_monitor"] = None

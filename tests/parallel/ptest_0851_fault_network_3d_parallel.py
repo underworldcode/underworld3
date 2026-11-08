@@ -11,6 +11,7 @@ ptest_0851_fault_network_3d_parallel.py --with-mpi
 """
 import numpy as np
 import pytest
+import sympy
 
 import underworld3 as uw
 
@@ -51,6 +52,7 @@ def test_network_3d_split_solve_np2():
     cm.yield_mode = "min"
     cm.Parameters.shear_viscosity_0 = 1.0
     cm.Parameters.yield_stress = net.damage_yield(v, dial=0.05)
+    cm.Parameters.yield_stress_min = -sympy.oo   # dial + rate term: positive by construction (#759)
     stokes.consistent_jacobian = True
     stokes.bodyforce = [0.0, 0.0, 0.0]
     for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):

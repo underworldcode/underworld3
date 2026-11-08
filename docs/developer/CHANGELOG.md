@@ -4,6 +4,166 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ---
 
+## 2026 Q4 (October – December)
+
+### Rotated free slip takes its rotation modes from the mesh (November 2026, #906)
+
+A spherical shell with rotated free slip on both walls and the default normal
+returned an answer with an arbitrary rigid rotation in it. The rotated route
+built the Cartesian rotations and kept only those that passed a 1e-8 test
+against the discrete constraints. On a faceted sphere the facet-averaged normal
+is not radial at the nodes, so every rotation failed the test by 0.0075 to
+0.0164 (a 0.5 shell built on macOS), and none was removed. On a 0.3 shell built on
+macOS the answer carried a rotation of rate 4.66 in a v_rms of 3.93, against 1.81
+under the analytic radial normal.
+
+The modes now come from `mesh.nullspace_rotations`, which the mesh factories
+fill and the standard Stokes path already read. A declared mode has its
+constrained rows zeroed, so v·n = 0 stays exact, and it is still tested against
+the assembled operator, so a no-slip wall rejects it. It skips the constraint
+test only where faceting is the only reason it could fail it: every rotated wall
+takes the default normal, the modes rotate about one centre, and each wall's
+vertices are equidistant from it to 1e-9 relative. A free surface that has
+deformed fails that check; the mode then takes the constraint test like an
+undeclared one, and the solve warns. A rotation that is only near-null there is
+kept, not removed as a gauge, because the deformation may not eliminate the null
+space; a model that wants it gone projects it out after the solve. On the macOS 0.3 shell the rotation left has
+rate 1.1e-15 and v_rms is 1.807, against 1.806 under the analytic normal.
+Meshes adapted, cut, split, placed into or moved by the add-on partition inherit
+the declaration, and the setter refuses a field that is not a rigid rotation.
+A mesh that declares nothing keeps the old detection. The modes are built from
+non-dimensional coordinates, which also fixes a units-model solve (#877).
+
+### Refining a spherical mesh no longer folds cells (November 2026, #946, #903)
+
+gmsh meshes a sphere in its (longitude, latitude) parameter plane. Near a pole it can
+join four wall nodes along the long diagonal of their quadrilateral, which creases
+the wall toward the centre. On a shell's inner wall the pocket under such a crease
+is meshed as one cell with all four vertices on the sphere. Regular refinement only
+subdivides it, but the refinement callback then snaps the midpoint of the creased
+edge outward past the unsnapped midpoint of the other diagonal, and the children
+fold. A 0.5-cell shell folded 3 cells on macOS and 5 on Linux. On the Linux mesh,
+every velocity multigrid solve of a rotated free-slip Stokes problem ran to its
+iteration cap. A macOS mesh with the same fold, built from another gmsh seed, did
+the same with an LU or an SVD coarse solve and with either wall normal.
+
+- Every gmsh generator with spherical walls now flips creased wall edges before the
+  volume mesh, so each wall patch is triangulated as its convex hull. The
+  generators are SphericalShell, SphericalShellInternalBoundary, SegmentofSphere,
+  CubedSphere, the segmented shell and ball, and RegionalSphericalBox. The flips
+  are pure Python on rank 0, about 1 s per 12,000 surface triangles.
+- The mesh hierarchy applies any refinement callback through a guard. A vertex
+  whose move turns a triangle or tetrahedron inside out goes back where refinement
+  placed it, and one warning gives the total. The guard covers meshes that do not
+  come from gmsh. It costs about 1 s on a 0.4-0.9 million cell mesh, at
+  construction.
+- In parallel, the copies of a vertex are reconciled before the check, the moved copy
+  winning. A callback moves only the vertices of the labelled facets a rank holds, so
+  before this a refined wall vertex could end off its wall depending on the rank count,
+  and at np 8 cells could invert where every rank saw its own copy untangled.
+- A crease on a curve between two wall patches is not flipped, so meshes built of
+  patches still hold vertices back at refinement, with a warning (#949). Measured by
+  vertices held at refinement 1 and 2:
+  - CubedSphere(simplex=True), numElements 3: 3 and 47; numElements 2: 0 and 24.
+  - SegmentedSphericalShell (cellSize 0.5, 3 segments): 2 and 61.
+  - RegionalSphericalBox (±70°, 3×3×2): 4 and 32.
+  Held vertices stay up to 4% of the radius off the wall (22% on that regional box).
+- The segmented shell and ball tagged their volume with Upper's value, so the
+  Upper label took interior vertices and the callback dragged them onto the
+  sphere. The volume is now 99999, as elsewhere.
+- A label missing from a DM now yields no points, where it yielded vertex 0, in
+  both copies of the lookup. A refined ball (radiusInner=0) had moved that vertex
+  to the origin and then divided by its zero radius (#903).
+
+Most spherical meshes change, by the flips, and recorded answers on them move with
+them. test_1111's shell is re-recorded on its new mesh: the shifted LU and a dense
+SVD coarse solve agree on it to every printed digit.
+
+### The multigrid coarse solve: one rule on every route (November 2026, #901)
+
+The rotated free-slip route solved its coarse level with a dense SVD whenever
+the problem left rigid rotations free, on the grounds that the Galerkin coarse
+operator inherits them and a plain LU meets a zero pivot (#306). The SVD is
+O(n^3) and was run on every rank: one factorisation of a 614-cell spherical
+shell bottom level took 64 s at np 1 and 102 s at np 4, against 7 s for the
+whole Stokes solve with LU at np 4, so adding ranks made the solve slower and
+capped the rollback campaign at np 16. The route also set its coarse level up
+twice per solve.
+
+Measured, the coarse operators of every real hierarchy were near-singular, not
+singular: lambda_min/lambda_max 2.0e-5 to 2.4e-8 on the annulus and 2.8e-4 on the
+shell, and plain redundant LU gave the SVD's answer and iteration counts on every
+fixture. Only a constructed case, the fine mesh used as its own coarse level, is
+singular (test_1111). Louis ruled on 2026-11-05 that there is no SVD path: every route
+factors the coarse level with the shared redundant LU and a nonzero factor
+shift, which acts only on a pivot below PETSc's zero-pivot tolerance, and a null space is fixed on the
+fine operator, never by the coarse solve. GAMG remains available as the coarse
+solve, when asked for, for a bottom level too large to gather.
+
+The shift is in the shared option bundle, so the native and standard custom-P
+routes now carry `NONZERO` at every rank count, as the rotated route does. Before,
+they ran PETSc's own default shift (`INBLOCKS`) at np > 1, which the bundle's
+`redundant` type keeps, and no shift at np 1, where that type replaces PETSc's
+shifted `PCLU`. On a coarse level whose pivots stay clear of zero it changes
+nothing: native and standard custom-P FMG give bitwise-identical
+velocity and pressure at the same iterations with and without it. The bundle's
+`coarse="svd"` variant is removed, not deprecated: `geometric_mg_bundle(coarse="svd")`
+raises a `ValueError` that names the default. A script that sets the PETSc
+option `mg_coarse_pc_type svd` itself is unaffected; on the standard path the
+user's key is respected as before (test_1021).
+
+### CI test batches sharded across parallel jobs (October 2026, #730)
+
+The test workflow ran as a single job whose wall-clock tracked the total cost
+of the suite. Measured on 2026-10-28, that was 91 minutes of tests in 16 serial
+batches plus the MPI phase, giving 96-minute jobs against a 120-minute cap, and
+PR #689 was cancelled at 2h00m52s having recorded no failures. The cap was
+deciding outcomes rather than bounding runaway runs.
+
+The serial batches now run as a four-way shard matrix. Each batch is assigned
+to a shard by hand from the measured per-batch times, because the batches
+differ by two orders of magnitude in cost and a round-robin assignment would
+group the three expensive ones together. The assignment and its measurements
+live in `scripts/test.sh` beside the batch definitions, and `--shard K/N`
+selects one; omitting it runs everything, which is what a local full run wants.
+
+Measured on the first sharded run (40638600008): shards of 23.6, 28.3, 17.3 and
+22.6 minutes including install and build, for a wall-clock of 28.7 minutes
+against 96 before. The estimates from the per-batch times did not transfer
+linearly -- shard 1 carried the 33-minute band and finished in 23.6, while
+shard 2 was estimated at 19 minutes of tests and became the long pole at 28.3.
+A batch costs less in a job that runs only its own batches than it did in
+sequence, by more than the assignment assumed. The split is worth revisiting,
+but on more than one sample: runner variance on a shared runner is of the same
+order as the imbalance that remains.
+
+Two parts of the workflow needed moving rather than copying. The tier C
+characterisation report, which costs about 42 minutes, became its own job: as a
+step on a matrix job it would have run once per shard to produce one report.
+The MPI phase belongs to a single shard for the same reason, and because it is
+the only part of the suite holding several ranks at once. A new aggregate check
+named `test` reports the combined result, so a single conclusion still answers
+whether the suite passed.
+
+Each shard rebuilds Underworld3 rather than downloading a shared artefact. The
+shards run concurrently, so the repeated build costs wall-clock once, and the
+repository is public, so the extra runner minutes are free. Sharing the
+artefact would add a transfer round trip and a second definition of what
+"built" means.
+
+`scripts/check_test_coverage.py` reads the batch globs out of `scripts/test.sh`
+to prove every test file is reachable, and it now recognises the sharded call
+site as well. Without that it reported all 355 files as unreachable, which is
+the right direction for the check to fail in.
+
+The remaining cost is concentrated rather than spread. The `test_106*` /
+`test_107*` band takes 33 minutes, and 48% of its 149 tests finish in the first
+two. Because the distribution is `--dist loadfile`, a file is atomic on a
+worker and the band cannot finish before its slowest file does, so splitting it
+further needs the per-file measurements and is left open on #730.
+
+---
+
 ## 2026 Q3 (July – September)
 
 ### Legacy Diffusion Restart Consistency (September 2026, #708)

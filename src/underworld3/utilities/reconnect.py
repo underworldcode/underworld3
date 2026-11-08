@@ -228,6 +228,17 @@ def _orient2d(pa, pb, pc):
 
     Returns ``_UNCERTAIN`` when the filter cannot resolve the sign.
     """
+    if len(pa) == 3:
+        # A triangle of a surface mesh in three dimensions, anticlockwise as
+        # seen from outside: the outward direction is the centroid's, the
+        # surface being a sphere about the origin.
+        n = np.cross(np.asarray(pa) - np.asarray(pc), np.asarray(pb) - np.asarray(pc))
+        c = np.asarray(pa) + np.asarray(pb) + np.asarray(pc)
+        det = float(n @ c)
+        bound = float(np.linalg.norm(n) * np.linalg.norm(c))
+        if det == 0.0 or abs(det) < _ORIENT_BOUND * bound:
+            return _UNCERTAIN
+        return 1 if det > 0.0 else -1
     acx, acy = pa[0] - pc[0], pa[1] - pc[1]
     bcx, bcy = pb[0] - pc[0], pb[1] - pc[1]
     left, right = acx * bcy, acy * bcx

@@ -8,6 +8,17 @@ subsystem description is `../subsystems/conforming-surfaces-and-fault-zones.md`
 and the multigrid side is `fault-patch-multigrid-2026-08.md`. Issues:
 #670 (the gather), #671 (the tail), PRs #669 and #672.
 
+```{note}
+For the cut, the 3-D sheet placement and the split reached through the Mesh API, the
+per-region gather and the per-split moves described here are superseded by one
+partition of the add-on hierarchy before any surgery
+([parallel-addon-distribution-2026-10](parallel-addon-distribution-2026-10.md)), and
+so is the band routes' gather (`FaultNetwork.build`, `place_fault_ribbon_2d` in
+gather mode). The gather remains the mechanism of a direct `place_sheet` or
+`place_thin_volume` call; the seam-ligament and seam-conform modes below are
+unchanged.
+```
+
 ## The frame: adapt-on-top
 
 The base mesh is the persistent, distributed object. It holds the bulk
@@ -823,7 +834,8 @@ overlap layer.
 The last row is the default now when a zone is keyed: `fac_zone` masks
 give the blocks, the structural split is off, the sub-solve is LU with a
 nonzero shift, the overlap one layer (`UW_FAC_MODE`, `UW_FAC_SUB_PC`,
-`UW_FAC_OVERLAP`, `UW_FAC_STRUCTURAL` remain as measurement knobs). One
+`UW_FAC_OVERLAP` remain as measurement knobs; `UW_FAC_STRUCTURAL`, listed here
+at the time, and `UW_FAC_COVER` were removed in 2026-11 by #921 and #918). One
 parallel trap on the way: the structural split's cover gate is a
 collective, and a rank with no band cells decided alone to take it while
 the others skipped it, a hang at np=4; the decision is now made from

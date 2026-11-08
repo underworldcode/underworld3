@@ -50,6 +50,24 @@ of equal standing with a finding. The wiki is frozen. `docs/` documents the code
 version; a finding graduates to it, or to a capability guide, when it has stopped
 moving, and the journal entry stays as its provenance.
 
+**Pending work, before anything else.** Repeated work has come from investigating
+without looking at what is already in flight. Before an investigation, a new branch
+or a design decision, and again when a related PR merges mid-session:
+
+```bash
+git fetch origin development
+git log --oneline --merges -20 origin/development            # what merged recently
+```
+
+plus the open PRs (GitHub MCP `list_pull_requests`, or `gh pr list --state open`). Read
+every open or recently merged PR that touches the subsystem before writing a line, name
+them in the opening report, and base the work on current development (branch from it,
+or merge it into the base branch first). A related PR open for more than about a week
+is itself a finding: say so at the start and ask whether to merge it, build on it, or
+wait. Do not rely on the maintainer noticing the overlap. (Case: the fault multigrid
+session of 2026-10-13 re-diagnosed parallel fault defects that PR #672, open for
+weeks, had already fixed, then paid a seven-file merge.)
+
 **Inline TODOs** mark the *place*; the roadmap item or issue tracks the *work*:
 
 ```python

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
-from parallel.serial_reference import _MPI_ENV_PREFIXES
+from parallel.serial_reference import _child_env
 
 pytestmark = [pytest.mark.tier_b]
 
@@ -87,8 +87,7 @@ def test_symbolic_diffusion_fresh_process_disk_restart(tmp_path):
     ranks = int(os.environ.get("UW_DIFFUSION_TEST_RANKS", "1"))
     root = Path(__file__).resolve().parents[1]
     worker = root / "tests/parallel/ptest_1079_diffusion_disk_restart.py"
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(_MPI_ENV_PREFIXES)}
+    env = _child_env(os.environ)
     launcher = [] if ranks == 1 else [str(Path(sys.executable).with_name("mpirun")), "-np", str(ranks)]
     for phase in ("write", "resume"):
         command = [sys.executable, str(root / "scripts/mpi_supervisor.py"),
