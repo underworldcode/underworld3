@@ -349,6 +349,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # The live multigrid configuration (#892) is the same check in serial and in
   # parallel, so it is one file under tests/parallel/ with no min_size mark too.
   batch 3 tests/parallel/test_1090_mg_live_configuration_parallel.py
+  # What global_evaluate returns reaches storage in the right place, the same
+  # question in serial and in parallel (#977).
+  batch 3 tests/parallel/test_0785_evaluated_values_reach_storage_parallel.py
   # So is the live finest-smoother operator of the rotated Newton loop (#894).
   batch 3 tests/parallel/test_1088_rotated_interface_operator_parallel.py
   # So is the band patch, the same rows at any rank count (#896).

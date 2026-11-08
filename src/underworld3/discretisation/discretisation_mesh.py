@@ -2455,6 +2455,12 @@ class Mesh(Stateful, uw_object):
         var._setup_ds()
         var._set_vec(available=True)
 
+    @staticmethod
+    def _any_rank_failed(failure):
+        """Whether ``failure`` is set on any rank, the same answer on all of them.
+        COLLECTIVE, on the communicator no PETSc object shares."""
+        return any(uw.mpi.verdict_comm.allgather(failure is not None))
+
     def _idw_transfer_to_var(self, old_coords, old_data, var):
         """Inverse-distance-weighted transfer of backed-up DOF values.
 
@@ -2720,6 +2726,26 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _refuse_parallel_refinement_with_units(*variables):
+        """The parallel refinement route reads the coordinates as non-dimensional, so
+        it gets every shape wrong when the model has reference quantities
+        (``uw.get_default_model().has_units()``), whatever the variables carry and
+        whether or not non-dimensional scaling is switched on, and when either
+        variable carries units (#991). Refuse rather than give a wrong value. These
+        facts and the rank count are the same on every rank, so every rank raises
+        together."""
+        if uw.mpi.size == 1:
+            return
+        referenced = uw.get_default_model().has_units()
+        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
+        if referenced or with_units:
+            reason = ("the model has reference quantities" if referenced
+                      else f"{', '.join(repr(n) for n in with_units)} carry units")
+            raise NotImplementedError(
+                f"Transfers between a parent and its refinement child are not yet "
+                f"right in parallel when {reason}; see #991.")
+
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
         if self._relationship_kind != "refinement":
@@ -2727,10 +2753,14 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
+        self._refuse_parallel_refinement_with_units(pv, cv)
+
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))
-            ).reshape(cv.data.shape)
+            from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
+            # a symmetric tensor.
+            out = _evaluated_in_storage_layout(
+                cv, numpy.asarray(uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2754,10 +2784,14 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
+        self._refuse_parallel_refinement_with_units(pv, cv)
+
         if uw.mpi.size > 1:
-            out = numpy.asarray(
-                uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))
-            ).reshape(pv.data.shape)
+            from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
+            # a symmetric tensor.
+            out = _evaluated_in_storage_layout(
+                pv, numpy.asarray(uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -6525,7 +6559,7 @@ class Mesh(Stateful, uw_object):
         # cell set that does not exist.
         cStart, cEnd = self.dm.getHeightStratum(0)
         if cEnd == cStart:
-            return numpy.zeros(model_points.shape[0], dtype=bool)
+            return numpy.zeros(model_points.shape[0], dtype=bool), cells
 
         # Cd-1 surface mesh: no boundary-face control points exist
         # (see _mark_local_boundary_faces_inside_and_out). Per the
@@ -9810,6 +9844,11 @@ class Mesh(Stateful, uw_object):
                                 rg.setValue(c, region.value)
                 rgLabel_name = "_CellRegions_"
 
+        # TODO(BUG): after metricCreateIsotropic on a rank with no cells, the next
+        # dm.distribute hangs, with cells [8, 8, 0] and not with cells on every rank.
+        # A clone, createGlobalVector, a norm, a barrier and a new variable all pass.
+        # No PETSc we build adapts on more than one rank yet, so nothing reaches
+        # it. See issue #975.
         # Create the metric from the field
         hvec = metric_field._lvec
         metric_vec = self.dm.metricCreateIsotropic(hvec, metric_field.field_id)
@@ -9855,13 +9894,19 @@ class Mesh(Stateful, uw_object):
             boundaries=self.boundaries,
         )
 
-        # Transfer variable data from old mesh to new mesh via evaluate.
+        # Transfer variable data from old mesh to new mesh via global_evaluate.
         # The old variables are still on ``self`` (old DM). Evaluate each old
         # variable's symbol at the *new mesh's DOF coords for that variable's
         # degree/continuity*, not at the new mesh's vertex set. The vertex
         # set only matches degree-1 continuous variables; for degree>=2 or
         # discontinuous variables the DOF count differs and the resulting
         # array would not fit into ``new_var.data``.
+        #
+        # Every rank takes part whether or not it holds DOFs of the old
+        # variable. The new node coordinates and the evaluation are both
+        # collective, and a rank's new nodes need not lie in its old cells: it
+        # may have had no old cells at all, so each node has to be evaluated on
+        # whichever rank holds it (#909).
         #
         # Cache target coords by (degree, continuous) so meshes with many
         # variables of the same basis don't pay for repeated cloned
@@ -9870,22 +9915,40 @@ class Mesh(Stateful, uw_object):
         target_coords_cache = {}
 
         for var_name, old_var in old_vars_data.items():
+            if old_var._lvec is None:
+                continue
+            failure = None
             try:
-                if old_var._lvec is not None and old_var.data.size > 0:
-                    if verbose:
-                        print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
-                    basis_key = (old_var.degree, old_var.continuous)
-                    if basis_key not in target_coords_cache:
-                        target_coords_cache[basis_key] = (
-                            temp_mesh._get_coords_for_basis(*basis_key)
-                        )
-                    target_coords = target_coords_cache[basis_key]
-                    transferred_data[var_name] = uw.function.evaluate(
-                        old_var.sym, target_coords
+                if verbose:
+                    print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
+                basis_key = (old_var.degree, old_var.continuous)
+                if basis_key not in target_coords_cache:
+                    target_coords_cache[basis_key] = (
+                        temp_mesh._get_coords_for_basis(*basis_key)
                     )
+                target_coords = target_coords_cache[basis_key]
+                # TODO(BUG): global_evaluate extrapolates a few nodes at np 8 on strip
+                # partitions, with or without an empty rank and with no flag here:
+                # worst on the wall x = 0 at 2 to 8 cells per rank (5 of 138 nodes,
+                # error 3.6e-2 on a field with values up to 3), and at interior
+                # points up to 50 cells per rank (error 1.1e-2). See issue #976.
+                transferred_data[var_name] = uw.function.global_evaluate(
+                    old_var.sym, target_coords
+                )
             except Exception as e:
+                # Sanctioned swallow (verbose-only report): a variable that
+                # cannot be transferred comes back zeroed, which the reset path
+                # below reports, rather than losing the adaptation.
+                failure = e
                 if verbose:
                     print(f"[{uw.mpi.rank}] Warning: transfer of '{var_name}' failed: {e}", flush=True)
+
+            # Restoring a variable below is collective, so every rank has to make
+            # the same choice: a raise on any rank after the collectives above
+            # resets the variable on all of them. A raise on one rank BEFORE them
+            # still hangs its peers there, since this exchange is never reached.
+            if self._any_rank_failed(failure):
+                transferred_data.pop(var_name, None)
 
         del temp_mesh
 
@@ -9915,24 +9978,34 @@ class Mesh(Stateful, uw_object):
         for old_var in old_vars_data.values():
             self._destroy_variable_petsc_state(old_var)
 
+        from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+
         # Reinitialize MeshVariables on the new mesh
         # Note: Variables are reset to zero. Users should reinitialize with data.
         for var_name, old_var in old_vars_data.items():
             try:
                 self._reinit_variable_on_new_dm(old_var)
 
-                # Restore transferred data if available
+                # Restore transferred data if available. Packing is collective, so
+                # whether to pack is agreed first: laying out the values can fail
+                # where a rank has nodes and succeed where it has none.
                 if var_name in transferred_data:
+                    failure = None
                     try:
-                        data = transferred_data[var_name]
-                        # evaluate returns (N, a, b) shaped array; pack to (N, ncomp)
-                        data_flat = data.reshape(old_var.data.shape)
+                        data_flat = _evaluated_in_storage_layout(
+                            old_var, transferred_data[var_name])
+                    except Exception as e2:
+                        # Sanctioned swallow (verbose-only report): as for the
+                        # transfer above, the variable comes back zeroed.
+                        failure = e2
+
+                    if self._any_rank_failed(failure):
+                        if verbose:
+                            print(f"[{uw.mpi.rank}] Variable '{var_name}' reset (transfer failed: {failure})", flush=True)
+                    else:
                         old_var.pack_raw_data_to_petsc(data_flat, sync=True)
                         if verbose:
                             print(f"[{uw.mpi.rank}] Variable '{var_name}' transferred to adapted mesh", flush=True)
-                    except Exception as e2:
-                        if verbose:
-                            print(f"[{uw.mpi.rank}] Variable '{var_name}' reset (transfer failed: {e2})", flush=True)
                 else:
                     if verbose:
                         print(f"[{uw.mpi.rank}] Variable '{var_name}' reset on adapted mesh", flush=True)
