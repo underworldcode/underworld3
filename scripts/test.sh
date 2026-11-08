@@ -410,6 +410,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/test_1142*py  # an exact rotation is projected out of the rotated velocity PC (#963)
   batch 4 tests/test_1143*py  # the rotated loop honours snes_rtol and snes_atol (#924)
   batch 4 tests/test_1145*py  # a Stokes adjoint keeps the velocity block's custom-P hierarchy (#1016)
+  batch 4 tests/test_1146*py  # a custom-P hierarchy re-solves after mesh.deform (#1015)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections

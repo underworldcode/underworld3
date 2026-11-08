@@ -152,7 +152,6 @@ stokes.tolerance = 1.0e-3
 
 stokes.petsc_options.setValue("ksp_monitor", None)
 stokes.petsc_options.setValue("snes_monitor", None)
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
 # Similar (equivalent horizontal pattern) but in a body force
 with meshball.access(t_init):
