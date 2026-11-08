@@ -1197,7 +1197,7 @@ def evaluate_nd(   expr,
                 "A matrix-valued expression with derivatives cannot be evaluated "
                 "with rbf=True (mode='fast'): the Clement recovery holds one scalar "
                 "work variable. Use the default mode, which projects, or evaluate "
-                "each component on its own. See #999."
+                "each component on its own. See #1004."
             )
 
         if rbf and not force_l2:
