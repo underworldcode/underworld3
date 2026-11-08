@@ -1562,8 +1562,10 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # 2.3-4 times, with the same iterations and slip (kaiju, #895; rcm was
             # worse than nd). On blocks that are not bands it cost nothing: 1.2 to
             # 3 times less fill on every block measured (hyperion's review).
+            # An ordering already in the database (the user's) is left in place.
             key = _sub_key.replace("sub_pc_type", "sub_pc_factor_mat_ordering_type")
-            opts[prefix + key] = "qmd"
+            if not opts.hasName(prefix + key):
+                opts[prefix + key] = "qmd"
             fac_keys.append(key)
             for _is in is_subs:   # the PC holds its own references
                 _is.destroy()
