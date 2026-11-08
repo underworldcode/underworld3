@@ -1551,6 +1551,18 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
             opts[prefix + key] = "nonzero"
             fac_keys.append(key)
+            # A fault band's block is long and narrow, and under PETSc's default
+            # ordering (nd) its fill followed the subdomain's row numbering: the
+            # same block took 3.1e9 to 2.35e10 flops to factor, by rank count and
+            # build. Quotient minimum degree cuts it 25-58 times and makes it the
+            # same at any rank count (4.1e8 on the add-on matrix's fault pair at np
+            # 8 and 16); the block's triangular solves, which every smoother
+            # application pays, ran 3.5-6 times faster and the solve 2.3-4 times,
+            # with the same iterations and slip (kaiju, #895; rcm was worse than
+            # nd).
+            key = _sub_key.replace("sub_pc_type", "sub_pc_factor_mat_ordering_type")
+            opts[prefix + key] = "qmd"
+            fac_keys.append(key)
             for _is in is_subs:   # the PC holds its own references
                 _is.destroy()
     return fac_keys
@@ -1572,7 +1584,8 @@ def _set_up_fac_smoothers(pc, fac_keys):
     The block solver is also set on each block's PC from the database, so the
     blocks run it even where the ASM had already set up before this call; the
     keys must still be in the database when it runs. FAC blocks are LU: ILU
-    there is a regression."""
+    there is a regression. Their ordering (quotient minimum degree) is set the
+    same way, before the blocks first factor."""
     if not fac_keys:
         return
     opts = PETSc.Options()
@@ -1589,6 +1602,8 @@ def _set_up_fac_smoothers(pc, fac_keys):
             block_pc.setType(opts.getString(prefix + "pc_type"))
             block_pc.setFactorShift(
                 shift_type=opts.getString(prefix + "pc_factor_shift_type"))
+            block_pc.setFactorOrdering(
+                ord_type=opts.getString(prefix + "pc_factor_mat_ordering_type"))
 
 
 def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
