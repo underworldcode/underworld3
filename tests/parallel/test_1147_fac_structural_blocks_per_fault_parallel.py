@@ -10,17 +10,19 @@ that rank's factorisation and triangular solves did twice the work of one fault'
 and the solve took 19 to 28 % longer than with a block per fault. The slip agreed to
 5e-14 in the same iterations.
 
-The structural patch is now one block per connected piece: rows that reference one
-coarse DOF, or are DOFs of one node, are one piece, so faults apart are two blocks
-and faults that meet are one. The fixture is #895's ``apart`` case at n_rungs 80:
+The structural patch is now cut into connected pieces, rows that reference one coarse
+DOF or are DOFs of one node being one piece, and each piece goes to the rank owning
+most of its rows; the pieces one rank receives are one block. The fixture is #895's ``apart`` case at n_rungs 80:
 UWTN 2026-022's problem A box with its fault shifted to (0.08, 0.20)-(0.48, 0.30) and
-a second, equal fault at (0.52, 0.70)-(0.92, 0.80), both split.
+a second, equal fault at (0.52, 0.70)-(0.92, 0.80), both split; the near pair is the
+problem A fault and a copy 0.12 below it.
 
 - at np 2 and above the structural patch is two blocks, every patch row held once,
   each block on the rank owning most of its rows, and the faults' two blocks on two
   ranks where the partition gave the faults to two ranks;
 - at np 1 the serial branch keeps one block;
-- the velocity solve takes the serial iterations;
+- two faults 0.12 apart stay one block: their pieces land on one rank, and they are
+  coupled in the operator, so cut apart they took 4 velocity iterations against 3;
 - :func:`_connected_pieces` joins rows through the keys they share.
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
@@ -43,15 +45,12 @@ A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
 S = float(np.linalg.norm(B - A)) / N_RUNGS
 T_HAT = (B - A) / np.linalg.norm(B - A)
+N_HAT = np.array([T_HAT[1], -T_HAT[0]])
 
 
-@pytest.fixture(scope="module")
-def apart():
-    """Solve the two-faults-apart box; return the solver and, per rank, its
+def _solve(traces):
+    """Solve the box with ``traces`` split; return the solver and, per rank, its
     finest-level blocks as (owned, subdomain) global rows."""
-    first = A + np.array([-0.22, -0.25]) + (np.arange(N_RUNGS + 1) * S)[:, None] * T_HAT
-    second = A + np.array([0.22, 0.25]) + (np.arange(N_RUNGS + 1) * S)[:, None] * T_HAT
-    traces = [("Fault", first), ("Second", second)]
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 8, regular=False,
         qdegree=2, refinement=2)
@@ -78,6 +77,21 @@ def apart():
     mine = [(np.asarray(o, dtype=np.int64), np.asarray(s, dtype=np.int64))
             for o, s in pairs if np.size(s)]
     return stokes, uw.mpi.comm.allgather(mine)
+
+
+def _trace(start):
+    return start + (np.arange(N_RUNGS + 1) * S)[:, None] * T_HAT
+
+
+@pytest.fixture(scope="module")
+def apart():
+    return _solve([("Fault", _trace(A + np.array([-0.22, -0.25]))),
+                   ("Second", _trace(A + np.array([0.22, 0.25])))])
+
+
+@pytest.fixture(scope="module")
+def near():
+    return _solve([("Fault", _trace(A)), ("Second", _trace(A + 0.12 * N_HAT))])
 
 
 @pytest.mark.tier_b
@@ -126,12 +140,18 @@ def test_each_block_is_on_the_rank_owning_most_of_it(apart):
 
 
 @pytest.mark.tier_b
-def test_the_velocity_solve_takes_the_serial_iterations(apart):
-    stokes, _per_rank = apart
+def test_faults_near_each_other_stay_one_block(near):
+    stokes, per_rank = near
+    blocks = [s for rank in per_rank for _o, s in rank]
+    assert len(blocks) == 1, (
+        f"np {uw.mpi.size}: two faults 0.12 apart are in blocks of "
+        f"{sorted(b.size for b in blocks)}; their pieces land on one rank and are "
+        f"coupled in the operator (#895 review, M1)")
     info = stokes._rotated_freeslip_info
     assert info["converged"]
     its = max(info["vel_its_last"])
-    assert its <= 4, f"np {uw.mpi.size}: the velocity solve took {its} iterations"
+    # 3 at np 1 to 4 as one block; cut into two pieces on one rank it took 4
+    assert its <= 3, f"np {uw.mpi.size}: the velocity solve took {its} iterations"
 
 
 @pytest.mark.tier_b

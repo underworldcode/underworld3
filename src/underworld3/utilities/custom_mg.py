@@ -875,18 +875,19 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
     COLLECTIVE. Rank 0 gathers every rank's rows and cuts them into the serial
     branch's blocks: each mask is one band, segmented along its strike by
     :func:`_segment_block`, and the structural rows outside every mask are one
-    more block. With no zone keyed, the structural patch is one block per
-    connected piece (:func:`_patch_links`): a fault apart from the others is a
-    block of its own, and faults that meet or share a coarse DOF are one block.
-    Each block goes whole to the rank that owns most of its rows, so a fault
-    the add-on partition gave to one rank is factorised on that rank, and two
-    faults on two ranks are factorised side by side; one block for both put
-    them on one rank, and that rank's factorisation and triangular solves did
-    twice the work (#895). The serial branch keeps the structural patch as one
-    block. Faults apart are not coupled in the operator, so one LU of them is
-    their LUs side by side: on #895's stage 1 the slip agreed to 5e-14 in the
-    same iterations. Otherwise the blocks are the same at any rank count,
-    except that the structural halo is
+    more block. With no zone keyed, the structural patch is cut into connected
+    pieces (:func:`_patch_links`), faults that meet or share a coarse DOF
+    being one piece, and each piece goes to the rank that owns most of its
+    rows; the pieces one rank receives are one block. A fault the add-on
+    partition gave to one rank is then factorised on that rank, and two faults
+    on two ranks side by side: one block for both put them on one rank, and
+    that rank's factorisation and triangular solves did twice the work (#895).
+    Pieces on one rank stay one block, as in serial, because pieces a coarse
+    cell or two apart are still coupled in the operator. Pieces on two ranks
+    lose any coupling between them, as two ASM blocks do; in #895's stage 1
+    and its review, pieces that reached two ranks were never coupled, and the
+    slip agreed to 5e-14 in the same iterations. Otherwise the blocks are the same at any
+    rank count, except that the structural halo is
     :func:`_fac_patch_split_parallel`'s, which can differ by a few rows where a
     partition boundary runs along the band. A segmented piece's cut can fall
     a node away from the serial one: the serial branch orders a split pair's
@@ -948,16 +949,31 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
                 owned = np.unique(np.concatenate([h[0] for h in held]).astype(np.int64))
                 links = (np.concatenate([h[2][0] for h in held]),
                          np.concatenate([h[2][1] for h in held]))
+                # The pieces one rank receives are one block. Apart on one rank
+                # they gain nothing, and faults a coarse cell or two apart are
+                # coupled in the operator, which separate blocks would drop:
+                # parallel faults 0.12 apart took 4 velocity iterations against
+                # 3, and their two pieces always landed on one rank (H1's review).
+                on_rank = {}
                 for piece in _connected_pieces(sub, *links):
-                    mine = piece[np.isin(piece, owned)]
+                    on_rank.setdefault(_majority_rank(piece, starts), []).append(piece)
+                for rank in sorted(on_rank):
+                    rows = np.sort(np.concatenate(on_rank[rank]))
+                    mine = rows[np.isin(rows, owned)]
+                    # every patch row is in a piece with itself, so a block
+                    # without one holds halo rows only
                     if mine.size:
-                        blocks.append((mine, piece))
+                        blocks.append((mine, rows))
         per_rank = [[] for _ in everyone]
         for owned, sub in blocks:
-            owner = np.searchsorted(starts, sub, side="right") - 1
-            per_rank[int(np.bincount(owner, minlength=len(everyone)).argmax())].append(
-                (owned, sub))
+            per_rank[_majority_rank(sub, starts)].append((owned, sub))
     return comm.scatter(per_rank, root=0)
+
+
+def _majority_rank(rows, starts):
+    """The rank owning most of the global ``rows``, given every rank's first row."""
+    owner = np.searchsorted(starts, rows, side="right") - 1
+    return int(np.bincount(owner, minlength=len(starts)).argmax())
 
 
 def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
