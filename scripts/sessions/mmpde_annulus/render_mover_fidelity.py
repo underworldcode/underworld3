@@ -15,8 +15,10 @@ SURFACE, INK, INK2 = "#fcfcfb", "#0b0b0b", "#52514e"
 SERIES = {"start": "#2a78d6", "development": "#eb6834", "pr1024": "#1baf7a"}
 LABEL = {"start": "starting mesh", "development": "development: mover stops after 5 steps",
          "pr1024": "#1024: mover converges (72 steps)"}
-blues = LinearSegmentedColormap.from_list(
-    "blue_ramp", ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"])
+# Diverging blue - neutral - red, centred on the middle of T's range, so the layer's
+# steep side is white and a black mesh shows against it.
+temperature = LinearSegmentedColormap.from_list(
+    "blue_neutral_red", ["#184f95", "#3987e5", "#9ec5f4", "#f0efec", "#f5a3a3", "#e34948", "#a42f2f"])
 plt.rcParams.update({"font.size": 11, "axes.edgecolor": INK2, "text.color": INK,
                      "axes.labelcolor": INK2, "xtick.color": INK2, "ytick.color": INK2})
 
@@ -29,8 +31,8 @@ for col, key in enumerate(SERIES):
     for row in range(2):
         ax = axes[row, col]
         ax.set_facecolor(SURFACE)
-        ax.tripcolor(tri, d["T"], shading="gouraud", cmap=blues, vmin=0.0, vmax=1.3)
-        ax.triplot(tri, color=INK2, lw=0.12 if row == 0 else 0.45)
+        ax.tripcolor(tri, d["T"], shading="gouraud", cmap=temperature, vmin=0.0, vmax=1.3)
+        ax.triplot(tri, color=INK, lw=0.15 if row == 0 else 0.5)
         ax.set_aspect("equal")
         ax.set_xticks([]); ax.set_yticks([])
         for s in ax.spines.values():
@@ -39,7 +41,7 @@ for col, key in enumerate(SERIES):
             ax.set_xlim(0.78, 1.01); ax.set_ylim(-0.115, 0.115)
     axes[0, col].set_title(LABEL[key], color=INK, fontsize=12)
 axes[1, 0].set_ylabel("zoom: the thermal layer at r = 0.9", color=INK2)
-fig.suptitle("One MMPDE move on an annulus with a sharp thermal layer (T, light to dark)",
+fig.suptitle("One MMPDE move on an annulus with a sharp thermal layer (T: blue cold, red hot)",
              color=INK, fontsize=14)
 fig.tight_layout()
 fig.savefig(f"{src}/mover_meshes.png", dpi=200, facecolor=SURFACE)
