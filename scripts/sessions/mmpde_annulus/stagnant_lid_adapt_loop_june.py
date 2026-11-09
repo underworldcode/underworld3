@@ -21,6 +21,7 @@ import sys
 import time
 import argparse
 import numpy as np
+from mpi4py import MPI
 import sympy
 import underworld3 as uw
 
@@ -84,6 +85,13 @@ p.add_argument('--dt-cell-percentile', type=float, default=50.0,
                     'dt and freezes the run; SLCN is unconditionally '
                     'stable so a robust (median) cell size is correct. '
                     'Set 0 to fall back to the strict min-cell estimate_dt.')
+p.add_argument('--fixed-dt', type=float, default=0.0,
+               help='If > 0, every step takes this timestep. A timestep that changes every step '
+                    'makes AdvDiffusionSLCN rewire its functions each step, which leaks memory.')
+p.add_argument('--diffusion-dt-res', type=int, default=0,
+               help='If > 0, take the diffusion limit on cells of 1/this size, not on this '
+                    'mesh: SLCN treats diffusion implicitly, and on a finer mesh the '
+                    'cell-scale diffusion time otherwise shrinks the step as h^2.')
 p.add_argument('--res', type=int, default=16,
                help='Background resolution (1/cellSize of the FINEST '
                     'level). With REFINE>0 the coarse base is this '
@@ -590,6 +598,11 @@ for s in range(START_STEP, END_STEP):
         dt = float(adv.estimate_dt(
             direction_aware=True,
             percentile=float(args.dt_cell_percentile))) * float(args.dt_mult)
+        if args.diffusion_dt_res > 0 and adv.dt_diff > 0:
+            dt_diff_ref = adv.dt_diff * (args.res / args.diffusion_dt_res) ** 2
+            dt = (min(adv.dt_adv, dt_diff_ref) if adv.dt_adv > 0 else dt_diff_ref) * float(args.dt_mult)
+        if args.fixed_dt > 0:
+            dt = args.fixed_dt
         adv.solve(timestep=dt, zero_init_guess=False)
         t_advdiff = time.time() - _td0
     except Exception as e:
@@ -664,8 +677,11 @@ for s in range(START_STEP, END_STEP):
                     f"{'ADAPT' if int(_r[8]) else '':>6}\n")
     if s % args.snapshot_every == 0:
         snapshot(s)
+    with open("/proc/self/statm") as _statm:
+        _rss = int(_statm.read().split()[1]) * 4096 / 1e6
+    _rss = uw.mpi.comm.allreduce(_rss, op=MPI.MAX)
     if s % args.log_every == 0:
-        print(f"{s:>5d} {t_sim:>9.5f} {dt:>10.3e} "
+        print(f"rss={_rss:.0f}MB {s:>5d} {t_sim:>9.5f} {dt:>10.3e} "
               f"{wall:>6.2f}s {vrms:>10.3e} {Nu_val:>+8.3f} "
               f"[{Tmin:+.3f},{Tmax:+.3f}] kspV={st_ksp:>3d} "
               f"{'ADAPT' if did_adapt else ''}",
