@@ -318,7 +318,10 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
             w /= w.sum(axis=1, keepdims=True)
             return np.einsum('nk,nkab->nab', w, M_src[idx])
-    elif metric_eval == "frozen":
+    elif metric_eval == "frozen" and any(
+            getattr(e, "free_symbols", None) for e in Msym):
+        # (A constant metric, as Mesh.relax gives, needs no field: the exact read
+        # below is free.)
         # The metric is a function of space, so it lives on a copy of the mesh
         # that does not move and uw.function.evaluate reads it there. Evaluated
         # on the moving mesh, a metric built from a mesh variable rides the
@@ -492,6 +495,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             (signed_vol(X, cells_own) * orient / a0_own).min(initial=np.inf))
 
     prevI = _energy(coords)
+    _M_next = None      # the metric at the accepted centroids, read by the line search
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
     # Acceleration of the first-order steepest-descent direction (``accel``).
     # The energy+min-area line-search below stays the fold guard, so any
@@ -538,17 +542,19 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         J = np.einsum('mij,mjk->mik', Eh, Einv)
         r = detEh / detE
         cen = coords[cells_own].mean(axis=1)
-        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        M = _M_next if _M_next is not None else _eval_M(cen)
+        Minv = np.linalg.inv(M); detM = np.linalg.det(M)
         sdetM = np.sqrt(detM)
         JMi = np.einsum('mij,mjk->mik', J, Minv)
         S = np.einsum('mij,mij->m', JMi, J)
         G = (theta * sdetM * S ** q
              + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
         K = np.abs(detE) / fact
-        # The line search compares energies under a metric read once per step: M at
-        # the current centroids, carried to each trial centroid to first order with
-        # this step's ∂M/∂x. That is the M the descent direction assumes, so the two
-        # agree, and a trial costs no metric read.
+        # The line search screens each trial with M carried from the current
+        # centroids to first order with this step's ∂M/∂x, which costs no metric
+        # read, and confirms a trial that passes with the metric read at its own
+        # centroids: the linear carry can overshoot where the metric changes fast.
+        # That read is the next step's M, so the step costs no extra read.
         I_step = _global_sum(np.sum(K * G))
         # ∂G/∂𝕁 = 2qθ√detM S^{q-1} M⁻¹ 𝕁ᵀ ; ∂G/∂r = p(1-2θ)dq detM^{(1-p)/2} r^{p-1}
         MinvJT = np.einsum('mij,mkj->mik', Minv, J)
@@ -672,20 +678,24 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             # could still introduce inf/NaN) so `_energy` never queries NaN.
             if (np.all(np.isfinite(trial))
                     and _min_area_frac(trial) > float(area_floor_frac)):
-                shift = trial[cells_own].mean(axis=1) - cen
-                M_trial = _spd_sanitise(M + np.einsum('mabc,mc->mab', dMdx, shift))
-                Itr = _energy(trial, M_trial)
-                if Itr < I_step:
-                    accepted = trial; Inew = Itr; break
+                trial_cen = trial[cells_own].mean(axis=1)
+                M_carried = _spd_sanitise(
+                    M + np.einsum('mabc,mc->mab', dMdx, trial_cen - cen))
+                if _energy(trial, M_carried) < I_step:
+                    M_read = _eval_M(trial_cen)
+                    Itr = _energy(trial, M_read)
+                    if Itr < I_step:
+                        accepted = trial; Inew = Itr; _M_next = M_read; break
             scale *= 0.5
         else:
-            accepted = coords; Inew = I_step; scale = 0.0
+            accepted = coords; Inew = I_step; scale = 0.0; _M_next = M
         # A conjugate direction need not descend: the per-node step cap and the
         # inexact line search both break conjugacy, and on a sharp metric every
         # backtrack can then fail far from the minimum. That says nothing about
         # the minimum, so retry along steepest descent; only a failure there
         # ends the sweep. Collective: scale comes from allreduced predicates.
         if scale == 0.0 and _accel == "cg" and _beta_cg > 0.0:
+            _M_next = M
             _prev_v = np.zeros_like(coords)
             _prev_dir = np.zeros_like(coords)
             continue
