@@ -102,7 +102,11 @@ def test_faults_apart_are_a_block_each_in_parallel(apart):
 @pytest.mark.skipif(uw.mpi.size < 2, reason="ownership is a parallel question")
 def test_each_block_is_on_the_rank_owning_most_of_it(apart):
     stokes, per_rank = apart
-    velocity = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC()
+    # the split faults solve through the rotated workspace, whose KSP carries the
+    # hierarchy; the SNES's own fieldsplit is never set up (PETSc error 73)
+    cache = getattr(stokes, "_rotated_linear_cache", None)
+    ksp = cache["ctx"]["ksp"] if cache else stokes.snes.getKSP()
+    velocity = ksp.getPC().getFieldSplitSubKSP()[0].getPC()
     finest = velocity.getMGSmoother(velocity.getMGLevels() - 1).getOperators()[0]
     starts = np.array(uw.mpi.comm.allgather(finest.getOwnershipRange()[0]))
     holders = []
