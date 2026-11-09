@@ -22,7 +22,9 @@ problem A fault and a copy 0.12 below it.
   ranks where the partition gave the faults to two ranks;
 - at np 1 the serial branch keeps one block;
 - two faults 0.12 apart stay one block: their pieces land on one rank, and they are
-  coupled in the operator, so cut apart they took 4 velocity iterations against 3;
+  coupled in the operator, so cut apart they took 4 velocity iterations against 3.
+  Development passes this test too (one block for all faults); it guards against
+  cutting the pieces one rank receives;
 - :func:`_connected_pieces` joins rows through the keys they share.
 
 This file carries no ``mpi(min_size=2)`` mark: at np 1 it checks the serial
