@@ -316,8 +316,6 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         verbose: bool = False,
         evalf: bool = False,
         divergence_retries: int = 0,
-        picard: int = 0,
-        time=None,
     ):
         """Solve the sheet momentum balance; with a viscoelastic constitutive
         model, carry the stress history across the step first.
@@ -327,17 +325,15 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         timestep : float
             Required when the constitutive model carries a stress history: the
             elastic timestep of the Maxwell element.
-        zero_init_guess, verbose, divergence_retries, picard, time
-            As for :meth:`SNES_Vector.solve` (``picard`` and ``time`` as for
-            ``Stokes.solve``; on a manifold the sheet always solves on the
-            rotated path, which honours both).
+        zero_init_guess, verbose, divergence_retries
+            As for :meth:`SNES_Vector.solve`.
         evalf : bool, default False
             Numerical evaluation during the history carry.
         """
         _refresh_facet_normal(self.mesh)
         if self.Unknowns.DFDt is None:
             super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
-                          divergence_retries=divergence_retries, picard=picard, time=time)
+                          divergence_retries=divergence_retries)
             self._refresh_pressure(verbose)
             return
         if timestep is None:
@@ -356,7 +352,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._build(verbose)
         self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
         super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
-                      divergence_retries=divergence_retries, picard=picard, time=time)
+                      divergence_retries=divergence_retries)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
         self._keep_history_tangent()
         self._refresh_pressure(verbose)

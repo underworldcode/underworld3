@@ -1,11 +1,9 @@
-"""ThinSheet follow-ups from the review of the thin-sheet work (#875, #876, #879).
+"""ThinSheet follow-ups from the review of the thin-sheet work (#875, #879).
 
 * #875: L and c_b went into F0/F1 as their numbers, so describe() and the
   transcript showed numbers, and a dimensional thickness skipped the unwrap
   path. The rows from add_basal_drag / add_basal_traction were declared
   nowhere. They now enter as the expressions, and basal_coupling is a term.
-* #876: ThinSheet.solve took neither picard nor time, and SNES_Vector's
-  rotated path (where a sheet on a sphere always solves) was handed picard=0.
 * #879: the history projection after a viscoelastic step was not in the
   transcript, and the facet-normal field was filled once and went stale after
   a deform.
@@ -60,18 +58,6 @@ def _sphere_sheet(eta):
     sheet.basal_drag = 1
     sheet.bodyforce = list(sympy.Matrix([[2 * y * z, -2 * x * z, 0]]))
     return sphere, sheet
-
-
-@pytest.mark.tier_b      # minutes: a nonlinear / viscoelastic sphere solve
-def test_a_sheet_on_a_sphere_takes_picard_and_time_through_the_rotated_path():
-    sphere, sheet = _sphere_sheet(lambda s: 1 / (1 + s.Unknowns.Einv2))
-    sheet.solve(zero_init_guess=True)
-    assert sheet._rotated_freeslip_info["converged"]
-    reference = np.array(sheet.u.array, copy=True)
-    sheet.solve(zero_init_guess=True, picard=2, time=0.0)      # a TypeError before
-    info = sheet._rotated_freeslip_info
-    assert info["converged"], info
-    assert np.abs(np.asarray(sheet.u.array) - reference).max() < 1e-6
 
 
 @pytest.mark.tier_a
