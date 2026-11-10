@@ -462,6 +462,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
     node_normals = {}
     node_dspec = {}
     node_specs = {}
+    # a given-normal wall's own normal at each of its nodes, which a declared mode's
+    # test reads instead of the node's merged frame (#968)
+    node_given = {}
     for spec in boundaries:
         name, normal = _boundary_spec(spec)
         dspec = None if datum_specs is None else datum_specs.get(name)
@@ -470,6 +473,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
         for q, nrm in nodes:
             node_normals.setdefault(q, []).append(nrm)
             node_specs.setdefault(q, set()).add(name)
+            if normal is not None:
+                node_given.setdefault(q, []).append((name, nrm))
             if dspec is not None:
                 node_dspec.setdefault(q, dspec)
 
@@ -527,10 +532,10 @@ def build_rotation(solver, boundaries, datum_specs=None):
         Q.setValue(i, i, 1.0)                    # identity default (owned rows)
 
     normal_rows = []
-    # the same rows grouped by the wall they came from (a corner node's rows belong to
-    # every wall that meets there): a given-normal wall's declared-mode test reads only
-    # its own rows (#968)
-    rows_by_wall = {}
+    # each given-normal wall's owned velocity rows (-1 for a component an essential
+    # condition removed) and its own normal there: a declared mode is tested against
+    # these, not against the merged frame of a node where walls meet (#968)
+    given_dofs = {}
     datum_nodes = []                             # (grows[0], q, dspec) for simple nodes
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
@@ -573,8 +578,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 for j in range(len(free)):
                     Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
             normal_rows.extend(rows[:rf])
-            for name in node_specs[q]:
-                rows_by_wall.setdefault(name, []).extend(rows[:rf])
+            for name, nrm in node_given.get(q, ()):
+                given_dofs.setdefault(name, []).append((grows, nrm))
             continue
         if not (rstart <= grows[0] < rend):      # not owned by this rank → skip
             continue
@@ -590,8 +595,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
             for j in range(dim):
                 Q.setValue(grows[i], grows[j], float(Vt[i, j]))
         normal_rows.extend(grows[:r])            # constrain the r normal-space rows
-        for name in node_specs[q]:
-            rows_by_wall.setdefault(name, []).extend(grows[:r])
+        for name, nrm in node_given.get(q, ()):
+            given_dofs.setdefault(name, []).append((grows, nrm))
         # A prescribed v_n datum is only well-defined at a SIMPLE node (one normal,
         # r=1): the rotated row grows[0] carries E[0]·v with E[0]=Vt[0]=±n̂ (SVD sign
         # ambiguity), so the constrained component is sgn·v_n. Store sgn = sign(Vt[0]·n̂)
@@ -722,8 +727,10 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 # takes the untouched free-slip RHS path and is bit-identical to it.
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
-    solver._rotated_normal_rows_by_wall = {
-        name: sorted(set(rows)) for name, rows in rows_by_wall.items()}
+    solver._rotated_given_wall_dofs = {
+        name: (np.array([g for g, _n in entries], dtype=np.int64).reshape(-1, dim),
+               np.array([n for _g, n in entries], dtype=float).reshape(-1, dim))
+        for name, entries in given_dofs.items()}
     return Q, Qt, sorted(set(normal_rows)), datum_map
 
 
@@ -984,12 +991,13 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
         # modes is this one
         if gauge["declared"] and getattr(solver, "_rotated_declared_modes_exempt", None) is None:
             solver._rotated_declared_modes_exempt = list(flags)
-        declared_rows = _declared_mode_test_rows(solver)
+            solver._rotated_declared_tested_walls = _declared_mode_given_walls(solver)
+        declared_dofs = _declared_mode_given_dofs(solver)
         for tg, declared in zip(_rigid_rotation_modes(solver), flags):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
                                            report=gauge["modes"], declared=declared,
-                                           declared_rows=declared_rows):
+                                           declared_dofs=declared_dofs):
                 if declared:
                     # the constraint-compatible mode: v_n = 0 stays exact when
                     # it is projected out of U (#906)
@@ -1989,9 +1997,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "continuation_switch_iteration": switch_iteration,
             "rotation_reused": rotation_reused,
             "workspace_reused": workspace_reused,
-            # per declared mode, whether it kept every rotated wall in place and so
-            # its exemption from the constraint test (None: the mesh declares none)
-            "declared_modes_exempt": getattr(solver, "_rotated_declared_modes_exempt", None)}
+            # per declared mode, whether it kept every facet-averaged wall in place and
+            # so its exemption from the constraint test there (None: the mesh declares
+            # none); the walls with a given normal, on which it was still tested
+            # against that normal (#968), are declared_modes_tested_walls
+            "declared_modes_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
+            "declared_modes_tested_walls": getattr(solver, "_rotated_declared_tested_walls", None)}
 
 
 
@@ -3045,11 +3056,12 @@ def _rotated_nullspace(solver, Q, normal_rows):
     n_rot = 0
     slack = 0.0
     flags, note = _declared_mode_flags(solver)
-    declared_rows = _declared_mode_test_rows(solver)
+    declared_dofs = _declared_mode_given_dofs(solver)
+    given_rejected = []
     for tg, declared in zip(_rigid_rotation_modes(solver), flags):
         report = []
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg, report=report,
-                                       declared=declared, declared_rows=declared_rows):
+                                       declared=declared, declared_dofs=declared_dofs):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
@@ -3057,6 +3069,8 @@ def _rotated_nullspace(solver, Q, normal_rows):
             viol = report[-1]["viol"]
             if viol >= _ROTATION_MODE_TOL:
                 slack = max(slack, viol)
+        elif report and report[-1]["rejected_by"] == "given_wall":
+            given_rejected.append(report[-1]["given_viol"])
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
     # The VELOCITY-block null-mode count (the constant-pressure mode lives in
     # the pressure block): the rotations removed from the answer, reported by
@@ -3065,12 +3079,24 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # the largest constraint violation of an admitted mode: 0 when every mode
     # is exact; read by the net-torque guard after the Newton loop
     solver._rotated_null_mode_slack = slack
-    # which declared modes were exempt from the constraint test: a deformed wall (a
-    # free-surface step) takes the exemption away, and the solve says why
+    # which declared modes were exempt from the constraint test on the facet-averaged
+    # walls: a deformed wall (a free-surface step) takes the exemption away, and the
+    # solve says why; a wall with a given normal is tested against it all the same
     declared_any = _rotations_declared(solver.mesh)
     solver._rotated_declared_modes_exempt = flags if declared_any else None
+    solver._rotated_declared_tested_walls = (
+        _declared_mode_given_walls(solver) if declared_any else None)
     if note is not None:
         _warn_declared_modes_refused(note)
+    if given_rejected:
+        # given_viol is reduced over the ranks, so every rank has the same list
+        _warn_declared_modes_refused(
+            f"the declared rotation modes are not removed: the rotated walls "
+            f"{solver._rotated_declared_tested_walls} take a given normal that a "
+            f"rotation about the mesh's centre is not tangent to (violation up to "
+            f"{max(given_rejected):.2g} against {_ROTATION_MODE_TOL:g}), so the answer "
+            f"keeps any rotation. Give those walls the normal of a surface of "
+            f"revolution about that centre, or the facet-averaged normal")
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -3090,7 +3116,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
 
 
 def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_TOL,
-                                report=None, declared=False, declared_rows=None):
+                                report=None, declared=False, declared_dofs=None):
     """True iff the rigid-body mode ``tg`` is a genuine null mode of the
     constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
     every constrained normal row; a declared mode that keeps every wall is exempt,
@@ -3128,21 +3154,31 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_T
     discretisation-sized violation (0.008-0.016 on #906's shell). The operator
     test still applies, so a no-slip wall that pins it rejects it.
 
-    ``declared_rows``: with ``declared``, the rows the mode is still tested on, those
-    of the walls that take a given normal when the others take the facet-averaged
-    one (#968). An exact normal passes on them to round-off; a wrong one rejects
-    the mode. COLLECTIVE, like the full test: every rank passes its own rows."""
+    ``declared_dofs``: with ``declared``, the ``(rows, normals)`` of the walls that
+    take a given normal when the others take the facet-averaged one
+    (:func:`_declared_mode_given_dofs`, #968). The mode is tested there against
+    each wall's own normal, ``n . mode``, not against the constrained rows: where a
+    given wall meets a facet-averaged one the node's frame carries the facet
+    average too. An exact normal passes to round-off; a wrong one rejects the mode
+    (``rejected_by: "given_wall"``). COLLECTIVE: every rank passes its own nodes,
+    none on a rank that owns none.
+    """
     tr = tg.duplicate()
     Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
     viol = _row_violation(tr, normal_rows, full)
-    given_viol = (None if declared_rows is None or not declared
-                  else _row_violation(tr, declared_rows, full))
     tr.destroy()                                  # transient duplicate
-    if (viol >= tol and not declared) or (given_viol is not None and given_viol >= tol):
+    given_viol = (None if declared_dofs is None or not declared
+                  else _given_normal_violation(tg, *declared_dofs, full))
+    if viol >= tol and not declared:
+        if report is not None:
+            report.append({"viol": float(viol), "op_viol": None, "given_viol": None,
+                           "accepted": False, "rejected_by": "constraint"})
+        return False
+    if given_viol is not None and given_viol >= tol:
         if report is not None:
             report.append({"viol": float(viol), "op_viol": None, "given_viol": given_viol,
-                           "accepted": False, "rejected_by": "constraint"})
+                           "accepted": False, "rejected_by": "given_wall"})
         return False
     # operator-nullity: rigid rotation has exactly zero strain in the discrete
     # space (P2 contains linear fields, affine cells integrate the form exactly),
@@ -3164,6 +3200,20 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_T
                        "given_viol": given_viol, "accepted": bool(op_viol < tol),
                        "rejected_by": None if op_viol < tol else "operator"})
     return op_viol < tol
+
+
+def _given_normal_violation(tg, rows, normals, full):
+    """``sqrt(sum (n . tg)^2)`` over the nodes ``rows`` (owned, ``(k, dim)``, -1 for
+    a removed component) with their normals ``normals``, over ``full``. A removed
+    component is held at zero, so it adds nothing. COLLECTIVE."""
+    rs, _re = tg.getOwnershipRange()
+    arr = tg.getArray()
+    local = 0.0
+    if rows.size:
+        present = rows >= 0
+        values = np.where(present, arr[np.where(present, rows - rs, 0)], 0.0)
+        local = float(np.sum(np.sum(normals * values, axis=1) ** 2))
+    return float(np.sqrt(mpi.comm.allreduce(local))) / (full + 1e-30)
 
 
 def _row_violation(tr, rows, full):
@@ -3468,7 +3518,7 @@ def _declared_mode_flags(solver):
       what an exact normal passes. When some do and others take the facet-averaged
       normal (``normal=None``), the exemption covers only the facet-averaged walls;
       the given-normal walls are tested on their own constrained rows
-      (:func:`_declared_mode_test_rows`, #968);
+      (:func:`_declared_mode_given_walls`, #968);
     - the declared modes are rigid rotations about one point, their centre;
     - every facet-averaged wall's vertices, the closure of its labelled facets, are
       equidistant from that centre to ``_WALL_INVARIANCE_TOL``: the wall is a sphere
@@ -3525,17 +3575,31 @@ def _declared_mode_flags(solver):
     return [True] * n_modes, None
 
 
-def _declared_mode_test_rows(solver):
-    """The constrained rows a declared mode is still tested on when it is exempt: the
-    rows of the walls that take a given normal, when the others take the
-    facet-averaged one (#968), or None when every wall takes the facet-averaged
-    normal and the exemption is whole. Rank-local, from :func:`build_rotation`."""
+def _declared_mode_given_walls(solver):
+    """The rotated walls that take a given normal, when others take the
+    facet-averaged one: a declared mode is still tested on them against their own
+    normal (#968). Empty when every wall takes the facet-averaged normal and the
+    exemption is whole. The same on every rank."""
     specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
-    given = [name for name, normal in specs if normal is not None]
-    if not given:
+    if all(normal is not None for _name, normal in specs):
+        return []                  # all given: no exemption, the whole test applies
+    return [name for name, normal in specs if normal is not None]
+
+
+def _declared_mode_given_dofs(solver):
+    """``(rows, normals)`` for :func:`_declared_mode_given_walls` on this rank: each
+    owned node's velocity rows (``(k, dim)``, -1 for a component an essential
+    condition removed) and that wall's own normal there, from
+    :func:`build_rotation`; None when no wall is tested."""
+    walls = _declared_mode_given_walls(solver)
+    if not walls:
         return None
-    by_wall = getattr(solver, "_rotated_normal_rows_by_wall", {})
-    return sorted({row for name in given for row in by_wall.get(name, ())})
+    dim = solver.mesh.cdim
+    by_wall = getattr(solver, "_rotated_given_wall_dofs", {})
+    parts = [by_wall[name] for name in walls if name in by_wall]
+    rows = np.concatenate([p[0] for p in parts]) if parts else np.empty((0, dim), np.int64)
+    normals = np.concatenate([p[1] for p in parts]) if parts else np.empty((0, dim))
+    return rows, normals
 
 
 def _warn_declared_modes_refused(note):

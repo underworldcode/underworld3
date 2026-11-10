@@ -253,14 +253,99 @@ def test_a_wrong_given_normal_beside_a_default_wall_rejects_the_rotation():
     stokes.add_rotated_freeslip_bc(0, "Lower", normal=tilted)
     stokes.add_rotated_freeslip_bc(0, "Upper")
     stokes.petsc_use_pressure_nullspace = True
-    stokes.solve()
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
     info = stokes._rotated_freeslip_info
     assert info["declared_modes_exempt"] == [True]
+    assert info["declared_modes_tested_walls"] == ["Lower"]
     mode = info["rotation_gauge"]["modes"][0]
-    assert not mode["accepted"] and mode["rejected_by"] == "constraint", mode
+    assert not mode["accepted"] and mode["rejected_by"] == "given_wall", mode
     assert mode["given_viol"] > 1.0e-3, mode
     assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
     assert _normal_velocity(info) < 1.0e-12
+    # the rotation stays in the answer, and the solve says so
+    with uw.selective_ranks(0) as selected:
+        if selected:
+            assert any("take a given normal that a rotation about the mesh's centre is "
+                       "not tangent to" in str(w.message) for w in record), \
+                [str(w.message) for w in record]
+
+
+def test_a_given_normal_wall_off_its_circle_is_tested_against_its_normal():
+    # the sphere test covers the facet-averaged walls only: the given-normal wall here
+    # is pushed off its circle, but the radial normal it is given is still tangent to
+    # the rotation, so the rotation is removed. Taking the sphere test on that wall
+    # refuses the exemption, and the slid default wall's faceting then keeps the
+    # rotation in the answer.
+    moved = _slid_annulus()
+    X = np.array(moved.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    outer = np.isclose(r, 1.0, atol=1.0e-9)
+    theta = np.arctan2(X[:, 1], X[:, 0])
+    X[outer] *= (1.0 + 1.0e-6 * np.cos(3.0 * theta[outer]))[:, None]
+    moved.deform(X)
+    mesh, v, stokes = _annulus_stokes("1131o", mesh=moved)
+    x, y = mesh.X
+    rr = sympy.sqrt(x ** 2 + y ** 2)
+    stokes.add_rotated_freeslip_bc(0, "Lower")
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=sympy.Matrix([[x / rr, y / rr]]))
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["declared_modes_exempt"] == [True]
+    assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
+    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
+    assert _normal_velocity(info) < 1.0e-12
+
+
+def _split_wall(mesh, wall, names):
+    """Register two boundaries, ``names[0]`` for the facets of ``wall`` with ``y > 0``
+    and ``names[1]`` for the rest: two walls that meet at two seam vertices. They go
+    on the consolidated ``UW_Boundaries`` label, which the rotated path reads."""
+    from enum import Enum
+
+    dm = mesh.dm
+    known = {b.name: b.value for b in mesh.boundaries}
+    values = [max(known.values()) + 1, max(known.values()) + 2]
+    mesh.boundaries = Enum(mesh.boundaries.__name__, {**known, **dict(zip(names, values))})
+    label = dm.getLabel("UW_Boundaries")
+    points = label.getStratumIS(known[wall])
+    for name in names:
+        dm.createLabel(name)
+    own = [dm.getLabel(name) for name in names]
+    coords = dm.getCoordinatesLocal().array.reshape(-1, 2)
+    csec = dm.getCoordinateSection()
+    vs, ve = dm.getDepthStratum(0)
+    fs, fe = dm.getHeightStratum(1)
+    for facet in (points.getIndices() if points else ()):
+        if not fs <= facet < fe:
+            continue
+        ys = [coords[csec.getOffset(int(q)) // 2, 1]
+              for q in dm.getTransitiveClosure(int(facet))[0] if vs <= q < ve]
+        k = 0 if np.mean(ys) > 0.0 else 1
+        label.setValue(int(facet), values[k])
+        own[k].setValue(int(facet), values[k])
+
+
+def test_a_seam_between_a_given_and_a_default_wall_keeps_the_rotation_exempt():
+    # where a given-normal wall meets a facet-averaged one, the seam node's frame
+    # averages both normals; the given wall is tested against its own normal there,
+    # not against that frame, so a genuine rotation is not rejected (review F1:
+    # testing the frame rows rejected it, given_viol 0.096)
+    mesh, v, stokes = _annulus_stokes("1131s", mesh=_slid_annulus())
+    _split_wall(mesh, "Upper", ("UpperN", "UpperS"))
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    stokes.add_rotated_freeslip_bc(0, "Lower")
+    stokes.add_rotated_freeslip_bc(0, "UpperN", normal=sympy.Matrix([[x / r, y / r]]))
+    stokes.add_rotated_freeslip_bc(0, "UpperS")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    mode = info["rotation_gauge"]["modes"][0]
+    assert mode["accepted"] and mode["given_viol"] < 1.0e-12, mode
+    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
 
 
 def test_the_direct_lu_route_records_its_verdict_on_the_declared_mode():
