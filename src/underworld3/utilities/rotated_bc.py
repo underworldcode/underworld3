@@ -3370,42 +3370,18 @@ def _rotated_nullspace(solver, Q, normal_rows, *, pressure_null_verified):
 
 def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_TOL,
                                 report=None, declared=False):
-    """True iff the rigid-body mode ``tg`` is a genuine null mode of the
-    constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
-    every constrained normal row; a declared mode that keeps every wall is exempt,
-    see ``declared``) AND it is a null vector of the assembled operator (‖J·tg‖ ~0 against the velocity diagonal scale). The operator test
-    is what catches pinning the rotated rows cannot see — an ESSENTIAL no-slip
-    on another boundary leaves the mode tangential to the rotated wall (first
-    test passes) while the eliminated operator is NOT null on it; admitting it
-    then projects an irreducible component out of every increment RHS, and the
-    Newton residual floors at that component's magnitude instead of converging
-    (measured: rel ~2e-5 plateau on the essential-inner + rotated-outer annulus).
-    (A closed circular free-slip boundary admits its one rotation; a full
-    spherical shell admits all three; straight/partial walls and any essential
-    BC pin them.)
+    """Verify a rotation gauge in the actual normal-constrained operator.
 
-    The caller must have ASSEMBLED the solver's Jacobian at some iterate; an
-    unassembled J (norm 0) skips the operator test rather than passing every
-    mode through a vacuous 0 ≈ 0.
+    A declared mode may bypass the pointwise normal check when the geometry
+    preserves its continuous symmetry. It must still annihilate BOTH sides of
+    the discrete operator after normal-row elimination, to assembly roundoff.
+    Projecting a declared mode onto the constraint space can introduce strain;
+    testing the unconstrained rigid field alone would incorrectly admit it.
 
-    COLLECTIVE: every rank runs the same global-vector ops. Do NOT early-return on
-    a per-rank ``not normal_rows`` — in parallel a rank may own no boundary node
-    (empty normal_rows) while others do, and an early return there would desync the
-    collective norms below and deadlock.
-
-    ``report``, if given, is a list this appends one dict to per call: the
-    constraint violation, the operator violation (``None`` when the constraint
-    test already rejected the mode) and the verdict. Whether a mode is admitted
-    decides whether a gauge component is projected out of the answer, so when
-    two solves of the same system disagree this is the first thing to look at
-    — but nothing in the returned dict was observable before.
-
-    ``declared``: the mode is one the mesh declares (#906). Its constraint
-    violation is recorded but does not reject it: the callers zero its
-    constrained rows, which makes it exactly compatible with v_n = 0, and on a
-    faceted sphere the facet-averaged normal leaves a declared rotation a
-    discretisation-sized violation (0.008-0.016 on #906's shell). The operator
-    test still applies, so a no-slip wall that pins it rejects it."""
+    The caller must assemble the solver's Jacobian first. COLLECTIVE: ranks
+    without owned normal rows take every vector action and norm too.
+    ``report`` records the constraint and operator checks for each candidate.
+    """
     tr = tg.duplicate()
     Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
@@ -3419,34 +3395,49 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_T
     tra[loc] = tga[loc]
     trc.setArray(tra)
     viol = trc.norm() / (full + 1e-30)            # parallel (collective on all ranks)
-    # transient duplicates
-    tr.destroy()
     trc.destroy()
     if viol >= tol and not declared:
+        tr.destroy()
         if report is not None:
             report.append({"viol": float(viol), "op_viol": None,
                            "accepted": False, "rejected_by": "constraint"})
         return False
-    # operator-nullity: rigid rotation has exactly zero strain in the discrete
-    # space (P2 contains linear fields, affine cells integrate the form exactly),
-    # so a genuine null mode gives assembly round-off; a pinned mode leaves O(1)
-    # boundary-strip rows.
-    J = solver.snes.getJacobian()[0]
-    Jm = tg.duplicate()
-    J.mult(tg, Jm)
-    jn = Jm.norm()
-    Jm.destroy()
-    if jn == 0.0 and J.norm() == 0.0:             # J never assembled → cannot verify
+    # The gauge must survive the SAME normal-row elimination as the solve.
+    # A declared rigid rotation can have zero strain before that elimination
+    # and acquire nonzero strain when its constrained components are removed.
+    # Test both sides before projecting any residual or finalized field.
+    _zero_rows_local(tr, normal_rows)
+    compatible = tg.duplicate()
+    Q.multTranspose(tr, compatible)
+    norm = compatible.norm()
+    if norm == 0:
+        tr.destroy()
+        compatible.destroy()
         if report is not None:
             report.append({"viol": float(viol), "op_viol": None,
-                           "accepted": True, "rejected_by": "unassembled-J"})
-        return True
-    op_viol = jn / (_velocity_diag_scale(J, solver) * (tg.norm() + 1e-30))
+                           "accepted": False, "rejected_by": "zero-compatible-mode"})
+        return False
+    J = solver.snes.getJacobian()[0]
+    work, action = tg.duplicate(), tr.duplicate()
+    scale = _velocity_diag_scale(J, solver) * norm
+    actions = []
+    for multiply in (J.mult, J.multTranspose):
+        multiply(compatible, work)
+        Q.mult(work, action)
+        _zero_rows_local(action, normal_rows)
+        actions.append(action.norm()/scale)
+    for vector in (tr, compatible, work, action):
+        vector.destroy()
+    operator_tolerance = 256 * np.finfo(PETSc.RealType).eps
+    op_viol = max(actions)
+    accepted = bool(np.isfinite(op_viol) and op_viol <= operator_tolerance)
     if report is not None:
         report.append({"viol": float(viol), "op_viol": float(op_viol),
-                       "accepted": bool(op_viol < tol),
-                       "rejected_by": None if op_viol < tol else "operator"})
-    return op_viol < tol
+                       "right_op_viol": float(actions[0]), "left_op_viol": float(actions[1]),
+                       "operator_tolerance": float(operator_tolerance),
+                       "accepted": accepted,
+                       "rejected_by": None if accepted else "operator"})
+    return accepted
 
 
 def _wall_normal_loads(solver, boundary, solve_result):

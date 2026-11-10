@@ -107,3 +107,15 @@ def test_surface_basis_coordinates_reproduce_embedded_affine_facets(degree, cont
         assert actual.shape == expected.shape
         assert np.max(np.min(distances, axis=1)) < 2e-13
         assert np.max(np.min(distances, axis=0)) < 2e-13
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("degree", [1, 2, 3])
+def test_affine_basis_nodes_stay_in_the_closed_physical_bounding_box(degree):
+    """An affine FE node cannot lie outside its vertices' convex hull."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.15)
+    coords = mesh._get_coords_for_basis(degree, True)
+    bounds = np.asarray(mesh.dm.getBoundingBox())
+    assert np.all(coords >= bounds[:, 0])
+    assert np.all(coords <= bounds[:, 1])

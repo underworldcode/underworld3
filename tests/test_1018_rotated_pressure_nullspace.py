@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import sympy as sp
+from types import SimpleNamespace
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import rotated_bc as rbc
@@ -10,6 +11,47 @@ from underworld3.utilities import rotated_bc as rbc
 from test_1018_rotated_solver_options import _hydrostatic_stokes, _BLOCK_OPTIONS
 
 pytestmark = pytest.mark.level_2
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("rotated_constraint,nonsymmetric,accepted", [
+    (False, False, True), (True, False, False), (False, True, False),
+])
+def test_rotation_gauge_requires_the_constrained_right_and_left_kernel(
+        rotated_constraint, nonsymmetric, accepted):
+    """A null mode of J need not be a null mode after normal elimination."""
+    size = 3 * uw.mpi.size
+    J = PETSc.Mat().createAIJ([size, size], nnz=3, comm=PETSc.COMM_WORLD)
+    Q = PETSc.Mat().createAIJ([size, size], nnz=3, comm=PETSc.COMM_WORLD)
+    lo, hi = J.getOwnershipRange()
+    block = np.diag([0.0, 2.0, 3.0])
+    if nonsymmetric:
+        block[0, 1] = 1.0
+    rotation = np.eye(3)
+    if rotated_constraint:
+        rotation[:2, :2] = np.array([[1.0, 1.0], [-1.0, 1.0]])/np.sqrt(2)
+    for row in range(lo, hi):
+        if row < 3:
+            J.setValues([row], [0, 1, 2], block[row:row + 1])
+            Q.setValues([row], [0, 1, 2], rotation[row:row + 1])
+        else:
+            J.setValue(row, row, 1.0)
+            Q.setValue(row, row, 1.0)
+    J.assemble()
+    Q.assemble()
+    mode = J.createVecRight()
+    mode.set(0)
+    if lo == 0:
+        mode.array[0] = 1.0
+    velocity_is = PETSc.IS().createStride(hi - lo, first=lo, comm=J.comm)
+    solver = SimpleNamespace(snes=SimpleNamespace(getJacobian=lambda: (J, J)),
+                             _subdict={"velocity": (velocity_is, None)})
+    report = []
+    verdict = rbc._mode_satisfies_constraints(
+        solver, Q, [0 if rotated_constraint else 2], mode, declared=True, report=report)
+    assert verdict is accepted, report
+    for item in (velocity_is, mode, Q, J):
+        item.destroy()
 
 
 @pytest.mark.tier_b

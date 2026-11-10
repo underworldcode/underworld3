@@ -175,7 +175,7 @@ def test_velocity_pseudoinverse_projects_only_a_copy_of_its_source():
     # The original A*z remains observable; projecting it in place would change
     # the coarse operator rather than constructing its velocity pseudoinverse.
     assert helper.g.dot(rotations[0]) == pytest.approx(perturbation/np.sqrt(3), rel=1e-14, abs=0)
-    expected = np.divide((dense @ toy_values(helper.z))[:8], np.diag(dense)[:8],
+    expected = np.divide(toy_values(helper.g)[:8], np.diag(dense)[:8],
                          out=np.zeros(8), where=np.diag(dense)[:8] != 0)
     np.testing.assert_allclose(toy_values(helper.w)[:8], expected, rtol=1e-14, atol=0)
     recorded.source.destroy()

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import os
 import weakref
 import threading
-from mpi4py.MPI import Info
+from mpi4py.MPI import Info, MAX
 import numpy
 import sympy
 from sympy.matrices.expressions.blockmatrix import bc_dist
@@ -5983,7 +5983,24 @@ class Mesh(Stateful, uw_object):
             # roundoff. Distribute its owner's value so halo coordinates agree.
             dmnew.localToGlobal(coordsNewL, coordsNewG, addv=PETSc.InsertMode.INSERT_VALUES)
             dmnew.globalToLocal(coordsNewG, coordsNewL)
-            return coordsNewL.array.reshape(-1, self.cdim).copy()
+            coords = coordsNewL.array.reshape(-1, self.cdim).copy()
+            if self.degree == 1:
+                # Affine nodal points are convex combinations of vertices.
+                # Remove only roundoff outside their physical bounds so a
+                # boundary node remains locatable by PETSc's closed-box search.
+                bounds = numpy.asarray(self.dm.getBoundingBox())
+                outside = 0.0
+                if len(coords):
+                    outside = max(0.0, float(numpy.max(bounds[:, 0] - coords.min(axis=0))),
+                                  float(numpy.max(coords.max(axis=0) - bounds[:, 1])))
+                outside = uw.mpi.comm.allreduce(outside, op=MAX)
+                bound = 64 * numpy.finfo(float).eps * numpy.max(numpy.abs(bounds))
+                if outside > bound:
+                    raise ArithmeticError(
+                        f"Affine coordinate projection leaves its physical bounds by {outside}; "
+                        f"roundoff bound is {bound}.")
+                numpy.clip(coords, bounds[:, 0], bounds[:, 1], out=coords)
+            return coords
         finally:
             dmnew.restoreGlobalVec(coordsNewG)
             dmnew.restoreLocalVec(coordsNewL)
