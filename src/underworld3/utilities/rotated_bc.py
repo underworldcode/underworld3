@@ -708,7 +708,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
                             ne = _unit_normal(sheet_normal_fn, sheet_normal_const, xq)
                             sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
                             # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
-                            datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
+                            datum_nodes.append((gp[2], q_plus, SHEET_TANGENCY, 2.0 * s2 * sgn_e))
         except (RuntimeError, ValueError) as err:
             problem = str(err)
         fault_contact._collective_raise(problem)

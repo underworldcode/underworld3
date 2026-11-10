@@ -100,6 +100,10 @@ def test_fault_reaction_is_the_membrane_resultant():
     sheet.add_fault_bc(0, "Flt")
     sheet.normal_velocity = W
     sheet.solve()
+    assert sheet._rotated_freeslip_info["converged"]
+    _coords, _radial, normal_velocity, _tangent = _split(sheet)
+    # The prescribed sheet motion applies to both copies of every fault node.
+    assert np.max(np.abs(normal_velocity - W)) < 1.0e-9
     assembler = _InterfaceAssembler(sheet, include=("Flt",))
     points = np.asarray(sheet.u.coords)[assembler._lo_p // split.cdim]
     radial = points / np.linalg.norm(points, axis=1)[:, None]
