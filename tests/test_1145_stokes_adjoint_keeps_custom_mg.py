@@ -128,17 +128,20 @@ def _dense_copy(M):
 def _dense_adjoint_error(stokes):
     """The adjoint's multiplier against a dense solve of K^T mu = b, K the consistent
     tangent at the forward state; the pressure constant removed where it is free."""
-    gvec = stokes.dm.getGlobalVec()
+    # The tangent switch may rebuild the DM and SNES, so the vector is taken from the
+    # DM it leaves and given back before the switch is undone, as adjoint_solve does.
+    tangent = stokes._consistent_tangent_for_adjoint()
+    dm = stokes.dm
+    gvec = dm.getGlobalVec()
     gvec.set(0.0)
     stokes._gather_fields_to_global(gvec)
-    tangent = stokes._consistent_tangent_for_adjoint()
     J, P = stokes.snes.getJacobian()[:2]
     alpha = stokes._newton_alpha_for_adjoint()
     stokes.snes.computeJacobian(gvec, J, P)
     stokes._restore_newton_alpha(alpha)
     K = _dense_copy(J)
+    dm.restoreGlobalVec(gvec)
     stokes._restore_tangent(tangent)
-    stokes.dm.restoreGlobalVec(gvec)
     pressure = np.asarray(stokes._subdict["pressure"][0].getIndices())
     b = np.random.default_rng(1145).standard_normal(K.shape[0])
     if stokes.petsc_use_pressure_nullspace:

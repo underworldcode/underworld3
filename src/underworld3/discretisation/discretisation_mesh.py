@@ -609,6 +609,12 @@ class Mesh(Stateful, uw_object):
 
         # Mesh coordinate version tracking for swarm coordination
         self._mesh_version = 0
+        # Committed moves of the geometry (mesh.deform and every mover): what a FAC
+        # patch was built on (#1017). Not _mesh_version, which a snapshot restore
+        # checks, so a mover leaves a snapshot restorable. A restore does not count:
+        # it puts the coarse levels back with this mesh, and the patch built before
+        # the move applies again.
+        self._move_version = 0
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
