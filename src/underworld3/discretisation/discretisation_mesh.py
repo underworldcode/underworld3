@@ -4401,6 +4401,55 @@ class Mesh(Stateful, uw_object):
                 pass
         return result
 
+    def _sync_hierarchy_finest_coordinates(self):
+        """Give the finest hierarchy level the coordinates ``self.dm`` now has.
+
+        For a mesh built with ``refinement`` (or coarsening) ``self.dm`` is a
+        clone of ``dm_hierarchy[-1]``, so the two share point numbering but
+        not, after a move, coordinates. Solvers build on a clone of the
+        hierarchy, so without this they assemble on the pre-move geometry
+        while integrals and evaluation use the moved one (#1037). The coarse
+        levels keep their geometry: their transfers are topological, and a
+        coarse level only preconditions.
+
+        Each level gets its own duplicate vector: a ``DMClone`` shares the
+        coordinate vector by reference, and a later write through ``self.dm``
+        must not move the hierarchy behind the mesh's back.
+        """
+        hierarchy = getattr(self, "dm_hierarchy", None)
+        if not hierarchy or hierarchy[-1] is self.dm:
+            return
+        finest = hierarchy[-1]
+        local = self.dm.getCoordinatesLocal()
+        if finest.getCoordinatesLocal().getSize() != local.getSize():
+            raise RuntimeError(
+                "Mesh: the finest hierarchy level's coordinate layout differs from "
+                "the mesh's, so the moved coordinates cannot be given to it; a solve "
+                "would run on the pre-move geometry (#1037).")
+        g = self.dm.getCoordinates().duplicate()
+        self.dm.getCoordinates().copy(g)
+        finest.setCoordinates(g)
+        v = local.duplicate()
+        local.copy(v)
+        finest.setCoordinatesLocal(v)
+        # New coordinates are not enough: the level's cached coordinate field
+        # (cell geometry, quadrature Jacobians) still describes the old nodes,
+        # and a solver's clone of the level inherits it. Rebuild it the way
+        # nuke_coords_and_rebuild does for self.dm.
+        if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
+            finest.projectCoordinates(self.petsc_fe)
+        elif hasattr(finest, "createCoordinateSpace"):
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            from underworld3.cython.petsc_maths import dm_force_coordinate_field
+            petsc_dm_create_coordinate_space_within_plex(finest, self.degree)
+            dm_force_coordinate_field(finest)
+        elif PETSc.Sys.getVersion() >= (3, 24, 0):
+            finest.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
+        else:
+            finest.setCoordinateDisc(disc=self.petsc_fe, project=False)
+
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
         """
@@ -4439,6 +4488,7 @@ class Mesh(Stateful, uw_object):
 
             self.dm.setCoordinatesLocal(coord_vec)
             self.nuke_coords_and_rebuild(active_vars=active_vars)
+            self._sync_hierarchy_finest_coordinates()
 
             # Rebuild the _coords array view.  nuke_coords_and_rebuild may
             # replace the coordinate vector internally (createCoordinateSpace),
