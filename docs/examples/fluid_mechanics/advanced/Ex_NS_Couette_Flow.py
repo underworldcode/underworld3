@@ -97,10 +97,10 @@ minX, maxX = -0.5 * width, 0.5 * width
 minY, maxY = -0.5 * height, 0.5 * height
 
 uw.pprint("min X, max X:", minX, maxX)
-    print("min Y, max Y:", minY, maxY)
-    print("kinematic viscosity: ", kin_visc)
-    print("fluid density: ", fluid_rho)
-    print("dynamic viscosity: ", kin_visc * fluid_rho)
+uw.pprint("min Y, max Y:", minY, maxY)
+uw.pprint("kinematic viscosity: ", kin_visc)
+uw.pprint("fluid density: ", fluid_rho)
+uw.pprint("dynamic viscosity: ", kin_visc * fluid_rho)
 
 # %%
 # cell size calculation
@@ -175,7 +175,6 @@ navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
 navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
 
-navier_stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
@@ -203,7 +202,7 @@ max_vel = vel
 delta_t = Cmax*delta_x/max_vel
 
 uw.pprint(f"Min radius: {delta_x}")
-    print("Timestep used:", delta_t)
+uw.pprint("Timestep used:", delta_t)
 
 # %%
 ts = 0

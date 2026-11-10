@@ -282,7 +282,6 @@ stokes.petsc_options["ksp_type"] = "fgmres"
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
 
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5

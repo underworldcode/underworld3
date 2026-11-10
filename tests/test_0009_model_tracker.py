@@ -211,11 +211,14 @@ def test_mesh_t_resolves_to_the_model_clock():
     at_five = np.abs(np.asarray(T.array)).max()
     assert at_five > 0.1 * control
 
-    # and it must TRACK the clock, not merely be non-zero once
+    # and it must TRACK the clock, not merely be non-zero once. These re-solves are
+    # warm and held to the cold-start target (the convergence reference policy), so
+    # the ratio is asked for at the solver's tolerance, 1e-4; doubling the source
+    # either moves it by a factor of two or does not move it at all.
     model.tracker.time = 10.0
     poisson.solve()
     at_ten = np.abs(np.asarray(T.array)).max()
-    assert at_ten == pytest.approx(2.0 * at_five, rel=1e-6)
+    assert at_ten == pytest.approx(2.0 * at_five, rel=1e-4)
 
 
 def test_a_dimensional_clock_survives_a_disk_snapshot(tmp_path):

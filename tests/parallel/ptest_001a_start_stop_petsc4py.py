@@ -35,7 +35,7 @@ petsc_fe = PETSc.FE().createDefault(
 if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
     dmplex.projectCoordinates(petsc_fe)
 else:
-    dmplex.setCoordinateDisc(petsc_fe, project=False)
+    dmplex.setCoordinateDisc(petsc_fe, localized=False, project=False)
 
 # Coordinate calculations (as mesh does)
 dmc = dmplex.getCoordinateDM()

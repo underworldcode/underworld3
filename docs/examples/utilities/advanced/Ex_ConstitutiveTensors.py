@@ -514,8 +514,6 @@ eta = sympy.symbols("\eta")
 C = sympy.Matrix.diag([eta]*6)
 
 # %%
-Pm = 
-
 Cv
 
 # %%

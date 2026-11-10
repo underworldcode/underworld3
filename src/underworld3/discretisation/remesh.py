@@ -467,21 +467,6 @@ def _iter_active_hooks(mesh):
         yield cb
 
 
-def _values_in_data_layout(var, values):
-    """Evaluated ``values``, one ``var.shape`` array per node, in the layout of ``var.data``.
-
-    The layout is the variable's own: a symmetric tensor holds only its independent
-    components, and a matrix is stored by columns.
-    """
-    data_shape = np.asarray(var.data).shape
-    per_node = np.asarray(values).reshape((data_shape[0], *var.shape))
-    out = np.empty(data_shape, dtype=per_node.dtype)
-    for i in range(var.shape[0]):
-        for j in range(var.shape[1]):
-            out[:, var._data_layout(i, j)] = per_node[:, i, j]
-    return out
-
-
 def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """One-shot REMAP dance for a set of variables.
 
@@ -505,6 +490,8 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """
     if not vars_:
         return
+    from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+
     # Capture target DOF coords on the NEW mesh first (we are sitting
     # on new_X right now). var.coords reads from the live mesh state.
     new_dof_coords = {}
@@ -543,9 +530,10 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
                     f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
-        if getattr(val, "units", None) is not None:
-            val = uw.non_dimensionalise(val)    # var.data holds non-dimensional values
-        resampled[var] = _values_in_data_layout(var, getattr(val, "magnitude", val))
+        # Laid out by _data_layout, which a flat reshape is not for a MATRIX or a
+        # symmetric tensor. var.data holds non-dimensional values, and the helper
+        # reduces a dimensional evaluation to them.
+        resampled[var] = _evaluated_in_storage_layout(var, val)
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():

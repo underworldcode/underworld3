@@ -224,15 +224,11 @@ def test_direct_lu_diagnostic_constrained_matches_direct_lu_diagnostic_nitsche()
     assert abs(constrained_cmb - nitsche_cmb) / nitsche_cmb < 0.01
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Known constrained field-split failure: LU sub-solves in the "
-        "velocity | [p,h] preconditioner still do not reproduce the validated "
-        "Nitsche/default velocity response."
-    ),
-    strict=True,
-)
 def test_lu_subsolve_fieldsplit_constrained_matches_default_nitsche_response():
+    # This was a strict xfail ("LU sub-solves in the velocity | [p,h] preconditioner
+    # still do not reproduce the validated Nitsche/default velocity response"). It
+    # passes on Linux (hyperion, both builds) and on macOS arm64 at development
+    # eddab707, so the agreement within 1 % is now asserted.
     nitsche_surface, nitsche_cmb, nitsche_reason = solve_response(
         "nitsche",
         "default",
