@@ -455,6 +455,7 @@ PTEST_FILES=(
   tests/parallel/ptest_0857_gather_regions_parallel.py
   tests/parallel/ptest_0859_fault_network_parallel.py
   tests/parallel/ptest_0864_split_checkpoint_parallel.py
+  tests/parallel/ptest_1094_thin_sheet_parallel.py
   tests/parallel/ptest_jit_cache.py
 )
 # These fail at np 4 (#956), so the --full-parallel pass leaves them out.
