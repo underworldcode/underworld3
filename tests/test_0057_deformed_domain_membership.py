@@ -38,6 +38,9 @@ def test_membership_and_eval_track_bulged_surface():
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
     r_sym = sympy.sqrt(mesh.X[0] ** 2 + mesh.X[1] ** 2)
     T.data[:, 0] = np.asarray(uw.function.evaluate(r_sym, T.coords)).flatten()
+    # This test is about point location. Carrying T keeps the nodal values, so the
+    # field along the crest is known; a remap would extrapolate past the old surface.
+    T.remesh_policy = "carry"
 
     # Bulge the outer surface OUTWARD in mode-3 (only the outward half), so the
     # surface near theta=0 sits well beyond the original radius r_o.

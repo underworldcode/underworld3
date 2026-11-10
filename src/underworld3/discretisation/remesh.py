@@ -314,11 +314,13 @@ def remesh_with_field_transfer(
     7. Marks REINIT vars stale (Phase 1: not strictly required because
        the only REINIT-stamped vars today are recomputed on first
        access; placeholder for future eager invalidation).
+    8. Marks the mesh vector stale, so kernels and integrals read the
+       values just written.
 
     Returns ``True`` if the mesh actually moved (``do_move`` reported
     geometry change); ``False`` if it short-circuited (caller can skip
     transfer too). Detection: compares ``mesh.X.coords`` before and
-    after ``do_move``.
+    after ``do_move``, and any rank that moved counts for all.
 
     Parallel: ``global_evaluate`` resolves off-rank target points
     correctly, so the transfer is partition-agnostic — the rank that
@@ -376,7 +378,11 @@ def _remesh_with_field_transfer_impl(
     do_move()
 
     new_X = np.asarray(mesh.X.coords).copy()
-    if np.array_equal(new_X, old_X):
+    # Decided over all ranks: a rank whose own nodes stayed put (pinned, empty,
+    # or outside a local deformation) must still enter the collective transfer
+    # below with the ranks whose nodes moved.
+    moved = uw.mpi.comm.allreduce(not np.array_equal(new_X, old_X), op=uw.MPI.LOR)
+    if not moved:
         # Mover short-circuited (skip threshold, no metric change, ...).
         # No transfer to do, no hooks to fire — caller treats this as a
         # no-op adapt.
@@ -425,6 +431,14 @@ def _remesh_with_field_transfer_impl(
     if extra_zero:
         for var in extra_zero:
             _write_var_data(var, 0.0)
+
+    # _write_var_data writes through a plain view of var.data, which does not
+    # mark the mesh vector stale, and the remap's own evaluations have just
+    # refreshed that vector from the values before the write. Kernels and
+    # integrals read the mesh vector, so without this they see the old field
+    # on the moved nodes. Every rank reaches this line (the move test above is
+    # collective), which update_lvec needs because it is collective.
+    mesh._stale_lvec = True
 
     return True
 
@@ -500,7 +514,8 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     resampled = {}
     for var in vars_:
         target = new_dof_coords.get(var, None)
-        if target is None or target.size == 0:
+        # A rank with no DOFs of this variable still enters the collective below.
+        if target is None:
             continue
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
