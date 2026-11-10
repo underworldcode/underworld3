@@ -6,6 +6,118 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### The fault-band patch factors in quotient minimum degree (November 2026, #895)
+
+The FAC patch smoother solves a fault band's block by LU, and under PETSc's default
+ordering the fill of that long, narrow block followed its row numbering: 8.1e9 to
+2.35e10 flops for the same block, varying with the rank count. Quotient minimum degree
+cuts the fill 25 to 58 times and makes it nearly the same at any rank count. The block's
+triangular solves, which every smoother application pays, run 3.5 to 6 times faster,
+and the add-on matrix's fault-network solves 2.3 to 4 times faster, with the same
+iterations and slip.
+### One convergence reference for every solver (November 2026, #911, #985, #924)
+
+PETSc measures a nonlinear solve relative to the residual of the guess it starts
+from, so a warm start near the answer was asked for a fraction of an already small
+residual and kept iterating; and each linear solve inside Newton was asked for a
+fraction of its own right-hand side, which on the last step of a tight solve is below
+round-off (test_0022's rotated solve ran its last increment into a 300-iteration cap,
+18 to 52 minutes on CI). Every solve now measures one reference and two targets, on
+the native and the rotated routes alike
+(`docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md`):
+
+- The nonlinear target is `max(rtol * max(||F(x0)||, R), atol)` (the rotated loop adds
+  its `atol`), where `R` is what the equation declares: `||F(0)||` for a stationary equation, so a warm start is held to
+  the cold start's target; zero for a solve with memory (a time step through a DDt,
+  a viscoelastic step) or a weakly imposed nonzero datum (Nitsche or a penalty), which
+  are measured against their own first residual as before. Under the `max` a time
+  loop was 20 to 70 times less accurate, and a warm re-solve of a Nitsche-driven lid
+  up to 1300 times.
+- Each linear solve stops at a tenth of the nonlinear target, and always cuts its own
+  residual at least tenfold (inexact Newton). A linear rtol the user, or the library,
+  set explicitly is left alone, and Eisenstat-Walker still sets the rtol on the
+  saddle-point route.
+- The rotated loop honours a user-set `snes_rtol`, `snes_atol` and `snes_stol` (#924).
+
+test_0022 takes 13.6 s on wombat against 758 s. Answers are now as accurate as the
+tolerance asks, and no more: a linear solve no longer gets a second, exact Newton
+step for free. `evaluate()` of an expression with derivatives goes through a
+projection asked for `snes_rtol = 1e-6`, and returns values to that, where it was
+often near round-off before.
+
+### Rotated free slip takes its rotation modes from the mesh (November 2026, #906)
+
+A spherical shell with rotated free slip on both walls and the default normal
+returned an answer with an arbitrary rigid rotation in it. The rotated route
+built the Cartesian rotations and kept only those that passed a 1e-8 test
+against the discrete constraints. On a faceted sphere the facet-averaged normal
+is not radial at the nodes, so every rotation failed the test by 0.0075 to
+0.0164 (a 0.5 shell built on macOS), and none was removed. On a 0.3 shell built on
+macOS the answer carried a rotation of rate 4.66 in a v_rms of 3.93, against 1.81
+under the analytic radial normal.
+
+The modes now come from `mesh.nullspace_rotations`, which the mesh factories
+fill and the standard Stokes path already read. A declared mode has its
+constrained rows zeroed, so v·n = 0 stays exact, and it is still tested against
+the assembled operator, so a no-slip wall rejects it. It skips the constraint
+test only where faceting is the only reason it could fail it: every rotated wall
+takes the default normal, the modes rotate about one centre, and each wall's
+vertices are equidistant from it to 1e-9 relative. A free surface that has
+deformed fails that check; the mode then takes the constraint test like an
+undeclared one, and the solve warns. A rotation that is only near-null there is
+kept, not removed as a gauge, because the deformation may not eliminate the null
+space; a model that wants it gone projects it out after the solve. On the macOS 0.3 shell the rotation left has
+rate 1.1e-15 and v_rms is 1.807, against 1.806 under the analytic normal.
+Meshes adapted, cut, split, placed into or moved by the add-on partition inherit
+the declaration, and the setter refuses a field that is not a rigid rotation.
+A mesh that declares nothing keeps the old detection. The modes are built from
+non-dimensional coordinates, which also fixes a units-model solve (#877).
+
+### Refining a spherical mesh no longer folds cells (November 2026, #946, #903)
+
+gmsh meshes a sphere in its (longitude, latitude) parameter plane. Near a pole it can
+join four wall nodes along the long diagonal of their quadrilateral, which creases
+the wall toward the centre. On a shell's inner wall the pocket under such a crease
+is meshed as one cell with all four vertices on the sphere. Regular refinement only
+subdivides it, but the refinement callback then snaps the midpoint of the creased
+edge outward past the unsnapped midpoint of the other diagonal, and the children
+fold. A 0.5-cell shell folded 3 cells on macOS and 5 on Linux. On the Linux mesh,
+every velocity multigrid solve of a rotated free-slip Stokes problem ran to its
+iteration cap. A macOS mesh with the same fold, built from another gmsh seed, did
+the same with an LU or an SVD coarse solve and with either wall normal.
+
+- Every gmsh generator with spherical walls now flips creased wall edges before the
+  volume mesh, so each wall patch is triangulated as its convex hull. The
+  generators are SphericalShell, SphericalShellInternalBoundary, SegmentofSphere,
+  CubedSphere, the segmented shell and ball, and RegionalSphericalBox. The flips
+  are pure Python on rank 0, about 1 s per 12,000 surface triangles.
+- The mesh hierarchy applies any refinement callback through a guard. A vertex
+  whose move turns a triangle or tetrahedron inside out goes back where refinement
+  placed it, and one warning gives the total. The guard covers meshes that do not
+  come from gmsh. It costs about 1 s on a 0.4-0.9 million cell mesh, at
+  construction.
+- In parallel, the copies of a vertex are reconciled before the check, the moved copy
+  winning. A callback moves only the vertices of the labelled facets a rank holds, so
+  before this a refined wall vertex could end off its wall depending on the rank count,
+  and at np 8 cells could invert where every rank saw its own copy untangled.
+- A crease on a curve between two wall patches is not flipped, so meshes built of
+  patches still hold vertices back at refinement, with a warning (#949). Measured by
+  vertices held at refinement 1 and 2:
+  - CubedSphere(simplex=True), numElements 3: 3 and 47; numElements 2: 0 and 24.
+  - SegmentedSphericalShell (cellSize 0.5, 3 segments): 2 and 61.
+  - RegionalSphericalBox (±70°, 3×3×2): 4 and 32.
+  Held vertices stay up to 4% of the radius off the wall (22% on that regional box).
+- The segmented shell and ball tagged their volume with Upper's value, so the
+  Upper label took interior vertices and the callback dragged them onto the
+  sphere. The volume is now 99999, as elsewhere.
+- A label missing from a DM now yields no points, where it yielded vertex 0, in
+  both copies of the lookup. A refined ball (radiusInner=0) had moved that vertex
+  to the origin and then divided by its zero radius (#903).
+
+Most spherical meshes change, by the flips, and recorded answers on them move with
+them. test_1111's shell is re-recorded on its new mesh: the shifted LU and a dense
+SVD coarse solve agree on it to every printed digit.
+
 ### The multigrid coarse solve: one rule on every route (November 2026, #901)
 
 The rotated free-slip route solved its coarse level with a dense SVD whenever

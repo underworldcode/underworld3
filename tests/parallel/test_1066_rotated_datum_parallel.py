@@ -28,8 +28,11 @@ from serial_reference import (
 # is partition-independent, not that it is right. The value is the pre-#568
 # `_INT_VV_REF`; the fingerprint is (owned cell count, integral 1 dV) for
 # Annulus(0.5, 1.0, cellSize=0.1). rtol 1e-2, i.e. "is this still the same answer".
-ANCHOR_DATUM = {"fingerprint": [600, 2.356187202481425],
-                "values": (6.6559607579,)}
+ANCHOR_DATUM = [{"fingerprint": [600, 2.356187202481425],
+                 "values": (6.6559607579,)},
+                # Linux's gmsh annulus, recorded on hyperion at np 2 (2026-11-06)
+                {"fingerprint": [612, 2.3561872024814274],
+                 "values": (6.656023361562388,)}]
 
 # The timeout covers the np=1 child the partition test spawns as well as the
 # parallel solve itself.

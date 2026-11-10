@@ -209,14 +209,21 @@ class _InstrumentedKSP:
         """Prepend the deadline test, once and for all.
 
         PETSc allows exactly one ``addConvergenceTest`` per KSP and offers no way to
-        take it off again, so the test is installed on first arming and left in place;
+        take it off again, so the test is registered (``utilities/ksp_convergence_tests``,
+        which it shares with the linear floor) on first arming and left in place;
         ``disarm()`` makes it inert instead of removing it. That is a true restore
         rather than an approximate one: with no budget set the test returns ``ITERATING``
         immediately and the KSP's native test decides exactly as it would have.
         """
         if self._test_installed:
             return
-        self.ksp.addConvergenceTest(self._test, prepend=True)
+        # petsc4py allows one Python test per KSP, which the convergence policy's
+        # linear floor also needs: both run in the one dispatcher, in front of PETSc's
+        from underworld3.utilities import ksp_convergence_tests
+        if not ksp_convergence_tests.register(self.ksp, "wall_clock_guard", self._test):
+            raise RuntimeError(
+                "the KSP already has a convergence test the library did not set, so "
+                "the wall-clock guard cannot run in front of it")
         self._test_installed = True
 
 

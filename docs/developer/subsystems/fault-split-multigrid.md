@@ -122,8 +122,8 @@ zero). Two further rules came out of the same case:
 A level with a FAC patch (the rows its transfer cannot represent, plus a one-cell
 halo, or a keyed `fac_zone`) is smoothed by a multiplicative composite: the level's
 SOR, then a basic ASM over the patch's blocks with one operator-sparsity overlap
-layer, each block solved by LU with a nonzero factor shift
-(`custom_mg._configure_pcmg`). This is the one configuration; the measurement knobs
+layer, each block solved by LU with a nonzero factor shift and quotient minimum
+degree ordering (`custom_mg._configure_pcmg`). This is the one configuration; the measurement knobs
 that varied it are gone, and `test_1090` checks the live objects on every install
 path.
 
@@ -141,6 +141,25 @@ path.
   | S 0.004, one block | 603 s | 1299 s | 1750 / 2102 s | 2360 / 2179 s |
   | S 0.004, blocks of 2000 rows | 433 s | 1404 s | 2089 / 2058 s | 2248 / 2981 s |
   | S 0.015625, one block | 516 s | 766 s | 931 / 869 s | 923 / 1207 s |
+
+- **Quotient minimum degree.** A fault band's block is long and narrow, and under
+  PETSc's default ordering (nested dissection) its fill followed the subdomain's row
+  numbering: the same block took 8.1e9 flops to factor at np 4 and 2.35e10 at np 8
+  and 16. Measured on the add-on matrix's row 5 networks (kaiju, np 4 to 16, 2026-11),
+  with the same iterations and slip in every case (reverse Cuthill-McKee was worse
+  than nested dissection):
+
+  | case, np | ordering | LU flops | MatSolve, max | solve, first / again |
+  |---|---|---|---|---|
+  | pair, 8 | nd | 2.35e10 | 77.2 s | 59.7 / 46.6 s |
+  | pair, 8 | qmd | 4.08e8 | 12.5 s | 15.1 / 12.6 s |
+  | pair, 16 | nd | 2.35e10 | 75.8 s | 60.3 / 43.6 s |
+  | pair, 16 | qmd | 4.10e8 | 15.4 s | 18.5 / 16.0 s |
+  | junction, 4 | nd | 7.24e9 | 39.5 s | 32.5 / 27.0 s |
+  | junction, 4 | qmd | 2.94e8 | 11.1 s | 13.8 / 12.4 s |
+
+  The block's triangular solves, which every smoother application pays, are most of
+  its cost: the factorisation is a few per cent of it.
 
 The size of the LU blocks is bounded by `fac_block_rows` for keyed zones. The
 structural block is not bounded: it is one LU, held by one rank in parallel (#895).
