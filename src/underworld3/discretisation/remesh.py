@@ -353,13 +353,11 @@ def remesh_with_field_transfer(
     finally:
         mesh._in_remesh_transfer = False
         mesh._remesh_pending_scratch = None
-    # A committed move tells everything keyed on the geometry: registered swarms
-    # (solve-entry sync), the variables' kd-trees, a FAC patch (#1017). Every mover
-    # commits here, not only mesh.deform, whose bump this was. Not in _deform_mesh:
-    # that primitive also runs inside ephemeral_coords and on snapshot restore,
-    # whose integrity check reads a moved version as invalidation.
+    # Every mover commits here, mesh.deform among them, and a FAC patch built on
+    # the old geometry is stale (#1017). Not in _deform_mesh, which also runs for
+    # the trial moves inside ephemeral_coords.
     if moved:
-        mesh._mesh_version += 1
+        mesh._move_version = getattr(mesh, "_move_version", 0) + 1
     return moved
 
 

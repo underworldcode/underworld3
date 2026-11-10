@@ -182,17 +182,33 @@ def test_a_deform_kills_the_patch_on_the_rotated_fault_route():
 
 def test_a_mover_kills_the_patch_too():
     # A mover commits through remesh_with_field_transfer as mesh.deform does, and
-    # only mesh.deform moved _mesh_version: a smoothed mesh kept a stale patch
-    # version and the moved patch was declined silently (H1's review, M2)
+    # the patch was keyed on _mesh_version, which only mesh.deform moves: a smoothed
+    # mesh kept its patch version and the moved patch was declined silently (H1's
+    # review, M2)
     s, mesh, managed_pc = _poisson()
     s.solve()
-    before = mesh._mesh_version
     uw.meshing.smooth_mesh_interior(mesh, n_iters=2)
-    assert mesh._mesh_version == before + 1
     with pytest.warns(UserWarning, match="FAC patch"):
         s.solve()
     assert s.snes.getConvergedReason() > 0
     _killed_and_said_so(s)
+
+
+def test_a_mover_leaves_a_snapshot_restorable():
+    # The kill has its own counter: a snapshot restore refuses a moved _mesh_version,
+    # and development restores after a mover (H1's review, round 2)
+    uw.reset_default_model()                # a snapshot needs unique mesh names
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
+                                             cellSize=1 / 8, regular=False)
+    T = uw.discretisation.MeshVariable("T1149", mesh, 1, degree=1)
+    T.array[...] = 1.0
+    model = uw.get_default_model()
+    snap = model.save_state()
+    x0 = np.asarray(mesh.X.coords).copy()
+    uw.meshing.smooth_mesh_interior(mesh, n_iters=2)
+    assert not np.array_equal(np.asarray(mesh.X.coords), x0)
+    model.load_state(snap)
+    assert np.array_equal(np.asarray(mesh.X.coords), x0)
 
 
 def _live_ksps():

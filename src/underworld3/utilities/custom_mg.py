@@ -2441,10 +2441,13 @@ class CustomMGHierarchy:
         coincident coarse node, would take every moved row as patch and the cover gate
         would decline it without saying why. The kill is recorded in ``pc_fallbacks``
         on every build until the hierarchy is registered again, and warned once.
-        Collective: a mover's no-move test is rank-local, so a version could move on
-        some ranks only, and the verdict is taken over all of them."""
-        version = getattr(self.level_meshes[-1], "_mesh_version", None)
-        at = getattr(solver, "_fac_patch_mesh_version", None)
+        A move is read from the finest mesh's ``_move_version``, which every committed
+        move bumps (``mesh.deform``, a mover, a snapshot restore that moved the nodes)
+        and a trial move inside ``ephemeral_coords`` does not. Collective: a mover's
+        no-move test is rank-local, so a version could move on some ranks only, and
+        the verdict is taken over all of them."""
+        version = getattr(self.level_meshes[-1], "_move_version", None)
+        at = getattr(solver, "_fac_patch_move_version", None)
         moved = int(at is not None and at != version)
         if solver.dm.comm.getSize() > 1:
             from mpi4py import MPI
@@ -2452,7 +2455,7 @@ class CustomMGHierarchy:
         if moved:
             # attributed to the user's solve(), not to this frame
             from underworld3.cython.generic_solvers import _warn_from_caller
-            solver._fac_patch_mesh_version = None
+            solver._fac_patch_move_version = None
             solver._fac_patch_killed = True
             _warn_from_caller(
                 f"custom_mg: the mesh of solver {solver.name!r} was deformed after its "
@@ -2551,8 +2554,8 @@ class CustomMGHierarchy:
             from mpi4py import MPI
             local = solver.dm.comm.tompi4py().allreduce(local, op=MPI.MAX)
         if local:
-            solver._fac_patch_mesh_version = getattr(self.level_meshes[-1],
-                                                     "_mesh_version", None)
+            solver._fac_patch_move_version = getattr(self.level_meshes[-1],
+                                                     "_move_version", None)
         return summary
 
     def install(self, solver, verbose=False):
@@ -2727,7 +2730,7 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     }
     # a new registration rebuilds a patch a deform killed (#1017)
     solver._fac_patch_killed = False
-    solver._fac_patch_mesh_version = None
+    solver._fac_patch_move_version = None
     solver.is_setup = False
 
 

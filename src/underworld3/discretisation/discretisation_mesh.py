@@ -609,6 +609,11 @@ class Mesh(Stateful, uw_object):
 
         # Mesh coordinate version tracking for swarm coordination
         self._mesh_version = 0
+        # Committed moves of the geometry (mesh.deform, a mover, a snapshot restore
+        # that moved the nodes): what a FAC patch was built on (#1017). Not
+        # _mesh_version, which a restore checks, so a mover leaves a snapshot
+        # restorable.
+        self._move_version = 0
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
@@ -4330,12 +4335,17 @@ class Mesh(Stateful, uw_object):
         def _do_move():
             self._deform_mesh(_nc)
 
-        # A move bumps _mesh_version inside the helper, which notifies
-        # registered swarms: solve-entry sync compares the version and marks
-        # them for deferred migration (#379 item 1 retired the read-trigger
-        # that consumed this channel).
         result = remesh_with_field_transfer(
             self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
+
+        # Notify registered swarms: solve-entry sync compares this version
+        # and marks them for deferred migration (#379 item 1 retired the
+        # read-trigger that consumed this channel). The bump lives HERE,
+        # not in _deform_mesh: the internal primitive also runs on
+        # snapshot restore, whose integrity check treats a moved version
+        # as invalidation and would refuse its own recovery.
+        if result:
+            self._mesh_version += 1
 
         # Refresh deformation-tracking per-boundary normals so Nitsche/penalty
         # BCs that captured ``boundary_normal(...).sym`` at setup read the new
@@ -5616,6 +5626,7 @@ class Mesh(Stateful, uw_object):
         if self.dm.comm.tompi4py().allreduce(moved):
             with self._coord_mutation():
                 self._deform_mesh(coords)
+            self._move_version += 1         # a FAC patch built on the other geometry is stale
 
         current_vars = {var.clean_name: var for var in self.vars.values()}
         for var_clean_name, saved_array in payload["vars"].items():
