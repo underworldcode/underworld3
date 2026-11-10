@@ -102,6 +102,10 @@ p.add_argument('--resolution-ratio', type=float, default=0.0,
                     'cell-size ratio) of the metric, keeping the MMPDE mover. '
                     'R>0 builds the metric with refinement=R + front-following '
                     '(R=3 is well beyond strategy extreme=2.0). 0 = use --strategy.')
+p.add_argument('--adv', choices=('slcn', 'supg'), default='slcn',
+               help='advection-diffusion scheme: semi-Lagrangian (AdvDiffusionSLCN) or '
+                    'Eulerian SUPG (AdvDiffusion). SUPG needs --fixed-dt: its estimate_dt '
+                    'takes different arguments.')
 p.add_argument('--Ra', type=float, default=1.0e7,
                help='Rayleigh number (default 1e7).')
 p.add_argument('--delta-eta', type=float, default=1.0e4,
@@ -271,9 +275,15 @@ if _REFINE > 0 and _PCVEL == "gmg":
 else:
     uw.pprint(f"  velocity PC = default GAMG (REFINE={_REFINE}, PCVEL={_PCVEL})")
 
-adv = uw.systems.AdvDiffusionSLCN(
-    mesh, u_Field=T, V_fn=V.sym, verbose=False,
-    theta=1.0, monotone_mode='clamp')
+if args.adv == 'supg':
+    if args.fixed_dt <= 0:
+        sys.exit('--adv supg needs --fixed-dt')
+    adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V.sym, verbose=False)
+else:
+    adv = uw.systems.AdvDiffusionSLCN(
+        mesh, u_Field=T, V_fn=V.sym, verbose=False,
+        theta=1.0, monotone_mode='clamp')
+uw.pprint(f"  advection-diffusion: {type(adv).__name__}")
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0
 adv.tolerance = 1.0e-4
@@ -335,6 +345,20 @@ def _nu_midshell():
 
 # Default Nu reported in the history is now the surface variant.
 _nu = _nu_surface
+
+
+# vrms = sqrt( ∫ v·v dA / ∫ dA ), an area integral. A mean over mesh nodes is
+# weighted by node density, so on an adapted mesh it over-weights the
+# boundary layers the mover packs nodes into.
+_int_vv = uw.maths.Integral(mesh, V.sym.dot(V.sym))
+# A constant integrand does not JIT, so the area integrates a field held at 1.
+_one = uw.discretisation.MeshVariable("one", mesh, 1, degree=1)
+_one.data[...] = 1.0
+_int_area = uw.maths.Integral(mesh, _one.sym[0])
+
+
+def _vrms():
+    return float(np.sqrt(_int_vv.evaluate() / _int_area.evaluate()))
 
 
 def snapshot(step):
@@ -595,10 +619,13 @@ for s in range(START_STEP, END_STEP):
         # (v ACROSS a thin cell) don't collapse dt. SLCN is unconditionally stable.
         # pct=0 restores the strict min-cell CFL.
         _td0 = time.time()
-        dt = float(adv.estimate_dt(
-            direction_aware=True,
-            percentile=float(args.dt_cell_percentile))) * float(args.dt_mult)
-        if args.diffusion_dt_res > 0 and adv.dt_diff > 0:
+        if args.fixed_dt > 0:
+            dt = args.fixed_dt
+        else:
+            dt = float(adv.estimate_dt(
+                direction_aware=True,
+                percentile=float(args.dt_cell_percentile))) * float(args.dt_mult)
+        if args.fixed_dt <= 0 and args.diffusion_dt_res > 0 and adv.dt_diff > 0:
             dt_diff_ref = adv.dt_diff * (args.res / args.diffusion_dt_res) ** 2
             dt = (min(adv.dt_adv, dt_diff_ref) if adv.dt_adv > 0 else dt_diff_ref) * float(args.dt_mult)
         if args.fixed_dt > 0:
@@ -639,15 +666,7 @@ for s in range(START_STEP, END_STEP):
                   f" — ABORT", flush=True)
         break
 
-    v_sq = np.asarray(uw.function.evaluate(
-        V.sym.dot(V.sym), mesh.X.coords))
-    # Collective vrms (v_sq is rank-local; reduce sum+count for a global rms —
-    # the previous np.mean(v_sq) was rank-local and printed a different value
-    # per rank).
-    _MPI = __import__("mpi4py").MPI
-    _vs = uw.mpi.comm.allreduce(float(v_sq.sum()), op=_MPI.SUM)
-    _vn = uw.mpi.comm.allreduce(int(v_sq.size), op=_MPI.SUM)
-    vrms = float(np.sqrt(_vs / max(_vn, 1)))
+    vrms = _vrms()
     Nu_val = _nu()
 
     hist.append((s, t_sim, dt, wall, vrms, Nu_val,

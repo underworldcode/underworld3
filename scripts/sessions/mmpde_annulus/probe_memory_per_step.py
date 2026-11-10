@@ -54,6 +54,13 @@ adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0
 adv.add_dirichlet_bc(0.0, "Upper")
 adv.add_dirichlet_bc(1.0, "Lower")
+supg = None
+if "supg" in parts:
+    supg = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V.sym)
+    supg.constitutive_model = uw.constitutive_models.DiffusionModel
+    supg.constitutive_model.Parameters.diffusivity = 1.0
+    supg.add_dirichlet_bc(0.0, "Upper")
+    supg.add_dirichlet_bc(1.0, "Lower")
 flux = uw.maths.BdIntegral(mesh=mesh, fn=T.sym[0], boundary="Upper")
 volume = uw.maths.Integral(mesh, V.sym.dot(V.sym))
 X = mesh.CoordinateSystem.X
@@ -71,6 +78,16 @@ for step in range(args.steps):
         adv.solve(timestep=1.0e-4, zero_init_guess=False)
     if "advvary" in parts:
         adv.solve(timestep=1.0e-4 * (1.0 + 0.01 * step), zero_init_guess=False)
+    if "supg" in parts:
+        supg.solve(timestep=1.0e-4, zero_init_guess=False)
+    if "metric" in parts or "mover" in parts:
+        rho = uw.meshing.metric_density_from_gradient(
+            mesh, T, refinement=4.0, coarsening="auto",
+            metric_choice="front-following", name="loop")
+    if "mover" in parts:
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="mmpde", skip_threshold=None, boundary_slip="ring",
+            method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0), verbose=False)
     if "diag" in parts:
         flux.evaluate()
         volume.evaluate()
