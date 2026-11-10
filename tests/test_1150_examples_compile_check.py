@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_examples_compile.py"
 
@@ -29,16 +29,24 @@ def _gate():
     return module
 
 
+def _notebook(cells):
+    return json.dumps({"cells": [{"cell_type": "code", "source": src, "metadata": {},
+                                  "outputs": [], "execution_count": None} for src in cells],
+                       "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
+
+
 def _tree(tmp_path, scripts=(), notebooks=()):
-    examples = tmp_path / "docs" / "examples"
-    examples.mkdir(parents=True)
-    for name, text in scripts:
-        (examples / name).write_text(text)
-    for name, cells in notebooks:
-        nb = {"cells": [{"cell_type": "code", "source": src, "metadata": {},
-                         "outputs": [], "execution_count": None} for src in cells],
-              "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
-        (examples / name).write_text(json.dumps(nb))
+    """A docs/ tree. A name may carry a sub-path under docs/; a bare name goes
+    under docs/examples/."""
+    docs = tmp_path / "docs"
+    for name, content in [(n, t) for n, t in scripts] + [(n, _notebook(c)) for n, c in notebooks]:
+        path = docs / (name if "/" in name else f"examples/{name}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
+    docs.mkdir(parents=True, exist_ok=True)
     return tmp_path
 
 
@@ -115,6 +123,54 @@ def test_a_malformed_notebook_fails_without_crashing(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "list.ipynb: not an nbformat 4 notebook" in out
     assert "nocells.ipynb: not an nbformat 4 notebook" in out
+
+
+@pytest.mark.parametrize("magic", ["time", "timeit", "capture", "prun"])
+def test_each_python_cell_magic_body_is_checked(tmp_path, capsys, magic):
+    root = _tree(tmp_path, notebooks=[("m.ipynb", [f"%%{magic}\nx = (\n"])])
+    assert _gate().main(["gate", str(root)]) == 1
+    assert "m.ipynb:cell 1:2:" in capsys.readouterr().out
+
+
+def test_notebooks_and_scripts_anywhere_under_docs_are_checked(tmp_path, capsys):
+    """The tutorials live under docs/beginner, and benchmarks under docs/advanced."""
+    root = _tree(tmp_path,
+                 scripts=[("advanced/bench.py", "x = (\n")],
+                 notebooks=[("beginner/tutorials/t.ipynb", ["y = (\n"])])
+    assert _gate().main(["gate", str(root)]) == 1
+    out = capsys.readouterr().out
+    assert "docs/advanced/bench.py:1" in out
+    assert "docs/beginner/tutorials/t.ipynb:cell 1:1" in out
+
+
+def test_checkpoint_copies_are_skipped(tmp_path, capsys):
+    root = _tree(tmp_path,
+                 scripts=[("examples/.ipynb_checkpoints/a-checkpoint.py", "x = (\n")],
+                 notebooks=[("examples/.ipynb_checkpoints/n-checkpoint.ipynb", ["x = (\n"])])
+    assert _gate().main(["gate", str(root)]) == 0
+    assert "0 scripts and 0 notebooks" in capsys.readouterr().out
+
+
+def test_a_valid_python_cell_is_not_altered(tmp_path):
+    """Continuation lines starting with % or != are Python, and so is top-level await."""
+    cells = ["y = (10\n     % 3)\n", "ok = (1\n      != 2)\n",
+             "s = \"\"\"\n%not a magic\n\"\"\"\n", "import asyncio\nawait asyncio.sleep(0)\n"]
+    root = _tree(tmp_path, notebooks=[("valid.ipynb", cells)])
+    assert _gate().main(["gate", str(root)]) == 0
+
+
+def test_a_timed_statement_is_checked(tmp_path, capsys):
+    root = _tree(tmp_path, notebooks=[("t.ipynb", ["%time x = (\n", "%timeit -n 3 f()\n"])])
+    assert _gate().main(["gate", str(root)]) == 1
+    out = capsys.readouterr().out
+    assert "t.ipynb:cell 1:1" in out and "cell 2" not in out
+
+
+def test_a_script_is_read_with_its_declared_encoding(tmp_path):
+    root = _tree(tmp_path, scripts=[
+        ("bom.py", b"\xef\xbb\xbfx = 1\n"),
+        ("latin.py", "# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n".encode("latin-1"))])
+    assert _gate().main(["gate", str(root)]) == 0
 
 
 def test_the_repository_examples_parse(capsys):
