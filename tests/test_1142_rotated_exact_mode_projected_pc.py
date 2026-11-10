@@ -240,8 +240,12 @@ def test_a_converged_re_solve_at_a_new_tolerance_keeps_the_geometry():
     # rotation, the operator and the prolongation stay for the next solve: dropping
     # them and rebuilding the prolongation grew RSS by about 10 MB a re-solve at np 2
     # (hyperion, round 5)
-    s = _slid_annulus_fmg("1142k", 3.0e-5, 1.0, tolerance=1.0e-9, solve=False)
+    # A slid wall's approximate rotation can fail the finalized original-
+    # residual guard at 1e-9. Such a solve correctly starts cold next time;
+    # use the exact geometry to test a genuinely converged automatic warm start.
+    s = _slid_annulus_fmg("1142k", 0.0, 1.0, tolerance=1.0e-9, solve=False)
     s.solve()
+    assert s._rotated_freeslip_info["converged"] and s.has_solution
     Q = s._rotated_linear_cache["Q"]
     s.tolerance = 1.0e-5
     s.solve()
