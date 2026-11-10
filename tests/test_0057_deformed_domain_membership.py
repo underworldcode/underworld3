@@ -67,11 +67,17 @@ def test_membership_and_eval_track_bulged_surface():
         f"points in the bulge (r in [{radii[0]:.2f},{radii[-1]:.2f}], surface "
         f"at {crest_r:.2f}) wrongly flagged exterior: {inside}")
 
-    # evaluate must LOCATE them (not clamp to the old boundary). T is carried
-    # Lagrangian-ly, so the value need not equal r; but it must NOT all collapse
-    # to ~r_o (the cold-clamp signature), and must vary smoothly with radius.
+    # evaluate must LOCATE them (not clamp to the old boundary). T is set to the
+    # radius on the deformed mesh, so a located point reads its own radius and a
+    # point clamped to the old boundary reads ~r_o. (The deform remaps T; beyond
+    # the old boundary the remap can only extrapolate, which is not what this
+    # test is about. It used to read T as carried with the nodes, which was the
+    # first evaluation after a move reading pre-move values, test_1151.)
+    T.data[:, 0] = np.asarray(uw.function.evaluate(r_sym, T.coords)).flatten()
     Tev = np.asarray(uw.function.evaluate(T.sym[0], pts)).flatten()
     assert np.ptp(Tev) > 0.02, (
         f"evaluate collapsed to a single boundary value (cold-clamp): {Tev}")
     assert np.all(np.diff(Tev) >= -1e-6), (
-        f"evaluate not monotone along the carried-T crest: {Tev}")
+        f"evaluate not monotone along the crest: {Tev}")
+    assert np.abs(Tev - radii).max() < 0.01, (
+        f"evaluate does not read the radius where the points are: {Tev} vs {radii}")
