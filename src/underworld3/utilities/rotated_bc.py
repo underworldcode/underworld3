@@ -2996,7 +2996,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # set them up while the keys are there (#892).
                 custom_mg._set_up_fac_smoothers(vel_pc, _fac_keys)
                 if _hier is not None:
-                    _hier._record_patch_summary(_rows, solver.dm.comm)
+                    _hier._record_installed_patch(solver, _rows)
             # an exact rotation (an analytic normal on a circle or sphere) is kept
             # out of the velocity preconditioner's directions (#963)
             n_projected, mode_ratios = 0, []
@@ -3207,7 +3207,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
                 pc.setUp()
                 custom_mg._set_up_fac_smoothers(pc, _fac_keys)
                 if _hier is not None:
-                    _hier._record_patch_summary(_rows, solver.dm.comm)
+                    _hier._record_installed_patch(solver, _rows)
             else:
                 pc.setUp()
         finally:

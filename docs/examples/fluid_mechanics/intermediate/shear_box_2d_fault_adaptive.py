@@ -374,9 +374,6 @@ sr_projection.uw_function = stokes.Unknowns.Einv2
 sr_projection.smoothing = 1e-3
 sr_projection.solve()
 
-# %%
-uw.
-
 # %% [markdown]
 """
 ## Visualize Results

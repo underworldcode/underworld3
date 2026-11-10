@@ -1321,6 +1321,11 @@ class SolverBaseClass(uw_object):
         # record. A user registration (set_custom_fmg) is a demand and is kept.
         if isinstance(self._custom_mg, dict) and self._custom_mg.get("auto_cached"):
             self._custom_mg = None
+        # FAC keys an install left for a solve that never set them up would be read
+        # by the route that replaces it: a GAMG level built a composite with no
+        # members (PETSc error 73, #1019).
+        from underworld3.utilities.custom_mg import _release_fac_keys
+        _release_fac_keys(self, force=True)
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
@@ -4322,6 +4327,7 @@ class SolverBaseClass(uw_object):
         #     rtol*||F_restart||, so it fires first — no need to zero rtol. So a chunked
         #     start/stop/restart terminates at the same point an uninterrupted solve would.
         # Tolerances are saved and restored so nothing leaks into later solves.
+        from underworld3.utilities import custom_mg
         _probe = bool(self._difficulty_probe)
         _warm = int(getattr(self, "_pending_picard", 0) or 0)
         self._pending_picard = 0
@@ -4377,6 +4383,12 @@ class SolverBaseClass(uw_object):
             # report behind for recovery logic to misread. bounded=True marks a report
             # produced under an estimate_difficulty cap.
             self._capture_solve_report(bounded=_probe)
+            # A custom-P install's FAC keys leave the options database once this
+            # solve has set the levels up from them (#1019). Not collective.
+            custom_mg._release_fac_keys(self)
+        # What a reinstall dropped is destroyed here, collectively, after a solve
+        # that returned on every rank (#1020).
+        custom_mg._free_after_install(self)
 
     def _picard_warmup(self, gvec, n, count_against_cap=False, verbose=False):
         """Take ``n`` Picard steps — Newton iterations with the FROZEN tangent — in place,
