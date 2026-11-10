@@ -399,51 +399,28 @@ def restore(model, snap: Snapshot) -> None:
     meshes = model._live_meshes()
     meshes_by_name = {m.name: m for m in meshes}
     swarms_by_name = {_swarm_stable_name(s): s for s in list(model._swarms.values())}
+    bearers_by_key = {_state_bearer_key(o): o for o in list(model._state_bearers)}
+
+    # Everything the snapshot names is looked up before anything is written, so a
+    # refused restore leaves the model as it was, and the verdict is agreed across
+    # the ranks: a history manager collected on some ranks but still referenced on
+    # others (a rank-local reference to a dropped solver) made those ranks restore
+    # and the others raise, and the job hung in the next collective (#1041).
+    problem = _agreed_problem(_restore_problem(snap, meshes_by_name, swarms_by_name,
+                                               bearers_by_key))
+    if problem is not None:
+        raise SnapshotInvalidatedError(problem)
 
     for mesh_name in snap.mesh_names:
-        mesh = meshes_by_name.get(mesh_name)
-        if mesh is None:
-            raise SnapshotInvalidatedError(
-                f"mesh {mesh_name!r} from snapshot is not registered on "
-                f"this Model; within-process restore requires the originating "
-                f"Model"
-            )
         payload = _build_mesh_payload(snap, mesh_name)
-        mesh.apply_snapshot_payload(payload)
+        meshes_by_name[mesh_name].apply_snapshot_payload(payload)
 
     for swarm_name in snap.swarm_names:
-        swarm = swarms_by_name.get(swarm_name)
-        if swarm is None:
-            raise SnapshotInvalidatedError(
-                f"swarm {swarm_name!r} from snapshot is not registered on "
-                f"this Model"
-            )
-        expected_mesh_name = snap.swarm_mesh_names[swarm_name]
-        if swarm.mesh.name != expected_mesh_name:
-            raise SnapshotInvalidatedError(
-                f"swarm {swarm_name!r} parent mesh changed from "
-                f"{expected_mesh_name!r} to {swarm.mesh.name!r} since "
-                f"snapshot"
-            )
         payload = _build_swarm_payload(snap, swarm_name)
-        swarm.apply_snapshot_payload(payload)
+        swarms_by_name[swarm_name].apply_snapshot_payload(payload)
 
-    if snap.state_bearers:
-        bearers_by_key = {
-            _state_bearer_key(o): o for o in list(model._state_bearers)
-        }
-        for key, captured_state in snap.state_bearers:
-            obj = bearers_by_key.get(key)
-            if obj is None:
-                raise SnapshotInvalidatedError(
-                    f"state-bearer {key!r} from snapshot is not registered "
-                    f"on this Model: the object it was captured from (a "
-                    f"history manager, often a solver's DuDt) has been "
-                    f"collected, or this is not the originating Model. "
-                    f"Keep a reference to the solver for as long as its "
-                    f"snapshots are to be restored"
-                )
-            obj.state = copy.deepcopy(captured_state)
+    for key, captured_state in snap.state_bearers:
+        bearers_by_key[key].state = copy.deepcopy(captured_state)
 
     _restore_expressions(snap)
 
@@ -456,6 +433,44 @@ def restore(model, snap: Snapshot) -> None:
         captured = snap.solver_states.get(solver.name)
         solver.state = (copy.deepcopy(captured) if captured is not None
                         else type(solver.state)())
+
+
+def _restore_problem(snap, meshes_by_name, swarms_by_name, bearers_by_key):
+    """Why ``snap`` cannot be restored on this rank, or None."""
+    for mesh_name in snap.mesh_names:
+        if mesh_name not in meshes_by_name:
+            return (f"mesh {mesh_name!r} from snapshot is not registered on "
+                    f"this Model; within-process restore requires the originating "
+                    f"Model")
+    for swarm_name in snap.swarm_names:
+        swarm = swarms_by_name.get(swarm_name)
+        if swarm is None:
+            return f"swarm {swarm_name!r} from snapshot is not registered on this Model"
+        expected_mesh_name = snap.swarm_mesh_names[swarm_name]
+        if swarm.mesh.name != expected_mesh_name:
+            return (f"swarm {swarm_name!r} parent mesh changed from "
+                    f"{expected_mesh_name!r} to {swarm.mesh.name!r} since snapshot")
+    for key, _captured_state in snap.state_bearers:
+        if key not in bearers_by_key:
+            return (f"state-bearer {key!r} from snapshot is not registered "
+                    f"on this Model: the object it was captured from (a "
+                    f"history manager, often a solver's DuDt) has been "
+                    f"collected, or this is not the originating Model. "
+                    f"Keep a reference to the solver for as long as its "
+                    f"snapshots are to be restored. Nothing was restored")
+    return None
+
+
+def _agreed_problem(problem):
+    """The first rank's ``problem`` (an error message, or None) on every rank, so a
+    restore refused anywhere is refused everywhere. COLLECTIVE."""
+    import underworld3 as uw
+
+    if uw.mpi.size > 1:
+        gathered = uw.mpi.verdict_comm.allgather(problem)
+        problems = [p for p in gathered if p is not None]
+        problem = problems[0] if problems else None
+    return problem
 
 
 def _build_mesh_payload(snap: Snapshot, mesh_name: str) -> dict:

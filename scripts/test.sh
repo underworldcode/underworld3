@@ -383,6 +383,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
   # So is a zone-keyed patch that a mover keeps, with the same solution (#1017).
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
+  # So is a refused snapshot restore, on every rank, with nothing written (#1041).
+  batch 3 tests/parallel/test_1155_snapshot_refusal_agrees_across_ranks_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —

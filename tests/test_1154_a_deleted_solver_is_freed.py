@@ -119,6 +119,8 @@ def _advection_diffusion(mesh, name):
     return adv_diff
 
 
+@pytest.mark.skipif(uw.mpi.size > 1, reason="serial: a per-rank tmp_path; the parallel "
+                    "contract is tests/parallel/test_1155")
 def test_a_snapshot_of_a_dropped_solver_says_it_cannot_be_restored(tmp_path):
     from underworld3.checkpoint.snapshot import SnapshotInvalidatedError
     uw.reset_default_model()
@@ -134,14 +136,19 @@ def test_a_snapshot_of_a_dropped_solver_says_it_cannot_be_restored(tmp_path):
     orchestration_model.load_state(token)
     orchestration_model.load_state(path)
 
+    T = adv_diff.u
     del adv_diff
     gc.collect()
+    T.array[:, 0, 0] = 7.0
+    before = np.array(T.array, copy=True)
     # development: both "restored" into the dropped solver's history, which
-    # the register kept alive
+    # the register kept alive; and a refused restore had already written the fields
     with pytest.raises(SnapshotInvalidatedError, match="collected"):
         orchestration_model.load_state(token)
+    assert np.array_equal(np.asarray(T.array), before)
     with pytest.raises(ValueError, match="collected"):
         orchestration_model.load_state(path)
+    assert np.array_equal(np.asarray(T.array), before)
     uw.reset_default_model()
 
 
