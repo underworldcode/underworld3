@@ -50,13 +50,17 @@ def test_element_table_matches_the_cells(name):
     dm, el = mesh.dm, mesh.element
     cS, cE = dm.getHeightStratum(0)
     fS, fE = dm.getHeightStratum(1)
-    assert cE > cS
+    assert uw.mpi.comm.allreduce(cE - cS) > 0
     cells = np.arange(cS, cE)
     cone_sizes = {dm.getConeSize(int(c)) for c in cells}
-    assert cone_sizes == {el.entities[1]}, (name, cone_sizes, el)
+    assert cone_sizes == ({el.entities[1]} if cells.size else set()), \
+        (name, cone_sizes, el)
     verts = closure_points(dm, cells, 0)
-    assert verts.shape[1] == el.entities[mesh.dim] and (verts >= 0).all(), \
+    # Empty ranks have no closure from which to infer a width; the bulk API
+    # returns its specified (0, 0) table while other ranks check actual cells.
+    assert verts.shape == (cells.size, el.entities[mesh.dim] if cells.size else 0) \
+        and (verts >= 0).all(), \
         (name, verts.shape, el)
     face_verts = closure_points(dm, np.arange(fS, fE), 0)
-    assert face_verts.shape[1] == el.face_entities[mesh.dim] \
+    assert face_verts.shape == (fE - fS, el.face_entities[mesh.dim] if fE > fS else 0) \
         and (face_verts >= 0).all(), (name, face_verts.shape, el)
