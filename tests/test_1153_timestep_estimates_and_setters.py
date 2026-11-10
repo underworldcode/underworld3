@@ -181,3 +181,30 @@ def test_a_time_valued_expression_needs_reference_scales(build):
     # a bare 1 kyr is refused (above); in an expression it was taken as dt = 1.0
     with pytest.raises(ValueError):
         solver.delta_t = E
+
+
+def test_a_navier_stokes_step_given_as_a_ratio_of_times_is_reduced():
+    # the setter reduced the ratio, but solve() handed the raw timestep to the
+    # history managers, whose own reduction read (600 kyr) / (20 Myr) as 30
+    from underworld3.systems.ddt import _as_float
+    uw.reset_default_model()
+    _set_scales()
+    assert _as_float(uw.quantity(600, "kyr") / uw.quantity(20, "Myr")) == pytest.approx(0.03, rel=1.0e-12)
+
+    def one_step(timestep):
+        solver = _navier_stokes()
+        solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        solver.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        solver.bodyforce = sympy.Matrix([0, 0]).T     # the default's shape is #1034
+        for wall in ("Bottom", "Left", "Right"):
+            solver.add_dirichlet_bc((0.0, 0.0), wall)
+        solver.add_dirichlet_bc((1.0, 0.0), "Top")
+        # two steps: from rest the trace-back is empty and the first-order
+        # coefficients do not depend on the step, so only the second shows it
+        solver.solve(timestep=timestep)
+        solver.solve(timestep=timestep)
+        return np.asarray(solver.u.data).copy()
+
+    as_a_ratio = one_step(uw.quantity(600, "kyr") / uw.quantity(20, "Myr"))
+    as_a_number = one_step(0.03)
+    assert np.allclose(as_a_ratio, as_a_number, rtol=0.0, atol=1.0e-10)
