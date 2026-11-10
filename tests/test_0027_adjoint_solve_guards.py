@@ -16,7 +16,7 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1]
 
 
 def _stokes(tag, viscosity, cell=1 / 8, p_degree=1, p_continuous=True):
@@ -38,6 +38,7 @@ def _stokes(tag, viscosity, cell=1 / 8, p_degree=1, p_continuous=True):
     return mesh, stokes, V, P
 
 
+@pytest.mark.tier_a
 def test_an_iterating_adjoint_is_not_held_to_the_forward_newtons_inexact_tolerance():
     eta0 = uw.expression(r"\eta_0", 1.0, "prefactor")
     mesh, stokes, V, P = _stokes("ew", lambda s: eta0 / (1 + 4 * s.Unknowns.Einv2), cell=1 / 12)
@@ -72,6 +73,7 @@ def test_an_iterating_adjoint_is_not_held_to_the_forward_newtons_inexact_toleran
     assert adjoint == pytest.approx(fd, rel=1.0e-4), (adjoint, fd)
 
 
+@pytest.mark.tier_a
 def test_a_target_on_the_wrong_space_is_refused_before_the_solve_naming_both_spaces():
     mesh, stokes, V, P = _stokes("p0", lambda s: 1.0, p_degree=0, p_continuous=False)
     stokes.petsc_options["fieldsplit_pressure_pc_type"] = "jacobi"
@@ -87,6 +89,7 @@ def test_a_target_on_the_wrong_space_is_refused_before_the_solve_naming_both_spa
     assert reason > 0
 
 
+@pytest.mark.tier_a
 def test_a_single_field_target_on_the_wrong_space_is_refused():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
                                              cellSize=1 / 6, qdegree=3)
@@ -102,6 +105,7 @@ def test_a_single_field_target_on_the_wrong_space_is_refused():
         poisson.adjoint_solve(-poisson.dual_of(T.sym[0]), target=wrong)
 
 
+@pytest.mark.tier_a
 def test_the_adjoint_of_an_unconverged_solve_is_refused():
     eta0 = uw.expression(r"\eta_0", 1.0, "prefactor")
     mesh, stokes, V, P = _stokes("unc", lambda s: eta0 / (1 + 40 * s.Unknowns.Einv2))
@@ -137,6 +141,7 @@ def _iterating_matrix_route():
     return mesh, stokes, V, eta0, misfit
 
 
+@pytest.mark.tier_a
 def test_on_the_matrix_route_the_adjoint_is_held_tight_and_the_ksp_is_put_back():
     mesh, stokes, V, eta0, misfit = _iterating_matrix_route()
     assert not stokes._adjoint_by_kernels()           # the route this test is about
@@ -164,6 +169,7 @@ def test_on_the_matrix_route_the_adjoint_is_held_tight_and_the_ksp_is_put_back()
     assert adjoint == pytest.approx(fd, rel=1.0e-4), (adjoint, fd)
 
 
+@pytest.mark.tier_a
 def test_a_raise_inside_the_adjoint_solve_still_puts_the_ksp_back():
     mesh, stokes, V, eta0, misfit = _iterating_matrix_route()
     stokes.solve(zero_init_guess=True)
@@ -186,6 +192,7 @@ def test_a_raise_inside_the_adjoint_solve_still_puts_the_ksp_back():
     assert stokes.solve_report.nl_its == its_cold
 
 
+@pytest.mark.tier_a
 def test_a_forward_solve_that_raises_leaves_no_adjoint_to_take():
     eta0 = uw.expression(r"\eta_0", 1.0, "prefactor")
     mesh, stokes, V, P = _stokes("raise", lambda s: eta0 / (1 + 4 * s.Unknowns.Einv2))
@@ -208,6 +215,7 @@ def test_a_forward_solve_that_raises_leaves_no_adjoint_to_take():
         stokes.gradient(misfit, parameters=[eta0])
 
 
+@pytest.mark.tier_a
 def test_a_restored_state_without_a_solution_admits_no_adjoint():
     from underworld3.checkpoint.state import SolverStepState
     eta0 = uw.expression(r"\eta_0", 1.0, "prefactor")
