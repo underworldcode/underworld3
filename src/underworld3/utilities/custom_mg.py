@@ -847,16 +847,47 @@ def _segment_block(rows, node_of_row, coords, max_rows):
     return pieces
 
 
+def _connected_pieces(rows, link_rows, link_keys):
+    """``rows`` cut into the pieces that ``(link_rows, link_keys)`` join, each
+    sorted, in order of their first row. A key is shared by the rows it names
+    (see :func:`_patch_links`); a link from a row outside ``rows`` is ignored."""
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    rows = np.asarray(rows, dtype=np.int64)
+    keep = np.isin(link_rows, rows)
+    link_rows, link_keys = link_rows[keep], link_keys[keep]
+    keys = np.unique(link_keys)
+    m = rows.size
+    a = np.searchsorted(rows, link_rows)
+    b = m + np.searchsorted(keys, link_keys)
+    g = sp.coo_matrix((np.ones(a.size), (a, b)), shape=(m + keys.size,) * 2)
+    _n, label = connected_components(g, directed=False)
+    label = label[:m]
+    # rows are sorted, so a piece's first row orders the pieces
+    _u, first = np.unique(label, return_index=True)
+    return [rows[label == label[i]] for i in np.sort(first)]
+
+
 def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
     """The finest level's FAC blocks in parallel, built from every rank's rows.
 
     COLLECTIVE. Rank 0 gathers every rank's rows and cuts them into the serial
     branch's blocks: each mask is one band, segmented along its strike by
     :func:`_segment_block`, and the structural rows outside every mask are one
-    more block; with no zone keyed, the structural patch is one block. Each
-    block goes whole to the rank that owns most of its rows, so the structural
-    block is one LU on one rank, as in serial. The blocks are therefore the
-    same at any rank count, except that the structural halo is
+    more block. With no zone keyed, the structural patch is cut into connected
+    pieces (:func:`_patch_links`), faults that meet or share a coarse DOF
+    being one piece, and each piece goes to the rank that owns most of its
+    rows; the pieces one rank receives are one block. A fault the add-on
+    partition gave to one rank is then factorised on that rank, and two faults
+    on two ranks side by side: one block for both put them on one rank, and
+    that rank's factorisation and triangular solves did twice the work (#895).
+    Pieces on one rank stay one block, as in serial, because pieces a coarse
+    cell or two apart are still coupled in the operator. Pieces on two ranks
+    lose any coupling between them, as two ASM blocks do; in #895's stage 1
+    and its review, pieces that reached two ranks were never coupled, and the
+    slip agreed to 5e-14 in the same iterations. Otherwise the blocks are the same at any
+    rank count, except that the structural halo is
     :func:`_fac_patch_split_parallel`'s, which can differ by a few rows where a
     partition boundary runs along the band. A segmented piece's cut can fall
     a node away from the serial one: the serial branch orders a split pair's
@@ -871,10 +902,10 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
         Per ``fac_zone`` mask, this rank's rows of the mask's cells (global,
         ghost rows resolved to their owners') and each row's node coordinates.
         An empty list where no zone is keyed; the same length on every rank.
-    structural : (ndarray, ndarray) or None
-        This rank's structural patch and subdomain rows (global, owned), or
-        None where the split level's gate declined them or the level has no
-        split.
+    structural : (ndarray, ndarray, (ndarray, ndarray)) or None
+        This rank's structural patch and subdomain rows (global, owned) and
+        their links (:func:`_patch_links`), or None where the split level's
+        gate declined them or the level has no split.
     max_rows : int
         The cap on a zone piece's rows (``fac_block_rows``).
     rstart : int
@@ -885,8 +916,8 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
     -------
     list of (ndarray, ndarray)
         This rank's blocks as ``(owned, subdomain)`` pairs: ``(rows, rows)``
-        for a zone piece and for the structural rows beside a zone, the patch
-        and its halo for the structural patch alone. A row is in one block of
+        for a zone piece and for the structural rows beside a zone, a piece's
+        patch and halo for the structural patch alone. A row is in one block of
         each mask; masks that overlap share their common rows by design.
     """
     everyone = comm.gather((rstart, zones, structural), root=0)
@@ -909,20 +940,40 @@ def _gathered_patch_blocks(zones, structural, max_rows, rstart, comm):
             covered.append(rows)
         held = [e[2] for e in everyone if e[2] is not None]
         if held:
-            sub = np.unique(np.concatenate([s for _o, s in held]).astype(np.int64))
+            sub = np.unique(np.concatenate([h[1] for h in held]).astype(np.int64))
             if zones:
                 extra = np.setdiff1d(sub, np.concatenate(covered))
                 if extra.size:
                     blocks.append((extra, extra))
             elif sub.size:
-                owned = np.unique(np.concatenate([o for o, _s in held]).astype(np.int64))
-                blocks.append((owned, sub))
+                owned = np.unique(np.concatenate([h[0] for h in held]).astype(np.int64))
+                links = (np.concatenate([h[2][0] for h in held]),
+                         np.concatenate([h[2][1] for h in held]))
+                # The pieces one rank receives are one block. Apart on one rank
+                # they gain nothing, and faults a coarse cell or two apart are
+                # coupled in the operator, which separate blocks would drop:
+                # parallel faults 0.12 apart took 4 velocity iterations against
+                # 3, and their two pieces always landed on one rank (H1's review).
+                on_rank = {}
+                for piece in _connected_pieces(sub, *links):
+                    on_rank.setdefault(_majority_rank(piece, starts), []).append(piece)
+                for rank in sorted(on_rank):
+                    rows = np.sort(np.concatenate(on_rank[rank]))
+                    mine = rows[np.isin(rows, owned)]
+                    # every patch row is in a piece with itself, so a block
+                    # without one holds halo rows only
+                    if mine.size:
+                        blocks.append((mine, rows))
         per_rank = [[] for _ in everyone]
         for owned, sub in blocks:
-            owner = np.searchsorted(starts, sub, side="right") - 1
-            per_rank[int(np.bincount(owner, minlength=len(everyone)).argmax())].append(
-                (owned, sub))
+            per_rank[_majority_rank(sub, starts)].append((owned, sub))
     return comm.scatter(per_rank, root=0)
+
+
+def _majority_rank(rows, starts):
+    """The rank owning most of the global ``rows``, given every rank's first row."""
+    owner = np.searchsorted(starts, rows, side="right") - 1
+    return int(np.bincount(owner, minlength=len(starts)).argmax())
 
 
 def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
@@ -977,7 +1028,8 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     where a partition boundary runs along the band. The cover
     gate is decided on the global counts, so every rank returns the same
     verdict, and ``gate`` receives the same record on every rank. Returns
-    ``(owned_global_rows, subdomain_global_rows)`` or ``None``.
+    ``(owned_global_rows, subdomain_global_rows, links)``, ``links`` from
+    :func:`_patch_links`, or ``None``.
     """
     fstart, fend = lay_f.rstart, lay_f.rend
     n = fend - fstart
@@ -1000,8 +1052,10 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     c_local_of_global.update(fetched)
 
     bg_cnode = np.full(n, -1, dtype=np.int64)
+    bg_col = np.full(n, -1, dtype=np.int64)
     patch_row = np.zeros(n, dtype=bool)
     ref_cnodes = []                      # coarse nodes patch rows reference
+    ref_links = []                       # (row, coarse column) of those references
     for r in range(n):
         sl = slice(indptr[r], indptr[r + 1])
         w = data[sl]
@@ -1014,13 +1068,16 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
         if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
             patch_row[r] = True
             ref_cnodes += [c_local_of_global[int(g)] // nc for g in cols[sl]]
+            ref_links += [(r, int(g)) for g in cols[sl]]
             continue
         cnode = c_local_of_global[int(cols[sl][j])] // nc
         if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
             patch_row[r] = True
             ref_cnodes.append(cnode)
+            ref_links.append((r, int(cols[sl][j])))
             continue
         bg_cnode[r] = cnode
+        bg_col[r] = int(cols[sl][j])
     node_of_row = local_of_row // nc
     nn = int(node_of_row.max()) + 1 if n else 0
     node_is_patch = np.zeros(max(nn, 1), dtype=bool)
@@ -1056,7 +1113,33 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
         return None
     owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
     sub = (sub_local + fstart).astype(np.int64)
-    return owned, sub
+    return owned, sub, _patch_links(sub_local, ref_links, bg_col, node_of_row, fstart)
+
+
+def _patch_links(sub_local, ref_links, bg_col, node_of_row, fstart):
+    """What joins the subdomain rows of a structural patch into blocks.
+
+    Two rows belong together when they reference one coarse DOF (a patch row
+    through its interpolation stencil, a background row through its coincident
+    coarse node) or are DOFs of one fine node. The patches of two faults apart
+    share no coarse DOF, so they are separate pieces of this graph, and
+    :func:`_gathered_patch_blocks` gives each piece its own block. Returns
+    ``(rows, keys)``: global rows, each paired with a key, ``-1 - c`` for coarse
+    column ``c`` and a global fine row otherwise.
+    """
+    in_sub = np.zeros(node_of_row.size, dtype=bool)
+    in_sub[sub_local] = True
+    ref = np.asarray(ref_links, dtype=np.int64).reshape(-1, 2)
+    ref = ref[in_sub[ref[:, 0]]]
+    bg = sub_local[bg_col[sub_local] >= 0]
+    # the DOFs of one node join through the node's first row
+    nodes, first = np.unique(node_of_row[sub_local], return_index=True)
+    lead = np.full(int(nodes.max()) + 1 if nodes.size else 0, -1, dtype=np.int64)
+    lead[nodes] = sub_local[first]
+    rows = np.concatenate([ref[:, 0], bg, sub_local])
+    keys = np.concatenate([-1 - ref[:, 1], -1 - bg_col[bg],
+                           lead[node_of_row[sub_local]] + fstart])
+    return (rows + fstart).astype(np.int64), keys.astype(np.int64)
 
 
 class LevelLayout(NamedTuple):
