@@ -8111,6 +8111,7 @@ class SNES_Vector(SolverBaseClass):
               debug_name=None,
               divergence_retries: int=0,
               picard: int = 0,
+              time=None,
                ):
         """
         Solve the vector field system of equations.
@@ -8144,7 +8145,13 @@ class SNES_Vector(SolverBaseClass):
             Picard (frozen-tangent) steps before Newton under the default
             ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
             ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
-            Keyword only in practice: it follows every other argument.
+            Keyword only in practice: it follows every other argument. On the
+            rotated path (a sheet on a manifold, rotated free slip, a fault
+            contact) the rotated loop stages the Picard steps itself, as for
+            ``Stokes.solve`` (#876).
+        time : float or Quantity, optional
+            Physical time for this solve, passed as ``petsc_t`` to the
+            pointwise functions (as for ``Stokes.solve``).
 
         Returns
         -------
@@ -8175,13 +8182,24 @@ class SNES_Vector(SolverBaseClass):
 
         # Layer 1: the Picard warm-up for this solve, decided before _build (a warm-up
         # under the consistent tangent needs the blended Jacobian compiled in).
-        self._plan_picard_warmup(picard, zero_init_guess,
-                                 own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+        # The rotated path stages Picard -> Newton in its own loop, as Stokes'
+        # does; it was handed picard=0 here, so solve(picard=N) never reached a
+        # sheet on a manifold, which always solves on it (#876).
+        rotated = bool(getattr(self, "_rotated_freeslip_bcs", None)
+                       or getattr(self, "_fault_contact_faults", None))
+        self._plan_picard_warmup(picard, zero_init_guess, own_loop=rotated,
+                                 staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+        picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
         self._build(verbose, debug, debug_name)
         if self._picard_blend and self.consistent_jacobian is True:
             self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
-        if self._solve_rotated_if_registered(zero_init_guess, verbose, 0, None):
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, picard, time):
             return
+
+        cdef DM _time_dm_vector
+        if time is not None:
+            _time_dm_vector = self.dm
+            UW_DMSetTime(_time_dm_vector.dm, self._nondimensional_time(time))
 
 
         gvec = self.dm.getGlobalVec()
