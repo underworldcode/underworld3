@@ -143,6 +143,46 @@ def problem(sign, zero_coupling, n_rotations):
     A.setTransposeNullSpace(ns)
     return (dense, A, avv, velocity, P, base, uis, pis, rotations, ns, norm)
 
+
+@pytest.mark.tier_b
+def test_velocity_pseudoinverse_projects_only_a_copy_of_its_source():
+    """Roundoff along a true rotation must not enter the singular inner solve."""
+    dense, A, avv, velocity, P, base, uis, pis, rotations, ns, norm = problem(1.0, False, 1)
+    perturbation = np.finfo(float).eps**2
+    lo, hi = A.getOwnershipRange()
+    if lo <= 0 < hi:
+        A.setValue(0, 8, perturbation)
+    if lo <= 8 < hi:
+        A.setValue(8, 0, perturbation)
+    A.assemble()
+
+    class RecordedVelocitySolve:
+        def solve(self, rhs, target):
+            self.source = rhs.copy()
+            velocity.solve(rhs, target)
+
+        def getConvergedReason(self):
+            return velocity.getConvergedReason()
+
+        def getOperators(self):
+            return velocity.getOperators()
+
+    recorded = RecordedVelocitySolve()
+    helper = BalancedPressureCoarse(A, base, recorded, uis, pis, [], rotations, 1e-10)
+    mode = rotations[0].getSubVector(uis)
+    assert recorded.source.dot(mode) == 0.0
+    rotations[0].restoreSubVector(uis, mode)
+    # The original A*z remains observable; projecting it in place would change
+    # the coarse operator rather than constructing its velocity pseudoinverse.
+    assert helper.g.dot(rotations[0]) == pytest.approx(perturbation/np.sqrt(3), rel=1e-14, abs=0)
+    expected = np.divide((dense @ toy_values(helper.z))[:8], np.diag(dense)[:8],
+                         out=np.zeros(8), where=np.diag(dense)[:8] != 0)
+    np.testing.assert_allclose(toy_values(helper.w)[:8], expected, rtol=1e-14, atol=0)
+    recorded.source.destroy()
+    helper.destroy(None)
+    for item in [ns, *rotations, velocity, base, avv, P, A, uis, pis]:
+        item.destroy()
+
 @pytest.mark.tier_b
 @pytest.mark.parametrize('n_rotations', [0, 1, 3])
 @pytest.mark.parametrize('sign', [1.0, -1.0], ids=['symmetric', 'nonsymmetric'])

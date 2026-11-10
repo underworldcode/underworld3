@@ -79,7 +79,14 @@ class _BalancedPressureCoarse:
             raise ArithmeticError('Supplied rotations are not null modes of the refreshed operator')
         self.a.mult(self.z, self.g)
         self.w.set(0)
-        source = self.g.getSubVector(self.velocity_is)
+        # H^dagger acts on the range of H. A*z can carry assembly roundoff
+        # along an exact rotation; asking singular H to reduce that component
+        # stalls even when its compatible residual is already tiny. Keep A*z
+        # intact for the coarse equations and project only this solve's copy.
+        response_source = self.g.copy()
+        if self.true_space is not None:
+            self.true_space.remove(response_source)
+        source = response_source.getSubVector(self.velocity_is)
         target = self.w.getSubVector(self.velocity_is)
         try:
             self.velocity_ksp.solve(source, target)
@@ -87,7 +94,8 @@ class _BalancedPressureCoarse:
                 raise ArithmeticError('Velocity response PC failed')
         finally:
             self.w.restoreSubVector(self.velocity_is, target)
-            self.g.restoreSubVector(self.velocity_is, source)
+            response_source.restoreSubVector(self.velocity_is, source)
+            response_source.destroy()
         self._zero_normal(self.w)
         if self.true_space is not None:
             self.true_space.remove(self.w)
