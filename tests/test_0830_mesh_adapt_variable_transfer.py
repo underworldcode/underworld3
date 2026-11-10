@@ -26,25 +26,14 @@ from underworld3.meshing import UnstructuredSimplexBox
 
 
 def _has_petsc_adaptation_backend():
-    """Probe whether PETSc was built with MMG/pragmatic.
-
-    The cheapest test: build a tiny mesh, try to call ``adaptMetric`` with
-    a trivial isotropic metric. If PETSc raises ``error code 63``
-    (``PETSC_ERR_ARG_OUTOFRANGE`` — typical of "no mesh adapter
-    configured"), the backend is missing.
-    """
-    try:
-        m = UnstructuredSimplexBox(
-            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5,
-        )
-        H = uw.discretisation.MeshVariable("_probe", m, 1, degree=1)
-        H.array[:, 0, 0] = 100.0
-        # Use the real adapt() entry point but with a coarse metric;
-        # if PETSc raises, we capture and skip.
-        m.remesh(H)
-        return True
-    except Exception:
-        return False
+    """Was PETSc built with the remesher ``mesh.remesh`` drives (mmg in serial, parmmg
+    in parallel)? It is an external opt-in, absent from conda-forge's PETSc. Read
+    from the build, not by running a remesh at import: a probe that swallowed its
+    exception turned a real breakage on an mmg build into a skip, and ran the mmg
+    route on every collection."""
+    from petsc4py import PETSc
+    # these tests mesh in 2-D, and the parallel remesher (parmmg) is 3-D only
+    return uw.mpi.size == 1 and PETSc.Sys.hasExternalPackage("mmg")
 
 
 _petsc_has_adaptation = _has_petsc_adaptation_backend()
@@ -53,8 +42,9 @@ pytestmark = [
     pytest.mark.level_2,
     pytest.mark.skipif(
         not _petsc_has_adaptation,
-        reason="PETSc was built without mesh-adaptation backends "
-        "(MMG/pragmatic). Use the amr-dev environment to run these tests.",
+        reason="mesh.remesh() of a 2-D mesh needs a PETSc built with mmg, an external "
+        "opt-in that conda-forge's PETSc does not have, and runs in serial only "
+        "(parmmg, the parallel remesher, is 3-D only).",
     ),
 ]
 

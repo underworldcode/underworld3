@@ -80,6 +80,9 @@ def RegionalSphericalBox(
         Number of uniform refinement levels to apply.
     coarsening : int, optional
         Number of coarsening levels to apply.
+        PETSc coarsens through DMAdaptMetric, which needs a PETSc built with mmg
+        (an external opt-in, not in conda-forge's PETSc); ``refinement`` works on
+        any build.
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     verbose : bool, default=False
@@ -475,6 +478,9 @@ def RegionalGeographicBox(
         Default: None
     coarsening : int, optional
         Number of coarsening steps to apply.
+        PETSc coarsens through DMAdaptMetric, which needs a PETSc built with mmg
+        (an external opt-in, not in conda-forge's PETSc); ``refinement`` works on
+        any build.
         Default: None
     gmsh_verbosity : int, optional
         Gmsh output verbosity level (0=quiet, 5=very verbose).
