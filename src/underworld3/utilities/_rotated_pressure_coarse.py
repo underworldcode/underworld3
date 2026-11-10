@@ -258,7 +258,19 @@ class _BalancedPressureCoarse:
             self.closed = True
 
 class _RotatedBalancedPressureCoarse(_BalancedPressureCoarse):
-    """Refresh the retained native fieldsplit before the balanced correction."""
+    """Refresh the retained fieldsplit; own its velocity-KSP wrapper reference.
+
+    The underlying KSP remains owned by the fieldsplit. Unlike the generic
+    borrowed adapter, this adapter receives a new getFieldSplitSubKSP wrapper.
+    Release that PETSc reference explicitly: deferred parallel cleanup otherwise
+    keeps the velocity PC and its multigrid hierarchy alive after teardown.
+    """
+
+    def destroy(self, pc):
+        if not self.closed:
+            super().destroy(pc)
+            self.velocity_ksp.destroy()
+            self.velocity_ksp = None
 
     def setUp(self, pc):
         operator = pc.getOperators()[0]
@@ -269,6 +281,7 @@ class _RotatedBalancedPressureCoarse(_BalancedPressureCoarse):
             self.a = operator
             self.base.setOperators(operator)
             self.base.setUp()
+            self.velocity_ksp.destroy()
             self.velocity_ksp = self.base.getFieldSplitSubKSP()[0]
             schur = self.base.getFieldSplitSubKSP()[1].getOperators()[0]
             schur.setNullSpace(PETSc.NullSpace())

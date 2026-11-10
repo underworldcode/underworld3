@@ -147,28 +147,33 @@ def test_the_shell_removes_only_discrete_rotation_gauges(radial, capsys):
         assert info["projected_null_modes"] == 3, info["null_mode_ratios"]
         assert max(info["null_mode_ratios"]) < 1.0e-13
     else:
-        assert 1.0e-3 < stokes._rotated_null_mode_slack < 0.05    # near-null, not null
+        assert stokes._rotated_null_mode_slack == 0.0  # no rejected mode becomes a gauge
         # near-null on the faceted walls (Jacobi-scaled residuals 6e-3 to 1.7e-2): left
         # to the multigrid, far above the 1e-6 at which a mode is projected (#963)
         assert info["projected_null_modes"] == 0, info["null_mode_ratios"]
-        assert min(info["null_mode_ratios"]) > 1.0e-3, info["null_mode_ratios"]
+        assert not info["null_mode_ratios"], info["null_mode_ratios"]
 
 
-def test_a_net_torque_still_warns_under_the_default_normal(capsys):
-    mesh, v, stokes = _shell_stokes("1131t", torque=0.01)
+@pytest.mark.parametrize("radial", [False, True])
+def test_net_torque_warning_requires_an_actual_rotation_gauge(radial, capsys):
+    mesh, v, stokes = _shell_stokes("1131t", radial=radial, torque=0.01)
     capsys.readouterr()
     stokes.solve()
-    assert "net torque" in capsys.readouterr().out
+    assert ("net torque" in capsys.readouterr().out) == radial
+    if not radial:
+        assert stokes._rotated_freeslip_info["converged"]
+        _assert_original_constrained_equations(stokes, stokes._rotated_freeslip_info)
 
 
-def test_an_annulus_as_built_keeps_its_declared_mode():
+def test_an_annulus_as_built_checks_its_declared_mode():
     mesh, v, stokes = _annulus_stokes("1131k")
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall)
     stokes.petsc_use_pressure_nullspace = True
     stokes.solve()
     assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [True]
-    assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 1
+    assert stokes._rotated_freeslip_info["rotation_gauge"]["orthonormal"] == 0
+    _assert_original_constrained_equations(stokes, stokes._rotated_freeslip_info)
     # a re-solve reuses the cached workspace, and reports the verdict it was built with
     stokes.solve()
     assert stokes._rotated_freeslip_info["declared_modes_exempt"] == [True]
@@ -201,7 +206,8 @@ def test_a_wall_moved_off_its_circle_loses_the_exemption(amplitude, exempt):
         if selected:
             assert warned != exempt, [str(w.message) for w in record]
     # refused, the facet-averaged normal leaves the rotation a violation well above 1e-8
-    assert info["rotation_gauge"]["orthonormal"] == (1 if exempt else 0), info["rotation_gauge"]
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+    _assert_original_constrained_equations(stokes, info)
     assert _normal_velocity(info) < 1.0e-12
 
 
@@ -374,8 +380,8 @@ def test_an_add_fault_child_inherits_the_declaration():
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
     assert info["declared_modes_exempt"] == [True]
-    assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
-    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+    _assert_original_constrained_equations(stokes, info)
 
 
 def test_a_level_the_add_on_partition_moves_inherits_the_declaration():
