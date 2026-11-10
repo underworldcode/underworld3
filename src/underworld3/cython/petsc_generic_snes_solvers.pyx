@@ -1701,6 +1701,10 @@ class SolverBaseClass(uw_object):
         next solve runs as it would in a run started cold from the restored
         fields."""
         self._has_solution = bool(s.has_solution)
+        # The adjoint's verdict follows the restored state, not whatever ran
+        # before the restore: a snapshot without a solution admits no adjoint
+        # until a solve converges (TranscriptAdjoint replays, so it re-records).
+        self._last_solve_converged = bool(s.has_solution)
         self._reset_preconditioner()
         # the rotated free-slip path solves with its own cached operator and
         # preconditioner, and a hint that licenses a shortcut on the next solve
@@ -1764,6 +1768,11 @@ class SolverBaseClass(uw_object):
         compiles the blended Jacobian for it to stage with.
         """
         picard = int(picard or 0)
+        # A solve is starting: until it records its own verdict, there is no
+        # converged state to take an adjoint about. Without this a solve that
+        # raises left the previous solve's True standing (measured: a gradient
+        # 15.5x off FD accepted). Every solver family calls this before _build.
+        self._last_solve_converged = False
         self._picard_stages = None
         self._picard_warmup_record = None
         self._pending_picard = 0
@@ -2200,7 +2209,9 @@ class SolverBaseClass(uw_object):
 
     #: Relative tolerance of the adjoint's linear solve. ``None`` derives it from
     #: the solver: ``0.1 * tolerance``, the margin the solvers' own ``tolerance``
-    #: setters give a linear solve (#769).
+    #: setters give a linear solve (#769). It only ever TIGHTENS: the KSP runs at
+    #: ``min(its own rtol, this)``. The rotated route solves its own (direct)
+    #: adjoint and does not read it.
     adjoint_ksp_rtol = None
 
     def _refuse_adjoint_of_unconverged_solve(self):
@@ -2211,7 +2222,12 @@ class SolverBaseClass(uw_object):
         route (``gradient``, a transcript walk, a direct call) is covered."""
         if getattr(self, "_last_solve_converged", None) is False:
             report = getattr(self, "_solve_report", None)
-            why = getattr(report, "reason_str", None) or "it did not converge"
+            if report is not None and not getattr(report, "converged", True):
+                why = getattr(report, "reason_str", None) or "it did not converge"
+            else:
+                # the report is from an earlier solve: this one raised, or the
+                # solver was restored to a state without a solution
+                why = "no converged solve since it raised or the solver was restored"
             raise RuntimeError(
                 f"adjoint_solve: the last solve of {type(self).__name__}({self.u.name}) "
                 f"did not converge ({why}). The adjoint is taken about the state "
@@ -2384,17 +2400,24 @@ class SolverBaseClass(uw_object):
         x.set(0.0)
 
         ksp = self.snes.getKSP()
-        if by_kernels:
-            # J IS K^T: assembled from the transposed kernels. Solve forwards.
-            ksp.setOperators(J, P)
-            with self._adjoint_linear_tolerance(ksp):
-                ksp.solve(b, x)
-            reason = int(ksp.getConvergedReason())
-            self._uninstall_adjoint_kernels(tangent)
-        else:
-            with self._adjoint_linear_tolerance(ksp):
-                reason = _solve_transposed(ksp, J, P, b, x)
-            self._restore_tangent(tangent)
+        try:
+            if by_kernels:
+                # J IS K^T: assembled from the transposed kernels. Solve forwards.
+                ksp.setOperators(J, P)
+                with self._adjoint_linear_tolerance(ksp):
+                    ksp.solve(b, x)
+                reason = int(ksp.getConvergedReason())
+            else:
+                with self._adjoint_linear_tolerance(ksp):
+                    reason = _solve_transposed(ksp, J, P, b, x)
+        finally:
+            # In a finally, as on the Stokes route: a raise inside the adjoint
+            # KSP left the transposed kernels installed, and the next forward
+            # solve ran Newton on K^T (measured: 12 Newton its against 3).
+            if by_kernels:
+                self._uninstall_adjoint_kernels(tangent)
+            else:
+                self._restore_tangent(tangent)
 
         if target is not None:
             # Homogeneous constraints: the local vector is zeroed before the
