@@ -323,10 +323,9 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
                 "material element, which a sheet on a curved surface does not yet "
                 "supply; use objective_rate='jaumann' (the spin is supplied) or 'none'.")
         self._stress_history_prepare(timestep, _force_setup=_force_setup)
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+        # Through _build, which destroys the old SNES before it makes a new one;
+        # the setup run here before left it alive, a whole SNES per rebuild (#1026).
+        self._build(verbose)
         self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
         super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
                       divergence_retries=divergence_retries)

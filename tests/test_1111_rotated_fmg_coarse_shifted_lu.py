@@ -27,10 +27,11 @@ The answers and the iteration counts were recorded on gmsh meshes, which
 triangulate differently on other hosts. Those assertions are gated on the
 mesh's fingerprint (global cells, volume); the rest hold anywhere.
 
-The shell is built at cell size 0.3. At 0.5, gmsh can put all four vertices of
-a coarse cell on the inner wall, and refinement then folds that cell's children
-(#946): the velocity multigrid converged on one host's mesh and ran to its
-iteration cap on every solve on another's. A folded shell skips the case.
+The shell's walls are triangulated as the convex hull of their nodes, so its
+refinement cannot fold a cell (#946, test_0001_sphere_refinement_folds). Before,
+gmsh could put all four vertices of a coarse cell on the inner wall at this cell
+size, and the velocity multigrid converged on one host's mesh and ran to its
+iteration cap on every solve on another's.
 """
 import contextlib
 import faulthandler
@@ -42,21 +43,20 @@ import sympy
 from petsc4py import PETSc
 
 import underworld3 as uw
-from underworld3.meshing.smoothing import graph
 from underworld3.utilities import custom_mg, rotated_bc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 # The SVD path's answer on each fixture (np 1): on the annulus from development
 # fc67b650, on the shell from a dense SVD coarse solve set by hand, which gave
-# the shifted LU's value and iterations in 604 s against 17 s. Then the velocity
+# the shifted LU's value and iterations in 91 s against 10 s. Then the velocity
 # / Schur iterations of the last outer iteration, and the fingerprint (global
 # cells, volume) of the mesh they were recorded on.
 CASES = {
     "annulus": {"vrms": 4.7900648439, "rtol": 1.0e-9, "modes": 1, "its": (4, 7),
                 "fingerprint": (640, 2.3561872025)},
-    "shell": {"vrms": 1.8237602846, "rtol": 1.0e-8, "modes": 3, "its": (5, 17),
-              "fingerprint": (8792, 3.6471643173)},
+    "shell": {"vrms": 1.7753740524, "rtol": 1.0e-8, "modes": 3, "its": (5, 17),
+              "fingerprint": (4904, 3.6466889256)},
 }
 # The forced-singular annulus (cell 0.25, the coarse level a copy of the mesh):
 # the SVD path's answer (development fc67b650, np 1).
@@ -68,20 +68,6 @@ def _fingerprint(mesh):
     s, e = mesh.dm.getHeightStratum(0)
     return (uw.mpi.comm.allreduce(e - s),
             float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate()))
-
-
-def _folded_cells(mesh):
-    """Owned cells whose signed volume, in DMPlex vertex order, has the opposite
-    sign to the rest of the mesh: cells refinement turned inside out (#946)."""
-    dm = mesh.dm
-    tets = graph._tet_cells(dm)            # None on a rank with no cells
-    folded = 0
-    if tets is not None:
-        vol = graph._signed_volumes(dm.getCoordinatesLocal().array.reshape(-1, 3), tets)
-        vol = vol[graph._owned_cell_mask(dm)]
-        if vol.size:
-            folded = int(np.count_nonzero(np.sign(vol) != np.sign(np.median(vol))))
-    return uw.mpi.comm.allreduce(folded)
 
 
 @pytest.fixture(autouse=True)
@@ -165,12 +151,8 @@ def test_the_coarse_solve_is_shifted_lu(kind, monkeypatch, tmp_path):
         mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.4,
                                   refinement=2, qdegree=3)
     else:
-        mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.3,
+        mesh = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5, cellSize=0.5,
                                          refinement=1, qdegree=3)
-        folded = _folded_cells(mesh)
-        if folded:
-            pytest.skip(f"refinement folded {folded} cells of this host's gmsh shell (#946); "
-                        "the solve need not converge on it")
     v, stokes = _stokes(mesh, f"1111{kind}")
     custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)
     stokes.solve(zero_init_guess=True)

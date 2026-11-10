@@ -27,7 +27,7 @@ and checks every level against the configuration ``_configure_pcmg`` and the
 "robust" geometric bundle write: coarse ``preonly`` + ``redundant`` with LU
 inside; every other level ``gmres``, 4 iterations, no norm, SOR; the FAC level a
 composite of SOR then ASM, basic restriction, one overlap layer, every block
-``preonly`` + LU with the nonzero shift.
+``preonly`` + LU with the nonzero shift and quotient-minimum-degree ordering.
 
 That configuration is the only one: the measurement knobs that varied it
 (``UW_FAC_MODE``, ``UW_FAC_SUB_PC``, ``UW_FAC_ASM_TYPE``, ``UW_FAC_OVERLAP``,
@@ -175,6 +175,10 @@ def _checked_fac_levels(mg, path):
                 f"{k.getPC().getType()!r}, configured 'lu' (#892)")
             assert "[NONZERO]" in _view(k.getPC()), (
                 f"{path} level {l}: FAC block LU without the nonzero shift")
+            # nd's fill followed the band's row numbering, 25-58 times qmd's (#895)
+            assert "matrix ordering: qmd" in _view(k.getPC()), (
+                f"{path} level {l}: FAC block LU not ordered by quotient minimum "
+                f"degree:\n{_view(k.getPC())}")
     return fac_levels
 
 

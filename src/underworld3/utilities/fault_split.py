@@ -1776,6 +1776,7 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     cut._refine_dofs_coincide = False
     cut.regions = mesh.regions
     cut._parent_mesh_version = mesh._mesh_version
+    cut._inherit_rotation_modes(mesh)
     mesh._registered_children.add(cut)
     from underworld3.utilities.addon_partition import inherit_provenance
     inherit_provenance(cut, mesh)
@@ -1872,6 +1873,7 @@ def _add_fault_sheets(mesh, faults, verbose=False, partition=True,
         child._refine_dofs_coincide = False
         child.regions = cut.regions
         child._parent_mesh_version = cut._mesh_version
+        child._inherit_rotation_modes(cut)
         child._surface_info = info
         child._embedded_surfaces = (
             set(getattr(cut, "_embedded_surfaces", ()) or ()) | {name})
@@ -2464,6 +2466,7 @@ def split_fault(mesh, name, orientation=None, verbose=False,
         child._fault_specs = list(mesh._fault_specs)
     child.regions = mesh.regions
     child._parent_mesh_version = mesh._mesh_version
+    child._inherit_rotation_modes(mesh)
     child._fault_point_pairs = dict(prior)
     child._fault_point_pairs[name] = pairs
     if getattr(mesh, "_embedded_surfaces", None):

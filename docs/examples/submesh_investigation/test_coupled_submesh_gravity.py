@@ -143,7 +143,6 @@ stokes.tolerance = 1e-4
 stokes.petsc_options["snes_type"] = "newtonls"
 stokes.petsc_options["ksp_type"] = "fgmres"
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
 stokes.solve(verbose=False)
 
