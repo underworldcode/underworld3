@@ -724,14 +724,35 @@ def _as_expression(components):
     return components[0] if len(components) == 1 else sympy.Matrix([components])
 
 
+def _is_leaf(e):
+    """A named expression the peels leave in place: its value is a bare number or
+    a dimensional quantity.
+
+    The JIT passes both as run-time constants, so the kernel compiled for an
+    integrand survives a change of their value; substituting a number would
+    recompile every sensitivity at every evaluation of an inversion. A
+    dimensional quantity cannot be substituted at all: it is not a SymPy object
+    (#765).
+    """
+    value = getattr(e, "sym", None)
+    return getattr(value, "is_Number", False) or not isinstance(value, sympy.Basic)
+
+
 def _peel_except(expression, wrt, depth=8):
-    """Expand every named expression except ``wrt`` (see the solver's
-    ``_peel_except``): ``_peel`` would substitute the parameter's value and
-    the derivative of a number is zero."""
+    """Expand every named expression in ``expression`` except ``wrt``.
+
+    A parameter reaches the residual through the constitutive model's own
+    named symbol: ``Parameters.diffusivity = kappa`` puts ``\\upkappa`` in
+    ``F1`` with ``kappa`` as its value, so differentiating the residual as
+    written with respect to ``kappa`` gives zero. ``fn_unwrap`` will not do
+    either: it substitutes every constant's value, and the derivative of a
+    number is zero too. This substitutes each named expression by its
+    definition, one level at a time, and stops at ``wrt`` so the chain rule
+    has something to hold on to. Leaves (:func:`_is_leaf`) stay as they are.
+    """
     for _ in range(depth):
         named = [e for e in uw.function.fn_extract_expressions(expression)
-                 if e is not wrt and e != wrt
-                 and not getattr(getattr(e, "sym", None), "is_Number", False)]
+                 if e is not wrt and e != wrt and not _is_leaf(e)]
         if not named:
             break
         expression = expression.subs({e: e.sym for e in named})
@@ -739,9 +760,5 @@ def _peel_except(expression, wrt, depth=8):
 
 
 def _peel(expression, depth=8):
-    for _ in range(depth):
-        named = uw.function.fn_extract_expressions(expression)
-        if not named:
-            break
-        expression = expression.subs({e: e.sym for e in named})
-    return expression
+    """Expand every named expression except leaves (:func:`_is_leaf`)."""
+    return _peel_except(expression, None, depth)
