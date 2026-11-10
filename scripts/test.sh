@@ -415,6 +415,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1146*py  # a custom-P hierarchy re-solves after mesh.deform (#1015)
   batch 4 tests/test_1148*py  # a new timestep keeps the SNES of a time-dependent solver (#1026)
   batch 4 tests/test_1149*py  # a custom-P hierarchy's state does not outlive a change (#1019, #1017)
+  batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
