@@ -164,10 +164,10 @@ minX, maxX = -0.5 * width, 0.5 * width
 minY, maxY = -0.5 * height, 0.5 * height
 
 uw.pprint("min X, max X:", minX, maxX)
-    print("min Y, max Y:", minY, maxY)
-    print("kinematic viscosity: ", kin_visc)
-    print("fluid density: ", fluid_rho)
-    print("dynamic viscosity: ", kin_visc * fluid_rho)
+uw.pprint("min Y, max Y:", minY, maxY)
+uw.pprint("kinematic viscosity: ", kin_visc)
+uw.pprint("fluid density: ", fluid_rho)
+uw.pprint("dynamic viscosity: ", kin_visc * fluid_rho)
 
 # %%
 # cell size calculation

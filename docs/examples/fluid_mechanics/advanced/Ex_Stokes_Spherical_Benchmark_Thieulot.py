@@ -716,7 +716,7 @@ if analytical:
     p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
 
     uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
-    print('Relative error in pressure in the L2 norm: ', p_err_l2)
+    uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # %% [markdown]
 """

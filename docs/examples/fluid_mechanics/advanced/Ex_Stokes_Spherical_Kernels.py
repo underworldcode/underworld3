@@ -229,8 +229,8 @@ pstats1 = p_cont.stats()
 pstats0 = p_soln.stats()
 
 uw.pprint(f"Pressure (C1): {pstats1}")
-    print(f"Pressure (C0): {pstats0}")
-    print(f"Velocity: {vnorm}")
+uw.pprint(f"Pressure (C0): {pstats0}")
+uw.pprint(f"Velocity: {vnorm}")
 # -
 
 meshball.write_timestep(

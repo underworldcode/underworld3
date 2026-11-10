@@ -414,6 +414,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1145*py  # a Stokes adjoint keeps the velocity block's custom-P hierarchy (#1016)
   batch 4 tests/test_1146*py  # a custom-P hierarchy re-solves after mesh.deform (#1015)
   batch 4 tests/test_1148*py  # a new timestep keeps the SNES of a time-dependent solver (#1026)
+  batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
