@@ -14,9 +14,10 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1]
 
 
+@pytest.mark.tier_a
 def test_velocity_shaped_fields_and_residual_rows_follow_the_embedding_dimension():
     mesh = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.4)
     assert (mesh.dim, mesh.cdim) == (2, 3)
@@ -31,6 +32,7 @@ def test_velocity_shaped_fields_and_residual_rows_follow_the_embedding_dimension
     assert ns._strong_residual(with_pressure=True).shape == (1, 3)
 
 
+@pytest.mark.tier_a
 def test_a_flat_mesh_is_unchanged():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25)
     v = uw.discretisation.MeshVariable("vflat", mesh, 2, degree=2)
