@@ -325,10 +325,19 @@ def test_the_null_space_serves_the_transposed_operator_too():
     Ahat = K.ptap(Qt)
     Ahat.zeroRowsColumns(rows, diag=_velocity_diag_scale(Ahat, stokes))
     checks = _pressure_nullspace_checks(Ahat, stokes._subdict["pressure"][0], True)
-    assert checks["verified"], checks
+    assert checks["verified"] == info["pressure_nullspace_verified"], checks
     nsp = _rotated_nullspace(stokes, Q, rows,
                              pressure_null_verified=checks["verified"])
     assert nsp is not None, "no null space here — the test would prove nothing"
+    # The exact analytic rotation is required; pressure is admitted only if
+    # the actual constrained operator verifies that separate gauge.
+    pressure_is = stokes._subdict["pressure"][0]
+    pressure_content = 0.0
+    for mode in nsp.getVecs():
+        pressure_part = mode.getSubVector(pressure_is)
+        pressure_content += pressure_part.norm() ** 2
+        mode.restoreSubVector(pressure_is, pressure_part)
+    assert pressure_content == pytest.approx(float(checks["verified"]), abs=256*np.finfo(float).eps)
     assert getattr(stokes, "_rotated_velocity_null_modes", 0) >= 1, (
         "no RIGID ROTATION was admitted; only the pressure mode is being "
         "measured, and that one is symmetric for a trivial reason")
@@ -342,11 +351,11 @@ def test_the_null_space_serves_the_transposed_operator_too():
             AhatT.mult(w, out)
             adjoint = out.norm() / w.norm()
             out.destroy()
-            # Absolute, and then the identity: the same mode read from the two
-            # sides must give the SAME residual, not merely a small one.
+            # Both exact actions are zero. Their floating-point cancellation
+            # errors need not have equal magnitudes on a nonsymmetric matrix.
+            roundoff = 256 * np.finfo(float).eps * Ahat.norm(PETSc.NormType.FROBENIUS)
             assert adjoint < 1.0e-8, (forward, adjoint)
-            assert abs(adjoint - forward) <= 0.01 * max(forward, 1.0e-16), (
-                forward, adjoint)
+            assert max(forward, adjoint) <= roundoff, (forward, adjoint, roundoff)
     finally:
         nsp.destroy()
         Ahat.destroy()

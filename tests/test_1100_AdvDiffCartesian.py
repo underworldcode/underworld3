@@ -158,6 +158,10 @@ def test_advDiff_boxmesh(mesh_type):
 
     T.array = uw.function.evaluate(U_start, T.coords)
 
+    sample_x = np.arange(0, 1, mesh.get_min_radius())
+    sample_y = np.zeros_like(sample_x) + 0.5
+    sample_points = np.column_stack([sample_x, sample_y])
+
     model_time = t_start
 
     #### Solve
@@ -173,12 +177,9 @@ def test_advDiff_boxmesh(mesh_type):
 
         model_time += dt
 
-    sample_x = np.arange(0, 1, mesh.get_min_radius())
-    sample_y = np.zeros_like(sample_x) + 0.5
-    sample_points = np.column_stack([sample_x, sample_y])
 
     ### compare UW and 1D numerical solution
-    T_UW = uw.function.evaluate(T.sym[0], sample_points).squeeze()
+    T_UW = uw.function.global_evaluate(T.sym[0], sample_points).squeeze()
 
     U_end = exact.fn_solution.subs(exact.t, t_end)
     T_analytical = uw.function.evaluate(U_end, sample_points).squeeze()
@@ -194,3 +195,18 @@ def test_advDiff_boxmesh(mesh_type):
 # For interactive visualization, run this test file directly as a notebook.
 
 # %%
+
+
+@pytest.mark.tier_a
+def test_shared_profile_evaluates_an_exact_quadratic_across_partitions():
+    """A shared line must read the field on its owner, even on distant ranks."""
+    mesh = create_mesh("mesh1")
+    field = uw.discretisation.MeshVariable("ProfileQuadratic", mesh, 1, degree=2)
+    x, y = np.asarray(field.coords).T
+    field.array[:, 0, 0] = x*x + 2*x*y + y*y
+    # Interior queries isolate rank ownership from physical-boundary location.
+    points = np.column_stack([np.linspace(1/48, 47/48, 47), np.full(47, 0.5)])
+    expected = (points[:, 0] + points[:, 1]) ** 2
+    observed = uw.function.global_evaluate(field.sym[0], points).squeeze()
+    np.testing.assert_allclose(observed, expected, rtol=0,
+                               atol=256*np.finfo(float).eps*np.max(expected))
