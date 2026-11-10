@@ -3668,6 +3668,11 @@ class SolverBaseClass(uw_object):
         if self._instrumentation is None:
             from underworld3.systems.solver_health import SolverInstrumentation
             self._instrumentation = SolverInstrumentation()
+            # Its callbacks on the KSPs hold it, and it holds the KSPs: a cycle
+            # through PETSc that Python's collector cannot see. _reset breaks it
+            # when the SNES is torn down; a solver that is simply dropped needs
+            # it broken when it is collected, or its KSP tree stays (#1041).
+            weakref.finalize(self, self._instrumentation.release).atexit = False
         return self._instrumentation
 
     def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):

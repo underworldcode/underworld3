@@ -558,7 +558,11 @@ def read_snapshot(model, path: str) -> None:
                 if obj is None:
                     raise ValueError(
                         f"snapshot at {path} contains state-bearer {key!r} "
-                        f"that is not registered on this model"
+                        f"that is not registered on this model: the object "
+                        f"it was written from (a history manager, often a "
+                        f"solver's DuDt) has been collected, or was never "
+                        f"built here. Build the same solvers, and keep them, "
+                        f"before loading"
                     )
                 _read_state_bearer_into(ps_group[key], obj)
 

@@ -437,8 +437,11 @@ def restore(model, snap: Snapshot) -> None:
             if obj is None:
                 raise SnapshotInvalidatedError(
                     f"state-bearer {key!r} from snapshot is not registered "
-                    f"on this Model; restore requires the originating "
-                    f"Model"
+                    f"on this Model: the object it was captured from (a "
+                    f"history manager, often a solver's DuDt) has been "
+                    f"collected, or this is not the originating Model. "
+                    f"Keep a reference to the solver for as long as its "
+                    f"snapshots are to be restored"
                 )
             obj.state = copy.deepcopy(captured_state)
 

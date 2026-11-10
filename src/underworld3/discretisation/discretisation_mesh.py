@@ -38,9 +38,10 @@ class _SolverRegister:
 
     A mesh move or DM change marks each live solver for rebuild, and a
     snapshot captures its step state. A plain list kept every solver ever
-    built on the mesh alive for as long as the mesh, with its SNES and KSP
-    tree and its PETSc options (#1041). Iteration takes a copy, so a
-    collection during a loop does not change what the loop walks.
+    built on the mesh alive for as long as the mesh, with its SNES and its
+    PETSc options (#1041). Like the model's own registries, it does not
+    extend a solver's lifetime: a snapshot or transcript that names a
+    dropped solver's state cannot be restored into it.
     """
 
     def __init__(self):
@@ -52,7 +53,7 @@ class _SolverRegister:
         self._count += 1
 
     def __iter__(self):
-        return iter(list(self._solvers.values()))
+        return iter(self._solvers.values())
 
     def __len__(self):
         return len(self._solvers)
