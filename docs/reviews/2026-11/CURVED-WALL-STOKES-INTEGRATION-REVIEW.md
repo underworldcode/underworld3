@@ -19,17 +19,30 @@ We merged upstream development into feature/cylindrical-wall-boundaries_sph, pre
 
 - Upstream test contracts: the adjoint test now supplies measured pressure verification; the deliberately faulty bisector control retains its algebraic defect check when a non-null rotation is explicitly refused. The cache fixture now asserts actual initial convergence before automatic warming. Its old slid wall had finalized residual3.8345e-8 above target1.9953e-11 and correctly started cold; no solver guard is weakened. The closure-table oracle now checks global non-emptiness and exact empty local tables on ranks with no cells.
 
+### PR #1033 CI repair audit
+
+The first full CI run (`42753082647`, head `7e4d3f71`) found 30 distinct failing cases. The earlier targeted counts below were not full-suite acceptance. Follow-up repairs address the failures rather than weakening PDE or solver tolerances:
+
+- Coordinate DM clones retain the embedding dimension. Independent surface P1/P2/DG0 coordinate oracles failed before the repair; manifold areas, Killing fields, membrane motion and surface transport then passed. Affine basis coordinates reject substantial bounding-box excursions collectively and clip only excursions within 64 machine epsilons, fixing PETSc point-location failures.
+- Pressure-response pseudoinverses project a copied inner RHS only in verified rigid gauges, preserving the original coarse equations. The native adapter releases its velocity-KSP wrapper on refresh/destruction, fixing the MPI multigrid-retention regression.
+- Gauge candidates must be left and right kernels of the actual normal-constrained operator. A declared geometric rotation does not waive this test. Updated rotation/projection tests independently recompute the finalized original equations; exact analytic-normal rotations retain positive controls.
+- Fault-pair sheet data use the registered boundary name, not the numeric datum, when scheduling collective evaluation. Both copies now carry the prescribed motion. Reactions use the same surface conormal as the constraint; the original membrane-resultant tolerance passes.
+- Direct LU selects one globally agreed pressure row, including ranks with no pressure DOFs. The old per-rank pins removed extra mass equations; the existing two-rank LU/multigrid slip comparison now passes without changing its tolerance.
+- Weak-pressure correction is a preconditioner policy, separate from gauge verification. Responses below the requested relative residual scale are left to the original fieldsplit/FGMRES solve instead of amplified by an exact coarse inverse. Original A/RHS, pressure-gauge rejection and finalized residual targets are unchanged. The nonlinear radial-datum reproducer changes from a pressure offset near -7.7e8 and an unconverged residual to a converged original residual of 3.00e-10; the historical annulus accuracy anchor is unchanged.
+- Kramer is included in the analytical sweep; its body-force sign mutation uses a nonzero smooth source. Collective context checks execute outside rank-local guards. XDMF midpoint checks allow only machine roundoff at zero; the FAC oracle checks its mathematical three-quarter coverage rule. Parallel deformation fixtures select a coordinate with an untouched-rank witness instead of assuming one partitioner layout.
+
 ## System Architecture
 
 Public Stokes methods delegate to shared private state, observation and field-layout helpers, with distinct cylindrical/spherical geometry and algebra modules. Native diagnostics borrow solved state; they do not replace equations.
 
 ## Testing Instructions
 
-- Serial: 352 unique checks passed; 13 skipped (12 optional assess comparisons and one x86-only OpenBLAS-kernel probe on arm64).
+- Pre-CI baseline: 352 unique serial checks passed; 13 skipped (12 optional assess comparisons and one x86-only OpenBLAS-kernel probe on arm64). This did not substitute for full CI.
 - MPI8: 191 unique checks passed on every rank; two serial-only direct-LU datum checks skipped on every rank.
 - MPI3: 13 unique checks passed on every rank, covering empty wall ownership/JIT, tolerance/cache retention, upstream FAC blocks, and Stokes/ThinSheet interface operator refresh.
 - All 440 test files are reachable from scripts/test.sh; deprecated-pattern scan, Python compilation, shell syntax and git diff whitespace checks pass.
-- The final src tree is identical to tested numerical source51e01ba267e9; subsequent commits adjust tests/documentation only. Installed package d13975522fb7 is a regular int32 install. Twelve compiled native objects remain byte-identical to the fresh f063f9f58de5 build.
+- CI-repair numerical head `b57a4cdc13a0`: regular installed int32 package; 52 passed/one x86-only skip in the focused serial pressure/options/projection gate, 19 passed on every MPI2 rank in the original failing pressure/datum/LU/cleanup gate, and 17 passed on every MPI2 rank in the pressure-gauge/LU lifecycle gate. Twelve native objects remain byte-identical to the fresh `f063f9f58de5` build; Python-only repairs required no native recompilation.
+- Additional repair evidence: 25 serial rotation-gauge checks pass; nine XDMF checks and the DMField point-location reproducer pass. Full surface transport and the 192-step Maxwell tide passed after the embedding-coordinate repair; those long runs are not represented as reruns of later fault-only/preconditioner edits. Final short surface and geometry checks are recorded with the repair evidence.
 - NCI explicitly reports scheduled maintenance; no fresh merged-head Gadi/int64 result is claimed.
 
 Twelve optional assess comparisons are skipped when assess is unavailable; independent native analytical tests run. Earlier 336 benchmark records remain pinned to their original numerical versions and are not represented as reruns of this merge.
@@ -40,7 +53,7 @@ We make no new issue-closure claims from this integration. Upstream fixes for #9
 
 The following remain open or unverified by this PR, rather than being inferred fixed:
 
-- #348/#899: partition-dependent direct-LU datum and split-fault LU behavior; the direct-LU field oracle here is serial.
+- #348/#899: the global-datum regression and existing two-rank split-fault LU/multigrid comparison now pass. This is targeted regression evidence, not an issue-closing claim for every direct-LU configuration.
 - #910/#911/#985/#625/#755: broader cached/roundoff/Schur-cost and viscoelastic-preconditioner issues; explicit rotated inner options do not claim to solve them generally.
 - #98/#608/#939/#931/#923/#962: other pressure, corner and host/partition-specific wall/topography failures; Kramer/coupled-wall component checks are not those reproducers.
 - #883/#884: wider cold datum/reference and gauge-reference issues; retained targeted regression contracts do not establish every mixed-forcing/continuation case.
