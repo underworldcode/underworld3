@@ -19,7 +19,7 @@ import pytest
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1]
 
 
 def _field(v):
@@ -37,6 +37,7 @@ def written(tmp_path):
     return mesh, v, out
 
 
+@pytest.mark.tier_a
 def test_a_manifold_mesh_is_written_to_xdmf_as_triangles_in_three_space(written):
     mesh, v, out = written
     xdmf = open(os.path.join(out, "sheet.mesh.00000.xdmf")).read()
@@ -48,6 +49,7 @@ def test_a_manifold_mesh_is_written_to_xdmf_as_triangles_in_three_space(written)
         assert h5[geometry].shape[1] == 3
 
 
+@pytest.mark.tier_a
 def test_a_manifold_mesh_rebuilt_from_its_checkpoint_keeps_its_embedding_and_reads_back(written):
     mesh, v, out = written
     rebuilt = uw.discretisation.Mesh(os.path.join(out, "sheet.mesh.00000.h5"))
@@ -59,6 +61,7 @@ def test_a_manifold_mesh_rebuilt_from_its_checkpoint_keeps_its_embedding_and_rea
     assert np.abs(np.asarray(w.array)[:, 0, 0] - _field(w)).max() < 1e-12
 
 
+@pytest.mark.tier_a
 def test_read_checkpoint_on_a_mesh_built_from_a_dm_refuses_and_names_the_routes(written):
     mesh, v, out = written
     path = os.path.join(out, "sheet.mesh.s869.00000.h5")
