@@ -437,8 +437,10 @@ def _remesh_with_field_transfer_impl(
     # Without the mark the first solve after a move assembled with every
     # transferred coefficient field at its pre-move values: on a viscosity read
     # from a DG0 zone field, 6 % in velocity and 80 % in pressure after
-    # mesh.deform, until a solve elsewhere set the mark. Every rank that moved
-    # reaches this line, so update_lvec's collective runs on all of them.
+    # mesh.deform, until a solve elsewhere set the mark. Only a rank whose own
+    # coordinates moved reaches this line, because the no-move test above is
+    # rank-local (#960); #959 decides the move over all ranks and carries this
+    # same mark, which replaces this one when it merges.
     mesh._stale_lvec = True
     return True
 

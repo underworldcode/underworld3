@@ -10,8 +10,9 @@ outside the zone. A repartition or a topology change kills the whole patch.
 
 The accuracy check: after each of several MMPDE moves, the solve with the kept patch
 matches a solve with the hierarchy registered again and the zone recomputed from the
-moved field, in velocity, pressure and fault slip, to the solver tolerance, and takes
-no more than one velocity iteration more. Hyperion measured 2-3 velocity iterations at
+moved field, in velocity, pressure and fault slip, to the solver tolerance (solved at
+1e-8, so that convergence noise sits well inside the bounds), and takes no more than
+one velocity iteration more. Hyperion measured 2-3 velocity iterations at
 every move with the patch kept, the same as a fresh registration, and 14-28 with it
 killed, at np 1, 2 and 4. A kept patch that is stale (its rows away from the band)
 fails the iteration bound.
@@ -42,6 +43,7 @@ S = LENGTH / N_RUNGS
 T_HAT = (B - A) / LENGTH
 N_HAT = np.array([T_HAT[1], -T_HAT[0]])
 MOVES = 3
+TOLERANCE = 1.0e-8
 
 
 def _fixture(split):
@@ -78,7 +80,9 @@ def _stokes(mesh, zone, split, tag):
     if split:
         s.add_fault_bc(0, boundary="Fault")
     s.petsc_use_pressure_nullspace = True
-    s.tolerance = 1.0e-6
+    # well inside the comparison's bounds: at 1e-6, kept and fresh differ by the
+    # convergence noise itself, 1.5e-6 in velocity at np 2 (hyperion, round 3)
+    s.tolerance = TOLERANCE
     return s, v, p
 
 
@@ -138,12 +142,13 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split):
         its_k = _velocity_iterations(kept, split)
         its_f = _velocity_iterations(fresh, split)
         assert its_k <= its_f + 1, (k, its_k, its_f)
-        # to the solver tolerance, 1e-6: measured 2e-8 velocity, 8e-7 pressure and
-        # 5e-7 slip at np 1 (a killed patch's pressure: 1.5e-5)
-        assert errors["velocity"] < 1.0e-6, (k, errors)
-        assert errors["pressure"] < 1.0e-5, (k, errors)
+        # to the solver tolerance: at 1e-8 kept and fresh agree to ~4e-9 (hyperion,
+        # np 1, 2 and 4); a patch only preconditions, and the outer solve converges
+        # on the true residual, so a stale one costs iterations and not accuracy
+        assert errors["velocity"] < 100 * TOLERANCE, (k, errors)
+        assert errors["pressure"] < 1000 * TOLERANCE, (k, errors)
         if split:
-            assert errors["slip"] < 1.0e-5, (k, errors)
+            assert errors["slip"] < 1000 * TOLERANCE, (k, errors)
         record = kept.pc_fallbacks.get("custom_mg.fac_patch")
         if not split:
             # nothing was dropped: no warning, no record

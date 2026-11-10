@@ -248,6 +248,9 @@ def test_a_zone_patch_survives_a_deform_and_a_topology_change_kills_it(monkeypat
     assert s.snes.getConvergedReason() > 0
     assert finest() == "composite"
     assert "fac_zone blocks" in s.pc_fallbacks["custom_mg.fac_patch"]["installed"]
+    # the coincidence test did not run on the moved rows: the structural rows are
+    # dropped, not found again and declined at the gate
+    assert s._custom_mg["hierarchy"].fac_gate[-1] is None
 
     signature = custom_mg._topology_signature
     monkeypatch.setattr(custom_mg, "_topology_signature",
@@ -257,6 +260,23 @@ def test_a_zone_patch_survives_a_deform_and_a_topology_change_kills_it(monkeypat
         s.solve()
     assert finest() != "composite"
     assert "whole-level" in s.pc_fallbacks["custom_mg.fac_patch"]["installed"]
+
+
+def test_the_topology_signature_follows_the_cells_and_not_the_nodes():
+    # what decides "a repartition or a topology change kills the zone patch"
+    from test_1146_custom_mg_after_deform import _fault_box
+    levels, mesh = _fault_box()
+    before = custom_mg._topology_signature(mesh)
+    c = np.asarray(mesh.X.coords).copy()
+    c[:, 0] += 0.01 * np.sin(np.pi * c[:, 0]) * np.sin(np.pi * c[:, 1])
+    mesh.deform(c)
+    uw.discretisation.MeshVariable("extra1149", mesh, 1, degree=1).array[...] = 0.0
+    assert custom_mg._topology_signature(mesh) == before        # a move, a new field
+    # other cells: the coarse level under it, and the same box cut differently
+    assert custom_mg._topology_signature(levels[-1]) != before
+    other = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
+                                              cellSize=1 / 9, regular=False, qdegree=2)
+    assert custom_mg._topology_signature(other) != before
 
 
 def _live_ksps():
