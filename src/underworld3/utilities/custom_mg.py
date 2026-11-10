@@ -1554,8 +1554,9 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
         if ksp.getType() in ("gmres", "fgmres", "lgmres", "dgmres", "pgmres", "pipefgmres") \
                 and opts.hasName(prefix + "ksp_gmres_restart"):
             ksp.setGMRESRestart(opts.getInt(prefix + "ksp_gmres_restart"))
-    # A FAC level's smoother keys (below) stay in the database after the solve on
-    # the standard path. A re-install whose level has no patch this time read the
+    # A FAC level's smoother keys (below) can still be in the database at a
+    # re-install: the top-level path keeps them until a solve has set the levels
+    # up (_release_fac_keys). A re-install whose level has no patch this time read the
     # level's "composite" back with no member PCs, which PETSc refuses (error 73
     # after mesh.deform, #1015), so a level without a patch now loses the FAC
     # configuration a previous install left: its pc_type when that is "composite"
@@ -1665,11 +1666,12 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # 2.3-4 times, with the same iterations and slip (kaiju, #895; rcm was
             # worse than nd). On blocks that are not bands it cost nothing: 1.2 to
             # 3 times less fill on every block measured (hyperion's review).
-            # An ordering already in the database (the user's) is left in place.
+            # An ordering already in the database (the user's) is left in place,
+            # and is not one of the keys a caller drops.
             key = _sub_key.replace("sub_pc_type", "sub_pc_factor_mat_ordering_type")
             if not opts.hasName(prefix + key):
                 opts[prefix + key] = "qmd"
-            fac_keys.append(key)
+                fac_keys.append(key)
             for _is in is_subs:   # the PC holds its own references
                 _is.destroy()
     return fac_keys
@@ -1715,6 +1717,59 @@ def _set_up_fac_smoothers(pc, fac_keys):
             # cannot serve as insurance the way the type and the shift do.
 
 
+def _drop_options(prefix, keys):
+    """Remove ``prefix + key`` from the options database for each of ``keys``.
+    Not collective."""
+    opts = PETSc.Options()
+    for key in keys or ():
+        if opts.hasName(prefix + key):
+            opts.delValue(prefix + key)
+
+
+def _release_fac_keys(solver, force=False):
+    """Drop the FAC keys a top-level install left in the options database, once the
+    solve has set the FAC levels up from them (#1019).
+
+    The top-level PC sets its levels up inside the solve, so the keys must be in the
+    database until then. A solve that ran a linear iteration applied every level's
+    smoother, and the ASM blocks have read their LU, shift and ordering; a later
+    set-up of an existing PC keeps what it has where the database says nothing, so
+    the warm solves keep the blocks. A solve that ran none (a warm start already
+    converged) keeps the keys for the next one. Called at the end of every solve, and
+    when the preconditioner choice changes (``force``), when the keys can only
+    mislead the route that replaces them: GAMG read the level's composite back with
+    no members (PETSc error 73). Not collective."""
+    names = getattr(solver, "_custom_mg_fac_keys", None)
+    if not names:
+        return
+    if not force:
+        try:
+            if solver.snes.getLinearSolveIterations() == 0:
+                return
+        except PETSc.Error:
+            return                  # an unreadable SNES: the next solve decides
+    _drop_options("", names)
+    solver._custom_mg_fac_keys = None
+
+
+def _free_after_install(solver):
+    """After a solve whose hierarchy was (re)installed, destroy what the previous
+    install dropped (#1020).
+
+    In parallel petsc4py defers each destroy to a collective
+    ``PETSc.garbage_cleanup``, which only a new mesh ran: every reinstall on the
+    standard paths kept its predecessor's transfers and level objects (+28 entries
+    and 8 MB per reinstall on the Stokes velocity block at np 2). The rotated path
+    does the same at the end of a solve that rebuilt its workspace (#1007).
+    Collective: an install runs on every rank or on none, so the flag agrees."""
+    if not getattr(solver, "_custom_mg_installed", False):
+        return
+    solver._custom_mg_installed = False
+    if solver.dm.comm.getSize() > 1:
+        from underworld3 import mpi
+        mpi._free_petsc_garbage(solver.dm.comm)
+
+
 def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
     """Configure the managed PCMG block to use the supplied prolongations.
 
@@ -1742,10 +1797,15 @@ def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
         # a single field: GAMG's own near-null space (the constant, or the
         # block's components) serves
-        _configure_pcmg(ksp.getPC(), Ps, coarse=coarse,
-                        smoother=solver._mg_smoother_variant,
-                        owned=solver._managed_pc_options, ksp=ksp,
-                        patch_rows=patch_rows)
+        fac_keys = _configure_pcmg(ksp.getPC(), Ps, coarse=coarse,
+                                   smoother=solver._mg_smoother_variant,
+                                   owned=solver._managed_pc_options, ksp=ksp,
+                                   patch_rows=patch_rows)
+        # This PC sets its levels up inside the solve, from the FAC keys: they
+        # leave the database after it (_release_fac_keys, #1019).
+        prefix = ksp.getPC().getOptionsPrefix() or ""
+        solver._custom_mg_fac_keys = [prefix + k for k in fac_keys] or None
+        solver._custom_mg_installed = True
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
@@ -1825,6 +1885,12 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False,
         m.destroy()
     vel_pc.setUp()
     _set_up_fac_smoothers(vel_pc, fac_keys)
+    # The FAC levels are set up and hold their block solver: the keys leave the
+    # database now, as on the rotated path. Left there, a later route that reads
+    # this prefix (a GAMG level, an install without the patch) built a composite
+    # with no members: PETSc error 73 (#1015, #1019).
+    _drop_options(vel_pc.getOptionsPrefix() or "", fac_keys)
+    solver._custom_mg_installed = True
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
     solver._attach_stokes_nullspace()
@@ -2087,6 +2153,10 @@ class CustomMGHierarchy:
         self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
         from underworld3.utilities import fault_mg
+        # TODO(MEASURE): the env flag is an A/B affordance for the #629 campaign;
+        # remove when settled. A deform since the patch was built kills it (#1017).
+        fac_on = (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
+                  and not self._fac_patch_killed(solver))
         for l in range(1, nlev):
             # A pair the add-on partition recorded (the base's finest static
             # level against the first add-on level, which the partition moved
@@ -2193,8 +2263,7 @@ class CustomMGHierarchy:
                 # nodes by their owner's rows), and the zone and the structural
                 # rows are cut into blocks from what every rank holds, so the
                 # blocks do not depend on the partition (#925).
-                if (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
-                        and l == nlev - 1):
+                if fac_on and l == nlev - 1:
                     lay = maps[l]
                     blocks = []
                     zones = []
@@ -2280,9 +2349,7 @@ class CustomMGHierarchy:
                                            maps[l], nc, self.builder)
                 # an orphan coarse DOF (no fine image) is dropped at install
                 # (restrict_unreached), never injected — see drop_orphans
-                # TODO(MEASURE): A/B affordance for the #629 campaign, like
-                # the nested-native flag above; remove when settled.
-                if not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC"):
+                if fac_on:
                     # An EXPLICIT zone beats detection: a painted weak/TI
                     # band has no split topology to detect, but the modeler
                     # knows exactly which cells were painted. The fac_zone
@@ -2357,6 +2424,44 @@ class CustomMGHierarchy:
             mpi.pprint(f"[{solver.name}] FAC cover gate: "
                        + ("; ".join(verdicts) or "not run"))
         return Ps
+
+    def _fac_patch_killed(self, solver):
+        """Has the solver's mesh moved since its FAC patch was installed?
+
+        Louis's ruling on #1017 (2026-11-08): moving the mesh kills the patch, and the
+        fault is then absent from the preconditioner until the patch is rebuilt, which
+        is one step of the fault-move cycle: move the fault, re-refine the base from
+        it, and register the hierarchy with the cut fault again (``set_custom_fmg``).
+        The registered coarse levels do not move with the fine mesh, so the patch
+        test, which reads a fine row as background only where it lands on a
+        coincident coarse node, would take every moved row as patch and the cover gate
+        would decline it without saying why. The kill is recorded in ``pc_fallbacks``
+        on every build until the hierarchy is registered again, and warned once.
+        ``_mesh_version`` moves on every rank together, so the verdict is collective."""
+        version = getattr(self.level_meshes[-1], "_mesh_version", None)
+        at = getattr(solver, "_fac_patch_mesh_version", None)
+        if at is not None and at != version:
+            # attributed to the user's solve(), not to this frame
+            from underworld3.cython.generic_solvers import _warn_from_caller
+            solver._fac_patch_mesh_version = None
+            solver._fac_patch_killed = True
+            _warn_from_caller(
+                f"custom_mg: the mesh of solver {solver.name!r} was deformed after its "
+                f"FAC patch was built, so the patch is gone and the fault is absent "
+                f"from the preconditioner. Rebuild it with the moved fault: re-refine "
+                f"the base from it and register the hierarchy again (set_custom_fmg) "
+                f"(#1017).", UserWarning)
+        if not getattr(solver, "_fac_patch_killed", False):
+            return False
+        solver._record_pc_fallback(
+            "custom_mg.fac_patch",
+            requested="the FAC patch on the fault",
+            installed="whole-level smoothing; the fault is absent from the preconditioner",
+            reason="unavailable",
+            detail="the mesh was deformed after the patch was built, and a deform kills "
+                   "the patch (#1017); register the hierarchy again with the moved "
+                   "fault to rebuild it")
+        return True
 
     def _fac_cover_max(self, l):
         """The FAC cover gate's threshold on level ``l`` (#918): 0.98 on a 2-D
@@ -2440,6 +2545,10 @@ class CustomMGHierarchy:
             Ps = restricted
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
         self._record_patch_summary(patch_rows, solver.dm.comm)
+        # the geometry this patch was built on: a deform kills it (#1017)
+        if patch_rows and any(rows is not None for rows in patch_rows):
+            solver._fac_patch_mesh_version = getattr(self.level_meshes[-1],
+                                                     "_mesh_version", None)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed): the level count and
         # the finest interpolation the PC now holds, kept as the Mat itself.
@@ -2590,6 +2699,9 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
         "verbose": verbose,
         "coarse_solve": coarse_solve,
     }
+    # a new registration rebuilds a patch a deform killed (#1017)
+    solver._fac_patch_killed = False
+    solver._fac_patch_mesh_version = None
     solver.is_setup = False
 
 
