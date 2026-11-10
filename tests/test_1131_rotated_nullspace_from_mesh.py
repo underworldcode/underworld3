@@ -20,6 +20,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.adjoint import misfit_duals
 from underworld3.utilities import custom_mg, rotated_bc
+from _rotated_residual_reference import _assert_original_constrained_equations
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -100,25 +101,6 @@ def _v_rms(v):
     return np.sqrt(float(np.sum(V * V)) / V.shape[0])
 
 
-def _assert_original_constrained_equations(stokes, info):
-    """Independently evaluate the finalized equations and their rest-state scale."""
-    trial = info["U"].copy()
-    residual = trial.duplicate()
-    rotated = trial.duplicate()
-    values = []
-    try:
-        for state in ("final", "rest"):
-            if state == "rest":
-                trial.set(0)
-            stokes.snes.computeFunction(trial, residual)
-            info["Q"].mult(residual, rotated)
-            rotated_bc._zero_rows_local(rotated, info["normal_rows"])
-            values.append(rotated.norm())
-        rtol, atol, _ = stokes._rotated_tolerances()
-        assert values[0] <= rtol * values[1] + atol, values
-    finally:
-        for vector in (rotated, residual, trial):
-            vector.destroy()
 
 
 @pytest.mark.parametrize("radial", [False, True], ids=["default_normal", "analytic_normal"])

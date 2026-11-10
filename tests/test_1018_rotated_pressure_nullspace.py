@@ -156,7 +156,6 @@ def _assert_flat_solution(stokes, amplitude):
 
 
 @pytest.mark.tier_b
-@pytest.mark.skipif(uw.mpi.size > 1, reason="Existing rotated direct-LU datum is serial-only")
 @pytest.mark.parametrize("requested", [False, True])
 def test_lu_datum_follows_verification_and_preserves_hydrostatics(monkeypatch, requested):
     stokes, _load = _hydrostatic_stokes()
@@ -315,3 +314,22 @@ def test_radial_sphere_rejects_pressure_before_zero_residual_exit(monkeypatch, u
         assert len(nullspace.getVecs()) == 3
     finally:
         nullspace.destroy()
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("empty_first_rank", [False, True])
+def test_lu_selects_one_global_pressure_datum_even_on_empty_ranks(empty_first_rank):
+    from mpi4py import MPI
+    # A rank may own no pressure row. Each remaining rank proposes a different
+    # row: selecting locally would remove multiple physical mass equations.
+    owner = min(1, uw.mpi.size - 1) if empty_first_rank else 0
+    rows = [] if uw.mpi.rank < owner else [100 + 10 * uw.mpi.rank, 101 + 10 * uw.mpi.rank]
+    section = SimpleNamespace(
+        getChart=lambda: (0, len(rows)),
+        getFieldDof=lambda point, field: 1,
+        getFieldOffset=lambda point, field: rows[point],
+    )
+    dm = SimpleNamespace(getGlobalSection=lambda: section, comm=PETSc.COMM_WORLD)
+    datum = rbc._naive_pressure_pin(dm)
+    assert uw.mpi.comm.allgather(datum) == [100 + 10 * owner] * uw.mpi.size
+    assert uw.mpi.comm.allreduce(int(datum in rows), op=MPI.SUM) == 1

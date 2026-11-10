@@ -12,6 +12,7 @@ membrane with no basal drag (the tidally flexed shell over an ocean):
 import numpy as np
 import pytest
 import sympy
+from mpi4py import MPI
 import underworld3 as uw
 from underworld3.utilities.fault_contact import _InterfaceAssembler, fault_normal_traction
 
@@ -111,8 +112,9 @@ def test_fault_reaction_is_the_membrane_resultant():
         <= 256 * np.finfo(float).eps
     _c, sig = fault_normal_traction(sheet, "Flt", sheet._rotated_freeslip_info)
     expected = L * 6 * eta * W
-    assert len(sig) > 5
-    assert np.abs(sig - expected).max() < 0.02 * expected
+    assert uw.mpi.comm.allreduce(len(sig), op=MPI.SUM) > 5
+    local_error = np.max(np.abs(sig - expected), initial=0.0)
+    assert uw.mpi.comm.allreduce(local_error, op=MPI.MAX) < 0.02 * expected
 
 
 @pytest.mark.level_3

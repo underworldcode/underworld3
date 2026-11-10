@@ -1010,21 +1010,24 @@ _SNES_DIVERGED_LINE_SEARCH = -6
 
 
 def _naive_pressure_pin(dm):
-    """One owned pressure DOF (datum) for the direct-LU gauge pin — row only, so
-    the B^T coupling is kept. Only the direct solve needs it; the iterative path
-    fixes the pressure gauge with the constant-pressure null space instead.
+    """Select one global pressure datum for a verified direct-LU gauge.
 
-    TODO(BUG): a naive per-rank scan of the rank's OWN global-section chart, so at
-    np>1 each rank pins a different pressure DOF (or none → the caller must skip).
-    Parallel-unsafe; tolerated only because LU is opt-in via
-    ``solver._rotated_use_lu`` (a serial PC-free diagnostic)."""
+    Only the selected row is replaced, preserving B^T. Every rank must agree
+    on it, including ranks with no owned pressure DOFs; a local scan would
+    remove a separate mass-conservation equation on each rank.
+    """
+    from mpi4py import MPI
+    missing = int(np.iinfo(PETSc.IntType).max)
+    candidate = missing
     gsec = dm.getGlobalSection()
     pS, pE = gsec.getChart()
     for q in range(pS, pE):
-        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0 \
-                and gsec.getFieldOffset(q, _PRESSURE_FIELD) >= 0:
-            return gsec.getFieldOffset(q, _PRESSURE_FIELD)
-    return None
+        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0:
+            row = int(gsec.getFieldOffset(q, _PRESSURE_FIELD))
+            if row >= 0:
+                candidate = min(candidate, row)
+    selected = dm.comm.tompi4py().allreduce(candidate, op=MPI.MIN)
+    return None if selected == missing else int(selected)
 
 
 def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge):

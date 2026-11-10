@@ -7,7 +7,8 @@ ranks before the verdict. The deformed fixture moves the outer wall's vertices o
 their circle only near (1, 0), so at np >= 2 a rank can hold an untouched part of the
 wall; a rank-local verdict would keep the mode there and drop it elsewhere.
 
-- An annulus as built keeps its declared mode on every rank, and v.n is zero on every
+- An annulus as built retains its declaration but rejects a non-null constrained
+  rotation on every rank, and v.n is zero on every
   constrained row.
 - With 1e-6 of radial deformation near (1, 0) on its outer wall, every rank drops the
   mode, rank 0 warns, and the constraint test then rejects it on every rank.
@@ -50,7 +51,16 @@ def _annulus(deform):
     if deform:
         X = np.array(mesh.X.coords)
         r = np.linalg.norm(X, axis=1)
-        patch = np.isclose(r, 1.0, atol=1.0e-9) & (X[:, 0] > 0.9)
+        # Pick a shared physical coordinate with the smallest rank footprint.
+        # A fixed angular patch can touch every rank with another partitioner,
+        # leaving the collective-verdict regression without an untouched witness.
+        wall = X[np.isclose(r, 1.0, atol=1.0e-9)]
+        appearances = {}
+        for rank_points in uw.mpi.comm.allgather([tuple(v) for v in wall]):
+            for point in set(rank_points):
+                appearances[point] = appearances.get(point, 0) + 1
+        target = min(appearances, key=lambda point: (appearances[point], point))
+        patch = np.all(np.isclose(X, target, atol=1.0e-12, rtol=0), axis=1)
         X[patch] *= 1.0 + 1.0e-6
         touched = int(np.count_nonzero(patch))
         mesh.deform(X)
@@ -97,9 +107,9 @@ def _solve(deform):
                 untouched=uw.mpi.comm.allreduce(int(touched == 0)))
 
 
-def test_the_annulus_as_built_keeps_its_mode_on_every_rank():
+def test_the_annulus_as_built_checks_its_mode_on_every_rank():
     out = _solve(deform=False)
-    assert not out["warned"] and set(out["verdicts"]) == {((True,), 1)}, out
+    assert not out["warned"] and set(out["verdicts"]) == {((True,), 0)}, out
     assert out["vn"] < 1.0e-12, out
 
 
@@ -154,4 +164,4 @@ def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
     verdicts = uw.mpi.comm.allgather((info["converged"], tuple(info["declared_modes_exempt"] or ()),
                                       info["rotation_gauge"]["orthonormal"]))
     assert set(declared) == {1}, (declared, moved)
-    assert set(verdicts) == {(True, (True,), 1)}, (verdicts, moved)
+    assert set(verdicts) == {(True, (True,), 0)}, (verdicts, moved)

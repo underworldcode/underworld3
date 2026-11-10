@@ -52,6 +52,7 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.utilities import custom_mg, rotated_bc
+from _rotated_residual_reference import _assert_original_constrained_equations
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -167,33 +168,27 @@ def _slid_annulus_fmg(name, slide, contrast, tolerance=1.0e-5, solve=True):
     if not solve:
         return s
     s.solve()
-    return s._rotated_freeslip_info
+    info = s._rotated_freeslip_info
+    assert info["converged"], info
+    _assert_original_constrained_equations(s, info)
+    return info
 
 
-# (slide, contrast, modes projected, band of the Jacobi-scaled residual). Measured on
-# macOS arm64: 3.8e-11 as built; 6.2e-7 / 5.7e-7 slid 1e-4 at contrast 1 / 1e6;
-# 6.2e-4 / 5.7e-4 slid 0.1. The Frobenius ratio of the same modes runs from 1.0e-6
-# (slide 0.1, contrast 1) to 4e-15 (slide 1e-4, contrast 1e6).
-SLID = [(0.0, 1.0, 1, (1.0e-14, 1.0e-9)),
-        (1.0e-4, 1.0, 1, (3.0e-7, 1.0e-6)),
-        (3.0e-4, 1.0, 0, (1.0e-6, 4.0e-6)),
-        (1.0e-4, 1.0e6, 1, (3.0e-7, 1.0e-6)),
-        (3.0e-4, 1.0e6, 0, (1.0e-6, 4.0e-6)),
-        (0.1, 1.0e6, 0, (2.0e-4, 2.0e-3))]
+# Physical weak rotations must remain in the equations, including under a
+# large viscosity contrast. The original residual is checked independently.
+SLID = [(0.0, 1.0), (1.0e-4, 1.0), (3.0e-4, 1.0),
+        (1.0e-4, 1.0e6), (3.0e-4, 1.0e6), (0.1, 1.0e6)]
 
 
-@pytest.mark.parametrize("slide, contrast, projected, band", SLID,
-                         ids=[f"slide{a:g}-contrast{c:g}" for a, c, _n, _b in SLID])
-def test_whether_a_rotation_is_exact_does_not_depend_on_the_viscosity(slide, contrast,
-                                                                      projected, band):
-    info = _slid_annulus_fmg(f"1142v{SLID.index((slide, contrast, projected, band))}",
-                             slide, contrast)
+@pytest.mark.parametrize("slide, contrast", SLID,
+                         ids=[f"slide{a:g}-contrast{c:g}" for a, c in SLID])
+def test_physical_weak_rotations_remain_under_viscosity_contrast(slide, contrast):
+    info = _slid_annulus_fmg(f"1142v{SLID.index((slide, contrast))}", slide, contrast)
     assert info["ksp_reason"] > 0 and info["velocity_pc"] == "custom-FMG", info
     assert info["declared_modes_exempt"] == [True], info
-    (ratio,) = info["null_mode_ratios"]
-    assert band[0] < ratio < band[1], (ratio, band)
-    assert info["null_mode_threshold"] == 1.0e-6
-    assert info["projected_null_modes"] == projected, info["null_mode_ratios"]
+    assert info["rotation_gauge"]["orthonormal"] == 0
+    assert info["null_mode_ratios"] == []
+    assert info["projected_null_modes"] == 0
 
 
 def test_the_threshold_follows_the_tolerance():
@@ -204,17 +199,13 @@ def test_the_threshold_follows_the_tolerance():
     assert threshold(1.0e-14) == 1.0e-10        # floored: a mode exact to rounding (4e-11)
 
 
-# slid 1e-5 and 3e-5 rad: 6.2e-8 and 1.8e-7 (macOS arm64 and hyperion agree to 3 digits)
-@pytest.mark.parametrize("slide, projected, band", [(1.0e-5, 1, (3.0e-8, 1.0e-7)),
-                                                    (3.0e-5, 0, (1.0e-7, 4.0e-7))],
-                         ids=["slide1e-05", "slide3e-05"])
-def test_a_tight_tolerance_projects_only_what_pays(slide, projected, band):
-    info = _slid_annulus_fmg(f"1142t{projected}", slide, 1.0, tolerance=1.0e-9)
+@pytest.mark.parametrize("slide", [1.0e-5, 3.0e-5])
+def test_a_tight_tolerance_retains_physical_weak_rotations(slide):
+    info = _slid_annulus_fmg(f"1142t{slide:g}", slide, 1.0, tolerance=1.0e-9)
     assert info["ksp_reason"] > 0, info
-    (ratio,) = info["null_mode_ratios"]
-    assert band[0] < ratio < band[1], (ratio, band)
-    assert info["null_mode_threshold"] == pytest.approx(1.0e-7, rel=1.0e-12)
-    assert info["projected_null_modes"] == projected, info["null_mode_ratios"]
+    assert info["rotation_gauge"]["orthonormal"] == 0
+    assert info["null_mode_ratios"] == []
+    assert info["projected_null_modes"] == 0
 
 
 def test_a_re_solve_at_a_new_tolerance_re_decides_the_projection():
@@ -231,7 +222,8 @@ def test_a_re_solve_at_a_new_tolerance_re_decides_the_projection():
     # the KSP context is rebuilt for the new tolerance; the geometry is kept
     assert second["rotation_reused"], second
     assert second["null_mode_threshold"] == 1.0e-6
-    assert second["projected_null_modes"] == 1, second["null_mode_ratios"]  # <= 1e-6
+    assert second["projected_null_modes"] == 0, second["null_mode_ratios"]
+    _assert_original_constrained_equations(s, second)
     assert second["ksp_reason"] > 0, second
 
 
@@ -256,7 +248,8 @@ def test_a_converged_re_solve_at_a_new_tolerance_keeps_the_geometry():
     third = s._rotated_freeslip_info
     assert third["rotation_reused"], third
     assert third["null_mode_threshold"] == 1.0e-6
-    assert third["projected_null_modes"] == 1, third["null_mode_ratios"]
+    assert third["projected_null_modes"] == 0, third["null_mode_ratios"]
+    _assert_original_constrained_equations(s, third)
 
 
 class _AddsAMode:
