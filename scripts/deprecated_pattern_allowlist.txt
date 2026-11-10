@@ -61,5 +61,4 @@ src/underworld3/utilities/diagnostics.py:except-pass
 src/underworld3/utilities/mathematical_mixin.py:except-pass
 src/underworld3/utilities/memprobe.py:except-pass
 src/underworld3/utilities/nondimensional.py:except-pass
-src/underworld3/utilities/rotated_bc.py:except-pass
 src/underworld3/utilities/unit_aware_coordinates.py:except-pass
