@@ -287,10 +287,28 @@ def misfit_duals(misfit, variables, scratch=None, boundary=None):
 
 
 def integral(mesh, expression, boundary=None):
-    """``float(∫ expression)`` over the mesh, or over ``boundary`` if named."""
+    """``∫ expression`` over the mesh, or over ``boundary`` if named, in the
+    frame PETSc integrated it in.
+
+    The adjoint state, the residual templates and the duals all live in that
+    frame. ``Integral.evaluate`` re-dimensionalises its result and labels it in
+    the mesh's coordinate units, so a ``float`` of it is wrong by the reference
+    scales, and so is a ``non_dimensionalise`` of it (#763).
+    """
     if boundary is None:
-        return float(uw.maths.Integral(mesh, expression).evaluate())
-    return float(uw.maths.BdIntegral(mesh, expression, boundary).evaluate())
+        return float(uw.maths.Integral(mesh, expression)._integrate())
+    return float(uw.maths.BdIntegral(mesh, expression, boundary)._integrate())
+
+
+def _value_at(expression, coords):
+    """``expression`` at ``coords`` (model coordinates), in the frame the JIT
+    compiles it in: constants as the kernels see them, and no units on the
+    result. ``uw.function.evaluate`` is the dimensional gateway, so it would
+    return a datum's derivative re-dimensionalised (#1048)."""
+    from underworld3.function._function import evaluate_nd
+    from underworld3.function.expressions import _unwrap_for_compilation
+    compiled = _unwrap_for_compilation(expression, keep_constants=False, return_self=False)
+    return np.asarray(evaluate_nd(compiled, coords), dtype=float)
 
 
 def _reads_of(solver, unknown, tokens):
@@ -557,7 +575,7 @@ class TranscriptAdjoint:
         # J and its dual on every field it touches, at the final level — and
         # the explicit dJ/dm, for a misfit that names a parameter directly.
         model.load_state(self.final_state)
-        J = float(uw.maths.Integral(self._mesh(), misfit).evaluate())
+        J = integral(self._mesh(), misfit)
         acc: Dict[str, object] = {}
         for var, dual in misfit_duals(misfit, self._tokens().values(), scratch).items():
             self._accumulate(acc, var, dual)
@@ -566,7 +584,7 @@ class TranscriptAdjoint:
         for p in parameters:
             explicit = sympy.diff(_peel_except(misfit, p), p)
             if explicit != 0:
-                grad[p] += float(uw.maths.Integral(self._mesh(), explicit).evaluate())
+                grad[p] += integral(self._mesh(), explicit)
 
         for k in range(len(self.steps) - 1, -1, -1):
             step = self.steps[k]

@@ -2661,7 +2661,7 @@ class SolverBaseClass(uw_object):
         Zero, at no cost, when no datum reads ``wrt``."""
         import numpy as np
         import sympy
-        from underworld3.adjoint import _shared_scratch
+        from underworld3.adjoint import _shared_scratch, _value_at
         derivatives = {}
         for index, bc in enumerate(self.essential_bcs):
             d = diff_wrt_field(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
@@ -2691,7 +2691,7 @@ class SolverBaseClass(uw_object):
                 if expr.is_Number:
                     value = float(expr)
                 else:
-                    value = float(np.asarray(uw.function.evaluate(expr, X[node:node + 1])).ravel()[0])
+                    value = float(_value_at(expr, X[node:node + 1]).ravel()[0])
                 total += float(rows[node, comp]) * value
         finally:
             _shared_scratch.give(reaction)
@@ -2905,7 +2905,8 @@ class SolverBaseClass(uw_object):
         dual on every node, ``misfit_dual``, where the misfit reads the
         prescribed values.
         """
-        total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        from underworld3.adjoint import integral
+        total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
         # A parameter that enters through a natural condition — a prescribed
         # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
@@ -2921,7 +2922,7 @@ class SolverBaseClass(uw_object):
             values = list(d)
             comps = getattr(mu, "num_components", 1)
             integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += float(uw.maths.BdIntegral(self.mesh, integrand, bc.boundary).evaluate())
+            total += integral(self.mesh, integrand, bc.boundary)
         return total
 
     def _constraint_mechanisms(self):
