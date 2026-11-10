@@ -66,6 +66,9 @@ from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.unit_aware_array import UnitAwareArray
+from underworld3.utilities.unit_aware_array import _to_nondim_ndarray
+from underworld3.discretisation.discretisation_mesh_variables import (
+    _evaluated_in_storage_layout, _storage_components)
 from underworld3.checkpoint.state import SnapshottableState
 from underworld3.discretisation.remesh import RemeshPolicy, remap_var_set
 
@@ -272,63 +275,13 @@ def _history_units(psi_fn, units=None):
 def _write_evaluated(var, values):
     """Write an evaluation of a store's quantity into the store.
 
-    ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
-    when it carries units (it is reduced), non-dimensional when it does not.
-    It is written component by component into ``.data``, the store's
-    non-dimensional storage, whatever units the store is built with.
+    It is written column by column into ``.data``, the store's non-dimensional
+    storage, whatever units the store is built with.
     """
-    shape = tuple(var.sym.shape)
-    values = np.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
-    for (i, j) in _storage_components(var.vtype, shape):
-        var.data[:, var._data_layout(i, j)] = values[:, i, j]
-
-
-def _to_nondim_ndarray(value, units=None):
-    """Reduce a possibly unit-carrying array to a plain non-dimensional ndarray.
-
-    The semi-Lagrangian trace-back, the DM point-location and all variable
-    storage operate in the mesh's NON-DIMENSIONAL coordinate/value space
-    (UW3 issue #267): every array entering that arithmetic must be a plain
-    ndarray of non-dimensional values. This is the single reduction used
-    by every coordinate / velocity / forcing unwrap in this module.
-
-    Parameters
-    ----------
-    value : array-like, UnitAwareArray, or Pint quantity
-        The array to reduce. A plain ndarray with ``units=None`` is
-        assumed to be non-dimensional already and is returned unchanged.
-    units : pint.Unit or str, optional
-        Units known out-of-band (e.g. from ``uw.get_units``) to attach
-        to a plain array before non-dimensionalising. Ignored when
-        ``value`` already carries units; ``None`` or ``"dimensionless"``
-        means no attachment.
-
-    Returns
-    -------
-    numpy.ndarray or original type
-        Non-dimensional plain array (unit-carrying input), or ``value``
-        unchanged (plain input with no ``units`` supplied).
-    """
-    carries_units = isinstance(value, UnitAwareArray) or hasattr(value, "magnitude")
-    if not carries_units and units and str(units) != "dimensionless":
-        value = UnitAwareArray(np.asarray(value), units=units)
-        carries_units = True
-    if not carries_units:
-        return value
-    # TODO(BUG): a raw pint.Quantity input reaches uw.non_dimensionalise(),
-    # which crashes when reference scales are active (units.py protocol 5,
-    # invalid `dimensionality=` kwarg). Pre-existing — the unified unwrap
-    # sites had the same hasattr("magnitude") gate, and the DDt data paths
-    # only ever supply UnitAwareArray/plain ndarray from uw.function
-    # evaluate/global_evaluate. Fix belongs in units.py. See #328.
-    nd = uw.non_dimensionalise(value)
-    if isinstance(nd, UnitAwareArray):
-        return np.array(nd)
-    if hasattr(nd, "magnitude"):
-        return nd.magnitude
-    if hasattr(nd, "value"):
-        return nd.value
-    return np.asarray(nd)
+    stored = _evaluated_in_storage_layout(var, values)
+    for (i, j) in _storage_components(var.vtype, tuple(var.sym.shape)):
+        column = var._data_layout(i, j)
+        var.data[:, column] = stored[:, column]
 
 
 def _bdf_coefficients(order, dt_current, dt_history):
@@ -537,28 +490,30 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
 
 
 def _create_exp_coefficients(instance_id):
-    """Create UWexpression objects for the ETD-2 coefficients ``[α, φ]``.
+    """Create UWexpression objects for the ETD coefficients ``[α, φ]`` of a
+    viscoelastic constitutive model.
 
-    These are named to render as ``α_exp`` and ``φ_exp`` (with the
-    DDt instance id appended) so they remain visually distinct from
-    BDF/AM coefficients in symbolic output.
+    These are named to render as ``α_exp`` and ``φ_exp`` (with the model's
+    instance id appended) so they remain visually distinct from BDF/AM
+    coefficients in symbolic output. The model owns them because the
+    Maxwell time they come from is the model's.
     """
     alpha = _UWexpression(
         rf"{{\alpha^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
         sym=0.0,
-        description=f"Exp integrator α = exp(-Δt/τ) (DDt instance {instance_id})",
+        description=f"Exp integrator α = exp(-Δt/τ) (constitutive model {instance_id})",
         _unique_name_generation=True,
     )
     phi = _UWexpression(
         rf"{{\varphi^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
         sym=0.0,
-        description=f"Exp integrator φ = (1-α)/(Δt/τ) (DDt instance {instance_id})",
+        description=f"Exp integrator φ = (1-α)/(Δt/τ) (constitutive model {instance_id})",
         _unique_name_generation=True,
     )
     return [alpha, phi]
 
 
-def _update_exp_values(coeffs, dt, tau_eff):
+def _update_exp_values(coeffs, dt, tau_eff, dt_symbol=None):
     r"""Update exponential-integrator coefficient values for current state.
 
     Computes :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}` and
@@ -573,11 +528,30 @@ def _update_exp_values(coeffs, dt, tau_eff):
         Two-element list ``[α, φ]`` to update.
     dt : float or None
         Current timestep.
-    tau_eff : float or None
+    tau_eff : float, sympy expression or None
         Maxwell relaxation time (η_eff/μ). When None or non-positive,
-        defaults to the viscous limit.
+        defaults to the viscous limit. An expression (a viscosity that varies
+        in space) gives symbolic coefficients, evaluated pointwise.
+    dt_symbol : expression, optional
+        The timestep's own atom, used in the symbolic coefficients so that a
+        new step value reaches the kernels as a constant.
     """
     dt_f = _as_float(dt)
+    if (isinstance(tau_eff, sympy.Basic) and not tau_eff.is_number
+            and dt_f is not None and dt_f > 0.0):
+        # A Maxwell time that varies in space: alpha and phi are fields the
+        # kernels evaluate pointwise. The step enters as its own constant atom
+        # (dt_symbol), so a change of step updates a constant rather than a
+        # number frozen into the compiled kernel. tau <= 0 is the viscous limit
+        # there (x -> inf); the floor is the declared vanishing regulariser.
+        # phi = (1 - e^-x)/x is written with expm1, which keeps its digits as
+        # x -> 0 (the elastic limit) and gives 1/x as x -> inf.
+        from sympy.codegen.cfunctions import expm1
+        dt_s = dt_symbol if dt_symbol is not None else sympy.Float(dt_f)
+        x = dt_s / sympy.Max(tau_eff, uw.maths.functions.vanishing)
+        coeffs[0].sym = sympy.exp(-x)
+        coeffs[1].sym = -expm1(-x) / x
+        return
     tau_f = _as_float(tau_eff)
     if dt_f is None or tau_f is None or tau_f <= 0.0 or dt_f <= 0.0:
         alpha, phi = 0.0, 0.0  # viscous limit
@@ -643,8 +617,6 @@ class _DDtBase(uw_object):
     - **History symbols**: Symbolic stores raw sympy matrices in
       ``psi_star``; the storage-backed flavors store variables and
       contribute ``.sym`` (see :meth:`_history_syms`).
-    - **ETD-2 exp coefficients** exist on every flavour that can carry a
-      viscoelastic stress (``with_exp=True``: all but the particle flavours).
     """
 
     @classmethod
@@ -750,8 +722,8 @@ class _DDtBase(uw_object):
         """
         return self._delta_t
 
-    def _init_coefficient_expressions(self, order, theta, with_exp):
-        """Create BDF/AM (and optionally ETD-2 exp) coefficient UWexpressions.
+    def _init_coefficient_expressions(self, order, theta):
+        """Create the BDF/AM coefficient UWexpressions.
 
         The coefficients are routed through PetscDS constants[] (see the
         module-level coefficient helpers), so order ramp-up and variable
@@ -766,21 +738,15 @@ class _DDtBase(uw_object):
             Adams-Moulton order-1 implicitness for the startup values —
             ``self.theta`` for flavors that expose it, 0.5
             (Crank-Nicolson) for the Lagrangian flavors that don't.
-        with_exp : bool
-            Also create the ETD-2 ``[α, φ]`` coefficients used by
-            Maxwell-relaxation integration; values are pushed via
-            PetscDSSetConstants every step in ``update_exp_coefficients``
-            (every flavour but the particle ones, #739).
+
+        The exponential (ETD) coefficients are not here: each viscoelastic
+        constitutive model owns its own, formed from its own Maxwell time.
         """
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        if with_exp:
-            self._exp_coeffs = _create_exp_coefficients(self.instance_number)
         # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, theta)
-        if with_exp:
-            _update_exp_values(self._exp_coeffs, None, None)
 
     def _adjoint_support(self):
         """Whether this history's shift admits a discrete adjoint.
@@ -792,28 +758,6 @@ class _DDtBase(uw_object):
         """
         return (False, f"{type(self).__name__} declares no linearisation")
 
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Set the exponential (ETD) coefficients for this step.
-
-        ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
-        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)``, with τ_eff the
-        Maxwell relaxation time :math:`\eta_\mathrm{eff}/\mu`. Called by the
-        constitutive model, which owns τ_eff, before each solve -- peer to the
-        BDF/AM coefficient updates that ``update_pre_solve`` makes itself.
-        Every flavour that can carry a Maxwell stress allocates these
-        coefficients (#739); the particle flavours do not.
-        """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
-
-    @property
-    def _exp_alpha(self):
-        """The ETD ``α`` coefficient UWexpression."""
-        return self._exp_coeffs[0]
-
-    @property
-    def _exp_phi(self):
-        """The ETD ``φ`` coefficient UWexpression."""
-        return self._exp_coeffs[1]
     def _note_history_shift(self, dt, **detail):
         """Tell the model's open step that this history advanced.
 
@@ -1533,7 +1477,7 @@ class Symbolic(_DDtBase):
         # Create the history list: each element is a Matrix of shape _shape.
         self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
 
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -1815,7 +1759,7 @@ class Eulerian(_DDtBase):
                 )
             )
 
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -1877,7 +1821,9 @@ class Eulerian(_DDtBase):
                     self.mesh, self.psi_star[0], verbose=False
                 )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
-            dim = self.mesh.dim
+            # a tensor history has one index per EMBEDDING dimension (a 3x3
+            # stress on a sheet in three-space)
+            dim = self.mesh.cdim
             if self.vtype == uw.VarType.SYM_TENSOR:
                 Nc = math.comb(dim + 1, 2)  # 3 in 2D, 6 in 3D
                 self._psi_star_indep_indices = [
@@ -2258,7 +2204,7 @@ class EulerianSUPG(Eulerian):
 
     @V_fn.setter
     def V_fn(self, value):
-        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.dim)
+        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.cdim)
 
     @property
     def integrator(self) -> str:
@@ -2268,7 +2214,7 @@ class EulerianSUPG(Eulerian):
         """The velocity carrying the unknown at ``states()[level]``."""
         if level == 0 or not self.V_fn_history:
             return self.V_fn
-        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.dim)
+        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.cdim)
 
     @property
     def tau_shape(self) -> str:
@@ -2301,7 +2247,8 @@ class EulerianSUPG(Eulerian):
 
     def _convective(self, a, psi):
         r"""``(a . grad) psi`` entry by entry, a matrix of ``psi``'s shape."""
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         grad = self.mesh.vector.gradient
 
         def entry(r, c):
@@ -2321,7 +2268,8 @@ class EulerianSUPG(Eulerian):
 
     def tau(self):
         r"""The stabilisation parameter :math:`\tau` (times the weights)."""
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         a = self.advecting_velocity(0)
         a_mag2 = sum(a[0, i] ** 2 for i in range(dim))
         h = self.mesh.cell_size()
@@ -2414,7 +2362,8 @@ class EulerianSUPG(Eulerian):
 
         The theta rule at :attr:`transport_theta`, Crank-Nicolson by default.
         """
-        dim = self.mesh.dim
+        # velocity components: one per EMBEDDING dimension (three on a surface mesh)
+        dim = self.mesh.cdim
         S, S_old = solver.u.sym, self._transport_old.sym
         gradient = self.mesh.vector.gradient
         a = self.advecting_velocity(0)
@@ -2600,7 +2549,7 @@ class CharacteristicTrace:
 
     def _new_level(self, k):
         snap = uw.discretisation.MeshVariable(
-            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.dim,
+            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.cdim,
             degree=self.velocity_degree(), continuous=True,
             varsymbol=rf"{{ V^{{ (n-{k}) }}_{{ [{self.instance_number}] }} }}",
             units=self.velocity_units(),
@@ -2626,7 +2575,7 @@ class CharacteristicTrace:
     def _evaluate_into(self, level):
         vals = uw.function.evaluate(self.V_matrix(), np.asarray(level["var"].coords_nd))
         vals = _to_nondim_ndarray(vals, units=self.velocity_units())
-        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.cdim)
 
     def initialise_levels(self, n):
         """Every cached level ``1 .. n-1`` <- ``V_fn`` now (a history starting
@@ -2687,7 +2636,7 @@ class CharacteristicTrace:
             v_at_pts = np.asarray(v_result)
             v_at_pts = v_at_pts[:, 0, :] if v_at_pts.ndim == 3 else v_at_pts
         out = _to_nondim_ndarray(v_at_pts, units=uw.get_units(self.V_fn))
-        return np.asarray(out).reshape(coords.shape[0], self.mesh.dim)
+        return np.asarray(out).reshape(coords.shape[0], self.mesh.cdim)
 
     # -- the steps and the trace -----------------------------------------------
 
@@ -3129,7 +3078,7 @@ class SemiLagrangian(_DDtBase):
             self.forcing_star.remesh_policy = RemeshPolicy.CARRY
             self.forcing_star._remesh_managed_by = self
 
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
 
         # Phase-2 remesh redesign: mark every DDt-owned mesh variable as
         # CARRY + operator-managed so the generic per-variable REMAP pass
@@ -3902,6 +3851,15 @@ class SemiLagrangian(_DDtBase):
         # here as dead code — see git history for the sketch if the
         # `preserve_moments` option is ever implemented.
 
+    # TODO(BUG): on a mesh with a split-node fault the trace-back samples the
+    # history with a point evaluation, which is unreliable within about h/2 of
+    # the slit and can read the other side of the fault. Measured 2026-10-09 on
+    # a Maxwell thin sheet with a sliding Coulomb fault: a period-2-step
+    # oscillation of the near-tip slip rate (amplitude doubling at half dt,
+    # unchanged by a 1e-11 solver tolerance) and patchy stress along the trace,
+    # both gone with the grid (Eulerian SUPG) history. A Stokes viscoelastic
+    # model with a split fault uses this history by default and is exposed too.
+    # See issue #871.
     def update_pre_solve(
         self,
         dt: float,
@@ -4280,7 +4238,7 @@ class Lagrangian(_DDtBase):
 
         # No user-settable theta on the swarm-based Lagrangian flavors:
         # Crank-Nicolson (0.5) is their fixed Adams-Moulton value.
-        self._init_coefficient_expressions(order, 0.5, with_exp=False)
+        self._init_coefficient_expressions(order, 0.5)
 
         dudt_swarm.populate(fill_param)
         # The class owns this swarm and carries the stress on it, so it also
@@ -4737,7 +4695,7 @@ class Lagrangian_Swarm(_DDtBase):
 
         # No user-settable theta on the swarm-based Lagrangian flavors:
         # Crank-Nicolson (0.5) is their fixed Adams-Moulton value.
-        self._init_coefficient_expressions(order, 0.5, with_exp=False)
+        self._init_coefficient_expressions(order, 0.5)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
@@ -4929,34 +4887,6 @@ def _psi_shape_for(vtype, cdim):
     if vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR):
         return (cdim, cdim)
     return None                     # MATRIX and friends: shape is the caller's
-
-
-def _storage_components(vtype, shape):
-    """(i, j) of the symbolic matrix that each stored column holds.
-
-    A vector or tensor field stores one dof per INDEPENDENT component, which
-    is not the same as one per matrix entry: a symmetric tensor in 2-D has a
-    2x2 symbolic form and three stored columns. The order is the one the
-    variable's own ``.sym`` reconstructs from — diagonal first, then the
-    off-diagonals in row-major upper-triangular order — and
-    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
-    a change of convention fails there rather than silently transposing a
-    stress.
-
-    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
-    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
-    variable sizes its storage by the embedding dimension, which is what
-    ``.sym`` is shaped by.
-    """
-    if vtype == uw.VarType.SCALAR or shape == (1, 1):
-        return [(0, 0)]
-    if shape[0] == 1:                                    # VECTOR
-        return [(0, j) for j in range(shape[1])]
-    if vtype == uw.VarType.SYM_TENSOR:
-        dim = shape[0]
-        return ([(i, i) for i in range(dim)]
-                + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
-    return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
 
 
 class IntegrationPointSemiLagrangian(_DDtBase):
@@ -5160,7 +5090,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # V_fn evaluated at the nodes at that time, so V_fn may be any
         # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)          # velocity levels the segments read
-        self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        self._init_coefficient_expressions(order, self.theta)
         self._register_with_default_model()
         # The forcing (strain-rate) history the second-order exponential
         # integrator reads. Unlike the nodal flavour, which re-evaluates the
@@ -5704,7 +5634,7 @@ class ForwardSemiLagrangian(_DDtBase):
             degree=1, continuous=True, varsymbol=rf"{{ F^{{\mathrm{{nodal}}}}_{{ [{inst}] }} }}")
         self._flux_projection = None
         self._n_v = 2
-        self._init_coefficient_expressions(1, self.theta, with_exp=True)
+        self._init_coefficient_expressions(1, self.theta)
         self._register_with_default_model()
 
     @property

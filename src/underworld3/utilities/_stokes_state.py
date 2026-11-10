@@ -92,4 +92,3 @@ class StokesSolveState:
                         original_relative_residual=relative, blocks=blocks,
                         physical_pressure_integral=e['pmean'].dot(vector)+self.lift_integral,
                         rotation_integrals=[weight.dot(vector) for weight in e['rotation_weights']])
-

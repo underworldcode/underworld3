@@ -62,7 +62,9 @@ class mesh_vector_calculus:
 
     def __init__(self, mesh):
         self.mesh = mesh
-        self.dim = self.mesh.dim
+        # Vectors carry one component per EMBEDDING dimension: on a manifold
+        # (dim < cdim) a tangential field is still a cdim-component row.
+        self.dim = self.mesh.cdim
 
     def cross(self, vector1, vector2):
         r"""

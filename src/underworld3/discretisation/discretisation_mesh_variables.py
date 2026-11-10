@@ -88,6 +88,53 @@ def _physical_dataset_model_values(dataset):
     return values / scale
 
 
+def _storage_components(vtype, shape):
+    """(i, j) of the symbolic matrix that each stored column holds.
+
+    A vector or tensor field stores one dof per INDEPENDENT component, which
+    is not the same as one per matrix entry: a symmetric tensor in 2-D has a
+    2x2 symbolic form and three stored columns. The order is the one the
+    variable's own ``.sym`` reconstructs from — diagonal first, then the
+    off-diagonals in row-major upper-triangular order — and
+    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
+    a change of convention fails there rather than silently transposing a
+    stress.
+
+    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
+    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
+    variable sizes its storage by the embedding dimension, which is what
+    ``.sym`` is shaped by.
+    """
+    if vtype == uw.VarType.SCALAR or shape == (1, 1):
+        return [(0, 0)]
+    if shape[0] == 1:                                    # VECTOR
+        return [(0, j) for j in range(shape[1])]
+    if vtype == uw.VarType.SYM_TENSOR:
+        dim = shape[0]
+        return ([(i, i) for i in range(dim)]
+                + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
+    return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
+
+
+def _evaluated_in_storage_layout(var, values):
+    """An evaluation of a store's quantity, as its ``.data`` holds it.
+
+    ``values`` is what ``evaluate`` or ``global_evaluate`` returned: dimensional
+    when it carries units (it is reduced), non-dimensional when it does not. The
+    result is ``(N, components)`` in ``_data_layout`` order. A flat reshape would
+    not do: a symmetric tensor stores fewer entries than its symbol has, and a
+    MATRIX stores by column.
+    """
+    shape = tuple(var.sym.shape)
+    from underworld3.utilities.unit_aware_array import _to_nondim_ndarray
+
+    values = numpy.asarray(_to_nondim_ndarray(values)).reshape(-1, *shape)
+    stored = numpy.empty(numpy.shape(var.data), dtype=numpy.float64)
+    for (i, j) in _storage_components(var.vtype, shape):
+        stored[:, var._data_layout(i, j)] = values[:, i, j]
+    return stored
+
+
 def extend_enum(inherited):
     def wrapper(final):
         joined = {}
@@ -223,6 +270,9 @@ class _BaseMeshVariable(Stateful, uw_object):
             units = params["units"]
             units_backend = params["units_backend"]
             remesh_policy = params.get("remesh_policy", remesh_policy)
+            # consumed: kept, its strong "mesh" entry pinned the mesh for as
+            # long as the variable lived (the variable holds its mesh weakly)
+            del self._init_params
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
@@ -294,6 +344,10 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.vtype = vtype
         self._mesh_ref = weakref.ref(mesh)
+        # A variable keeps its mesh alive: a helper may return only the
+        # variable. The variable's symbols hold the variable weakly, so caches
+        # of those symbols do not pin it, or the mesh.
+        self._mesh_owner = mesh
         self.shape = num_components
         self.degree = degree
         self.continuous = continuous
@@ -1223,6 +1277,13 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         ``None`` when the file was written without ``petsc_reload=True``.
         """
+        # TODO(BUG): the writer puts the native payload under
+        # /restart/petsc/topologies (Mesh._write_petsc_reload_file, since
+        # 36c01399) while this looks for a top-level "topologies" group, so a
+        # payload written with petsc_reload=True is never found and a split
+        # mesh's read_timestep refuses (tests/test_0864_split_checkpoint_
+        # roundtrip.py::test_roundtrip_keeps_the_two_sides_distinct fails on
+        # feature/tidal-shell too). Found 2026-10-18; not fixed on this branch.
         import h5py
 
         found = None
@@ -1959,6 +2020,15 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
+        # TODO(BUG): on a manifold mesh (dim < cdim, e.g. SphericalManifold) the
+        # default (reconstructed-mesh, migration-SF) path below segfaults inside
+        # PETSc when called on the mesh object that wrote the file; the same
+        # call on a volume mesh round-trips exactly, and same_layout=True
+        # round-trips exactly on the manifold. The path's intended use — a mesh
+        # reconstructed from its checkpoint — is untested on a manifold: the h5
+        # mesh round-trip drops the coordinate dimension first (see the
+        # SphericalManifold factory). Found 2026-10-09 (thin-sheet work), not fixed.
+        # See issue #870.
         import h5py
 
         if uw.mpi.rank == 0:
@@ -2158,7 +2228,8 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self.vtype != uw.VarType.SYM_TENSOR:
             return self._sym.reshape(1, len(self._sym))
         else:
-            if self.mesh.dim == 2:
+            # Voigt order of a tensor with one index per EMBEDDING dimension
+            if self.mesh.cdim == 2:
                 return sympy.Matrix(
                     [
                         self._sym[0, 0],
@@ -2179,22 +2250,23 @@ class _BaseMeshVariable(Stateful, uw_object):
                 ).T
 
     def _data_layout(self, i, j=None):
-        # mapping
+        # mapping; vectors and tensors carry one component per EMBEDDING
+        # dimension (cdim), which is what sizes the layout on a manifold mesh
 
         if self.vtype == uw.VarType.SCALAR:
             return 0
         if self.vtype == uw.VarType.VECTOR:
             if i < 0 or j < 0:
-                return self.mesh.dim
+                return self.mesh.cdim
             else:
                 if j is None:
                     return i
                 elif i == 0:
                     return j
                 else:
-                    raise IndexError(f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} ")
+                    raise IndexError(f"Vectors have shape {self.mesh.cdim} or {(1, self.mesh.cdim)} ")
         if self.vtype == uw.VarType.TENSOR:
-            if self.mesh.dim == 2:
+            if self.mesh.cdim == 2:
                 if i < 0 or j < 0:
                     return 4
                 else:
@@ -2206,7 +2278,7 @@ class _BaseMeshVariable(Stateful, uw_object):
                     return ((0, 1, 2), (3, 4, 5), (6, 7, 8))[i][j]
 
         if self.vtype == uw.VarType.SYM_TENSOR:
-            if self.mesh.dim == 2:
+            if self.mesh.cdim == 2:
                 if i < 0 or j < 0:
                     return 3
                 else:
@@ -2442,11 +2514,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         self._data_cache = None
         self._array_cache = None
 
-    def __del__(self):
-        if self._lvec:
-            self._lvec.destroy()
-        if self._gvec:
-            self._gvec.destroy()
+    # No __del__ destroying the vectors: a variable is in a reference cycle
+    # with its mesh, so it is freed by the cyclic collector, at a different
+    # moment on each rank. An explicit destroy of the parallel vector there
+    # would be a collective call made by one rank. petsc4py frees both vectors
+    # when the variable goes, deferring the parallel one to the collective
+    # cleanup that the next mesh construction runs (mpi._free_petsc_garbage).
 
     @property
     def mesh(self):
@@ -3788,6 +3861,19 @@ class _BaseMeshVariable(Stateful, uw_object):
             "rms": vrms,
         }
 
+    def _discard_temporary(self, temporary):
+        """Take a statistics temporary off the mesh and destroy its vectors.
+
+        Every rank reaches this at the same point, the end of a collective
+        statistics call, so the parallel vector is destroyed collectively here.
+        Left to the collector, it waits on petsc4py's deferred list until the
+        next mesh is built, one vector per call on a fixed mesh."""
+        if temporary.name in self.mesh.vars:
+            del self.mesh.vars[temporary.name]
+        for vector in (temporary._lvec, temporary._gvec):
+            if vector is not None:
+                vector.destroy()
+
     def _vector_stats(self):
         """Statistics for vector variables using magnitude."""
         import numpy as np
@@ -3834,9 +3920,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             return mag_stats
 
         finally:
-            # Cleanup temporary variable
-            if magnitude_var.name in self.mesh.vars:
-                del self.mesh.vars[magnitude_var.name]
+            self._discard_temporary(magnitude_var)
 
     def _tensor_stats(self):
         """Statistics for tensor variables using Frobenius norm."""
@@ -3894,9 +3978,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             return frob_stats
 
         finally:
-            # Cleanup temporary variable
-            if frobenius_var.name in self.mesh.vars:
-                del self.mesh.vars[frobenius_var.name]
+            self._discard_temporary(frobenius_var)
 
     @property
     def coords(self) -> numpy.ndarray:

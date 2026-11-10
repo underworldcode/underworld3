@@ -128,6 +128,20 @@ refresh these products collectively; loss of a true null mode or a degenerate
 coarse block raises rather than regularizing the equations. One-sided nullity
 does not activate this right-response correction.
 
+In parallel both normals constrain the same wall nodes. Each boundary facet is
+labelled on one rank, so a rank can own a wall node whose facets all sit on
+neighbours. The geometric path finds it by summing the facet normals over the
+point SF; the analytic path sums a marker through the same scatter and then
+evaluates the normal once per node, so every rank holding a node gives it the
+same normal to the bit. Both paths are collective. Before #935 the analytic
+path took only the nodes of the facets labelled on its rank, and such a node
+got no constraint row: on coarse boxes a corner, from np 2; on a production
+annulus an arc node, from np 24. The readers that take their nodes from the same
+list (`boundary_normal_traction`, `boundary_normal_traction_integral` and the
+dynamic topography field) dropped that node too.
+`FreeSurface._surface_node_coords` completes its vertex set the same way.
+Guard: `tests/parallel/test_1140_rotated_analytic_normal_wall_nodes_parallel.py`.
+
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy
 makes the boundary condition matter), it is correct on curved/tilted/deformed
@@ -227,7 +241,12 @@ path uses**:
 2. a **mesh-owned** coarse tail (`mesh._custom_mg_coarse_meshes`, what
    `mesh.adapt()` leaves on a refinement child) is picked up opportunistically,
    with the barycentric→RBF builder fallback, so a failed build degrades to GAMG
-   rather than crashing the solve.
+   rather than crashing the solve. In parallel the retry and the degrade happen
+   on a verdict every rank holds: a builder failure, which is agreed across
+   ranks as soon as the builder returns, or a check on allreduced sizes
+   (`custom_mg.CollectiveBuildError`). Any other exception is one rank's while
+   the others are inside the build's collectives, so it is raised rather than
+   retried alone (#886).
 
 Step 2 used to be unreachable from here. The standard path's injection hook runs
 *after* the rotated dispatch has already returned, and the rotated builder
@@ -241,12 +260,32 @@ it composes with transverse isotropy.
 The option bundle for both the FMG and the GAMG velocity block comes from
 `utilities/multigrid_options.py`, shared with the native and standard custom-P
 routes, so the rotated block cannot be configured differently by accident. The
-single deliberate difference is the coarse solve: `coarse="svd"`, because the
-Galerkin-coarsened rotated block inherits the rigid-rotation null space where
-`redundant`/LU hits a zero pivot. See
+coarse solve is the shared one, a redundant LU with a nonzero factor shift that
+acts only on a pivot below PETSc's zero-pivot tolerance (#901). This route
+writes the bundle under a prefix unique to the solve and drops it when the
+set-up is done, so its coarse solve cannot be overridden through
+`petsc_options`. See
 [the solvers subsystem doc](solvers.md) for the bundle itself.
 
-### Velocity accuracy in the default nested Schur solve
+The free-slip gauge is fixed on the fine operator, by the verified rigid
+rotations, never by the coarse solve. The Galerkin-coarsened rotated block
+inherits those rotations only nearly: the coarse operator is near-singular, not
+singular. lambda_min/lambda_max is 2.0e-5 to 2.4e-8 on the annulus with 40 to 600
+bottom cells, and 2.8e-4 on the spherical shell. The LU factors those levels at
+the same answer and iteration counts as the solve it replaced, and also on a
+faulted annulus with rotated coarse levels. The shift matters only on a singular
+level, such as one that is the fine operator itself (#306's situation,
+test_1111).
+
+The coarse levels are rotated as well (`fault_mg.level_wall_rotation`, since
+2026-10-14): each takes the per-node wall frame on its own nodes and loses its
+normal rows, so the coarse space is exactly the constrained motion. A Cartesian
+coarse level under a rotated finest keeps wall-normal unknowns the fine operator
+reaches only through vanishing sines, and the smoother's nodal block inversion
+meets a zero pivot there. Details in
+[the split-level multigrid doc](fault-split-multigrid.md).
+
+### The velocity sub-KSP must converge, not just apply
 
 In the default nested configuration, the velocity block is preconditioned by
 multigrid, with FGMRES around it at `0.033 × tolerance`. The following accuracy
@@ -296,11 +335,69 @@ the rotated path into `SolverInstrumentation.sub_reports()` is the proper fix an
 has not been done. On the opt-in `solver._rotated_use_lu` path there are no
 sub-KSPs at all and both fields record `None`.
 
+**An exact rotation is kept out of the multigrid's directions (#963).** Take an
+analytic normal on a circle or sphere: the constraint then leaves a rotation an
+exact null vector of the rotated velocity block, its Jacobi-scaled residual
+max |(D⁻¹ A m)ᵢ| / max |mᵢ| about 1e-15. A multigrid cycle returns a rounding-level component along
+it in each direction it makes. The KSP's null space removes the mode from the
+right-hand side and the solution only, so the inner FGMRES floored near 1e-7
+against its 3.3e-11 and ran to its cap of 200. Whether the outer solve converged
+after that depended on rounding, so on the OpenBLAS kernel: on CI it did not, and
+the job hung.
+
+On the custom-FMG route the velocity sub-PC is therefore a projection around the
+multigrid, `z = P M (P r)`. `P` removes every admitted rotation whose Jacobi-scaled
+residual is at or below `max(1e-10, min(1e-6, 100 tol))`, orthonormalised; the
+inner solve then takes about 4 cycles. Each row is scaled by its own diagonal, so
+the measure is local: a viscosity contrast does not move it, and it tracks the
+mode's constraint violation (2 to 3 times it). The scale it replaced,
+|A m| / (|A|_F |m|), took its size from the stiffest cells, and a contrast of 1e5
+or more then classed a faceted rotation as exact and projected it, at 2 to 4 times
+the cost (#964, round 3).
+
+The threshold follows the tolerance because what projecting a near-null mode costs
+does (#964, round 4, hyperion). On walls slid along their circles, at tol 1e-9 and
+np 2:
+- projecting paid at 62 tol: 19464 GMRES orthogonalisations against 140115 left
+  unprojected;
+- it cost at 180 tol: 49014 against 10528;
+- at 620 tol it cost 2 times at np 2 and 4.5 times at np 4.
+
+At tol 1e-11, a mode at 6.2e-8 projected ran the velocity solve into its cap. At
+tol 1e-6 the cases from 6e-7 to 6e-6 cost the same either way, hence the cap at
+1e-6. The floor keeps a mode exact to rounding projected at any tolerance. Left
+unprojected, such a mode makes the count depend on the BLAS kernel (#963). A tolerance
+change drops the workspace's KSP context, whose KSP tolerances and projection were set
+for the old one, and keeps its rotation, operator and prolongation. A warm re-solve
+already inside the new tolerance builds no context and records `None` for the
+projection; the next solve that needs one builds it. At np 4, tol 1e-11, slide 1e-5,
+projecting would have been 2.7 times cheaper (74392 against 203893): which side is
+cheaper still depends on the rank count, and the threshold does not follow it. The record carries the threshold as
+`null_mode_threshold`.
+
+A rotation above the threshold is near-null and is left to the multigrid: a declared
+rotation on a faceted sphere (6e-3 to 2e-2 on test_1131's shell), or on a circle
+whose wall vertices are unevenly spaced, as a mover leaves them (6e-4 for walls slid
+0.1 rad along their circles). The annulus as gmsh builds it has equal edges, so its
+facet-averaged normal is radial at the vertices and its rotation is exact (4e-11):
+it is projected under either normal.
+
+The record carries `projected_null_modes`, the number projected, and
+`null_mode_ratios`, that residual for each admitted rotation, on the custom-FMG
+route. The GAMG velocity route projects nothing and records 0 and `[]`; the rotated
+vector route and the direct LU record `None`. `velocity_pc_type` still names the
+multigrid. The projection owns the multigrid it wraps and destroys it with itself.
+
 The manual loop exists because the rotated operator `Q A Qᵀ` carries no DM
 field information, so PETSc's DM-coupled fieldsplit cannot precondition it;
 the increment is solved by an IS-built fieldsplit instead, driven from the
-loop. The loop honours `zero_init_guess`, `picard`, and the solver's
-`consistent_jacobian` tangent policy (frozen / Newton / continuation).
+loop. The loop honours `zero_init_guess`, `picard`, the solver's
+`consistent_jacobian` tangent policy (frozen / Newton / continuation), and a
+user-set `snes_max_it` as its cap on Newton increments, 50 otherwise
+(`_rotated_max_it`; #920, `test_1136`). As in PETSc's SNES, the residual is
+tested after the last increment, so `snes_max_it = 0` is one residual
+evaluation. Unlike the standard path's Picard warm-up, staged Picard steps count
+against the cap.
 
 ### How the datum passes through Newton
 
@@ -329,16 +426,118 @@ Newton step) is *verified* against the same reference before it may report
 convergence — a stiff tangent also produces tiny steps far from the solution,
 and an unverified tiny step goes back through the line search (a slow crawl
 continues; a genuine stall ends the loop with an explicit warning). An
-unconverged exit always warns; the fields hold the last iterate.
+unconverged exit warns and leaves the last iterate in the fields, except for the
+one case that raises, below.
+
+A **cold start whose first linear solve fails** raises on every rank (#907). The
+outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can fail hard:
+a preconditioner that failed (reason −11), a breakdown, a NaN, or a residual that
+grew. On the first step of a solve from a zero guess (a warm request on zero fields
+counts, with or without a datum), nothing has been produced.
+With a preconditioner failing at iteration 0, the route used to write the zero
+guess into the fields as if it were a solution.
+
+The exception names the reason. `Stokes.solve` and `fault_contact.solve_with_fault`
+(and so `FaultNetwork.solve`) raise it after the result is recorded: a caller
+that catches it reads `converged = False`, the KSP reason in
+`_rotated_freeslip_info`, and a negative SNES reason. The fields are not written.
+Set `solver.tolerate_linear_failure = True` to warn and continue instead, as the
+route used to; the fields then hold the zero guess. A cold datum lift whose solve
+failed is not applied.
+
+Elsewhere a hard failure only warns, and the line search rejects the failed
+increment:
+- on a warm start, the fields keep the caller's state;
+- after an accepted step, they keep that iterate, and the loop's convergence
+  verdict stands. A solve driven past round-off can fail its last linear solve
+  this way with Newton already at 2e-10 of the reference residual, and a warm
+  re-solve of such a state fails its first one.
+
+**A workspace whose KSP failed hard is never cached**, whether the failure raised
+or warned. PCMG and PCREDUNDANT do not reset a failed preconditioner's reason at
+set-up, so a cached workspace fails every later solve at iteration 0, even after
+the cause is gone. The next solve builds its workspace afresh, which costs one
+full KSP set-up. On a 39k-dof FMG fixture that doubles the solve, 38.7 s to
+76.5 s. A time loop driven past round-off fails its last increment every step,
+so it pays that set-up every step.
+
+An iteration cap (reason −3, petsc4py's `DIVERGED_MAX_IT`) only warns. So does
+the velocity sub-solve's own reason, because the outer FGMRES absorbs an inexact
+inner solve; when the outer solve failed hard, only the outer failure is
+reported. The standard SNES path only warns on divergence.
 
 ### Null-space handling
 
-Rigid-rotation candidates (one mode on a closed circle, three on a spherical
-shell) are admitted to the increment null space and the post-solve gauge
-removal only if they pass **two** tests: tangential to every rotated
-constraint row (`Q·m ≈ 0` there), **and** a null vector of the assembled
-operator (`‖J·m‖ ≈ 0` against the velocity diagonal scale). The second test is
-what catches pinning the first cannot see — an essential condition on another
+The rigid-rotation candidates are the modes the mesh **declares** in
+`mesh.nullspace_rotations` (#906): one on an annulus, three on a spherical shell
+or a sheet on a sphere. A box declares nothing; detection then finds no mode. The mesh factories declare them, and the
+standard Stokes path reads the same list for `petsc_use_nullspace`. A mesh built
+without them (a gmsh import, a wrapped DM) declares its modes by assignment,
+`mesh.nullspace_rotations = [sympy.Matrix([-y, x])]`. Assigning `[]` declares
+that it has none. The setter refuses a field that is not a rigid rotation
+(affine, with a nonzero antisymmetric gradient, zero on its axis: a screw is
+refused). A mesh adapted, cut, split or placed into from a declaring mesh
+inherits its modes, rewritten in its own coordinates, at any rank count; so does
+the mesh the add-on partition moves a level into. `remesh` works in place and
+keeps them. A mesh reloaded from a file declares nothing, like a gmsh import.
+
+A declared mode is exempt from the test against the constraint rows when the
+faceting is the only reason it could fail it (`_declared_mode_flags`):
+
+- every rotated wall takes the facet-averaged normal (`normal=None`). A wall with
+  a given normal is tested, and an exact normal passes;
+- the declared modes rotate about one point, their centre (all of `A c = -m0` at
+  once; a single declared rotation in 3-D leaves a line, and is not exempt);
+- each rotated wall's vertices, the closure of its labelled facets, are
+  equidistant from that centre to 1e-9 relative: the wall is a sphere (a circle in
+  2-D) about it. Faceting keeps the vertices on the sphere and only the edge
+  midpoints off it. Any other surface of revolution is tested.
+
+A deformed wall fails the last check, a free surface after its first step for
+example, or a cut that puts chord vertices on a wall. The modes then take the
+constraint test like undeclared ones, and the solve warns once, naming the wall
+and the spread of its vertices. The verdict, the same for every mode, is in the
+solve's `declared_modes_exempt` entry; which modes were admitted is in
+`rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
+that is only near-null is not removed, and the answer carries a poorly
+determined rotation (measured on a shell, Linux: unmoved, rate 3.7e-15 in a v_rms
+of 1.79; a wall moved by 5e-10, enough to cross the threshold, rate 5.6 in 4.59,
+and the same up to a 1e-6 move).
+
+That is the intended behaviour (ruling, 2026-11-08). A deformed wall's rotation is
+kept as a near-null mode and is not removed as a gauge, because "the deformation
+may not eliminate the null space". Projecting out a mode that is not exactly null
+would also remove the part of it that the operator does determine. A model that
+wants the rotation gone removes it after the solve: a least-squares projection of
+the velocity against the rotation field, as `_project_out_rotation` in the
+free-surface convection driver does (`free-surface-convection.md` §3). In parallel
+its two sums are global reductions.
+
+An exempt mode has its constrained rows zeroed, in the null space and in the
+gauge removal alike, which makes it exactly compatible with `v·n = 0`. A test
+against the rows would reject the modes on a faceted sphere: there the
+facet-averaged normal leaves each declared rotation a violation of the order of
+the discretisation error (0.0075-0.0164 on a 0.5 shell built on macOS; 0.0037-0.0054
+on a 0.3 shell built on Linux), against a 1e-8 tolerance. Under the analytic
+normal the modes are exact.
+
+The outer Newton test is measured in the quotient space of the admitted modes.
+A guard warns when the projected-out component dominates the converged
+residual, which means the forcing has a net torque that free-slip walls cannot
+balance. A declared mode with violation $s$ also carries a component of a
+torque-free forcing, about $s^2/3$ of the forcing scale, so the guard warns only
+above $10 s^2$ of the convergence reference. On #906's shell that component was
+8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$ (the shells at
+cell sizes 0.5 and 0.25). A torque of 1 %
+of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
+the guard is unchanged.
+
+A mesh that declares nothing is offered the Cartesian rotations. Each is
+admitted to the increment null space and the post-solve gauge removal only if
+it passes **two** tests: tangential to every rotated constraint row
+(`Q·m ≈ 0` there), **and** a null vector of the assembled operator (`‖J·m‖ ≈ 0`
+against the velocity diagonal scale). A declared mode takes the second test
+too. The second test is what catches pinning the first cannot see — an essential condition on another
 boundary leaves the mode tangential to the rotated wall while the eliminated
 operator is *not* null on it, and admitting it projects an irreducible
 component out of every increment (the residual then floors far above
@@ -372,6 +571,19 @@ the shared boundary-mass machinery in `utilities/boundary_flux.py`;
 `dynamic_topography_field` writes `h = −(σ_nn − σ̄_nn)/(Δρ g)` onto a surface
 field for the free-surface integrator.
 
+At a node an essential wall also constrains (a corner with a Dirichlet wall),
+the constrained components are not in the reaction vector. They read zero and
+contribute nothing to σ_nn; the free components keep their load (Louis's
+ruling, 2026-11-04, #936). A fully constrained corner therefore carries zero
+load; the de-smear can still give it a nonzero σ_nn from its neighbours (3-D
+P2). `boundary_normal_traction` and
+`boundary_normal_traction_integral` take the loads from one helper
+(`_wall_normal_loads`), which counts each node once, on the rank owning its
+first free component. Before #936 both read those components from an unzeroed
+pooled vector, and the integral dropped a node whose first component was
+constrained. At such a corner the rotated constraint itself still ignores a
+nonzero pinned value (#939).
+
 ### Which de-smearing mass (3-D)
 
 `mass="auto"` uses the **P1-projected** recovery on a 3-D P2 trace. The full
@@ -393,9 +605,113 @@ vertex error does not. **If you sample only midpoints, pass
 `mass="consistent"`.** See also #404 (the vertex-integral checkerboard) and
 #637 (only P1/P2 triangular traces are supported in 3-D at all).
 
+## The adjoint transposes the rotated operator, not the Jacobian
+
+`solver.adjoint_solve(b)` under rotated free-slip does not transpose `K`. The
+forward solve never inverted `K` — it inverted `Â = Q K Qᵀ` with the wall-normal
+rows struck out — so the adjoint is the transpose of that, taken in the same
+frame and rotated back. `rotated_bc.solve_rotated_adjoint` owns the sequence,
+and the solver dispatches to it whenever `_rotated_freeslip_bcs` is non-empty.
+
+Everything follows from `Q` being orthogonal. Writing `μ̂ = Q μ` and `b̂ = Q b`,
+
+```
+⟨μ̂, Â δ̂⟩ = ⟨Qμ, Q K Qᵀ Q δ⟩ = ⟨μ, K δ⟩        ⟨b̂, δ̂⟩ = ⟨Q b, Q δ⟩ = ⟨b, δ⟩
+```
+
+so the rotated adjoint system is the physical one written in the boundary
+frame, and `μ = Qᵀ μ̂` takes the answer back. Three consequences worth stating
+because each one is a place the wiring could be wrong and still look plausible:
+
+* **The constraint is part of the adjoint.** `zeroRowsColumns` zeroes the row
+  *and* the column and puts a scalar on the diagonal, so it commutes with
+  transposition: eliminating the constrained rows from `Âᵀ` gives exactly the
+  transpose of the operator the forward solve ran on. The multiplier's
+  wall-normal component is *set* to zero, not iterated towards it — the dual of
+  a strong constraint is a strong homogeneous constraint on the same degrees of
+  freedom.
+* **The block structure survives.** UW3 assembles the velocity flux as `τ − pI`
+  against `+div u`, so the operator is `[[A, −Bᵀ], [B, 0]]` and its transpose is
+  `[[Aᵀ, Bᵀ], [−B, 0]]` — the off-diagonal **signs swap**, the blocks do not
+  move, and the two swapped signs cancel in `B A⁻ᵀ Bᵀ` so the Schur complement
+  keeps its sign as well as its sparsity. The fieldsplit-Schur setup, the 1/μ
+  pressure-mass block and the custom-FMG prolongation all apply to `Âᵀ`
+  unchanged. (That `−Bᵀ` is also why a symmetry check on the COMPOSITE matrix
+  says nothing: it reads ~2.5e-2 for constant isotropic viscosity. The velocity
+  block is the one to measure — 5.3e-17 there, against 5.7e-2 for a power-law
+  TI tangent.)
+* **The null space is shared.** A rigid rotation has zero strain rate, so
+  `∫C:ε(·):ε(·)` annihilates it read from either side whatever the symmetry of
+  `C`; the constant-pressure mode couples only through `Bᵀ`, which both
+  operators carry in the same block. `_rotated_nullspace` therefore serves the
+  adjoint as it does the forward — measured, not argued: on a free-slip annulus
+  with a power-law TI tangent the admitted modes give `‖Â v‖` = 4.8e-17 / 2.3e-10
+  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10. Those are exact modes; a declared mode on a
+  faceted sphere, or on a circle with unequal edges, is near-null, and leaves
+  `‖Â v‖` of the order of its slack.
+
+**Where there is a null space, the multiplier is returned modulo it.** Pinning
+one boundary with an essential condition removes it — `_rotated_nullspace` then
+returns `None`, and the gradient is unambiguous. That is the configuration to
+prefer when a sensitivity is the point, and it is what
+`test_0022_rotated_adjoint`'s gradient fixture uses. An enclosed free-slip
+domain has an undetermined pressure level and, on an annulus or shell, an
+undetermined rigid rotation. The forward fixes the gauge after the fact; the
+adjoint has no rest state to fix it against, so the component of `b` along
+those modes is projected out (`nsp.remove`). A misfit that is itself invariant
+under rigid rotation loses nothing to this. One that is not is asking for the
+sensitivity of a quantity the forward problem does not determine, and the
+projection is what says so — so pin the gauge in the forward problem (a
+Dirichlet boundary) rather than reading a rotation-sensitive gradient.
+
+### What the test cannot see, and why `Qt` is still built
+
+In 2-D with one normal per node **`Q` is exactly symmetric**: the frame
+`numpy.linalg.svd` returns for a single normal is the Householder reflection
+`[[nx, ny], [ny, -nx]]`, and `‖Q - Qᵀ‖` measures **zero** on an annulus. So
+swapping `Q` for `Qᵀ` anywhere in either the forward or the adjoint path is
+numerically invisible there — substituting one for the other in the adjoint's
+dual rotation moves the gradient in the eighth digit (measured). That is an
+accident of the 2-D single-normal case, not a licence to alias the two: a 3-D
+boundary frame is a 3×3 orthogonal matrix whose two tangent rows are not pinned,
+and a multi-normal corner block is not a reflection either. `build_rotation`
+assembles `Qt` explicitly for that reason, and the adjoint uses `Q` for the dual
+and `Qᵀ` for the answer because that is what the duality says, not because a 2-D
+test forced it. **A 3-D rotated adjoint test would be the one that pins this
+axis down; there isn't one.**
+
+### Cost, and what is not cached
+
+The adjoint builds a fresh KSP/PC every call (`ctx=None`), so each one pays a
+full fieldsplit plus GAMG/FMG `PCSetUp` — the cost the #417 cross-solve cache
+exists to avoid, on the one path an inversion calls in a loop. The prolongation
+IS reused from that cache when the forward built one (it depends only on `Q` and
+the hierarchy), which matters for more than speed: `_build_rotated_custom_Pl`
+leaks the velocity submatrix and the rotated fine prolongation on every call —
+nothing owns them, and `_destroy_rotated_linear_cache` only dereferences the
+list. An adjoint workspace cache keyed the same way as the forward's would fix
+both; it is not built.
+
+`tests/test_0022_rotated_adjoint.py` is serial: at np>1 it trips the JIT
+rank-divergence guard about half the time (#752), in the forward solve rather
+than the adjoint.
+
+`J` must be assembled with the **consistent** tangent. A forward that ran
+Picard leaves the frozen-viscosity operator on the SNES, which is not `∂R/∂u`;
+`adjoint_solve` rebuilds it, and `adjoint_support()` says so in its reason.
+
+**Fault contact still refuses.** Its rotated operator carries an additive
+interface tangent, reassembled at every iterate, and that term's transpose is
+not routed into the adjoint.
+
+
 ## Tests
 
 `tests/test_1018_rotated_freeslip.py` (serial: essential-equivalence, FMG,
 tangent policies, datum linear + nonlinear),
 `tests/parallel/test_1066_rotated_datum_parallel.py` (np≥2: partition
-independence of the linear datum and the nonlinear Newton datum path).
+independence of the linear datum and the nonlinear Newton datum path),
+`tests/test_0022_rotated_adjoint.py` (the adjoint gradient against a central
+finite difference on an annulus with a transversely isotropic viscosity — a
+curved boundary so the rotation is a real per-node frame, and a tangent with no
+major symmetry so a wrong transpose cannot hide behind a symmetric operator).

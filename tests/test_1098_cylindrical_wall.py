@@ -236,5 +236,3 @@ def test_torque_projection_preserves_normal_nodal_loads_on_irregular_trace():
     np.testing.assert_allclose(np.sum(loads[1] * rotation), 0, atol=1e-13)
     normal = nodes / np.linalg.norm(nodes, axis=1)[:, None]
     np.testing.assert_allclose(np.sum((loads[1] - loads[0]) * normal, axis=1), 0, atol=1e-13)
-
-

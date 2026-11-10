@@ -40,4 +40,3 @@ def _scatter_values(vector, indices):
 def array_sha256(value: np.ndarray) -> str:
     value = np.ascontiguousarray(value)
     return hashlib.sha256(str(value.dtype).encode()+str(value.shape).encode()+value.tobytes()).hexdigest()
-

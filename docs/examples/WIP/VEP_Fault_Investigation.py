@@ -87,6 +87,7 @@ stokes.constitutive_model = cm
 cm.Parameters.shear_viscosity_0 = ETA
 cm.Parameters.shear_modulus = MU
 cm.Parameters.yield_stress = tau_y_field
+cm.Parameters.yield_stress_min = -sympy.oo  # reads the distance field, but 1/weakness >= TAU_Y_FAULT > 0 by construction
 # yield_mode="softmin" is the default (smooth approximation to Min)
 cm.Parameters.shear_viscosity_min = ETA * 1.0e-2
 cm.Parameters.strainrate_inv_II_min = 1.0e-5

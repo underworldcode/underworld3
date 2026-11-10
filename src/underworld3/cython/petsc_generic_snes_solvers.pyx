@@ -1,4 +1,5 @@
 import collections
+import weakref
 
 import numpy as np
 import sympy
@@ -117,20 +118,66 @@ def _solve_transposed(ksp, J, P, b, x):
     matrices are transposed explicitly and the same KSP solves the
     transposed system forwards: every preconditioner the forward solve can
     use, the adjoint can use, set up on :math:`J^T` exactly as it was on
-    :math:`J`. The forward operators are put back afterwards. A null space
+    :math:`J`. The forward values are put back afterwards. A null space
     attached to ``J`` (the pressure constant on an enclosed domain) is the
     transpose null space of ``J^T``, and is carried across.
+
+    Where the pattern is symmetric, as an assembled finite-element operator's is,
+    the transposed VALUES are copied into J's (and P's) own storage, so the
+    preconditioner chain keeps its own matrices and refreshes from the new
+    values, as at a Newton step. Handed new matrices instead, the outer KSP took
+    them but the fieldsplit's velocity block kept its last set-up: J's
+    velocity block, 9 velocity iterations against 5 on J^T (#1021), and after a
+    Picard forward the injection's assembly at u = 0, which ran the velocity
+    solve to its cap. A non-symmetric pattern takes the new matrices still.
     """
-    # Mat.transpose() with no target transposes IN PLACE; give it a new Mat.
-    Jt = PETSc.Mat()
-    J.transpose(Jt)
-    if P.handle == J.handle:
-        Pt = Jt
-    else:
-        Pt = PETSc.Mat()
-        P.transpose(Pt)
-    for source, put in ((J.getNullSpace(), Jt.setTransposeNullSpace),
-                        (J.getTransposeNullSpace(), Jt.setNullSpace),
+    SAME = PETSc.Mat.Structure.SAME_NONZERO_PATTERN
+    mats = [J] if P.handle == J.handle else [J, P]
+    transposes = []
+    for M in mats:
+        Mt = PETSc.Mat()          # Mat.transpose() with no target is IN PLACE
+        M.transpose(Mt)
+        transposes.append(Mt)
+
+    def _same_pattern(A, B):
+        # local rows with global columns, sorted within a row; the verdict is the
+        # same on every rank (COLLECTIVE)
+        ia, ja, _ = A.getValuesCSR()
+        ib, jb, _ = B.getValuesCSR()
+        local = bool(np.array_equal(ia, ib) and np.array_equal(ja, jb))
+        return A.getComm().tompi4py().allreduce(local, op=uw.MPI.LAND)
+
+    in_place = all(_same_pattern(M, Mt) for M, Mt in zip(mats, transposes))
+    nsp, tnsp = J.getNullSpace(), J.getTransposeNullSpace()
+    if in_place:
+        saved = []
+        for M, Mt in zip(mats, transposes):
+            saved.append((M, M.copy()))
+            Mt.copy(M, structure=SAME)
+            Mt.destroy()
+        if nsp is not None and nsp.handle != 0:
+            J.setTransposeNullSpace(nsp)
+        if tnsp is not None and tnsp.handle != 0:
+            J.setNullSpace(tnsp)
+        ksp.setOperators(J, P)
+        try:
+            ksp.solve(b, x)
+            reason = int(ksp.getConvergedReason())
+        finally:
+            for M, keep in saved:
+                keep.copy(M, structure=SAME)
+                keep.destroy()
+            if nsp is not None and nsp.handle != 0:
+                J.setNullSpace(nsp)
+            if tnsp is not None and tnsp.handle != 0:
+                J.setTransposeNullSpace(tnsp)
+            ksp.setOperators(J, P)
+        return reason
+
+    Jt = transposes[0]
+    Pt = Jt if len(transposes) == 1 else transposes[1]
+    for source, put in ((nsp, Jt.setTransposeNullSpace),
+                        (tnsp, Jt.setNullSpace),
                         (J.getNearNullSpace(), Jt.setNearNullSpace)):
         if source is not None and source.handle != 0:
             put(source)
@@ -353,6 +400,38 @@ def _discard_preconditioner_setup(pc):
         pc.setFromOptions()
 
 
+# A linear solve inside Newton stops once its residual is this fraction of the Newton
+# target (inexact Newton): the next nonlinear residual is then inside the target, and no
+# linear solve chases a relative reduction of an already small residual (#911).
+_LINEAR_TARGET_FRACTION = 0.1
+
+
+# The solver that owns each options prefix, by a token. Instance numbers restart
+# after uw_object._reset(), so a later solver can take a prefix a dropped one had.
+_SOLVER_OPTIONS_OWNER = {}
+
+
+def _drop_solver_options(prefix, token):
+    """Remove every option a dropped solver left in the global database: those
+    under its prefix, and the ``private_`` copies PETSc makes for its sub-objects.
+    Only while that solver still owns the prefix, and only before PETSc is
+    finalised: the mesh and its solvers form a reference cycle, which the
+    collector can reach after PetscFinalize, where touching the options database
+    segfaults. Not collective."""
+    if _SOLVER_OPTIONS_OWNER.get(prefix) is not token:
+        return
+    del _SOLVER_OPTIONS_OWNER[prefix]
+    try:
+        if PETSc.Sys.isFinalized():
+            return
+        opts = PETSc.Options()
+        for name in list(opts.getAll()):
+            if name.startswith(prefix) or name.startswith("private_" + prefix):
+                opts.delValue(name)
+    except Exception:
+        pass
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -362,6 +441,10 @@ class SolverBaseClass(uw_object):
 
     This class is not intended to be used directly
     """
+
+    # whether adjoint_solve takes the transpose of a rotated operator
+    _adjoint_routes_rotated_constraints = False
+
 
     def __init__(self, mesh):
 
@@ -398,6 +481,11 @@ class SolverBaseClass(uw_object):
         # Switch threshold of the rotated-free-slip two-phase path (rotated_bc.py):
         # Picard until the relative residual falls below this, then Newton.
         self.newton_switch_rtol = 1.0e-2
+        # The rotated-free-slip path (rotated_bc.py): a hard failure of the first
+        # linear solve of a cold start raises, because it leaves no solution
+        # (#907). True warns and continues instead, as before. The standard SNES
+        # path only warns on divergence.
+        self.tolerate_linear_failure = False
         # consistent_jacobian = "continuation" (#791): alpha is keyed on the residual,
         #     alpha = clip(log10(F_ref / F) - log10(1 / start)) / (log10(1 / newton_at)
         #             - log10(1 / start)), never decreasing,
@@ -462,6 +550,14 @@ class SolverBaseClass(uw_object):
         self.name = "Solver_{}_".format(self.instance_number)
         self.petsc_options_prefix = self.name
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
+        # Nothing removed a solver's options when it was dropped, so the global
+        # database grew by about 25 keys per solver (49 for a Stokes and a Poisson
+        # solve, #950). They go when the solver is collected; not at interpreter
+        # exit, by which time PETSc may be finalised.
+        _token = object()
+        _SOLVER_OPTIONS_OWNER[self.petsc_options_prefix] = _token
+        weakref.finalize(self, _drop_solver_options,
+                         self.petsc_options_prefix, _token).atexit = False
 
         self.dm = None
         self.dm_hierarchy = []
@@ -473,6 +569,25 @@ class SolverBaseClass(uw_object):
         self._velocity_is = None
         self._pressure_is = None
         self._subdict = {}
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
+        # + reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        # _rotated_freeslip_datum maps boundary → prescribed wall-normal datum
+        # (the non-zero `conds` of add_rotated_freeslip_bc; absent ⇒ u.n = 0).
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_datum = {}
+        self._rotated_freeslip_info = None
+        # Cross-solve rotated workspace (rotated_bc cache, issue #417):
+        # populated/keyed/invalidated entirely inside solve_rotated_freeslip;
+        # torn down here by _reset_rotated_solver_cache on any DM rebuild.
+        self._rotated_linear_cache = None
+        # Split-fault interface conditions (add_fault_bc): fault names whose
+        # coincident DOF pairs carry a contact (the laws themselves live in
+        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
+        # Non-empty => solve() takes the rotated path, where fault_contact
+        # supplies the pair blocks and the interface operator.
+        self._fault_contact_faults = []
 
         # Per-Newton-iteration callbacks (PETSc SNESSetUpdate). Empty by default
         # -> no hook is installed and the solve path is unchanged. See
@@ -853,7 +968,14 @@ class SolverBaseClass(uw_object):
         if not mode:
             return expr
         if newton_expr is None:
-            newton_expr = _jacobian_unwrap(expr, route=self._jit_route_in_use())
+            # Atoms the constitutive model freezes because they are too costly to
+            # differentiate are swapped for its differentiable stand-ins first
+            # (its private _tangent_surrogates); applied to the solver's own
+            # flux, so the solver's closure terms stay in the tangent.
+            surrogates = getattr(getattr(self, "_constitutive_model", None),
+                                 "_tangent_surrogates", None) or {}
+            source = expr.xreplace(surrogates) if surrogates else expr
+            newton_expr = _jacobian_unwrap(source, route=self._jit_route_in_use())
         if mode == "continuation" or (mode is True and getattr(self, "_picard_blend", False)):
             a = self._get_newton_alpha()
             if isinstance(expr, sympy.MatrixBase):
@@ -874,12 +996,22 @@ class SolverBaseClass(uw_object):
     def _newton_flux(self, exact_F1):
         """Newton (consistent) flux for the bulk ``F1`` Jacobian source.
 
-        Returns the constitutive model's own smooth tangent law
-        (``constitutive_model.flux_jacobian``) when it supplies one — matched to
-        the container/shape of ``exact_F1`` — otherwise ``None`` so that
-        :meth:`_jacobian_source` falls back to the exact flux unwrapped. Lets a
-        model whose flux has a non-smooth yield kink provide a physically
-        motivated smooth tangent without changing the residual.
+        When the constitutive model supplies a tangent flux
+        (``constitutive_model.flux_jacobian``), it is a DEVIATORIC stress, like
+        the model's ``flux``: the solver applies its own closure to it
+        (``_flux_closure`` — Stokes: less the mechanical pressure with the
+        penalty, plus DEVSS; the thin sheet: the plane-stress trace term times
+        the thickness), so the tangent differentiates the same momentum flux as
+        the residual with only the model's part exchanged. A solver without a
+        closure uses the model flux as its F1, and the tangent flux stands in for
+        it directly. Returns ``None`` when there is no tangent flux, so that
+        :meth:`_jacobian_source` differentiates the exact flux.
+
+        Before 2026-10-12 the tangent flux replaced the WHOLE F1 (Stokes lost the
+        pressure, penalty and DEVSS terms from its tangent), and on vector and
+        scalar solvers it was silently ignored: a 2-D Array was flattened with
+        ``list()`` (which yields rows) and the error swallowed. See
+        ``tests/test_1082_flux_jacobian_closure.py``.
         """
         # The frozen (Picard) path never needs the Newton flux — short-circuit so
         # the (potentially expensive) model.flux_jacobian is not even evaluated,
@@ -890,16 +1022,27 @@ class SolverBaseClass(uw_object):
         smooth = getattr(cm, "flux_jacobian", None) if cm is not None else None
         if smooth is None:
             return None
-        try:
-            sm = sympy.Array(smooth)
-            ex = sympy.Array(exact_F1)
-            if sm.shape != ex.shape:
-                sm = sm.reshape(*ex.shape)
-            if isinstance(exact_F1, sympy.MatrixBase):
-                return sympy.Matrix(exact_F1.shape[0], exact_F1.shape[1], list(sm))
-            return sm
-        except Exception:
-            return None
+        closure = getattr(self, "_flux_closure", None)
+        if closure is not None:
+            smooth = closure(sympy.Matrix(smooth))
+        n_exact = int(np.prod(sympy.Array(exact_F1).shape))
+        flat = list(sympy.Array(smooth).reshape(n_exact)) \
+            if int(np.prod(sympy.Array(smooth).shape)) == n_exact else None
+        if flat is None:
+            raise ValueError(
+                f"constitutive_model.flux_jacobian has shape "
+                f"{sympy.Array(smooth).shape}; this solver's flux has shape "
+                f"{sympy.Array(exact_F1).shape}")
+        shape = sympy.Array(exact_F1).shape
+        if isinstance(exact_F1, sympy.MatrixBase):
+            composed = sympy.Matrix(shape[0], shape[1], flat)
+        else:
+            composed = sympy.Array(flat, shape)
+        surrogates = getattr(cm, "_tangent_surrogates", None) or {}
+        if surrogates:
+            composed = composed.xreplace(surrogates)
+        # differentiated as the exact flux would be: named quantities unwrapped
+        return _jacobian_unwrap(composed, route=self._jit_route_in_use())
 
     def _get_newton_alpha(self):
         """Lazily construct the Picard->Newton continuation parameter.
@@ -988,7 +1131,7 @@ class SolverBaseClass(uw_object):
         self.is_setup = False
 
     def set_custom_fmg(self, coarse_meshes, *, builder="barycentric",
-                       field_id=None, verbose=False):
+                       field_id=None, coarse_solve=None, verbose=False):
         r"""Drive geometric multigrid with a prolongation built from
         ``coarse_meshes`` — the canonical custom-MG entry point.
 
@@ -1011,6 +1154,10 @@ class SolverBaseClass(uw_object):
         field_id : int, optional
             Target field for a multi-field (saddle-point) solver; ``0`` is the
             Stokes velocity block. ``None`` (default) for single-field solvers.
+        coarse_solve : {None, "gamg"}, default None
+            The coarse-level solve. ``None`` keeps the gathered LU; ``"gamg"``
+            solves the coarse level with GAMG instead, for a coarsest mesh too
+            large for every rank to factor (it costs more where both fit).
         verbose : bool, default False
             Print the per-level DOF counts at injection.
 
@@ -1020,7 +1167,8 @@ class SolverBaseClass(uw_object):
         """
         from underworld3.utilities.custom_mg import set_custom_fmg as _set_custom_fmg
         _set_custom_fmg(self, coarse_meshes, builder=builder,
-                        field_id=field_id, verbose=verbose)
+                        field_id=field_id, coarse_solve=coarse_solve,
+                        verbose=verbose)
 
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
@@ -1927,6 +2075,17 @@ class SolverBaseClass(uw_object):
             """Second invariant of strain rate tensor."""
             return inner_self._Einv2
 
+        def second_invariant(inner_self, M):
+            r"""Second invariant :math:`\sqrt{M_{ij} M_{ij} / 2}` of a deviatoric
+            tensor built on these kinematics (a strain rate, a stress).
+
+            Constitutive models take every invariant through here, so a solver
+            whose tensors are a reduced representation of the 3-D ones supplies
+            the missing components: the thin sheet adds the out-of-plane
+            component :math:`M_{nn} = -\operatorname{tr} M` that incompressibility
+            implies. The default is the plain contraction."""
+            return sympy.sqrt((M**2).trace() / 2)
+
         @property
         def CoordinateSystem(inner_self):
             """Coordinate system of the underlying mesh."""
@@ -1985,9 +2144,9 @@ class SolverBaseClass(uw_object):
         transpose for the state and the symbolic derivative of the residual
         for a parameter. What removes that:
 
-        * a rotated constraint — free-slip or fault contact — solves on a
-          rotated operator inside its own Krylov loop (``rotated_bc.py``),
-          and there is no transpose path through it;
+        * a fault contact, whose rotated operator carries an additive
+          interface tangent reassembled at every iterate — the transpose of
+          that term is not routed into the adjoint;
         * an unconverged solve, which is caught after the fact by
           :meth:`_record_solve_outcome`: a linearisation about a state the
           solve never reached is not the adjoint of anything.
@@ -1997,12 +2156,22 @@ class SolverBaseClass(uw_object):
         ``tests/test_0018_adjoint_support_record.py``.
         """
         mechanisms = self._constraint_mechanisms()
-        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
-        if rotated:
+        contact = mechanisms["fault_contact"]
+        if contact:
             return (False,
-                    f"{len(rotated)} rotated constraint(s): the solve runs on a "
-                    f"rotated operator with its own Krylov loop, and there is "
-                    f"no transpose path through it")
+                    f"{len(contact)} fault contact(s): the rotated operator "
+                    f"carries an additive interface tangent, reassembled at every "
+                    f"iterate, whose transpose is not routed into the adjoint")
+        # Rotated FREE-SLIP admits one — the transpose of the rotated operator,
+        # taken in the boundary frame — where the solver routes its adjoint
+        # through it (the Stokes saddle point, rotated_bc.solve_rotated_adjoint).
+        # Elsewhere adjoint_solve would transpose the unrotated operator.
+        rotated = mechanisms["rotated_freeslip"]
+        if rotated and not self._adjoint_routes_rotated_constraints:
+            return (False,
+                    f"{len(rotated)} rotated constraint(s): this solver's "
+                    f"adjoint_solve transposes the unrotated operator, and the "
+                    f"rotated transpose is routed only for the Stokes saddle point")
         if not self.consistent_jacobian and not self._residual_is_linear_in_unknown():
             return (True,
                     "implicit residual: Jacobian transpose for the state, symbolic "
@@ -2568,7 +2737,12 @@ class SolverBaseClass(uw_object):
         kernels rather than obtained by transposing the assembled matrix.
         The kernel route covers the volume terms; a boundary Jacobian (a
         natural or Nitsche condition with a tangent) is not swapped yet, so
-        such a solver takes the matrix route."""
+        such a solver takes the matrix route. So does a rotated constraint: its
+        adjoint is the transpose of the ROTATED operator Q K Qᵀ, which
+        rotated_bc builds from the assembled FORWARD Jacobian — handing it K^T
+        would rotate the wrong matrix."""
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            return False
         return not (getattr(self, "natural_bcs", None) or [])
 
     def _install_adjoint_kernels(self):
@@ -3844,6 +4018,255 @@ class SolverBaseClass(uw_object):
             f"  to investigate.\n"
         )
 
+    # Which reference a solve measures (#911). None follows the equation: a solve with
+    # memory takes "increment", any other "stationary". Set on a solver to measure one
+    # rule against the other on the same model.
+    _convergence_reference_rule = None
+    # The linear floor of the solve in progress, in ||F|| units; None outside one.
+    _linear_floor = None
+
+    def _carries_memory(self):
+        """Whether this equation's residual carries the last step's answer forward,
+        through a history of the unknown (``DuDt``) or of the flux (``DFDt``). The
+        guess is then the last step's answer, and a step is measured against the
+        change it makes."""
+        unknowns = getattr(self, "Unknowns", None)
+        return unknowns is not None and (getattr(unknowns, "DuDt", None) is not None
+                                         or getattr(unknowns, "DFDt", None) is not None)
+
+    def _weak_datum(self):
+        """Whether a boundary term imposes a datum weakly: it depends on the unknowns
+        and is nonzero at rest, as a Nitsche or penalty condition with a nonzero value
+        does. Its term in F(0) is the penalty times the datum, with the coefficient at
+        rest (for a shear-thinning law the viscosity at zero strain rate), so ||F(0)||
+        measures the penalty rather than the forcing: on a Nitsche-driven power-law
+        lid, a warm re-solve held to it was 70 to 1300 times less accurate than under
+        PETSc's own test.
+
+        A datum is read by its symbols, not its value: every UW expression whose value
+        is a number is held as a symbol of its own before the term is unwrapped, so a
+        lid ramped up from zero, or a Robin ambient set later, counts from the start
+        (the value can change without a rebuild; read by value, a datum that was zero
+        when first read stayed "no datum": hyperion's review, M1). An expression whose
+        value at rest cannot be decided counts too. Read once per set of boundary
+        terms, keyed on the terms' hashes: an expression re-pointed in place between
+        the unknown and a constant (``E.sym = ...``) keeps its hash, so the verdict is
+        not read again until the boundary conditions change; such a model states its
+        rule with ``_convergence_reference_rule``. The same on every rank."""
+        bcs = tuple(getattr(self, "natural_bcs", None) or ())
+
+        def _term_key(term):
+            try:
+                return hash(term)
+            except TypeError:
+                return id(term)
+
+        key = tuple((id(bc),) + tuple(_term_key(getattr(bc, name, None))
+                                      for name in ("fn_f", "fn_F", "fn_p")) for bc in bcs)
+        if getattr(self, "_weak_datum_key", None) == key:
+            return self._weak_datum_value
+        from underworld3.function.expressions import (UWexpression, unwrap_expression,
+                                                      _unwrap_for_compilation)
+
+        def _held(expr):
+            expr = sympy.sympify(expr)
+            for _depth in range(64):
+                found = expr.atoms(UWexpression)
+                if not found:
+                    break
+                swap = {}
+                for a in found:
+                    value = sympy.sympify(unwrap_expression(a, mode="nondimensional"))
+                    if not value.free_symbols and not value.atoms(sympy.Function):
+                        swap[a] = sympy.Dummy(str(a))     # a constant: held as a symbol
+                    else:
+                        swap[a] = a.sym                   # open one level
+                expr = expr.xreplace(swap)
+            return expr
+
+        X = sympy.Matrix(list(self.mesh.X))
+        at_rest = {}
+        unknowns = getattr(self, "Unknowns", None)
+        for name in ("u", "p"):
+            var = getattr(unknowns, name, None) if unknowns is not None else None
+            if var is None:
+                continue
+            field = sympy.Matrix(var.sym)
+            # the unknown and its gradient, which UW3 carries as functions of its own
+            for f in field.atoms(sympy.Function) | field.jacobian(X).atoms(sympy.Function):
+                at_rest[f] = 0
+        found = False
+        for bc in bcs:
+            for term in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                         getattr(bc, "fn_p", None)):
+                if term is None:
+                    continue
+                t = sympy.Matrix(_unwrap_for_compilation(
+                    sympy.Matrix(term).applyfunc(_held), return_self=False))
+                if not (t.atoms(sympy.Function) & set(at_rest)):
+                    continue                       # forcing: a traction, not a constraint
+                if t.subs(at_rest).doit().is_zero_matrix is not True:
+                    found = True
+                    break
+            if found:
+                break
+        self._weak_datum_key, self._weak_datum_value = key, found
+        return found
+
+    def _resolved_reference_rule(self):
+        """``"increment"`` or ``"stationary"``: the reference this solve measures, from
+        ``_convergence_reference_rule`` when set, else from the equation: a solve with
+        memory (:meth:`_carries_memory`) or a weakly imposed datum (:meth:`_weak_datum`)
+        measures its increment, where ``||F(0)||`` measures the whole field or the
+        penalty. The rotated Newton loop reads it too. The same on every rank."""
+        rule = self._convergence_reference_rule
+        if rule is None:
+            rule = ("increment" if self._carries_memory() or self._weak_datum()
+                    else "stationary")
+        if rule not in ("increment", "stationary"):
+            raise ValueError(f"_convergence_reference_rule must be 'increment', "
+                             f"'stationary' or None, not {rule!r}")
+        return rule
+
+    def _reference_residual(self, gvec):
+        """The norm of the residual this equation measures its convergence against.
+
+        A stationary equation measures the residual a cold start would see,
+        ``||F(0)||`` with the boundary data in place. It depends on the forcing and the
+        boundary data, not on the guess ``gvec``. An equation with memory
+        (:meth:`_carries_memory`) returns 0, so a step is measured against its own
+        first residual, PETSc's default: ``||F(0)||`` there measures the whole field,
+        and rtol of it is 20 to 70 times looser than rtol of the step's change.
+
+        The equation owns this declaration. An equation whose ``F(0)`` carries
+        something no iterate measures overrides it: a nonzero velocity imposed weakly
+        (its term scales with the viscosity at rest), a prescribed datum lift, a
+        projected null space. COLLECTIVE when it evaluates ``F(0)``; the rule is the
+        same on every rank."""
+        if self._resolved_reference_rule() == "increment":
+            return 0.0
+        zero = gvec.duplicate()
+        zero.set(0.0)
+        F = gvec.duplicate()
+        self.snes.computeFunction(zero, F)
+        norm = F.norm()
+        zero.destroy()
+        F.destroy()
+        return norm
+
+    def _user_sets_outer_ksp_rtol(self):
+        """Whether the outer KSP's rtol is one this solver's ``tolerance`` did not derive:
+        set by the user, or by the library for a solve it wants tight (a projection).
+        Each class's ``_TOLERANCE_DERIVED_KEYS`` says what ``tolerance`` writes; a class
+        without the table derives ``ksp_rtol = 0.1 * tolerance``, and a table without
+        the key (the saddle point, where Eisenstat-Walker owns it) derives none."""
+        if not self.petsc_options.hasName("ksp_rtol"):
+            return False
+        table = getattr(self, "_TOLERANCE_DERIVED_KEYS", None)
+        factor = 1.0e-1 if table is None else table.get("ksp_rtol")
+        if factor is None:
+            return True
+        return self.petsc_options.getReal("ksp_rtol") != float(self._tolerance) * factor
+
+    def _install_linear_floor_test(self, ksp):
+        """Compose the linear floor with the outer KSP's own convergence test, once per
+        KSP. The test is inactive outside a solve that sets ``self._linear_floor``.
+
+        The floor is in ||F|| units, and the KSP may measure a preconditioned norm:
+        GMRES with left preconditioning does, about 40 times under ||F|| on the scalar
+        route, where the floor as an absolute tolerance stopped a Newton step's linear
+        solve at its first residual. The test scales the floor into the KSP's own norm
+        by the ratio of its first residual to ||b|| = ||F(x_k)||, so it is right in
+        either norm. It runs in the KSP's convergence test rather than as a
+        pre-solve, because Eisenstat-Walker is PETSc's pre-solve on the saddle-point
+        route: EW sets the rtol, and the floor bounds it from below. It shares that
+        test with the wall-clock guard through ``utilities/ksp_convergence_tests``,
+        since petsc4py allows one Python test per KSP. While the SNES has not
+        converged ||F(x_k)|| > T, so the floor asks for a reduction of at least
+        ``1 / _LINEAR_TARGET_FRACTION``; the cap guards a route that stops elsewhere.
+        The solver is held weakly: the KSP keeps the callback in a C-held context the
+        garbage collector cannot see, and a strong reference would pin the solver.
+        COLLECTIVE at its 0 (one norm)."""
+        from underworld3.utilities import ksp_convergence_tests
+        if ksp_convergence_tests.registered(ksp, "linear_floor"):
+            return True
+        import weakref
+        solver_ref = weakref.ref(self)
+        threshold = [0.0, 0.0]        # in the KSP's norm, and in ||F|| units
+
+        def _below_the_floor(ksp, its, rnorm):
+            solver = solver_ref()
+            floor = None if solver is None else solver._linear_floor
+            norm_type = ksp.getNormType()
+            if floor is None or norm_type == PETSc.KSP.NormType.NONE:
+                # no norm to test (PETSc passes 0): the floor would stop every
+                # application at its first iteration
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if its == 0:
+                bnorm = ksp.getRhs().norm()
+                cap = min(floor / bnorm, _LINEAR_TARGET_FRACTION) if bnorm > 0.0 else 0.0
+                threshold[0] = cap * rnorm
+                threshold[1] = cap * bnorm          # the floor in ||F|| units, capped
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if rnorm > threshold[0]:
+                return PETSc.KSP.ConvergedReason.ITERATING
+            if norm_type == PETSc.KSP.NormType.UNPRECONDITIONED:
+                return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            # A preconditioned norm is scaled by its first ratio to ||b||, which need
+            # not hold as the iteration goes; the true residual decides. Stopping on
+            # the estimate alone left the true residual above the floor and cost
+            # Newton a step (test_0009, a warm nonlinear Poisson: hyperion's review,
+            # M2). Every rank reaches this test with the same rnorm. COLLECTIVE.
+            r = ksp.buildResidual()
+            true = r.norm()
+            r.destroy()
+            if true <= threshold[1]:
+                return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+            threshold[0] *= threshold[1] / true     # rescale the estimate and go on
+            return PETSc.KSP.ConvergedReason.ITERATING
+
+        # False when a convergence test the library did not set owns the KSP
+        return ksp_convergence_tests.register(ksp, "linear_floor", _below_the_floor)
+
+    def _apply_convergence_reference(self, gvec):
+        """Set this solve's absolute targets from one reference residual.
+
+        ``F_ref = max(||F(x0)||, R)``: ``x0`` is the guess the solve starts from, and
+        ``R`` is the equation's declared reference, :meth:`_reference_residual`. A warm
+        start is therefore held to the same target as a cold start of the same
+        problem. The SNES stops at ``T = max(rtol * F_ref, atol)``, and its linear
+        solves at the floor ``_LINEAR_TARGET_FRACTION * T`` (inexact Newton,
+        :meth:`_install_linear_floor_test`). The floor never loosens a linear rtol
+        the solver's ``tolerance`` did not derive (:meth:`_user_sets_outer_ksp_rtol`).
+        The rules are applied the same way on every route; the tolerances in force are
+        returned for the caller to restore, and the caller clears ``_linear_floor``.
+        Design: docs/developer/design/CONVERGENCE_REFERENCE_POLICY_2026-11.md.
+        COLLECTIVE.
+        """
+        ksp = self.snes.getKSP()
+        saved = (self.snes.getTolerances(), ksp.getTolerances())
+        rtol, atol, _stol, _max_it = saved[0]
+        F = gvec.duplicate()
+        self.snes.computeFunction(gvec, F)
+        F_x0 = F.norm()
+        F.destroy()
+        F_0 = self._reference_residual(gvec)
+        F_ref = max(F_x0, F_0)
+        target = max(rtol * F_ref, atol)
+        floor = None
+        if not np.isfinite(target):
+            # A NaN or infinite residual: PETSc refuses the tolerance (error 63), and
+            # the solve must fail on the residual itself, with its own reason.
+            target = atol
+        else:
+            self.snes.setTolerances(atol=target)
+            if not self._user_sets_outer_ksp_rtol() and self._install_linear_floor_test(ksp):
+                floor = _LINEAR_TARGET_FRACTION * target
+        self._linear_floor = floor
+        self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
+                                       "target": target, "linear_floor": floor}
+        return saved
+
     def _snes_solve_with_retries(self, gvec, divergence_retries=0, verbose=False):
         """Call self.snes.solve(None, gvec) with warm-start retries on divergence.
 
@@ -3902,14 +4325,16 @@ class SolverBaseClass(uw_object):
         _probe = bool(self._difficulty_probe)
         _warm = int(getattr(self, "_pending_picard", 0) or 0)
         self._pending_picard = 0
-        _saved_tol = None
-        if _probe or _warm:
-            _saved_tol = self.snes.getTolerances()
+        # One reference residual for this solve, and the targets it sets (the SNES
+        # atol and the linear floor); everything below starts from them, and the
+        # tolerances in force before are restored in the finally.
+        _saved_tol, _saved_ksp_tol = self._apply_convergence_reference(gvec)
         if _probe:
             if self._difficulty_max_it is not None:
                 self.snes.setTolerances(max_it=int(self._difficulty_max_it))
             if self._resume_abs_target is not None:
-                self.snes.setTolerances(atol=float(self._resume_abs_target))
+                self.snes.setTolerances(atol=max(float(self._resume_abs_target),
+                                                 self._convergence_reference["target"]))
 
         try:
             if _warm:
@@ -3940,9 +4365,12 @@ class SolverBaseClass(uw_object):
                         self._snapshot_numerics()
                         self.snes.solve(None, gvec)
         finally:
-            if _saved_tol is not None:
-                self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
-                                        stol=_saved_tol[2], max_it=_saved_tol[3])
+            self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
+                                    stol=_saved_tol[2], max_it=_saved_tol[3])
+            self.snes.getKSP().setTolerances(rtol=_saved_ksp_tol[0], atol=_saved_ksp_tol[1],
+                                             divtol=_saved_ksp_tol[2],
+                                             max_it=_saved_ksp_tol[3])
+            self._linear_floor = None
             # Default-on difficulty report — single tail so every path is covered,
             # INCLUDING a solve that raises: the report then reflects the failed
             # attempt's SNES state rather than leaving the previous solve's converged
@@ -4942,13 +5370,14 @@ class SolverBaseClass(uw_object):
 
         ### checking if it's an instance - it will need to be reset
         if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
+            # Only override the constitutive model's order if the solver has
+            # an explicit VE order (> 0). Otherwise preserve the model's default.
+            # Done first: a model that refuses the order is never assigned.
+            if self._order > 0:
+                model_or_class.order = self._order
             self._constitutive_model = model_or_class
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
-            # Only override the constitutive model's order if the solver has
-            # an explicit VE order (> 0). Otherwise preserve the model's default.
-            if self._order > 0:
-                self._constitutive_model.order = self._order
             # Establish bidirectional reference so parameter changes can propagate to solver
             self._constitutive_model.Parameters._solver = self
 
@@ -5434,6 +5863,447 @@ class SolverBaseClass(uw_object):
 
 
 ## Specific to dimensionality
+
+
+    def _rotated_max_it(self):
+        """The rotated loop's iteration cap (#920): a user-set ``snes_max_it``,
+        else 50. ``SNES_Stokes_SaddlePt`` owns the key and overrides this."""
+        if not self.petsc_options.hasName("snes_max_it"):
+            return 50
+        try:
+            return int(self.petsc_options.getString("snes_max_it"))
+        except Exception:
+            # A value that is not an integer (a bare flag holds None): this solve
+            # takes the default and leaves the value for PETSc to object to.
+            return 50
+
+    def _rotated_tolerance_key(self, key, default):
+        """A user-set tolerance ``key`` for the rotated loop, else ``default``. A value
+        that is not a number takes the default, as in ``_rotated_max_it``."""
+        if not self.petsc_options.hasName(key):
+            return default
+        try:
+            return float(self.petsc_options.getString(key))
+        except Exception:
+            # A bare flag holds None, and a word will not convert: this solve takes
+            # the default and leaves the value for PETSc to object to.
+            return default
+
+    def _rotated_tolerances(self):
+        """The rotated loop's ``(rtol, atol, stol)`` (#924): a user-set ``snes_rtol``,
+        ``snes_atol`` or ``snes_stol``, else ``tolerance``, 1e-11 and 1e-8, the loop's
+        own defaults. The ``tolerance`` setter writes ``snes_rtol``, so the key reads
+        as the tolerance until the user moves it; nothing in the library writes the
+        other two. ``SNES_Stokes_SaddlePt`` owns ``snes_rtol`` and overrides this."""
+        return (self._rotated_tolerance_key("snes_rtol", float(self.tolerance)),
+                self._rotated_tolerance_key("snes_atol", 1.0e-11),
+                self._rotated_tolerance_key("snes_stol", 1.0e-8))
+
+    def _solve_rotated_if_registered(self, zero_init_guess, verbose, picard, time):
+        """Run the rotated strong-constraint solve when a rotated free-slip
+        boundary or a split-fault contact is registered, and return True; return
+        False when neither is, so the caller continues on the standard SNES path.
+
+        Shared by the saddle-point (Stokes) and vector (thin sheet) solvers: the
+        rotation, the Newton loop and the reaction recovery live in
+        ``utilities/rotated_bc.py`` and address the velocity field by name.
+        """
+        cdef DM _time_dm
+        if not (self._rotated_freeslip_bcs or self._fault_contact_faults):
+            return False
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        # Run the same pre-solve preamble as the standard path so the pointwise
+        # functions see the DM time, the auxiliary vector, and updated constants
+        # (needed for problems whose coefficients live in auxiliary fields). This
+        # must precede the nonlinearity probe below so the trial assemblies see
+        # the correct coefficients.
+        if time is not None:
+            t_nd = self._nondimensional_time(time)
+            _time_dm = self.dm
+            UW_DMSetTime(_time_dm.dm, t_nd)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants(record=True)
+
+        # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
+        # Re-check here: this path never reaches the instrumentation, so an armed
+        # guard would be silently inert -- the exact state guard() exists to refuse.
+        if (getattr(self, "_instrumentation", None) is not None
+                and self._instrumentation.armed):
+            raise NotImplementedError(
+                "a wall-clock guard is armed but this solve takes the rotated "
+                "free-slip path, which runs its own Krylov loop outside self.snes "
+                "and cannot be bounded by it. Call unguard() first."
+            )
+        # ONE path for linear and nonlinear models: the manual outer
+        # Newton/Picard loop that rotates F(u), J(u) and the strong
+        # v_n = u_n constraint every iteration. It honours zero_init_guess
+        # (warm start), the Picard warmup count, and the consistent_jacobian
+        # tangent (Picard / Newton / continuation); a linear model converges
+        # after its first increment, so no up-front nonlinearity probe is
+        # paid (the loop self-terminates; _residual_is_nonlinear survives as
+        # a lazy guard inside the picard+pure-Newton corner).
+        from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+        rtol, atol, stol = self._rotated_tolerances()
+        self._rotated_freeslip_info = solve_rotated_freeslip(
+            self, self._rotated_freeslip_bcs, verbose=verbose,
+            zero_init_guess=zero_init_guess, picard=picard,
+            max_it=self._rotated_max_it(), rtol=rtol, atol=atol, stol=stol,
+            # An explicit `time=` reaches the kernels through petsc_t on
+            # the DM — invisible to every state counter and constant
+            # value, so it must veto the cached-operator fast path.
+            force_operator_refresh=time is not None)
+        # This path solves via ksp.solve on the rotated operator (not self.snes),
+        # so give it a report from the rotated result rather than leaving a stale one.
+        _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
+        # The warm-start flag must follow the rotated solve's own verdict — the SNES
+        # was never run, so the generic reader would latch a stale reason.
+        self._record_convergence_status(converged=_rotated_report.converged)
+        # raised after the result and the convergence status are recorded, so a
+        # caller that catches it reads a failed solve (#907)
+        if self._rotated_freeslip_info.get("linear_failure"):
+            raise RuntimeError(self._rotated_freeslip_info["linear_failure"])
+        return True
+
+    def _reject_mixed_constraint_mechanisms(self, adding):
+        """Refuse a rotated constraint and a block constraint on one solver (#464).
+
+        The rotated driver builds its own index-set fieldsplit over exactly two
+        fields (``rotated_bc._solve_rotated_iterative``), and ``build_rotation``
+        addresses velocity and pressure by field number. A block constraint
+        registers a multiplier field of its own, and those DOFs are in neither
+        index set — the preconditioner would then be built over a strict subset
+        of the operator's rows, with nothing said about it.
+
+        The two are alternative ways to impose the same wall-normal condition,
+        so asking for both is a configuration error rather than a case to
+        support. Supporting it would need a third split for the multipliers and
+        a ``build_rotation`` that knows about them.
+
+        Parameters
+        ----------
+        adding : str
+            Name of the method being called, so the message can say which
+            mechanism is already in place and which one was refused.
+        """
+
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        multipliers = mechanisms["multipliers"]
+
+        if adding == "solve":
+            # The dispatch reads both lists, so it can only report the pair.
+            if not (rotated and multipliers):
+                return
+            raise RuntimeError(
+                f"solve(): this solver carries {len(rotated)} rotated "
+                f"(free-slip or fault contact) and {len(multipliers)} "
+                f"block-constraint boundary condition(s). The rotated solve "
+                f"splits velocity and pressure by field number and the "
+                f"multiplier fields lie outside that split, so the "
+                f"preconditioner would cover only part of the operator. Both "
+                f"impose the same wall-normal condition — use one of them "
+                f"(issue #464)."
+            )
+
+        if adding == "add_constraint_bc":
+            if not rotated:
+                return
+            present, refused = len(rotated), "a block constraint"
+            present_kind = "rotated (free-slip or fault contact)"
+        else:
+            if not multipliers:
+                return
+            present, refused = len(multipliers), "a rotated constraint"
+            present_kind = "block-constraint multiplier"
+
+        raise RuntimeError(
+            f"{adding}(): this solver already carries {present} "
+            f"{present_kind} boundary condition(s), so it cannot also take "
+            f"{refused}. The rotated solve splits velocity and pressure by "
+            f"field number and a block constraint adds a multiplier field "
+            f"outside that split, so the preconditioner would cover only part "
+            f"of the operator. Both impose the same wall-normal condition — "
+            f"use one of them (issue #464)."
+        )
+
+    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        conds : float, scalar sympy expression, or None, optional
+            Prescribed wall-normal velocity datum :math:`\tilde u_n` (the SCALAR
+            component along the outward normal), in the canonical value-first BC
+            order (Style Charter, API conventions). Zero (or ``None``) is pure
+            free-slip :math:`\mathbf{u}\cdot\hat{\mathbf n}=0`. A non-zero value
+            — a number, a sympy expression of ``mesh.X``, or a scalar field read
+            such as ``h_dot.sym[0]`` — is imposed strongly (machine precision) as
+            :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n`, evaluated at the
+            boundary nodes at each ``solve()``. On an enclosed boundary the
+            datum must be discretely flux-free (:math:`\oint \tilde u_n = 0`)
+            for incompressibility. A corner/edge node shared between rotated
+            boundaries has no single normal and stays at the free-slip pinning
+            (datum ignored there). Vector/matrix values are rejected.
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` (the default, and normally
+            the right choice) uses the geometric facet normal, measure-weighted
+            so that it is consistent with the straight-facet boundary integral
+            the assembler evaluates. A sympy ``1×dim`` matrix supplies an
+            analytic normal (``X/|X|`` on a spherical cap, a constant on a
+            planar face): exact for the TRUE surface, but the assembler still
+            integrates over the facets, so it keeps a consistency error that
+            grows with facet non-uniformity. Use it when the constraint must
+            follow the geometry rather than the mesh. A constant array is also
+            accepted. See ``docs/developer/subsystems/rotated-freeslip.md``.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+
+        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
+        normal)`` is detected conservatively (the first positional argument is
+        a string — the datum is never a string) and shimmed with one
+        DeprecationWarning: the string becomes ``boundary`` and a second
+        positional argument, if present, becomes ``normal``.
+        """
+        self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
+
+        if isinstance(conds, str):
+            # legacy boundary-first call: (boundary[, normal])
+            if boundary is not None:
+                if normal is not None:
+                    raise TypeError(
+                        "add_rotated_freeslip_bc() received 'normal' twice "
+                        "(positionally, legacy order, and as a keyword)")
+                normal = boundary
+            boundary = conds
+            conds = None
+            import warnings
+            warnings.warn(
+                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
+                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
+                "with conds=0 (or boundary=... by keyword)",
+                DeprecationWarning, stacklevel=2)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_rotated_freeslip_bc() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        if conds is not None:
+            if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
+                raise TypeError(
+                    "add_rotated_freeslip_bc(conds=...) takes the SCALAR "
+                    "wall-normal datum u.n; got a vector/matrix value")
+            # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
+            # structurally, but both are zero data (the free-slip member of the
+            # family). is_zero is True only when sympy can PROVE zero, so a
+            # symbolic datum (field read, expression) is correctly kept.
+            if sympy.sympify(conds).is_zero is not True:
+                self._rotated_freeslip_datum[boundary] = conds
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def add_fault_bc(self, conds=0, boundary=None, normal=None):
+        r"""Interface condition on a split-node fault (value-first).
+
+        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
+        ``fault_split.split_fault``); the mesh carries its coincident DOF
+        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
+        is always imposed strongly; ``conds`` sets the tangential law:
+
+        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
+          traction, the slip emerges (the stress-driven crack).
+        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
+          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
+          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
+          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
+          not the background's — and :math:`w` its width). ``conds`` large
+          removes the fault (only the JUMP is penalised — nothing becomes
+          rigid).
+
+        ``normal`` optionally supplies the fault's smooth unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
+        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
+        smoothed normal is built from the fault's own stored polyline —
+        the right choice for digitized traces with no analytic formula),
+        or a constant ``(dim,)`` array. Use it whenever the fault trace is
+        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
+        adjacent facet normals, which zig-zags at the sampling kinks, and
+        the no-opening constraint then forbids smooth slip past each kink —
+        slip notches and normal-traction sawteeth that GROW under mesh
+        refinement. The smooth normal restores the smooth curve's
+        mechanics on the same polyline mesh. On a straight fault the
+        default is already exact, and a deliberately KINKED fault should
+        NOT be smoothed — there the kink response is the physics.
+
+        The solve then takes the rotated strong-constraint path
+        (``utilities/rotated_bc.py`` with the pair blocks of
+        ``utilities/fault_contact.py``); ``guard()`` /
+        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
+        Slip and leak per coincident pair afterwards:
+        ``fault_contact.fault_slip(solver, boundary,
+        solver._rotated_freeslip_info)``.
+        """
+        from underworld3.utilities import fault_contact
+
+        self._reject_mixed_constraint_mechanisms("add_fault_bc")
+
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_fault_bc() requires the fault's boundary name string; "
+                f"got {type(boundary).__name__}")
+        eta_f = float(conds)
+        if eta_f == 0.0:
+            fault_contact.add_frictionless_fault_bc(self, boundary,
+                                                    normal=normal)
+        else:
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
+                                               normal=normal)
+        self.is_setup = False
+        return
+
+    def _residual_is_nonlinear(self, tol=1e-8):
+        r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
+        — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
+        iteration is required.
+
+        Detected by a NUMERICAL probe: assemble the Jacobian at two distinct
+        velocity states and compare. A symbolic test on ``F1.sym`` cannot see the
+        nonlinearity — the effective viscosity's strain-rate (velocity-gradient)
+        dependence is carried as a JIT-substituted *placeholder* symbol
+        (``\dot\varepsilon_{II}``) in the flux, decoupled from the gradient
+        ``L`` in the symbolic form, so it only becomes visible once the operator
+        is assembled at a concrete iterate. Constant- or temperature-dependent
+        viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
+        bit-identical ⇒ linear.
+
+        Used as a LAZY guard in the rotated-free-slip loop's picard + pure-Newton
+        corner (a Picard warmup is meaningless for a linear residual and impossible
+        for pure Newton) — the loop itself needs no up-front probe, it
+        self-terminates. The caller must have run the pre-solve preamble
+        (auxiliary vector + constants) so the assembly sees the correct
+        coefficients.
+        """
+        snes = self.snes
+        dm = self.dm
+        snes.setUp()
+        J = snes.getJacobian()[0]
+        U1 = dm.getGlobalVec(); U2 = dm.getGlobalVec()
+        # two distinct smooth, bounded states with non-zero velocity gradients
+        # (a linear operator gives the SAME J for both; only a solution-dependent
+        # viscosity makes them differ). Ownership-relative index keeps it
+        # partition-independent enough for the norm comparison.
+        rs, re = U1.getOwnershipRange()
+        idx = np.arange(rs, re, dtype=float)
+        # write IN PLACE into each vec's PETSc-owned array (getArray returns a writable
+        # view). setArray with a fresh numpy temporary on a POOLED getGlobalVec is risky:
+        # its storage lifetime/pool reuse is not guaranteed for the later computeJacobian.
+        a1 = U1.getArray(); a1[:] = 0.1 * np.sin(0.7 * idx + 0.3)
+        a2 = U2.getArray(); a2[:] = 0.1 * np.sin(1.3 * idx + 1.1)
+        J1 = J.copy(); J2 = J.copy()
+        try:
+            snes.computeJacobian(U1, J1)
+            snes.computeJacobian(U2, J2)
+            J2.axpy(-1.0, J1)                       # J2 <- J(U2) - J(U1)
+            rel = J2.norm() / (J1.norm() + 1e-300)
+        finally:
+            dm.restoreGlobalVec(U1); dm.restoreGlobalVec(U2)
+            J1.destroy(); J2.destroy()
+        return rel > tol
+
+    def boundary_normal_traction(self, boundary, mass="auto"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`.
+
+        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
+        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
+        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
+        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
+        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
+        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
+        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
+        independently of h (#404, measured in #633). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only (#637).
+
+        .. warning::
+           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
+           only slowly (the vertex basis has zero surface mean, so vertex reactions
+           carry only the O(h) facet-geometry error); edge-midpoint values are
+           superconvergent. Pointwise consumers on curved boundaries should use
+           midpoint or integral/fitted quantities (issue #414)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
+
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
+        ``mass="auto"`` selects lumped recovery where valid and
+        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
+
+        .. warning::
+           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
+           values written into ``field`` converge only slowly; edge-midpoint values
+           are superconvergent. Downstream pointwise use of curved-boundary
+           topography should rely on midpoint/fitted quantities (issue #414)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
+
+    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
+        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
+        rotated-free-slip constraint reaction.
+
+        With ``remove_mean=True`` (default), the constant normal-traction gauge
+        is removed before projection. Unlike pointwise
+        :meth:`boundary_normal_traction`, this weak projection does not recover
+        nodal traction values or gather a global boundary mesh. It is therefore
+        suitable for harmonic and integral diagnostics on curved P2 boundaries,
+        whose recovered vertex values converge slowly (issue #414).
+        """
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction_integral requires a completed "
+                "rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
+        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
+                     remove_mean=remove_mean)
 
 
 class SNES_Scalar(SolverBaseClass):
@@ -6462,9 +7332,11 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self._push_managed_option("ksp_type", "gmres")
-        # A vector unknown: mesh.dim components per node, which GAMG has to be
-        # told. See multigrid_options._gamg_settings.
-        self._pc_block_size = self.mesh.dim
+        # A vector unknown: one component per EMBEDDING dimension (cdim) at each
+        # node, which GAMG has to be told. On a volume mesh cdim == dim; on a
+        # manifold (dim < cdim) the vector lives in the embedding space. See
+        # multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.cdim
         for key, value in multigrid_options.gamg_bundle(
                 block_size=self._pc_block_size).settings.items():
             self._push_managed_option(key, value)
@@ -6486,7 +7358,7 @@ class SNES_Vector(SolverBaseClass):
         # here we only auto-create the default unknown when none was supplied)
         if u_Field is None:
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh,
-                        num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._obj_count),
+                        num_components=mesh.cdim, varname="Uv{}".format(SNES_Vector._obj_count),
                         vtype=uw.VarType.VECTOR, degree=degree )
 
 
@@ -6778,7 +7650,11 @@ class SNES_Vector(SolverBaseClass):
         options.setValue("private_{}_u_petscdualspace_lagrange_continuity".format(self.petsc_options_prefix), self.u.continuous)
         options.setValue("private_{}_u_petscdualspace_lagrange_node_endpoints".format(self.petsc_options_prefix), False)
 
-        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.dim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
+        # The FE carries cdim components: the unknown MeshVariable is sized by the
+        # embedding dimension, and the residual / Jacobian blocks below are too.
+        # (A dim-component FE against a cdim-component variable was the manifold
+        # vector-FE gap: a Vec-size mismatch on SphericalManifold.)
+        self.petsc_fe_u = PETSc.FE().createDefault(mesh.dim, mesh.cdim, mesh.isSimplex, mesh.qdegree, "private_{}_u_".format(self.petsc_options_prefix), PETSc.COMM_SELF)
         self.petsc_fe_u_id = self.dm.getNumFields()
         self.dm.setField( self.petsc_fe_u_id, self.petsc_fe_u )
         self.petsc_fe_u.setName("_vector_unknown_")
@@ -6865,9 +7741,22 @@ class SNES_Vector(SolverBaseClass):
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
+        # The coarse levels take the fields first: the decomposition below builds
+        # a sub-DM, which recurses into the coarse DMs (measured: PETSc error 62,
+        # "number of requested fields 1 greater than number of DM fields 0", on
+        # any mesh with refinement levels).
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
+
+        # The single field, registered AFTER the boundaries are on the DM (the
+        # decomposition finalises the DM, and DMAddBoundary refuses afterwards),
+        # under the name the rotated solve and the copy-back address it by —
+        # the saddle solver names its fields the same way. The index set is the
+        # whole vector; the sub-DM carries its local/global scatter.
+        names, isets, dms = self.dm.createFieldDecomposition()
+        self.fields = {"velocity": self.u}
+        self._subdict = {"velocity": (isets[0], dms[0])}
 
         self.is_setup = False
 
@@ -7329,6 +8218,8 @@ class SNES_Vector(SolverBaseClass):
         self._build(verbose, debug, debug_name)
         if self._picard_blend and self.consistent_jacobian is True:
             self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, 0, None):
+            return
 
 
         gvec = self.dm.getGlobalVec()
@@ -8168,6 +9059,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     SNES_Vector : For vector-valued equations without constraints.
     """
 
+    # adjoint_solve routes a rotated solve through solve_rotated_adjoint
+    _adjoint_routes_rotated_constraints = True
+
+
     class _Unknowns(SolverBaseClass._Unknowns):
         '''Extend the unknowns with the constraint parameter'''
 
@@ -8227,25 +9122,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
-        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
-        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
-        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
-        # + reaction = sigma_nn). Empty by default → the solve path is unchanged.
-        # _rotated_freeslip_datum maps boundary → prescribed wall-normal datum
-        # (the non-zero `conds` of add_rotated_freeslip_bc; absent ⇒ u.n = 0).
-        self._rotated_freeslip_bcs = []
-        self._rotated_freeslip_datum = {}
-        self._rotated_freeslip_info = None
-        # Cross-solve rotated workspace (rotated_bc cache, issue #417):
-        # populated/keyed/invalidated entirely inside solve_rotated_freeslip;
-        # torn down here by _reset_rotated_solver_cache on any DM rebuild.
-        self._rotated_linear_cache = None
-        # Split-fault interface conditions (add_fault_bc): fault names whose
-        # coincident DOF pairs carry a contact (the laws themselves live in
-        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
-        # Non-empty => solve() takes the rotated path, where fault_contact
-        # supplies the pair blocks and the interface operator.
-        self._fault_contact_faults = []
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -8427,219 +9303,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # this attrib records if we need to re-setup
         self.is_setup = False
-
-    def _reject_mixed_constraint_mechanisms(self, adding):
-        """Refuse a rotated constraint and a block constraint on one solver (#464).
-
-        The rotated driver builds its own index-set fieldsplit over exactly two
-        fields (``rotated_bc._solve_rotated_iterative``), and ``build_rotation``
-        addresses velocity and pressure by field number. A block constraint
-        registers a multiplier field of its own, and those DOFs are in neither
-        index set — the preconditioner would then be built over a strict subset
-        of the operator's rows, with nothing said about it.
-
-        The two are alternative ways to impose the same wall-normal condition,
-        so asking for both is a configuration error rather than a case to
-        support. Supporting it would need a third split for the multipliers and
-        a ``build_rotation`` that knows about them.
-
-        Parameters
-        ----------
-        adding : str
-            Name of the method being called, so the message can say which
-            mechanism is already in place and which one was refused.
-        """
-
-        mechanisms = self._constraint_mechanisms()
-        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
-        multipliers = mechanisms["multipliers"]
-
-        if adding == "solve":
-            # The dispatch reads both lists, so it can only report the pair.
-            if not (rotated and multipliers):
-                return
-            raise RuntimeError(
-                f"solve(): this solver carries {len(rotated)} rotated "
-                f"(free-slip or fault contact) and {len(multipliers)} "
-                f"block-constraint boundary condition(s). The rotated solve "
-                f"splits velocity and pressure by field number and the "
-                f"multiplier fields lie outside that split, so the "
-                f"preconditioner would cover only part of the operator. Both "
-                f"impose the same wall-normal condition — use one of them "
-                f"(issue #464)."
-            )
-
-        if adding == "add_constraint_bc":
-            if not rotated:
-                return
-            present, refused = len(rotated), "a block constraint"
-            present_kind = "rotated (free-slip or fault contact)"
-        else:
-            if not multipliers:
-                return
-            present, refused = len(multipliers), "a rotated constraint"
-            present_kind = "block-constraint multiplier"
-
-        raise RuntimeError(
-            f"{adding}(): this solver already carries {present} "
-            f"{present_kind} boundary condition(s), so it cannot also take "
-            f"{refused}. The rotated solve splits velocity and pressure by "
-            f"field number and a block constraint adds a multiplier field "
-            f"outside that split, so the preconditioner would cover only part "
-            f"of the operator. Both impose the same wall-normal condition — "
-            f"use one of them (issue #464)."
-        )
-
-    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
-        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
-        the boundary velocity DOFs into a per-node (normal, tangential) frame and
-        imposing the rotated normal component as an exact Dirichlet constraint.
-
-        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
-        this enforces zero wall-normal flow to machine precision, and the constraint
-        **reaction** is the consistent boundary normal traction
-        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
-        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
-        boundaries because the normal is taken per node.
-
-        Parameters
-        ----------
-        conds : float, scalar sympy expression, or None, optional
-            Prescribed wall-normal velocity datum :math:`\tilde u_n` (the SCALAR
-            component along the outward normal), in the canonical value-first BC
-            order (Style Charter, API conventions). Zero (or ``None``) is pure
-            free-slip :math:`\mathbf{u}\cdot\hat{\mathbf n}=0`. A non-zero value
-            — a number, a sympy expression of ``mesh.X``, or a scalar field read
-            such as ``h_dot.sym[0]`` — is imposed strongly (machine precision) as
-            :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n`, evaluated at the
-            boundary nodes at each ``solve()``. On an enclosed boundary the
-            datum must be discretely flux-free (:math:`\oint \tilde u_n = 0`)
-            for incompressibility. A corner/edge node shared between rotated
-            boundaries has no single normal and stays at the free-slip pinning
-            (datum ignored there). Vector/matrix values are rejected.
-        boundary : str
-            Boundary label to constrain.
-        normal : None or sympy 1×dim Matrix or array, optional
-            Per-node outward normal source. ``None`` (the default, and normally
-            the right choice) uses the geometric facet normal, measure-weighted
-            so that it is consistent with the straight-facet boundary integral
-            the assembler evaluates. A sympy ``1×dim`` matrix supplies an
-            analytic normal (``X/|X|`` on a spherical cap, a constant on a
-            planar face): exact for the TRUE surface, but the assembler still
-            integrates over the facets, so it keeps a consistency error that
-            grows with facet non-uniformity. Use it when the constraint must
-            follow the geometry rather than the mesh. A constant array is also
-            accepted. See ``docs/developer/subsystems/rotated-freeslip.md``.
-
-        Notes
-        -----
-        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
-        edge) is constrained on the whole span of its accumulated normals: a 3D
-        face frees two tangential directions, a 3D edge frees one (the edge
-        tangent), a corner is fully pinned. Registering delegates the solve to
-        :mod:`underworld3.utilities.rotated_bc`.
-
-        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
-        normal)`` is detected conservatively (the first positional argument is
-        a string — the datum is never a string) and shimmed with one
-        DeprecationWarning: the string becomes ``boundary`` and a second
-        positional argument, if present, becomes ``normal``.
-        """
-        self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
-
-        if isinstance(conds, str):
-            # legacy boundary-first call: (boundary[, normal])
-            if boundary is not None:
-                if normal is not None:
-                    raise TypeError(
-                        "add_rotated_freeslip_bc() received 'normal' twice "
-                        "(positionally, legacy order, and as a keyword)")
-                normal = boundary
-            boundary = conds
-            conds = None
-            import warnings
-            warnings.warn(
-                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
-                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
-                "with conds=0 (or boundary=... by keyword)",
-                DeprecationWarning, stacklevel=2)
-        if not isinstance(boundary, str):
-            raise TypeError(
-                f"add_rotated_freeslip_bc() requires a boundary label string; "
-                f"got {type(boundary).__name__}")
-        if conds is not None:
-            if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
-                raise TypeError(
-                    "add_rotated_freeslip_bc(conds=...) takes the SCALAR "
-                    "wall-normal datum u.n; got a vector/matrix value")
-            # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
-            # structurally, but both are zero data (the free-slip member of the
-            # family). is_zero is True only when sympy can PROVE zero, so a
-            # symbolic datum (field read, expression) is correctly kept.
-            if sympy.sympify(conds).is_zero is not True:
-                self._rotated_freeslip_datum[boundary] = conds
-        self._rotated_freeslip_bcs.append((boundary, normal))
-        self.is_setup = False
-        return
-
-    def add_fault_bc(self, conds=0, boundary=None, normal=None):
-        r"""Interface condition on a split-node fault (value-first).
-
-        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
-        ``fault_split.split_fault``); the mesh carries its coincident DOF
-        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
-        is always imposed strongly; ``conds`` sets the tangential law:
-
-        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
-          traction, the slip emerges (the stress-driven crack).
-        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
-          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
-          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
-          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
-          not the background's — and :math:`w` its width). ``conds`` large
-          removes the fault (only the JUMP is penalised — nothing becomes
-          rigid).
-
-        ``normal`` optionally supplies the fault's smooth unit normal —
-        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
-        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
-        smoothed normal is built from the fault's own stored polyline —
-        the right choice for digitized traces with no analytic formula),
-        or a constant ``(dim,)`` array. Use it whenever the fault trace is
-        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
-        adjacent facet normals, which zig-zags at the sampling kinks, and
-        the no-opening constraint then forbids smooth slip past each kink —
-        slip notches and normal-traction sawteeth that GROW under mesh
-        refinement. The smooth normal restores the smooth curve's
-        mechanics on the same polyline mesh. On a straight fault the
-        default is already exact, and a deliberately KINKED fault should
-        NOT be smoothed — there the kink response is the physics.
-
-        The solve then takes the rotated strong-constraint path
-        (``utilities/rotated_bc.py`` with the pair blocks of
-        ``utilities/fault_contact.py``); ``guard()`` /
-        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
-        Slip and leak per coincident pair afterwards:
-        ``fault_contact.fault_slip(solver, boundary,
-        solver._rotated_freeslip_info)``.
-        """
-        from underworld3.utilities import fault_contact
-
-        self._reject_mixed_constraint_mechanisms("add_fault_bc")
-
-        if not isinstance(boundary, str):
-            raise TypeError(
-                f"add_fault_bc() requires the fault's boundary name string; "
-                f"got {type(boundary).__name__}")
-        eta_f = float(conds)
-        if eta_f == 0.0:
-            fault_contact.add_frictionless_fault_bc(self, boundary,
-                                                    normal=normal)
-        else:
-            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
-                                               normal=normal)
-        self.is_setup = False
-        return
 
     def pressure_split(self, *, jumps, normals, tolerance=1e-10):
         r"""Lift prescribed pressure jumps on fitted triangle/tetrahedron facets.
@@ -8888,131 +9551,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
         return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
-
-    def _residual_is_nonlinear(self, tol=1e-8):
-        r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
-        — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
-        iteration is required.
-
-        Detected by a NUMERICAL probe: assemble the Jacobian at two distinct
-        velocity states and compare. A symbolic test on ``F1.sym`` cannot see the
-        nonlinearity — the effective viscosity's strain-rate (velocity-gradient)
-        dependence is carried as a JIT-substituted *placeholder* symbol
-        (``\dot\varepsilon_{II}``) in the flux, decoupled from the gradient
-        ``L`` in the symbolic form, so it only becomes visible once the operator
-        is assembled at a concrete iterate. Constant- or temperature-dependent
-        viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
-        bit-identical ⇒ linear.
-
-        Used as a LAZY guard in the rotated-free-slip loop's picard + pure-Newton
-        corner (a Picard warmup is meaningless for a linear residual and impossible
-        for pure Newton) — the loop itself needs no up-front probe, it
-        self-terminates. The caller must have run the pre-solve preamble
-        (auxiliary vector + constants) so the assembly sees the correct
-        coefficients.
-        """
-        snes = self.snes
-        dm = self.dm
-        snes.setUp()
-        J = snes.getJacobian()[0]
-        U1 = dm.getGlobalVec(); U2 = dm.getGlobalVec()
-        # two distinct smooth, bounded states with non-zero velocity gradients
-        # (a linear operator gives the SAME J for both; only a solution-dependent
-        # viscosity makes them differ). Ownership-relative index keeps it
-        # partition-independent enough for the norm comparison.
-        rs, re = U1.getOwnershipRange()
-        idx = np.arange(rs, re, dtype=float)
-        # write IN PLACE into each vec's PETSc-owned array (getArray returns a writable
-        # view). setArray with a fresh numpy temporary on a POOLED getGlobalVec is risky:
-        # its storage lifetime/pool reuse is not guaranteed for the later computeJacobian.
-        a1 = U1.getArray(); a1[:] = 0.1 * np.sin(0.7 * idx + 0.3)
-        a2 = U2.getArray(); a2[:] = 0.1 * np.sin(1.3 * idx + 1.1)
-        J1 = J.copy(); J2 = J.copy()
-        try:
-            snes.computeJacobian(U1, J1)
-            snes.computeJacobian(U2, J2)
-            J2.axpy(-1.0, J1)                       # J2 <- J(U2) - J(U1)
-            rel = J2.norm() / (J1.norm() + 1e-300)
-        finally:
-            dm.restoreGlobalVec(U1); dm.restoreGlobalVec(U2)
-            J1.destroy(); J2.destroy()
-        return rel > tol
-
-    def boundary_normal_traction(self, boundary, mass="auto"):
-        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
-        rotated-free-slip ``boundary`` as the constraint reaction from the last
-        solve — the smooth, bounded quantity used for dynamic topography
-        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
-        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
-        :meth:`solve`.
-
-        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
-        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
-        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
-        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
-        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
-        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
-        independently of h (#404, measured in #633). Three-dimensional recovery
-        currently supports triangular P1/P2 traces only (#637).
-
-        .. warning::
-           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
-           only slowly (the vertex basis has zero surface mean, so vertex reactions
-           carry only the O(h) facet-geometry error); edge-midpoint values are
-           superconvergent. Pointwise consumers on curved boundaries should use
-           midpoint or integral/fitted quantities (issue #414)."""
-        if self._rotated_freeslip_info is None:
-            raise RuntimeError(
-                "boundary_normal_traction requires a completed rotated-free-slip solve.")
-        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
-        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
-
-    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
-        r"""Write the dynamic topography
-        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
-        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
-        constraint reaction of the last solve. This is the hand-off to the free-surface
-        machinery — the 3-number topography integrator drives node motion from a surface
-        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
-        pass it here after each :meth:`solve`; its boundary nodes are filled and the
-        interior left untouched.
-
-        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
-        ``mass="auto"`` selects lumped recovery where valid and
-        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
-        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
-
-        .. warning::
-           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
-           values written into ``field`` converge only slowly; edge-midpoint values
-           are superconvergent. Downstream pointwise use of curved-boundary
-           topography should rely on midpoint/fitted quantities (issue #414)."""
-        if self._rotated_freeslip_info is None:
-            raise RuntimeError(
-                "dynamic_topography requires a completed rotated-free-slip solve.")
-        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
-        return _dtf(self, boundary, self._rotated_freeslip_info, field,
-                    buoyancy_scale=buoyancy_scale, mass=mass)
-
-    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
-        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
-        rotated-free-slip constraint reaction.
-
-        With ``remove_mean=True`` (default), the constant normal-traction gauge
-        is removed before projection. Unlike pointwise
-        :meth:`boundary_normal_traction`, this weak projection does not recover
-        nodal traction values or gather a global boundary mesh. It is therefore
-        suitable for harmonic and integral diagnostics on curved P2 boundaries,
-        whose recovered vertex values converge slowly (issue #414).
-        """
-        if self._rotated_freeslip_info is None:
-            raise RuntimeError(
-                "boundary_normal_traction_integral requires a completed "
-                "rotated-free-slip solve.")
-        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
-        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
-                     remove_mean=remove_mean)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):
@@ -9446,6 +9984,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     def _push_snes_max_it(self, value):
         self._push_owned_option("snes_max_it", int(value))
+
+    def _rotated_max_it(self):
+        """The rotated loop's cap through the owned-option record: resolved as
+        the standard path resolves it, then pushed, so that the record reads a
+        later user value correctly on either path (#920)."""
+        cap = self._resolve_snes_max_it(50)
+        self._push_snes_max_it(cap)
+        return cap
+
+    def _rotated_tolerances(self):
+        """The rotated loop's ``(rtol, atol, stol)`` (#924): ``snes_rtol`` through the
+        owned-option record, as ``_rotated_max_it`` takes the cap, since a rotated solve
+        returns before ``_reassert_outer_tolerances``; a user-set ``snes_atol`` or
+        ``snes_stol``, else the loop's own 1e-11 and 1e-8."""
+        rtol = self._resolve_owned_option("snes_rtol", float(self._tolerance))
+        self._push_owned_option("snes_rtol", rtol)
+        return (rtol, self._rotated_tolerance_key("snes_atol", 1.0e-11),
+                self._rotated_tolerance_key("snes_stol", 1.0e-8))
 
     def _reassert_outer_tolerances(self):
         """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
@@ -11956,12 +12512,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             cached = (key, self._residual_is_linear_in_unknown())
             self._adjoint_linearity_cache = cached
         nonlinear = not cached[1]
-        if not self.consistent_jacobian and nonlinear:
-            return (True,
-                    why + ". The forward solve used the Picard tangent, so the "
-                    "consistent tangent is assembled for the adjoint (a rebuild "
-                    "of the Jacobian kernel)")
-        return supported, why
+        # The base reaches the same conclusion by its own (uncached) linearity
+        # test, so say it once: this override exists for the CACHE, not for a
+        # second opinion. Without the guard the sentence appears twice in the
+        # reason, which reads as two different findings about the same solve.
+        if not self.consistent_jacobian and nonlinear and "Picard tangent" not in why:
+            why = (why + ". The forward solve used the Picard tangent, so the "
+                   "consistent tangent is assembled for the adjoint (a rebuild "
+                   "of the Jacobian kernel)")
+        rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or [])
+        if rotated:
+            why = (why + f". {len(rotated)} rotated free-slip constraint(s): the "
+                   "forward solve inverted the ROTATED operator Q J Qᵀ, so the "
+                   "adjoint is the transpose of THAT, taken in the boundary frame "
+                   "and rotated back (rotated_bc.solve_rotated_adjoint). The "
+                   "multiplier comes back modulo the free-slip null space — the "
+                   "pressure level, and a rigid rotation on an annulus or shell")
+        return True, why
 
     def adjoint_solve(self, rhs, target=None):
         r"""Solve :math:`K^T (\\mu, \\lambda) = b` on the composite (u, p) system.
@@ -11972,6 +12539,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         strain-rate- or pressure-dependent viscosity it is the transpose of
         the consistent tangent, which that construction cannot build.
 
+        Under rotated free-slip the operator to transpose is not :math:`K` but
+        the rotated, constraint-eliminated one the forward solve actually
+        inverted, :math:`Q K Q^T` — see
+        :func:`~underworld3.utilities.rotated_bc.solve_rotated_adjoint`. The
+        multiplier is returned in the physical frame, exactly zero in the
+        wall-normal component, and modulo the free-slip null space.
+
         Parameters
         ----------
         rhs : numpy.ndarray or petsc4py.PETSc.Vec
@@ -11979,7 +12553,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             one from a velocity-space expression.
         target : (MeshVariable, MeshVariable), optional
             ``(u_adj, p_adj)`` on the velocity and pressure spaces, to receive
-            the multipliers as fields. Constrained nodes are set to zero.
+            the multipliers as fields. Essential (Dirichlet) nodes are set to
+            zero. A rotated free-slip node is NOT one of those: it is
+            constrained in one component only, and comes back carrying its
+            tangential multiplier.
 
         Returns
         -------
@@ -11999,6 +12576,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         by_kernels = self._adjoint_by_kernels()            # before any DM vector
         tangent = (self._install_adjoint_kernels() if by_kernels
                    else self._consistent_tangent_for_adjoint())
+        if not getattr(self, "_rotated_freeslip_bcs", None):
+            # The velocity block's custom-P hierarchy, as the forward solve installs
+            # it before its SNES solve: switching the tangent for the adjoint resets
+            # the preconditioner, and the fieldsplit rebuilt the block as a
+            # one-level multigrid with no coarse correction and no FAC smoother (23
+            # velocity iterations against the forward's 4, #1016). It goes in BEFORE
+            # the tangent below is assembled at the forward state: the install
+            # assembles at a zero vector to reach the fieldsplit, and after the
+            # state's assembly it left the adjoint solving with the tangent at
+            # u = 0 (hyperion's review: a power-law adjoint 73 % off in the
+            # velocity, reported converged). The rotated route builds its own.
+            from underworld3.utilities.custom_mg import auto_inject_custom_mg
+            auto_inject_custom_mg(self, field_id=0)
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
         self._gather_fields_to_global(gvec)
@@ -12036,16 +12626,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         x = gvec.duplicate()
         x.set(0.0)
 
-        if by_kernels:
-            # J IS K^T: assembled from the transposed kernels. Solve forwards.
-            ksp = self.snes.getKSP()
-            ksp.setOperators(J, P)
-            ksp.solve(b, x)
-            reason = int(ksp.getConvergedReason())
-            self._uninstall_adjoint_kernels(tangent)
-        else:
-            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
-            self._restore_tangent(tangent)
+        try:
+            if getattr(self, "_rotated_freeslip_bcs", None):
+                # The forward solve never ran self.snes: it inverted the ROTATED,
+                # constraint-eliminated operator in its own Krylov loop. The
+                # adjoint is the transpose of THAT operator, not of K, and
+                # rotated_bc owns the whole rotate / eliminate / solve /
+                # rotate-back sequence here as it does forward.
+                #
+                # This is the MATRIX route by construction: solve_rotated_adjoint
+                # forms Q K Qᵀ from the assembled forward Jacobian and transposes
+                # the result, so it needs K and not Kᵀ. _adjoint_by_kernels()
+                # returns False whenever a rotated constraint is present, which
+                # is what guarantees J is the forward operator here.
+                from underworld3.utilities.rotated_bc import solve_rotated_adjoint
+                mu, reason = solve_rotated_adjoint(self, J, b, verbose=False)
+                mu.copy(x)
+                mu.destroy()
+            elif by_kernels:
+                # J IS K^T: assembled from the transposed kernels. Solve forwards.
+                ksp = self.snes.getKSP()
+                ksp.setOperators(J, P)
+                ksp.solve(b, x)
+                reason = int(ksp.getConvergedReason())
+            else:
+                reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+        finally:
+            # Teardown belongs in `finally`: the rotated path refuses by design —
+            # a released rotation, a changed boundary set — and a refusal that
+            # left the solver switched to the Newton tangent would make the next
+            # FORWARD solve run Newton on a solver configured for Picard,
+            # silently and far from here.
+            if by_kernels:
+                self._uninstall_adjoint_kernels(tangent)
+            else:
+                self._restore_tangent(tangent)
 
         if target is not None:
             u_adj, p_adj = target
@@ -12440,55 +13055,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Non-dimensionalise if the scaling system is active.
         cdef DM _time_dm_stokes
 
-        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
-        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
-        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
-        if self._rotated_freeslip_bcs or self._fault_contact_faults:
-            # Run the same pre-solve preamble as the standard path so the pointwise
-            # functions see the DM time, the auxiliary vector, and updated constants
-            # (needed for problems whose coefficients live in auxiliary fields). This
-            # must precede the nonlinearity probe below so the trial assemblies see
-            # the correct coefficients.
-            if time is not None:
-                t_nd = self._nondimensional_time(time)
-                _time_dm_stokes = self.dm
-                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
-            self.mesh.update_lvec()
-            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-            self._update_constants(record=True)
-
-            # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
-            # Re-check here: this path never reaches the instrumentation, so an armed
-            # guard would be silently inert -- the exact state guard() exists to refuse.
-            if (getattr(self, "_instrumentation", None) is not None
-                    and self._instrumentation.armed):
-                raise NotImplementedError(
-                    "a wall-clock guard is armed but this solve takes the rotated "
-                    "free-slip path, which runs its own Krylov loop outside self.snes "
-                    "and cannot be bounded by it. Call unguard() first."
-                )
-            # ONE path for linear and nonlinear models: the manual outer
-            # Newton/Picard loop that rotates F(u), J(u) and the strong
-            # v_n = u_n constraint every iteration. It honours zero_init_guess
-            # (warm start), the Picard warmup count, and the consistent_jacobian
-            # tangent (Picard / Newton / continuation); a linear model converges
-            # after its first increment, so no up-front nonlinearity probe is
-            # paid (the loop self-terminates; _residual_is_nonlinear survives as
-            # a lazy guard inside the picard+pure-Newton corner).
-            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
-            self._rotated_freeslip_info = solve_rotated_freeslip(
-                self, self._rotated_freeslip_bcs, verbose=verbose,
-                zero_init_guess=zero_init_guess, picard=picard,
-                # An explicit `time=` reaches the kernels through petsc_t on
-                # the DM — invisible to every state counter and constant
-                # value, so it must veto the cached-operator fast path.
-                force_operator_refresh=time is not None)
-            # This path solves via ksp.solve on the rotated operator (not self.snes),
-            # so give it a report from the rotated result rather than leaving a stale one.
-            _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
-            # The warm-start flag must follow the rotated solve's own verdict — the SNES
-            # was never run, so the generic reader would latch a stale reason.
-            self._record_convergence_status(converged=_rotated_report.converged)
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, picard, time):
             return
 
         if time is not None:
@@ -12514,29 +13081,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         gvec.setArray(0.0)
 
         if not zero_init_guess:
-
             if verbose and uw.mpi.rank == 0:
                 print(f"SNES pre-solve - non-zero initial guess", flush=True)
-
-
-            self._push_snes_max_it(0)
-            self.snes.setType("nrichardson")
-            self.snes.setFromOptions()
-            # PETSc may rebuild operator state after setFromOptions(), so reattach
-            # the configured Stokes nullspace before each solve path.
-            self._attach_stokes_nullspace()
-            self.snes.solve(None, gvec)
-
             for name,var in self.fields.items():
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
                 subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
                 gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
-            self.atol = self.snes.getFunctionNorm() * self.tolerance
-
-        else:
-            self.atol = 0.0
+        # The absolute target is set from this solve's reference residual where every
+        # solve is gated (_apply_convergence_reference); it used to be tolerance times
+        # the warm start's own residual, which held a warm start to a stricter target
+        # than a cold one.
+        self.atol = 0.0
 
         # ⚠️ #791. A Picard step is a Newton iteration with the FROZEN (Picard)
         # tangent — a linear Stokes solve, velocity block and Schur complement, with

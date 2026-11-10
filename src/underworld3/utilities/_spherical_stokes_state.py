@@ -103,4 +103,3 @@ def prepare_spherical_replay_fields(mesh: uw.discretisation.Mesh, velocity: uw.d
 def assign_spherical_fields(vector: PETSc.Vec, layout: Mapping[str, object]) -> tuple[uw.discretisation.MeshVariable, uw.discretisation.MeshVariable]:
     """Explicit field-only replay, preserving the native conversion semantics."""
     return SphericalSolveState(layout).assign_fields(vector)
-

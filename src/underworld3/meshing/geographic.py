@@ -16,6 +16,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -326,7 +327,7 @@ def RegionalSphericalBox(
                 gmsh.model.mesh.set_recombine(3, volume)
 
         # Generate Mesh
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 

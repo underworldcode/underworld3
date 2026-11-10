@@ -308,5 +308,3 @@ def _solve_with_wall_updates(stokes, walls, updates):
         if iteration < updates:
             step["boundary_updates"] = {name: wall.update() for name, wall in sorted(walls.items())}
     return history
-
-

@@ -32,6 +32,9 @@ datum strongly.
 - Its reaction is the boundary normal traction, read with
   `solver.boundary_normal_traction(boundary)`; no augmented-Lagrangian
   splitting is involved.
+- Where the rotated wall meets an essential wall, a component the essential
+  condition constrains contributes zero to σ_nn, and the free components keep
+  their load (Louis, 2026-11-04, #936).
 
 Governing document: [rotated free-slip](../subsystems/rotated-freeslip.md).
 
