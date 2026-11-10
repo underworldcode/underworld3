@@ -41,6 +41,7 @@ import underworld3 as uw
 from underworld3.cython.generic_solvers import SNES_Scalar as _SNES_Scalar
 from underworld3.cython.generic_solvers import SNES_Vector as _SNES_Vector
 from underworld3.utilities._api_tools import Template
+from underworld3.function.expressions import unwrap_expression
 
 
 class _ScalarLoad(_SNES_Scalar):
@@ -324,40 +325,85 @@ def _tokens_of(variables):
     return {_token_of(var): var for var in variables if hasattr(var, "sym")}
 
 
-def _datum_reads_of(solver, variables):
-    """The variables among ``variables`` that an essential datum of ``solver``
-    reads: a field prescribed on a wall, ``u|_G = f``.
+def _boundary_reads_of(solver, variables):
+    """``[(variable, kind)]`` for the variables among ``variables`` that a
+    boundary condition of ``solver`` reads, ``kind`` being ``"essential"``
+    (a datum, ``u|_G = f``) or ``"natural"`` (a flux or traction).
 
-    The field route (:func:`field_duals`) differentiates the residual, and a
-    datum is not in the residual: PETSc's global vector holds only the
-    unconstrained degrees of freedom, so a field read only there comes back
-    with a dual of exactly zero (#787). Its term is the reaction of the
-    adjoint constraint mapped onto the field's nodes, which is not built yet,
-    so the callers refuse rather than return the zero."""
-    found = []
-    data = [str(_peel(sympy.Matrix(bc.fn))) for bc in (getattr(solver, "essential_bcs", None) or [])]
-    if not data:
-        return found
+    The field route (:func:`field_duals`) differentiates the volume residual
+    only. A datum is not in it, since the global vector holds only the
+    unconstrained degrees of freedom, and a natural condition is a facet
+    integral it does not assemble. So a field read only there comes back
+    with a dual of exactly zero (#787), which reads as "no influence". The
+    callers refuse instead.
+
+    Matching is on whole function atoms of each element of the condition,
+    unwrapped one element at a time (a nested expression ``b = 2 a`` with
+    ``a`` wrapping ``f`` hides ``f`` from a whole-matrix peel). The atoms are the
+    variable's own (its value) and its derivative atoms (``{f}_{,0}``), so a
+    name that merely contains another (``\\bar{T}`` against ``T``) does not
+    match."""
+    conditions = []
+    for bc in (getattr(solver, "essential_bcs", None) or []):
+        conditions.append(("essential", bc.fn))
+    for bc in (getattr(solver, "natural_bcs", None) or []):
+        for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+            if fn is not None:
+                conditions.append(("natural", fn))
+    if not conditions:
+        return []
+    atoms = []
+    for kind, fn in conditions:
+        found = set()
+        for element in sympy.Matrix(fn):
+            # unwrap_expression, not _peel: a bare named expression as the
+            # element (b = 2 a, a wrapping f) is not expanded by _peel, which
+            # substitutes only the expressions found inside it
+            found |= set(unwrap_expression(sympy.sympify(element)).atoms(sympy.Function))
+        atoms.append((kind, found))
+    out = []
     for var in variables:
         if var is getattr(solver, "u", None) or not hasattr(var, "sym"):
             continue
-        token = _token_of(var)
-        if any(token in text for text in data):
-            found.append(var)
-    return found
+        own = set(sympy.Matrix(var.sym).atoms(sympy.Function))
+        derivative = re.compile(re.escape(_token_of(var)) + r"_\{ ?(\d*),(\d+)\}\(")
+        for kind, found in atoms:
+            if own & found or any(derivative.match(str(a)) for a in found):
+                out.append((var, kind))
+                break
+    return out
 
 
-def _refuse_datum_fields(solver, variables, where):
-    found = _datum_reads_of(solver, variables)
-    if found:
-        names = ", ".join(f"'{v.name}'" for v in found)
-        raise NotImplementedError(
-            f"{where}: field(s) {names} enter an essential (Dirichlet) datum of "
-            f"{type(solver).__name__}({solver.u.name}). The derivative through a "
-            f"datum is the reaction of the adjoint constraint on the constrained "
-            f"nodes, which the field route does not assemble yet; without it the "
-            f"dual would be exactly zero, which reads as 'no influence' (#787). A "
-            f"scalar parameter in a datum is supported (sensitivity).")
+def _refuse_boundary_fields(solver, reads, where, why):
+    names = ", ".join(f"'{v.name}' ({kind} condition)" for v, kind in reads)
+    raise NotImplementedError(
+        f"{where}: {names} of {type(solver).__name__}({solver.u.name}) {why}. "
+        f"The derivative through a boundary condition is not assembled on the "
+        f"field route yet; without it the dual would be exactly zero, which "
+        f"reads as 'no influence' (#787). A scalar parameter in a condition is "
+        f"supported (sensitivity).")
+
+
+def _depends_on_controls(solver, parameters, fields, tokens):
+    """Whether a solve's output can carry a control's influence: it reads a
+    parameter, a requested field (its own unknown included, as an initial
+    condition), or any other variable through which the chain continues."""
+    if any(f is solver.u for f in fields):
+        return True
+    if _reads_of(solver, solver.u, tokens):
+        return True
+    forms = [solver.F0.sym, solver.F1.sym]
+    if getattr(solver, "PF0", None) is not None:
+        forms.append(solver.PF0.sym)
+    forms += [bc.fn for bc in (getattr(solver, "essential_bcs", None) or [])]
+    for bc in (getattr(solver, "natural_bcs", None) or []):
+        forms += [fn for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None))
+                  if fn is not None]
+    for p in parameters:
+        for form in forms:
+            if not sympy.Matrix(_peel_except(sympy.Matrix(form), p)).diff(p).is_zero_matrix:
+                return True
+    return False
 
 
 def field_duals(solver, mu, variables, scratch=None):
@@ -415,7 +461,6 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     duals = {}
     grad = {p: 0.0 for p in parameters}
     read = [u] + [f for f in fields if f is not u]
-    _refuse_datum_fields(solver, fields, "gradient")
     for where, term in terms.items():
         J += integral(mesh, term, where)
         for var, dual in misfit_duals(term, read, scratch, boundary=where).items():
@@ -447,6 +492,9 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
                 route[history.psi_star[0]] = field
     read_vars = [f for f in fields if f is not u] + list(route)
     if u in duals:
+        reads = _boundary_reads_of(solver, [f for f in fields if f is not u])
+        if reads:
+            _refuse_boundary_fields(solver, reads, "gradient", "enter a boundary condition")
         rhs = duals.pop(u)
         # dJ/du on every node, the constrained ones included: the rows the
         # solve leaves out are the misfit reading the prescribed data, and
@@ -591,21 +639,6 @@ class TranscriptAdjoint:
         model = self.model
         scratch = self._scratch
 
-        # A field in an essential datum carries no dual on the field route
-        # (#787). It matters where the walk would need it: a field asked for,
-        # or another solve's unknown, through which the chain runs. Checked
-        # before any replay, so the refusal costs nothing.
-        solvers = {}
-        for step in self.steps:
-            for e in step.events:
-                if e["kind"] == "solve":
-                    obj = model.part_object(e["part"])
-                    if obj is not None:
-                        solvers[id(obj)] = obj
-        unknowns = [s.u for s in solvers.values() if getattr(s, "u", None) is not None]
-        for solver in solvers.values():
-            _refuse_datum_fields(solver, list(fields) + unknowns, "TranscriptAdjoint.gradient")
-
         # J and its dual on every field it touches, at the final level — and
         # the explicit dJ/dm, for a misfit that names a parameter directly.
         model.load_state(self.final_state)
@@ -620,6 +653,16 @@ class TranscriptAdjoint:
             if explicit != 0:
                 grad[p] += float(uw.maths.Integral(self._mesh(), explicit).evaluate())
 
+        # every solve's outputs: the unknown, and the pressure of a saddle point
+        others = []
+        for step in self.steps:
+            for e in step.events:
+                if e["kind"] == "solve":
+                    obj = model.part_object(e["part"])
+                    for v in (getattr(obj, "u", None), getattr(obj, "p", None)):
+                        if v is not None and all(v is not o for o in others):
+                            others.append(v)
+        pending = {}
         for k in range(len(self.steps) - 1, -1, -1):
             step = self.steps[k]
             solves = [e for e in step.events if e["kind"] == "solve"]
@@ -631,12 +674,36 @@ class TranscriptAdjoint:
                         f"{solves[j]['part']!r} — the backward pass needs the "
                         f"solvers of the run in this process")
                 u = solver.u
+                # A boundary condition downstream read this unknown, and its
+                # part of the dual was not assembled (#787). That matters only
+                # if this solve passes a control's influence on.
+                outputs = [v for v in (u, getattr(solver, "p", None)) if v is not None]
+                read = [v for v in outputs if v.name in pending]
+                if read and _depends_on_controls(solver, parameters, fields, self._tokens()):
+                    reader, kind = pending[read[0].name]
+                    _refuse_boundary_fields(
+                        reader, [(read[0], kind)], "TranscriptAdjoint.gradient",
+                        f"reads the output of {type(solver).__name__}({u.name}), "
+                        f"which depends on the controls")
                 rhs = acc.get(u.name)
                 # Decided on every rank together: the gate guards a collective
                 # solve, and a misfit supported on one rank's cells deadlocked
                 # here when each rank looked only at its own values.
                 if not self._nonzero(rhs):
                     continue
+                # This solve matters to J. A requested field in one of its
+                # conditions has no dual on the field route: refuse. Another
+                # solve's output read there is noted, and refused only if that
+                # solve turns out to depend on a control.
+                own_p = getattr(solver, "p", None)
+                reads = _boundary_reads_of(
+                    solver, list(fields) + [v for v in others if v is not own_p])
+                asked = [(v, k) for v, k in reads if any(v is f for f in fields)]
+                if asked:
+                    _refuse_boundary_fields(solver, asked, "TranscriptAdjoint.gradient",
+                                            "enter a boundary condition")
+                for v, kind in reads:
+                    pending.setdefault(v.name, (solver, kind))
                 inputs = self._linearise_at(step, solves, j)
                 mu, lam = self._adjoint(solver, rhs)
                 # the dual on every node of this level's output, the
