@@ -751,8 +751,13 @@ def _peel_except(expression, wrt, depth=8):
     has something to hold on to. Leaves (:func:`_is_leaf`) stay as they are.
     """
     for _ in range(depth):
-        named = [e for e in uw.function.fn_extract_expressions(expression)
-                 if e is not wrt and e != wrt and not _is_leaf(e)]
+        # The named expressions at this level, read from the tree itself:
+        # fn_extract_expressions misses a bare named expression and any product
+        # made only of named ones, which left a misfit written as one with a
+        # zero gradient.
+        named = [e for e in expression.atoms(sympy.Symbol)
+                 if isinstance(e, uw.function.expression)
+                 and e is not wrt and e != wrt and not _is_leaf(e)]
         if not named:
             break
         expression = expression.subs({e: e.sym for e in named})
