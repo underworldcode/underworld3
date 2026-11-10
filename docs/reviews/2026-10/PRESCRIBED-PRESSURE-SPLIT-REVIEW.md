@@ -1,10 +1,12 @@
 # Prescribed pressure lifting: pre-PR audit
 
+## Overview
+
 27 October 2026. Agent audit of `feature/cylindrical-pressure-jump` against
 development `7222caf34c1e`; not maintainer approval. Runtime source
 `55ea3ffea4e8`, Mac Linux ARM64 container, PETSc 3.25.4 int32.
 
-## Findings resolved
+## Changes Made
 
 - We found repeated extraction reused mesh-field names and overwrote retained
   lifts. Solver/call-specific names now preserve previous fields; the analytic/
@@ -19,7 +21,11 @@ development `7222caf34c1e`; not maintainer approval. Runtime source
   neither the API nor its documentation equates the geometries or attributes
   the vertex-star construction to Chang and Kwak's harmonic extension.
 
-## Attacks and evidence
+## System Architecture
+
+The public Stokes method delegates fitted-jump extraction to private simplex/tetrahedral helpers. Vertex-owned star exchanges preserve distributed layouts; exact-circle lifting remains a separate specialised construction.
+
+## Testing Instructions
 
 - Both `test_1099*` modules: 14 tests pass per rank at 1, 2 and 8 ranks.
 - Prescribed analytic expressions, continuous numerical fields, callable data,
@@ -37,7 +43,7 @@ development `7222caf34c1e`; not maintainer approval. Runtime source
   No solver class, constraint mechanism or solve event is added. Prescribed
   data are frozen inputs; differentiability through lifting is not claimed.
 
-## Open issues in the pressure/solver territory
+## Known Limitations
 
 We do not claim a fix or change their status: #98 concerns spherical boundary
 pressure, #608 mixed-wall corner errors, #348 partition-dependent LU pressure
@@ -46,7 +52,7 @@ scaling. Those code paths are unchanged; their reproducers were not rerun in
 this pressure-extraction audit. The small manufactured meshes emit the existing
 GAMG/no-hierarchy warning associated with #625, while meeting every error bound.
 
-## Merge conditions
+### Merge conditions
 
 - Review the prescribed-jump sign and natural-datum contract and fitted-simplex
   scope. Unknown coupled jumps, unfitted cuts, nonzero finite-tip singularities
@@ -54,3 +60,10 @@ GAMG/no-hierarchy warning associated with #625, while meeting every error bound.
 - Retain the serial/MPI mathematical tests and the specialised circle helper's
   independent weak-load checks. Broader benchmark acceptance is separate from
   these component checks; no default benchmark workflow changes here.
+
+## Sign-Off
+
+| Role | Name | Date | Status |
+| --- | --- | --- | --- |
+| Automated component audit | Agent audit | 2026-10-27 | Component audit completed; not maintainer approval |
+| Maintainer review | Pending | — | Pending; no approval claimed |
