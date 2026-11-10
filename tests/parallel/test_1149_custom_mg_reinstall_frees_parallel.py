@@ -4,7 +4,8 @@ In parallel petsc4py does not destroy a PETSc object when Python collects its wr
 the destroy is collective, so the object goes on a deferred list that only a collective
 ``PETSc.garbage_cleanup`` empties, and nothing on the standard solve paths ran one. Every
 reinstall of a custom-P hierarchy kept its predecessor's transfers and level objects:
-+4 entries per reinstall on Poisson and +28 on the Stokes velocity block at np 2. The
+on this fixture at np 2, +6 entries per reinstall on Poisson and +28 on the Stokes
+velocity block (hyperion, development a6eebb61). The
 solve that installed now empties the list at its end, as the rotated path does (#1007).
 
 Run with at least two ranks.
@@ -92,5 +93,5 @@ def test_a_reinstall_leaves_nothing_deferred(kind):
         s.solve()
         assert s.snes.getConvergedReason() > 0
         counts.append(_deferred_entries(s.dm.comm))
-    # before the fix: +4 (Poisson) and +28 (Stokes) entries per reinstall
+    # development: +6 (Poisson) and +28 (Stokes) entries per reinstall
     assert counts[-1] <= counts[0], counts
