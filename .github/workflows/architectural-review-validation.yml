@@ -88,7 +88,8 @@ jobs:
   create-review-checklist:
     name: Post Review Checklist
     runs-on: ubuntu-latest
-    if: github.event.action == 'opened'
+    # Fork pull_request tokens are read-only; validation still runs below.
+    if: github.event.action == 'opened' && github.event.pull_request.head.repo.full_name == github.repository
 
     permissions:
       pull-requests: write
@@ -160,7 +161,8 @@ jobs:
           echo "pixi run underworld-test"
 
       - name: Post test status
-        if: always()
+        # Posting is optional; never grant a fork token additional privileges.
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |

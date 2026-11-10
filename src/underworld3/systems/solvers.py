@@ -1804,6 +1804,325 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
 
     instances = 0
 
+    def observe_stokes(self, observer):
+        """Observe a cylindrical or spherical gap solve through collective hooks.
+
+        Parameters
+        ----------
+        observer : underworld3.diagnostics.StokesObserver
+            Read-only callbacks borrowing solver objects for the scoped solve.
+        """
+        from underworld3.utilities._stokes_observer import observe_stokes
+        return observe_stokes(self, observer)
+
+    def observe_spherical_stokes(self, observer):
+        """Observe one spherical solve through a scoped, collective context.
+
+        Parameters
+        ----------
+        observer : underworld3.diagnostics.SphericalStokesObserver
+            Receives borrowed solver objects. Callbacks must not mutate or destroy
+            operators, right-hand sides, settings, or iterates.
+
+        Returns
+        -------
+        contextlib.AbstractContextManager
+            Removes the observer on normal completion and exceptions.
+        """
+        from underworld3.diagnostics.observer import observe_spherical_stokes
+        return observe_spherical_stokes(self, observer)
+
+    def rotated_stokes_diagnostics(self, *, rtol):
+        """Snapshot settings and verify the finalized original rotated residual.
+
+        Parameters
+        ----------
+        rtol : float
+            Positive relative bound on the original constrained equations.
+        """
+        from underworld3.diagnostics.stokes import rotated_stokes_diagnostics
+        return rotated_stokes_diagnostics(self, rtol=rtol)
+
+    def verify_linear_stokes_residual(self, *, rtol):
+        """Verify the original linear residual without changing solved fields.
+
+        Parameters
+        ----------
+        rtol : float
+            Positive relative bound on the original native residual.
+        """
+        from underworld3.diagnostics.stokes import verify_linear_stokes_residual
+        return verify_linear_stokes_residual(self, rtol=rtol)
+
+    def solve_spherical_gap(
+        self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
+        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+        quadrature, linear_solver_options, batch_size, volume_force,
+        norm_preconditioner_length=None, radial_quadrature=4,
+    ):
+        r"""Solve an opt-in spherical P2/P1 system with weak normal wall constraints.
+
+        Each inner-cut tetrahedron integrates its own polynomial over its
+        physical restriction outside the inner sphere. Inner-wall traces use
+        those cell polynomials with the original surface multiplier space;
+        wholly void cells contribute zero, and unsupported unknowns are removed
+        by identity completion. Outer gaps retain polynomial continuations and
+        their radial-curtain consistency terms. No jump penalty or pressure
+        filtering is added. Uniform multiplier stability is unproven.
+
+        Parameters
+        ----------
+        inner_boundary, outer_boundary : str
+            Complete triangular walls whose vertices lie on the physical spheres.
+        radius_inner, radius_outer : float
+            Positive physical radii, with inner < outer.
+        viscosity : float
+            Positive constant matching this solver's constitutive viscosity.
+        pressure_jump : sympy expression
+            Coordinate-only pressure lift at the walls and in boundary gaps.
+            Pass zero when no pressure lift is present.
+        pressure_jump_integral : float
+            Integral of the lift over the computational polyhedral volume;
+            signed wall-gap contributions are added for the physical gauge.
+        gap_bodyforce : sympy matrix
+            Explicit coordinate-only continuation of the regular volume force.
+        volume_force : PETSc.Vec or None
+            Caller-owned assembled force on the full velocity field. Added once
+            to the ordinary bodyforce integral; pass None when absent. Its
+            inner-domain integration must already use the physical cell
+            restriction: a load vector alone does not identify a source density.
+            The true-sphere pressure lift is supported outside its internal
+            interface and therefore has no inner-cut contribution. For a
+            true-sphere pressure lift, pass its volume_force, its pressure_jump
+            and integral, and continue its regular_force_expression in the gaps.
+            The native_outer_boundary_force is excluded by physical wall data.
+        norm_preconditioner_length : float or None, default=None
+            Explicit nominal mesh spacing for the experimental norm-block
+            preconditioner. None retains the pinned solve with supplied PETSc
+            options. A positive value requests FGMRES/PythonPC on the original
+            verified singular operator; configure those PETSc options explicitly.
+            This solver experiment requires independent refinement validation.
+        quadrature : int
+            Outer surface Gauss order, at least three. Physical inner-cell
+            integration uses at least order twelve, recorded in the checks;
+            assess quadrature convergence independently of mesh refinement.
+        radial_quadrature : int, default=4
+            Gap radial Gauss order, at least two. Choose it independently for
+            polynomial force loads; degree-nine force times P2 and the radial
+            volume Jacobian needs order seven. Bilinear curtain terms retain
+            radial order four, recorded separately in the returned checks.
+        linear_solver_options : dict
+            Explicit PETSc KSP/PC options for the coupled mixed system.
+        batch_size : int
+            Positive cell batch bound for local integration workspaces.
+
+        Returns
+        -------
+        named tuple
+            Physical normal/tangential reaction fields and validation checks.
+            The normal reaction is negative physical normal stress. Scalar
+            free-slip multipliers enforce normal velocity weakly; tangential
+            traction is natural. All three rigid rotations and the paired
+            pressure/reaction gauge are checked before solving.
+
+        Notes
+        -----
+        Configure continuous P2 velocity, continuous P1 pressure, constant
+        Newtonian viscosity, zero penalty and standard continuity. This method
+        replaces wall registration; do not add ordinary boundary conditions.
+        It is experimental until analytical, partition and stability gates pass.
+        """
+        from underworld3.utilities._spherical_stokes_gap import _solve_spherical_gap
+
+        return _solve_spherical_gap(
+            self, inner_boundary, outer_boundary, radius_inner, radius_outer,
+            viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+            quadrature, linear_solver_options, batch_size, volume_force,
+            norm_preconditioner_length, radial_quadrature,
+        )
+
+    def solve_spherical_gap_zero_slip(
+        self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
+        viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+        quadrature, linear_solver_options, batch_size, volume_force,
+        norm_preconditioner_length=None, radial_quadrature=4,
+    ):
+        r"""Solve the spherical-gap system with all three wall velocities constrained.
+
+        Parameters and physical inner-cut/outer-gap forms match :meth:`solve_spherical_gap`.
+        Three Cartesian surface multipliers avoid polar tangent singularities.
+        Their mapped basis contains the exact physical normal, preserving the
+        paired pressure/reaction gauge. Rotations are constrained by zero slip;
+        returned tangential reactions remain separate from the normal reaction.
+        The mapped multiplier space requires independent stability verification.
+        """
+        from underworld3.utilities._spherical_stokes_gap import _solve_spherical_gap_zero_slip
+
+        return _solve_spherical_gap_zero_slip(
+            self, inner_boundary, outer_boundary, radius_inner, radius_outer,
+            viscosity, pressure_jump, pressure_jump_integral, gap_bodyforce,
+            quadrature, linear_solver_options, batch_size, volume_force,
+            norm_preconditioner_length, radial_quadrature,
+        )
+
+    def spherical_pressure_lifting(
+        self, *, inner_boundary, interface, interface_radius, outer_boundary,
+        outer_radius, jump, volume_order, surface_order, radial_order,
+    ):
+        r"""Build a true-sphere lift p_J=jump*H(r-interface_radius).
+
+        Return caller-owned regular volume and native planar boundary force
+        vectors, the reconstructed physical_pressure=q+p_J, and gauge integrals.
+        The original sheet must be removed when using these replacement loads.
+        Native walls use install_linear_spherical_pressure_lift; coupled walls
+        use only volume_force plus their physical wall datum and gap force.
+        Destroy the returned vectors after solver attachment/solve is complete.
+        """
+        from underworld3.utilities._spherical_pressure_lift import _spherical_pressure_lifting
+        return _spherical_pressure_lifting(
+            self, inner_boundary, interface, interface_radius, outer_boundary,
+            outer_radius, jump, volume_order, surface_order, radial_order,
+        )
+
+    def install_linear_spherical_pressure_lift(self, *, pressure_lift):
+        r"""Install replacement force loads for this solver's true-sphere lift.
+
+        Configure homogeneous native walls and zero ordinary bodyforce first.
+        The callback owns a copy in residual sign F=J*x-force; the caller retains
+        both lift vectors. This shares replacement/reset lifetime with sheet
+        adapters and removes essential rows through the native velocity layout.
+        """
+        from underworld3.utilities._spherical_interface_load import _install_linear_spherical_pressure_lift
+        return _install_linear_spherical_pressure_lift(stokes=self, pressure_lift=pressure_lift)
+
+    def install_linear_physical_spherical_sheet_load(
+        self, *, interface, radius, harmonic_degree, harmonic_order,
+        harmonic_component, harmonic_normalization, density_coefficient,
+        quadrature_points,
+    ):
+        r"""Install a radial residual integrated on the true internal sphere.
+
+        Parameters
+        ----------
+        interface : str
+            Fitted internal spherical interface label.
+        radius : float
+            Positive physical radius matching the fitted interface vertices.
+        harmonic_degree, harmonic_order : int
+            Real spherical harmonic degree and order, with degree >= 1.
+        harmonic_component, harmonic_normalization : str
+            Explicit real harmonic component and angular normalization.
+        density_coefficient : float
+            Signed residual amplitude: b_sheet integrates g Y_lm e_r.
+            No 4*pi*G factor is applied; the algebraic equation is J*x=-b_sheet.
+        quadrature_points : int
+            At least two Gauss points per spherical facet coordinate.
+
+        Returns
+        -------
+        petsc4py.PETSc.Vec
+            Borrowed coupled global vector owned by this solver. Pressure-block
+            entries are zero; the callback evaluates F(x)=J*x+b_sheet.
+
+        Notes
+        -----
+        Uses actual containing tetrahedra for physical-surface quadrature;
+        no facet-owner extrapolation is used. Requires continuous P2 velocity,
+        fixed solution-independent viscosity, zero bulk force and homogeneous
+        walls, with no simultaneous natural loads. The native Jacobian and
+        solver settings are retained. Reinstallation, reset and DM rebuild
+        release the borrowed vector; callers must not modify or destroy it.
+        This differs geometrically from :meth:`install_linear_spherical_sheet_load`.
+        """
+        from underworld3.utilities._spherical_interface_load import (
+            _install_linear_physical_spherical_stokes_sheet_load,
+        )
+        return _install_linear_physical_spherical_stokes_sheet_load(
+            stokes=self, interface=interface, radius=radius,
+            harmonic_degree=harmonic_degree, harmonic_order=harmonic_order,
+            harmonic_component=harmonic_component,
+            harmonic_normalization=harmonic_normalization,
+            density_coefficient=density_coefficient,
+            quadrature_points=quadrature_points,
+        )
+
+    def install_linear_spherical_sheet_load(self, *, interface, harmonic_degree,
+            density_coefficient, harmonic_order=0, harmonic_component="cos",
+            harmonic_normalization="axisymmetric_unnormalized", quadrature_points=8,
+            modes=None):
+        r"""Install a radial-sheet residual in a linear continuous-P2 Stokes system.
+
+        Configure this solver with continuous P2 velocity, fixed solution-independent
+        viscosity, zero bulk force and homogeneous walls before installation.
+        The adapter supports ViscousFlowModel on 3D straight triangular facets.
+
+        Parameters
+        ----------
+        interface : str
+            Member name in ``stokes.mesh.boundaries`` for the straight triangular facets.
+        harmonic_degree : int
+            Spherical-harmonic degree, at least 1.
+        harmonic_order : int, default=0
+            Order satisfying ``0 <= harmonic_order <= harmonic_degree``.
+        harmonic_component : {"cos", "sin"}, default="cos"
+            Real angular component. Order zero requires ``"cos"``.
+        harmonic_normalization : {"axisymmetric_unnormalized", "real_orthonormal"}, default="axisymmetric_unnormalized"
+            Angular normalization used by both sources and projections. The default
+            is ``P_l(cos(theta))`` and is restricted to order zero. Use
+            ``"real_orthonormal"`` for non-axisymmetric modes.
+        density_coefficient : float
+            Finite signed amplitude of the radial sheet term in Stokes residual units.
+            No ``4*pi*G`` factor is applied. It is added to the residual as
+            ``density_coefficient*Y*e_r``; see the residual sign convention below.
+        quadrature_points : int, default=8
+            At least two Gauss points per transformed triangle coordinate.
+        modes : sequence of dict or None, default=None
+            Optional nonempty multi-mode specification replacing the single mode.
+            Each mapping requires ``harmonic_degree`` and ``density_coefficient``;
+            ``harmonic_order``, ``harmonic_component`` and ``harmonic_normalization``
+            default to 0, ``"cos"`` and the function's normalization respectively.
+            Different degrees may share one Stokes operator. The single-mode arguments
+            remain required by the signature but are ignored when ``modes`` is supplied.
+
+        Returns
+        -------
+        petsc4py.PETSc.Vec
+            Coupled global vector ``b_sheet`` with sheet entries in the velocity block
+            and zeros in the pressure block. The Stokes callback owns this vector:
+            callers may inspect it but must not mutate or destroy it. Reinstallation,
+            reset or a DM rebuild releases the previous vector.
+
+        Raises
+        ------
+        TypeError
+            Harmonic degree or order has an invalid type, or a mode has malformed types.
+        KeyError
+            A mode specification lacks a required entry.
+        ValueError
+            Mesh, field, modes, interface, quadrature, viscosity, body force or boundary
+            data do not satisfy the restricted linear-adapter contract.
+
+        Notes
+        -----
+        Call collectively, instead of adding the same internal sheet as a natural BC.
+        The native Jacobian is retained and the callback evaluates
+        ``F(x)=J*x+b_sheet``; the algebraic equation is therefore ``J*x=-b_sheet``.
+        The vector is a residual load, not a separately sign-reversed force RHS.
+        Consistent facet coordinates and radial directions give zero work against
+        rigid rotations. Empty local interface strata are allowed, empty mesh charts
+        and proper subcommunicators are not. Reinstall after model/mesh setup changes.
+        """
+        from underworld3.utilities._spherical_interface_load import (
+            _install_linear_spherical_stokes_sheet_load,
+        )
+        return _install_linear_spherical_stokes_sheet_load(
+            stokes=self, interface=interface, harmonic_degree=harmonic_degree,
+            density_coefficient=density_coefficient, harmonic_order=harmonic_order,
+            harmonic_component=harmonic_component,
+            harmonic_normalization=harmonic_normalization,
+            quadrature_points=quadrature_points, modes=modes)
+
+
     def __init__(
         self,
         mesh: uw.discretisation.Mesh,
@@ -2523,6 +2842,117 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         self._is_setup = False
         symval = sympify(constraints_matrix)
         self._constraints = symval
+
+    def solve_cylindrical_gap(
+        self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
+        viscosity, pressure_jump, pressure_jump_integral, cap_bodyforce,
+        quadrature, linear_solver_options,
+    ):
+        r"""Solve coupled Stokes flow on physical circles with signed gap integrals.
+
+        Parameters
+        ----------
+        inner_boundary, outer_boundary : str
+            Complete exterior circle labels, centred at the origin.
+        radius_inner, radius_outer : float
+            Positive physical radii, ordered inner < outer.
+        viscosity : float
+            Positive constant matching the Newtonian constitutive viscosity.
+        pressure_jump : scalar coordinate expression
+            Prescribed lift in :math:`p=q+p_J`; zero without pressure splitting.
+        pressure_jump_integral : float
+            Global integral of the lift over the polygonal mesh, including its
+            interface-cut correction. Use the value returned by
+            :meth:`cylindrical_pressure_lifting`, or zero without a lift.
+        cap_bodyforce : vector coordinate expression
+            Smooth regular-force extension into both boundary caps. For the
+            cylindrical pressure lift this is :math:`-\nabla p_J` away from
+            the source interface. Volume forcing is read from ``bodyforce``:
+            one unmodified P1/P2 vector MeshVariable or a coordinate expression.
+        quadrature : int
+            Angular Gauss points per circular cap; at least three.
+        linear_solver_options : dict
+            PETSc KSP/PC options for this explicitly selected linear backend,
+            e.g. ``{"ksp_type": "preonly", "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps"}``. Ordinary SNES and
+            rotated-solver options do not configure this separate coupled path.
+
+        Returns
+        -------
+        named tuple
+            ``normal_reaction`` and ``checks``. The reaction contains boundary
+            P2-in-angle coefficients for :math:`\lambda=-\sigma_{nn}`;
+            interior entries are zero and are not a volume stress field.
+            Velocity and regular pressure are written to this solver's fields.
+
+        Notes
+        -----
+        Collective, distributed PETSc assembly on fixed nondimensional affine
+        triangles, continuous P2 velocity/P1 pressure, constant Newtonian
+        viscosity, and two complete free-slip circles. Do not register ordinary
+        essential/natural/rotated conditions as well. Momentum and continuity
+        integrate polygon + outer caps - inner caps. A boundary multiplier
+        enforces zero normal velocity weakly on the true circles; this is not
+        pointwise rotated free slip. The regular-pressure momentum load includes
+        :math:`\int_{\Gamma_R}p_J\,n\cdot v` when the lift is nonzero at a wall,
+        keeping the returned reaction equal to physical normal stress.
+        Pressure and reaction shift together;
+        volume pressure and rigid-rotation gauges are imposed after solving.
+        This opt-in research method has no claimed uniform inf-sup theorem.
+
+        References
+        ----------
+        Collins, Li, Lozinski & Scovazzi (2025), Gap-SBM,
+        https://arxiv.org/abs/2508.09613: solution/test extension and gap work.
+        Urquiza, Garon & Farinas (2014), JCP 256, 748-767,
+        https://doi.org/10.1016/j.jcp.2013.08.045: weak slip multipliers.
+        Burman, Hansbo & Larson (2020), BIT 60, 235-260,
+        https://doi.org/10.1007/s10543-019-00773-4: related multiplier boundary
+        correction. Signed circular caps, P2/P1/P2 spaces and paired gauges
+        are this UW3 adaptation, not a reproduction of one published method.
+        """
+        from underworld3.utilities._cylindrical_gap import _solve_cylindrical_gap
+        return _solve_cylindrical_gap(
+            self, inner_boundary, outer_boundary, radius_inner, radius_outer,
+            viscosity, pressure_jump, pressure_jump_integral, cap_bodyforce,
+            quadrature, linear_solver_options,
+        )
+
+    def solve_cylindrical_gap_zero_slip(
+        self, *, inner_boundary, outer_boundary, radius_inner, radius_outer,
+        viscosity, pressure_jump, pressure_jump_integral, cap_bodyforce,
+        quadrature, linear_solver_options,
+    ):
+        r"""Enforce zero velocity on both true circles in a coupled gap solve.
+
+        Parameters and domain restrictions are those of
+        :meth:`solve_cylindrical_gap`. Normal and tangential velocity are now
+        constrained weakly, with two P2-in-angle multipliers. Rigid rotation
+        is constrained physically and is not removed as a nullspace gauge.
+        Net applied torque is balanced by the tangential wall reactions.
+
+        Returns
+        -------
+        named tuple
+            ``normal_reaction``, ``tangential_reaction`` and ``checks``.
+            The reactions are :math:`-n\cdot\sigma n` and
+            :math:`-e_\theta\cdot\sigma n`, with boundary-only coefficients.
+
+        References
+        ----------
+        Collins et al. (2025), https://arxiv.org/abs/2508.09613, motivate gap
+        trial/test integration. Burman, Hansbo & Larson (2020),
+        https://doi.org/10.1007/s10543-019-00773-4, study related boundary
+        correction with multipliers for Dirichlet conditions. The signed
+        circles, P2/P1/P2 spaces and normal/tangential multiplier pair are this
+        UW3 adaptation; their theorems do not prove this particular method.
+        """
+        from underworld3.utilities._cylindrical_gap import _solve_cylindrical_gap_zero_slip
+        return _solve_cylindrical_gap_zero_slip(
+            self, inner_boundary, outer_boundary, radius_inner, radius_outer,
+            viscosity, pressure_jump, pressure_jump_integral, cap_bodyforce,
+            quadrature, linear_solver_options,
+        )
 
     @property
     def bodyforce(self):

@@ -2660,8 +2660,8 @@ class _DMLevelView:
     the boundary labels ``refine()`` propagates, which is all copyDS needs)
     plus ``_get_coords_for_basis``, delegated UNBOUND to
     ``discretisation.Mesh`` so there is one implementation. That method reads
-    only ``self.dm`` and the four scalars copied here (``dim``, ``cdim``,
-    ``isSimplex``, ``qdegree`` — shared by every level of a uniform
+    only ``self.dm`` and the geometry scalars copied here (``dim``, ``cdim``,
+    ``degree``, ``isSimplex``, ``qdegree`` — shared by every level of a uniform
     refinement), which is what makes the unbound call safe. No full ``Mesh``
     is built: a coarse MG level needs no variables, caches, or registries.
     """
@@ -2675,6 +2675,7 @@ class _DMLevelView:
         self.cdim = fine_mesh.cdim
         self.isSimplex = fine_mesh.isSimplex
         self.qdegree = fine_mesh.qdegree
+        self.degree = fine_mesh.degree
 
         # The gmsh-imported BASE level carries section-only coordinates (its
         # coordinate field is a PetscContainer, no PetscFE). PETSc's

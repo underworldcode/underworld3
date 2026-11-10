@@ -802,6 +802,7 @@ from .utilities.diagnostics import doctor, health_check
 ## -------------------------------------------------------------
 
 from .utilities._params import Params, Param, ParamType
+from . import diagnostics
 
 ## -------------------------------------------------------------
 # PAUSE - Interactive pause for notebook development

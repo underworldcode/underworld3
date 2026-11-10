@@ -22,7 +22,12 @@ import sympy
 import underworld3 as uw
 import underworld3.utilities.rotated_bc as rbc
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# These fixtures inspect a complete dense operator and freeze the historical
+# whole-mesh normal orientation. Their geometry/CSR captures are serial; the
+# distributed pressure/nullspace regressions live in the adjacent test modules.
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_a,
+              pytest.mark.skipif(uw.mpi.size > 1,
+                                 reason="Serial dense-operator and historical normal-orientation fixtures")]
 
 _MACHINE = 1e-15         # |A z|/|A| at machine level; the straight box sits at 3e-18
 
@@ -77,7 +82,7 @@ def _bisector_nodes(solver, boundary, normal=None,
 
 
 class _CaptureOperator:
-    """Capture the constrained rotated operator and its attached null space.
+    """Capture the constrained operator and an independent pressure constant.
 
     The operator only exists inside the rotated solve, so the linear-solve entry point
     is wrapped for the duration of the ``with`` block. Nothing else can see it.
@@ -85,7 +90,7 @@ class _CaptureOperator:
 
     def __init__(self):
         self.A = None
-        self.nsp = None
+        self.pressure_mode = None
 
     def __enter__(self):
         self._orig = rbc._solve_rotated_iterative
@@ -98,8 +103,16 @@ class _CaptureOperator:
                 for r in range(n):
                     dense[r, aj[ai[r]:ai[r + 1]]] = av[ai[r]:ai[r + 1]]
                 self.A = dense
-                self.nsp = [np.asarray(v.array_r).copy()
-                            for v in kw["nsp"].getVecs()]
+                # A defective pressure mode must be measured even when the
+                # solver correctly refuses to register it as a null vector.
+                mode = Ahat.createVecRight()
+                mode.set(0)
+                pressure_is = solver._subdict["pressure"][0]
+                part = mode.getSubVector(pressure_is)
+                part.set(1)
+                mode.restoreSubVector(pressure_is, part)
+                self.pressure_mode = np.asarray(mode.array_r).copy()
+                mode.destroy()
             return self._orig(solver, Ahat, bhat, Q, Qt, normal_rows, **kw)
 
         rbc._solve_rotated_iterative = _capture
@@ -111,8 +124,8 @@ class _CaptureOperator:
 
     @property
     def constant_pressure_residual(self):
-        """``|A z| / |A|`` for the attached constant-pressure vector."""
-        z = self.nsp[0] / np.linalg.norm(self.nsp[0])
+        """``|A z| / |A|`` for the independently constructed pressure constant."""
+        z = self.pressure_mode / np.linalg.norm(self.pressure_mode)
         return np.linalg.norm(self.A @ z) / np.linalg.norm(self.A, 2)
 
 
@@ -183,9 +196,18 @@ def _skewed_annulus(tag, skew):
     return s
 
 
-def _residual(build, *args):
+def _residual(build, *args, allow_invalid_rotation=False):
     with _CaptureOperator() as cap:
-        build(*args).solve()
+        try:
+            build(*args).solve()
+        except ValueError as error:
+            # The deliberately defective normal also invalidates a mesh-declared
+            # rotation. The balanced pressure PC correctly refuses that mode;
+            # the already captured original operator still measures the defect.
+            if not (allow_invalid_rotation and cap.A is not None
+                    and str(error) == "Rotation modes are not true null vectors"):
+                raise
+            assert cap.constant_pressure_residual > 1e-11
         return cap.constant_pressure_residual
 
 
@@ -222,7 +244,8 @@ def test_skewed_annulus_constant_pressure_stays_a_null_vector():
     kinked facets) from the symptom (a deformed box)."""
     skewed = _residual(_skewed_annulus, "K", 0.04)
     with _BisectorNormals():
-        skewed_bisector = _residual(_skewed_annulus, "B", 0.04)
+        skewed_bisector = _residual(_skewed_annulus, "B", 0.04,
+                                    allow_invalid_rotation=True)
     assert skewed < _MACHINE, (
         f"skewed annulus leaves |Az|/|A| = {skewed:.3e} (#560)")
     assert skewed_bisector > 1e-11, (

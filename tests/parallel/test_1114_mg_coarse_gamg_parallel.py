@@ -74,7 +74,7 @@ def _stokes(route, coarse_solve):
         stokes.bodyforce = (1.0e3 * sympy.cos(4 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
                             * sympy.Matrix([X[0] / r, X[1] / r]))
         for wall in ("Lower", "Upper"):
-            stokes.add_rotated_freeslip_bc(0, wall)
+            stokes.add_rotated_freeslip_bc(0, wall, normal=mesh.CoordinateSystem.unit_e_0)
     else:
         stokes.bodyforce = sympy.Matrix(
             [0, 1.0e2 * sympy.sin(sympy.pi * X[0]) * sympy.sin(sympy.pi * X[1])])

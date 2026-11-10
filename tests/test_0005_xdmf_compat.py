@@ -78,9 +78,12 @@ def test_direct_p1_p2_and_dg0_use_fields_only(tmp_path):
             assert values.shape == coordinates.shape
             np.testing.assert_allclose(values, coordinates, atol=1.0e-12)
             points = coordinates[cells]
-            np.testing.assert_allclose(points[:, 3], 0.5 * (points[:, 0] + points[:, 1]))
-            np.testing.assert_allclose(points[:, 4], 0.5 * (points[:, 1] + points[:, 2]))
-            np.testing.assert_allclose(points[:, 5], 0.5 * (points[:, 2] + points[:, 0]))
+            # Unit-box affine coordinates evaluated from adjacent cells can
+            # differ by roundoff at zero; relative error alone is undefined.
+            roundoff = 16 * np.finfo(float).eps
+            np.testing.assert_allclose(points[:, 3], 0.5 * (points[:, 0] + points[:, 1]), rtol=0, atol=roundoff)
+            np.testing.assert_allclose(points[:, 4], 0.5 * (points[:, 1] + points[:, 2]), rtol=0, atol=roundoff)
+            np.testing.assert_allclose(points[:, 5], 0.5 * (points[:, 2] + points[:, 0]), rtol=0, atol=roundoff)
             _assert_no_compatibility_copies(handle)
 
         xdmf = directory / "compact.mesh.00000.xdmf"
@@ -129,7 +132,8 @@ def test_direct_p2_tetrahedron_uses_exact_tetrahedron_10(tmp_path):
             edge_pairs = ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3))
             for local_node, (a, b) in enumerate(edge_pairs, start=4):
                 np.testing.assert_allclose(
-                    points[:, local_node], 0.5 * (points[:, a] + points[:, b])
+                    points[:, local_node], 0.5 * (points[:, a] + points[:, b]),
+                    rtol=0, atol=16 * np.finfo(float).eps,
                 )
             assert "visualization" not in handle
             _assert_no_compatibility_copies(handle)

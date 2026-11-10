@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import os
 import weakref
 import threading
-from mpi4py.MPI import Info
+from mpi4py.MPI import Info, MAX
 import numpy
 import sympy
 from sympy.matrices.expressions.blockmatrix import bc_dist
@@ -5898,6 +5898,9 @@ class Mesh(Stateful, uw_object):
         dmold = self.dm.getCoordinateDM()
         dmold.createDS()
         dmnew = dmold.clone()
+        # A coordinate-DM clone can retain topological dimension on a surface.
+        # Identity projection needs the full physical embedding coordinates.
+        dmnew.setCoordinateDim(self.cdim)
 
         options = PETSc.Options()
         options["coordinterp_petscspace_degree"] = degree
@@ -5967,39 +5970,47 @@ class Mesh(Stateful, uw_object):
         return self._cell_node_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
-        """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
-        ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
-        (ghost nodes included).
+        """Physical FE node coordinates in the basis DM's local-section order.
 
-        The interpolation matrix comes from UW3's copy of PETSc's nested
-        interpolator, which assembles also on a rank that holds cells but owns
-        none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
+        PETSc evaluates the coordinate identity using the mesh geometry and
+        target dual space. Local projection includes halo nodes and avoids
+        global interpolation-matrix assembly on ghost-only MPI partitions.
         """
         from underworld3.cython.petsc_discretisation import (
-            petsc_dm_create_interpolation_within_plex,
+            petsc_dm_project_coordinate_identity,
         )
 
-        dmold = self.dm.getCoordinateDM()
         dmnew = self._basis_coordinate_dm(degree, continuous)
-
-        matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
-        coordsOld = self.dm.getCoordinates()
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
-        matInterp.mult(coordsOld, coordsNewG)
-        dmnew.globalToLocal(coordsNewG, coordsNewL)
-
-        arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
-
-        dmnew.restoreGlobalVec(coordsNewG)
-        dmnew.restoreLocalVec(coordsNewL)
-        # Clean up the PETSc interpolation objects built above. Without this
-        # they accumulate until Python GC runs — noticeable in long adapt
-        # loops that re-fill the coord cache per variable.
-        matInterp.destroy()
-        dmnew.destroy()
-
-        return arrcopy
+        try:
+            petsc_dm_project_coordinate_identity(self.dm, dmnew, coordsNewL)
+            # Neighbouring cells can evaluate a shared node with different
+            # roundoff. Distribute its owner's value so halo coordinates agree.
+            dmnew.localToGlobal(coordsNewL, coordsNewG, addv=PETSc.InsertMode.INSERT_VALUES)
+            dmnew.globalToLocal(coordsNewG, coordsNewL)
+            coords = coordsNewL.array.reshape(-1, self.cdim).copy()
+            if self.degree == 1:
+                # Affine nodal points are convex combinations of vertices.
+                # Remove only roundoff outside their physical bounds so a
+                # boundary node remains locatable by PETSc's closed-box search.
+                bounds = numpy.asarray(self.dm.getBoundingBox())
+                outside = 0.0
+                if len(coords):
+                    outside = max(0.0, float(numpy.max(bounds[:, 0] - coords.min(axis=0))),
+                                  float(numpy.max(coords.max(axis=0) - bounds[:, 1])))
+                outside = uw.mpi.comm.allreduce(outside, op=MAX)
+                bound = 64 * numpy.finfo(float).eps * numpy.max(numpy.abs(bounds))
+                if outside > bound:
+                    raise ArithmeticError(
+                        f"Affine coordinate projection leaves its physical bounds by {outside}; "
+                        f"roundoff bound is {bound}.")
+                numpy.clip(coords, bounds[:, 0], bounds[:, 1], out=coords)
+            return coords
+        finally:
+            dmnew.restoreGlobalVec(coordsNewG)
+            dmnew.restoreLocalVec(coordsNewL)
+            dmnew.destroy()
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)

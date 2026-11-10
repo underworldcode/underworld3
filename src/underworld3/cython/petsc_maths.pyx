@@ -4,7 +4,7 @@ import numpy as np
 
 import underworld3
 import underworld3.timing as timing
-from   underworld3.utilities._jitextension import getext, JITCallbackSet
+from   underworld3.utilities._jitextension import getext, JITCallbackSet, _aux_component_offsets
 
 from petsc4py import PETSc
 
@@ -132,7 +132,8 @@ class Integral:
         mesh=self.mesh
 
         _getext_result = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
-                                self.mesh.vars.values(), verbose=verbose)
+                                self.mesh.vars.values(), verbose=verbose,
+                                primary_component_offsets=_aux_component_offsets(self.mesh))
         cdef PtrContainer ext = _getext_result.ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
@@ -318,7 +319,8 @@ class CellWiseIntegral:
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
         _getext_result = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
-                                self.mesh.vars.values())
+                                self.mesh.vars.values(),
+                                primary_component_offsets=_aux_component_offsets(self.mesh))
         cdef PtrContainer ext = _getext_result.ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
@@ -461,7 +463,8 @@ class BdIntegral:
         # Compile integrand using the boundary residual slot (includes petsc_n[] in signature)
         _getext_result = getext(
             self.mesh, JITCallbackSet(bd_residual=(fn,)),
-            self.mesh.vars.values(), verbose=verbose)
+            self.mesh.vars.values(), verbose=verbose,
+                                primary_component_offsets=_aux_component_offsets(self.mesh))
         cdef PtrContainer ext = _getext_result.ptrobj
 
         # Prepare the solution vector on the original mesh DM

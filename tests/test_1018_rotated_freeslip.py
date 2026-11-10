@@ -1351,6 +1351,10 @@ def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
     info = s._rotated_freeslip_info
     assert info["nonlinear_iterations"] > 1, "nonlinear datum solve did not genuinely iterate"
     assert info["converged"], "nonlinear datum solve did not converge"
+    assert not info["pressure_nullspace_verified"]
+    assert not info["pressure_coarse_correction_active"]
+    from _rotated_residual_reference import _assert_original_constrained_equations
+    _assert_original_constrained_equations(s, info)
     vc = v.coords
     rr = np.hypot(vc[:, 0], vc[:, 1])
     outer = np.abs(rr - RO) < 4.0e-2                 # outer velocity nodes (incl. edge mids)

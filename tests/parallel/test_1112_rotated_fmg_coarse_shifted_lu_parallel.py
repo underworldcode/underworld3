@@ -50,7 +50,7 @@ def test_the_coarse_solve_is_shifted_lu_in_parallel(monkeypatch, tmp_path):
     stokes.bodyforce = (1.0e3 * sympy.cos(4 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
                         * sympy.Matrix([X[0] / r, X[1] / r]))
     for wall in ("Lower", "Upper"):
-        stokes.add_rotated_freeslip_bc(0, wall)
+        stokes.add_rotated_freeslip_bc(0, wall, normal=mesh.CoordinateSystem.unit_e_0)
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-6
     custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)

@@ -128,6 +128,9 @@ def test_rotated_datum_nonlinear_parallel():
 
     info = s._rotated_freeslip_info
     assert info["converged"], "nonlinear parallel datum solve did not converge"
+    assert not info["pressure_nullspace_verified"]
+    assert not info["pressure_coarse_correction_active"]
+    assert info["fresh_unprojected_rnorm"] <= s.tolerance * info["fresh_reference_rnorm"]
     assert info["nonlinear_iterations"] > 1, "did not genuinely iterate"
     # datum imposed, measured with parallel-safe boundary quadrature only
     vn = (v.sym[0] * x + v.sym[1] * y) / r

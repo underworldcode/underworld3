@@ -69,6 +69,49 @@ cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
     _check_error_code_collectively(ierr, "DMPlexComputeGeometryFVM")
 
 
+cdef extern from "petscdm.h":
+    ctypedef enum InsertMode:
+        INSERT_VALUES
+    PetscErrorCode DMGetCoordinateDM(PetscDM, PetscDM *)
+    PetscErrorCode DMSetCoordinateDM(PetscDM, PetscDM)
+    PetscErrorCode DMGetCoordinatesLocal(PetscDM, PetscVec *)
+    PetscErrorCode DMSetCoordinatesLocal(PetscDM, PetscVec)
+    PetscErrorCode DMProjectFunctionLocal(
+        PetscDM, PetscReal,
+        PetscErrorCode (**)(PetscInt, PetscReal, const PetscReal *, PetscInt,
+                            PetscScalar *, void *) noexcept,
+        void **, InsertMode, PetscVec)
+
+
+cdef PetscErrorCode _coordinate_identity(
+        PetscInt dim, PetscReal time, const PetscReal *x, PetscInt components,
+        PetscScalar *values, void *ctx) noexcept nogil:
+    cdef PetscInt component
+    for component in range(components):
+        values[component] = x[component]
+    return 0
+
+
+def petsc_dm_project_coordinate_identity(DM source, DM target, Vec local_coordinates):
+    """Evaluate physical coordinates in the target FE's local-section layout.
+
+    Projecting the identity through the source coordinate geometry preserves
+    curved geometry and CG/DG nodal locations without a global interpolation
+    matrix. In particular, ghost-only partitions need no matrix preallocation.
+    The target is a temporary coordinate-basis DM, not the source mesh.
+    """
+    cdef PetscDM coordinate_dm = NULL
+    cdef PetscVec coordinates = NULL
+    cdef PetscErrorCode (*functions[1])(
+        PetscInt, PetscReal, const PetscReal *, PetscInt, PetscScalar *, void *) noexcept
+    functions[0] = _coordinate_identity
+    CHKERRQ(DMGetCoordinateDM(source.dm, &coordinate_dm))
+    CHKERRQ(DMGetCoordinatesLocal(source.dm, &coordinates))
+    CHKERRQ(DMSetCoordinateDM(target.dm, coordinate_dm))
+    CHKERRQ(DMSetCoordinatesLocal(target.dm, coordinates))
+    CHKERRQ(DMProjectFunctionLocal(
+        target.dm, 0.0, functions, NULL, INSERT_VALUES, local_coordinates.vec))
+
 ## This is currently wrapped in petsc4py but returns zero
 
 def petsc_fvm_get_min_radius(mesh) -> float:

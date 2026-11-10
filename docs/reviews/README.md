@@ -28,6 +28,16 @@ docs/reviews/
 
 ## 2026 Reviews
 
+### November 2026
+
+- [Curved-wall Stokes: upstream integration review](2026-11/CURVED-WALL-STOKES-INTEGRATION-REVIEW.md)
+  — serial/MPI component and upstream contract checks; maintainer review pending.
+
+### October 2026
+
+- [Prescribed pressure lifting: pre-PR audit](2026-10/PRESCRIBED-PRESSURE-SPLIT-REVIEW.md)
+  — component checks at 1/2/8 ranks; awaiting maintainer review.
+
 ### February 2026
 
 **Review Period**: February 2026

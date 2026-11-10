@@ -105,8 +105,28 @@ analytic column is unchanged by this fix, and identical at every rank count).
 
 Prefer the default. Reach for `normal=` when the constraint must follow the true
 surface rather than the mesh — a coarse spherical shell where faceting, not the
-gauge, is the dominant error — and be aware that the pressure gauge is then only
-as good as the numbers above.
+gauge, is the dominant error. Such a constraint need not preserve a discrete
+pressure gauge. The solver tests the constant-pressure vector on both the
+constrained operator and its transpose, using roundoff-scaled pressure-block
+bounds. A failed test disables pressure-nullspace registration and pressure-mean
+residual projection; it does not remove the pressure equation. A direct-LU datum
+is permitted only after the unpinned operator passes this test.
+
+For a requested pressure mode with measured nonzero actions on both sides,
+the native iterative route retains its fieldsplit PC $M_0$ and applies
+
+$$M^{-1}=E+(I-EA)M_0^{-1}(I-AE),\qquad
+E=V(V^TAV)^{-1}V^T.$$
+
+The two columns of $V$ are constant pressure and its velocity-block response,
+with the response's natural scale. Only independently verified rigid rotations
+are projected from the PC output; zero, one and three rotations are supported.
+The original $A$, right-hand side, physical pressure level and convergence
+tolerance are unchanged. Coarse equations are audited with the componentwise
+backward-error bound recorded in the correction metrics. Operator/PC changes
+refresh these products collectively; loss of a true null mode or a degenerate
+coarse block raises rather than regularizing the equations. One-sided nullity
+does not activate this right-response correction.
 
 In parallel both normals constrain the same wall nodes. Each boundary facet is
 labelled on one rank, so a rank can own a wall node whose facets all sit on
@@ -183,6 +203,32 @@ native 1/μ pressure mass as the Schur preconditioner). There is no separate
 linear path and no up-front nonlinearity probe: a linear model converges after
 its first increment and the loop self-terminates.
 
+### Explicit linear-solver options
+
+The rotated path accepts three solver-local overrides through
+`solver.petsc_options`. Without them, its nested FGMRES defaults are unchanged:
+
+```python
+solver.petsc_options["rotated_fieldsplit_velocity_ksp_type"] = "preonly"
+solver.petsc_options["rotated_fieldsplit_pressure_ksp_type"] = "preonly"
+solver.petsc_options["rotated_ksp_max_it"] = 500
+```
+
+Set these on every rank before `solve()`. UW3 maps the public
+`velocity`/`pressure` names to its private `vel`/`pres` fieldsplit prefix.
+Changing or removing an override invalidates the cached rotated workspace.
+The effective types and limit are returned as `velocity_ksp_type`,
+`pressure_ksp_type` and `ksp_max_it` in `solver._rotated_freeslip_info`.
+
+Selecting `preonly` for both inner KSPs uses the existing velocity multigrid
+and pressure-mass preconditioners as block applications. Coupled FGMRES still
+enforces `solver.tolerance` on the original system. This differs from putting
+only the velocity KSP in `preonly` while iterating the pressure Schur equation,
+which has the limitation described below. The pressure-mass approximation is
+described in the [PETSc Stokes guide](https://petsc.org/release/tutorials/physics/guide_to_stokes/).
+This configuration was validated for the constant-viscosity P2/P1 annulus;
+performance for other rheologies and meshes requires separate validation.
+
 ### Where the multigrid hierarchy comes from
 
 Native geometric FMG cannot serve a rotated solve at all — the DM-coupled
@@ -241,9 +287,11 @@ meets a zero pivot there. Details in
 
 ### The velocity sub-KSP must converge, not just apply
 
-The velocity block is preconditioned by multigrid, but the KSP *around* that
-multigrid is FGMRES to `0.1 × tolerance` — never `preonly`. This is not a
-tuning preference. `PCFieldSplit` forms the Schur complement
+In the default nested configuration, the velocity block is preconditioned by
+multigrid, with FGMRES around it at `0.033 × tolerance`. The following accuracy
+requirement concerns an iterated pressure Schur equation; the explicit
+both-`preonly` block configuration above does not iterate that equation.
+`PCFieldSplit` forms the Schur complement
 `S = A₁₁ − A₁₀ A₀₀⁻¹ A₀₁` and applies `A₀₀⁻¹` through this same velocity KSP,
 so `preonly` replaces `A₀₀⁻¹` with a single multigrid cycle and hands the
 pressure Krylov a *different* system `S̃ ≠ S`, preconditioned by a 1/μ mass
@@ -266,8 +314,8 @@ null space attached to `S`) has not been isolated.
 
 The native (non-rotated) Stokes path and the GAMG fallback have always wrapped
 their multigrid this way; the rotated custom-FMG branch was the sole exception.
-`max_it` matches both (200); `rtol` matches the GAMG fallback (0.1 × tol), where
-the native path asks for 0.033 × tol.
+The current velocity `max_it` is 200 and `rtol` is `0.033 × tolerance` on both
+rotated routes; the pressure KSP asks for `0.1 × tolerance`.
 
 Two things make this easy to miss, and both are now instrumented. The outer
 iteration count does not reveal it — a full Schur factorisation with a good
@@ -449,52 +497,30 @@ A deformed wall fails the last check, a free surface after its first step for
 example, or a cut that puts chord vertices on a wall. The modes then take the
 constraint test like undeclared ones, and the solve warns once, naming the wall
 and the spread of its vertices. The verdict, the same for every mode, is in the
-solve's `declared_modes_exempt` entry; which modes were admitted is in
-`rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
-that is only near-null is not removed, and the answer carries a poorly
-determined rotation (measured on a shell, Linux: unmoved, rate 3.7e-15 in a v_rms
-of 1.79; a wall moved by 5e-10, enough to cross the threshold, rate 5.6 in 4.59,
-and the same up to a 1e-6 move).
+solve's `declared_modes_exempt` entry; admission and removal are recorded in
+`rotation_gauge`. Geometry declarations supply candidates, not proofs that a
+faceted discretisation retains the continuous symmetry.
 
-That is the intended behaviour (ruling, 2026-11-08). A deformed wall's rotation is
-kept as a near-null mode and is not removed as a gauge, because "the deformation
-may not eliminate the null space". Projecting out a mode that is not exactly null
-would also remove the part of it that the operator does determine. A model that
-wants the rotation gone removes it after the solve: a least-squares projection of
-the velocity against the rotation field, as `_project_out_rotation` in the
-free-surface convection driver does (`free-surface-convection.md` §3). In parallel
-its two sums are global reductions.
+A candidate is made compatible with the normal constraints by zeroing its
+constrained rotated rows. Both the right and left actions of the resulting
+**constrained** operator must then vanish to assembly roundoff (256 real-scalar
+epsilons, scaled by the velocity diagonal and mode norm). Testing the original
+rigid field against the unconstrained Jacobian is insufficient: zeroing normal
+components can introduce strain. This test runs after Jacobian assembly and
+also rejects rotations pinned by another essential wall.
 
-An exempt mode has its constrained rows zeroed, in the null space and in the
-gauge removal alike, which makes it exactly compatible with `v·n = 0`. A test
-against the rows would reject the modes on a faceted sphere: there the
-facet-averaged normal leaves each declared rotation a violation of the order of
-the discretisation error (0.0075-0.0164 on a 0.5 shell built on macOS; 0.0037-0.0054
-on a 0.3 shell built on Linux), against a 1e-8 tolerance. Under the analytic
-normal the modes are exact.
+Only verified modes enter the quotient residual and final gauge removal.
+Analytic radial constraints retain the exact rotations of a circular or spherical
+wall. Facet-averaged normals or unequal wall spacing can instead turn them into
+weak physical modes, which remain in the equations. Removing such a mode would
+change the finalized original residual. The solver recomputes that residual and
+refuses convergence if it exceeds the requested bound.
 
-The outer Newton test is measured in the quotient space of the admitted modes.
-A guard warns when the projected-out component dominates the converged
-residual, which means the forcing has a net torque that free-slip walls cannot
-balance. A declared mode with violation $s$ also carries a component of a
-torque-free forcing, about $s^2/3$ of the forcing scale, so the guard warns only
-above $10 s^2$ of the convergence reference. On #906's shell that component was
-8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$ (the shells at
-cell sizes 0.5 and 0.25). A torque of 1 %
-of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
-the guard is unchanged.
-
-A mesh that declares nothing is offered the Cartesian rotations. Each is
-admitted to the increment null space and the post-solve gauge removal only if
-it passes **two** tests: tangential to every rotated constraint row
-(`Q·m ≈ 0` there), **and** a null vector of the assembled operator (`‖J·m‖ ≈ 0`
-against the velocity diagonal scale). A declared mode takes the second test
-too. The second test is what catches pinning the first cannot see — an essential condition on another
-boundary leaves the mode tangential to the rotated wall while the eliminated
-operator is *not* null on it, and admitting it projects an irreducible
-component out of every increment (the residual then floors far above
-tolerance instead of converging). The null space is therefore built after the
-first Jacobian assembly.
+A deformed wall likewise keeps any non-null rotation as a physical degree of
+freedom. An application can explicitly project its output for a separate
+measurement, but that projected field is not automatically a solution of the
+original equations. A net-torque guard remains active for genuine rotation
+gauges, where the forcing must be compatible with the singular operator.
 
 ### Parallel notes
 

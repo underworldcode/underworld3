@@ -17,6 +17,10 @@ make the correct path the default path.
 Design of record: `docs/developer/design/nonlinear-solver-homotopy-warmstart.md`.
 Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-solvers`.
 
+Explicit rotated linear-solver overrides are described in the
+[rotated free-slip guide](../subsystems/rotated-freeslip.md#explicit-linear-solver-options).
+They leave the defaults used by this nonlinear recipe unchanged.
+
 ---
 
 ## The recipe (what actually converges)

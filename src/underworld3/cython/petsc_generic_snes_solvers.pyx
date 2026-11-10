@@ -3259,6 +3259,13 @@ class SolverBaseClass(uw_object):
             from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
             _destroy_rotated_linear_cache(cache)
 
+    def _release_linear_spherical_sheet_rhs(self):
+        """Release the restricted load after its owning SNES is destroyed."""
+        sheet_rhs = getattr(self, "_linear_spherical_sheet_rhs", None)
+        self._linear_spherical_sheet_rhs = None
+        if sheet_rhs is not None:
+            sheet_rhs.destroy()
+
     def _reset(self):
 
         self._reset_rotated_solver_cache()
@@ -3275,6 +3282,8 @@ class SolverBaseClass(uw_object):
                 self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
+
+        self._release_linear_spherical_sheet_rhs()
 
         if self.dm is not None:
             for coarse_dm in self.dm_hierarchy:
@@ -3578,11 +3587,38 @@ class SolverBaseClass(uw_object):
         config = dict(tangent=dict(consistent_jacobian=self.consistent_jacobian,
                                    newton_pressure_coupling=self.newton_pressure_coupling,
                                    path="rotated_freeslip"))
+        if "pressure_nullspace_verified" in info:
+            config["_rotated_pressure_projection_active"] = bool(info["pressure_nullspace_projection_active"])
         try:
             self._snapshot_model_facts(config)
         except Exception:
             # Sanctioned: formulation facts are a record; none is recorded on failure
             pass
+        config.pop("_rotated_pressure_projection_active", None)
+        if "pressure_nullspace_verified" in info:
+            # The rotated solve uses its constrained operator, rather than the
+            # native SNES Jacobian inspected by the generic model snapshot.
+            config.setdefault("gauge", {}).update(
+                pressure_nullspace_requested=bool(info["pressure_nullspace_requested"]),
+                pressure_nullspace_verified=bool(info["pressure_nullspace_verified"]),
+                pressure_nullspace_projection_active=bool(info["pressure_nullspace_projection_active"]),
+                pressure_nullspace_attached=bool(info["pressure_nullspace_attached"]),
+                pressure_nullspace_checks=info["pressure_nullspace_checks"],
+                operator_scope=info["pressure_nullspace_checks"]["operator_scope"],
+            )
+            config["rotated_residual"] = dict(
+                scope=info["fresh_residual_scope"],
+                fresh_unprojected_norm=float(info["fresh_unprojected_rnorm"]),
+                fresh_projected_norm=float(info["fresh_projected_rnorm"]),
+                full_reference_norm=float(info["fresh_unprojected_reference_rnorm"]),
+            )
+        if "pressure_coarse_correction_active" in info:
+            config["rotated_preconditioner"] = dict(
+                outer_pc_type=info["outer_pc_type"],
+                retained_base_pc_type=info["retained_base_pc_type"],
+                pressure_coarse_correction_active=info["pressure_coarse_correction_active"],
+                pressure_coarse_correction_metrics=info["pressure_coarse_correction_metrics"],
+            )
         self._emit_solve_notes(config.pop("_warnings", ()))
         report = SolveReport(
             reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
@@ -4668,6 +4704,8 @@ class SolverBaseClass(uw_object):
                 self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
+
+        self._release_linear_spherical_sheet_rhs()
 
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
@@ -9278,6 +9316,254 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
+    def pressure_split(self, *, jumps, normals, tolerance=1e-10):
+        r"""Lift prescribed pressure jumps on fitted triangle/tetrahedron facets.
+
+        Parameters
+        ----------
+        jumps : mapping
+            Interface name to scalar :math:`[p]=p^+-p^-`. Each value is a
+            SymPy expression, continuous scalar MeshVariable on this mesh,
+            constant, or callable taking an ``(N, dim)`` coordinate array.
+            Values are sampled at interface vertices and interpolated P1.
+        normals : mapping
+            Matching names to vectors pointing from the minus to plus side.
+            Expressions, constant vectors and coordinate callables are accepted.
+            These select the side orientation; the extracted sheet is normal
+            to the fitted facets, with no tangential sheet-force extraction.
+        tolerance : float
+            Relative tolerance for jump compatibility around vertex-star cycles.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump`` (:math:`p_J`), ``pressure_jump_field`` (DG P1),
+            ``regular_force`` (DG P0), ``natural_datum``, ``physical_pressure``,
+            ``pressure_jump_integral`` and ``checks``.
+
+        Notes
+        -----
+        Call collectively, with the same interface names on every rank, before
+        solving. Continuous P1 pressure represents :math:`q` in :math:`p=q+p_J`.
+        Replace the prescribed normal sheet load :math:`[p]n\delta_\Gamma`
+        by ``split.regular_force.sym`` added to any regular body force. Do not
+        retain that sheet load. Add ``split.natural_datum`` to the original
+        UW3 exterior natural datum on natural components; prescribed velocity
+        needs no traction correction. Use ``split.physical_pressure`` for
+        total-pressure diagnostics and include its lift integral in the gauge.
+
+        Affine interface-fitted simplices and nondimensional data are required.
+        Closed, boundary-to-boundary, finite and intersecting interfaces use
+        the same nodal construction. Finite tips/rims and junction cycles must
+        have compatible jumps; incompatible data are rejected collectively.
+        Geometry cutting through cells and unknown flow-dependent jumps require
+        additional interface discretisation/coupling and are not inferred here.
+        This lifts a pressure discontinuity with continuous velocity, not slip.
+        The lift is defined up to a continuous P1 field absorbed by q; no
+        harmonic extension or convergence rate is assumed.
+
+        References
+        ----------
+        Chang and Kwak (2009), "Extraction method for Stokes Flow with jumps
+        in the pressure", https://arxiv.org/abs/0911.4769, Sections 2--3.
+        Their extraction principle motivates this API; its vertex-star DG P1
+        lift differs from their harmonic extension and CR discretisation.
+        """
+        from underworld3.utilities._pressure_split import _create_pressure_split
+        return _create_pressure_split(self, jumps, normals, tolerance)
+
+    def cylindrical_pressure_lifting(self, *, interface_radius, outer_radius,
+                                     wavenumber, amplitude, quadrature_points):
+        r"""Construct an exact-circle pressure lift and moment-equivalent force.
+
+        Parameters
+        ----------
+        interface_radius, outer_radius : float
+            Prescribed circular sheet and outer wall radii, with outer > sheet.
+        wavenumber : int
+            Azimuthal cosine mode of the prescribed radial sheet load.
+        amplitude : float
+            Sheet amplitude in :math:`f=-A\cos(n\theta)e_r\delta(r-R)`.
+        quadrature_points : int
+            Points per direction in circular-cut quadrature.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump``, ``regular_force`` (DG P2 MeshVariable),
+            ``natural_datum``, ``pressure_jump_integral`` and ``checks``.
+            Reconstruct physical pressure as :math:`p=q+p_J`. Assign the
+            force and register ``natural_datum`` on the natural outer-wall
+            components. This term is :math:`-p_J\Gamma` and does not vanish on
+            outer chords. Fully prescribed velocity has zero test trace, so
+            no outer natural datum is registered for zero-slip walls.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Explicitly selected correction for affine 2D P2/continuous-P1 annuli,
+        constant viscosity and a fitted circular sheet. No analytical Stokes
+        solution enters construction. Call collectively on every rank.
+
+        References
+        ----------
+        K. S. Chang and D. Y. Kwak (2009), "Extraction method for Stokes
+        Flow with jumps in the pressure", arXiv:0911.4769,
+        https://arxiv.org/abs/0911.4769, Section 2, equations (4)-(6).
+        The pressure split motivates this method. The radial lift, circular-cut
+        load integration and outer-chord natural datum are UW3 adaptations,
+        not the paper's harmonic-extension/CR scheme.
+        """
+        from underworld3.utilities._cylindrical_pressure import _create_circular_pressure_lift
+        if self.u.degree != 2 or not self.u.continuous or self.p.degree != 1 or not self.p.continuous:
+            raise ValueError("Circular pressure lifting requires continuous P2/P1 fields.")
+        return _create_circular_pressure_lift(self.mesh, interface_radius, outer_radius,
+                                             wavenumber, amplitude, quadrature_points)
+
+    def add_cylindrical_wall_transfer(self, *, boundary, radius, sign,
+                                      viscosity, pressure_jump, quadrature):
+        r"""Register lagged free-slip transfer to a physical circular wall.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete exterior circular boundary label on a fixed affine mesh.
+        radius : float
+            Physical circle radius, centered at the coordinate origin.
+        sign : int
+            Domain-outward normal orientation: -1 inner, +1 outer.
+        viscosity : float
+            Positive constant viscosity, matching the constitutive model.
+        pressure_jump : scalar expression or scalar P1 MeshVariable
+            Known pressure lift in :math:`p=q+p_J`; pass zero without splitting.
+            Accepts the coordinate expression from cylindrical_pressure_lifting
+            or the DG P1 field from pressure_split. Cell-side values are used
+            for discontinuous fields; no analytical Stokes state is required.
+        quadrature : int
+            Gauss points per boundary edge, at least three.
+
+        Returns
+        -------
+        object
+            Wall handle for :meth:`solve_cylindrical_wall_updates`.
+
+        Notes
+        -----
+        Requires nondimensional continuous P2 velocity/P1 regular pressure on
+        affine triangles. Replaces ordinary free-slip registration on this wall.
+        Registers a rotated normal datum and a tangential natural datum, then
+        updates them from numerical cell gradients/Hessians: the normal shift
+        is :math:`-s(R-r)\partial_r u_r`, the shear shift
+        :math:`-(R-r)\partial_r\sigma_{r\theta}`. Polygon-facet loads preserve
+        tangential P2 nodal moments, zero net flux and zero rotation torque.
+        The method does not recover boundary traction or compute topography.
+
+        References
+        ----------
+        Atallah, Canuto and Scovazzi (2020), CMAME 372, 113341,
+        https://doi.org/10.1016/j.cma.2020.113341, Section 2.2, equations
+        (8)--(13), motivates Taylor transfer. This strong, lagged mixed-slip
+        adaptation is not their Nitsche method; no convergence theorem is
+        claimed. Check physical-circle residuals in the solve history.
+        """
+        from underworld3.utilities._cylindrical_wall import _add_cylindrical_wall_transfer
+        return _add_cylindrical_wall_transfer(self, boundary=boundary, radius=radius,
+            sign=sign, viscosity=viscosity, pressure_jump=pressure_jump,
+            quadrature=quadrature)
+
+    def solve_cylindrical_wall_updates(self, *, walls, updates):
+        """Solve with lagged free-slip conditions on both physical circles.
+
+        Parameters
+        ----------
+        walls : mapping
+            Names to this system's inner and outer wall handles.
+        updates : int
+            Nonnegative update count; performs ``updates + 1`` Stokes solves.
+
+        Returns
+        -------
+        list of dict
+            Solver verdict, pressure gauge, update changes and true-circle
+            normal-velocity/shear-stress RMS after every solve. The iteration
+            count is explicit, not a convergence guarantee.
+
+        Notes
+        -----
+        Enable ``petsc_use_pressure_nullspace`` before solving. Existing rotated
+        solver settings are retained. No analytical solution enters the updates.
+        """
+        from underworld3.utilities._cylindrical_wall import _solve_with_wall_updates
+        return _solve_with_wall_updates(self, walls, updates)
+
+    def add_cylindrical_zero_slip_transfer(self, *, boundary, radius, sign,
+                                           quadrature):
+        r"""Register a full-vector zero-slip datum shifted to a physical circle.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete exterior circular boundary label on a fixed affine mesh.
+        radius : float
+            Positive physical radius, centered at the origin.
+        sign : int
+            Domain-outward orientation: -1 inner, +1 outer.
+        quadrature : int
+            Gauss points per edge for physical-circle audits, at least three.
+
+        Returns
+        -------
+        object
+            Handle for :meth:`solve_cylindrical_zero_slip_updates`.
+
+        Notes
+        -----
+        Requires nondimensional affine triangles with continuous P2/P1 fields.
+        Replaces ordinary zero-slip registration on this wall. The lagged
+        essential datum is the complete P2 continuation
+        :math:`u_h(x)-u_h(Rx/|x|)`. Both walls receive one joint zero-flux
+        projection; vertex constraints remain zero. Pressure splitting is
+        independent and needs no exterior traction datum on zero-slip walls.
+
+        References
+        ----------
+        Ruas (2019), CAMWA 77(6), 1756--1769,
+        https://doi.org/10.1016/j.camwa.2018.05.029, Sections 2/4, equations
+        (29)--(30), provides a true-boundary trial-constraint precedent.
+        Atallah et al. (2020), https://doi.org/10.1016/j.cma.2020.113341,
+        Section 2.2, motivates the Taylor shift. The lagged symmetric-stress
+        scheme and joint flux projection are adaptations, not their theorems.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _add_cylindrical_zero_slip_transfer
+        return _add_cylindrical_zero_slip_transfer(self, boundary=boundary,
+            radius=radius, sign=sign, quadrature=quadrature)
+
+    def solve_cylindrical_zero_slip_updates(self, *, walls, updates):
+        """Solve with jointly flux-compatible shifted zero-slip data.
+
+        Parameters
+        ----------
+        walls : mapping
+            Names to this system's inner and outer zero-slip wall handles.
+        updates : int
+            Nonnegative update count; performs ``updates + 1`` standard solves.
+
+        Returns
+        -------
+        list of dict
+            Solver verdict, joint flux projection, update changes and true-circle
+            full-velocity residuals. Inspect these for fixed-point convergence.
+
+        Notes
+        -----
+        Enable ``petsc_use_pressure_nullspace`` before solving. No rotated
+        constraints, torque correction, pressure or traction recovery is added.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
+        return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
+
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
@@ -10201,6 +10487,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     def _snapshot_model_facts(self, cfg):
         """``cfg["gauge"]``: the pressure-level convention this Stokes solve runs under."""
+        pressure_projection_active = cfg.pop(
+            "_rotated_pressure_projection_active", bool(self._petsc_use_pressure_nullspace))
         attached = False
         try:
             # Before the first solve SNESGetJacobian hands back NULL matrices; a method
@@ -10250,7 +10538,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     f"the regularisation (Parameters.plastic_rate_strengthening, units of "
                     f"viscosity) — its scale is the model's, there is no universal default "
                     f"— or accept the risk. Recorded in solve_report.config['regularisation'].")
-        if self._petsc_use_pressure_nullspace and in_rheology is True:
+        if pressure_projection_active and in_rheology is True:
             # The projection fixes mean(p) = 0 on every Krylov solve. With a pressure-
             # dependent viscosity (Drucker-Prager) the yield stress then follows that
             # gauge choice, and moves with it as the yielded region changes between

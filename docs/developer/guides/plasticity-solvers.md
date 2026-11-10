@@ -7,6 +7,9 @@ kind: recipe
 
 # plasticity-solvers
 
+For explicit rotated linear-solver overrides, see the
+[rotated free-slip guide](../subsystems/rotated-freeslip.md#explicit-linear-solver-options).
+
 The workable recipe for **nonlinear convergence of yielding (viscoplastic / VEP)
 Stokes** in Underworld3. Hard-`Min` yield laws have a non-differentiable kink that
 breaks naive solvers; this encodes what the yield campaigns measured actually works —

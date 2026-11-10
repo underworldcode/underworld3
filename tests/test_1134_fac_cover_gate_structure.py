@@ -14,7 +14,8 @@ The fixture is test_1017's NVB band hierarchy (Poisson) with the band widened to
 half-width 0.3. The band level has 417 rows, and its patch and halo hold 355 of
 them on macOS arm64 and 356 on kaiju's Linux x86_64 (85 %), over the gate, so it
 declines. The uniform level below it has 225 rows (the interior P2 nodes of the
-8 x 8 grid), all in its subdomain. A new host records its subdomain count here.
+8 x 8 grid), all in its subdomain. Patch/halo counts depend on triangulation;
+the contract is that a cover over three quarters is declined, on every host.
 """
 import pytest
 
@@ -27,9 +28,6 @@ pytestmark = [pytest.mark.level_2]
 
 BAND = 0.3
 BAND_ROWS = 417
-# the band level's patch+halo rows, per host
-BAND_SUBDOMAIN = {"macOS arm64, custom PETSc 3.25.0": 355,
-                  "Linux x86_64 (kaiju), PETSc 3.25.0": 356}
 UNIFORM_ROWS = 225
 
 
@@ -51,8 +49,7 @@ def test_an_unsplit_band_over_the_gate_is_declined_and_recorded():
     assert h.level_patch_rows[2] is None
     gate = h.fac_gate[2]
     assert (gate["rows"], gate["taken"]) == (BAND_ROWS, False), gate
-    assert gate["subdomain_rows"] in BAND_SUBDOMAIN.values(), (
-        f"{gate}: patch+halo rows; recorded per host {BAND_SUBDOMAIN}")
+    assert 3 * BAND_ROWS < 4 * gate["subdomain_rows"] <= 4 * BAND_ROWS, gate
 
 
 @pytest.mark.tier_b

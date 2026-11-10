@@ -420,6 +420,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
   batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
   batch 4 tests/test_1450*py
+  batch 4 tests/test_1112*py tests/test_1114*py tests/test_111[6-9]*py  # spherical pressure, norm and diagnostics
 
   # Named (un-numbered) test files - JIT, docstrings, projections
   batch 4 tests/test_docstring_utils.py tests/test_jit_cache.py \
@@ -536,6 +537,10 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
       $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
+    $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+      tests/test_1018_rotated_solver_options.py || status=1
+    $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+      tests/test_1098*py tests/test_1099*py tests/test_1100*py || status=1
 
     # A SECOND pass at four ranks, because two is a special case: the failure
     # this suite exists to catch is a collective entered by some ranks and not
