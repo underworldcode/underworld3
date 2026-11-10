@@ -30,8 +30,20 @@ def frame(step):
 
 steps = sorted(int(m.group(1)) for f in glob.glob(f"{run}/step*.mesh.00000.h5")
                if (m := re.search(r"step(\d+)\.mesh", f)))
-wanted = [s for s in (5, 50, 100) if s in steps] + [steps[-1]]
-wanted = sorted(set(wanted))
+# Optional argv[3]: comma-separated model times; the snapshot nearest each is
+# shown, so runs with different timesteps can be compared at the same times.
+# Optional argv[4]: the figure title.
+t_of = {}
+for line in open(f"{run}/run_log.txt"):
+    p = line.split()
+    if p and p[0].isdigit():
+        t_of[int(p[0])] = float(p[1])
+if len(sys.argv) > 3:
+    targets = [float(x) for x in sys.argv[3].split(",")]
+    wanted = sorted({min(steps, key=lambda s: abs(t_of.get(s, 1e9) - tt)) for tt in targets})
+else:
+    wanted = sorted(set([s for s in (5, 50, 100) if s in steps] + [steps[-1]]))
+title = sys.argv[4] if len(sys.argv) > 4 else None
 zooms = (("top boundary layer", (-0.22, 0.22), (0.76, 1.01)),
          ("inner hot layer", (-0.18, 0.18), (0.47, 0.66)))
 fig, axes = plt.subplots(2, len(wanted), figsize=(4.6 * len(wanted), 9.6), facecolor=SURFACE)
@@ -39,7 +51,7 @@ for ax, step in zip(axes[0], wanted):
     tri, T = frame(step)
     ax.tripcolor(tri, T, shading="gouraud", cmap=temperature, vmin=0.0, vmax=1.0)
     ax.triplot(tri, color=INK, lw=0.05)
-    ax.set_title(f"step {step}", color=INK)
+    ax.set_title(f"step {step}, t = {t_of.get(step, float('nan')):.3f}", color=INK)
     ax.set_aspect("equal"); ax.axis("off")
 tri, T = frame(wanted[-1])
 for ax, (name, xlim, ylim) in zip(axes[1], zooms):
@@ -50,8 +62,8 @@ for ax, (name, xlim, ylim) in zip(axes[1], zooms):
     ax.set_title(f"step {wanted[-1]}: {name}", color=INK)
 for ax in axes[1][len(zooms):]:
     ax.axis("off")
-fig.suptitle("Adaptive stagnant-lid convection, Ra 1e7, Δη 1e3, mover every step "
-             "(T: blue cold, red hot)", color=INK, fontsize=14, y=0.995)
+fig.suptitle(title or ("Adaptive stagnant-lid convection, Ra 1e7, Δη 1e3, mover every step "
+             "(T: blue cold, red hot)"), color=INK, fontsize=14, y=0.995)
 fig.tight_layout()
 fig.savefig(out, dpi=170, facecolor=SURFACE)
 print("written", out, "steps", wanted)
