@@ -1225,12 +1225,9 @@ class SNES_Darcy(SNES_Scalar):
         ``self.v`` contain the solution.
         """
 
-        if (not self.is_setup) or _force_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # Solve pressure
+        # Solve pressure. The base solve sets the solver up through _build, which
+        # destroys the old SNES before it makes a new one; the setup run here
+        # before left it alive, a whole SNES per rebuild (#1026).
 
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
@@ -1280,6 +1277,8 @@ class SNES_TransientDarcy(SNES_Darcy):
         Time integration order (BDF/Adams-Moulton history depth).
     theta : float, default=0.5
         Implicit time weighting (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+        With the default symbolic flux history it has no effect: the history
+        term is the current flux, so every step is backward Euler (#1029).
     degree : int, default=2
         Polynomial degree for finite element discretization.
     verbose : bool, default=False
@@ -1370,6 +1369,7 @@ class SNES_TransientDarcy(SNES_Darcy):
 
     @delta_t.setter
     def delta_t(self, value):
+        value = _nondimensionalise_timestep(value)
         if hasattr(value, "value"):
             value = value.value
         elif hasattr(value, "magnitude"):
@@ -5219,6 +5219,8 @@ class SNES_Diffusion(SNES_Scalar):
         Time integration order.
     theta : float, default=0.0
         Time integration parameter (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+        With the default symbolic flux history it has no effect: the history
+        term is the current flux, so every step is backward Euler (#1029).
     evalf : bool, default=False
         Numerically evaluate symbolic expressions during setup.
     verbose : bool, default=False
@@ -5748,11 +5750,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @delta_t.setter
     def delta_t(self, value):
-        """Set the timestep value."""
-        if not (_timestep_is_a_constant(value)
+        """Set the timestep (handles unit conversion if provided)."""
+        dt = _nondimensionalise_timestep(value)
+        if not (_timestep_is_a_constant(dt)
                 and _timestep_is_a_constant(self._delta_t.sym)):
             self._needs_function_rewire = True
-        self._delta_t.sym = value
+        self._delta_t.sym = dt
 
     @property
     def rho(self):

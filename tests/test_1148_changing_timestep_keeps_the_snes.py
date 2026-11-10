@@ -22,7 +22,15 @@ TransientDarcy compiled its first F1 before its symbolic flux history was popula
 so the flux lacked its history term: theta times the flux, half at theta = 0.5. A
 rewire put it back, and a new timestep was one; at a fixed timestep the run kept the
 half flux, and one step differed from a forced setup's by 8.5 % (#1027). The last
-test checks one step against a forced setup.
+test checks one step against a forced setup. Theta itself has no effect with that
+history, which holds the current flux (#1029); the test compares two setups and does
+not depend on it.
+
+A timestep with units is reduced by the model's time scale, and a new one is a
+constant like a number: TransientDarcy packed the magnitude, so 400 kyr went in as
+400, and NavierStokesSLCN kept the quantity, which is not a number, and rewired on
+every step. Steady Darcy's ``solve`` set itself up directly too, and a new source
+left the old SNES alive.
 
 Viscoelastic Stokes passed before the fix too; it is here because its ``solve`` had
 the same setup, which now goes through ``_build``, and its timestep (``dt_elastic``)
@@ -111,6 +119,16 @@ def _viscoelastic_stokes(tag):
     return s, lambda: np.asarray(s.DFDt.psi_star[0].array[...]).copy()
 
 
+def _navier_stokes_slcn(tag):
+    mesh = _box()
+    v = uw.discretisation.MeshVariable(f"U{tag}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P{tag}", mesh, 1, degree=1)
+    s = uw.systems.NavierStokesSLCN(mesh, velocityField=v, pressureField=p, rho=1.0)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    return s, lambda: np.asarray(v.array[...]).copy()
+
+
 def _march(build, tag, rebuild, timesteps=TIMESTEPS):
     """Solve at ``timesteps``; return each step's SNES, the setups and JIT keys after
     the first solve, and the final state."""
@@ -161,6 +179,51 @@ def test_a_new_timestep_keeps_the_snes_and_takes_effect(build):
                           timesteps=(TIMESTEPS[0],) * len(TIMESTEPS))
     assert np.abs(kept - fixed).max() > 1.0e-4 * scale, (
         f"{tag}: the march ends where a fixed timestep's does")
+
+
+def test_a_new_darcy_source_destroys_the_old_snes():
+    mesh = _box()
+    x, y = mesh.X
+    h = uw.discretisation.MeshVariable("h_steady", mesh, 1, degree=2)
+    v = uw.discretisation.MeshVariable("v_steady", mesh, 2, degree=1)
+    s = uw.systems.SteadyStateDarcy(mesh, h, v)
+    s.constitutive_model = uw.constitutive_models.DarcyFlowModel
+    s.constitutive_model.Parameters.permeability = 1.0
+    s.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
+    s.f = sympy.sin(sympy.pi * x)
+    s.add_dirichlet_bc(0.0, "Bottom")
+    s.add_dirichlet_bc(0.0, "Top")
+    s.solve()
+    old = s.snes
+    s.f = sympy.cos(sympy.pi * x) * y
+    s.solve()
+    # a new source rewires the kernels in place and keeps the SNES; SNES_Darcy.solve
+    # set itself up directly, made a new SNES and left the old one alive
+    assert s.snes is old or old.handle == 0, "a new SNES, and the old one is still alive"
+
+
+@pytest.fixture
+def time_scale_20_myr():
+    uw.reset_default_model()
+    uw.get_default_model().set_reference_quantities(length_scale=1000 * uw.units.km,
+                                                    time_scale=20 * uw.units.Myr)
+    yield
+    uw.reset_default_model()
+
+
+@pytest.mark.parametrize("build", [_slcn, _diffusion, _transient_darcy, _navier_stokes_slcn],
+                         ids=["adv_diffusion_slcn", "diffusion", "transient_darcy",
+                              "navier_stokes_slcn"])
+def test_a_timestep_with_units_is_the_reduced_constant(build, time_scale_20_myr):
+    s, _state = build(f"{build.__name__}u")
+    s.delta_t = uw.quantity(400, "kyr")
+    # the first timestep replaces the solver's symbolic one, and rewires
+    s._needs_function_rewire = False
+    s.delta_t = uw.quantity(600, "kyr")
+    # TransientDarcy packed the magnitude, 600, and NavierStokesSLCN kept the
+    # quantity, which is not a number, and rewired on every step
+    assert float(s.delta_t.sym) == pytest.approx(0.03, rel=1.0e-12), s.delta_t.sym
+    assert not s._needs_function_rewire, f"{build.__name__}: a new timestep with units rewires"
 
 
 @pytest.mark.parametrize("build", [_transient_darcy, _diffusion],
