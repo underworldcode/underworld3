@@ -2442,8 +2442,11 @@ class CustomMGHierarchy:
         would decline it without saying why. The kill is recorded in ``pc_fallbacks``
         on every build until the hierarchy is registered again, and warned once.
         A move is read from the finest mesh's ``_move_version``, which every committed
-        move bumps (``mesh.deform``, a mover, a snapshot restore that moved the nodes)
-        and a trial move inside ``ephemeral_coords`` does not. Collective: a mover's
+        move bumps (``mesh.deform`` and every mover) and a trial move inside
+        ``ephemeral_coords`` does not. Nor does a snapshot restore: it puts the coarse
+        levels back with the fine mesh, and the patch built before the move applies
+        again (hyperion measured 3 iterations kept against 6 killed on the fault
+        fixture, 2 against 15 on a zone patch, with the same solution). Collective: a mover's
         no-move test is rank-local, so a version could move on some ranks only, and
         the verdict is taken over all of them."""
         version = getattr(self.level_meshes[-1], "_move_version", None)

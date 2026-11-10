@@ -189,7 +189,8 @@ one campaign and is the error to recognise.
   the base from it, and register the new levels with the cut fault
   (`set_custom_fmg`). Registering the old coarse levels again does not rebuild
   it: the cover gate declines the patch. A trial move inside `ephemeral_coords`
-  is not a move.
+  is not a move, and nor is a snapshot restore, which puts the coarse levels back
+  with the fine mesh.
 - The robust (GMRES) smoother under contrast: the fast Richardson variant
   degrades already at $10^{2}$.
 - Check the subdomain probe, not only the iteration count: a patch that
