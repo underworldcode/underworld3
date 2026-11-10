@@ -261,8 +261,8 @@ for step in range(0, 2): #250
     tstarstats = T1._meshVar.stats()
 
     uw.pprint("Timestep {}, dt {}".format(step, delta_t))
-        print(tstats[2], tstats[3])
-        print(tstarstats[2], tstarstats[3])
+    uw.pprint(tstats[2], tstats[3])
+    uw.pprint(tstarstats[2], tstarstats[3])
 
     plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
 

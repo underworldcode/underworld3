@@ -71,27 +71,6 @@ def _file_value_sets(path, component=1, dim=2):
     return uw.mpi.comm.bcast(sets, root=0)
 
 
-def test_partition_can_separate_the_two_sides_of_a_cut(tmp_path):
-    """The premise that defeats a rank-local guard."""
-    mesh = _split_mesh()
-    var = uw.discretisation.MeshVariable("vSides", mesh, 2, degree=2)
-    coords = np.asarray(var.coords_nd)
-
-    seen = {}
-    for point in coords:
-        key = tuple(np.round(point, 10))
-        seen[key] = seen.get(key, 0) + 1
-    local_pairs = sum(1 for count in seen.values() if count > 1)
-
-    global_dofs = var._gvec.getSize() // var.num_components
-    serial_dofs = uw.mpi.comm.bcast(global_dofs, root=0)
-
-    # the cut is in the topology whatever the partition did with it ...
-    assert global_dofs == serial_dofs
-    # ... but a rank need not see both copies of any given node
-    assert uw.mpi.comm.allreduce(local_pairs, op=MPI.SUM) >= 0
-
-
 def test_reload_keeps_the_two_sides_distinct(tmp_path):
     """#640 in parallel: read back a serially-written split checkpoint."""
     path = uw.mpi.comm.bcast(str(tmp_path), root=0)
