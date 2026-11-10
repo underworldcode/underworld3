@@ -172,6 +172,8 @@ child = mesh.adapt(metric, max_levels=2)
 
 - The base mesh is **not modified**: each call re-marks from the static base, so
   successive adapts do not accumulate. `child.parent is mesh`.
+- The base must be built with `refinement>=1`: its coarse levels are the child's
+  multigrid tail.
 - `max_levels` bounds the refinement depth on top of the base finest.
 - The metric may be a MeshVariable, a sympy expression, or a callable
   `metric(centroids) -> M`. A callable built from exact geometry
@@ -309,7 +311,7 @@ A PETSc with mmg is a custom build:
 pixi install -e amr
 
 # Build custom PETSc (takes ~1 hour)
-pixi run -e amr petsc-build
+pixi run -e amr petsc-local-build
 
 # Verify installation
 pixi run -e amr python -c "import underworld3; print('AMR ready')"

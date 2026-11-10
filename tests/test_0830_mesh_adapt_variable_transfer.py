@@ -32,7 +32,8 @@ def _has_petsc_adaptation_backend():
     exception turned a real breakage on an mmg build into a skip, and ran the mmg
     route on every collection."""
     from petsc4py import PETSc
-    return PETSc.Sys.hasExternalPackage("parmmg" if uw.mpi.size > 1 else "mmg")
+    # these tests mesh in 2-D, and the parallel remesher (parmmg) is 3-D only
+    return uw.mpi.size == 1 and PETSc.Sys.hasExternalPackage("mmg")
 
 
 _petsc_has_adaptation = _has_petsc_adaptation_backend()
@@ -41,8 +42,9 @@ pytestmark = [
     pytest.mark.level_2,
     pytest.mark.skipif(
         not _petsc_has_adaptation,
-        reason="mesh.remesh() needs a PETSc built with mmg (parmmg in parallel), an "
-        "external opt-in that conda-forge's PETSc does not have.",
+        reason="mesh.remesh() of a 2-D mesh needs a PETSc built with mmg, an external "
+        "opt-in that conda-forge's PETSc does not have, and runs in serial only "
+        "(parmmg, the parallel remesher, is 3-D only).",
     ),
 ]
 

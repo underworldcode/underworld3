@@ -623,8 +623,8 @@ def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=Fa
     _dm_stack_bcs(mesh.dm, boundaries, "CombinedBoundaries")
     try:
         dm_a = mesh.dm.adaptMetric(metric_vec, bdLabel="CombinedBoundaries")
-    except PETSc.Error:
-        _require_metric_remesher("adaptivity.mesh_adapt_meshVar")
+    except PETSc.Error as err:
+        _require_metric_remesher("adaptivity.mesh_adapt_meshVar", err)
         raise
 
     icoord_vec = dm_a.getCoordinates()

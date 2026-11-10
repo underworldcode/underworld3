@@ -22,7 +22,7 @@ This example builds on `shear_box_2d_fault.py` by adding:
 - **Mesh adaptation** using MMG via PETSc's `adaptMetric`
 - **Refinement metrics** based on distance from embedded surfaces
 - **Element count control**: balancing refinement and coarsening
-- Variables automatically reset after adaptation (reinitialization needed)
+- Variables attached to the mesh are interpolated onto the new cells
 
 ## Adaptation Strategy
 
@@ -295,7 +295,8 @@ if render:
 ## Stokes Solver Setup
 
 After adaptation, we set up the Stokes solver. Note that:
-- MeshVariables were reset to zero during adaptation
+- MeshVariables attached before the remesh are interpolated onto the new cells;
+  these are created after it
 - The solver will be built fresh on the adapted mesh
 """
 
@@ -494,7 +495,7 @@ This example demonstrated **mesh adaptation** for fault-localized problems:
 2. **Surface-based metric**: `fault.refinement_metric()` creates H-field from distance
 3. **Adaptation**: `mesh.remesh(metric)` refines near fault, coarsens elsewhere
 4. **Element count control**: ~10× finer at fault with similar total count
-5. **Automatic updates**: Surfaces recompute distance fields, variables reset
+5. **Automatic updates**: Surfaces recompute distance fields, variables are interpolated
 
 ### Adaptation Parameters
 

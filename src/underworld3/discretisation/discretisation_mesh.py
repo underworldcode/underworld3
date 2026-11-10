@@ -249,21 +249,22 @@ def _hierarchy_sidecar_name(mesh_filename):
     return f"{base}.hierarchy.L0{ext}"
 
 
-def _require_metric_remesher(what):
+def _require_metric_remesher(what, cause=None):
     """Raise a plain error when this PETSc has no metric remesher (mmg, parmmg or
     pragmatic). ``what`` names the route. These routes are an external opt-in:
     conda-forge's PETSc has none, and without one PETSc fails deep inside
     DMAdaptMetric. Called when that PETSc call has failed, so that a DM whose
     adaptMetric is supplied otherwise (a test's stand-in) is not refused. Not
-    collective (every rank reads the same build)."""
+    collective (every rank reads the same build). ``cause`` is the PETSc error,
+    which the RuntimeError is raised from."""
     if not any(PETSc.Sys.hasExternalPackage(p) for p in ("mmg", "parmmg", "pragmatic")):
         raise RuntimeError(
-            f"{what} needs a PETSc built with a metric remesher (mmg, and parmmg "
-            f"for parallel 3-D), an external opt-in that this PETSc (as "
+            f"{what} needs a PETSc built with a metric remesher (mmg, parmmg for "
+            f"parallel 3-D, or pragmatic), an external opt-in that this PETSc (as "
             f"conda-forge's) does not have. Without one: mesh.adapt(metric, "
-            f"max_levels=...) refines into a child mesh, "
-            f"uw.meshing.node_redistribution moves the nodes to a metric, and "
-            f"refinement= builds a multigrid hierarchy.")
+            f"max_levels=...) refines a base built with refinement>=1 into a child "
+            f"mesh, uw.meshing.node_redistribution moves the nodes to a metric, and "
+            f"refinement= builds a multigrid hierarchy.") from cause
 
 
 def _mesh_coords_update_callback(array, change_context):
@@ -1409,8 +1410,8 @@ class Mesh(Stateful, uw_object):
         for i in range(coarsening):
             try:
                 dm_coarsened = self.dm_hierarchy[i].coarsen()
-            except PETSc.Error:
-                _require_metric_remesher("Mesh(coarsening=...)")
+            except PETSc.Error as err:
+                _require_metric_remesher("Mesh(coarsening=...)", err)
                 raise
             self.dm_hierarchy[i].setCoarseDM(dm_coarsened)
             self.dm_hierarchy.append(dm_coarsened)
@@ -4270,7 +4271,8 @@ class Mesh(Stateful, uw_object):
             "node displacement (free surface / prescribed motion)\n"
             "    • uw.meshing.node_redistribution(mesh, metric) / "
             "uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
-            "    • mesh.adapt(metric, max_levels=…)       — a refined child mesh\n"
+            "    • mesh.adapt(metric, max_levels=…)       — a refined child mesh "
+            "(the base built with refinement>=1)\n"
             "    • mesh.remesh(metric)                     — needs a PETSc built "
             "with mmg (external opt-in)\n"
             "  These route the field + SL/DDt-history transfer "
@@ -9971,8 +9973,8 @@ class Mesh(Stateful, uw_object):
                 bdLabel="CombinedBoundaries",
                 rgLabel=rgLabel_name,
             )
-        except PETSc.Error:
-            _require_metric_remesher("mesh.remesh")
+        except PETSc.Error as err:
+            _require_metric_remesher("mesh.remesh", err)
             raise
 
         # Unstack boundary labels on the new dm
@@ -10091,8 +10093,8 @@ class Mesh(Stateful, uw_object):
 
         from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
 
-        # Reinitialize MeshVariables on the new mesh
-        # Note: Variables are reset to zero. Users should reinitialize with data.
+        # Rebuild each MeshVariable on the new mesh and write back the values
+        # interpolated above; a variable whose transfer failed is left at zero.
         for var_name, old_var in old_vars_data.items():
             try:
                 self._reinit_variable_on_new_dm(old_var)
