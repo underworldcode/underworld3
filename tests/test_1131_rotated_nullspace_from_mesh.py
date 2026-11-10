@@ -28,6 +28,9 @@ Contracts, all exactness properties:
   constraint test then rejects it; one moved the way an MMPDE mover moves it (wall
   vertices sliding along their circles, the interior moving) keeps it, and its
   answer carries no rotation;
+- walls that mix a given normal and the facet-averaged one keep the exemption on
+  the facet-averaged walls and test the given-normal walls on their own rows (#968):
+  an exact normal removes the rotation, a tilted one rejects it;
 - a no-slip wall rejects a declared mode; a box declares none and finds none;
 - the setter refuses a field that is not a rigid rotation, and an add_fault child
   inherits the declaration, written in its own coordinates;
@@ -210,12 +213,15 @@ def test_a_wall_moved_off_its_circle_loses_the_exemption(amplitude, exempt):
     assert _normal_velocity(info) < 1.0e-12
 
 
-def test_mixed_given_and_default_normals_warn_that_the_rotation_stays():
-    # the exemption needs every wall on the default normal; a mix is refused, loudly.
-    # On an annulus whose vertices have slid along their circles the default-normal wall
-    # is faceted unevenly and fails the constraint test, so the rotation stays. (On the
-    # annulus as built its edges are equal, the facet-averaged normal is radial at the
-    # vertices, and the rotation passes the test.)
+def test_mixed_given_and_default_normals_remove_the_rotation():
+    # one wall takes the analytic normal, the other the facet-averaged one (#968). On an
+    # annulus whose vertices have slid along their circles the default-normal wall is
+    # faceted unevenly, so a rotation fails the constraint test there by the faceting
+    # error. The exemption covers that wall; the given-normal wall is tested on its own
+    # rows, which the exact normal passes. Development refused the exemption for the
+    # whole set, kept the rotation and warned. (On the annulus as built its edges are
+    # equal, the facet-averaged normal is radial at the vertices, and the rotation
+    # passes the test anyway.)
     mesh, v, stokes = _annulus_stokes("1131x", mesh=_slid_annulus())
     x, y = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2)
@@ -226,12 +232,35 @@ def test_mixed_given_and_default_normals_warn_that_the_rotation_stays():
         warnings.simplefilter("always")
         stokes.solve()
     info = stokes._rotated_freeslip_info
-    assert info["declared_modes_exempt"] == [False]
+    assert info["converged"], info
+    assert info["declared_modes_exempt"] == [True]
+    assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
+    mode = info["rotation_gauge"]["modes"][0]
+    # faceted on the default wall, exact on the given one
+    assert mode["viol"] > 1.0e-8 and mode["given_viol"] < 1.0e-12, mode
+    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
+    assert _normal_velocity(info) < 1.0e-12
+    assert not any("take a given normal" in str(w.message) for w in record)
+
+
+def test_a_wrong_given_normal_beside_a_default_wall_rejects_the_rotation():
+    # the exemption does not extend to a given-normal wall: one that is not radial is
+    # not tangent to the rotation and rejects it on its own rows
+    mesh, v, stokes = _annulus_stokes("1131w", mesh=_slid_annulus())
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    tilted = sympy.Matrix([[x / r + 0.1, y / r]]) / sympy.sqrt((x / r + 0.1) ** 2 + (y / r) ** 2)
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=tilted)
+    stokes.add_rotated_freeslip_bc(0, "Upper")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["declared_modes_exempt"] == [True]
+    mode = info["rotation_gauge"]["modes"][0]
+    assert not mode["accepted"] and mode["rejected_by"] == "constraint", mode
+    assert mode["given_viol"] > 1.0e-3, mode
     assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
-    with uw.selective_ranks(0) as selected:
-        if selected:
-            assert any("take a given normal and the others the facet-averaged one"
-                       in str(w.message) for w in record), [str(w.message) for w in record]
+    assert _normal_velocity(info) < 1.0e-12
 
 
 def test_the_direct_lu_route_records_its_verdict_on_the_declared_mode():
