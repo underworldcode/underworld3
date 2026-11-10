@@ -220,24 +220,45 @@ def _nondimensionalise_timestep(value):
     float or the original object
         The nondimensional magnitude when the conversion applies, otherwise
         ``value`` unchanged.
+
+    Raises
+    ------
+    ValueError
+        For a quantity that is not a time (a length is not a timestep), and
+        for a time quantity when the model has no reference scales to reduce
+        it by (#1031).
+
+    A ``UWexpression`` is returned as it is, so that a later ``E.sym = ...``
+    reaches the solver; a 0-d array is a number, and comes back as a float,
+    so that it does not rewire the kernels on every step (#1031).
     """
+    from underworld3.function.expressions import UWexpression
+    from ..scaling import units as ureg
+
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        return float(value)
+    if isinstance(value, UWexpression):
+        dims = value.dimensionality
+        if dims and dims != ureg.second.dimensionality:
+            raise ValueError(
+                f"timestep {value} has dimension {dims}, not a time.")
+        return value
     if not hasattr(value, "dimensionality"):
         return value
+    if not value.dimensionality:
+        magnitude = getattr(value, "magnitude", getattr(value, "value", value))
+        return float(magnitude)
+    if value.dimensionality != ureg.second.dimensionality:
+        raise ValueError(
+            f"timestep {value} has dimension {value.dimensionality}, not a time.")
+    orchestration_model = uw.get_default_model()
+    time_scale = (getattr(orchestration_model, "fundamental_scales", None) or {}).get("time")
+    if time_scale is None:
+        raise ValueError(
+            f"timestep {value} has units, and this model has no reference scales "
+            f"to reduce it by: set them (model.set_reference_quantities), or pass "
+            f"a nondimensional number.")
     try:
-        from ..scaling import units as ureg
-
-        if value.dimensionality != ureg.second.dimensionality:
-            return value
-        orchestration_model = uw.get_default_model()
-        if not (
-            orchestration_model
-            and hasattr(orchestration_model, "fundamental_scales")
-            and orchestration_model.fundamental_scales
-        ):
-            return value
-        time_scale = orchestration_model.fundamental_scales.get("time")
-        if time_scale is None:
-            return value
 
         # Physical time / time scale = nondimensional time.
         # Must use to_reduced_units() to convert both quantities to the same
@@ -432,7 +453,10 @@ def _advective_diffusive_dt(constitutive_K, V_fn, mesh, direction_aware=False,
         if tris is None:
             h_per_element = element_radii
         else:
-            coords = np.asarray(mesh.X.coords)
+            # model units: mesh.X.coords is dimensional in a model with
+            # reference scales, and read as model units it made the crossing
+            # time the length scale times too long (#891)
+            coords = np.asarray(mesh._coords)
             centroids = coords[tris].mean(axis=1)
             vhat = np.where(
                 vel_magnitudes[:, None] > 0,
@@ -1369,11 +1393,9 @@ class SNES_TransientDarcy(SNES_Darcy):
 
     @delta_t.setter
     def delta_t(self, value):
+        # a UWexpression is kept, so that a later E.sym reaches the solver;
+        # the helper has already reduced a time quantity to a number (#1031)
         value = _nondimensionalise_timestep(value)
-        if hasattr(value, "value"):
-            value = value.value
-        elif hasattr(value, "magnitude"):
-            value = value.magnitude
         if not (_timestep_is_a_constant(value)
                 and _timestep_is_a_constant(self._delta_t.sym)):
             self._needs_function_rewire = True
