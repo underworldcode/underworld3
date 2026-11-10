@@ -1547,7 +1547,9 @@ class SNES_Richards(SNES_TransientDarcy):
     order : int, default=1
         Time integration order.
     theta : float, default=0.5
-        Implicit time weighting.
+        Implicit time weighting. With the default symbolic flux history it has
+        no effect: the history term is the current flux, so every step is
+        backward Euler (#1029).
     degree : int, default=2
         Polynomial degree.
     verbose : bool, default=False

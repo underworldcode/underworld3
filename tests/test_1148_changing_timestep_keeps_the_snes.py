@@ -32,6 +32,10 @@ constant like a number: TransientDarcy packed the magnitude, so 400 kyr went in 
 every step. Steady Darcy's ``solve`` set itself up directly too, and a new source
 left the old SNES alive.
 
+A timestep that varies in space is compiled into the kernels, so a number after it
+must still rebuild them; a setter that looked at the new timestep alone would keep
+the expression.
+
 Viscoelastic Stokes passed before the fix too; it is here because its ``solve`` had
 the same setup, which now goes through ``_build``, and its timestep (``dt_elastic``)
 is a constant as well.
@@ -179,6 +183,29 @@ def test_a_new_timestep_keeps_the_snes_and_takes_effect(build):
                           timesteps=(TIMESTEPS[0],) * len(TIMESTEPS))
     assert np.abs(kept - fixed).max() > 1.0e-4 * scale, (
         f"{tag}: the march ends where a fixed timestep's does")
+
+
+# SLCN traces back by the timestep, which must then be a number
+@pytest.mark.parametrize("build", [_diffusion, _transient_darcy],
+                         ids=["diffusion", "transient_darcy"])
+def test_a_number_after_a_varying_timestep_reaches_the_kernels(build):
+    tag = build.__name__
+    results = []
+    for rebuild in (False, True):
+        s, state = build(f"{tag}v{int(rebuild)}")
+        x, _y = s.mesh.X
+        s.solve(timestep=TIMESTEPS[0] * (1 + x), zero_init_guess=False)
+        s.solve(timestep=TIMESTEPS[1], zero_init_guess=False, _force_setup=rebuild)
+        results.append(state())
+    kept, rebuilt = results
+    scale = max(np.abs(rebuilt).max(), 1.0e-30)
+    # a varying timestep is compiled into the kernels; the number after it is a
+    # constant only once the kernels are rebuilt without the expression. A setter
+    # that looked at the new timestep alone kept the old kernels: 1.7e-2 (diffusion)
+    # and 3.6e-2 (TransientDarcy)
+    assert np.abs(kept - rebuilt).max() <= 1.0e-6 * scale, (
+        f"{tag}: a number after a varying timestep differs from a forced setup's by "
+        f"{np.abs(kept - rebuilt).max() / scale:.2e} (relative)")
 
 
 def test_a_new_darcy_source_destroys_the_old_snes():
