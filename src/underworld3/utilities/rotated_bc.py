@@ -1761,10 +1761,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         if not use_pnull:
             pnull_gauge[0] = 0.0
             solver._rotated_pressure_gauge_residual = 0.0
+        rebuild_context = bool(not use_lu and ctx is not None
+                               and ctx["pressure_nullspace_verified"] != use_pnull)
+        if mpi.size > 1:
+            rebuild_context = any(mpi.comm.allgather(rebuild_context))
         if not use_lu and ctx is not None:
-            rebuild_context = ctx["pressure_nullspace_verified"] != use_pnull
-            if mpi.size > 1:
-                rebuild_context = any(mpi.comm.allgather(rebuild_context))
             if rebuild_context:
                 # KSP/Schur metadata and their owned nullspaces must change
                 # together. Geometry and the operator allocation remain reusable.

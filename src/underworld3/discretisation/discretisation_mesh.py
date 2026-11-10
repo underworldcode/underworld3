@@ -5892,6 +5892,9 @@ class Mesh(Stateful, uw_object):
         dmold = self.dm.getCoordinateDM()
         dmold.createDS()
         dmnew = dmold.clone()
+        # A coordinate-DM clone can retain topological dimension on a surface.
+        # Identity projection needs the full physical embedding coordinates.
+        dmnew.setCoordinateDim(self.cdim)
 
         options = PETSc.Options()
         options["coordinterp_petscspace_degree"] = degree

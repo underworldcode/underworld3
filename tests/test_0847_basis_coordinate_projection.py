@@ -75,3 +75,35 @@ def test_shared_continuous_coordinates_are_identical(interface_mesh):
                 np.testing.assert_array_equal(value, shared[index])
             else:
                 shared[index] = value
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("degree,continuous", [(1, True), (2, True), (0, False)])
+def test_surface_basis_coordinates_reproduce_embedded_affine_facets(degree, continuous):
+    """The coordinate identity has three components on a two-dimensional surface."""
+    mesh = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.4, degree=1, qdegree=3)
+    coords = np.asarray(mesh._get_coords_for_basis(degree, continuous))
+    rows = mesh._cell_node_indices(degree, continuous)
+    dm = mesh.dm
+    section = dm.getCoordinateSection()
+    physical = dm.getCoordinatesLocal().array
+    vstart, vend = dm.getDepthStratum(0)
+    cstart, cend = dm.getHeightStratum(0)
+    for cell in range(cstart, cend):
+        vertices = np.asarray([
+            physical[section.getOffset(point):section.getOffset(point) + 3]
+            for point in dm.getTransitiveClosure(cell)[0]
+            if vstart <= point < vend
+        ])
+        if degree == 0:
+            expected = vertices.mean(axis=0, keepdims=True)
+        elif degree == 1:
+            expected = vertices
+        else:
+            expected = np.vstack([vertices, [(vertices[i] + vertices[j]) / 2
+                                  for i in range(3) for j in range(i + 1, 3)]])
+        actual = coords[rows[cell - cstart]]
+        distances = np.linalg.norm(actual[:, None, :] - expected[None, :, :], axis=2)
+        assert actual.shape == expected.shape
+        assert np.max(np.min(distances, axis=1)) < 2e-13
+        assert np.max(np.min(distances, axis=0)) < 2e-13

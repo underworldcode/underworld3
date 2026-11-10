@@ -175,8 +175,9 @@ def test_a_singular_coarse_level_converges_to_the_svd_answer(monkeypatch, tmp_pa
     seen = _seen_pcs(monkeypatch)
     nullspace = rotated_bc._rotated_nullspace
 
-    def nullspace_seen(solver, Q, normal_rows):
-        seen["nsp"] = nullspace(solver, Q, normal_rows)
+    def nullspace_seen(solver, Q, normal_rows, *, pressure_null_verified):
+        seen["nsp"] = nullspace(solver, Q, normal_rows,
+                                pressure_null_verified=pressure_null_verified)
         seen["vel_is"] = solver._subdict["velocity"][0]
         return seen["nsp"]
 
