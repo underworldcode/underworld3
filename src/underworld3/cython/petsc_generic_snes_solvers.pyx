@@ -2881,30 +2881,10 @@ class SolverBaseClass(uw_object):
 
     @staticmethod
     def _peel_except(expression, wrt, depth=8):
-        """Expand every named expression in ``expression`` except ``wrt``.
-
-        A parameter reaches the residual through the constitutive model's own
-        named symbol — ``Parameters.diffusivity = kappa`` puts ``\\upkappa`` in
-        ``F1`` with ``kappa`` as its value — so differentiating the residual
-        as written with respect to ``kappa`` gives zero. ``fn_unwrap`` will not
-        do either: it substitutes every constant's VALUE, and the derivative
-        of a number is zero too. This substitutes each named expression by its
-        definition, one level at a time, and stops at ``wrt`` so the chain
-        rule has something to hold on to.
-        """
-        # A named expression whose value is a bare number is left as it is:
-        # the JIT passes it as a run-time constant, so the kernel compiled
-        # for the integrand survives a change of its value. Substituting the
-        # number recompiled every sensitivity at every evaluation of an
-        # inversion (four compiles per evaluation on the fault example).
-        for _ in range(depth):
-            named = [e for e in uw.function.fn_extract_expressions(expression)
-                     if e is not wrt and e != wrt
-                     and not getattr(getattr(e, "sym", None), "is_Number", False)]
-            if not named:
-                break
-            expression = expression.subs({e: e.sym for e in named})
-        return expression
+        """Expand every named expression in ``expression`` except ``wrt``:
+        :func:`underworld3.adjoint._peel_except`."""
+        from underworld3.adjoint import _peel_except
+        return _peel_except(expression, wrt, depth)
 
     def sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
         r"""``d J / d m`` for a scalar parameter ``wrt``, given the adjoint state.
@@ -2920,7 +2900,8 @@ class SolverBaseClass(uw_object):
         dual on every node, ``misfit_dual``, where the misfit reads the
         prescribed values.
         """
-        total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        from underworld3.adjoint import integral
+        total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
         # A parameter that enters through a natural condition — a prescribed
         # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
@@ -2936,7 +2917,7 @@ class SolverBaseClass(uw_object):
             values = list(d)
             comps = getattr(mu, "num_components", 1)
             integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += float(uw.maths.BdIntegral(self.mesh, integrand, bc.boundary).evaluate())
+            total += integral(self.mesh, integrand, bc.boundary)
         return total
 
     def _constraint_mechanisms(self):
