@@ -402,10 +402,13 @@ def restore(model, snap: Snapshot) -> None:
     bearers_by_key = {_state_bearer_key(o): o for o in list(model._state_bearers)}
 
     # Everything the snapshot names is looked up before anything is written, so a
-    # refused restore leaves the model as it was, and the verdict is agreed across
-    # the ranks: a history manager collected on some ranks but still referenced on
-    # others (a rank-local reference to a dropped solver) made those ranks restore
-    # and the others raise, and the job hung in the next collective (#1041).
+    # restore refused for a missing mesh, swarm or history manager leaves the model
+    # as it was, and the verdict is agreed across the ranks: a history manager
+    # collected on some ranks but still referenced on others (a rank-local reference
+    # to a dropped solver) made those ranks restore and the others raise, and the
+    # job hung in the next collective (#1041). The checks inside
+    # apply_snapshot_payload (a moved mesh, a changed layout) still run as each mesh
+    # is written, so a refusal there can leave earlier meshes restored.
     problem = _agreed_problem(_restore_problem(snap, meshes_by_name, swarms_by_name,
                                                bearers_by_key))
     if problem is not None:

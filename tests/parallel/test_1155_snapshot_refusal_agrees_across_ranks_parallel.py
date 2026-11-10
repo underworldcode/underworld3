@@ -18,7 +18,8 @@ import pytest
 import underworld3 as uw
 from underworld3.checkpoint.snapshot import SnapshotInvalidatedError
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_b, pytest.mark.timeout(300),
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
+              pytest.mark.timeout(300, method="thread"),
               pytest.mark.skipif(uw.mpi.size == 1,
                                  reason="one rank holding a reference needs two ranks; "
                                         "test_1154 covers the serial contract")]
