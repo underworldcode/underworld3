@@ -217,47 +217,58 @@ def _nondimensionalise_timestep(value):
 
     Returns
     -------
-    float or the original object
-        The nondimensional magnitude when the conversion applies, otherwise
-        ``value`` unchanged.
+    float, UWexpression, or the original object
+        A float for a number-like array, a dimensionless quantity, or a time
+        quantity reduced by the model's time scale; a ``UWexpression`` as it
+        is; anything else unchanged (assumed already nondimensional).
 
     Raises
     ------
     ValueError
-        For a quantity that is not a time (a length is not a timestep), and
-        for a time quantity when the model has no reference scales to reduce
-        it by (#1031).
+        For a quantity or expression that is not a time (a length is not a
+        timestep), and for a time quantity or time-valued expression when the
+        model has no reference scales to reduce it by (#1031).
 
     A ``UWexpression`` is returned as it is, so that a later ``E.sym = ...``
-    reaches the solver; a 0-d array is a number, and comes back as a float,
-    so that it does not rewire the kernels on every step (#1031).
+    reaches the solver; a single-element array is a number, and comes back as
+    a float, so that it does not rewire the kernels on every step (#1031).
     """
     from underworld3.function.expressions import UWexpression
     from ..scaling import units as ureg
 
-    if isinstance(value, np.ndarray) and value.ndim == 0:
-        return float(value)
+    def _time_scale(what):
+        orchestration_model = uw.get_default_model()
+        scale = (getattr(orchestration_model, "fundamental_scales", None) or {}).get("time")
+        if scale is None:
+            raise ValueError(
+                f"timestep {what} has units, and this model has no reference scales "
+                f"to reduce it by: set them (model.set_reference_quantities), or pass "
+                f"a nondimensional number.")
+        return scale
+
+    if isinstance(value, np.ndarray) and value.size == 1:
+        return float(value.reshape(()))
     if isinstance(value, UWexpression):
         dims = value.dimensionality
-        if dims and dims != ureg.second.dimensionality:
-            raise ValueError(
-                f"timestep {value} has dimension {dims}, not a time.")
+        if dims:
+            if dims != ureg.second.dimensionality:
+                raise ValueError(
+                    f"timestep {value} has dimension {dims}, not a time.")
+            _time_scale(value)
         return value
     if not hasattr(value, "dimensionality"):
         return value
     if not value.dimensionality:
-        magnitude = getattr(value, "magnitude", getattr(value, "value", value))
-        return float(magnitude)
+        # a ratio such as (600 kyr) / (20 Myr) is dimensionless but not reduced:
+        # its magnitude is 30 in kyr/Myr, 0.03 once reduced
+        pint_value = getattr(value, "_pint_qty", value)
+        if hasattr(pint_value, "to"):
+            return float(pint_value.to("dimensionless").magnitude)
+        return float(getattr(value, "magnitude", getattr(value, "value", value)))
     if value.dimensionality != ureg.second.dimensionality:
         raise ValueError(
             f"timestep {value} has dimension {value.dimensionality}, not a time.")
-    orchestration_model = uw.get_default_model()
-    time_scale = (getattr(orchestration_model, "fundamental_scales", None) or {}).get("time")
-    if time_scale is None:
-        raise ValueError(
-            f"timestep {value} has units, and this model has no reference scales "
-            f"to reduce it by: set them (model.set_reference_quantities), or pass "
-            f"a nondimensional number.")
+    time_scale = _time_scale(value)
     try:
 
         # Physical time / time scale = nondimensional time.
