@@ -196,9 +196,18 @@ def _skewed_annulus(tag, skew):
     return s
 
 
-def _residual(build, *args):
+def _residual(build, *args, allow_invalid_rotation=False):
     with _CaptureOperator() as cap:
-        build(*args).solve()
+        try:
+            build(*args).solve()
+        except ValueError as error:
+            # The deliberately defective normal also invalidates a mesh-declared
+            # rotation. The balanced pressure PC correctly refuses that mode;
+            # the already captured original operator still measures the defect.
+            if not (allow_invalid_rotation and cap.A is not None
+                    and str(error) == "Rotation modes are not true null vectors"):
+                raise
+            assert cap.constant_pressure_residual > 1e-11
         return cap.constant_pressure_residual
 
 
@@ -235,7 +244,8 @@ def test_skewed_annulus_constant_pressure_stays_a_null_vector():
     kinked facets) from the symptom (a deformed box)."""
     skewed = _residual(_skewed_annulus, "K", 0.04)
     with _BisectorNormals():
-        skewed_bisector = _residual(_skewed_annulus, "B", 0.04)
+        skewed_bisector = _residual(_skewed_annulus, "B", 0.04,
+                                    allow_invalid_rotation=True)
     assert skewed < _MACHINE, (
         f"skewed annulus leaves |Az|/|A| = {skewed:.3e} (#560)")
     assert skewed_bisector > 1e-11, (

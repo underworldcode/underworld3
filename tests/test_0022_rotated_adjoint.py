@@ -55,6 +55,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.adjoint import misfit_duals
 from underworld3.utilities.rotated_bc import (_rotated_nullspace,
+                                              _pressure_nullspace_checks,
                                               _velocity_diag_scale)
 
 
@@ -320,15 +321,18 @@ def test_the_null_space_serves_the_transposed_operator_too():
 
     info = stokes._rotated_freeslip_info
     Q, Qt, rows = info["Q"], info["Qt"], info["normal_rows"]
-    nsp = _rotated_nullspace(stokes, Q, rows)
+    K = stokes.snes.getJacobian()[0]
+    Ahat = K.ptap(Qt)
+    Ahat.zeroRowsColumns(rows, diag=_velocity_diag_scale(Ahat, stokes))
+    checks = _pressure_nullspace_checks(Ahat, stokes._subdict["pressure"][0], True)
+    assert checks["verified"], checks
+    nsp = _rotated_nullspace(stokes, Q, rows,
+                             pressure_null_verified=checks["verified"])
     assert nsp is not None, "no null space here — the test would prove nothing"
     assert getattr(stokes, "_rotated_velocity_null_modes", 0) >= 1, (
         "no RIGID ROTATION was admitted; only the pressure mode is being "
         "measured, and that one is symmetric for a trivial reason")
 
-    K = stokes.snes.getJacobian()[0]
-    Ahat = K.ptap(Qt)
-    Ahat.zeroRowsColumns(rows, diag=_velocity_diag_scale(Ahat, stokes))
     AhatT = Ahat.transpose(PETSc.Mat())
     try:
         for w in nsp.getVecs():
@@ -344,5 +348,6 @@ def test_the_null_space_serves_the_transposed_operator_too():
             assert abs(adjoint - forward) <= 0.01 * max(forward, 1.0e-16), (
                 forward, adjoint)
     finally:
+        nsp.destroy()
         Ahat.destroy()
         AhatT.destroy()
