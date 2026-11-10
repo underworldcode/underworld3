@@ -1738,7 +1738,11 @@ def _release_fac_keys(solver, force=False):
     converged) keeps the keys for the next one. Called at the end of every solve, and
     when the preconditioner choice changes (``force``), when the keys can only
     mislead the route that replaces them: GAMG read the level's composite back with
-    no members (PETSc error 73). Not collective."""
+    no members (PETSc error 73). Not collective.
+
+    After the drop, a ``setFromOptions`` on the FAC level's own smoother KSP takes it
+    back to the default smoother: the composite is gone from the database (hyperion
+    measured 3 to 5 iterations). No library path makes that call."""
     names = getattr(solver, "_custom_mg_fac_keys", None)
     if not names:
         return
@@ -2437,10 +2441,15 @@ class CustomMGHierarchy:
         coincident coarse node, would take every moved row as patch and the cover gate
         would decline it without saying why. The kill is recorded in ``pc_fallbacks``
         on every build until the hierarchy is registered again, and warned once.
-        ``_mesh_version`` moves on every rank together, so the verdict is collective."""
+        Collective: a mover's no-move test is rank-local, so a version could move on
+        some ranks only, and the verdict is taken over all of them."""
         version = getattr(self.level_meshes[-1], "_mesh_version", None)
         at = getattr(solver, "_fac_patch_mesh_version", None)
-        if at is not None and at != version:
+        moved = int(at is not None and at != version)
+        if solver.dm.comm.getSize() > 1:
+            from mpi4py import MPI
+            moved = solver.dm.comm.tompi4py().allreduce(moved, op=MPI.MAX)
+        if moved:
             # attributed to the user's solve(), not to this frame
             from underworld3.cython.generic_solvers import _warn_from_caller
             solver._fac_patch_mesh_version = None
@@ -2449,8 +2458,10 @@ class CustomMGHierarchy:
                 f"custom_mg: the mesh of solver {solver.name!r} was deformed after its "
                 f"FAC patch was built, so the patch is gone and the fault is absent "
                 f"from the preconditioner. Rebuild it with the moved fault: re-refine "
-                f"the base from it and register the hierarchy again (set_custom_fmg) "
-                f"(#1017).", UserWarning)
+                f"the base from it and register the new levels (set_custom_fmg). "
+                f"Registering the old coarse levels again does not bring it back: "
+                f"they did not move with the mesh, and the patch is declined at the "
+                f"cover gate (#1017).", UserWarning)
         if not getattr(solver, "_fac_patch_killed", False):
             return False
         solver._record_pc_fallback(
@@ -2459,8 +2470,8 @@ class CustomMGHierarchy:
             installed="whole-level smoothing; the fault is absent from the preconditioner",
             reason="unavailable",
             detail="the mesh was deformed after the patch was built, and a deform kills "
-                   "the patch (#1017); register the hierarchy again with the moved "
-                   "fault to rebuild it")
+                   "the patch (#1017); re-refine the base from the moved fault and "
+                   "register the new levels to rebuild it")
         return True
 
     def _fac_cover_max(self, l):
@@ -2525,6 +2536,25 @@ class CustomMGHierarchy:
         self.patch_summary = _fac_patch_summary(patch_rows, comm)
         return self.patch_summary
 
+    def _record_installed_patch(self, solver, patch_rows):
+        """Record the patch an install route handed over: its summary, and the
+        geometry it was built on, which a move of the mesh kills (#1017).
+
+        Collective. Every route that installs this hierarchy's transfers calls it,
+        the standard one (:meth:`install`) and the two rotated ones in
+        ``utilities.rotated_bc``, which configure the PC themselves; a route that
+        left the version out declined a moved patch without saying so. Whether
+        there is a patch is decided over all ranks: a rank may own no patch row."""
+        summary = self._record_patch_summary(patch_rows, solver.dm.comm)
+        local = int(bool(patch_rows) and any(rows is not None for rows in patch_rows))
+        if solver.dm.comm.getSize() > 1:
+            from mpi4py import MPI
+            local = solver.dm.comm.tompi4py().allreduce(local, op=MPI.MAX)
+        if local:
+            solver._fac_patch_mesh_version = getattr(self.level_meshes[-1],
+                                                     "_mesh_version", None)
+        return summary
+
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
@@ -2544,11 +2574,7 @@ class CustomMGHierarchy:
                     for level, rows in enumerate(patch_rows)]
             Ps = restricted
         _install_transfers(solver, Ps, verbose=verbose, patch_rows=patch_rows)
-        self._record_patch_summary(patch_rows, solver.dm.comm)
-        # the geometry this patch was built on: a deform kills it (#1017)
-        if patch_rows and any(rows is not None for rows in patch_rows):
-            solver._fac_patch_mesh_version = getattr(self.level_meshes[-1],
-                                                     "_mesh_version", None)
+        self._record_installed_patch(solver, patch_rows)
         # Record what is live on this solver's PC, so a repeat solve can
         # skip the re-install (see _pcmg_still_installed): the level count and
         # the finest interpolation the PC now holds, kept as the Mat itself.

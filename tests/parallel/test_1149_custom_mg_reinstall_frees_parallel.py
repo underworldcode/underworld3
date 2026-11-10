@@ -5,8 +5,8 @@ the destroy is collective, so the object goes on a deferred list that only a col
 ``PETSc.garbage_cleanup`` empties, and nothing on the standard solve paths ran one. Every
 reinstall of a custom-P hierarchy kept its predecessor's transfers and level objects:
 on this fixture at np 2, +6 entries per reinstall on Poisson and +28 on the Stokes
-velocity block (hyperion, development a6eebb61). The
-solve that installed now empties the list at its end, as the rotated path does (#1007).
+velocity block (hyperion, development a6eebb61). The solve that installed now empties
+the list at its end, as the rotated path does (#1007).
 
 Run with at least two ranks.
 """

@@ -47,34 +47,68 @@ def _fac_keys_in_database(solver):
     return found
 
 
-def _adapt_child_poisson():
+def _adapt_child(name):
     base = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
                                              cellSize=0.1, refinement=1, qdegree=2)
     pts = np.column_stack([np.linspace(0.3, 0.7, 9), np.linspace(0.45, 0.55, 9),
                            np.zeros(9)])
-    guide = uw.meshing.Surface("guide_1149", base, pts)
+    guide = uw.meshing.Surface(name, base, pts)
     guide.discretize()
-    mesh = base.adapt(guide.refinement_metric_function(
+    return base.adapt(guide.refinement_metric_function(
         h_near=0.025, h_far=0.05, width=0.08, profile="linear"), max_levels=1)
-    s = uw.systems.Poisson(mesh)
+
+
+def _adapt_child_poisson():
+    s = uw.systems.Poisson(_adapt_child("guide_1149"))
     s.constitutive_model = uw.constitutive_models.DiffusionModel
     s.f = 1
     for wall in ("Bottom", "Top", "Left", "Right"):
         s.add_dirichlet_bc(0, wall)
     s.tolerance = 1.0e-6
-    return s
+    return s, lambda: s.snes.getKSP().getPC()
 
 
-def test_gamg_after_a_fac_install_on_an_adapt_child():
-    s = _adapt_child_poisson()
+def _adapt_child_stokes():
+    mesh = _adapt_child("guide_1149s")
+    _x, y = mesh.X
+    s = uw.systems.Stokes(mesh)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        s.add_dirichlet_bc((y - sympy.Rational(1, 2), 0), wall)
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-6
+    return s, lambda: s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC()
+
+
+@pytest.mark.parametrize("build", [_adapt_child_poisson, _adapt_child_stokes],
+                         ids=["poisson", "stokes_velocity"])
+def test_gamg_after_a_fac_install_on_an_adapt_child(build):
+    # Poisson's keys are dropped after the solve, the velocity block's at its
+    # explicit set-up; either left behind is error 73 on the GAMG levels
+    s, managed_pc = build()
     s.solve()
-    pc = s.snes.getKSP().getPC()
+    pc = managed_pc()
     assert pc.getType() == "mg"
     assert pc.getMGSmoother(pc.getMGLevels() - 1).getPC().getType() == "composite"
     s.preconditioner = "gamg"
     s.solve()                      # PETSc error 73 before the fix
     assert s.snes.getConvergedReason() > 0, s.snes.getConvergedReason()
-    assert s.snes.getKSP().getPC().getType() == "gamg"
+    assert managed_pc().getType() == "gamg"
+
+
+def test_a_user_block_ordering_survives_the_drop():
+    # The install writes qmd only where the database has no ordering, and drops
+    # only what it wrote: a user's ordering stays for the next set-up.
+    s, _mesh, managed_pc = _poisson()
+    fac = len(s._custom_mg["hierarchy"].level_meshes) - 1      # the finest level
+    key = f"mg_levels_{fac}_sub_1_sub_pc_factor_mat_ordering_type"
+    s.petsc_options[key] = "rcm"
+    s.solve()
+    assert s.snes.getConvergedReason() > 0
+    prefix = s.petsc_options.prefix or ""
+    assert PETSc.Options().getString(prefix + key, None) == "rcm"
+    assert _fac_keys_in_database(s) == [prefix + key]        # the install's are gone
 
 
 def test_fac_keys_leave_the_database_and_the_blocks_keep_lu():
@@ -109,17 +143,56 @@ def test_a_deform_kills_the_fac_patch_and_says_so(build):
     with pytest.warns(UserWarning, match="FAC patch"):
         s.solve()
     assert s.snes.getConvergedReason() > 0, s.snes.getConvergedReason()
-    record = s.pc_fallbacks["custom_mg.fac_patch"]
-    assert record["reason"] == "unavailable" and "deform" in record["detail"]
+    # killed, not declined: the cover gate did not run on the moved rows
+    _killed_and_said_so(s)
     pc = managed_pc()
     assert pc.getMGSmoother(pc.getMGLevels() - 1).getPC().getType() != "composite"
-    # killed, not declined: the cover gate did not run on the moved rows
-    assert all(g is None for g in s._custom_mg["hierarchy"].fac_gate)
 
     # the patch stays killed over later solves and installs
     s.solve()
     pc = managed_pc()
     assert pc.getMGSmoother(pc.getMGLevels() - 1).getPC().getType() != "composite"
+
+
+def _killed_and_said_so(s):
+    record = s.pc_fallbacks["custom_mg.fac_patch"]
+    assert record["reason"] == "unavailable" and "deform" in record["detail"]
+    assert all(g is None for g in s._custom_mg["hierarchy"].fac_gate)
+
+
+def test_a_deform_kills_the_patch_on_the_rotated_fault_route():
+    # add_fault_bc configures the velocity block in utilities.rotated_bc, not through
+    # install(); the route recorded no geometry, and a deform there declined the moved
+    # patch silently at the cover gate (H1's review of bundle A, M1)
+    s, mesh, _managed_pc = _stokes()
+    s.add_fault_bc(0, "Flt")
+    s.solve()
+    assert s._rotated_freeslip_info["converged"]
+    assert "custom_mg.fac_patch" not in s.pc_fallbacks
+    assert any(g for g in s._custom_mg["hierarchy"].fac_gate if g is not None)
+
+    c = np.asarray(mesh.X.coords).copy()
+    c[:, 0] += 0.01 * np.sin(np.pi * c[:, 0]) * np.sin(np.pi * c[:, 1])
+    mesh.deform(c)
+    with pytest.warns(UserWarning, match="FAC patch"):
+        s.solve()
+    assert s._rotated_freeslip_info["converged"]
+    _killed_and_said_so(s)
+
+
+def test_a_mover_kills_the_patch_too():
+    # A mover commits through remesh_with_field_transfer as mesh.deform does, and
+    # only mesh.deform moved _mesh_version: a smoothed mesh kept a stale patch
+    # version and the moved patch was declined silently (H1's review, M2)
+    s, mesh, managed_pc = _poisson()
+    s.solve()
+    before = mesh._mesh_version
+    uw.meshing.smooth_mesh_interior(mesh, n_iters=2)
+    assert mesh._mesh_version == before + 1
+    with pytest.warns(UserWarning, match="FAC patch"):
+        s.solve()
+    assert s.snes.getConvergedReason() > 0
+    _killed_and_said_so(s)
 
 
 def _live_ksps():

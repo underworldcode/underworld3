@@ -347,12 +347,20 @@ def remesh_with_field_transfer(
     # hooks fire. Drained into ctx.scratch after do_move returns.
     mesh._remesh_pending_scratch = {}
     try:
-        return _remesh_with_field_transfer_impl(
+        moved = _remesh_with_field_transfer_impl(
             mesh, do_move, dt=dt,
             extra_zero=extra_zero, verbose=verbose)
     finally:
         mesh._in_remesh_transfer = False
         mesh._remesh_pending_scratch = None
+    # A committed move tells everything keyed on the geometry: registered swarms
+    # (solve-entry sync), the variables' kd-trees, a FAC patch (#1017). Every mover
+    # commits here, not only mesh.deform, whose bump this was. Not in _deform_mesh:
+    # that primitive also runs inside ephemeral_coords and on snapshot restore,
+    # whose integrity check reads a moved version as invalidation.
+    if moved:
+        mesh._mesh_version += 1
+    return moved
 
 
 def _remesh_with_field_transfer_impl(

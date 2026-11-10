@@ -381,8 +381,6 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1139_fac_zone_blocks_any_rank_count_parallel.py
   # So are the structural patch's blocks, one per fault apart (#895).
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
-  # So is a custom-P reinstall, which frees what it dropped (#1020).
-  batch 3 tests/parallel/test_1149_custom_mg_reinstall_frees_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —

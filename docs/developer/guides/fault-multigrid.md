@@ -179,13 +179,17 @@ one campaign and is the error to recognise.
   route that read the same prefix (GAMG on an adapt child, an install whose level
   had no patch) built a composite with no members and stopped with PETSc error 73
   (#1015, #1019).
-- A deform kills the patch (ruling, 2026-11-08, #1017). The registered coarse
-  levels do not move with the fine mesh, so after `mesh.deform` the hierarchy is
-  installed again without the patch, `pc_fallbacks["custom_mg.fac_patch"]` says
-  so, and a warning says the fault is absent from the preconditioner. The patch
-  is rebuilt as one step of the fault-move cycle: move the fault, re-refine the
-  base from it, and register the hierarchy with the cut fault again
-  (`set_custom_fmg`).
+- A move of the mesh kills the patch (ruling, 2026-11-08, #1017): `mesh.deform`
+  and every mover that commits through `remesh_with_field_transfer` (the
+  smoothing and MMPDE movers), on the standard routes and under `add_fault_bc`.
+  The registered coarse levels do not move with the fine mesh, so the hierarchy
+  is installed again without the patch, `pc_fallbacks["custom_mg.fac_patch"]`
+  says so, and a warning says the fault is absent from the preconditioner. The
+  patch is rebuilt as one step of the fault-move cycle: move the fault, re-refine
+  the base from it, and register the new levels with the cut fault
+  (`set_custom_fmg`). Registering the old coarse levels again does not rebuild
+  it: the cover gate declines the patch. A trial move inside `ephemeral_coords`
+  is not a move.
 - The robust (GMRES) smoother under contrast: the fast Richardson variant
   degrades already at $10^{2}$.
 - Check the subdomain probe, not only the iteration count: a patch that
