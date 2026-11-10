@@ -13,7 +13,7 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1]
 
 
 def _stokes():
@@ -35,6 +35,7 @@ def _stokes():
     return stokes
 
 
+@pytest.mark.tier_a
 def test_a_continuation_solve_reports_its_iterations_by_tangent_and_where_alpha_ended():
     stokes = _stokes()
     stokes.consistent_jacobian = "continuation"
@@ -53,6 +54,7 @@ def test_a_continuation_solve_reports_its_iterations_by_tangent_and_where_alpha_
     assert float(stokes._get_newton_alpha().sym) == 0.0      # still put back for the next step
 
 
+@pytest.mark.tier_a
 def test_a_newton_solve_after_a_continuation_one_carries_no_stale_stages():
     stokes = _stokes()
     stokes.consistent_jacobian = "continuation"
