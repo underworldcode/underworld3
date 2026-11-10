@@ -191,6 +191,16 @@ one campaign and is the error to recognise.
   it: the cover gate declines the patch. A trial move inside `ephemeral_coords`
   is not a move, and nor is a snapshot restore, which puts the coarse levels back
   with the fine mesh.
+- A `fac_zone` patch survives a move (2026-11-10). Its blocks are the masked
+  cells' rows, which a node move leaves in place, and it only preconditions: after
+  MMPDE moves the solution matches a fresh registration to the solver tolerance in
+  velocity, pressure and slip, at the same velocity iterations (2-3 at np 1, 2 and
+  4 on hyperion's fixture, 14-28 with the patch killed; test_1152). On a split
+  level the move still drops the structural rows outside the zone. A repartition
+  or a topology change of the finest mesh kills the whole patch.
+- The first solve after a move reads the moved fields. The mesh-move transfer
+  wrote them without marking the mesh's assembly vector stale, so a solver that
+  had solved before the move assembled with pre-move coefficients (test_1151).
 - The robust (GMRES) smoother under contrast: the fast Richardson variant
   degrades already at $10^{2}$.
 - Check the subdomain probe, not only the iteration count: a patch that

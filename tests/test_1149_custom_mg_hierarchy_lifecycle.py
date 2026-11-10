@@ -20,6 +20,7 @@ The parallel half of the bundle, #1020 (a reinstall's dropped objects stay on
 petsc4py's deferred list), is ``tests/parallel/test_1149_custom_mg_reinstall_frees_parallel.py``.
 """
 import gc
+import warnings
 
 import numpy as np
 import pytest
@@ -209,6 +210,53 @@ def test_a_mover_leaves_a_snapshot_restorable():
     assert not np.array_equal(np.asarray(mesh.X.coords), x0)
     model.load_state(snap)
     assert np.array_equal(np.asarray(mesh.X.coords), x0)
+
+
+def _zone_keyed_poisson():
+    from test_1146_custom_mg_after_deform import _fault_box
+    levels, mesh = _fault_box()
+    s = uw.systems.Poisson(mesh)
+    s.constitutive_model = uw.constitutive_models.DiffusionModel
+    s.f = 1
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        s.add_dirichlet_bc(0, wall)
+    s.tolerance = 1.0e-6
+    cells = uw.discretisation.MeshVariable("cells1149", mesh, 1, degree=0, continuous=False)
+    c = np.asarray(cells.coords)
+    near = np.abs(c[:, 1] - 0.45 - 0.25 * (c[:, 0] - 0.3)) < 0.06     # the fault's cells
+    set_custom = custom_mg.set_custom_fmg
+    set_custom(s, levels, fac_zone=near & (c[:, 0] > 0.25) & (c[:, 0] < 0.75))
+    return s, mesh
+
+
+def test_a_zone_patch_survives_a_deform_and_a_topology_change_kills_it(monkeypatch):
+    # A fac_zone patch is cut from the masked cells' rows, which a node move leaves
+    # in place (Louis, 2026-11-10). This level is split, so the deform drops the
+    # structural rows outside the zone and says so; a repartition or a topology
+    # change in place kills the whole patch, read from the finest mesh's cell-node
+    # table. The unsplit zone and the solutions are test_1152.
+    s, mesh = _zone_keyed_poisson()
+    s.solve()
+    finest = lambda: s.snes.getKSP().getPC().getMGSmoother(
+        s.snes.getKSP().getPC().getMGLevels() - 1).getPC().getType()
+    assert finest() == "composite"
+    c = np.asarray(mesh.X.coords).copy()
+    c[:, 0] += 0.01 * np.sin(np.pi * c[:, 0]) * np.sin(np.pi * c[:, 1])
+    mesh.deform(c)
+    with pytest.warns(UserWarning, match="fac_zone blocks are kept"):
+        s.solve()
+    assert s.snes.getConvergedReason() > 0
+    assert finest() == "composite"
+    assert "fac_zone blocks" in s.pc_fallbacks["custom_mg.fac_patch"]["installed"]
+
+    signature = custom_mg._topology_signature
+    monkeypatch.setattr(custom_mg, "_topology_signature",
+                        lambda m: (signature(m)[0], signature(m)[1] + 1))
+    s.is_setup = False
+    with pytest.warns(UserWarning, match="FAC patch"):
+        s.solve()
+    assert finest() != "composite"
+    assert "whole-level" in s.pc_fallbacks["custom_mg.fac_patch"]["installed"]
 
 
 def _live_ksps():

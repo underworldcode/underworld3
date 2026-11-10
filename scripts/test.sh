@@ -381,6 +381,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1139_fac_zone_blocks_any_rank_count_parallel.py
   # So are the structural patch's blocks, one per fault apart (#895).
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
+  # So is a zone-keyed patch that a mover keeps, with the same solution (#1017).
+  batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -416,6 +418,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1148*py  # a new timestep keeps the SNES of a time-dependent solver (#1026)
   batch 4 tests/test_1149*py  # a custom-P hierarchy's state does not outlive a change (#1019, #1017)
   batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
+  batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections

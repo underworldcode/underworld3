@@ -1717,6 +1717,14 @@ def _set_up_fac_smoothers(pc, fac_keys):
             # cannot serve as insurance the way the type and the shift do.
 
 
+def _topology_signature(mesh):
+    """This rank's cell-node table of ``mesh``, as (shape, checksum): what a node move
+    leaves alone and a repartition or a topology change does not. Not collective."""
+    import zlib
+    cn = np.ascontiguousarray(mesh._cell_node_indices(1, True))
+    return cn.shape, zlib.crc32(cn.tobytes())
+
+
 def _drop_options(prefix, keys):
     """Remove ``prefix + key`` from the options database for each of ``keys``.
     Not collective."""
@@ -2158,9 +2166,12 @@ class CustomMGHierarchy:
         comm = solver.dm.comm
         from underworld3.utilities import fault_mg
         # TODO(MEASURE): the env flag is an A/B affordance for the #629 campaign;
-        # remove when settled. A deform since the patch was built kills it (#1017).
+        # remove when settled. A move since the patch was built kills it, or on a
+        # zone-keyed level only the rows the coincidence test found (#1017).
+        killed = self._fac_patch_killed(solver)
         fac_on = (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
-                  and not self._fac_patch_killed(solver))
+                  and killed != "all")
+        structural_on = killed is None
         for l in range(1, nlev):
             # A pair the add-on partition recorded (the base's finest static
             # level against the first add-on level, which the partition moved
@@ -2299,7 +2310,7 @@ class CustomMGHierarchy:
                     split_level = fault_mg.is_split_level(self.level_meshes[l])
                     keyed = self.fac_zone is not None
                     mpi_comm = comm.tompi4py()
-                    if split_level or not keyed:
+                    if (split_level or not keyed) and structural_on:
                         gate = {}
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
@@ -2397,7 +2408,7 @@ class CustomMGHierarchy:
                         # level without a split keeps the zone's blocks alone
                         # (#670).
                         split = None
-                        if fault_mg.is_split_level(self.level_meshes[l]):
+                        if fault_mg.is_split_level(self.level_meshes[l]) and structural_on:
                             gate = {}
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
@@ -2430,7 +2441,8 @@ class CustomMGHierarchy:
         return Ps
 
     def _fac_patch_killed(self, solver):
-        """Has the solver's mesh moved since its FAC patch was installed?
+        """What a move of the solver's mesh has killed of its FAC patch: ``"all"``,
+        ``"structural"``, or None for nothing.
 
         Louis's ruling on #1017 (2026-11-08): moving the mesh kills the patch, and the
         fault is then absent from the preconditioner until the patch is rebuilt, which
@@ -2439,46 +2451,88 @@ class CustomMGHierarchy:
         The registered coarse levels do not move with the fine mesh, so the patch
         test, which reads a fine row as background only where it lands on a
         coincident coarse node, would take every moved row as patch and the cover gate
-        would decline it without saying why. The kill is recorded in ``pc_fallbacks``
-        on every build until the hierarchy is registered again, and warned once.
-        A move is read from the finest mesh's ``_move_version``, which every committed
-        move bumps (``mesh.deform`` and every mover) and a trial move inside
-        ``ephemeral_coords`` does not. Nor does a snapshot restore: it puts the coarse
-        levels back with the fine mesh, and the patch built before the move applies
-        again (hyperion measured 3 iterations kept against 6 killed on the fault
-        fixture, 2 against 15 on a zone patch, with the same solution). Collective: a mover's
-        no-move test is rank-local, so a version could move on some ranks only, and
-        the verdict is taken over all of them."""
-        version = getattr(self.level_meshes[-1], "_move_version", None)
+        would decline it without saying why.
+
+        A ``fac_zone`` patch survives a move (Louis, 2026-11-10: "this is mostly about
+        efficiency and I am good with what works but I don't want to compromise
+        accuracy"). Its blocks are the masked cells' rows, which a node move leaves in
+        place: a mover changes coordinates, not the cells, their DOF numbering or the
+        partition, and the patch is only a preconditioner, so a stale one could cost
+        iterations but not change the solution. Hyperion measured 2-3 velocity
+        iterations at every one of 6 MMPDE moves at np 1, 2 and 4 with the patch kept,
+        the same as a fresh registration with the zone recomputed, and 14-28 with it
+        killed. What a move still kills on a zone-keyed level is what the coincidence
+        test found there, the split fault's structural rows (``"structural"``). A
+        change of the finest mesh's cells (a repartition, a topology change in place),
+        read from a checksum of this rank's cell-node table, kills the whole patch,
+        keyed or not.
+
+        The kill is recorded in ``pc_fallbacks`` on every build until the hierarchy is
+        registered again, and warned once. A move is read from the finest mesh's
+        ``_move_version``, which every committed move bumps (``mesh.deform`` and every
+        mover) and a trial move inside ``ephemeral_coords`` does not. Nor does a
+        snapshot restore: it puts the coarse levels back with the fine mesh, and the
+        patch built before the move applies again (hyperion measured 3 iterations kept
+        against 6 killed on the fault fixture, 2 against 15 on a zone patch, with the
+        same solution). Collective: a mover's no-move test is rank-local, so a version
+        could move on some ranks only, and the verdict is taken over all of them."""
+        from underworld3.utilities.fault_mg import is_split_level
+        finest = self.level_meshes[-1]
         at = getattr(solver, "_fac_patch_move_version", None)
-        moved = int(at is not None and at != version)
+        moved = int(at is not None
+                    and at != getattr(finest, "_move_version", None))
+        rebuilt = int(at is not None
+                      and getattr(solver, "_fac_patch_topology", None)
+                      != _topology_signature(finest))
         if solver.dm.comm.getSize() > 1:
             from mpi4py import MPI
-            moved = solver.dm.comm.tompi4py().allreduce(moved, op=MPI.MAX)
-        if moved:
-            # attributed to the user's solve(), not to this frame
-            from underworld3.cython.generic_solvers import _warn_from_caller
+            flags = solver.dm.comm.tompi4py().allreduce(moved | rebuilt << 1, op=MPI.BOR)
+            moved, rebuilt = flags & 1, flags >> 1
+        if moved or rebuilt:
             solver._fac_patch_move_version = None
-            solver._fac_patch_killed = True
-            _warn_from_caller(
-                f"custom_mg: the mesh of solver {solver.name!r} was deformed after its "
-                f"FAC patch was built, so the patch is gone and the fault is absent "
-                f"from the preconditioner. Rebuild it with the moved fault: re-refine "
-                f"the base from it and register the new levels (set_custom_fmg). "
-                f"Registering the old coarse levels again does not bring it back: "
-                f"they did not move with the mesh, and the patch is declined at the "
-                f"cover gate (#1017).", UserWarning)
-        if not getattr(solver, "_fac_patch_killed", False):
-            return False
+            if self.fac_zone is not None and not rebuilt:
+                kill = "structural" if is_split_level(finest) else None
+            else:
+                kill = "all"
+            previous = getattr(solver, "_fac_patch_killed", False)
+            if kill is not None and previous != kill and previous != "all":
+                solver._fac_patch_killed = kill
+                # attributed to the user's solve(), not to this frame
+                from underworld3.cython.generic_solvers import _warn_from_caller
+                if kill == "all":
+                    _warn_from_caller(
+                        f"custom_mg: the mesh of solver {solver.name!r} was deformed "
+                        f"after its FAC patch was built, so the patch is gone and the "
+                        f"fault is absent from the preconditioner. Rebuild it with the "
+                        f"moved fault: re-refine the base from it and register the new "
+                        f"levels (set_custom_fmg). Registering the old coarse levels "
+                        f"again does not bring it back: they did not move with the "
+                        f"mesh, and the patch is declined at the cover gate (#1017).",
+                        UserWarning)
+                else:
+                    _warn_from_caller(
+                        f"custom_mg: the mesh of solver {solver.name!r} was deformed "
+                        f"after its FAC patch was built. The fac_zone blocks are kept; "
+                        f"the split fault's structural rows outside the zone are gone "
+                        f"from the patch. Register the new levels (set_custom_fmg) to "
+                        f"rebuild them (#1017).", UserWarning)
+        killed = getattr(solver, "_fac_patch_killed", False)
+        if not killed:
+            return None
+        if killed == "all":
+            installed = "whole-level smoothing; the fault is absent from the preconditioner"
+        else:
+            installed = ("the fac_zone blocks; the split fault's structural rows outside "
+                         "the zone are absent from the finest level's patch")
         solver._record_pc_fallback(
             "custom_mg.fac_patch",
             requested="the FAC patch on the fault",
-            installed="whole-level smoothing; the fault is absent from the preconditioner",
+            installed=installed,
             reason="unavailable",
             detail="the mesh was deformed after the patch was built, and a deform kills "
                    "the patch (#1017); re-refine the base from the moved fault and "
                    "register the new levels to rebuild it")
-        return True
+        return killed
 
     def _fac_cover_max(self, l):
         """The FAC cover gate's threshold on level ``l`` (#918): 0.98 on a 2-D
@@ -2559,6 +2613,7 @@ class CustomMGHierarchy:
         if local:
             solver._fac_patch_move_version = getattr(self.level_meshes[-1],
                                                      "_move_version", None)
+            solver._fac_patch_topology = _topology_signature(self.level_meshes[-1])
         return summary
 
     def install(self, solver, verbose=False):
@@ -2734,6 +2789,7 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     # a new registration rebuilds a patch a deform killed (#1017)
     solver._fac_patch_killed = False
     solver._fac_patch_move_version = None
+    solver._fac_patch_topology = None
     solver.is_setup = False
 
 

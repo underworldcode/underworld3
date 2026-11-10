@@ -432,6 +432,14 @@ def _remesh_with_field_transfer_impl(
         for var in extra_zero:
             _write_var_data(var, 0.0)
 
+    # The writes above go through plain views of the variables' local vectors,
+    # which do not mark the mesh's assembly vector stale as a user's write does.
+    # Without the mark the first solve after a move assembled with every
+    # transferred coefficient field at its pre-move values: on a viscosity read
+    # from a DG0 zone field, 6 % in velocity and 80 % in pressure after
+    # mesh.deform, until a solve elsewhere set the mark. Every rank that moved
+    # reaches this line, so update_lvec's collective runs on all of them.
+    mesh._stale_lvec = True
     return True
 
 
