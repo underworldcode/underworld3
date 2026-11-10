@@ -324,6 +324,42 @@ def _tokens_of(variables):
     return {_token_of(var): var for var in variables if hasattr(var, "sym")}
 
 
+def _datum_reads_of(solver, variables):
+    """The variables among ``variables`` that an essential datum of ``solver``
+    reads: a field prescribed on a wall, ``u|_G = f``.
+
+    The field route (:func:`field_duals`) differentiates the residual, and a
+    datum is not in the residual: PETSc's global vector holds only the
+    unconstrained degrees of freedom, so a field read only there comes back
+    with a dual of exactly zero (#787). Its term is the reaction of the
+    adjoint constraint mapped onto the field's nodes, which is not built yet,
+    so the callers refuse rather than return the zero."""
+    found = []
+    data = [str(_peel(sympy.Matrix(bc.fn))) for bc in (getattr(solver, "essential_bcs", None) or [])]
+    if not data:
+        return found
+    for var in variables:
+        if var is getattr(solver, "u", None) or not hasattr(var, "sym"):
+            continue
+        token = _token_of(var)
+        if any(token in text for text in data):
+            found.append(var)
+    return found
+
+
+def _refuse_datum_fields(solver, variables, where):
+    found = _datum_reads_of(solver, variables)
+    if found:
+        names = ", ".join(f"'{v.name}'" for v in found)
+        raise NotImplementedError(
+            f"{where}: field(s) {names} enter an essential (Dirichlet) datum of "
+            f"{type(solver).__name__}({solver.u.name}). The derivative through a "
+            f"datum is the reaction of the adjoint constraint on the constrained "
+            f"nodes, which the field route does not assemble yet; without it the "
+            f"dual would be exactly zero, which reads as 'no influence' (#787). A "
+            f"scalar parameter in a datum is supported (sensitivity).")
+
+
 def field_duals(solver, mu, variables, scratch=None):
     r"""``(\partial R/\partial f)^T \mu`` as a dual on each field ``f`` the
     solver's residual reads, among ``variables``.
@@ -379,6 +415,7 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     duals = {}
     grad = {p: 0.0 for p in parameters}
     read = [u] + [f for f in fields if f is not u]
+    _refuse_datum_fields(solver, fields, "gradient")
     for where, term in terms.items():
         J += integral(mesh, term, where)
         for var, dual in misfit_duals(term, read, scratch, boundary=where).items():
@@ -553,6 +590,21 @@ class TranscriptAdjoint:
         fields = list(fields)
         model = self.model
         scratch = self._scratch
+
+        # A field in an essential datum carries no dual on the field route
+        # (#787). It matters where the walk would need it: a field asked for,
+        # or another solve's unknown, through which the chain runs. Checked
+        # before any replay, so the refusal costs nothing.
+        solvers = {}
+        for step in self.steps:
+            for e in step.events:
+                if e["kind"] == "solve":
+                    obj = model.part_object(e["part"])
+                    if obj is not None:
+                        solvers[id(obj)] = obj
+        unknowns = [s.u for s in solvers.values() if getattr(s, "u", None) is not None]
+        for solver in solvers.values():
+            _refuse_datum_fields(solver, list(fields) + unknowns, "TranscriptAdjoint.gradient")
 
         # J and its dual on every field it touches, at the final level — and
         # the explicit dJ/dm, for a misfit that names a parameter directly.
