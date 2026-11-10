@@ -931,12 +931,20 @@ def _destroy_rotated_linear_cache(cache):
     cache["custom_Pl"] = None
 
 
-def _pressure_coarse_correction_needed(checks: dict) -> bool:
-    """The right-response correction requires measured non-nullity on both sides."""
+def _pressure_coarse_correction_needed(checks: dict, *, relative_target=0.0) -> bool:
+    """Correct a pressure response resolved above the requested residual scale.
+
+    This selects only the preconditioner. Tiny nonzero responses remain in A
+    and the original residual; they never become gauges. Inverting such a
+    response exactly below the outer target can amplify a harmless defect
+    into a huge pressure offset and lose residual accuracy through roundoff.
+    The outer and finalized original-equation checks retain their tolerances.
+    """
+    threshold = max(checks["tolerance"], float(relative_target))
     return bool(checks["requested"] and not checks["verified"]
                 and checks["right_relative"] is not None and checks["left_relative"] is not None
-                and checks["right_relative"] > checks["tolerance"]
-                and checks["left_relative"] > checks["tolerance"])
+                and checks["right_relative"] > threshold
+                and checks["left_relative"] > threshold)
 
 
 def _pressure_nullspace_checks(operator, pressure_is, requested: bool) -> dict:
@@ -3063,7 +3071,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
 
     # A measured, nonzero pressure response is a weakly determined mode, not
     # a gauge. Correct its preconditioning without projecting its equation.
-    use_coarse = _pressure_coarse_correction_needed(pressure_nullspace_checks) and pres_is.getSize() > 0
+    use_coarse = _pressure_coarse_correction_needed(
+        pressure_nullspace_checks, relative_target=float(solver.tolerance)) and pres_is.getSize() > 0
     coarse = ctx.get("pressure_coarse")
     if coarse is not None and not use_coarse:
         coarse.destroy(None)

@@ -31,6 +31,22 @@ def test_correction_requires_requested_measured_nonnullity_on_both_sides():
                       left_relative=left, tolerance=256*np.finfo(float).eps)
         assert _pressure_coarse_correction_needed(checks) is expected
 
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("right,left,target,expected", [
+    (1.0e-10, 1.0e-10, 1.0e-9, False),
+    (1.0e-8, 1.0e-8, 1.0e-9, True),
+    (1.0e-8, 1.0e-10, 1.0e-9, False),
+    (1.0e-10, 1.0e-8, 1.0e-9, False),
+    (1.0e-9, 1.0e-9, 1.0e-9, False),
+])
+def test_preconditioner_correction_respects_the_residual_scale(right, left, target, expected):
+    checks = dict(requested=True, verified=False, right_relative=right,
+                  left_relative=left, tolerance=256*np.finfo(float).eps)
+    assert _pressure_coarse_correction_needed(checks, relative_target=target) is expected
+    # This is a PC policy: it must not turn the physical mode into a gauge.
+    assert not checks["verified"]
+
 def matrix_from_dense(dense):
     n = len(dense)
     layout = PETSc.Vec().createMPI(n, comm=PETSc.COMM_WORLD)
