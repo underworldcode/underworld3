@@ -135,8 +135,14 @@ def _moves(split):
 
 
 @pytest.mark.parametrize("split", [False, True], ids=["zone", "zone_on_a_split_level"])
-def test_a_kept_zone_patch_matches_a_fresh_registration(split):
+def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
     for k, kept, fresh, errors, said in _moves(split):
+        # one line per move, past pytest's capture: on a loaded host a move takes over a
+        # minute at np 2 (hyperion at load 60: 157 s and 254 s for the two cases, 3-4
+        # times CI), and the MPI supervisor kills a job silent for 300 s
+        with capsys.disabled():
+            uw.pprint(f"test_1152[{'split' if split else 'zone'}] move {k}/{MOVES}",
+                      flush=True)
         # measured at np 1: 6 and 6 on the zone, 13 and 13 on the split level; a
         # killed or stale zone patch took 12 and 15
         its_k = _velocity_iterations(kept, split)
