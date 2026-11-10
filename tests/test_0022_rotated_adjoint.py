@@ -312,8 +312,8 @@ def test_the_null_space_serves_the_transposed_operator_too():
     stokes.constitutive_model.Parameters.shear_viscosity_1 = ETA_1 * eta_0
     stokes.constitutive_model.Parameters.director = unit_r
     stokes.bodyforce = 1.0e2 * sympy.cos(3 * th) * (r - R_I) / (R_O - R_I) * unit_r
-    stokes.add_rotated_freeslip_bc(0.0, "Lower")
-    stokes.add_rotated_freeslip_bc(0.0, "Upper")
+    stokes.add_rotated_freeslip_bc(0.0, "Lower", normal=unit_r)
+    stokes.add_rotated_freeslip_bc(0.0, "Upper", normal=unit_r)
     stokes.petsc_use_pressure_nullspace = True
     stokes.consistent_jacobian = True
     stokes.tolerance = 1.0e-10
