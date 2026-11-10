@@ -4,7 +4,7 @@ Date: 2026-11-10. Prepared by the Underworld development team with AI support fr
 
 ## Overview
 
-We merged upstream development into feature/cylindrical-wall-boundaries_sph, preserving upstream solver contracts and the branch's pressure/wall corrections. Local-only development toolchain commits are excluded from this PR. Numerical tests use a regular installed Linux/arm64 PETSc 3.25.4 int32 package, never an editable source import. The subsequent upstream FAC-only Python delta is tested separately; compiled extension hashes are preserved.
+We merged upstream development into feature/cylindrical-wall-boundaries_sph, preserving upstream solver contracts and the branch's pressure/wall corrections. Local-only development toolchain commits are excluded from this PR. Numerical tests use a regular installed Linux/arm64 PETSc 3.25.4 int32 package, never an editable source import. The upstream FAC-only Python delta was tested separately. The later merge through `a6eebb61` adds a Richards docstring clarification and two timestep regressions; its library AST is identical after removing docstrings. Compiled extension hashes are preserved.
 
 ## Changes Made
 
@@ -42,7 +42,7 @@ Public Stokes methods delegate to shared private state, observation and field-la
 - MPI3: 13 unique checks passed on every rank, covering empty wall ownership/JIT, tolerance/cache retention, upstream FAC blocks, and Stokes/ThinSheet interface operator refresh.
 - All 440 test files are reachable from scripts/test.sh; deprecated-pattern scan, Python compilation, shell syntax and git diff whitespace checks pass.
 - CI-repair numerical head `b57a4cdc13a0`: regular installed int32 package; 52 passed/one x86-only skip in the focused serial pressure/options/projection gate, 19 passed on every MPI2 rank in the original failing pressure/datum/LU/cleanup gate, and 17 passed on every MPI2 rank in the pressure-gauge/LU lifecycle gate. Twelve native objects remain byte-identical to the fresh `f063f9f58de5` build; Python-only repairs required no native recompilation.
-- Additional repair evidence: 25 serial rotation-gauge checks pass; nine XDMF checks and the DMField point-location reproducer pass. Full surface transport and the 192-step Maxwell tide passed after the embedding-coordinate repair; those long runs are not represented as reruns of later fault-only/preconditioner edits. Final short surface and geometry checks are recorded with the repair evidence.
+- Additional repair evidence: 25 serial rotation-gauge checks pass; nine XDMF checks and the DMField point-location reproducer pass. Full surface transport and the 192-step Maxwell tide passed after the embedding-coordinate repair; those long runs are not represented as reruns of later fault-only/preconditioner edits. Final short surface checks pass all nine selected cases. The geometry/rotation gate passes 41 cases; its old singular-coarse fixture required an analytic normal to supply the true kernel it claims to test. That corrected fixture passes its unchanged SVD-value tolerance. No full-CI result is inferred from this evidence.
 - NCI explicitly reports scheduled maintenance; no fresh merged-head Gadi/int64 result is claimed.
 
 Twelve optional assess comparisons are skipped when assess is unavailable; independent native analytical tests run. Earlier 336 benchmark records remain pinned to their original numerical versions and are not represented as reruns of this merge.

@@ -129,8 +129,9 @@ def _stokes(mesh, name):
     radial = sympy.sin(sympy.pi * (r - 0.5) / 0.5)
     shape = sympy.cos(4 * th) * (1 if dim == 2 else X[2] / r)
     stokes.bodyforce = 1.0e3 * shape * radial * sympy.Matrix([xi / r for xi in X])
-    # the shell's three rotations are null modes only under the analytic normal (#906)
-    normal = None if dim == 2 else mesh.CoordinateSystem.unit_e_0
+    # Both fixtures require genuine singular coarse operators, rather than
+    # weak rotations produced by facet-averaged wall constraints.
+    normal = mesh.CoordinateSystem.unit_e_0
     for wall in ("Lower", "Upper"):
         stokes.add_rotated_freeslip_bc(0, wall, normal=normal)
     stokes.petsc_use_pressure_nullspace = True
