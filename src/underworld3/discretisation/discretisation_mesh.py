@@ -4437,6 +4437,25 @@ class Mesh(Stateful, uw_object):
                 pass
         return result
 
+    def _finest_level_takes_moved_coordinates(self):
+        """Whether a move can give ``dm_hierarchy[-1]`` the moved coordinates.
+
+        False only when the finest level's coordinate layout differs from
+        ``self.dm``'s (a refined mesh with degree-2 coordinates, which is not
+        supported). Collective: every rank must reach the same answer before
+        the move starts, or a rank that holds no cells would go on into
+        ``createCoordinateSpace`` alone.
+        """
+        hierarchy = getattr(self, "dm_hierarchy", None)
+        if not hierarchy or hierarchy[-1] is self.dm:
+            return True
+        same = (hierarchy[-1].getCoordinatesLocal().getSize()
+                == self.dm.getCoordinatesLocal().getSize())
+        if uw.mpi.size > 1:
+            from mpi4py import MPI
+            same = uw.mpi.comm.allreduce(same, op=MPI.LAND)
+        return same
+
     def _sync_hierarchy_finest_coordinates(self):
         """Give the finest hierarchy level the coordinates ``self.dm`` now has.
 
@@ -4444,34 +4463,26 @@ class Mesh(Stateful, uw_object):
         clone of ``dm_hierarchy[-1]``, so the two share point numbering but
         not, after a move, coordinates. Solvers build on a clone of the
         hierarchy, so without this they assemble on the pre-move geometry
-        while integrals and evaluation use the moved one (#1037). The coarse
-        levels keep their geometry: their transfers are topological, and a
-        coarse level only preconditions.
+        while integrals and evaluation use the moved one (#1037).
 
-        Each level gets its own duplicate vector: a ``DMClone`` shares the
-        coordinate vector by reference, and a later write through ``self.dm``
-        must not move the hierarchy behind the mesh's back.
+        The coarse levels keep their geometry. For PETSc's geometric
+        multigrid that costs nothing: the nested interpolation is topological
+        and the coarse operators are Galerkin products. Custom-P transfers are
+        built from coordinates, so after a large move the unmoved coarse
+        levels cost it iterations, though not accuracy.
+
+        The level gets a copy of the global coordinates; its local vector is
+        regenerated from them. Its coordinate field (cell geometry, quadrature
+        Jacobians) is then rebuilt the way ``nuke_coords_and_rebuild`` rebuilds
+        ``self.dm``'s, since a solver's clone of the level inherits it.
         """
         hierarchy = getattr(self, "dm_hierarchy", None)
         if not hierarchy or hierarchy[-1] is self.dm:
             return
         finest = hierarchy[-1]
-        local = self.dm.getCoordinatesLocal()
-        if finest.getCoordinatesLocal().getSize() != local.getSize():
-            raise RuntimeError(
-                "Mesh: the finest hierarchy level's coordinate layout differs from "
-                "the mesh's, so the moved coordinates cannot be given to it; a solve "
-                "would run on the pre-move geometry (#1037).")
         g = self.dm.getCoordinates().duplicate()
         self.dm.getCoordinates().copy(g)
         finest.setCoordinates(g)
-        v = local.duplicate()
-        local.copy(v)
-        finest.setCoordinatesLocal(v)
-        # New coordinates are not enough: the level's cached coordinate field
-        # (cell geometry, quadrature Jacobians) still describes the old nodes,
-        # and a solver's clone of the level inherits it. Rebuild it the way
-        # nuke_coords_and_rebuild does for self.dm.
         if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
             finest.projectCoordinates(self.petsc_fe)
         elif hasattr(finest, "createCoordinateSpace"):
@@ -4485,6 +4496,11 @@ class Mesh(Stateful, uw_object):
             finest.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
         else:
             finest.setCoordinateDisc(disc=self.petsc_fe, project=False)
+        # The rebuild releases the level's old coordinate DM, section and
+        # vectors to petsc4py's deferred-destroy list, six entries a move.
+        # Every rank is here (the move is collective), so free them now rather
+        # than let a long run of moves accumulate them.
+        PETSc.garbage_cleanup(self.dm.getComm())
 
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
@@ -4516,6 +4532,12 @@ class Mesh(Stateful, uw_object):
         """
 
         self._assert_coord_mutation_allowed()
+
+        if not self._finest_level_takes_moved_coordinates():
+            raise RuntimeError(
+                "Mesh: a refined mesh whose coordinates are degree 2 cannot be moved: "
+                "its finest hierarchy level holds degree-1 coordinates, so a solve "
+                "after the move would run on the pre-move geometry (#1037).")
 
         with self._mesh_update_lock:
             coord_vec = self.dm.getCoordinatesLocal()
@@ -7646,6 +7668,16 @@ class Mesh(Stateful, uw_object):
             verbose=False,
         )
 
+    def _cached_finest_wrap_is_stale(self, wrap):
+        """Whether the cached wrap of the finest level predates a move. Collective."""
+        stale = not numpy.array_equal(
+            wrap.dm.getCoordinatesLocal().array,
+            self.dm_hierarchy[-1].getCoordinatesLocal().array)
+        if uw.mpi.size > 1:
+            from mpi4py import MPI
+            stale = uw.mpi.comm.allreduce(stale, op=MPI.LOR)
+        return stale
+
     def _coarse_level_meshes(self):
         """The static coarse-mesh tail (one Mesh per base hierarchy level,
         coarsest..base-finest), built once and cached — they never change
@@ -7659,6 +7691,14 @@ class Mesh(Stateful, uw_object):
         The token is a plain sentinel object: identity ties the family together
         without a reference cycle back to this mesh."""
         cached = getattr(self, "_coarse_level_meshes_cache", None)
+        if cached is not None and self._cached_finest_wrap_is_stale(cached[-1]):
+            # A move since the cache was built gave dm_hierarchy[-1] new
+            # coordinates (#1037). Re-wrap it in the same slot, so an adapt's
+            # multigrid tail starts from the geometry the child is refined from.
+            fresh = self._wrap_coarse_level(self.dm_hierarchy[-1])
+            fresh._refine_slot = cached[-1]._refine_slot
+            fresh._mg_static = True
+            cached[-1] = fresh
         if cached is None:
             cached = [self._wrap_coarse_level(d) for d in self.dm_hierarchy]
             token = object()
@@ -9261,35 +9301,11 @@ class Mesh(Stateful, uw_object):
                     "sagitta ~ cell size). Refine the base mesh or adapt "
                     "without registered bounding surfaces.")
 
-        # Refine from the mesh's CURRENT geometry. Node redistribution
-        # (redistribute_nodes) moves mesh.dm's coordinates while the static
-        # base hierarchy keeps the originals — without this carry, an adapt
-        # after a redistribution would silently refine the unmoved mesh.
-        # When moved, the base-finest MG tail level is swapped for the moved
-        # copy below; the coarser tail levels keep their original geometry
-        # (the coordinate-based custom-P transfers accept non-nested pairs).
+        # Refine from the mesh's current geometry. A move keeps the finest
+        # hierarchy level in step with mesh.dm (#1037), so it is the geometry
+        # the child is refined from, and the cached multigrid tail is re-wrapped
+        # to match (_coarse_level_meshes).
         base_finest = self.dm_hierarchy[-1]
-        _cur_coords = self.dm.getCoordinatesLocal().array
-        _moved = not numpy.array_equal(
-            _cur_coords, base_finest.getCoordinatesLocal().array)
-        if uw.mpi.size > 1:
-            from mpi4py import MPI
-            _moved = uw.mpi.comm.allreduce(_moved, op=MPI.LOR)
-        if _moved:
-            base_finest = base_finest.clone()
-            # DMClone shares the coordinates Vec by reference — writing
-            # through getCoordinatesLocal().array here would silently move
-            # the "static" hierarchy level (self.dm_hierarchy[-1]) under
-            # the parent mesh. Install a duplicate instead; the clone gets
-            # the moved geometry, the hierarchy keeps the original.
-            _v = base_finest.getCoordinatesLocal().duplicate()
-            _v.array[:] = _cur_coords
-            base_finest.setCoordinatesLocal(_v)
-            if engine == "nvb" and self.dim == 3 and _nvbx is not None:
-                # the refinement-state seed was written on the unmoved base
-                # (in the guard above); re-seed on the moved geometry
-                from underworld3.utilities.nvb import write_tagged_state_label
-                write_tagged_state_label(base_finest)
 
         markers_per_level = []
         # relax=True is the RECOMMENDED default: relax once, at the end.
@@ -9758,13 +9774,6 @@ class Mesh(Stateful, uw_object):
         own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
         coarse_tail = (list(own_tail) + [self]) if own_tail is not None \
             else self._coarse_level_meshes()
-        if _moved:
-            # the finest base level of the MG tail must carry the SAME moved
-            # geometry the child was refined from; coarser levels keep their
-            # original coordinates (custom-P transfers accept non-nested pairs)
-            _moved_wrap = self._wrap_coarse_level(base_finest)
-            _moved_wrap._mg_static = True
-            coarse_tail = coarse_tail[:-1] + [_moved_wrap]
         child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 

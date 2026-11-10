@@ -89,9 +89,6 @@ def test_the_coarse_levels_keep_their_geometry_and_the_finest_level_moves():
     finest = mesh.dm_hierarchy[-1].getCoordinatesLocal().array
     assert np.array_equal(finest, mesh.dm.getCoordinatesLocal().array)
     assert np.array_equal(mesh.dm_hierarchy[0].getCoordinates().getArray(), coarse_before)
-    # Its own vector: a later write through mesh.dm doesn't move the hierarchy by itself.
-    assert (mesh.dm_hierarchy[-1].getCoordinatesLocal().handle
-            != mesh.dm.getCoordinatesLocal().handle)
 
 
 def test_a_solve_after_relax_on_a_refined_annulus_uses_the_relaxed_geometry():
@@ -119,3 +116,40 @@ def test_a_solve_after_relax_on_a_refined_annulus_uses_the_relaxed_geometry():
     solver.solve()
     solver_coords = solver.snes.getDM().getCoordinatesLocal().array
     assert np.array_equal(solver_coords, after)
+
+
+def _adapt_after_a_stretch(build_cache_first):
+    """Stretch a refined box, adapt it, and solve Poisson on the child with its
+    automatic multigrid tail. Returns the tail's base-finest coordinates, the
+    parent's moved coordinates and the iteration count."""
+    mesh = _stretched_box(1)
+    uw.discretisation.MeshVariable("d", mesh, 1, degree=1)
+    if build_cache_first:
+        mesh.multigrid_levels    # what an earlier adapt or set_custom_fmg leaves behind
+    _stretch(mesh)
+    child = mesh.adapt(
+        lambda c: np.where(np.abs(np.asarray(c)[:, 0] - 1.2) < 0.15, 64.0 ** 2, 1.0),
+        max_levels=1)
+    base_finest = child._custom_mg_coarse_meshes[len(mesh.dm_hierarchy) - 1]
+    T = uw.discretisation.MeshVariable("Tc", child, 1, degree=2)
+    solver = uw.systems.Poisson(child, u_Field=T)
+    solver.constitutive_model = uw.constitutive_models.DiffusionModel
+    solver.constitutive_model.Parameters.diffusivity = 1.0
+    x, y = child.X
+    solver.f = sympy.sin(sympy.pi * x / 1.5) * sympy.sin(sympy.pi * y)
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        solver.add_dirichlet_bc(0.0, wall)
+    solver.tolerance = 1.0e-10
+    solver.solve()
+    return (base_finest.dm.getCoordinatesLocal().array.copy(),
+            mesh.dm.getCoordinatesLocal().array.copy(),
+            solver.snes.getKSP().getIterationNumber())
+
+
+def test_an_adapt_after_a_move_starts_its_multigrid_tail_from_the_moved_mesh():
+    # The cached wrap of the finest level predates the move unless it is re-wrapped.
+    tail_finest, moved, its_cached = _adapt_after_a_stretch(build_cache_first=True)
+    same = np.array_equal(tail_finest, moved)
+    assert uw.mpi.comm.allreduce(same, op=uw.MPI.LAND)
+    _, _, its_fresh = _adapt_after_a_stretch(build_cache_first=False)
+    assert its_cached == its_fresh
