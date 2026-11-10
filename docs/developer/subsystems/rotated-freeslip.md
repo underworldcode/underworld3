@@ -497,52 +497,30 @@ A deformed wall fails the last check, a free surface after its first step for
 example, or a cut that puts chord vertices on a wall. The modes then take the
 constraint test like undeclared ones, and the solve warns once, naming the wall
 and the spread of its vertices. The verdict, the same for every mode, is in the
-solve's `declared_modes_exempt` entry; which modes were admitted is in
-`rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
-that is only near-null is not removed, and the answer carries a poorly
-determined rotation (measured on a shell, Linux: unmoved, rate 3.7e-15 in a v_rms
-of 1.79; a wall moved by 5e-10, enough to cross the threshold, rate 5.6 in 4.59,
-and the same up to a 1e-6 move).
+solve's `declared_modes_exempt` entry; admission and removal are recorded in
+`rotation_gauge`. Geometry declarations supply candidates, not proofs that a
+faceted discretisation retains the continuous symmetry.
 
-That is the intended behaviour (ruling, 2026-11-08). A deformed wall's rotation is
-kept as a near-null mode and is not removed as a gauge, because "the deformation
-may not eliminate the null space". Projecting out a mode that is not exactly null
-would also remove the part of it that the operator does determine. A model that
-wants the rotation gone removes it after the solve: a least-squares projection of
-the velocity against the rotation field, as `_project_out_rotation` in the
-free-surface convection driver does (`free-surface-convection.md` §3). In parallel
-its two sums are global reductions.
+A candidate is made compatible with the normal constraints by zeroing its
+constrained rotated rows. Both the right and left actions of the resulting
+**constrained** operator must then vanish to assembly roundoff (256 real-scalar
+epsilons, scaled by the velocity diagonal and mode norm). Testing the original
+rigid field against the unconstrained Jacobian is insufficient: zeroing normal
+components can introduce strain. This test runs after Jacobian assembly and
+also rejects rotations pinned by another essential wall.
 
-An exempt mode has its constrained rows zeroed, in the null space and in the
-gauge removal alike, which makes it exactly compatible with `v·n = 0`. A test
-against the rows would reject the modes on a faceted sphere: there the
-facet-averaged normal leaves each declared rotation a violation of the order of
-the discretisation error (0.0075-0.0164 on a 0.5 shell built on macOS; 0.0037-0.0054
-on a 0.3 shell built on Linux), against a 1e-8 tolerance. Under the analytic
-normal the modes are exact.
+Only verified modes enter the quotient residual and final gauge removal.
+Analytic radial constraints retain the exact rotations of a circular or spherical
+wall. Facet-averaged normals or unequal wall spacing can instead turn them into
+weak physical modes, which remain in the equations. Removing such a mode would
+change the finalized original residual. The solver recomputes that residual and
+refuses convergence if it exceeds the requested bound.
 
-The outer Newton test is measured in the quotient space of the admitted modes.
-A guard warns when the projected-out component dominates the converged
-residual, which means the forcing has a net torque that free-slip walls cannot
-balance. A declared mode with violation $s$ also carries a component of a
-torque-free forcing, about $s^2/3$ of the forcing scale, so the guard warns only
-above $10 s^2$ of the convergence reference. On #906's shell that component was
-8.8e-5 of the forcing at $s = 0.016$ and 6.0e-6 at $s = 0.0042$ (the shells at
-cell sizes 0.5 and 0.25). A torque of 1 %
-of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
-the guard is unchanged.
-
-A mesh that declares nothing is offered the Cartesian rotations. Each is
-admitted to the increment null space and the post-solve gauge removal only if
-it passes **two** tests: tangential to every rotated constraint row
-(`Q·m ≈ 0` there), **and** a null vector of the assembled operator (`‖J·m‖ ≈ 0`
-against the velocity diagonal scale). A declared mode takes the second test
-too. The second test is what catches pinning the first cannot see — an essential condition on another
-boundary leaves the mode tangential to the rotated wall while the eliminated
-operator is *not* null on it, and admitting it projects an irreducible
-component out of every increment (the residual then floors far above
-tolerance instead of converging). The null space is therefore built after the
-first Jacobian assembly.
+A deformed wall likewise keeps any non-null rotation as a physical degree of
+freedom. An application can explicitly project its output for a separate
+measurement, but that projected field is not automatically a solution of the
+original equations. A net-torque guard remains active for genuine rotation
+gauges, where the forcing must be compatible with the singular operator.
 
 ### Parallel notes
 

@@ -955,8 +955,11 @@ class _InterfaceAssembler:
                              for a in range(ncomp)])
                 lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
                 lo_m.append(lo)
-                tans.append(_pair_frame(solver, q, nrm)[1:1 + ncomp])
-                nrms.append(nrm)
+                frame = _pair_frame(solver, q, nrm)
+                tans.append(frame[1:1 + ncomp])
+                # Surface reactions use the same tangential co-normal as the
+                # orthonormal constraint frame, excluding radial constraint work.
+                nrms.append(frame[0])
                 return index_of[q]
 
             plus_name = f"{name}Plus"

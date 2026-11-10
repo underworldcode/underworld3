@@ -1,38 +1,13 @@
-"""The rotated free-slip path takes its rigid-rotation modes from the mesh (#906).
+"""Mesh rotation declarations are candidates for discrete gauges, not proofs.
 
-A spherical shell with rotated free slip on both walls and the default normal (the
-facet-averaged mesh normal) used to solve with an arbitrary rigid rotation in its
-answer. The rotated path built every Cartesian rotation and kept those that passed a
-1e-8 test against the discrete constraints. On the faceted sphere the facet-averaged
-normal is not radial at the nodes, so all three rotations failed (violations
-0.0075-0.0164), none was removed, and the answer carried a rotation: rate 4.66 in a
-v_rms of 3.93 on the shell below, against 1.81 under the analytic radial normal.
+Analytic radial constraints preserve three exact rigid rotations on a shell.
+Facet-averaged normals and nonuniform wall spacing can instead give their
+constraint-compatible projections nonzero strain. Those physical weak modes
+must remain in the equations. Gauge removal must leave the independently
+recomputed finalized original residual within the requested tolerance.
 
-The modes are now the ones the mesh declares, ``mesh.nullspace_rotations``, as the
-standard Stokes path already reads them. A declared mode skips the constraint test
-only while it leaves every rotated wall in place: the wall's vertices must be
-equidistant from the rotation's centre, to 1e-9 relative. Faceting keeps them on the
-sphere; a deformed wall (a free surface) does not, and the mode then has to pass the
-constraint test like an undeclared one, with a warning. An admitted declared mode
-has its constrained rows zeroed, so v.n = 0 stays exact. It is still tested against
-the assembled operator, so a no-slip wall that pins it rejects it. A mesh that
-declares nothing keeps the detection (a box finds no mode). A mesh without the
-metadata declares its modes through the public setter, and meshes cut from a
-declaring mesh inherit them.
-
-Contracts, all exactness properties:
-- on the shell, under either normal, three modes are removed, the answer's rigid
-  rotation is at round-off, and v.n is zero on every constrained row;
-- an annulus as built keeps its declared mode; one whose outer wall is pushed off its
-  circle by 1e-6, as a free surface moves it, loses it, with a warning, and the
-  constraint test then rejects it; one moved the way an MMPDE mover moves it (wall
-  vertices sliding along their circles, the interior moving) keeps it, and its
-  answer carries no rotation;
-- a no-slip wall rejects a declared mode; a box declares none and finds none;
-- the setter refuses a field that is not a rigid rotation, and an add_fault child
-  inherits the declaration, written in its own coordinates;
-- a shell in a units model solves and keeps its three modes (#877: the modes were
-  built from dimensional coordinates, and development raised TypeError).
+Geometry declarations still follow mesh moves, inheritance and units; no-slip
+walls, changed radii and incompatible explicit normals reject candidates.
 """
 import warnings
 
@@ -125,8 +100,29 @@ def _v_rms(v):
     return np.sqrt(float(np.sum(V * V)) / V.shape[0])
 
 
+def _assert_original_constrained_equations(stokes, info):
+    """Independently evaluate the finalized equations and their rest-state scale."""
+    trial = info["U"].copy()
+    residual = trial.duplicate()
+    rotated = trial.duplicate()
+    values = []
+    try:
+        for state in ("final", "rest"):
+            if state == "rest":
+                trial.set(0)
+            stokes.snes.computeFunction(trial, residual)
+            info["Q"].mult(residual, rotated)
+            rotated_bc._zero_rows_local(rotated, info["normal_rows"])
+            values.append(rotated.norm())
+        rtol, atol, _ = stokes._rotated_tolerances()
+        assert values[0] <= rtol * values[1] + atol, values
+    finally:
+        for vector in (rotated, residual, trial):
+            vector.destroy()
+
+
 @pytest.mark.parametrize("radial", [False, True], ids=["default_normal", "analytic_normal"])
-def test_the_shell_returns_no_rigid_rotation(radial, capsys):
+def test_the_shell_removes_only_discrete_rotation_gauges(radial, capsys):
     mesh, v, stokes = _shell_stokes(f"1131{int(radial)}", radial=radial)
     assert len(mesh.nullspace_rotations) == 3
     capsys.readouterr()
@@ -138,14 +134,13 @@ def test_the_shell_returns_no_rigid_rotation(radial, capsys):
     # exempt from the constraint test under the facet-averaged normal; a given normal
     # is tested, and the exact radial one passes
     assert info["declared_modes_exempt"] == [not radial] * 3
-    assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
-    assert stokes._rotated_velocity_null_modes == 3
-    # the gauge removes the rotation to round-off; without the declared modes the
-    # default normal left a rate of 4.66 here
-    assert np.abs(_rotation_rates(v)).max() < 1.0e-10 * _v_rms(v)
+    assert info["rotation_gauge"]["orthonormal"] == (3 if radial else 0), info["rotation_gauge"]
+    assert stokes._rotated_velocity_null_modes == (3 if radial else 0)
+    _assert_original_constrained_equations(stokes, info)
     # the admitted modes were zeroed on the constrained rows, so v.n stays exact
     assert _normal_velocity(info) < 1.0e-12
     if radial:
+        assert np.abs(_rotation_rates(v)).max() < 1.0e-10 * _v_rms(v)
         assert max(m["viol"] for m in info["rotation_gauge"]["modes"]) < 1.0e-14
         assert stokes._rotated_null_mode_slack == 0.0
         # exact modes of the velocity block: projected out of the multigrid (#963)
@@ -286,7 +281,7 @@ def _slid_annulus():
     return moved
 
 
-def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
+def test_a_wall_preserving_move_does_not_guarantee_a_discrete_rotation_gauge():
     # the detection route drops the mode here (violation 0.0037 against 1e-8) and leaves
     # a rotation of rate 2.5e-6 in a v_rms of 5.0e-3
     mesh, v, stokes = _annulus_stokes("1131m", mesh=_slid_annulus())
@@ -297,8 +292,8 @@ def test_a_move_that_keeps_the_walls_keeps_the_declared_mode():
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
     assert info["declared_modes_exempt"] == [True]
-    assert info["rotation_gauge"]["orthonormal"] == 1, info["rotation_gauge"]
-    assert abs(_rotation_rate_2d(v)) < 1.0e-10 * _v_rms(v)
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+    _assert_original_constrained_equations(stokes, info)
     assert _normal_velocity(info) < 1.0e-12
 
 
@@ -431,7 +426,8 @@ def test_a_units_model_shell_solves_with_its_declared_modes(velocity_units):
         info = stokes._rotated_freeslip_info
         assert info["converged"], info
         assert info["declared_modes_exempt"] == [True, True, True]
-        assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
+        assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+        _assert_original_constrained_equations(stokes, info)
         assert _normal_velocity(info) < 1.0e-12
     finally:
         uw.reset_default_model()
@@ -456,7 +452,7 @@ def test_a_given_normal_is_tested_not_exempt():
     assert _normal_velocity(info) < 1.0e-12
 
 
-def test_a_segmented_shell_keeps_its_modes():
+def test_a_segmented_shell_checks_its_declared_modes():
     # its Upper label also holds interior vertices (r down to 0.62); the walls are
     # read from the closure of the labelled facets, which lie on the sphere
     mesh = uw.meshing.SegmentedSphericalShell(radiusOuter=1.0, radiusInner=0.5,
@@ -477,8 +473,8 @@ def test_a_segmented_shell_keeps_its_modes():
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
     assert info["declared_modes_exempt"] == [True, True, True]
-    assert info["rotation_gauge"]["orthonormal"] == 3, info["rotation_gauge"]
-    assert np.abs(_rotation_rates(v)).max() < 1.0e-10 * _v_rms(v)
+    assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
+    _assert_original_constrained_equations(stokes, info)
 
 
 def test_a_sphere_off_the_origin_is_exempt_about_its_own_centre():

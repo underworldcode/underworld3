@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
+from underworld3.utilities.fault_contact import _InterfaceAssembler, fault_normal_traction
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -90,7 +91,6 @@ def test_fault_reaction_is_the_membrane_resultant():
     it: the no-opening reaction, de-smeared by the trace mass, is the resultant
     L * 6 eta W on every pair (the trace mass once took the triangle's weights
     on a surface mesh and read 5 to 8 times that)."""
-    from underworld3.utilities.fault_contact import fault_normal_traction
     W, eta, L = 0.1, 1.0, 0.08
     sphere = _sphere(0.15)
     phi = np.linspace(-0.3, 0.3, 9)
@@ -100,6 +100,11 @@ def test_fault_reaction_is_the_membrane_resultant():
     sheet.add_fault_bc(0, "Flt")
     sheet.normal_velocity = W
     sheet.solve()
+    assembler = _InterfaceAssembler(sheet, include=("Flt",))
+    points = np.asarray(sheet.u.coords)[assembler._lo_p // split.cdim]
+    radial = points / np.linalg.norm(points, axis=1)[:, None]
+    assert np.max(np.abs(np.einsum("ij,ij->i", assembler._nrm, radial)), initial=0) \
+        <= 256 * np.finfo(float).eps
     _c, sig = fault_normal_traction(sheet, "Flt", sheet._rotated_freeslip_info)
     expected = L * 6 * eta * W
     assert len(sig) > 5
