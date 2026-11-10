@@ -249,6 +249,23 @@ def _hierarchy_sidecar_name(mesh_filename):
     return f"{base}.hierarchy.L0{ext}"
 
 
+def _require_metric_remesher(what):
+    """Raise a plain error when this PETSc has no metric remesher (mmg, parmmg or
+    pragmatic). ``what`` names the route. These routes are an external opt-in:
+    conda-forge's PETSc has none, and without one PETSc fails deep inside
+    DMAdaptMetric. Called when that PETSc call has failed, so that a DM whose
+    adaptMetric is supplied otherwise (a test's stand-in) is not refused. Not
+    collective (every rank reads the same build)."""
+    if not any(PETSc.Sys.hasExternalPackage(p) for p in ("mmg", "parmmg", "pragmatic")):
+        raise RuntimeError(
+            f"{what} needs a PETSc built with a metric remesher (mmg, and parmmg "
+            f"for parallel 3-D), an external opt-in that this PETSc (as "
+            f"conda-forge's) does not have. Without one: mesh.adapt(metric, "
+            f"max_levels=...) refines into a child mesh, "
+            f"uw.meshing.node_redistribution moves the nodes to a metric, and "
+            f"refinement= builds a multigrid hierarchy.")
+
+
 def _mesh_coords_update_callback(array, change_context):
     """Setter callback for a mesh's canonical coordinate array.
 
@@ -1377,6 +1394,10 @@ class Mesh(Stateful, uw_object):
 
         Note: coarsening callbacks are not supported — the coarse meshes
         do not carry the boundary labels a callback would need.
+
+        PETSc coarsens a mesh through DMAdaptMetric, so ``coarsening=`` needs a
+        PETSc built with mmg (an external opt-in that conda-forge's PETSc does not
+        have); ``refinement=`` builds a hierarchy on any build.
         """
         # Does this have any effect on a coarsening strategy ?
         self.dm.setRefinementUniform()
@@ -1386,7 +1407,11 @@ class Mesh(Stateful, uw_object):
 
         self.dm_hierarchy = [self.dm]
         for i in range(coarsening):
-            dm_coarsened = self.dm_hierarchy[i].coarsen()
+            try:
+                dm_coarsened = self.dm_hierarchy[i].coarsen()
+            except PETSc.Error:
+                _require_metric_remesher("Mesh(coarsening=...)")
+                raise
             self.dm_hierarchy[i].setCoarseDM(dm_coarsened)
             self.dm_hierarchy.append(dm_coarsened)
 
@@ -4243,8 +4268,11 @@ class Mesh(Stateful, uw_object):
             "  Use instead:\n"
             "    • mesh.deform(new_coords, dt=…)        — impose an arbitrary "
             "node displacement (free surface / prescribed motion)\n"
-            "    • mesh.remesh(metric) / mesh.adapt(metric_field)\n"
-            "    • uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
+            "    • uw.meshing.node_redistribution(mesh, metric) / "
+            "uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
+            "    • mesh.adapt(metric, max_levels=…)       — a refined child mesh\n"
+            "    • mesh.remesh(metric)                     — needs a PETSc built "
+            "with mmg (external opt-in)\n"
             "  These route the field + SL/DDt-history transfer "
             "(remesh_with_field_transfer). For trusted scheme-internal trial "
             "meshes that will be discarded, use `with mesh.ephemeral_coords(): …`."
@@ -7593,8 +7621,8 @@ class Mesh(Stateful, uw_object):
         levels of the mesh it was made from, which its solvers pick up without a
         ``set_custom_fmg`` call), the levels are that tail followed by this mesh.
         Otherwise they are the mesh's own hierarchy: ``n + 1`` levels for
-        ``refinement=n`` or ``coarsening=n``, and the mesh alone when it was
-        built with neither.
+        ``refinement=n`` or ``coarsening=n`` (which needs a PETSc built with
+        mmg), and the mesh alone when it was built with neither.
 
         The coarse levels of a refinement hierarchy are meshes in their own
         right, carrying this mesh's boundary labels; those of a coarsening
@@ -8957,8 +8985,9 @@ class Mesh(Stateful, uw_object):
                     raise NotImplementedError(
                         "adapt(engine='nvb') at np>1 needs the native uwnvb "
                         "transform (underworld3.utilities._nvb_transform), "
-                        "which is not built in this environment. Build the "
-                        "custom-PETSc/amr env, or use engine='sbr' at np>1."
+                        "which every underworld3 build compiles (setup.py) but "
+                        "this one failed to import: rebuild (./uw build), or use "
+                        "engine='sbr' at np>1."
                     )
             else:
                 # 3D: prefer the native driver when built (same preference
@@ -8974,8 +9003,8 @@ class Mesh(Stateful, uw_object):
                     raise NotImplementedError(
                         "adapt(engine='nvb') at np>1 needs the native uwnvb "
                         "transform (underworld3.utilities._nvb_transform), "
-                        "which is not built in this environment. Build the "
-                        "custom-PETSc/amr env."
+                        "which every underworld3 build compiles (setup.py) but "
+                        "this one failed to import: rebuild (./uw build)."
                     )
                 if _nvbx is not None:
                     from underworld3.utilities.nvb import (
@@ -9824,10 +9853,22 @@ class Mesh(Stateful, uw_object):
         automatically transferring all attached MeshVariables, updating Surfaces,
         and marking Solvers for rebuild on their next solve() call.
 
-        Contrast :meth:`adapt`, which performs *nested* skeleton-based refinement
-        on top of the static base and **returns a refined child** (the mesh is
-        not modified in place). ``remesh`` is the in-place, redistributing path;
-        prefer ``adapt`` when you want a parent/child geometric-MG hierarchy.
+        .. warning::
+           ``remesh`` is an **external opt-in**. It needs a PETSc built with the
+           mmg remesher (``--download-mmg``, and ``--download-parmmg`` for
+           parallel), which the conda-forge PETSc does not have, and no internal
+           path, default or test set depends on it. Its reach is limited: mmg
+           remeshes in serial in 2-D and 3-D, and parmmg in parallel in 3-D only,
+           so a 2-D mesh cannot be remeshed in parallel this way.
+
+        The supported ways to change a mesh's resolution need no extra build:
+        :meth:`adapt`, which refines on top of the static base and **returns a
+        refined child** with a parent/child geometric-MG hierarchy, in 2-D and
+        3-D and in parallel; node redistribution
+        (:func:`underworld3.meshing.node_redistribution`), which moves the nodes
+        to follow a metric with the topology and partition kept; and
+        :meth:`deform`. ``remesh`` is the in-place, redistributing path for when
+        the cells themselves must be regenerated.
 
         This method was formerly called ``adapt``; ``adapt`` now performs the
         nested SBR adapt-on-top.
@@ -9843,7 +9884,8 @@ class Mesh(Stateful, uw_object):
 
         Notes
         -----
-        The adaptation uses PETSc's mesh adaptation with MMG/pragmatic backend.
+        The adaptation is PETSc's ``DMAdaptMetric`` with the mmg (serial) or
+        parmmg (parallel, 3-D) backend; without one it raises and says so.
 
         **What happens automatically:**
 
@@ -9923,11 +9965,15 @@ class Mesh(Stateful, uw_object):
             print(f"[{uw.mpi.rank}] Mesh adaptation starting (nodes: ~{n_nodes_old})...", flush=True)
 
         # Perform the actual mesh adaptation
-        new_dm = self.dm.adaptMetric(
-            metric_vec,
-            bdLabel="CombinedBoundaries",
-            rgLabel=rgLabel_name,
-        )
+        try:
+            new_dm = self.dm.adaptMetric(
+                metric_vec,
+                bdLabel="CombinedBoundaries",
+                rgLabel=rgLabel_name,
+            )
+        except PETSc.Error:
+            _require_metric_remesher("mesh.remesh")
+            raise
 
         # Unstack boundary labels on the new dm
         adaptivity._dm_unstack_bcs(new_dm, self.boundaries, "CombinedBoundaries")

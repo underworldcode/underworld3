@@ -4,7 +4,8 @@ r"""
 
 **PHYSICS:** fluid_mechanics
 **DIFFICULTY:** intermediate
-**RUNTIME:** < 2 minutes (requires AMR environment)
+**RUNTIME:** < 2 minutes (needs a PETSc built with mmg: an external opt-in, not
+conda-forge's PETSc; `mesh.adapt(metric, max_levels=...)` refines without it)
 
 ## Description
 
@@ -12,7 +13,7 @@ A 2D shear box with an embedded weak fault zone, demonstrating **mesh adaptation
 to refine resolution near the fault while keeping the total element count manageable.
 
 This example builds on `shear_box_2d_fault.py` by adding:
-- Metric-based mesh adaptation using `mesh.adapt()`
+- Metric-based re-meshing using `mesh.remesh()` (mmg, serial 2-D)
 - Surface-based refinement criteria via `fault.refinement_metric()`
 - Strategy for ~10× refinement near the fault with constant element count
 
@@ -255,16 +256,16 @@ if render:
 """
 ### Perform Adaptation
 
-The `mesh.adapt()` method:
-1. Calls PETSc/MMG mesh adaptation
-2. Reinitializes MeshVariables (reset to zero)
+The `mesh.remesh()` method:
+1. Calls PETSc/mmg mesh adaptation (DMAdaptMetric)
+2. Interpolates the MeshVariables onto the new cells
 3. Notifies surfaces to recompute distance fields
 4. Marks solvers for rebuild
 """
 
 # %%
 print("Adapting mesh...")
-mesh.adapt(metric, verbose=True)
+mesh.remesh(metric, verbose=True)
 
 n_elements_adapted = mesh.dm.getChart()[1] - mesh.dm.getChart()[0]
 print(f"\nAdapted mesh: ~{n_elements_adapted} entities")
@@ -491,7 +492,7 @@ This example demonstrated **mesh adaptation** for fault-localized problems:
 
 1. **Coarse initial mesh**: Started 2× coarser than target uniform resolution
 2. **Surface-based metric**: `fault.refinement_metric()` creates H-field from distance
-3. **Adaptation**: `mesh.adapt(metric)` refines near fault, coarsens elsewhere
+3. **Adaptation**: `mesh.remesh(metric)` refines near fault, coarsens elsewhere
 4. **Element count control**: ~10× finer at fault with similar total count
 5. **Automatic updates**: Surfaces recompute distance fields, variables reset
 

@@ -19,19 +19,13 @@ from test_0800_optional_modules import requires_amr
 
 
 def _has_petsc_adaptation_backend():
-    """Runtime probe: try a trivial in-place ``remesh`` (MMG). ``requires_amr``
-    only greps petscvariables for 'pragmatic', which can be present while the
-    runtime adapter is non-functional (e.g. the custom-MG PETSc build); this
-    actually exercises ``adaptMetric`` and skips if it raises."""
-    try:
-        m = uw.meshing.UnstructuredSimplexBox(
-            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
-        H = uw.discretisation.MeshVariable("_probe810", m, 1, degree=1)
-        H.data[:, 0] = 100.0
-        m.remesh(H)
-        return True
-    except Exception:
-        return False
+    """Was PETSc built with the remesher ``mesh.remesh`` drives (mmg in serial, parmmg
+    in parallel)? It is an external opt-in, absent from conda-forge's PETSc. Read
+    from the build, not by running a remesh at import: a probe that swallowed its
+    exception turned a real breakage on an mmg build into a skip, and ran the mmg
+    route on every collection."""
+    from petsc4py import PETSc
+    return PETSc.Sys.hasExternalPackage("parmmg" if uw.mpi.size > 1 else "mmg")
 
 
 _petsc_has_adaptation = _has_petsc_adaptation_backend()
@@ -41,8 +35,8 @@ pytestmark = [
     requires_amr,
     pytest.mark.skipif(
         not _petsc_has_adaptation,
-        reason="PETSc mesh-adaptation backend (MMG/pragmatic) is non-functional "
-        "at runtime; remesh() cannot run here.",
+        reason="mesh.remesh() needs a PETSc built with mmg (parmmg in parallel), an "
+        "external opt-in that conda-forge's PETSc does not have.",
     ),
 ]
 
