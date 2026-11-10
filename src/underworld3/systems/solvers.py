@@ -192,6 +192,19 @@ def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     return dt_nondimensional
 
 
+def _timestep_is_a_constant(dt):
+    """Whether a timestep enters the compiled kernels as a runtime constant.
+
+    A number does: every solve packs the constants again
+    (``_update_constants``), so a new one reaches the kernels with no rewire and
+    no recompile. Anything symbolic, an expression included, changes the kernels
+    themselves and needs the rewire, and so does a number replacing one (#1026).
+    """
+    if isinstance(dt, (int, float, np.number)):
+        return True
+    return isinstance(dt, sympy.Basic) and bool(dt.is_number)
+
+
 def _nondimensionalise_timestep(value):
     """Convert a dimensional (time-valued) timestep to its nondimensional value.
 
@@ -1212,12 +1225,9 @@ class SNES_Darcy(SNES_Scalar):
         ``self.v`` contain the solution.
         """
 
-        if (not self.is_setup) or _force_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # Solve pressure
+        # Solve pressure. The base solve sets the solver up through _build, which
+        # destroys the old SNES before it makes a new one; the setup run here
+        # before left it alive, a whole SNES per rebuild (#1026).
 
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
@@ -1267,6 +1277,8 @@ class SNES_TransientDarcy(SNES_Darcy):
         Time integration order (BDF/Adams-Moulton history depth).
     theta : float, default=0.5
         Implicit time weighting (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+        With the default symbolic flux history it has no effect: the history
+        term is the current flux, so every step is backward Euler (#1029).
     degree : int, default=2
         Polynomial degree for finite element discretization.
     verbose : bool, default=False
@@ -1357,13 +1369,15 @@ class SNES_TransientDarcy(SNES_Darcy):
 
     @delta_t.setter
     def delta_t(self, value):
-        self._needs_function_rewire = True
+        value = _nondimensionalise_timestep(value)
         if hasattr(value, "value"):
-            self._delta_t.sym = value.value
+            value = value.value
         elif hasattr(value, "magnitude"):
-            self._delta_t.sym = value.magnitude
-        else:
-            self._delta_t.sym = value
+            value = value.magnitude
+        if not (_timestep_is_a_constant(value)
+                and _timestep_is_a_constant(self._delta_t.sym)):
+            self._needs_function_rewire = True
+        self._delta_t.sym = value
 
     @property
     def DuDt(self):
@@ -1458,10 +1472,16 @@ class SNES_TransientDarcy(SNES_Darcy):
             self._needs_function_rewire = True
             self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
 
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+        # The symbolic flux history is compiled into F1, as in SNES_Diffusion:
+        # populated after the first build, it left F1 without its history term,
+        # theta times the flux (half at theta = 0.5), until something else
+        # rebuilt the kernels (#1027).
+        if isinstance(self.DFDt, Symbolic_DDt) and not self.DFDt._history_initialised:
+            self.DFDt.initialise_history()
+
+        # Through _build, which destroys the old SNES before it makes a new one;
+        # the setup run here before left it alive, a whole SNES per rebuild (#1026).
+        self._build(verbose)
 
         # Pre-solve: update history terms
         self.DuDt.update_pre_solve(timestep, verbose=verbose)
@@ -1527,7 +1547,9 @@ class SNES_Richards(SNES_TransientDarcy):
     order : int, default=1
         Time integration order.
     theta : float, default=0.5
-        Implicit time weighting.
+        Implicit time weighting. With the default symbolic flux history it has
+        no effect: the history term is the current flux, so every step is
+        backward Euler (#1029).
     degree : int, default=2
         Polynomial degree.
     verbose : bool, default=False
@@ -2142,10 +2164,9 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
             if order is None or order > self._order:
                 order = self._order
 
-            if not self.is_setup:
-                self._setup_pointwise_functions(verbose)
-                self._setup_discretisation(verbose)
-                self._setup_solver(verbose)
+            # Through _build, which destroys the old SNES before it makes a new one;
+            # the setup run here before left it alive, a whole SNES per rebuild (#1026).
+            self._build(verbose)
 
             self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
 
@@ -4898,21 +4919,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        # Skip the (expensive) function rewire when the timestep is unchanged.
-        # The comparison must tolerate UWexpressions / UWQuantities, hence the
-        # float() coercion via .data.
-        try:
-            old_dt = float(self._delta_t.data)
-            new_dt = float(value.data) if hasattr(value, 'data') else float(value)
-            if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
-                return
-        except (TypeError, ValueError):
-            # Non-numeric (e.g. symbolic) timestep: no stable comparison is
-            # possible — fall through and assign.
-            pass
-
-        self._needs_function_rewire = True
-        self._delta_t.sym = _nondimensionalise_timestep(value)
+        dt = _nondimensionalise_timestep(value)
+        if not (_timestep_is_a_constant(dt)
+                and _timestep_is_a_constant(self._delta_t.sym)):
+            self._needs_function_rewire = True
+        self._delta_t.sym = dt
 
     @timing.routine_timer_decorator
     def estimate_dt(self, direction_aware: bool = False, percentile: float = 0.0):
@@ -5007,10 +5018,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self._needs_function_rewire = True
             self.DFDt.psi_fn = _history_psi_fn(self.constitutive_model)
 
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+        # Through _build, which destroys the old SNES before it makes a new one;
+        # the setup run here before left it alive, a whole SNES per rebuild (#1026).
+        self._build(verbose)
 
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
@@ -5211,6 +5221,8 @@ class SNES_Diffusion(SNES_Scalar):
         Time integration order.
     theta : float, default=0.0
         Time integration parameter (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+        With the default symbolic flux history it has no effect: the history
+        term is the current flux, so every step is backward Euler (#1029).
     evalf : bool, default=False
         Numerically evaluate symbolic expressions during setup.
     verbose : bool, default=False
@@ -5381,21 +5393,11 @@ class SNES_Diffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        # Skip the (expensive) function rewire when the timestep is unchanged.
-        # The comparison must tolerate UWexpressions / UWQuantities, hence the
-        # float() coercion via .data.
-        try:
-            old_dt = float(self._delta_t.data)
-            new_dt = float(value.data) if hasattr(value, 'data') else float(value)
-            if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
-                return
-        except (TypeError, ValueError):
-            # Non-numeric (e.g. symbolic) timestep: no stable comparison is
-            # possible — fall through and assign.
-            pass
-
-        self._needs_function_rewire = True
-        self._delta_t.sym = _nondimensionalise_timestep(value)
+        dt = _nondimensionalise_timestep(value)
+        if not (_timestep_is_a_constant(dt)
+                and _timestep_is_a_constant(self._delta_t.sym)):
+            self._needs_function_rewire = True
+        self._delta_t.sym = dt
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -5476,10 +5478,9 @@ class SNES_Diffusion(SNES_Scalar):
         if isinstance(self.DFDt, Symbolic_DDt) and not self.DFDt._history_initialised:
             self.DFDt.initialise_history()
 
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+        # Through _build, which destroys the old SNES before it makes a new one;
+        # the setup run here before left it alive, a whole SNES per rebuild (#1026).
+        self._build(verbose)
 
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
@@ -5751,9 +5752,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @delta_t.setter
     def delta_t(self, value):
-        """Set the timestep value."""
-        self._needs_function_rewire = True
-        self._delta_t.sym = value
+        """Set the timestep (handles unit conversion if provided)."""
+        dt = _nondimensionalise_timestep(value)
+        if not (_timestep_is_a_constant(dt)
+                and _timestep_is_a_constant(self._delta_t.sym)):
+            self._needs_function_rewire = True
+        self._delta_t.sym = dt
 
     @property
     def rho(self):
@@ -5908,10 +5912,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             _cm.Parameters.dt_elastic = timestep
             _cm._update_history_coefficients()
 
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+        # Through _build, which destroys the old SNES before it makes a new one;
+        # the setup run here before left it alive, a whole SNES per rebuild (#1026).
+        self._build(verbose)
 
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - pre-solve DuDt update", flush=True)

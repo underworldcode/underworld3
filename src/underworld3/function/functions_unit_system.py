@@ -719,8 +719,13 @@ def _apply_monotone_limit(
     # the original shape afterwards.
     psi_data_flat = psi_data.reshape(psi_data.shape[0], -1)
     nbr_vals = psi_data_flat[idxs]
-    nbr_min = nbr_vals.min(axis=1)
-    nbr_max = nbr_vals.max(axis=1)
+    # The stored columns follow _data_layout and `value` runs by row, so each bound
+    # is put in the place of the entry it bounds: a MATRIX stores by column, and a
+    # symmetric tensor stores one column for two entries.
+    rows, columns = var.sym.shape
+    stored_column = [var._data_layout(i, j) for i in range(rows) for j in range(columns)]
+    nbr_min = nbr_vals.min(axis=1)[:, stored_column]
+    nbr_max = nbr_vals.max(axis=1)[:, stored_column]
 
     veep_np = np.asarray(value)
     orig_shape = veep_np.shape

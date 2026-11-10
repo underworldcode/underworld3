@@ -226,16 +226,26 @@ def accuracy_anchor(values, anchor, fingerprint, labels, what, rtol=1e-2):
     ``rtol`` is deliberately loose (1 %). This is not a reproducibility check — that is
     ``compare``'s job, three to eight orders tighter. This one only has to notice that
     the answer has become a different answer.
+
+    ``anchor`` is one recorded anchor or a list of them, one per mesh a host builds (the
+    macOS and the Linux gmsh triangulate the same domain differently). The one whose
+    fingerprint matches this mesh is used. When none matches the check skips, and the
+    message carries this host's fingerprint and values, ready to be recorded.
     """
     import pytest
 
-    if not _same_mesh(fingerprint, anchor["fingerprint"]):
+    anchors = anchor if isinstance(anchor, (list, tuple)) else [anchor]
+    matching = [a for a in anchors if _same_mesh(fingerprint, a["fingerprint"])]
+    if not matching:
         pytest.skip(
-            f"{what}: accuracy anchor was recorded on a different mesh "
-            f"[{_fp(anchor['fingerprint'])}] from this host's "
-            f"[{_fp(fingerprint)}] — gmsh triangulates differently across "
-            f"platforms. Partition independence is still asserted; only the "
-            f"absolute value is skipped.")
+            f"{what}: no accuracy anchor was recorded on this mesh "
+            f"[{_fp(fingerprint)}]; recorded on "
+            f"{[_fp(a['fingerprint']) for a in anchors]}. gmsh triangulates "
+            f"differently across platforms. Partition independence is still "
+            f"asserted; only the absolute value is skipped. To record this host: "
+            f"{{'fingerprint': {[float(f) for f in fingerprint]!r}, "
+            f"'values': {[float(v) for v in values]!r}}}")
+    anchor = matching[0]
     for value, ref, label in zip(values, anchor["values"], labels):
         assert np.isclose(value, ref, rtol=rtol, atol=0), (
             f"{what}: {label} has MOVED from its recorded value on the same mesh "

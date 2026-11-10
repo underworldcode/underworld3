@@ -152,7 +152,6 @@ stokes.tolerance = 1.0e-3
 
 stokes.petsc_options.setValue("ksp_monitor", None)
 stokes.petsc_options.setValue("snes_monitor", None)
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
 # Similar (equivalent horizontal pattern) but in a body force
 with meshball.access(t_init):
@@ -230,8 +229,8 @@ pstats1 = p_cont.stats()
 pstats0 = p_soln.stats()
 
 uw.pprint(f"Pressure (C1): {pstats1}")
-    print(f"Pressure (C0): {pstats0}")
-    print(f"Velocity: {vnorm}")
+uw.pprint(f"Pressure (C0): {pstats0}")
+uw.pprint(f"Velocity: {vnorm}")
 # -
 
 meshball.write_timestep(

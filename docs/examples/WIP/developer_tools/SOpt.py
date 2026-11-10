@@ -333,7 +333,6 @@ if write_file:
     stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
     stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
     stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-    stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
     stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
     stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
     stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 2
@@ -501,7 +500,6 @@ stokes_forward.penalty = 1
 stokes_forward.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
 stokes_forward.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 stokes_forward.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-stokes_forward.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes_forward.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 stokes_forward.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 stokes_forward.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 2
@@ -637,7 +635,6 @@ stokes_adjoint.petsc_options["ksp_monitor"] = None
 stokes_adjoint.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
 stokes_adjoint.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 stokes_adjoint.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-stokes_adjoint.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes_adjoint.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 stokes_adjoint.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 stokes_adjoint.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 2

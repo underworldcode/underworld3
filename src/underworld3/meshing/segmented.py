@@ -17,6 +17,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -535,12 +536,14 @@ def SegmentedSphericalShell(
         gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
         gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
-        gmsh.model.addPhysicalGroup(3, wedges, 30)
-        gmsh.model.setPhysicalName(3, 30, "Elements")
+        # 99999 as the other generators: a volume tagged with a boundary's value
+        # (Upper, 30) puts interior points in that boundary's label (#946)
+        gmsh.model.addPhysicalGroup(3, wedges, 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         gmsh.model.remove_entities([(0, centre)])
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
 
         write_gmsh(uw_filename)
         gmsh.finalize()
@@ -958,12 +961,14 @@ def SegmentedSphericalBall(
         gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
         gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
-        gmsh.model.addPhysicalGroup(3, wedges, 30)
-        gmsh.model.setPhysicalName(3, 30, "Elements")
+        # 99999 as the other generators: a volume tagged with a boundary's value
+        # (Upper, 30) puts interior points in that boundary's label (#946)
+        gmsh.model.addPhysicalGroup(3, wedges, 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         # gmsh.model.remove_entities([(0, centre)])
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
 
         write_gmsh(uw_filename)
         gmsh.finalize()

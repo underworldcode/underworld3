@@ -493,6 +493,8 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """
     if not vars_:
         return
+    from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+
     # Capture target DOF coords on the NEW mesh first (we are sitting
     # on new_X right now). var.coords reads from the live mesh state.
     new_dof_coords = {}
@@ -532,8 +534,10 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
                     f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
-        resampled[var] = np.asarray(val).reshape(
-            np.asarray(var.data).shape)
+        # Laid out by _data_layout, which a flat reshape is not for a MATRIX or a
+        # symmetric tensor. The units are dropped as before: deform with units has
+        # its own faults, left for later (review of #909, round 3, H1 and P1).
+        resampled[var] = _evaluated_in_storage_layout(var, np.asarray(val))
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
