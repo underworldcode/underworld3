@@ -74,10 +74,10 @@ minX, maxX = -0.5 * width, 0.5 * width
 minY, maxY = -0.5 * height, 0.5 * height
 
 uw.pprint("min X, max X:", minX, maxX)
-    print("min Y, max Y:", minY, maxY)
-    print("kinematic viscosity: ", kin_visc)
-    print("fluid density: ", fluid_rho)
-    print("dynamic viscosity: ", kin_visc * fluid_rho)
+uw.pprint("min Y, max Y:", minY, maxY)
+uw.pprint("kinematic viscosity: ", kin_visc)
+uw.pprint("fluid density: ", fluid_rho)
+uw.pprint("dynamic viscosity: ", kin_visc * fluid_rho)
 
 # %%
 # cell size calculation
@@ -173,7 +173,7 @@ max_vel = vel
 delta_t = Cmax*delta_x/max_vel
 
 uw.pprint(f"Min radius: {delta_x}")
-    print("Timestep used:", delta_t)
+uw.pprint("Timestep used:", delta_t)
 
 # %%
 # sample the velocity along the middle
@@ -243,6 +243,6 @@ shear_force_calc.solve()
 
 num_val = uw.function.evaluate(shear_force.sym, np.array([[1, 0.5]]))
 uw.pprint(f"Theoretical value: {dyn_visc * vel / height}")
-    print(f"Numerical value: {num_val}")
+uw.pprint(f"Numerical value: {num_val}")
 
 

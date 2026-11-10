@@ -46,6 +46,19 @@ jobs:
             exit 1
           fi
 
+      - name: Every example script and notebook parses (#944)
+        if: ${{ !cancelled() }}
+        run: |
+          # Compiles docs/examples/**/*.py and each notebook code cell under docs/
+          # (IPython magics and shell escapes removed). Runs nothing, needs no
+          # build: it catches an example that no longer compiles.
+          if ! python scripts/check_examples_compile.py; then
+            echo ""
+            echo "FAILED: an example or notebook under docs/ no longer parses."
+            echo "  Run local: python scripts/check_examples_compile.py"
+            exit 1
+          fi
+
       - name: Report deprecated patterns in docs/ (informational)
         run: |
           # Never fails: docs cleanup is tracked separately. This keeps the
