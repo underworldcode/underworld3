@@ -7,14 +7,20 @@ over-constrained, and the answer depended on the partition. The pin is now the l
 global pressure row, chosen over all ranks.
 
 - exactly one pressure row is pinned, whatever the rank count;
+- the pinned row is a pressure row, the lowest one (an off-by-one row is an
+  eliminated velocity row and would pass the other checks);
 - the direct solve agrees with the iterative one (which fixes the gauge with the
-  constant-pressure null space) in velocity, and in pressure up to its constant.
+  constant-pressure null space) in velocity, and in pressure up to its constant;
+- a nonlinear direct solve takes a second Newton increment at np > 1: the pin
+  used to compress its row out of the rotated operator's pattern, and the next
+  increment's in-place PtAP crashed in malloc on the owning rank.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1156_rotated_lu_pressure_pin_parallel.py
 """
 import numpy as np
 import pytest
 import sympy
+from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
@@ -26,14 +32,15 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
                                  reason="the direct rotated path factors with MUMPS")]
 
 
-def _box(tag, use_lu):
+def _box(tag, use_lu, nonlinear=False):
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=0.1, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{tag}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P{tag}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = (
+        1 + 50 * v.sym.dot(v.sym) if nonlinear else 1.0)
     x, y = mesh.X
     stokes.bodyforce = sympy.Matrix([[0, sympy.cos(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
     for wall in ("Bottom", "Top", "Left", "Right"):
@@ -60,6 +67,12 @@ def test_one_pressure_row_is_pinned_at_any_rank_count():
     # development: one per rank
     assert uw.mpi.comm.allreduce(int(row is not None)) == 1
     assert len(set(uw.mpi.comm.allgather(pinned))) == 1
+    owned = stokes._subdict["pressure"][0].getIndices()
+    lowest = uw.mpi.comm.allreduce(int(owned.min()) if owned.size else np.iinfo(np.int64).max,
+                                   op=MPI.MIN)
+    if row is not None:
+        assert row in owned
+    assert uw.mpi.comm.allreduce(row if row is not None else -1, op=MPI.MAX) == lowest
 
 
 def test_the_direct_solve_matches_the_iterative_one():
@@ -71,3 +84,14 @@ def test_the_direct_solve_matches_the_iterative_one():
     # development at np 2: two pressure DOFs pinned to zero, a different problem
     assert np.linalg.norm(vl - vi) < 1.0e-6 * np.linalg.norm(vi)
     assert np.linalg.norm(pl - pi) < 1.0e-6 * np.linalg.norm(pi)
+
+
+def test_a_nonlinear_direct_solve_takes_a_second_increment():
+    stokes, v_lu, _p = _box("nllu", use_lu=True, nonlinear=True)
+    info = stokes._rotated_freeslip_info
+    # development at np 2: a malloc error in MatPtAP on the pin's owner, a hang elsewhere
+    assert info["converged"]
+    assert info["nonlinear_iterations"] >= 2
+    _s, v_it, _p = _box("nlit", use_lu=False, nonlinear=True)
+    vl, vi = _global(v_lu.data), _global(v_it.data)
+    assert np.linalg.norm(vl - vi) < 1.0e-6 * np.linalg.norm(vi)

@@ -953,14 +953,22 @@ def _global_pressure_pin(dm):
     so the collective ``zeroRows`` is called by all ranks or by none. Each rank
     used to pin the first pressure DOF of its own chart, so at np > 1 every rank
     fixed one, the gauge was over-constrained and the answer depended on the
-    partition (#348). COLLECTIVE."""
+    partition (#348).
+
+    The pin is a correct gauge only where constant pressure is an exact null mode
+    of the constrained operator. Where it is not (a split fault, an open boundary,
+    a pressure Dirichlet condition) the pinned row replaces a real equation and
+    the direct solve converges to a different problem (#899). COLLECTIVE."""
     from mpi4py import MPI
 
-    gsec = dm.getGlobalSection()
+    lsec, gsec = dm.getLocalSection(), dm.getGlobalSection()
     pS, pE = gsec.getChart()
     lowest = None
     for q in range(pS, pE):
-        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0:
+        # a constrained pressure DOF (a pressure Dirichlet point) has no row;
+        # the local section carries the constraint counts
+        if (lsec.getFieldDof(q, _PRESSURE_FIELD)
+                - lsec.getFieldConstraintDof(q, _PRESSURE_FIELD)) > 0:
             offset = gsec.getFieldOffset(q, _PRESSURE_FIELD)
             if offset >= 0 and (lowest is None or offset < lowest):
                 lowest = offset
@@ -1703,9 +1711,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # the finest smoother's operator unless it is the PC's own.
         # The tangent's pattern is fixed by the fault facets, and Ahat's by
         # the ptap, so both stay inside the pattern of the first copy.
-        # The direct-LU path still takes a fresh sum each iterate: its pressure
-        # pin (zeroRows) drops the pinned row's entries from the pattern, and
-        # it has no multigrid to go stale.
+        # The direct-LU path still takes a fresh sum each iterate: it has no
+        # multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
             if Atot is None or use_lu:
@@ -1761,6 +1768,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 ctx = {"ksp": ksp_lu, "Mp": None, "pin": lu_pin, "pinned": lu_pinned}
             pin = ctx["pin"]
             if ctx["pinned"]:
+                # Without KEEP_NONZERO_PATTERN zeroRows compresses the pinned row
+                # out of Ahat's pattern, and the next increment's in-place
+                # ptap(result=Ahat) then writes into it: a malloc error on the
+                # owning rank at np > 1 while the others wait in a collective.
+                Aop.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
                 # collective: every rank calls it, the owner with the one row
                 Aop.zeroRows([] if pin is None else [pin], diag=1.0)
                 if pin is not None:

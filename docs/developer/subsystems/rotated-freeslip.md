@@ -518,7 +518,11 @@ first Jacobian assembly.
   pinning one pressure DOF, the lowest global pressure row, chosen over all ranks
   (`_global_pressure_pin`). Each rank used to pin the first pressure DOF of its
   own chart, so at np > 1 the gauge was over-constrained and the answer depended
-  on the partition (#348).
+  on the partition (#348). The pin is a valid gauge only where constant pressure
+  is an exact null mode of the constrained operator. On a split fault, an open
+  boundary, a tilted given normal or a pressure Dirichlet condition it replaces a
+  real equation: the direct solve then reports convergence to a different
+  problem, and its answer is not a reference for the iterative one (#899).
 
 ## Result and reaction
 
