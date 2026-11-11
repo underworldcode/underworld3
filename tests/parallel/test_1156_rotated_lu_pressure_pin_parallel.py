@@ -15,7 +15,10 @@ global pressure row, chosen over all ranks.
   used to compress its row out of the rotated operator's pattern, and the next
   increment's in-place PtAP crashed in malloc on the owning rank;
 - a pressure Dirichlet condition already fixes the gauge, so nothing is pinned
-  and the direct solve matches the iterative one.
+  and the direct solve matches the iterative one;
+- a pin beside a Dirichlet wall: the residual used to zero the pinned row before
+  projecting out the pressure mean, which spread that row's residual over the
+  other pressure rows (#899).
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1156_rotated_lu_pressure_pin_parallel.py
 """
@@ -34,7 +37,7 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
                                  reason="the direct rotated path factors with MUMPS")]
 
 
-def _box(tag, use_lu, nonlinear=False, pressure_top=False):
+def _box(tag, use_lu, nonlinear=False, pressure_top=False, driven_lid=False):
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=0.1, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{tag}", mesh, 2, degree=2)
@@ -45,8 +48,15 @@ def _box(tag, use_lu, nonlinear=False, pressure_top=False):
         1 + 50 * v.sym.dot(v.sym) if nonlinear else 1.0)
     x, y = mesh.X
     stokes.bodyforce = sympy.Matrix([[0, sympy.cos(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
-    for wall in ("Bottom", "Top", "Left", "Right"):
-        stokes.add_rotated_freeslip_bc(0, wall)
+    if driven_lid:
+        # Dirichlet walls: the lowest pressure row is a wall corner, beside the
+        # lifted velocity's divergence
+        stokes.add_rotated_freeslip_bc(0, "Bottom")
+        for wall in ("Top", "Left", "Right"):
+            stokes.add_dirichlet_bc((y - sympy.Rational(1, 2), 0.0), wall)
+    else:
+        for wall in ("Bottom", "Top", "Left", "Right"):
+            stokes.add_rotated_freeslip_bc(0, wall)
     if pressure_top:
         stokes.add_condition(f_id=1, c_type="dirichlet", conds=0.0, label="Top")
     stokes.petsc_use_pressure_nullspace = not pressure_top
@@ -113,3 +123,16 @@ def test_a_pressure_dirichlet_condition_is_the_gauge():
     assert np.linalg.norm(vl - vi) < 1.0e-6 * np.linalg.norm(vi)
     assert np.linalg.norm(pl - pi) < 1.0e-6 * np.linalg.norm(pi)
     assert not pinned and row is None
+
+
+def test_a_pin_beside_a_dirichlet_wall_solves_the_same_problem():
+    stokes, v_lu, p_lu = _box("dwlu", use_lu=True, driven_lid=True)
+    info = stokes._rotated_freeslip_info
+    _s, v_it, p_it = _box("dwit", use_lu=False, driven_lid=True)
+    vl, vi = _global(v_lu.data), _global(v_it.data)
+    pl, pi = _global(p_lu.data), _global(p_it.data)
+    pl, pi = pl - pl.mean(), pi - pi.mean()
+    # development: the pinned row zeroed before the mean projection, a shifted problem (#899)
+    assert np.linalg.norm(vl - vi) < 1.0e-6 * np.linalg.norm(vi)
+    assert np.linalg.norm(pl - pi) < 1.0e-6 * np.linalg.norm(pi)
+    assert info["converged"] and info["nonlinear_iterations"] <= 2, info["nonlinear_iterations"]

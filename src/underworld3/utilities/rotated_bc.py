@@ -3657,12 +3657,13 @@ def _warn_given_wall_rejections(solver, violations, offered):
         return
     what = ("The declared rotation mode is not removed" if offered == 1 else
             f"{len(violations)} of the {offered} declared rotation modes are not removed")
+    kept = "that rotation" if len(violations) == 1 else "those rotations"
     _warn_declared_modes_refused(
         f"{what}: "
         f"the rotated walls {_declared_mode_given_walls(solver)} take a given normal "
         f"that a rotation about the mesh's centre is not tangent to (violation up to "
         f"{max(violations):.2g} against {_ROTATION_MODE_TOL:g}), so the answer keeps "
-        f"those rotations. Give those walls the normal of a surface of revolution "
+        f"{kept}. Give those walls the normal of a surface of revolution "
         f"about that centre, or the facet-averaged normal")
 
 
