@@ -3965,13 +3965,15 @@ class SolverBaseClass(uw_object):
         block hands the pressure Krylov an operator that moves between applications.
         The count is in ``solve_report.sub[name].capped``; this says so at solve time,
         one warning per capped block. The message names the block and its cap only,
-        so Python's warning filter shows it once per block in a time loop; the counts
-        stay in the report. Not during a bounded difficulty probe, whose caps are the
-        point. Rank 0 warns; nothing collective."""
+        and is attributed to the user's ``solve()`` line, so Python's warning filter
+        shows it once per block and call site in a time loop; the counts stay in the
+        report. Not during a bounded difficulty probe, whose caps are the point. Rank 0
+        warns, after the solve has recorded its status on every rank; nothing
+        collective. The native path only: the rotated loop reports its sub-solves in
+        its own diagnostics (#625)."""
         report = getattr(self, "_solve_report", None)
         if report is None or self._difficulty_probe:
             return
-        import warnings
         for name, sub in (getattr(report, "sub", None) or {}).items():
             if not getattr(sub, "capped", 0):
                 continue
@@ -3982,17 +3984,53 @@ class SolverBaseClass(uw_object):
                         cap = _sk.getTolerances()[3]
             except Exception:
                 pass
-            # a solver that splits by DM field index names its blocks "0", "1", ...
-            block = f"field-{name}" if str(name).isdigit() else name
+            block = self._sub_solve_block_label(name)
             with uw.selective_ranks(0) as selected:
                 if selected:
-                    warnings.warn(
+                    _warn_from_caller(
                         f"{type(self).__name__}: the {block} sub-solve stopped at its "
                         f"iteration cap{f' ({cap})' if cap is not None else ''} without "
                         f"converging, so the solve's convergence does not mean that block "
-                        f"solved. Counts in solve_report.sub[{name!r}].capped; raise "
-                        f"fieldsplit_{name}_ksp_max_it or improve its preconditioner "
-                        f"(#585, #625).", RuntimeWarning, stacklevel=3)
+                        f"solved. Counts in solve_report.sub[{name!r}].capped. A higher "
+                        f"fieldsplit_{name}_ksp_max_it helps only a block that converges "
+                        f"slowly; one that stagnates needs a better preconditioner "
+                        f"(#585, #625).", RuntimeWarning)
+
+    def _warn_on_diverged_solve(self):
+        """Warn when the solve diverged (#1059). The printed notice of
+        ``_warn_on_divergence`` is easy to miss in a run's output, and a script carries
+        on with whatever the fields hold, which after a failure at iteration 0 is the
+        initial guess (u = 0 for a cold start). The message names the solver and the
+        reason only, so the warning filter shows it once per reason and call site.
+        Not for the stop a bounded difficulty probe asks for (DIVERGED_MAX_IT). Rank 0
+        warns; nothing collective."""
+        reason = self.snes.getConvergedReason()
+        if reason >= 0 or (self._difficulty_probe and reason == -5):
+            return
+        _entry = self._convergence_reasons.get(reason)
+        reason_str = _entry[0] if _entry is not None else f"UNKNOWN({reason})"
+        held = ("the initial guess" if self.snes.getIterationNumber() == 0
+                else "the last iterate")
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                _warn_from_caller(
+                    f"{type(self).__name__}: the solve diverged ({reason_str}) and its "
+                    f"fields hold {held}. solver.solve_report records the solve "
+                    f"(#1059).", RuntimeWarning)
+
+    def _sub_solve_block_label(self, name):
+        """The block a fieldsplit sub-solve ``name`` solves, in words. A solver that
+        splits by DM field index names its blocks "0", "1", ...; the label then lists
+        the fields grouped in it (a constrained solve's block 1 is the pressure and
+        its multipliers, solved as one Schur block)."""
+        if not str(name).isdigit():
+            return f"{name}"
+        try:
+            ids = [int(i) for i in str(self.petsc_options[f"pc_fieldsplit_{name}_fields"]).split(",")]
+            fields = [self.dm.getField(i)[0].getName() for i in ids]
+        except Exception:
+            return f"field-{name}"
+        return f"field-{name} ({' + '.join(fields)})"
 
     def _warn_on_divergence(self, phase="solve"):
         """Check SNES convergence and warn on genuine divergence.
@@ -4004,7 +4042,6 @@ class SolverBaseClass(uw_object):
             ``DIVERGED_MAX_IT`` served the nrichardson warm-up removed in #791.)
         """
 
-        self._warn_on_capped_sub_solves()
         reason = self.snes.getConvergedReason()
 
         if reason >= 0:
@@ -7229,6 +7266,11 @@ class SNES_Scalar(SolverBaseClass):
 
         self._record_convergence_status()
 
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
+
         return
 
 
@@ -8300,6 +8342,11 @@ class SNES_Vector(SolverBaseClass):
 
         self._record_convergence_status()
 
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
+
         return
 
 
@@ -8977,6 +9024,11 @@ class SNES_MultiComponent(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 
@@ -12973,6 +13025,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 

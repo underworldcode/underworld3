@@ -6,7 +6,10 @@ solved: the Schur operator is then applied through an inexact, varying velocity
 solve. The count was recorded (``solve_report.sub[...].capped``) but nothing said
 so at solve time.
 
-- a solve whose velocity block runs into its cap warns, naming the block and the cap;
+- a solve whose velocity block runs into its cap warns, on rank 0 only, naming the
+  block and the cap, attributed to the caller's solve() line;
+- in a loop of solves from one line Python's default filter shows it once;
+- a bounded difficulty probe, whose cap is the point, does not warn;
 - a solve within the caps does not.
 """
 import warnings
@@ -37,6 +40,13 @@ def _box(tag, velocity_cap=None):
     return stokes
 
 
+def _velocity_cap_warnings(record):
+    # at np 2 the pressure block can cap too under a velocity cap of 2; count the
+    # velocity block's own warning
+    return [w for w in record
+            if "iteration cap" in str(w.message) and "the velocity sub-solve" in str(w.message)]
+
+
 def _cap_warnings(record):
     return [str(w.message) for w in record if "iteration cap" in str(w.message)]
 
@@ -50,10 +60,38 @@ def test_a_velocity_block_at_its_cap_warns():
     assert capped.get("velocity", 0) > 0, capped
     # development: recorded, and nothing said
     with uw.selective_ranks(0) as selected:
+        shown = _velocity_cap_warnings(record)
         if selected:
-            messages = _cap_warnings(record)
-            assert len(messages) == 1, messages
-            assert "velocity" in messages[0] and "cap" in messages[0], messages
+            assert len(shown) == 1, [str(w.message) for w in record]
+            assert "iteration cap (2)" in str(shown[0].message), str(shown[0].message)
+            assert shown[0].filename == __file__, shown[0].filename
+        else:
+            assert not shown, [str(w.message) for w in shown]
+
+
+def test_a_loop_of_capped_solves_shows_the_warning_once():
+    stokes = _box("loop", velocity_cap=2)
+    counts = []
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("default")
+        for tolerance in (1.0e-8, 1.0e-9, 1.0e-10):
+            stokes.tolerance = tolerance
+            stokes.solve(zero_init_guess=True)
+            counts.append(stokes.solve_report.sub["velocity"].capped)
+    # the counts differ from solve to solve; the message must not carry them
+    assert min(counts) > 0 and len(set(counts)) > 1, counts
+    with uw.selective_ranks(0) as selected:
+        if selected:
+            assert len(_velocity_cap_warnings(record)) == 1, [str(w.message) for w in record]
+
+
+def test_a_difficulty_probe_does_not_warn():
+    stokes = _box("probe", velocity_cap=2)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        report = stokes.estimate_difficulty(1, warm=False)
+    assert report.sub["velocity"].capped > 0, report.sub
+    assert not _velocity_cap_warnings(record), [str(w.message) for w in record]
 
 
 def test_a_solve_within_its_caps_is_quiet():
