@@ -2631,12 +2631,21 @@ class SolverBaseClass(uw_object):
                 ghost = set(int(q) for q in graph[1])
         except Exception:
             ghost = set()
+        # A boundary can have no point on this rank. getStratumIS then hard-aborts
+        # for a value missing from the rank's own value set, and otherwise returns
+        # an IS wrapping a NULL handle (not None) whose first use segfaults; that
+        # took every datum sensitivity down at np >= 2. Ask the rank's values
+        # first, and test the IS itself.
+        values_is = label.getValueIS()
+        local_values = set(int(v) for v in values_is.getIndices()) if values_is else set()
         owner = {}
         for index, bc in enumerate(self.essential_bcs):
             if int(bc.f_id) != 0:
                 continue
+            if int(bc.boundary_label_val) not in local_values:
+                continue
             stratum = label.getStratumIS(int(bc.boundary_label_val))
-            if stratum is None:
+            if not stratum:
                 continue
             points = set()
             for q in stratum.getIndices():

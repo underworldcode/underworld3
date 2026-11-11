@@ -8,6 +8,8 @@ instead, and so came back scaled by reference quantities:
   ``Integral.evaluate()``, which re-dimensionalises. A dimensional viscosity
   :math:`\alpha\eta` gave :math:`\partial J/\partial\alpha` 1e21 times too large,
   the viscosity reference (#763).
+* The explicit term and the facet term (a dimensional traction) went through the
+  same re-dimensionalising integral.
 * The Dirichlet-datum term read the datum's derivative through
   ``uw.function.evaluate``, re-dimensionalised to m²: 9e8 times too large on a
   30 km box (#1048).
@@ -49,15 +51,21 @@ def _box(case, references):
         stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
     lid = alpha * x * (1 - x) if case == "datum" else 0.0
-    stokes.add_dirichlet_bc((lid, None if case == "traction" else 0.0), "Top")
+    free_top = case in ("traction", "dimensional traction")
+    stokes.add_dirichlet_bc((lid, None if free_top else 0.0), "Top")
     for wall in ("Bottom", "Left", "Right"):
         stokes.add_dirichlet_bc((0.0, 0.0), wall)
     if case == "traction":
         stokes.add_natural_bc((0.0, alpha * sympy.sin(sympy.pi * x)), "Top")
+    if case == "dimensional traction":
+        tau = uw.expression(r"\tau_0", uw.quantity(1e6, "Pa"), "traction scale")
+        stokes.add_natural_bc((0.0, alpha * tau * sympy.sin(sympy.pi * x)), "Top")
     stokes.tolerance = 1.0e-11
     stokes.solve()
     u = stokes.Unknowns.u
     misfit = u.sym[1] * sympy.sin(sympy.pi * x) + u.sym[0] * y
+    if case == "explicit":
+        misfit = alpha * misfit
     return stokes, misfit, alpha
 
 
@@ -73,7 +81,8 @@ def _central_difference(stokes, misfit, alpha):
     return (values[0] - values[1]) / (2 * h)
 
 
-@pytest.mark.parametrize("case", ["dimensional viscosity", "datum", "traction"])
+@pytest.mark.parametrize(
+    "case", ["dimensional viscosity", "datum", "traction", "dimensional traction", "explicit"])
 def test_the_gradient_matches_central_differences(case):
     stokes, misfit, alpha = _box(case, references=True)
 
