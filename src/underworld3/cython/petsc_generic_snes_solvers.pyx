@@ -7159,6 +7159,12 @@ class SNES_Scalar(SolverBaseClass):
         This is a **collective operation** - all MPI ranks must call it.
         The solver automatically handles mesh variable synchronization.
 
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
+
         See Also
         --------
         snes : Access to underlying PETSc SNES object for advanced control.
@@ -8242,6 +8248,12 @@ class SNES_Vector(SolverBaseClass):
         -----
         This is a **collective operation** - all MPI ranks must call it.
 
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
+
         See Also
         --------
         u : The solution vector field variable.
@@ -8959,6 +8971,14 @@ class SNES_MultiComponent(SolverBaseClass):
             ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
             ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
             Keyword only in practice: it follows every other argument.
+
+        Notes
+        -----
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
         """
 
 

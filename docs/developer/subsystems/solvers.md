@@ -533,7 +533,7 @@ chooses between them. This is the layering:
 |---|---|---|
 | `solver.strategy` | the **named intent** — `"default"` / `"robust"` / `"fast"` | public property on the solver |
 | `MGSettings` | the **option values** an intent resolves to | `utilities/multigrid_options.py` |
-| `solver.petsc_options` | the **escape hatch** — any key you set here outranks both | public, unchanged |
+| `solver.petsc_options` | the **escape hatch** — any key you set here outranks both, and is read again at every solve (#1078) | public, unchanged |
 
 `"robust"` (gmres/4) survives an operator a stationary smoother stalls on: the
 Spiegelman notch contraction above, and 11 → 5 velocity iterations on the

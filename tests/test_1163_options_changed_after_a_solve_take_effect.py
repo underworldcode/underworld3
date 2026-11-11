@@ -8,14 +8,18 @@ first solve at 1e-4 stopped at 1e-4. Stokes re-read them on every solve.
 - after a first solve, a new ``tolerance``, ``snes_max_it``, line search and
   ``ksp_rtol`` are what the SNES and KSP hold at the next solve, in the scalar,
   vector and multi-component solvers and in Stokes;
-- a Poisson solve tightened from 1e-4 to 1e-9 after its first solve meets 1e-9.
+- a Poisson solve tightened from 1e-4 to 1e-9 after its first solve meets 1e-9;
+- a cap of 0 Newton steps set after a solve stops the next one at its start, in
+  each of the four solvers.
 """
 import pytest
 import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
+              # the Stokes box has no mesh hierarchy, and says so; not what is tested here
+              pytest.mark.filterwarnings("ignore:Stokes. the velocity block fell back")]
 
 
 def _box():
@@ -101,3 +105,19 @@ def test_a_tolerance_tightened_after_a_solve_is_met():
     # 5.75e-07 from 1.22e-01), well short of 1e-9 relative
     assert tight[-1] <= 1.0e-9 * tight[0], tight
     assert len(tight) > len(loose), (loose, tight)
+
+
+@pytest.mark.parametrize("family", sorted(_SOLVERS))
+def test_an_iteration_cap_set_after_a_solve_stops_the_next(family):
+    # what the next solve does, not what the SNES holds after it: a cap of 0 Newton
+    # steps set after the first solve stops the second at its initial residual
+    s = _SOLVERS[family](f"{family}cap")
+    s.solve()
+    assert s.snes.getIterationNumber() >= 1
+    s.petsc_options["snes_max_it"] = 0
+    with pytest.warns(RuntimeWarning, match="diverged"):
+        s.solve(zero_init_guess=True)
+    # development: the scalar, vector and multi-component solvers took their
+    # Newton steps and converged
+    assert s.snes.getIterationNumber() == 0, s.snes.getIterationNumber()
+    assert s.snes.getConvergedReason() == -5, s.snes.getConvergedReason()     # DIVERGED_MAX_IT
