@@ -104,7 +104,7 @@ class TestNitscheFreeslip:
         assert reasons["penalty"] > 0, reasons
 
     @pytest.mark.xfail(reason="the Nitsche Stokes solve stops short of its tolerance (#1072)",
-                       strict=False)
+                       strict=True)
     def test_nitsche_converges(self, solutions):
         """The Nitsche solve reaches its tolerance. It does not yet: on one host it
         ends DIVERGED_LINE_SEARCH after 3 Newton steps, on another its pressure
@@ -183,13 +183,21 @@ class TestNitscheFreeslip:
         the penalty coefficient or the method had moved. The measured leaks are
         printed instead: read them, do not gate on them.
         """
+        from mpi4py import MPI
+
         leaks = {}
         for method in ("essential", "penalty", "nitsche"):
             v, _, coords = solutions[method]
             on_top = np.abs(coords[:, 1] - 1.0) < 1e-10
-            if not np.any(on_top):
-                pytest.skip("no nodes on the top wall in this partition")
-            leaks[method] = np.max(np.abs(v[on_top, 1])) / np.max(np.abs(v))
+            # over every rank's nodes, so each rank asserts the same numbers (a rank
+            # holding no top-wall node used to skip on its own)
+            n_top = uw.mpi.comm.allreduce(int(np.count_nonzero(on_top)), op=MPI.SUM)
+            assert n_top > 0, "the mesh has no node on the top wall"
+            top = uw.mpi.comm.allreduce(
+                float(np.max(np.abs(v[on_top, 1]))) if np.any(on_top) else 0.0, op=MPI.MAX)
+            scale = uw.mpi.comm.allreduce(
+                float(np.max(np.abs(v))) if v.size else 0.0, op=MPI.MAX)
+            leaks[method] = top / scale
 
         print("Relative |v_y| on top: "
               + ", ".join(f"{k}={v:.3e}" for k, v in leaks.items()))
