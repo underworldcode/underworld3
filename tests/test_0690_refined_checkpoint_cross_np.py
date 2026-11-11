@@ -41,8 +41,9 @@ def _build(case):
     import underworld3 as uw
 
     if case == "quad":
-        # Quadrilaterals renumber differently under refinement than triangles,
-        # so they expose the bug at write np 1, read np 2 (triangles need np 4).
+        # A tensor-cell case beside the simplex ones. Like them it fails on
+        # development when written on two ranks (written on one and read on
+        # two it happens to reload correctly there; only hexahedra fail that way).
         return uw.meshing.StructuredQuadBox(elementRes=(4, 4), refinement=REFINEMENT)
     if case == "annulus":
         mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.25,
