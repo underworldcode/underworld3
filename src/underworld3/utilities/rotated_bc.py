@@ -1821,13 +1821,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
                 refresh_operator=assemble,
-                abs_target=_increment_target(rtol * ref + atol), scale=ref)
+                abs_target=_increment_target(rtol * ref + atol))
             hard, kind = ctx["hard_failure"], "rotated fieldsplit-Schur"
         else:
             dhat, last_reason, ctx = _solve_rotated_vector(
                 solver, Aop, bhat, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, ctx=ctx, refresh_operator=assemble,
-                abs_target=_increment_target(rtol * ref + atol), scale=ref)
+                abs_target=_increment_target(rtol * ref + atol))
             hard, kind = ctx["hard_failure"], "rotated vector"
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
@@ -2396,6 +2396,82 @@ def _destroy_rotated_ksp_ctx(ctx):
     if ctx.get("cns") is not None:
         ctx["cns"].destroy()
         ctx["cns"] = None
+    if ctx.get("schur_roundoff") is not None:
+        ctx["schur_roundoff"].destroy()
+        ctx["schur_roundoff"] = None
+
+
+# A Schur right-hand side within this many machine epsilons of the round-off of its own
+# terms carries nothing to solve for (#910). Measured on test_1115's annulus at forcings
+# 1e3 and 1e8, as r0 / (eps ||A10| |x_u||): 6.7e14 cold, 1.8e8 for a warm solve with a
+# real pressure correction (7 iterations), 30 to 2.7e4 for the round-off ones.
+_SCHUR_ROUNDOFF = 1.0e6 * np.finfo(float).eps
+
+
+class _SchurRoundoffTest:
+    """A convergence test, prepended on the pressure (Schur) sub-KSP, that stops it at
+    iteration 0 when its right-hand side is round-off (#910).
+
+    Under the full factorisation the Schur solve takes ``b_p - A10 x_u``, with
+    ``x_u = A00^-1 b_u`` solved first. A warm start whose pressure equations already
+    hold has ``b_p`` at round-off, and ``A10 x_u`` is the divergence of a
+    divergence-free increment: zero by the physics, so the right-hand side is the
+    rounding of a sum whose terms are ``|A10| |x_u|``. A relative tolerance on that
+    asked for a cut below what the arithmetic carries. The solve ran to its cap, a
+    velocity solve per iteration, or the noise grew past the divergence tolerance at
+    FGMRES's restart and the outer solve failed at iteration 0 (PC_FAILED).
+
+    The scale is the sub-solve's own: the outer FGMRES hands the fieldsplit unit
+    Krylov vectors, so nothing in the outer residual's units sets it. It is taken
+    when the Schur solve starts, from the velocity sub-KSP's solution (the
+    factorisation's ``x_u``; the Schur complement's inner solves have not run yet at
+    iteration 0). A right-hand side that carries anything is not touched, and after
+    iteration 0 the default test decides. Skipping a correction that is round-off
+    next to ``x_u`` cannot stall the outer solve: its next Krylov vector carries
+    whatever pressure residual is left, at unit scale. COLLECTIVE (two norms on every
+    rank, one decision from the global residual)."""
+
+    def __init__(self, Ahat, vel_is, pres_is, vel_ksp):
+        self.vel_is, self.pres_is = vel_is, pres_is
+        self.vel_ksp = vel_ksp
+        self.A10 = None
+        self.abs_A10 = None
+        self.abs_x = None
+        self.work = None
+        self.fired = 0
+        self.refresh(Ahat)
+
+    def refresh(self, Ahat):
+        """Read ``|A10|`` from the operator's current values."""
+        self.A10 = Ahat.createSubMatrix(self.pres_is, self.vel_is, submat=self.A10)
+        ip, jj, vv = self.A10.getValuesCSR()
+        if self.abs_A10 is None:
+            self.abs_A10 = self.A10.copy()
+        self.abs_A10.setValuesCSR(ip, jj, np.abs(vv))
+        self.abs_A10.assemble()
+
+    def __call__(self, ksp, its, rnorm):
+        if its != 0:
+            return PETSc.KSP.ConvergedReason.ITERATING
+        x = self.vel_ksp.getSolution()
+        if self.abs_x is None:
+            self.abs_x = x.duplicate()
+            self.work = self.abs_A10.createVecLeft()
+        x.copy(self.abs_x)
+        self.abs_x.abs()
+        self.abs_A10.mult(self.abs_x, self.work)
+        if rnorm <= _SCHUR_ROUNDOFF * self.work.norm():
+            self.fired += 1
+            return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+        return PETSc.KSP.ConvergedReason.ITERATING
+
+    def destroy(self):
+        for name in ("A10", "abs_A10", "abs_x", "work"):
+            obj = getattr(self, name)
+            if obj is not None:
+                obj.destroy()
+                setattr(self, name, None)
+        self.vel_ksp = None
 
 
 # An admitted rotation is projected out of the velocity preconditioner (#963) when its
@@ -2532,12 +2608,6 @@ def _project_exact_null_modes(vel_ksp, nsp, vel_is, comm, tol):
 _INCREMENT_TARGET_FRACTION = 0.1
 
 
-# Round-off of the problem's own scale, the floor a fieldsplit sub-solve stops at
-# whatever its relative tolerance (#910): 1000 machine epsilons of the convergence
-# reference.
-_SUBSOLVE_ROUNDOFF = 1.0e3 * np.finfo(float).eps
-
-
 def _increment_target(newton_target):
     """The absolute residual an increment's linear solves need reach: a fraction of
     the Newton loop's target (#911). :func:`_set_absolute_target` caps it at the same
@@ -2550,7 +2620,7 @@ def _increment_target(newton_target):
     return _INCREMENT_TARGET_FRACTION * float(newton_target)
 
 
-def _set_absolute_target(ksp, abs_target, bhat, ctx, scale=None):
+def _set_absolute_target(ksp, abs_target, bhat, ctx):
     """Hold an increment's linear solve to the Newton loop's floor ``abs_target``.
 
     The outer KSP takes it as its absolute tolerance, capped at
@@ -2569,15 +2639,6 @@ def _set_absolute_target(ksp, abs_target, bhat, ctx, scale=None):
     above the target, a first increment above all, is solved as before, and only the
     last increments of a tight solve relax (#911).
 
-    The sub-KSPs also stop at round-off of the problem's own scale ``scale`` (the
-    convergence reference, ``_SUBSOLVE_ROUNDOFF`` of it). A warm start whose pressure
-    equations already hold hands the pressure sub-solve a Schur right-hand side that
-    is round-off (4e-15 against 7e-2 cold), and a relative tolerance on that asked for
-    a cut below what the arithmetic carries: the solve ran to its cap, a velocity
-    solve per iteration, or the noise grew past the divergence tolerance and failed
-    the outer solve at iteration 0 (#910). The floor is about seven orders below the
-    Newton target, so it does not bind on a right-hand side that carries anything.
-
     The configured values are kept on ``ctx`` and put back when ``abs_target`` is
     None (the floor switched off) or not finite (a NaN residual, which the solve
     must fail on with its own reason; PETSc refuses the tolerance, error 63).
@@ -2588,28 +2649,24 @@ def _set_absolute_target(ksp, abs_target, bhat, ctx, scale=None):
     if base is None:
         rtol, atol = ksp.getTolerances()[:2]
         base = ctx["floor_base"] = {"rtol": rtol, "atol": atol,
-                                    "sub_rtol": [sub.getTolerances()[0] for sub in subs],
-                                    "sub_atol": [sub.getTolerances()[1] for sub in subs]}
+                                    "sub_rtol": [sub.getTolerances()[0] for sub in subs]}
     bnorm = bhat.norm() if abs_target is not None else 0.0
     if abs_target is None or not np.isfinite(abs_target) or not np.isfinite(bnorm) \
             or bnorm <= 0.0:
         ksp.setTolerances(atol=base["atol"])
-        for sub, rtol0, atol0 in zip(subs, base["sub_rtol"], base["sub_atol"]):
-            sub.setTolerances(rtol=rtol0, atol=atol0)
+        for sub, rtol0 in zip(subs, base["sub_rtol"]):
+            sub.setTolerances(rtol=rtol0)
         return
     target = min(abs_target, _INCREMENT_TARGET_FRACTION * bnorm)
     ksp.setTolerances(atol=max(base["atol"], target))
     relaxed = max(1.0, (target / bnorm) / max(base["rtol"], 1.0e-300))
-    roundoff = (_SUBSOLVE_ROUNDOFF * scale
-                if scale is not None and np.isfinite(scale) and scale > 0.0 else 0.0)
-    for sub, rtol0, atol0 in zip(subs, base["sub_rtol"], base["sub_atol"]):
-        sub.setTolerances(rtol=max(rtol0, min(rtol0 * relaxed, _INCREMENT_TARGET_FRACTION)),
-                          atol=max(atol0, roundoff))
+    for sub, rtol0 in zip(subs, base["sub_rtol"]):
+        sub.setTolerances(rtol=max(rtol0, min(rtol0 * relaxed, _INCREMENT_TARGET_FRACTION)))
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
                              custom_Pl=None, nsp=None, Mp=None, ctx=None,
-                             refresh_operator=True, abs_target=None, scale=None):
+                             refresh_operator=True, abs_target=None):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
     (PR#290, rotated) whenever the solver has a hierarchy — ``set_custom_fmg`` or a
@@ -2845,6 +2902,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 S = pc.getFieldSplitSubKSP()[1].getOperators()[0]
                 cns = PETSc.NullSpace().create(constant=True, comm=dm.comm)
                 S.setNullSpace(cns)
+            # a Schur right-hand side at round-off stops at iteration 0 (#910)
+            _vel_sub, _pres_sub = pc.getFieldSplitSubKSP()
+            schur_roundoff = _SchurRoundoffTest(Ahat, vel_is, pres_is, _vel_sub)
+            _pres_sub.addConvergenceTest(schur_roundoff, prepend=True)
         finally:
             # all options consumed by setFromOptions/setUp — the KSP's own, and
             # the multigrid bundle and FAC keys under the velocity sub-PC's
@@ -2853,6 +2914,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # error path too.
             _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "schur_roundoff": schur_roundoff,
                "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,
                # which preconditioner this solve actually got — reported so a model
@@ -2894,6 +2956,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         # unchanged matrix: leave the KSP/PC/GAMG setup untouched entirely.
         if refresh_operator:
             ksp.setOperators(Ahat)
+            if ctx.get("schur_roundoff") is not None:
+                ctx["schur_roundoff"].refresh(Ahat)
 
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs
@@ -2904,7 +2968,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # (1e-11 of a 1e-9 residual, #911). The floor stops the outer solve there, and
     # relaxes the sub-solves by as much; early increments, whose residual is large,
     # are untouched.
-    _set_absolute_target(ksp, abs_target, bhat, ctx, scale)
+    _set_absolute_target(ksp, abs_target, bhat, ctx)
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
@@ -2950,7 +3014,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
 
 
 def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=None,
-                          ctx=None, refresh_operator=True, abs_target=None, scale=None):
+                          ctx=None, refresh_operator=True, abs_target=None):
     """Solve the rotated operator of a single-field (vector) solver — the thin
     sheet — with one KSP on the whole matrix: geometric FMG on the custom
     prolongation when the solver has a hierarchy, else the shared GAMG bundle
@@ -3028,7 +3092,7 @@ def _solve_rotated_vector(solver, Ahat, bhat, normal_rows, custom_Pl=None, nsp=N
             ksp.setOperators(Ahat)
     if nsp is not None:
         nsp.remove(bhat)
-    _set_absolute_target(ksp, abs_target, bhat, ctx, scale)    # the increment floor, as the saddle route
+    _set_absolute_target(ksp, abs_target, bhat, ctx)    # the increment floor, as the saddle route
     Uhat = Ahat.createVecRight()
     Uhat.set(0.0)
     ksp.solve(bhat, Uhat)

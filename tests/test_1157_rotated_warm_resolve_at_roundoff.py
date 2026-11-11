@@ -10,7 +10,12 @@ Which of the two happened depended on the rounding, so the failure looked random
 16 of 26 serial runs had at least one.
 
 - every warm re-solve converges;
-- the pressure sub-solve stops at round-off, nowhere near its cap.
+- the pressure sub-solve stops at round-off, nowhere near its cap;
+- a cold solve at a large forcing is untouched: the round-off is measured in the
+  Schur solve's own terms, not in the outer residual's units. A first fix scaled
+  it by the convergence reference, and on this annulus at forcing 1e8 it cut
+  genuine sub-solves short, 9.3e-7 off the direct solve where development is
+  1.7e-8 (hyperion's review).
 """
 import numpy as np
 import pytest
@@ -24,24 +29,28 @@ pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 WARM_SOLVES = 4
 
 
-def _annulus():
+def _annulus(tag="", forcing=1.0e3, lu=False):
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.4,
                               refinement=2, qdegree=3)
-    v = uw.discretisation.MeshVariable("V1157", mesh, 2, degree=2)
-    p = uw.discretisation.MeshVariable("P1157", mesh, 1, degree=1)
+    v = uw.discretisation.MeshVariable(f"V1157{tag}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P1157{tag}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     X = mesh.X
     r = sympy.sqrt(X[0] ** 2 + X[1] ** 2)
     th = sympy.atan2(X[1], X[0])
-    stokes.bodyforce = (1.0e3 * sympy.cos(4 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
+    stokes.bodyforce = (forcing * sympy.cos(4 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
                         * sympy.Matrix([X[0] / r, X[1] / r]))
     stokes.add_rotated_freeslip_bc(0, "Lower")
     stokes.add_rotated_freeslip_bc(0, "Upper")
     stokes.petsc_use_pressure_nullspace = True
-    stokes.tolerance = 1.0e-6
-    custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)
+    if lu:
+        stokes._rotated_use_lu = True
+        stokes.tolerance = 1.0e-11
+    else:
+        stokes.tolerance = 1.0e-6
+        custom_mg.set_custom_fmg(stokes, mesh._coarse_level_meshes()[:-1], field_id=0)
     return v, stokes
 
 
@@ -62,3 +71,20 @@ def test_warm_resolves_with_satisfied_pressure_converge_without_thrashing():
     # solve in four or so failed with -11
     assert all(converged for converged, _reason, _its in records), records
     assert max(its for _c, _r, its in records) < 50, records
+    # the first warm solve carries a real pressure correction (7 iterations,
+    # 1.8e8 times the round-off of its terms) and must still solve for it
+    assert records[0][2] > 0, records
+
+
+def test_a_cold_solve_at_a_large_forcing_is_untouched():
+    v, stokes = _annulus("big", forcing=1.0e8)
+    stokes.solve(zero_init_guess=True)
+    assert stokes._rotated_freeslip_info["converged"]
+    v_lu, direct = _annulus("biglu", forcing=1.0e8, lu=True)
+    direct.solve(zero_init_guess=True)
+    a, b = np.asarray(v.array).ravel(), np.asarray(v_lu.array).ravel()
+    err = np.sqrt(uw.mpi.comm.allreduce(float(((a - b) ** 2).sum()))
+                  / uw.mpi.comm.allreduce(float((b ** 2).sum())))
+    # the reference-scaled floor: 9.3e-7; development and this test: 1.2e-8 (wombat)
+    assert err < 5.0e-8, err
+    assert stokes._rotated_linear_cache["ctx"]["schur_roundoff"].fired == 0
