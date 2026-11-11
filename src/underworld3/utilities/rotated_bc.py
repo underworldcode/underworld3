@@ -941,22 +941,49 @@ _SNES_DIVERGED_MAX_IT = -5
 _SNES_DIVERGED_LINE_SEARCH = -6
 
 
-def _naive_pressure_pin(dm):
-    """One owned pressure DOF (datum) for the direct-LU gauge pin — row only, so
-    the B^T coupling is kept. Only the direct solve needs it; the iterative path
-    fixes the pressure gauge with the constant-pressure null space instead.
+def _global_pressure_pin(dm):
+    """The one pressure DOF the direct-LU gauge pin fixes, as ``(row, pinned)``.
+    Row only, so the B^T coupling is kept; only the direct solve needs it, the
+    iterative path fixes the pressure gauge with the constant-pressure null space.
 
-    TODO(BUG): a naive per-rank scan of the rank's OWN global-section chart, so at
-    np>1 each rank pins a different pressure DOF (or none → the caller must skip).
-    Parallel-unsafe; tolerated only because LU is opt-in via
-    ``solver._rotated_use_lu`` (a serial PC-free diagnostic)."""
-    gsec = dm.getGlobalSection()
+    The DOF is the lowest global pressure row: each rank offers its lowest owned
+    one and the minimum is taken over the ranks, so exactly one row is pinned at
+    any rank count. ``row`` is that global row on the rank that owns it and None
+    elsewhere; ``pinned`` is the same on every rank and says whether a pin exists,
+    so the collective ``zeroRows`` is called by all ranks or by none. Each rank
+    used to pin the first pressure DOF of its own chart, so at np > 1 every rank
+    fixed one, the gauge was over-constrained and the answer depended on the
+    partition (#348).
+
+    A pressure Dirichlet condition already fixes the gauge, so then nothing is
+    pinned (``(None, False)`` on every rank); a pin there would replace a real
+    pressure equation.
+
+    The pin is a correct gauge only where constant pressure is an exact null mode
+    of the constrained operator. Where it is not (an open boundary, a given
+    normal that is not the wall's) the pinned row replaces a real equation and
+    the direct solve converges to a different problem (#348). COLLECTIVE."""
+    from mpi4py import MPI
+
+    lsec, gsec = dm.getLocalSection(), dm.getGlobalSection()
     pS, pE = gsec.getChart()
+    lowest = None
+    constrained = 0
     for q in range(pS, pE):
-        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0 \
-                and gsec.getFieldOffset(q, _PRESSURE_FIELD) >= 0:
-            return gsec.getFieldOffset(q, _PRESSURE_FIELD)
-    return None
+        # the local section carries the constraint counts
+        cdof = lsec.getFieldConstraintDof(q, _PRESSURE_FIELD)
+        constrained += cdof
+        if lsec.getFieldDof(q, _PRESSURE_FIELD) - cdof > 0:
+            offset = gsec.getFieldOffset(q, _PRESSURE_FIELD)
+            if offset >= 0 and (lowest is None or offset < lowest):
+                lowest = offset
+    if mpi.comm.allreduce(int(constrained), op=MPI.MAX) > 0:
+        return None, False
+    none = np.iinfo(np.int64).max
+    row = mpi.comm.allreduce(none if lowest is None else int(lowest), op=MPI.MIN)
+    if row == none:
+        return None, False
+    return (row if row == lowest else None), True
 
 
 def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge):
@@ -1303,7 +1330,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # pure free-slip.
     datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
     # Direct LU per increment: no FMG prolongation / null space to build — the
-    # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
+    # gauge is fixed by one pressure pin instead (see _global_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
     # The pin is decided ONCE, here, because the residual has to agree with the
     # operator about it. The direct path replaces the pinned pressure row with
@@ -1313,7 +1340,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # defined as unreachable. Measured before this was hoisted: the velocity
     # residual reached 6e-12 at the first increment and the remaining |F̂| was
     # the pinned DOF alone, bit-identical for eight further no-op iterations.
-    lu_pin = _naive_pressure_pin(dm) if (use_lu and "pressure" in solver._subdict) else None
+    lu_pin, lu_pinned = (_global_pressure_pin(dm) if (use_lu and "pressure" in solver._subdict)
+                         else (None, False))
     interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
 
     # ---- cross-solve workspace cache (issue #417; see the block comment
@@ -1566,10 +1594,6 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # in the rotated frame)
             interface.residual_add(solver, uvec, Fh)
         _zero_rows_local(Fh, normal_rows)
-        if lu_pin is not None:
-            # Same reason as normal_rows: the pinned row is not an equation the
-            # solve is trying to satisfy, so it is not evidence about convergence.
-            _zero_rows_local(Fh, [lu_pin])
         if use_pnull:
             sp = Fh.getSubVector(pres_is)
             n_p = sp.getSize()
@@ -1577,6 +1601,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
             pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if lu_pin is not None:
+            # Same reason as normal_rows: the pinned row is not an equation the
+            # solve is trying to satisfy, so it is not evidence about convergence.
+            # AFTER the gauge projection: zeroed first, the pinned row's residual
+            # became a pressure mean that the projection spread over every other
+            # pressure row, which then solved a shifted problem. A pin beside a
+            # Dirichlet wall, where the lifted velocity has divergence, stalled
+            # the direct solve at 2e-5 and 4-6 % off in slip (#899).
+            _zero_rows_local(Fh, [lu_pin])
         if rot_modes:
             removed = 0.0
             for m in rot_modes:              # project out the rotation-gauge modes
@@ -1697,9 +1730,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # the finest smoother's operator unless it is the PC's own.
         # The tangent's pattern is fixed by the fault facets, and Ahat's by
         # the ptap, so both stay inside the pattern of the first copy.
-        # The direct-LU path still takes a fresh sum each iterate: its pressure
-        # pin (zeroRows) drops the pinned row's entries from the pattern, and
-        # it has no multigrid to go stale.
+        # The direct-LU path still takes a fresh sum each iterate: it has no
+        # multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
             if Atot is None or use_lu:
@@ -1752,11 +1784,18 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 pc_lu.setType("lu")
                 pc_lu.setFactorSolverType("mumps")
                 # The SAME pin the residual excludes — one decision, not two.
-                ctx = {"ksp": ksp_lu, "Mp": None, "pin": lu_pin}
+                ctx = {"ksp": ksp_lu, "Mp": None, "pin": lu_pin, "pinned": lu_pinned}
             pin = ctx["pin"]
-            if pin is not None:
-                Aop.zeroRows([pin], diag=1.0)
-                _zero_rows_local(bhat, [pin])
+            if ctx["pinned"]:
+                # Without KEEP_NONZERO_PATTERN zeroRows compresses the pinned row
+                # out of Ahat's pattern, and the next increment's in-place
+                # ptap(result=Ahat) then writes into it: a malloc error on the
+                # owning rank at np > 1 while the others wait in a collective.
+                Aop.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
+                # collective: every rank calls it, the owner with the one row
+                Aop.zeroRows([] if pin is None else [pin], diag=1.0)
+                if pin is not None:
+                    _zero_rows_local(bhat, [pin])
             ctx["ksp"].setOperators(Aop)      # values changed in place → refactor
             dhat = Aop.createVecRight()
             dhat.set(0.0)
@@ -2039,7 +2078,7 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
 
     **Where there IS a null space, it is projected out of the right-hand side**
     (iterative path; the direct-LU path fixes the pressure gauge with the same
-    naive pin the forward solve uses and builds none). A boundary with an
+    pressure pin the forward solve uses and builds none). A boundary with an
     essential condition removes it altogether — `_rotated_nullspace` then returns
     None and the gradient is unambiguous, which is the configuration to prefer
     when a sensitivity is what you are after. A free-slip
@@ -2118,9 +2157,10 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
     Ahat = J.ptap(Qt)
     diag_scale = _velocity_diag_scale(Ahat, solver)
     Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
-    pin = _naive_pressure_pin(dm) if use_lu else None
-    if pin is not None:
-        Ahat.zeroRows([pin], diag=1.0)
+    pin, pinned = _global_pressure_pin(dm) if use_lu else (None, False)
+    if pinned:
+        # the forward solve's pin, and collective like it
+        Ahat.zeroRows([] if pin is None else [pin], diag=1.0)
     AhatT = Ahat.transpose(PETSc.Mat())
     Ahat.destroy()
 
@@ -3615,12 +3655,15 @@ def _warn_given_wall_rejections(solver, violations, offered):
     every rank calls this alike."""
     if not violations:
         return
+    what = ("The declared rotation mode is not removed" if offered == 1 else
+            f"{len(violations)} of the {offered} declared rotation modes are not removed")
+    kept = "that rotation" if len(violations) == 1 else "those rotations"
     _warn_declared_modes_refused(
-        f"{len(violations)} of the {offered} declared rotation modes are not removed: "
+        f"{what}: "
         f"the rotated walls {_declared_mode_given_walls(solver)} take a given normal "
         f"that a rotation about the mesh's centre is not tangent to (violation up to "
         f"{max(violations):.2g} against {_ROTATION_MODE_TOL:g}), so the answer keeps "
-        f"those rotations. Give those walls the normal of a surface of revolution "
+        f"{kept}. Give those walls the normal of a surface of revolution "
         f"about that centre, or the facet-averaged normal")
 
 

@@ -512,10 +512,22 @@ first Jacobian assembly.
 - All row surgery on vectors uses ownership-relative indices
   (`_zero_rows_local` / `_set_rows_local`); indexing a local slice with global
   rows is the np>1 crash class.
-- Direct LU per increment (`solver._rotated_use_lu = True`) is a **serial**
-  preconditioner-free diagnostic (the pressure-gauge pin is a naive per-rank
-  scan, marked `TODO(BUG)`); use it to separate "the operator/constraint is
-  wrong" from "the preconditioner is struggling".
+- Direct LU per increment (`solver._rotated_use_lu = True`) is a
+  preconditioner-free diagnostic; use it to separate "the operator/constraint is
+  wrong" from "the preconditioner is struggling". It fixes the pressure gauge by
+  pinning one pressure DOF, the lowest global pressure row, chosen over all ranks
+  (`_global_pressure_pin`). Each rank used to pin the first pressure DOF of its
+  own chart, so at np > 1 the gauge was over-constrained and the answer depended
+  on the partition (#348). The pin is a valid gauge only where constant pressure
+  is an exact null mode of the constrained operator. A pressure Dirichlet
+  condition already fixes the gauge, so nothing is pinned. On an open boundary
+  or a given normal that is not the wall's, the pin replaces a real equation:
+  the direct solve then reports convergence to a different problem, and its
+  answer is not a reference for the iterative one.
+  A split fault inside closed walls keeps the null mode. The residual zeroes the
+  pinned row after the pressure-mean projection, not before; before, the mean
+  of the pinned row's residual was spread over the other pressure rows, and a
+  pin beside a Dirichlet wall stalled the direct solve on a fault (#899).
 
 ## Result and reaction
 

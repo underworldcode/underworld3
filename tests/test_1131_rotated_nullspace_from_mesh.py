@@ -267,9 +267,11 @@ def test_a_wrong_given_normal_beside_a_default_wall_rejects_the_rotation():
     # the rotation stays in the answer, and the solve says so
     with uw.selective_ranks(0) as selected:
         if selected:
-            assert any("take a given normal that a rotation about the mesh's centre is "
-                       "not tangent to" in str(w.message) for w in record), \
-                [str(w.message) for w in record]
+            messages = [str(w.message) for w in record if "take a given normal that a "
+                        "rotation about the mesh's centre is not tangent to" in str(w.message)]
+            # once per solve, and in the singular for the annulus's one mode
+            assert len(messages) == 1 and messages[0].startswith(
+                "The declared rotation mode is not removed"), messages
 
 
 def test_the_direct_lu_route_warns_when_a_given_wall_rejects_the_rotation():
@@ -291,7 +293,8 @@ def test_the_direct_lu_route_warns_when_a_given_wall_rejects_the_rotation():
     messages = [str(w.message) for w in record if "not tangent to" in str(w.message)]
     with uw.selective_ranks(0) as selected:
         if selected:
-            assert len(messages) == 1 and "1 of the 1 declared" in messages[0], messages
+            assert len(messages) == 1 and messages[0].startswith(
+                "The declared rotation mode is not removed"), messages
 
 
 def test_a_given_normal_wall_off_its_circle_is_tested_against_its_normal():
