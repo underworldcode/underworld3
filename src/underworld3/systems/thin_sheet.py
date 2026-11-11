@@ -384,6 +384,10 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._record_history_projection()
         for level in self.Unknowns.DFDt.psi_star:
             coords = level.coords
+            # TODO(BUG): the projection uses the sphere's radial normal, which is
+            # wrong once the manifold is deformed off the sphere (as is the
+            # tangency constraint, _sheet_normal); the cell's facet normal now
+            # follows a deform, but these node normals do not. See issue #879.
             rhat = coords / np.linalg.norm(coords, axis=1)[:, None]
             P = np.eye(self.mesh.cdim)[None] - rhat[:, :, None] * rhat[:, None, :]
             projected = P @ np.asarray(level.array) @ P

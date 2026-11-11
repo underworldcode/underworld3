@@ -60,22 +60,45 @@ def _sphere_sheet(eta):
     return sphere, sheet
 
 
+def _triangle_normals(mesh):
+    """Unit normal of each cell from its own three vertices, ``(b - a) x (c - a)``:
+    independent of the DM's cell geometry, which the code under test uses. The
+    sign is the cell's orientation, so compare up to sign."""
+    dm = mesh.dm
+    c0, c1 = dm.getHeightStratum(0)
+    v0, v1 = dm.getDepthStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
+    out = []
+    for c in range(c0, c1):
+        verts = [int(q) - v0 for q in dm.getTransitiveClosure(c)[0] if v0 <= q < v1]
+        a, b, d = X[verts]
+        n = np.cross(b - a, d - a)
+        out.append(n / np.linalg.norm(n))
+    return np.array(out)
+
+
 @pytest.mark.tier_a
-def test_the_facet_normal_follows_a_deform():
-    from underworld3.systems.thin_sheet import _facet_normal_field
+def test_the_facet_normal_follows_a_deform_through_the_solve():
+    """After a deform, the solve refills the facet normal its projector reads
+    (it was filled once and REMAP'd: 1.2e-2 off). The reference is each
+    triangle's own vertex cross product."""
     sphere, sheet = _sphere_sheet(lambda s: 1)
-    field = _facet_normal_field(sphere)
-    before = np.array(field.array, copy=True)
+    field = sphere._sheet_facet_normal
+    before = np.array(np.asarray(field.array)[:, 0, :], copy=True)
     X = np.array(sphere.X.coords, copy=True)
     X[:, 0] *= 1.2                                             # an ellipsoid: the normals turn
     sphere.deform(X)
-    _facet_normal_field(sphere)
-    c0, c1 = sphere.dm.getHeightStratum(0)
-    fresh = np.array([sphere.dm.computeCellGeometryFVM(c)[2] for c in range(c0, c1)])
-    fresh /= np.linalg.norm(fresh, axis=1)[:, None]
+    try:
+        sheet.solve(zero_init_guess=True)
+    except Exception:
+        # Sanctioned: the sheet's tangency still uses the sphere's analytic
+        # normal (#879, left open), so the solve on an ellipsoid need not
+        # converge; what is asserted is the refill it performs first.
+        pass
     now = np.asarray(field.array)[:, 0, :]
-    assert np.abs(now - fresh).max() < 1e-12
-    assert np.abs(now - before[:, 0, :]).max() > 1e-3          # it did move
+    reference = _triangle_normals(sphere)
+    assert np.abs(np.abs((now * reference).sum(axis=1)) - 1).max() < 1e-12
+    assert np.abs(now - before).max() > 1e-3                   # it did move
 
 
 @pytest.mark.tier_b      # minutes: a nonlinear / viscoelastic sphere solve
