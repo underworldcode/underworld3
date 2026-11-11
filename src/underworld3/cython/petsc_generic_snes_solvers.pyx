@@ -1765,8 +1765,9 @@ class SolverBaseClass(uw_object):
         * ``False``: every iteration already is a Picard step.
 
         ``staged_loop``: the solver's own loop stages Picard then Newton itself
-        (rotated free-slip); an explicit ``picard > 0`` under ``True`` then only
-        compiles the blended Jacobian for it to stage with.
+        (rotated free-slip, fault contact: ``rotated_bc.solve_rotated_freeslip``); an
+        explicit ``picard > 0`` under ``True`` then only compiles the blended Jacobian
+        for it to stage with.
         """
         picard = int(picard or 0)
         self._picard_stages = None
@@ -8192,7 +8193,8 @@ class SNES_Vector(SolverBaseClass):
             picard, zero_init_guess,
             own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
                           or getattr(self, "_fault_contact_faults", None)),
-            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                             or getattr(self, "_fault_contact_faults", None)))
         picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
         self._build(verbose, debug, debug_name)
         if self._picard_blend and self.consistent_jacobian is True:
@@ -12774,7 +12776,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             picard, zero_init_guess,
             own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
                           or getattr(self, "_fault_contact_faults", None)),
-            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                             or getattr(self, "_fault_contact_faults", None)))
         picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
 
         self._build(verbose, debug, debug_name)

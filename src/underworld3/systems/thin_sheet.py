@@ -304,8 +304,13 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             Required when the constitutive model carries a stress history: the
             elastic timestep of the Maxwell element.
         zero_init_guess, verbose, divergence_retries, picard
-            As for :meth:`SNES_Vector.solve`. ``picard=N`` asks for N Picard
-            iterations before Newton (a cold nonlinear solve takes one on its own).
+            As for :meth:`SNES_Vector.solve`. A sheet on a manifold solves in the
+            rotated loop (``rotated_bc.solve_rotated_freeslip``), which takes no
+            automatic Picard step: ``picard=0`` is Newton from the start, and
+            ``picard=N`` gives at least N Picard iterations, staying on Picard
+            until the residual has fallen by ``solver.newton_switch_rtol``
+            (default 1e-2). On a flat mesh a cold nonlinear solve takes one
+            Picard step on its own, and ``picard=N`` gives N.
             Time reaches the sheet through ``mesh.t``, the model's clock.
         evalf : bool, default False
             Numerical evaluation during the history carry.
@@ -400,9 +405,11 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         (``"eulerian"``, the streamline-upwind transport). On a manifold the
         grid flavours are the ones available, ``"eulerian"`` and ``"none"`` (the
         history stays at its node, for a tidal or seismic cycle that moves far
-        less than a cell a step): the trace-back flavours leave the faceted
-        surface. On a flat mesh the others may be chosen, but next to a
-        split-node fault the trace-back reads across the slit."""
+        less than a cell a step): the others leave the faceted surface, the
+        trace-backs (``"semi_lagrangian"``, ``"integration_point"``) along a
+        characteristic and ``"forward"`` and ``"lagrangian"`` with their
+        points. On a flat mesh they may be chosen, but next to a split-node
+        fault a trace-back reads across the slit."""
         return super().stress_transport
 
     @stress_transport.setter
@@ -411,8 +418,8 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             raise ValueError(
                 f"stress_transport={value!r} is not available on a manifold "
                 "mesh: the thin sheet carries its history on the grid "
-                "('eulerian', or 'none' to leave it at its node); a trace-back "
-                "leaves the faceted surface.")
+                "('eulerian', or 'none' to leave it at its node); the other "
+                "flavours move their points off the faceted surface.")
         _StressHistoryMixin.stress_transport.fset(self, value)
 
     # ------------------------------------------------------------------
