@@ -1,6 +1,6 @@
 """A natural BC that reads the unknown enters the Jacobian once (#1065).
 
-The scalar and vector solvers registered each natural BC's boundary Jacobian
+The scalar, vector and multi-component solvers registered each natural BC's boundary Jacobian
 twice, as the Jacobian and as the preconditioner, and their Jacobian and
 preconditioner are one matrix: the Robin term entered twice. The residual was
 right, so the converged answer was too, but a linear Robin problem took 17 to 23
@@ -9,8 +9,10 @@ Newton iterations, or failed, and an adjoint built on the tangent was wrong.
 - a linear Poisson problem with a Robin condition is solved by its first Newton
   step (to the linear solve's tolerance), at the exact top value of its
   one-dimensional profile;
-- the Robin part of the assembled Jacobian equals the finite-difference one;
-- so is a linear vector projection with a Robin condition.
+- the Robin part of the assembled Jacobian equals the finite-difference one in
+  the scalar, vector and multi-component solvers;
+- a linear vector or multi-component projection with a Robin condition is
+  solved by its first Newton step too.
 """
 import numpy as np
 import pytest
@@ -54,9 +56,34 @@ def test_a_linear_robin_problem_takes_one_newton_step(k):
     assert np.allclose(t, 0.3 / (1.0 - k), rtol=1.0e-6, atol=1.0e-9), (t.min(), t.max())
 
 
-def test_the_robin_part_of_the_jacobian_matches_finite_differences():
+def _vector_robin(k, tag, n_components=None, degree=2, cell_size=0.125):
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=cell_size, qdegree=3)
+    if n_components is None:
+        u = uw.discretisation.MeshVariable(f"U1162{tag}", mesh, 2, degree=degree)
+        s = uw.systems.Vector_Projection(mesh, u)
+    else:
+        s = uw.systems.MultiComponent_Projection(mesh, n_components=n_components, degree=degree)
+        u = s.u
+    s.uw_function = sympy.Matrix([[1.0, 0.5]])
+    s.smoothing = 1.0e-2
+    s.add_natural_bc([k * u.sym[0], k * u.sym[1]], "Top")
+    s.tolerance = 1.0e-8
+    return s
+
+
+_FAMILIES = {
+    "scalar": lambda k, tag: _robin_poisson(k, tag, degree=1, cell_size=0.25)[0],
+    "vector": lambda k, tag: _vector_robin(k, tag, degree=1, cell_size=0.25),
+    "multicomponent": lambda k, tag: _vector_robin(k, tag, n_components=2, degree=1,
+                                                   cell_size=0.25),
+}
+
+
+@pytest.mark.parametrize("family", sorted(_FAMILIES))
+def test_the_robin_part_of_the_jacobian_matches_finite_differences(family):
     def jacobians(k, tag):
-        s, _T = _robin_poisson(k, tag, degree=1, cell_size=0.25)
+        s = _FAMILIES[family](k, tag)
         s.petsc_options["snes_max_it"] = 0
         s.solve()
         snes = s.snes
@@ -81,8 +108,8 @@ def test_the_robin_part_of_the_jacobian_matches_finite_differences():
         return hand, fd
     if uw.mpi.size > 1:
         pytest.skip("a dense column-by-column finite difference, serial only")
-    hand0, fd0 = jacobians(0.0, "j0")
-    hand1, fd1 = jacobians(-1.0, "j1")
+    hand0, fd0 = jacobians(0.0, f"{family}j0")
+    hand1, fd1 = jacobians(-1.0, f"{family}j1")
     robin_hand, robin_fd = hand1 - hand0, fd1 - fd0
     assert np.linalg.norm(robin_fd) > 0.1                   # the term is there to measure
     # development: the hand-coded Robin part is 2.0 times the finite-difference one
@@ -91,17 +118,11 @@ def test_the_robin_part_of_the_jacobian_matches_finite_differences():
     assert np.linalg.norm(robin_hand - robin_fd) < 1.0e-6 * np.linalg.norm(robin_fd)
 
 
-def test_a_linear_vector_robin_problem_takes_one_newton_step():
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
-                                             cellSize=0.125, qdegree=3)
-    u = uw.discretisation.MeshVariable("U1162", mesh, 2, degree=2)
-    projection = uw.systems.Vector_Projection(mesh, u)
-    projection.uw_function = sympy.Matrix([[1.0, 0.5]])
-    projection.smoothing = 1.0e-2
-    projection.add_natural_bc([-10.0 * u.sym[0], -10.0 * u.sym[1]], "Top")
-    projection.tolerance = 1.0e-8
+@pytest.mark.parametrize("n_components", [None, 2], ids=["vector", "multicomponent"])
+def test_a_linear_vector_robin_problem_takes_one_newton_step(n_components):
+    projection = _vector_robin(-10.0, f"n{n_components}", n_components=n_components)
     projection.solve()
-    # development: 19
+    # development: 19 for both
     assert projection.snes.getConvergedReason() > 0, projection.snes.getConvergedReason()
     history = projection.solve_report.history
     assert projection.snes.getIterationNumber() <= 2, (projection.snes.getIterationNumber(), history)
