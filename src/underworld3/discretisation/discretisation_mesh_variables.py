@@ -2025,7 +2025,8 @@ class _BaseMeshVariable(Stateful, uw_object):
         # from a DMPlex object (SphericalManifold, a mesh handed a DM) has
         # none, and the path failed inside sectionLoad (a TypeError on
         # development; a segfault when found, #870). Refused here, with the two
-        # routes that do apply to it.
+        # routes that do apply to it. (read_timestep, the coordinate remap, is
+        # not one on a manifold yet: it sizes coordinates by mesh.dim, #870.)
         if not same_layout and self.mesh.sf is None:
             raise RuntimeError(
                 f"read_checkpoint({filename!r}): mesh '{self.mesh.name}' was built "
@@ -2034,8 +2035,7 @@ class _BaseMeshVariable(Stateful, uw_object):
                 f"same_layout=True if this mesh, in this parallel layout, wrote the "
                 f"file; or rebuild the mesh from its checkpoint "
                 f"(uw.discretisation.Mesh('<name>.mesh.<index>.h5')) and read into "
-                f"a variable on that; or use read_timestep(), which remaps by "
-                f"coordinates.")
+                f"a variable on that.")
         import h5py
 
         if uw.mpi.rank == 0:
