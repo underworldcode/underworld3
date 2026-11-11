@@ -197,18 +197,17 @@ def _viscous_fault_solve(base, use_lu):
 
 
 def test_the_direct_lu_path_takes_an_interface_law(base):
-    """The direct-LU path keeps a fresh operator at every iterate: its pressure pin
-    (``zeroRows``) drops the pinned row's entries, so the in-place refresh of the
-    multigrid paths would not fit it. An in-place refresh there raised PETSc's
-    "new nonzero caused a malloc" at iterate 1, which fails this test.
+    """The direct-LU path takes a fault interface law over several Newton
+    increments without PETSc's "new nonzero caused a malloc", and converges to the
+    multigrid path's slip.
 
-    The path does not converge on a fault contact at all (#899, on development
-    too), so non-convergence alone is an expected failure. A fix to #899 that
-    converges to a different slip fails the test; one that agrees passes it, and
-    the xfail line should then go."""
+    It used to stall at 2e-5 and 4-6 % off in slip (#899): the residual zeroed the
+    pinned pressure row before projecting out the pressure mean, so the mean of
+    that row's residual was spread over every other pressure row. The pin lands
+    beside a Dirichlet wall here, where the lifted velocity has divergence."""
     lu_converged, lu = _viscous_fault_solve(base, use_lu=True)
     mg_converged, mg = _viscous_fault_solve(base, use_lu=False)
     assert mg_converged
-    if not lu_converged:
-        pytest.xfail("#899: the direct-LU rotated path does not converge on a fault contact")
+    # development: 50 increments, not converged, slip 4-6 % off (#899)
+    assert lu_converged
     assert abs(lu - mg) < 1e-6 * mg, (lu, mg)

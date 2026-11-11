@@ -462,6 +462,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
     node_normals = {}
     node_dspec = {}
     node_specs = {}
+    # a given-normal wall's own normal at each of its nodes, which a declared mode's
+    # test reads instead of the node's merged frame (#968)
+    node_given = {}
     for spec in boundaries:
         name, normal = _boundary_spec(spec)
         dspec = None if datum_specs is None else datum_specs.get(name)
@@ -470,6 +473,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
         for q, nrm in nodes:
             node_normals.setdefault(q, []).append(nrm)
             node_specs.setdefault(q, set()).add(name)
+            if normal is not None:
+                node_given.setdefault(q, []).append((name, nrm))
             if dspec is not None:
                 node_dspec.setdefault(q, dspec)
 
@@ -527,6 +532,10 @@ def build_rotation(solver, boundaries, datum_specs=None):
         Q.setValue(i, i, 1.0)                    # identity default (owned rows)
 
     normal_rows = []
+    # each given-normal wall's owned velocity rows (-1 for a component an essential
+    # condition removed) and its own normal there: a declared mode is tested against
+    # these, not against the merged frame of a node where walls meet (#968)
+    given_dofs = {}
     datum_nodes = []                             # (grows[0], q, dspec) for simple nodes
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
@@ -569,6 +578,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 for j in range(len(free)):
                     Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
             normal_rows.extend(rows[:rf])
+            for name, nrm in node_given.get(q, ()):
+                given_dofs.setdefault(name, []).append((grows, nrm))
             continue
         if not (rstart <= grows[0] < rend):      # not owned by this rank → skip
             continue
@@ -584,6 +595,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
             for j in range(dim):
                 Q.setValue(grows[i], grows[j], float(Vt[i, j]))
         normal_rows.extend(grows[:r])            # constrain the r normal-space rows
+        for name, nrm in node_given.get(q, ()):
+            given_dofs.setdefault(name, []).append((grows, nrm))
         # A prescribed v_n datum is only well-defined at a SIMPLE node (one normal,
         # r=1): the rotated row grows[0] carries E[0]·v with E[0]=Vt[0]=±n̂ (SVD sign
         # ambiguity), so the constrained component is sgn·v_n. Store sgn = sign(Vt[0]·n̂)
@@ -714,6 +727,10 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 # takes the untouched free-slip RHS path and is bit-identical to it.
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
+    solver._rotated_given_wall_dofs = {
+        name: (np.array([g for g, _n in entries], dtype=np.int64).reshape(-1, dim),
+               np.array([n for _g, n in entries], dtype=float).reshape(-1, dim))
+        for name, entries in given_dofs.items()}
     return Q, Qt, sorted(set(normal_rows)), datum_map
 
 
@@ -924,22 +941,49 @@ _SNES_DIVERGED_MAX_IT = -5
 _SNES_DIVERGED_LINE_SEARCH = -6
 
 
-def _naive_pressure_pin(dm):
-    """One owned pressure DOF (datum) for the direct-LU gauge pin — row only, so
-    the B^T coupling is kept. Only the direct solve needs it; the iterative path
-    fixes the pressure gauge with the constant-pressure null space instead.
+def _global_pressure_pin(dm):
+    """The one pressure DOF the direct-LU gauge pin fixes, as ``(row, pinned)``.
+    Row only, so the B^T coupling is kept; only the direct solve needs it, the
+    iterative path fixes the pressure gauge with the constant-pressure null space.
 
-    TODO(BUG): a naive per-rank scan of the rank's OWN global-section chart, so at
-    np>1 each rank pins a different pressure DOF (or none → the caller must skip).
-    Parallel-unsafe; tolerated only because LU is opt-in via
-    ``solver._rotated_use_lu`` (a serial PC-free diagnostic)."""
-    gsec = dm.getGlobalSection()
+    The DOF is the lowest global pressure row: each rank offers its lowest owned
+    one and the minimum is taken over the ranks, so exactly one row is pinned at
+    any rank count. ``row`` is that global row on the rank that owns it and None
+    elsewhere; ``pinned`` is the same on every rank and says whether a pin exists,
+    so the collective ``zeroRows`` is called by all ranks or by none. Each rank
+    used to pin the first pressure DOF of its own chart, so at np > 1 every rank
+    fixed one, the gauge was over-constrained and the answer depended on the
+    partition (#348).
+
+    A pressure Dirichlet condition already fixes the gauge, so then nothing is
+    pinned (``(None, False)`` on every rank); a pin there would replace a real
+    pressure equation.
+
+    The pin is a correct gauge only where constant pressure is an exact null mode
+    of the constrained operator. Where it is not (an open boundary, a given
+    normal that is not the wall's) the pinned row replaces a real equation and
+    the direct solve converges to a different problem (#348). COLLECTIVE."""
+    from mpi4py import MPI
+
+    lsec, gsec = dm.getLocalSection(), dm.getGlobalSection()
     pS, pE = gsec.getChart()
+    lowest = None
+    constrained = 0
     for q in range(pS, pE):
-        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0 \
-                and gsec.getFieldOffset(q, _PRESSURE_FIELD) >= 0:
-            return gsec.getFieldOffset(q, _PRESSURE_FIELD)
-    return None
+        # the local section carries the constraint counts
+        cdof = lsec.getFieldConstraintDof(q, _PRESSURE_FIELD)
+        constrained += cdof
+        if lsec.getFieldDof(q, _PRESSURE_FIELD) - cdof > 0:
+            offset = gsec.getFieldOffset(q, _PRESSURE_FIELD)
+            if offset >= 0 and (lowest is None or offset < lowest):
+                lowest = offset
+    if mpi.comm.allreduce(int(constrained), op=MPI.MAX) > 0:
+        return None, False
+    none = np.iinfo(np.int64).max
+    row = mpi.comm.allreduce(none if lowest is None else int(lowest), op=MPI.MIN)
+    if row == none:
+        return None, False
+    return (row if row == lowest else None), True
 
 
 def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge):
@@ -974,10 +1018,14 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
         # modes is this one
         if gauge["declared"] and getattr(solver, "_rotated_declared_modes_exempt", None) is None:
             solver._rotated_declared_modes_exempt = list(flags)
+            solver._rotated_declared_tested_walls = _given_normal_walls(solver)
+        declared_dofs = _declared_mode_given_dofs(solver)
+        given_rejected = []
         for tg, declared in zip(_rigid_rotation_modes(solver), flags):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
-                                           report=gauge["modes"], declared=declared):
+                                           report=gauge["modes"], declared=declared,
+                                           declared_dofs=declared_dofs):
                 if declared:
                     # the constraint-compatible mode: v_n = 0 stays exact when
                     # it is projected out of U (#906)
@@ -988,7 +1036,13 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
                     live.append(m)
                 else:
                     live.append(tg.copy())      # owned copy — pool vec goes back below
+            elif gauge["modes"][-1]["rejected_by"] == "given_wall":
+                given_rejected.append(gauge["modes"][-1]["given_viol"])
             dm.restoreGlobalVec(tg)
+        # the iterative route warned when it built its null space; the direct-LU
+        # route builds none, so this verdict is the only one it gets
+        if getattr(solver, "_rotated_use_lu", False):
+            _warn_given_wall_rejections(solver, given_rejected, len(flags))
         ortho = []
         for w in live:
             for q in ortho:
@@ -1276,7 +1330,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # pure free-slip.
     datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
     # Direct LU per increment: no FMG prolongation / null space to build — the
-    # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
+    # gauge is fixed by one pressure pin instead (see _global_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
     # The pin is decided ONCE, here, because the residual has to agree with the
     # operator about it. The direct path replaces the pinned pressure row with
@@ -1286,7 +1340,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # defined as unreachable. Measured before this was hoisted: the velocity
     # residual reached 6e-12 at the first increment and the remaining |F̂| was
     # the pinned DOF alone, bit-identical for eight further no-op iterations.
-    lu_pin = _naive_pressure_pin(dm) if (use_lu and "pressure" in solver._subdict) else None
+    lu_pin, lu_pinned = (_global_pressure_pin(dm) if (use_lu and "pressure" in solver._subdict)
+                         else (None, False))
     interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
 
     # ---- cross-solve workspace cache (issue #417; see the block comment
@@ -1308,8 +1363,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     coefficient_states = None
     operator_sig = None
     if cache_allowed:
+        # The constants signature carries the JIT key: the kernels the cached
+        # enumeration was read from. The enumeration is reused only for the same
+        # kernels; a rewire that adds a coefficient variable re-enumerates, so
+        # the new variable is watched whether or not the rewire also tore the
+        # workspace down (#546, m3).
+        current_sig = _operator_constants_signature(solver)
+        cached_sig = cache.get("operator_sig") if cache is not None else None
+        same_kernels = (current_sig is not None and cached_sig is not None
+                        and cached_sig[0] == current_sig[0])
         if cache is not None and cache.get("geometry_sig") == geometry_sig \
-                and cache.get("coefficient_variables") is not None:
+                and same_kernels and cache.get("coefficient_variables") is not None:
             coefficient_variables = cache["coefficient_variables"]
         else:
             coefficient_variables = _operator_coefficient_variables(solver)
@@ -1318,7 +1382,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # The state counters alone are BLIND to rampable UWexpression
             # constants (#416: value changes bump nothing) — the constants
             # signature is the other half of the key.
-            operator_sig = _operator_constants_signature(solver)
+            operator_sig = current_sig
 
     op_ok = False
     if cache is not None:
@@ -1539,10 +1603,6 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # in the rotated frame)
             interface.residual_add(solver, uvec, Fh)
         _zero_rows_local(Fh, normal_rows)
-        if lu_pin is not None:
-            # Same reason as normal_rows: the pinned row is not an equation the
-            # solve is trying to satisfy, so it is not evidence about convergence.
-            _zero_rows_local(Fh, [lu_pin])
         if use_pnull:
             sp = Fh.getSubVector(pres_is)
             n_p = sp.getSize()
@@ -1550,6 +1610,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
             pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if lu_pin is not None:
+            # Same reason as normal_rows: the pinned row is not an equation the
+            # solve is trying to satisfy, so it is not evidence about convergence.
+            # AFTER the gauge projection: zeroed first, the pinned row's residual
+            # became a pressure mean that the projection spread over every other
+            # pressure row, which then solved a shifted problem. A pin beside a
+            # Dirichlet wall, where the lifted velocity has divergence, stalled
+            # the direct solve at 2e-5 and 4-6 % off in slip (#899).
+            _zero_rows_local(Fh, [lu_pin])
         if rot_modes:
             removed = 0.0
             for m in rot_modes:              # project out the rotation-gauge modes
@@ -1670,9 +1739,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # the finest smoother's operator unless it is the PC's own.
         # The tangent's pattern is fixed by the fault facets, and Ahat's by
         # the ptap, so both stay inside the pattern of the first copy.
-        # The direct-LU path still takes a fresh sum each iterate: its pressure
-        # pin (zeroRows) drops the pinned row's entries from the pattern, and
-        # it has no multigrid to go stale.
+        # The direct-LU path still takes a fresh sum each iterate: it has no
+        # multigrid to go stale.
         if interface is not None:
             Khat = interface.tangent(solver, u)
             if Atot is None or use_lu:
@@ -1725,11 +1793,18 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 pc_lu.setType("lu")
                 pc_lu.setFactorSolverType("mumps")
                 # The SAME pin the residual excludes — one decision, not two.
-                ctx = {"ksp": ksp_lu, "Mp": None, "pin": lu_pin}
+                ctx = {"ksp": ksp_lu, "Mp": None, "pin": lu_pin, "pinned": lu_pinned}
             pin = ctx["pin"]
-            if pin is not None:
-                Aop.zeroRows([pin], diag=1.0)
-                _zero_rows_local(bhat, [pin])
+            if ctx["pinned"]:
+                # Without KEEP_NONZERO_PATTERN zeroRows compresses the pinned row
+                # out of Ahat's pattern, and the next increment's in-place
+                # ptap(result=Ahat) then writes into it: a malloc error on the
+                # owning rank at np > 1 while the others wait in a collective.
+                Aop.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
+                # collective: every rank calls it, the owner with the one row
+                Aop.zeroRows([] if pin is None else [pin], diag=1.0)
+                if pin is not None:
+                    _zero_rows_local(bhat, [pin])
             ctx["ksp"].setOperators(Aop)      # values changed in place → refactor
             dhat = Aop.createVecRight()
             dhat.set(0.0)
@@ -1977,9 +2052,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "continuation_switch_iteration": switch_iteration,
             "rotation_reused": rotation_reused,
             "workspace_reused": workspace_reused,
-            # per declared mode, whether it kept every rotated wall in place and so
-            # its exemption from the constraint test (None: the mesh declares none)
-            "declared_modes_exempt": getattr(solver, "_rotated_declared_modes_exempt", None)}
+            # per declared mode, whether it kept every facet-averaged wall in place and
+            # so its exemption from the constraint test there (None: the mesh declares
+            # none); the walls with a given normal, on which it was still tested
+            # against that normal (#968), are declared_modes_tested_walls
+            "declared_modes_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
+            "declared_modes_tested_walls": getattr(solver, "_rotated_declared_tested_walls", None)}
 
 
 
@@ -2009,7 +2087,7 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
 
     **Where there IS a null space, it is projected out of the right-hand side**
     (iterative path; the direct-LU path fixes the pressure gauge with the same
-    naive pin the forward solve uses and builds none). A boundary with an
+    pressure pin the forward solve uses and builds none). A boundary with an
     essential condition removes it altogether — `_rotated_nullspace` then returns
     None and the gradient is unambiguous, which is the configuration to prefer
     when a sensitivity is what you are after. A free-slip
@@ -2088,9 +2166,10 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
     Ahat = J.ptap(Qt)
     diag_scale = _velocity_diag_scale(Ahat, solver)
     Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
-    pin = _naive_pressure_pin(dm) if use_lu else None
-    if pin is not None:
-        Ahat.zeroRows([pin], diag=1.0)
+    pin, pinned = _global_pressure_pin(dm) if use_lu else (None, False)
+    if pinned:
+        # the forward solve's pin, and collective like it
+        Ahat.zeroRows([] if pin is None else [pin], diag=1.0)
     AhatT = Ahat.transpose(PETSc.Mat())
     Ahat.destroy()
 
@@ -3033,10 +3112,12 @@ def _rotated_nullspace(solver, Q, normal_rows):
     n_rot = 0
     slack = 0.0
     flags, note = _declared_mode_flags(solver)
+    declared_dofs = _declared_mode_given_dofs(solver)
+    given_rejected = []
     for tg, declared in zip(_rigid_rotation_modes(solver), flags):
         report = []
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg, report=report,
-                                       declared=declared):
+                                       declared=declared, declared_dofs=declared_dofs):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
@@ -3044,6 +3125,8 @@ def _rotated_nullspace(solver, Q, normal_rows):
             viol = report[-1]["viol"]
             if viol >= _ROTATION_MODE_TOL:
                 slack = max(slack, viol)
+        elif report and report[-1]["rejected_by"] == "given_wall":
+            given_rejected.append(report[-1]["given_viol"])
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
     # The VELOCITY-block null-mode count (the constant-pressure mode lives in
     # the pressure block): the rotations removed from the answer, reported by
@@ -3052,12 +3135,16 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # the largest constraint violation of an admitted mode: 0 when every mode
     # is exact; read by the net-torque guard after the Newton loop
     solver._rotated_null_mode_slack = slack
-    # which declared modes were exempt from the constraint test: a deformed wall (a
-    # free-surface step) takes the exemption away, and the solve says why
+    # which declared modes were exempt from the constraint test on the facet-averaged
+    # walls: a deformed wall (a free-surface step) takes the exemption away, and the
+    # solve says why; a wall with a given normal is tested against it all the same
     declared_any = _rotations_declared(solver.mesh)
     solver._rotated_declared_modes_exempt = flags if declared_any else None
+    solver._rotated_declared_tested_walls = (
+        _given_normal_walls(solver) if declared_any else None)
     if note is not None:
         _warn_declared_modes_refused(note)
+    _warn_given_wall_rejections(solver, given_rejected, len(flags))
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -3077,7 +3164,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
 
 
 def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_TOL,
-                                report=None, declared=False):
+                                report=None, declared=False, declared_dofs=None):
     """True iff the rigid-body mode ``tg`` is a genuine null mode of the
     constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
     every constrained normal row; a declared mode that keeps every wall is exempt,
@@ -3113,27 +3200,33 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_T
     constrained rows, which makes it exactly compatible with v_n = 0, and on a
     faceted sphere the facet-averaged normal leaves a declared rotation a
     discretisation-sized violation (0.008-0.016 on #906's shell). The operator
-    test still applies, so a no-slip wall that pins it rejects it."""
+    test still applies, so a no-slip wall that pins it rejects it.
+
+    ``declared_dofs``: with ``declared``, the ``(rows, normals)`` of the walls that
+    take a given normal when the others take the facet-averaged one
+    (:func:`_declared_mode_given_dofs`, #968). The mode is tested there against
+    each wall's own normal, ``n . mode``, not against the constrained rows: where a
+    given wall meets a facet-averaged one the node's frame carries the facet
+    average too. An exact normal passes to round-off; a wrong one rejects the mode
+    (``rejected_by: "given_wall"``). COLLECTIVE: every rank passes its own nodes,
+    none on a rank that owns none.
+    """
     tr = tg.duplicate()
     Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
-    # norm of tr restricted to the constrained rows: zero everything else, then .norm()
-    rs, re = tr.getOwnershipRange()
-    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
-    trc = tr.duplicate()
-    trc.set(0.0)
-    tra = trc.getArray()
-    tga = tr.getArray()
-    tra[loc] = tga[loc]
-    trc.setArray(tra)
-    viol = trc.norm() / (full + 1e-30)            # parallel (collective on all ranks)
-    # transient duplicates
-    tr.destroy()
-    trc.destroy()
+    viol = _row_violation(tr, normal_rows, full)
+    tr.destroy()                                  # transient duplicate
+    given_viol = (None if declared_dofs is None or not declared
+                  else _given_normal_violation(tg, *declared_dofs, full))
     if viol >= tol and not declared:
         if report is not None:
-            report.append({"viol": float(viol), "op_viol": None,
+            report.append({"viol": float(viol), "op_viol": None, "given_viol": None,
                            "accepted": False, "rejected_by": "constraint"})
+        return False
+    if given_viol is not None and given_viol >= tol:
+        if report is not None:
+            report.append({"viol": float(viol), "op_viol": None, "given_viol": given_viol,
+                           "accepted": False, "rejected_by": "given_wall"})
         return False
     # operator-nullity: rigid rotation has exactly zero strain in the discrete
     # space (P2 contains linear fields, affine cells integrate the form exactly),
@@ -3152,9 +3245,38 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=_ROTATION_MODE_T
     op_viol = jn / (_velocity_diag_scale(J, solver) * (tg.norm() + 1e-30))
     if report is not None:
         report.append({"viol": float(viol), "op_viol": float(op_viol),
-                       "accepted": bool(op_viol < tol),
+                       "given_viol": given_viol, "accepted": bool(op_viol < tol),
                        "rejected_by": None if op_viol < tol else "operator"})
     return op_viol < tol
+
+
+def _given_normal_violation(tg, rows, normals, full):
+    """``sqrt(sum (n . tg)^2)`` over the nodes ``rows`` (owned, ``(k, dim)``, -1 for
+    a removed component) with their normals ``normals``, over ``full``. A removed
+    component is held at zero, so it adds nothing. COLLECTIVE."""
+    rs, _re = tg.getOwnershipRange()
+    arr = tg.getArray()
+    local = 0.0
+    if rows.size:
+        present = rows >= 0
+        values = np.where(present, arr[np.where(present, rows - rs, 0)], 0.0)
+        local = float(np.sum(np.sum(normals * values, axis=1) ** 2))
+    return float(np.sqrt(mpi.comm.allreduce(local))) / (full + 1e-30)
+
+
+def _row_violation(tr, rows, full):
+    """``||tr||`` on the global ``rows`` (each rank passes the rows it owns) over
+    ``full``. COLLECTIVE."""
+    rs, re = tr.getOwnershipRange()
+    loc = np.asarray([g - rs for g in rows if rs <= g < re], dtype=np.int64)
+    trc = tr.duplicate()
+    trc.set(0.0)
+    tra = trc.getArray()
+    tra[loc] = tr.getArray()[loc]
+    trc.setArray(tra)
+    viol = trc.norm() / (full + 1e-30)
+    trc.destroy()
+    return float(viol)
 
 
 def _wall_normal_loads(solver, boundary, solve_result):
@@ -3440,10 +3562,13 @@ def _declared_mode_flags(solver):
     fails it by the faceting error. A declared mode is exempt when that is the only
     reason it could fail:
 
-    - every rotated wall takes the facet-averaged normal (``normal=None``); a wall with
-      a given normal is tested, which an exact normal passes;
+    - when every rotated wall takes a given normal, nothing is exempt: the test is
+      what an exact normal passes. When some do and others take the facet-averaged
+      normal (``normal=None``), the exemption covers only the facet-averaged walls;
+      the given-normal walls are tested on their own constrained rows
+      (:func:`_declared_mode_given_walls`, #968);
     - the declared modes are rigid rotations about one point, their centre;
-    - every rotated wall's vertices, the closure of its labelled facets, are
+    - every facet-averaged wall's vertices, the closure of its labelled facets, are
       equidistant from that centre to ``_WALL_INVARIANCE_TOL``: the wall is a sphere
       (a circle in 2-D) about it. Faceting keeps vertices on the sphere and only edge
       midpoints off it. A deformed wall fails, a free surface after its first step
@@ -3464,15 +3589,10 @@ def _declared_mode_flags(solver):
         return [], None
     specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
     given = [name for name, normal in specs if normal is not None]
-    if given and len(given) < len(specs):
-        return [False] * n_modes, (
-            f"rotated walls {given} take a given normal and the others the facet-averaged "
-            f"one, so the declared rotation modes take the constraint test. Where a "
-            f"facet-averaged wall is faceted (a sphere, or a circle with unequal edges) a "
-            f"rotation fails it by the faceting error and is not removed. Give every "
-            f"rotated wall the analytic normal, or none")
-    if given:
+    if given and len(given) == len(specs):
         return [False] * n_modes, None
+    # the walls the exemption covers: a given-normal wall is tested instead
+    specs = [(name, normal) for name, normal in specs if normal is None]
 
     centre = _declared_centre(mesh)
     if centre is None:
@@ -3501,6 +3621,59 @@ def _declared_mode_flags(solver):
                 f"{_WALL_INVARIANCE_TOL:g}. The declared rotation modes therefore take "
                 f"the constraint test")
     return [True] * n_modes, None
+
+
+def _given_normal_walls(solver):
+    """Every rotated wall that takes a given normal: the walls a declared mode is
+    tested on against that normal (all of them with the constraint rows when no wall
+    takes the facet-averaged normal). Reported as ``declared_modes_tested_walls``."""
+    specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
+    return [name for name, normal in specs if normal is not None]
+
+
+def _declared_mode_given_walls(solver):
+    """The rotated walls that take a given normal, when others take the
+    facet-averaged one: a declared mode is still tested on them against their own
+    normal (#968). Empty when every wall takes the facet-averaged normal and the
+    exemption is whole. The same on every rank."""
+    specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
+    if all(normal is not None for _name, normal in specs):
+        return []                  # all given: no exemption, the whole test applies
+    return [name for name, normal in specs if normal is not None]
+
+
+def _declared_mode_given_dofs(solver):
+    """``(rows, normals)`` for :func:`_declared_mode_given_walls` on this rank: each
+    owned node's velocity rows (``(k, dim)``, -1 for a component an essential
+    condition removed) and that wall's own normal there, from
+    :func:`build_rotation`; None when no wall is tested."""
+    walls = _declared_mode_given_walls(solver)
+    if not walls:
+        return None
+    dim = solver.mesh.cdim
+    by_wall = getattr(solver, "_rotated_given_wall_dofs", {})
+    parts = [by_wall[name] for name in walls if name in by_wall]
+    rows = np.concatenate([p[0] for p in parts]) if parts else np.empty((0, dim), np.int64)
+    normals = np.concatenate([p[1] for p in parts]) if parts else np.empty((0, dim))
+    return rows, normals
+
+
+def _warn_given_wall_rejections(solver, violations, offered):
+    """Say, once, that the given-wall test rejected ``len(violations)`` of the
+    ``offered`` declared modes (#968). ``violations`` is reduced over the ranks, so
+    every rank calls this alike."""
+    if not violations:
+        return
+    what = ("The declared rotation mode is not removed" if offered == 1 else
+            f"{len(violations)} of the {offered} declared rotation modes are not removed")
+    kept = "that rotation" if len(violations) == 1 else "those rotations"
+    _warn_declared_modes_refused(
+        f"{what}: "
+        f"the rotated walls {_declared_mode_given_walls(solver)} take a given normal "
+        f"that a rotation about the mesh's centre is not tangent to (violation up to "
+        f"{max(violations):.2g} against {_ROTATION_MODE_TOL:g}), so the answer keeps "
+        f"{kept}. Give those walls the normal of a surface of revolution "
+        f"about that centre, or the facet-averaged normal")
 
 
 def _warn_declared_modes_refused(note):

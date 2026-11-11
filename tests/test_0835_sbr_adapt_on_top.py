@@ -247,9 +247,11 @@ def test_wedge_metric_funnels_finest_level_to_feature():
 
     cw = base.adapt(wedge, max_levels=3, engine="sbr")
     cg = base.adapt(gauss, max_levels=3, engine="sbr")
-    # per-level marked counts are stashed for checkpoint-by-marker
-    nw = [len(m) for m in cw._adapt_markers]
-    ng = [len(m) for m in cg._adapt_markers]
+    # per-level marked counts are stashed for checkpoint-by-marker. They are this
+    # rank's cells, so they are summed over the ranks: a ratio of one rank's
+    # counts depends on the partition (equal ratios on rank 0 at np 2, #1043)
+    nw = [uw.mpi.comm.allreduce(len(m)) for m in cw._adapt_markers]
+    ng = [uw.mpi.comm.allreduce(len(m)) for m in cg._adapt_markers]
     assert len(nw) == 3 and len(ng) == 3
 
     # growth = finest-level marked / coarsest-level marked. The wedge funnels
