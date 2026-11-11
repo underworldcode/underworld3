@@ -3643,8 +3643,10 @@ def _warn_given_wall_rejections(solver, violations, offered):
     every rank calls this alike."""
     if not violations:
         return
+    what = ("The declared rotation mode is not removed" if offered == 1 else
+            f"{len(violations)} of the {offered} declared rotation modes are not removed")
     _warn_declared_modes_refused(
-        f"{len(violations)} of the {offered} declared rotation modes are not removed: "
+        f"{what}: "
         f"the rotated walls {_declared_mode_given_walls(solver)} take a given normal "
         f"that a rotation about the mesh's centre is not tangent to (violation up to "
         f"{max(violations):.2g} against {_ROTATION_MODE_TOL:g}), so the answer keeps "
