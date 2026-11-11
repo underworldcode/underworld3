@@ -71,3 +71,18 @@ def test_a_misfit_written_as_a_named_expression_has_its_gradient(named):
     g = _gradient(alpha, alpha, misfit=misfit)
 
     assert g["parameters"][alpha] == pytest.approx(-g["J"] / 2.0, rel=1e-6)
+
+
+def test_a_misfit_named_ten_levels_deep_has_its_gradient():
+    # The peel stopped after eight levels and left the deeper names in place, so
+    # the field behind them was never reached and dJ/dalpha came back 0.
+    def misfit(density):
+        m = density
+        for level in range(10):
+            m = uw.expression(rf"m_{{{level}}}", m, "misfit, one level up")
+        return m
+
+    alpha = uw.expression(r"\alpha", 2.0, "viscosity")
+    g = _gradient(alpha, alpha, misfit=misfit)
+
+    assert g["parameters"][alpha] == pytest.approx(-g["J"] / 2.0, rel=1e-6)

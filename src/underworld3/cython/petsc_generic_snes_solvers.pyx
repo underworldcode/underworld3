@@ -2894,7 +2894,7 @@ class SolverBaseClass(uw_object):
             return False
 
     @staticmethod
-    def _peel_except(expression, wrt, depth=8):
+    def _peel_except(expression, wrt, depth=64):
         """Expand every named expression in ``expression`` except ``wrt``:
         :func:`underworld3.adjoint._peel_except`."""
         from underworld3.adjoint import _peel_except

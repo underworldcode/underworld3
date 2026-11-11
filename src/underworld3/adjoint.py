@@ -760,7 +760,7 @@ def _is_leaf(e):
     return getattr(value, "is_Number", False) or not isinstance(value, sympy.Basic)
 
 
-def _peel_except(expression, wrt, depth=8):
+def _peel_except(expression, wrt, depth=64):
     """Expand every named expression in ``expression`` except ``wrt``.
 
     A parameter reaches the residual through the constitutive model's own
@@ -781,11 +781,15 @@ def _peel_except(expression, wrt, depth=8):
                  if isinstance(e, uw.function.expression)
                  and e is not wrt and e != wrt and not _is_leaf(e)]
         if not named:
-            break
+            return expression
         expression = expression.subs({e: e.sym for e in named})
-    return expression
+    # Stopping here left the deeper names in place, so a field behind them got a
+    # zero derivative and the gradient came back silently 0.
+    raise RecursionError(
+        f"the adjoint could not expand the named expressions in this residual or "
+        f"misfit within {depth} levels; is one defined in terms of itself?")
 
 
-def _peel(expression, depth=8):
+def _peel(expression, depth=64):
     """Expand every named expression except leaves (:func:`_is_leaf`)."""
     return _peel_except(expression, None, depth)
