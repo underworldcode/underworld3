@@ -1625,7 +1625,7 @@ class Surface:
         r"""Create a metric field for mesh adaptation based on distance from this surface.
 
         Returns a MeshVariable containing refinement metric values that can
-        be passed directly to mesh.remesh(). Higher metric values produce finer
+        be passed directly to mesh.adapt(). Higher metric values produce finer
         mesh (smaller elements).
 
         Parameters
@@ -1659,7 +1659,7 @@ class Surface:
         -----
         **Metric Tensor Mathematics**
 
-        For isotropic mesh adaptation, MMG/PETSc uses a metric tensor:
+        For isotropic mesh adaptation, the metric routes take a metric tensor:
 
         .. math::
 
@@ -1698,7 +1698,7 @@ class Surface:
         >>>
         >>> # With plain floats (nondimensional coordinates)
         >>> metric = fault.refinement_metric(h_near=0.005, h_far=0.05)
-        >>> mesh.remesh(metric)
+        >>> child = mesh.adapt(metric, max_levels=2)
         >>>
         >>> # With quantities (automatic nondimensionalisation)
         >>> metric = fault.refinement_metric(
@@ -1706,7 +1706,7 @@ class Surface:
         ...     h_far=uw.quantity(30, "km"),
         ...     width=uw.quantity(10, "km"),
         ... )
-        >>> mesh.remesh(metric)
+        >>> child = mesh.adapt(metric, max_levels=2)
         """
         if self.mesh is None:
             raise RuntimeError(
@@ -2485,7 +2485,7 @@ class SurfaceCollection:
         Returns
         -------
         MeshVariable
-            Scalar metric field suitable for ``mesh.remesh()``.
+            Scalar metric field suitable for ``mesh.adapt()``.
         """
         h_near = _to_nd_length(h_near)
         h_far = _to_nd_length(h_far)
@@ -3386,10 +3386,11 @@ def _fault_min_distance_np(P, polylines):
 
 
 def _fault_mmg_metric(mesh, faults, cell_size, n_across, h_far, name):
-    """Build the ``h⁻²`` isotropic metric MeshVariable for ``mesh.adapt``
-    (MMG): edge length ``cell_size`` in the band ``|d| < (n_across/2)·dx``,
-    ramping (smoothstep) to ``h_far`` outside. MMG *adds* nodes to honour
-    this absolute spacing, so the band is genuinely uniform."""
+    """Build the ``h⁻²`` isotropic metric MeshVariable for ``mesh.adapt`` (or
+    the mmg opt-in ``mesh.remesh``): edge length ``cell_size`` in the band
+    ``|d| < (n_across/2)·dx``, ramping (smoothstep) to ``h_far`` outside. Both
+    *add* nodes to honour this absolute spacing, so the band is genuinely
+    uniform. Building the metric needs no mmg."""
     dx = float(cell_size)
     D = (n_across / 2.0) * dx
     h_far = float(h_far) if h_far is not None else _mesh_h0(mesh)
@@ -3427,13 +3428,14 @@ def fault_metric(mesh, faults, method="ma", *, cell_size,
                                                        method="mmpde")``
     ``"anisotropic"``    2×2 tensor (sympy Matrix)     ``smooth_mesh_interior(
                                                        method="mmpde")``
-    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.remesh(...)``
+    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.adapt(...)``
     ===================  ============================  ===========================
 
     **``cell_size`` is honoured differently by each** — this is the key
     distinction, not a detail:
 
-    * ``"adapt"`` (MMG) **adds nodes**, so ``cell_size`` is an *absolute*,
+    * ``"adapt"`` **adds nodes** (``mesh.adapt``; ``mesh.remesh`` with mmg), so
+      ``cell_size`` is an *absolute*,
       *exact* target: you get a genuinely uniform band of that spacing
       (topology changes).
     * ``"ma"`` / ``"anisotropic"`` only **redistribute a fixed node budget**

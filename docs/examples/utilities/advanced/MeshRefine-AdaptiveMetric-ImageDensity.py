@@ -4,6 +4,8 @@
 
 **PHYSICS:** utilities  
 **DIFFICULTY:** advanced  
+**REQUIRES:** a PETSc built with mmg (`adaptivity.mesh_adapt_meshVar` remeshes
+through it), an external opt-in that the standard conda-forge PETSc does not have  
 **MIGRATED:** From underworld3-documentation/Notebooks
 
 ## Description

@@ -1321,6 +1321,11 @@ class SolverBaseClass(uw_object):
         # record. A user registration (set_custom_fmg) is a demand and is kept.
         if isinstance(self._custom_mg, dict) and self._custom_mg.get("auto_cached"):
             self._custom_mg = None
+        # FAC keys an install left for a solve that never set them up would be read
+        # by the route that replaces it: a GAMG level built a composite with no
+        # members (PETSc error 73, #1019).
+        from underworld3.utilities.custom_mg import _release_fac_keys
+        _release_fac_keys(self, force=True)
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
@@ -2881,30 +2886,10 @@ class SolverBaseClass(uw_object):
 
     @staticmethod
     def _peel_except(expression, wrt, depth=8):
-        """Expand every named expression in ``expression`` except ``wrt``.
-
-        A parameter reaches the residual through the constitutive model's own
-        named symbol — ``Parameters.diffusivity = kappa`` puts ``\\upkappa`` in
-        ``F1`` with ``kappa`` as its value — so differentiating the residual
-        as written with respect to ``kappa`` gives zero. ``fn_unwrap`` will not
-        do either: it substitutes every constant's VALUE, and the derivative
-        of a number is zero too. This substitutes each named expression by its
-        definition, one level at a time, and stops at ``wrt`` so the chain
-        rule has something to hold on to.
-        """
-        # A named expression whose value is a bare number is left as it is:
-        # the JIT passes it as a run-time constant, so the kernel compiled
-        # for the integrand survives a change of its value. Substituting the
-        # number recompiled every sensitivity at every evaluation of an
-        # inversion (four compiles per evaluation on the fault example).
-        for _ in range(depth):
-            named = [e for e in uw.function.fn_extract_expressions(expression)
-                     if e is not wrt and e != wrt
-                     and not getattr(getattr(e, "sym", None), "is_Number", False)]
-            if not named:
-                break
-            expression = expression.subs({e: e.sym for e in named})
-        return expression
+        """Expand every named expression in ``expression`` except ``wrt``:
+        :func:`underworld3.adjoint._peel_except`."""
+        from underworld3.adjoint import _peel_except
+        return _peel_except(expression, wrt, depth)
 
     def sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
         r"""``d J / d m`` for a scalar parameter ``wrt``, given the adjoint state.
@@ -3492,6 +3477,16 @@ class SolverBaseClass(uw_object):
             except (AttributeError, TypeError):
                 # Sanctioned: no alpha container (never built); the start value stands
                 pass
+        # A continuation solve resets alpha to 0 after it ends (a clean Picard
+        # tangent for the next step), so the live alpha read above is not where
+        # this solve finished. Its own record is, and the iterations by tangent
+        # are the breakdown the report otherwise loses: whether the frozen stage
+        # found the basin or ran out (#778). Reset per solve in
+        # _plan_picard_warmup, so a previous solve's stages are never reported.
+        stages = getattr(self, "_continuation_stages", None)
+        if stages and "tangent" in config:
+            config["tangent"]["alpha_end"] = float(stages["final_alpha"])
+            config["tangent"]["stages"] = dict(stages)
         _kcfg = config.get("ksp")
         # Only once a linear solve has run: before that the PC is not set up, and
         # PCFieldSplitGetSubKSP errors — printing to stderr even when caught (measured on
@@ -3950,6 +3945,83 @@ class SolverBaseClass(uw_object):
         -14: ("DIVERGED_OBJECTIVE_NANORINF", "Objective is Not-a-Number or infinite"),
     }
 
+    def _warn_on_capped_sub_solves(self):
+        """Warn when a fieldsplit sub-solve of this solve stopped at its iteration cap
+        (#585, #625).
+
+        PETSc does not count a sub-KSP that stops at its cap (``DIVERGED_ITS``) as a
+        failure, so the outer solve can converge while the block never solved: the
+        Schur operator is applied through the velocity solve, and a capped velocity
+        block hands the pressure Krylov an operator that moves between applications.
+        The count is in ``solve_report.sub[name].capped``; this says so at solve time,
+        one warning per capped block. The message names the block and its cap only,
+        and is attributed to the user's ``solve()`` line, so Python's warning filter
+        shows it once per block and call site in a time loop; the counts stay in the
+        report. Not during a bounded difficulty probe, whose caps are the point. Rank 0
+        warns, after the solve has recorded its status on every rank; nothing
+        collective. The native path only: the rotated loop reports its sub-solves in
+        its own diagnostics (#625)."""
+        report = getattr(self, "_solve_report", None)
+        if report is None or self._difficulty_probe:
+            return
+        for name, sub in (getattr(report, "sub", None) or {}).items():
+            if not getattr(sub, "capped", 0):
+                continue
+            cap = None
+            try:
+                for _sk in self.snes.getKSP().getPC().getFieldSplitSubKSP():
+                    if (_sk.getOptionsPrefix() or "").endswith(f"fieldsplit_{name}_"):
+                        cap = _sk.getTolerances()[3]
+            except Exception:
+                pass
+            block = self._sub_solve_block_label(name)
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    _warn_from_caller(
+                        f"{type(self).__name__}: the {block} sub-solve stopped at its "
+                        f"iteration cap{f' ({cap})' if cap is not None else ''} without "
+                        f"converging, so the solve's convergence does not mean that block "
+                        f"solved. Counts in solve_report.sub[{name!r}].capped. A higher "
+                        f"fieldsplit_{name}_ksp_max_it helps only a block that converges "
+                        f"slowly; one that stagnates needs a better preconditioner "
+                        f"(#585, #625).", RuntimeWarning)
+
+    def _warn_on_diverged_solve(self):
+        """Warn when the solve diverged (#1059). The printed notice of
+        ``_warn_on_divergence`` is easy to miss in a run's output, and a script carries
+        on with whatever the fields hold, which after a failure at iteration 0 is the
+        initial guess (u = 0 for a cold start). The message names the solver and the
+        reason only, so the warning filter shows it once per reason and call site.
+        Not for the stop a bounded difficulty probe asks for (DIVERGED_MAX_IT). Rank 0
+        warns; nothing collective."""
+        reason = self.snes.getConvergedReason()
+        if reason >= 0 or (self._difficulty_probe and reason == -5):
+            return
+        _entry = self._convergence_reasons.get(reason)
+        reason_str = _entry[0] if _entry is not None else f"UNKNOWN({reason})"
+        held = ("the initial guess" if self.snes.getIterationNumber() == 0
+                else "the last iterate")
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                _warn_from_caller(
+                    f"{type(self).__name__}: the solve diverged ({reason_str}) and its "
+                    f"fields hold {held}. solver.solve_report records the solve "
+                    f"(#1059).", RuntimeWarning)
+
+    def _sub_solve_block_label(self, name):
+        """The block a fieldsplit sub-solve ``name`` solves, in words. A solver that
+        splits by DM field index names its blocks "0", "1", ...; the label then lists
+        the fields grouped in it (a constrained solve's block 1 is the pressure and
+        its multipliers, solved as one Schur block)."""
+        if not str(name).isdigit():
+            return f"{name}"
+        try:
+            ids = [int(i) for i in str(self.petsc_options[f"pc_fieldsplit_{name}_fields"]).split(",")]
+            fields = [self.dm.getField(i)[0].getName() for i in ids]
+        except Exception:
+            return f"field-{name}"
+        return f"field-{name} ({' + '.join(fields)})"
+
     def _warn_on_divergence(self, phase="solve"):
         """Check SNES convergence and warn on genuine divergence.
 
@@ -4286,6 +4358,7 @@ class SolverBaseClass(uw_object):
         #     rtol*||F_restart||, so it fires first — no need to zero rtol. So a chunked
         #     start/stop/restart terminates at the same point an uninterrupted solve would.
         # Tolerances are saved and restored so nothing leaks into later solves.
+        from underworld3.utilities import custom_mg
         _probe = bool(self._difficulty_probe)
         _warm = int(getattr(self, "_pending_picard", 0) or 0)
         self._pending_picard = 0
@@ -4341,6 +4414,12 @@ class SolverBaseClass(uw_object):
             # report behind for recovery logic to misread. bounded=True marks a report
             # produced under an estimate_difficulty cap.
             self._capture_solve_report(bounded=_probe)
+            # A custom-P install's FAC keys leave the options database once this
+            # solve has set the levels up from them (#1019). Not collective.
+            custom_mg._release_fac_keys(self)
+        # What a reinstall dropped is destroyed here, collectively, after a solve
+        # that returned on every rank (#1020).
+        custom_mg._free_after_install(self)
 
     def _picard_warmup(self, gvec, n, count_against_cap=False, verbose=False):
         """Take ``n`` Picard steps — Newton iterations with the FROZEN tangent — in place,
@@ -7177,6 +7256,11 @@ class SNES_Scalar(SolverBaseClass):
 
         self._record_convergence_status()
 
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
+
         return
 
 
@@ -8248,6 +8332,11 @@ class SNES_Vector(SolverBaseClass):
 
         self._record_convergence_status()
 
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
+
         return
 
 
@@ -8925,6 +9014,11 @@ class SNES_MultiComponent(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 
@@ -12921,6 +13015,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 
