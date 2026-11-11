@@ -2405,7 +2405,8 @@ def _destroy_rotated_ksp_ctx(ctx):
 # A Schur right-hand side within this many machine epsilons of the round-off of its own
 # terms carries nothing to solve for (#910). Measured as r0 / (eps ||A10| |x_u||) at
 # pressure iteration 0 (hyperion's review records and wombat, 833 decisions):
-#   - cold solves: 6.7e14, never fired (forcing 1e3 to 1e10, mu 1e-8 to 1e2);
+#   - cold solves: 5.7e9 (test_1018's late Newton increments) to 2e15, about 6.7e14
+#     on the annulus; never fired (forcing 1e3 to 1e10, mu 1e-8 to 1e2);
 #   - genuine warm corrections: 1.8e8 at mu 1, down to 1.45e6 (test_1157 at mu 1e-4)
 #     and 2.27e6, where the warm pressure comes from a 1e-6 solve and its correction
 #     is itself near the outer tolerance;
