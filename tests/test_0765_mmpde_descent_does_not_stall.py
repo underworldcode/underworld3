@@ -66,3 +66,25 @@ def test_a_constant_metric_builds_no_frozen_field(monkeypatch):
     uw.meshing.node_redistribution(mesh, 1.0 + 4.0 * sympy.exp(-((y - 0.5) / 0.1) ** 2))
     assert "M_frozen" in made, made
 
+
+
+def test_the_reported_energy_is_the_energy_of_the_accepted_mesh():
+    """The line search screens a trial with the metric carried to first order from
+    the current centroids, then confirms it with the metric read at its own, and
+    reports that confirmed energy. A second call starts by reading the true energy of
+    the mesh the first left, and the two agree. Without the confirmation the first
+    call reports the carried energy, which a sharp metric makes the linear carry
+    miss. The metric is read exactly from its expression, so both calls see the same
+    one."""
+    from underworld3.meshing.smoothing import _mmpde_mover
+
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 16, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    density = 1.0 + 60.0 * sympy.exp(-((r - 0.9) / 0.02) ** 2)
+    kwargs = dict(step_frac=0.2, accel="cg", momentum=0.0, metric_eval="sympy")
+
+    moved = _mmpde_mover(mesh, density, ("Upper", "Lower"), False, n_outer=6, **kwargs)
+    again = _mmpde_mover(mesh, density, ("Upper", "Lower"), False, n_outer=1, **kwargs)
+    assert len(moved) > 2 and moved[-1] < moved[0]
+    assert abs(moved[-1] - again[0]) <= 1.0e-12 * again[0], (moved[-1], again[0])

@@ -182,6 +182,9 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     every mover, and MMPDE's clustering intensity comes from the metric
     tensor itself. Any other unexpected keyword is warned about (READ-11:
     it is a caller typo, not a tunable) rather than silently swallowed.
+
+    Returns the energy of the starting mesh followed by the energy of each accepted
+    step, every one read with the metric at that mesh's own centroids.
     """
     import sympy
     from petsc4py import PETSc
@@ -497,6 +500,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     prevI = _energy(coords)
     _M_next = None      # the metric at the accepted centroids, read by the line search
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
+    energies = [prevI]
     # Acceleration of the first-order steepest-descent direction (``accel``).
     # The energy+min-area line-search below stays the fold guard, so any
     # accelerator overshoot is backtracked — never tangles (verified fold-proof
@@ -715,6 +719,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         # The legacy absolute `outer_tol` is retained as an additional, even
         # tighter floor for callers that set it.
         prevI = Inew
+        energies.append(Inew)
         # Stagnation (residual stol) exit: PETSc-`stol`-style "give up when the
         # meshing functional stops dropping well below the last steps". The
         # node-step `dmax` is capped and never shrinks on this descent mover, so
@@ -741,3 +746,4 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
 
     coord_dm.restoreLocalVec(vloc)
     coord_dm.restoreGlobalVec(vglob)
+    return energies
