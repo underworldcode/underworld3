@@ -35,6 +35,22 @@ def _gmax(value):
     return uw.mpi.comm.allreduce(float(value), op=MPI.MAX)
 
 
+def _on_every_rank(local):
+    """Run the rank-local ``local()`` and agree on the outcome before any
+    collective: a raise on one rank alone left the others waiting in the next
+    reduction (H1's review saw a mutant hang this way). Every rank raises if
+    any did, naming the ranks; otherwise each gets its own result."""
+    try:
+        value, error = local(), None
+    except Exception as exc:
+        value, error = None, f"{type(exc).__name__}: {exc}"
+    errors = uw.mpi.comm.allgather(error)
+    failed = {r: e for r, e in enumerate(errors) if e is not None}
+    if failed:
+        raise AssertionError(f"rank-local check failed on rank(s) {failed}")
+    return value
+
+
 def _flat_sheet(faulted):
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, qdegree=3)
@@ -62,10 +78,15 @@ def test_the_extruded_layer_is_the_sheet_times_its_thickness_with_its_pairing():
         return coords[verts].mean(axis=0)
 
     pairs = layer._fault_point_pairs.get("Flt", {})
-    gap = max([np.linalg.norm(centroid(a) - centroid(b)) for a, b in pairs.items()] or [0.0])
+
+    def local():
+        gap = max([np.linalg.norm(centroid(a) - centroid(b)) for a, b in pairs.items()] or [0.0])
+        z = {round(float(coords[q - v_start, 2]), 12) for q in pairs if v_start <= q < v_end}
+        return gap, z
+
+    gap, z = _on_every_rank(local)
     assert _gmax(gap) < 1.0e-12
     assert uw.mpi.comm.allreduce(len(pairs), op=MPI.SUM) > 0
-    z = {round(float(coords[q - v_start, 2]), 12) for q in pairs if v_start <= q < v_end}
     z = set().union(*uw.mpi.comm.allgather(z))
     assert round(-L / 2, 12) in z and round(L / 2, 12) in z
 
@@ -84,9 +105,12 @@ def test_a_uniform_force_against_a_drag_gives_u_equal_to_L_f_over_c(faulted):
     if faulted:
         sheet.add_fault_bc(0, "Flt")
     sheet.solve()
-    u = np.asarray(sheet.u.array)[:, 0, :]
-    error = np.abs(u - np.array([0.5, 0.0])).max() if len(u) else 0.0
-    assert _gmax(error) < 1.0e-8
+
+    def local():
+        u = np.asarray(sheet.u.array)[:, 0, :]
+        return np.abs(u - np.array([0.5, 0.0])).max() if len(u) else 0.0
+
+    assert _gmax(_on_every_rank(local)) < 1.0e-8
 
 
 @pytest.mark.tier_b
@@ -105,14 +129,16 @@ def test_a_rigid_rotation_of_the_sphere_is_returned_exactly():
     sheet.bodyforce = list(2 * rot)
     sheet.solve()
     assert sheet._rotated_freeslip_info["converged"]
-    c = np.asarray(sheet.u.coords)
-    u = np.asarray(sheet.u.array)[:, 0, :]
-    if len(c):
+
+    def local():
+        c = np.asarray(sheet.u.coords)
+        u = np.asarray(sheet.u.array)[:, 0, :]
+        if not len(c):
+            return 0.0, 0.0
         exact = np.cross(np.array([float(w) for w in omega]), c)
-        error = np.abs(u - exact).max()
         rhat = c / np.linalg.norm(c, axis=1)[:, None]
-        leak = np.abs((u * rhat).sum(axis=1)).max()
-    else:
-        error = leak = 0.0
+        return np.abs(u - exact).max(), np.abs((u * rhat).sum(axis=1)).max()
+
+    error, leak = _on_every_rank(local)
     assert _gmax(error) < 1.0e-7
     assert _gmax(leak) < 1.0e-13
