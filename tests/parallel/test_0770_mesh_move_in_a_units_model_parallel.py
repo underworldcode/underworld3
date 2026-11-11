@@ -34,3 +34,24 @@ def test_deform_keeps_the_mesh_in_its_frame_and_remaps_a_field_with_units():
     interior = np.linalg.norm(moved, axis=1) < 0.99
     assert largest((np.array(T.data).reshape(-1) - (0.3 + 0.2 * moved[:, 0]))[interior]) < 1.0e-9
     uw.reset_default_model()
+
+
+@pytest.mark.mpi(min_size=2)
+@pytest.mark.timeout(60)
+def test_deform_returns_on_a_rank_with_no_vertices():
+    """The physical-size check reduces over every rank. A one-cell mesh leaves all
+    ranks but one with no vertices, and those ranks still enter the reductions.
+    Before the fix they skipped them and the move hung."""
+    uw.reset_default_model()
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1000, "km"), temperature_diff=uw.quantity(1000, "K"),
+        viscosity=uw.quantity(1e21, "Pa*s"), diffusivity=uw.quantity(1e-6, "m**2/s"))
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(1, 1), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+    start = np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
+    assert min(uw.mpi.comm.allgather(start.shape[0])) == 0
+
+    mesh.deform(start * 1.0)
+
+    moved = np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
+    assert np.allclose(moved, start)
+    uw.reset_default_model()
