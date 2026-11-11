@@ -74,7 +74,9 @@ def test_picard_stages_a_picard_phase_on_a_manifold_sheet():
 def _follow_the_advice(capfd, solver, mesh):
     from underworld3.utilities import custom_mg
     solver.solve()
-    out = capfd.readouterr().out
+    # the warning is printed on rank 0 only: every rank asserts on rank 0's text, so
+    # all of them go on into the collective registration together
+    out = uw.mpi.comm.bcast(capfd.readouterr().out, root=0)
     assert "falls back to GAMG" in out, out
     field = "field_id=0" in out
     call = ("custom_mg.set_custom_fmg(solver, mesh.multigrid_levels[:-1]"
@@ -105,7 +107,7 @@ def test_the_gamg_advice_on_a_refined_stokes_mesh_works(capfd):
     s.solve()
     assert s._rotated_freeslip_info["converged"]
     assert s._rotated_freeslip_info["velocity_pc_type"] != "gamg"
-    assert "falls back to GAMG" not in capfd.readouterr().out
+    assert "falls back to GAMG" not in uw.mpi.comm.bcast(capfd.readouterr().out, root=0)
 
 
 def test_the_gamg_advice_on_a_refined_sheet_works(capfd):
