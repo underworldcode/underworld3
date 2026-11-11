@@ -13,7 +13,9 @@ global pressure row, chosen over all ranks.
   constant-pressure null space) in velocity, and in pressure up to its constant;
 - a nonlinear direct solve takes a second Newton increment at np > 1: the pin
   used to compress its row out of the rotated operator's pattern, and the next
-  increment's in-place PtAP crashed in malloc on the owning rank.
+  increment's in-place PtAP crashed in malloc on the owning rank;
+- a pressure Dirichlet condition already fixes the gauge, so nothing is pinned
+  and the direct solve matches the iterative one.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1156_rotated_lu_pressure_pin_parallel.py
 """
@@ -32,7 +34,7 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
                                  reason="the direct rotated path factors with MUMPS")]
 
 
-def _box(tag, use_lu, nonlinear=False):
+def _box(tag, use_lu, nonlinear=False, pressure_top=False):
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=0.1, qdegree=3)
     v = uw.discretisation.MeshVariable(f"V{tag}", mesh, 2, degree=2)
@@ -45,7 +47,9 @@ def _box(tag, use_lu, nonlinear=False):
     stokes.bodyforce = sympy.Matrix([[0, sympy.cos(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
     for wall in ("Bottom", "Top", "Left", "Right"):
         stokes.add_rotated_freeslip_bc(0, wall)
-    stokes.petsc_use_pressure_nullspace = True
+    if pressure_top:
+        stokes.add_condition(f_id=1, c_type="dirichlet", conds=0.0, label="Top")
+    stokes.petsc_use_pressure_nullspace = not pressure_top
     stokes.tolerance = 1.0e-10
     if use_lu:
         stokes._rotated_use_lu = True
@@ -70,9 +74,11 @@ def test_one_pressure_row_is_pinned_at_any_rank_count():
     owned = stokes._subdict["pressure"][0].getIndices()
     lowest = uw.mpi.comm.allreduce(int(owned.min()) if owned.size else np.iinfo(np.int64).max,
                                    op=MPI.MIN)
-    if row is not None:
-        assert row in owned
-    assert uw.mpi.comm.allreduce(row if row is not None else -1, op=MPI.MAX) == lowest
+    # every collective before any assert: a rank that fails alone hangs the others
+    found = uw.mpi.comm.allreduce(row if row is not None else -1, op=MPI.MAX)
+    owner_ok = uw.mpi.comm.allreduce(row is None or bool(np.isin(row, owned)), op=MPI.LAND)
+    assert owner_ok
+    assert found == lowest
 
 
 def test_the_direct_solve_matches_the_iterative_one():
@@ -95,3 +101,15 @@ def test_a_nonlinear_direct_solve_takes_a_second_increment():
     _s, v_it, _p = _box("nlit", use_lu=False, nonlinear=True)
     vl, vi = _global(v_lu.data), _global(v_it.data)
     assert np.linalg.norm(vl - vi) < 1.0e-6 * np.linalg.norm(vi)
+
+
+def test_a_pressure_dirichlet_condition_is_the_gauge():
+    stokes, v_lu, p_lu = _box("pdlu", use_lu=True, pressure_top=True)
+    row, pinned = rotated_bc._global_pressure_pin(stokes.dm)
+    _s, v_it, p_it = _box("pdit", use_lu=False, pressure_top=True)
+    vl, vi = _global(v_lu.data), _global(v_it.data)
+    pl, pi = _global(p_lu.data), _global(p_it.data)
+    # a pin on a real pressure row: 0.9-3.6 % off in velocity (#348 review 2, N4)
+    assert np.linalg.norm(vl - vi) < 1.0e-6 * np.linalg.norm(vi)
+    assert np.linalg.norm(pl - pi) < 1.0e-6 * np.linalg.norm(pi)
+    assert not pinned and row is None

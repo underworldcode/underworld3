@@ -955,24 +955,30 @@ def _global_pressure_pin(dm):
     fixed one, the gauge was over-constrained and the answer depended on the
     partition (#348).
 
+    A pressure Dirichlet condition already fixes the gauge, so then nothing is
+    pinned (``(None, False)`` on every rank); a pin there would replace a real
+    pressure equation.
+
     The pin is a correct gauge only where constant pressure is an exact null mode
     of the constrained operator. Where it is not (an open boundary, a given
-    normal that is not the wall's, a pressure Dirichlet condition) the pinned row
-    replaces a real equation and the direct solve converges to a different
-    problem (#348). COLLECTIVE."""
+    normal that is not the wall's) the pinned row replaces a real equation and
+    the direct solve converges to a different problem (#348). COLLECTIVE."""
     from mpi4py import MPI
 
     lsec, gsec = dm.getLocalSection(), dm.getGlobalSection()
     pS, pE = gsec.getChart()
     lowest = None
+    constrained = 0
     for q in range(pS, pE):
-        # a constrained pressure DOF (a pressure Dirichlet point) has no row;
         # the local section carries the constraint counts
-        if (lsec.getFieldDof(q, _PRESSURE_FIELD)
-                - lsec.getFieldConstraintDof(q, _PRESSURE_FIELD)) > 0:
+        cdof = lsec.getFieldConstraintDof(q, _PRESSURE_FIELD)
+        constrained += cdof
+        if lsec.getFieldDof(q, _PRESSURE_FIELD) - cdof > 0:
             offset = gsec.getFieldOffset(q, _PRESSURE_FIELD)
             if offset >= 0 and (lowest is None or offset < lowest):
                 lowest = offset
+    if mpi.comm.allreduce(int(constrained), op=MPI.MAX) > 0:
+        return None, False
     none = np.iinfo(np.int64).max
     row = mpi.comm.allreduce(none if lowest is None else int(lowest), op=MPI.MIN)
     if row == none:
