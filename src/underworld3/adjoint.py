@@ -673,11 +673,15 @@ class TranscriptAdjoint:
             tracked = self._tracked_field(h)
             if tracked is None:
                 continue
-            captured.append((h, tracked, np.array(tracked.array, copy=True)))
+            # A raw copy between a field and its own history, inside the
+            # solver's frame: both hold non-dimensional values in one layout.
+            # Through .array it was refused in a units model, the field and its
+            # history not always carrying the same units.
+            captured.append((h, tracked, np.array(tracked.data, copy=True)))
         self._replay(solver, step)
         inputs = {}
         for h, tracked, before in captured:
-            h.psi_star[0].array[...] = before
+            h.psi_star[0].data[...] = before
             inputs[h.psi_star[0].name] = tracked
         return inputs
 
