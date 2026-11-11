@@ -85,7 +85,9 @@ def test_the_robin_part_of_the_jacobian_matches_finite_differences(family):
     def jacobians(k, tag):
         s = _FAMILIES[family](k, tag)
         s.petsc_options["snes_max_it"] = 0
-        s.solve()
+        # a solve stopped at 0 iterations only builds the SNES, and says it diverged
+        with pytest.warns(RuntimeWarning, match="diverged"):
+            s.solve()
         snes = s.snes
         x = snes.getSolution().copy()
         x.set(0.3)
