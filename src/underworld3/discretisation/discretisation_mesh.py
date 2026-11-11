@@ -4311,11 +4311,13 @@ class Mesh(Stateful, uw_object):
             model = uw.non_dimensionalise(coords)
             return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
         model = numpy.asarray(coords, dtype=float)
-        if scale != 1.0 and model.size:
+        # Collective: a rank with no vertices still enters both reductions.
+        if scale != 1.0:
             current = numpy.asarray(self._coords).reshape(-1, self.cdim)
             extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
                                            op=uw.MPI.MAX)
-            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()), op=uw.MPI.MAX)
+            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()) if model.size else 0.0,
+                                         op=uw.MPI.MAX)
             if (extent > 0.0 and size > 0.0
                     and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
                 raise ValueError(
