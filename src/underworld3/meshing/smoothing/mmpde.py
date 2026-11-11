@@ -267,12 +267,18 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     # signed-measure primitive and d! volume factor.
     cells_all = _tri_cells(dm) if cdim == 2 else _tet_cells(dm)
     signed_vol = _signed_areas if cdim == 2 else _signed_volumes
-    if cells_all is None:
-        # TODO(BUG): rank-LOCAL early return — under MPI a rank with zero
-        # local cells (or a non-simplex local patch) returns here while the
-        # other ranks enter the collective energy/line-search reductions
-        # below, hanging the job. Pre-existing 2D posture, inherited by 3D
-        # (2026-07 review note); the fix is a collective emptiness check.
+    # The cell list is None for two reasons, decided collectively (#1085),
+    # because every step below the return is collective:
+    # - no local cells (a small mesh, or an uneven partition): this rank
+    #   takes part with an empty cell array, contributing nothing to the sums;
+    # - cells that are not all simplices: the mover does not apply, and every
+    #   rank returns together.
+    cStart, cEnd = dm.getHeightStratum(0)
+    if cells_all is None and cEnd == cStart:
+        cells_all = np.zeros((0, cdim + 1), dtype=np.int64)
+    from mpi4py import MPI
+
+    if uw.mpi.comm.allreduce(cells_all is None, op=MPI.LOR):
         return []
     fact = float(math.factorial(cdim))         # d! → |K| = |detE|/d!
     owned_cell = _owned_cell_mask(dm)
