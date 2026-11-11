@@ -272,6 +272,28 @@ def test_a_wrong_given_normal_beside_a_default_wall_rejects_the_rotation():
                 [str(w.message) for w in record]
 
 
+def test_the_direct_lu_route_warns_when_a_given_wall_rejects_the_rotation():
+    # the LU route builds no null space, so its gauge verdict is the only place to say
+    # that the rotation stays (review round 2, N1: 5.5e-3 of v_rms left, unannounced)
+    mesh, v, stokes = _annulus_stokes("1131u", mesh=_slid_annulus())
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    tilted = sympy.Matrix([[x / r + 0.1, y / r]]) / sympy.sqrt((x / r + 0.1) ** 2 + (y / r) ** 2)
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=tilted)
+    stokes.add_rotated_freeslip_bc(0, "Upper")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes._rotated_use_lu = True
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    gauge = stokes._rotated_freeslip_info["rotation_gauge"]
+    assert gauge["modes"][0]["rejected_by"] == "given_wall", gauge
+    messages = [str(w.message) for w in record if "not tangent to" in str(w.message)]
+    with uw.selective_ranks(0) as selected:
+        if selected:
+            assert len(messages) == 1 and "1 of the 1 declared" in messages[0], messages
+
+
 def test_a_given_normal_wall_off_its_circle_is_tested_against_its_normal():
     # the sphere test covers the facet-averaged walls only: the given-normal wall here
     # is pushed off its circle, but the radial normal it is given is still tangent to
@@ -566,6 +588,8 @@ def test_a_given_normal_is_tested_not_exempt():
     info = stokes._rotated_freeslip_info
     assert info["converged"], info
     assert info["declared_modes_exempt"] == [False]
+    # every wall takes a given normal: tested on all of them, with the constraint rows
+    assert info["declared_modes_tested_walls"] == ["Lower", "Upper"]
     assert info["rotation_gauge"]["orthonormal"] == 0, info["rotation_gauge"]
     assert _normal_velocity(info) < 1.0e-12
 
