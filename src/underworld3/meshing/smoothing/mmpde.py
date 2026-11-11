@@ -273,7 +273,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         # other ranks enter the collective energy/line-search reductions
         # below, hanging the job. Pre-existing 2D posture, inherited by 3D
         # (2026-07 review note); the fix is a collective emptiness check.
-        return
+        return []
     fact = float(math.factorial(cdim))         # d! → |K| = |detE|/d!
     owned_cell = _owned_cell_mask(dm)
     cells_own = cells_all[owned_cell]
