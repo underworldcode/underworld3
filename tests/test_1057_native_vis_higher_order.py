@@ -75,7 +75,7 @@ def _check(mesh, degree, exact_volume=None):
     name = f"T{degree}"
     T = uw.discretisation.MeshVariable(name, mesh, 1, degree=degree)
     X = np.asarray(T.coords)
-    T.data[:, 0] = X[:, 0]
+    T.array[:, 0, 0] = X[:, 0]
 
     grid = vis.meshVariable_to_native_pv_mesh(T)
     assert grid is not None, f"no native grid for degree {degree}"
@@ -83,7 +83,7 @@ def _check(mesh, degree, exact_volume=None):
 
     # Point i is DOF i, so the variable's values attach by row.
     np.testing.assert_array_equal(np.asarray(grid.points)[:, :dim], X[:, :dim])
-    grid.point_data[name] = np.asarray(T.data[:, 0])
+    grid.point_data[name] = np.asarray(T.array[:, 0, 0])
 
     # No inverted sub-cell. VTK's 2D cell areas are unsigned, so in 2D the
     # orientation is checked on the signed area computed here.
