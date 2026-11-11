@@ -2631,12 +2631,21 @@ class SolverBaseClass(uw_object):
                 ghost = set(int(q) for q in graph[1])
         except Exception:
             ghost = set()
+        # A boundary can have no point on this rank. getStratumIS then hard-aborts
+        # for a value missing from the rank's own value set, and otherwise returns
+        # an IS wrapping a NULL handle (not None) whose first use segfaults; that
+        # took every datum sensitivity down at np >= 2. Ask the rank's values
+        # first, and test the IS itself.
+        values_is = label.getValueIS()
+        local_values = set(int(v) for v in values_is.getIndices()) if values_is else set()
         owner = {}
         for index, bc in enumerate(self.essential_bcs):
             if int(bc.f_id) != 0:
                 continue
+            if int(bc.boundary_label_val) not in local_values:
+                continue
             stratum = label.getStratumIS(int(bc.boundary_label_val))
-            if stratum is None:
+            if not stratum:
                 continue
             points = set()
             for q in stratum.getIndices():
@@ -2661,7 +2670,7 @@ class SolverBaseClass(uw_object):
         Zero, at no cost, when no datum reads ``wrt``."""
         import numpy as np
         import sympy
-        from underworld3.adjoint import _shared_scratch
+        from underworld3.adjoint import _shared_scratch, _value_at
         derivatives = {}
         for index, bc in enumerate(self.essential_bcs):
             d = diff_wrt_field(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
@@ -2682,17 +2691,26 @@ class SolverBaseClass(uw_object):
             if misfit_dual is not None:
                 rows = rows + np.asarray(misfit_dual, dtype=float).reshape(-1, n)
             X = np.asarray(self.u.coords_nd)
-            total = 0.0
+            nodes = {}
             for (node, comp), index in self._essential_datum_owner().items():
-                d = derivatives.get(index)
-                if d is None or d[comp] == 0:
-                    continue
-                expr = sympy.sympify(d[comp])
-                if expr.is_Number:
-                    value = float(expr)
-                else:
-                    value = float(np.asarray(uw.function.evaluate(expr, X[node:node + 1])).ravel()[0])
-                total += float(rows[node, comp]) * value
+                nodes.setdefault((index, comp), []).append(node)
+            total = 0.0
+            # One evaluation per condition and component, on every rank and in the
+            # same order, whether or not this rank owns any of its nodes: a datum
+            # that reads a mesh variable is evaluated collectively, and one call
+            # per owned node hung once ranks owned different numbers of them.
+            for index in sorted(derivatives):
+                d = derivatives[index]
+                for comp in range(len(d)):
+                    if d[comp] == 0:
+                        continue
+                    here = np.array(nodes.get((index, comp), []), dtype=int)
+                    expr = sympy.sympify(d[comp])
+                    if expr.is_Number:
+                        values = np.full(len(here), float(expr))
+                    else:
+                        values = _value_at(expr, X[here].reshape(-1, X.shape[1])).ravel()
+                    total += float(np.dot(rows[here, comp], values)) if len(here) else 0.0
         finally:
             _shared_scratch.give(reaction)
         return float(uw.mpi.comm.allreduce(total, op=uw.MPI.SUM))
@@ -2885,7 +2903,7 @@ class SolverBaseClass(uw_object):
             return False
 
     @staticmethod
-    def _peel_except(expression, wrt, depth=8):
+    def _peel_except(expression, wrt, depth=64):
         """Expand every named expression in ``expression`` except ``wrt``:
         :func:`underworld3.adjoint._peel_except`."""
         from underworld3.adjoint import _peel_except
@@ -2905,7 +2923,8 @@ class SolverBaseClass(uw_object):
         dual on every node, ``misfit_dual``, where the misfit reads the
         prescribed values.
         """
-        total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        from underworld3.adjoint import integral
+        total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
         # A parameter that enters through a natural condition — a prescribed
         # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
@@ -2921,7 +2940,7 @@ class SolverBaseClass(uw_object):
             values = list(d)
             comps = getattr(mu, "num_components", 1)
             integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += float(uw.maths.BdIntegral(self.mesh, integrand, bc.boundary).evaluate())
+            total += integral(self.mesh, integrand, bc.boundary)
         return total
 
     def _constraint_mechanisms(self):

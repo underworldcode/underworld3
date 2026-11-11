@@ -287,10 +287,28 @@ def misfit_duals(misfit, variables, scratch=None, boundary=None):
 
 
 def integral(mesh, expression, boundary=None):
-    """``float(∫ expression)`` over the mesh, or over ``boundary`` if named."""
+    """``∫ expression`` over the mesh, or over ``boundary`` if named, in the
+    frame PETSc integrated it in.
+
+    The adjoint state, the residual templates and the duals all live in that
+    frame. ``Integral.evaluate`` re-dimensionalises its result and labels it in
+    the mesh's coordinate units, so a ``float`` of it is wrong by the reference
+    scales, and so is a ``non_dimensionalise`` of it (#763).
+    """
     if boundary is None:
-        return float(uw.maths.Integral(mesh, expression).evaluate())
-    return float(uw.maths.BdIntegral(mesh, expression, boundary).evaluate())
+        return float(uw.maths.Integral(mesh, expression)._integrate())
+    return float(uw.maths.BdIntegral(mesh, expression, boundary)._integrate())
+
+
+def _value_at(expression, coords):
+    """``expression`` at ``coords`` (model coordinates), in the frame the JIT
+    compiles it in: constants as the kernels see them, and no units on the
+    result. ``uw.function.evaluate`` is the dimensional gateway, so it would
+    return a datum's derivative re-dimensionalised (#1048)."""
+    from underworld3.function._function import evaluate_nd
+    from underworld3.function.expressions import _unwrap_for_compilation
+    compiled = _unwrap_for_compilation(expression, keep_constants=False, return_self=False)
+    return np.asarray(evaluate_nd(compiled, coords), dtype=float)
 
 
 def _reads_of(solver, unknown, tokens):
@@ -557,7 +575,7 @@ class TranscriptAdjoint:
         # J and its dual on every field it touches, at the final level — and
         # the explicit dJ/dm, for a misfit that names a parameter directly.
         model.load_state(self.final_state)
-        J = float(uw.maths.Integral(self._mesh(), misfit).evaluate())
+        J = integral(self._mesh(), misfit)
         acc: Dict[str, object] = {}
         for var, dual in misfit_duals(misfit, self._tokens().values(), scratch).items():
             self._accumulate(acc, var, dual)
@@ -566,7 +584,7 @@ class TranscriptAdjoint:
         for p in parameters:
             explicit = sympy.diff(_peel_except(misfit, p), p)
             if explicit != 0:
-                grad[p] += float(uw.maths.Integral(self._mesh(), explicit).evaluate())
+                grad[p] += integral(self._mesh(), explicit)
 
         for k in range(len(self.steps) - 1, -1, -1):
             step = self.steps[k]
@@ -655,11 +673,15 @@ class TranscriptAdjoint:
             tracked = self._tracked_field(h)
             if tracked is None:
                 continue
-            captured.append((h, tracked, np.array(tracked.array, copy=True)))
+            # A raw copy between a field and its own history, inside the
+            # solver's frame: both hold non-dimensional values in one layout.
+            # Through .array it was refused in a units model, the field and its
+            # history not always carrying the same units.
+            captured.append((h, tracked, np.array(tracked.data, copy=True)))
         self._replay(solver, step)
         inputs = {}
         for h, tracked, before in captured:
-            h.psi_star[0].array[...] = before
+            h.psi_star[0].data[...] = before
             inputs[h.psi_star[0].name] = tracked
         return inputs
 
@@ -738,7 +760,7 @@ def _is_leaf(e):
     return getattr(value, "is_Number", False) or not isinstance(value, sympy.Basic)
 
 
-def _peel_except(expression, wrt, depth=8):
+def _peel_except(expression, wrt, depth=64):
     """Expand every named expression in ``expression`` except ``wrt``.
 
     A parameter reaches the residual through the constitutive model's own
@@ -750,7 +772,7 @@ def _peel_except(expression, wrt, depth=8):
     definition, one level at a time, and stops at ``wrt`` so the chain rule
     has something to hold on to. Leaves (:func:`_is_leaf`) stay as they are.
     """
-    for _ in range(depth):
+    for _ in range(depth + 1):
         # The named expressions at this level, read from the tree itself:
         # fn_extract_expressions misses a bare named expression and any product
         # made only of named ones, which left a misfit written as one with a
@@ -759,11 +781,15 @@ def _peel_except(expression, wrt, depth=8):
                  if isinstance(e, uw.function.expression)
                  and e is not wrt and e != wrt and not _is_leaf(e)]
         if not named:
-            break
+            return expression
         expression = expression.subs({e: e.sym for e in named})
-    return expression
+    # Stopping here left the deeper names in place, so a field behind them got a
+    # zero derivative and the gradient came back silently 0.
+    raise RecursionError(
+        f"the adjoint could not expand the named expressions in this residual or "
+        f"misfit within {depth} levels; is one defined in terms of itself?")
 
 
-def _peel(expression, depth=8):
+def _peel(expression, depth=64):
     """Expand every named expression except leaves (:func:`_is_leaf`)."""
     return _peel_except(expression, None, depth)
