@@ -420,6 +420,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
   batch 4 tests/test_1153*py  # timestep estimates read model units; setters keep or refuse (#891, #978, #1031)
   batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
+  batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
