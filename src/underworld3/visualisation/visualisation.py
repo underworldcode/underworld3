@@ -463,6 +463,27 @@ def _orient_subcells(conn, X, dim, simplex):
     return conn
 
 
+def _orient_subcells_on_surface(conn, X, parent_x, simplex):
+    """Reorder each sub-cell of a 2D surface in 3D so that its normal points
+    the same way as its parent cell's. ``parent_x`` holds each parent cell's
+    corners, ``(n_cells, n_corners, 3)``, and the sub-cells of a cell are
+    consecutive in ``conn``."""
+    import numpy as np
+
+    # A triangle's normal from corners 0, 1, 2; a quad's from 0, 1 and 3.
+    third = 2 if simplex else 3
+    parent_n = np.cross(parent_x[:, 1] - parent_x[:, 0], parent_x[:, third] - parent_x[:, 0])
+    parent_n = np.repeat(parent_n, len(conn) // len(parent_x), axis=0)
+    x = X[conn]
+    sub_n = np.cross(x[:, 1] - x[:, 0], x[:, third] - x[:, 0])
+    flip = (sub_n * parent_n).sum(axis=1) < 0
+    if simplex:
+        conn[flip, 0], conn[flip, 1] = conn[flip, 1].copy(), conn[flip, 0].copy()
+    else:
+        conn[flip] = conn[flip][:, [0, 3, 2, 1]]
+    return conn
+
+
 def _lagrange_subcell_connectivity(meshVar):
     """Sub-cells of the mesh's own cells through a continuous Lagrange
     variable's nodes: an ``(n, nv)`` table of the variable's DOF rows, or
@@ -566,7 +587,10 @@ def _lagrange_subcell_connectivity(meshVar):
         return None
     conn = nodes[:, subcells].reshape(-1, subcells.shape[1])
     if cdim != dim:
-        return conn                       # a manifold: no signed volume to fix
+        # A surface in 3D has no signed area; each sub-cell faces the way its
+        # parent cell does instead.
+        parent_x = X[nodes[:, corner_nodes]]
+        return _orient_subcells_on_surface(conn, X, parent_x, simplex)
     return _orient_subcells(conn, X, dim, simplex)
 
 
@@ -620,9 +644,10 @@ def meshVariable_to_native_pv_mesh(meshVar):
         (False, 3): pv.CellType.HEXAHEDRON,
     }[(bool(mesh.dm.isSimplex()), dim)]
 
+    cdim = mesh.cdim
     coords = np.asarray(meshVar.coords, dtype=np.float64)
     points = np.zeros((coords.shape[0], 3))
-    points[:, :dim] = coords[:, :dim]
+    points[:, :cdim] = coords[:, :cdim]
     cells = np.column_stack([np.full(len(conn), conn.shape[1]), conn]).ravel()
     native = pv.UnstructuredGrid(cells, np.full(len(conn), celltype, dtype=np.uint8), points)
     native._units = mesh.units if mesh.units is not None else uw.units.dimensionless

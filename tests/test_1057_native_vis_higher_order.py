@@ -10,9 +10,9 @@ of its nodes, whose alpha filter drops coarse cells on a graded mesh.
 Each case checks exact, closed-form properties of the result:
 
 * every cell is kept: there are ``cells * k**dim`` sub-cells;
-* point ``i`` is the variable's DOF ``i``, so ``T.data`` attaches directly. A
-  field that is a polynomial of degree ``k`` reads back exactly at every
-  sub-cell vertex;
+* point ``i`` is the variable's DOF ``i``, so ``T.data`` attaches directly;
+* no sub-cell is inverted, checked on signed areas in 2D (VTK's are
+  unsigned) and on the normals against the parent cell's on a sphere;
 * the sub-cells tile the domain conformingly: no sub-cell is inverted, no
   edge is shared by more than two sub-cells (in 2D), and the boundary has
   exactly ``k**(dim-1)`` sub-facets for each boundary facet of the mesh. A
@@ -75,19 +75,24 @@ def _check(mesh, degree, exact_volume=None):
     name = f"T{degree}"
     T = uw.discretisation.MeshVariable(name, mesh, 1, degree=degree)
     X = np.asarray(T.coords)
-    poly = (X[:, 0] + 0.5 * X[:, 1]) ** degree + (X[:, -1] ** degree if dim == 3 else 0.0)
-    T.data[:, 0] = poly
+    T.data[:, 0] = X[:, 0]
 
     grid = vis.meshVariable_to_native_pv_mesh(T)
     assert grid is not None, f"no native grid for degree {degree}"
     assert grid.n_cells == _n_cells(mesh) * degree**dim
 
-    # Point i is DOF i, and the field attaches by row.
+    # Point i is DOF i, so the variable's values attach by row.
     np.testing.assert_array_equal(np.asarray(grid.points)[:, :dim], X[:, :dim])
     grid.point_data[name] = np.asarray(T.data[:, 0])
-    p = np.asarray(grid.points)
-    expect = (p[:, 0] + 0.5 * p[:, 1]) ** degree + (p[:, 2] ** degree if dim == 3 else 0.0)
-    np.testing.assert_allclose(grid.point_data[name], expect, rtol=0, atol=1e-12)
+
+    # No inverted sub-cell. VTK's 2D cell areas are unsigned, so in 2D the
+    # orientation is checked on the signed area computed here.
+    if dim == 2:
+        conn = np.asarray(grid.cells).reshape(grid.n_cells, -1)[:, 1:]
+        x = np.asarray(grid.points)[conn][..., :2]
+        third = 2 if mesh.dm.isSimplex() else 3
+        e1, e2 = x[:, 1] - x[:, 0], x[:, third] - x[:, 0]
+        assert (e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).min() > 0.0
 
     # Conforming tiling, no inverted sub-cell.
     sizes = grid.compute_cell_sizes(length=False, area=dim == 2, volume=dim == 3)
@@ -192,3 +197,24 @@ def test_map_is_topological_off_the_chord(degree):
     moved = SimpleNamespace(mesh=mesh, degree=degree, continuous=True,
                             coords_nd=X + 0.1 * spacing * rng.uniform(-1, 1, X.shape))
     np.testing.assert_array_equal(_lagrange_subcell_connectivity(moved), exact)
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("degree", [1, 2, 3])
+def test_spherical_manifold(degree):
+    # A surface in 3D: the points keep all three coordinates, and every
+    # sub-triangle faces the way its parent cell does.
+    mesh = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.4, degree=1, qdegree=3)
+    T = uw.discretisation.MeshVariable(f"T_sph{degree}", mesh, 1, degree=degree)
+    grid = vis.meshVariable_to_native_pv_mesh(T)
+    assert grid is not None
+    assert grid.n_cells == _n_cells(mesh) * degree**2
+    np.testing.assert_array_equal(np.asarray(grid.points), np.asarray(T.coords)[:, :3])
+
+    def normals(pv_grid):
+        conn = np.asarray(pv_grid.cells).reshape(pv_grid.n_cells, -1)[:, 1:]
+        x = np.asarray(pv_grid.points)[conn]
+        return np.cross(x[:, 1] - x[:, 0], x[:, 2] - x[:, 0])
+
+    parent = np.repeat(normals(vis.mesh_to_pv_mesh(mesh)), degree**2, axis=0)
+    assert ((normals(grid) * parent).sum(axis=1)).min() > 0.0
