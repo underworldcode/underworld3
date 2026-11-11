@@ -30,8 +30,39 @@ def test_the_default_mover_reaches_its_minimum(capsys):
         mesh, density, verbose=True,
         method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0),
         slip_surfaces=True, skip_threshold=None)
-    trace = capsys.readouterr().out
+    # Only rank 0 prints the trace; every rank parses its copy.
+    trace = uw.mpi.comm.bcast(capsys.readouterr().out, root=0)
     energy = [float(line.split("I=")[1].split()[0]) for line in trace.splitlines()
               if "mmpde outer" in line]
     drop = (energy[0] - energy[-1]) / energy[0]
     assert drop > 0.08, f"energy fell {drop:.1%} in {len(energy)} outer iterations"
+
+
+def _frozen_metric_fields(monkeypatch):
+    """Record the name of every MeshVariable built while the mover runs."""
+    made = []
+    cls = uw.discretisation.MeshVariable
+    real_init = cls.__init__
+
+    def recording(self, varname=None, *args, **kwargs):
+        made.append(varname)
+        real_init(self, varname, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "__init__", recording)
+    return made
+
+
+def test_a_constant_metric_builds_no_frozen_field(monkeypatch):
+    """``Mesh.relax`` passes a constant metric, which the mover reads exactly at any
+    point. It skips the frozen copy of the mesh that a spatial metric needs. The
+    control is the same mover on a metric that varies in space."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=2)
+    made = _frozen_metric_fields(monkeypatch)
+    mesh.relax()
+    assert "M_frozen" not in made, made
+
+    x, y = mesh.X
+    uw.meshing.node_redistribution(mesh, 1.0 + 4.0 * sympy.exp(-((y - 0.5) / 0.1) ** 2))
+    assert "M_frozen" in made, made
+
