@@ -52,3 +52,14 @@ def registered(ksp, name):
     """Whether a test is registered on ``ksp`` under ``name``."""
     tests = _chain(ksp)
     return bool(tests) and name in tests
+
+
+def unregister(ksp, name):
+    """Stop running the test registered on ``ksp`` under ``name``. The dispatcher stays
+    on the KSP, since PETSc cannot remove it, and with no tests left it hands every
+    decision to the KSP's own test. A test that is a bound method holds its object, and
+    the KSP holds the test, so a test that must not outlive its object is unregistered
+    when the object lets the KSP go (#1012)."""
+    tests = _chain(ksp)
+    if tests:
+        tests.pop(name, None)

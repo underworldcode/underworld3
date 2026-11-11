@@ -136,17 +136,21 @@ def test_node_budget_localises_refinement():
     assert _ncell(budgeted) < _ncell(full)
 
 
-def test_adapt_mmg_shim_warns():
+def test_adapt_mmg_shim_warns(monkeypatch):
+    # The shim forwards to mesh.remesh, the MMG route, which is an external opt-in
+    # (a PETSc built with mmg; conda-forge's has none). The forward is recorded
+    # in place of the remesh, so the default test set never reaches DMAdaptMetric.
     base = _base()
     H = uw.discretisation.MeshVariable("Hshim", base, 1, degree=1)
     H.data[:, 0] = 1.0 / 0.1**2
+    forwarded = []
+    monkeypatch.setattr(type(base), "remesh",
+                        lambda self, metric, verbose=False: forwarded.append(metric))
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        try:
-            base.adapt(H, adapter="mmg")        # forwards to remesh (MMG)
-        except Exception:
-            pass                                # MMG backend may be absent
+        assert base.adapt(H, adapter="mmg") is base
         assert any(issubclass(x.category, DeprecationWarning) for x in w)
+    assert forwarded == [H]
 
 
 def test_stokes_velocity_block_auto_picks_up_fmg():
@@ -243,9 +247,11 @@ def test_wedge_metric_funnels_finest_level_to_feature():
 
     cw = base.adapt(wedge, max_levels=3, engine="sbr")
     cg = base.adapt(gauss, max_levels=3, engine="sbr")
-    # per-level marked counts are stashed for checkpoint-by-marker
-    nw = [len(m) for m in cw._adapt_markers]
-    ng = [len(m) for m in cg._adapt_markers]
+    # per-level marked counts are stashed for checkpoint-by-marker. They are this
+    # rank's cells, so they are summed over the ranks: a ratio of one rank's
+    # counts depends on the partition (equal ratios on rank 0 at np 2, #1043)
+    nw = [uw.mpi.comm.allreduce(len(m)) for m in cw._adapt_markers]
+    ng = [uw.mpi.comm.allreduce(len(m)) for m in cg._adapt_markers]
     assert len(nw) == 3 and len(ng) == 3
 
     # growth = finest-level marked / coarsest-level marked. The wedge funnels

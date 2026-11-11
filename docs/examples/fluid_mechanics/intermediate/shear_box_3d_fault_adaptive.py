@@ -4,7 +4,8 @@ r"""
 
 **PHYSICS:** fluid_mechanics
 **DIFFICULTY:** intermediate
-**RUNTIME:** < 5 minutes (requires AMR environment)
+**RUNTIME:** < 5 minutes (needs a PETSc built with mmg, or parmmg in parallel:
+an external opt-in, not conda-forge's PETSc)
 
 ## Description
 
@@ -251,7 +252,7 @@ print(f"Metric range: h_min={metric.data.min():.4f}, h_max={metric.data.max():.4
 
 # %%
 print("Adapting 3D mesh...")
-mesh.adapt(metric, verbose=True)
+mesh.remesh(metric, verbose=True)
 
 n_elements_adapted = mesh.dm.getChart()[1] - mesh.dm.getChart()[0]
 print(f"\nAdapted mesh: ~{n_elements_adapted} entities")
