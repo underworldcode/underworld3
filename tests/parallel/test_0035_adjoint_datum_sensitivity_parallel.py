@@ -4,8 +4,14 @@
 ``getStratumIS``. On a rank holding no point of that boundary, PETSc hard-aborts
 for a value missing from the rank's own value set, and otherwise returns an IS
 wrapping a NULL handle, not ``None``, whose first use segfaults. Every datum
-sensitivity died at np 2, with or without units. The baseline is a central
-difference of the forward solve, which uses no adjoint machinery.
+sensitivity died at np 2, with or without units.
+
+A datum that reads a mesh variable then hung: its derivative was evaluated once
+per owned node, each evaluation collective, and ranks own different numbers of
+nodes. It is now evaluated once per condition and component, on every rank.
+
+The baseline is a central difference of the forward solve, which uses no
+adjoint machinery.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_0035_adjoint_datum_sensitivity_parallel.py
 """
@@ -18,8 +24,9 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier
               pytest.mark.timeout(600)]
 
 
+@pytest.mark.parametrize("datum", ["coordinates", "field"])
 @pytest.mark.parametrize("references", [False, True], ids=["no units", "units"])
-def test_a_lid_datum_gradient_matches_central_differences(references):
+def test_a_lid_datum_gradient_matches_central_differences(references, datum):
     if references:
         uw.get_default_model().set_reference_quantities(
             length=uw.quantity(30, "km"), viscosity=uw.quantity(1e21, "Pa*s"),
@@ -32,7 +39,12 @@ def test_a_lid_datum_gradient_matches_central_differences(references):
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
-    stokes.add_dirichlet_bc((alpha * x * (1 - x), 0.0), "Top")
+    lid = alpha * x * (1 - x)
+    if datum == "field":
+        g = uw.discretisation.MeshVariable("g_lid", mesh, 1, degree=1)
+        g.data[:, 0] = 1.0 + 0.3 * g.coords_nd[:, 0]
+        lid = lid * g.sym[0]
+    stokes.add_dirichlet_bc((lid, 0.0), "Top")
     for wall in ("Bottom", "Left", "Right"):
         stokes.add_dirichlet_bc((0.0, 0.0), wall)
     stokes.tolerance = 1.0e-11

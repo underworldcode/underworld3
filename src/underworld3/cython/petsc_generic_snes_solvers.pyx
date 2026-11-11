@@ -2691,17 +2691,26 @@ class SolverBaseClass(uw_object):
             if misfit_dual is not None:
                 rows = rows + np.asarray(misfit_dual, dtype=float).reshape(-1, n)
             X = np.asarray(self.u.coords_nd)
-            total = 0.0
+            nodes = {}
             for (node, comp), index in self._essential_datum_owner().items():
-                d = derivatives.get(index)
-                if d is None or d[comp] == 0:
-                    continue
-                expr = sympy.sympify(d[comp])
-                if expr.is_Number:
-                    value = float(expr)
-                else:
-                    value = float(_value_at(expr, X[node:node + 1]).ravel()[0])
-                total += float(rows[node, comp]) * value
+                nodes.setdefault((index, comp), []).append(node)
+            total = 0.0
+            # One evaluation per condition and component, on every rank and in the
+            # same order, whether or not this rank owns any of its nodes: a datum
+            # that reads a mesh variable is evaluated collectively, and one call
+            # per owned node hung once ranks owned different numbers of them.
+            for index in sorted(derivatives):
+                d = derivatives[index]
+                for comp in range(len(d)):
+                    if d[comp] == 0:
+                        continue
+                    here = np.array(nodes.get((index, comp), []), dtype=int)
+                    expr = sympy.sympify(d[comp])
+                    if expr.is_Number:
+                        values = np.full(len(here), float(expr))
+                    else:
+                        values = _value_at(expr, X[here].reshape(-1, X.shape[1])).ravel()
+                    total += float(np.dot(rows[here, comp], values)) if len(here) else 0.0
         finally:
             _shared_scratch.give(reaction)
         return float(uw.mpi.comm.allreduce(total, op=uw.MPI.SUM))

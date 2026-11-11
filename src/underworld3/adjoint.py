@@ -772,7 +772,7 @@ def _peel_except(expression, wrt, depth=64):
     definition, one level at a time, and stops at ``wrt`` so the chain rule
     has something to hold on to. Leaves (:func:`_is_leaf`) stay as they are.
     """
-    for _ in range(depth):
+    for _ in range(depth + 1):
         # The named expressions at this level, read from the tree itself:
         # fn_extract_expressions misses a bare named expression and any product
         # made only of named ones, which left a misfit written as one with a

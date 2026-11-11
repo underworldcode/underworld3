@@ -86,3 +86,20 @@ def test_a_misfit_named_ten_levels_deep_has_its_gradient():
     g = _gradient(alpha, alpha, misfit=misfit)
 
     assert g["parameters"][alpha] == pytest.approx(-g["J"] / 2.0, rel=1e-6)
+
+
+def test_the_peel_expands_its_full_depth_and_refuses_a_self_reference():
+    from underworld3.adjoint import _peel
+
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=1 / 4)
+    f = uw.discretisation.MeshVariable("f_depth", mesh, 1, degree=1)
+    chain = f.sym[0]
+    for level in range(64):
+        chain = uw.expression(rf"c_{{{level}}}", chain, "one level up")
+    assert _peel(chain) == f.sym[0]
+
+    loop = uw.expression(r"\ell", 1.0, "refers to itself")
+    loop.sym = 2 * loop
+    with pytest.raises(RecursionError):
+        _peel(loop)
