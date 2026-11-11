@@ -2889,16 +2889,19 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                    f"refinement>=1, or adapt onto a child, to get FMG."
                    + cost)
         # attributed to the user's line: a fixed stacklevel landed on memprobe's
-        # wrapper, and the filter then showed it once per process
-        _warn_from_caller(
-            f"Stokes: the velocity block fell back to '{installed}' — no mesh "
-            f"hierarchy was available, so the custom-P multigrid could not be "
-            f"built. FMG is 4x faster on this class of problem and does ~45x "
-            f"less velocity work (#625); '{installed}' degrades under "
-            f"refinement until it hits its iteration cap, which corrupts the "
-            f"Schur operator and stalls the pressure solve. Build the base mesh "
-            f"with refinement>=1 to get a hierarchy." + cost,
-            RuntimeWarning)
+        # wrapper, and the filter then showed it once per process; rank 0 only,
+        # as the solve's other warnings
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                _warn_from_caller(
+                    f"Stokes: the velocity block fell back to '{installed}' — no mesh "
+                    f"hierarchy was available, so the custom-P multigrid could not be "
+                    f"built. FMG is 4x faster on this class of problem and does ~45x "
+                    f"less velocity work (#625); '{installed}' degrades under "
+                    f"refinement until it hits its iteration cap, which corrupts the "
+                    f"Schur operator and stalls the pressure solve. Build the base mesh "
+                    f"with refinement>=1 to get a hierarchy." + cost,
+                    RuntimeWarning)
 
     # @property
     # def continuity_rhs(self):

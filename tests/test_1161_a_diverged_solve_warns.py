@@ -8,7 +8,8 @@ so it does not depend on #1059's cause.
 
 - a diverged solve warns once, on rank 0, naming the reason, attributed to the
   caller's solve() line;
-- a converged solve does not.
+- a converged solve does not, and nor does the stop a bounded difficulty probe
+  asks for (DIVERGED_MAX_IT).
 """
 import warnings
 
@@ -67,3 +68,14 @@ def test_a_converged_solve_does_not_warn():
         stokes.solve()
     assert stokes.snes.getConvergedReason() > 0
     assert not _divergence_warnings(record)
+
+
+def test_a_bounded_probe_at_its_cap_does_not_warn():
+    stokes = _box("probe")
+    u = stokes.Unknowns.u.sym
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1 + 1.0e4 * u.dot(u)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        report = stokes.estimate_difficulty(1, warm=False)
+    assert report.reason == -5, report.reason_str      # DIVERGED_MAX_IT, the asked-for stop
+    assert not _divergence_warnings(record), [str(w.message) for w in record]
