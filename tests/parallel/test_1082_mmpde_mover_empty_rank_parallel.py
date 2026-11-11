@@ -1,4 +1,4 @@
-"""The MMPDE mover runs when some ranks hold no cells (#1085).
+"""The MMPDE mover runs when some ranks hold no cells (#1082).
 
 Every step of ``_mmpde_mover`` after it builds its cell list is collective.
 It used to return ``[]`` on a rank whose cell list came back ``None`` while
@@ -8,11 +8,14 @@ rank aborted the job ("Message truncated"). ``UnstructuredSimplexBox`` with
 
 Checked here:
 
-* with some ranks empty, the mover completes on every rank, every rank
-  returns the same energy history, the energy does not increase, and no
-  cell is inverted;
+* with some ranks empty, the mover completes on every rank and moves the
+  mesh, every rank returns the same energy history, the energy does not
+  increase, and no cell is inverted;
 * on a quadrilateral mesh, where the mover does not apply, every rank
   returns ``[]`` together.
+
+That the moved mesh matches a serial run is checked in
+``tests/test_1082_mmpde_mover_empty_rank_matches_serial.py``.
 """
 
 import numpy as np
@@ -29,8 +32,10 @@ BOUNDARIES = ("Top", "Bottom", "Left", "Right")
 
 
 def _metric(mesh):
+    # Off the box's centre: the four-cell box has one interior vertex, at the
+    # centre, and a metric symmetric about it would leave it where it is.
     x, y = mesh.X
-    return 1.0 + 4.0 * sympy.exp(-((y - 0.5) / 0.2) ** 2)
+    return 1.0 + 4.0 * sympy.exp(-((x - 0.3) ** 2 + (y - 0.35) ** 2) / 0.04)
 
 
 @pytest.mark.tier_b
@@ -42,8 +47,12 @@ def test_mover_completes_with_empty_ranks():
     if min(counts) > 0:
         pytest.skip(f"no rank is empty at np {uw.mpi.size} (cells per rank {counts})")
 
+    before = np.asarray(mesh.X.coords).copy()
     energies = _mmpde_mover(mesh, _metric(mesh), BOUNDARIES, False, n_outer=2,
                             metric_eval="sympy")
+    moved = np.abs(np.asarray(mesh.X.coords) - before).max() if len(before) else 0.0
+    # The interior vertex moves 0.031 (serially and at np 4 alike).
+    assert uw.mpi.comm.allreduce(float(moved), op=MPI.MAX) > 0.01
 
     every = uw.mpi.comm.allgather([float(e) for e in energies])
     assert all(e == every[0] for e in every), every
