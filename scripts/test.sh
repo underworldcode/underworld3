@@ -423,6 +423,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)
   batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)
   batch 4 tests/test_1161*py  # a diverged solve warns (#1059)
+  batch 4 tests/test_1163*py  # options and a tolerance set after a solve take effect (#1078)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections

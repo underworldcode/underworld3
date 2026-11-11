@@ -7216,6 +7216,9 @@ class SNES_Scalar(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # Pure-Neumann scalar problems: attach a constant nullspace
         # to the (now set-up) Jacobian. No-op unless
@@ -8290,6 +8293,9 @@ class SNES_Vector(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
@@ -8990,6 +8996,9 @@ class SNES_MultiComponent(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
