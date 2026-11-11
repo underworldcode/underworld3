@@ -3497,6 +3497,16 @@ class SolverBaseClass(uw_object):
             except (AttributeError, TypeError):
                 # Sanctioned: no alpha container (never built); the start value stands
                 pass
+        # A continuation solve resets alpha to 0 after it ends (a clean Picard
+        # tangent for the next step), so the live alpha read above is not where
+        # this solve finished. Its own record is, and the iterations by tangent
+        # are the breakdown the report otherwise loses: whether the frozen stage
+        # found the basin or ran out (#778). Reset per solve in
+        # _plan_picard_warmup, so a previous solve's stages are never reported.
+        stages = getattr(self, "_continuation_stages", None)
+        if stages and "tangent" in config:
+            config["tangent"]["alpha_end"] = float(stages["final_alpha"])
+            config["tangent"]["stages"] = dict(stages)
         _kcfg = config.get("ksp")
         # Only once a linear solve has run: before that the PC is not set up, and
         # PCFieldSplitGetSubKSP errors — printing to stderr even when caught (measured on
