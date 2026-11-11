@@ -3955,6 +3955,45 @@ class SolverBaseClass(uw_object):
         -14: ("DIVERGED_OBJECTIVE_NANORINF", "Objective is Not-a-Number or infinite"),
     }
 
+    def _warn_on_capped_sub_solves(self):
+        """Warn when a fieldsplit sub-solve of this solve stopped at its iteration cap
+        (#585, #625).
+
+        PETSc does not count a sub-KSP that stops at its cap (``DIVERGED_ITS``) as a
+        failure, so the outer solve can converge while the block never solved: the
+        Schur operator is applied through the velocity solve, and a capped velocity
+        block hands the pressure Krylov an operator that moves between applications.
+        The count is in ``solve_report.sub[name].capped``; this says so at solve time,
+        one warning per capped block. The message names the block and its cap only,
+        so Python's warning filter shows it once per block in a time loop; the counts
+        stay in the report. Not during a bounded difficulty probe, whose caps are the
+        point. Rank 0 warns; nothing collective."""
+        report = getattr(self, "_solve_report", None)
+        if report is None or self._difficulty_probe:
+            return
+        import warnings
+        for name, sub in (getattr(report, "sub", None) or {}).items():
+            if not getattr(sub, "capped", 0):
+                continue
+            cap = None
+            try:
+                for _sk in self.snes.getKSP().getPC().getFieldSplitSubKSP():
+                    if (_sk.getOptionsPrefix() or "").endswith(f"fieldsplit_{name}_"):
+                        cap = _sk.getTolerances()[3]
+            except Exception:
+                pass
+            # a solver that splits by DM field index names its blocks "0", "1", ...
+            block = f"field-{name}" if str(name).isdigit() else name
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    warnings.warn(
+                        f"{type(self).__name__}: the {block} sub-solve stopped at its "
+                        f"iteration cap{f' ({cap})' if cap is not None else ''} without "
+                        f"converging, so the solve's convergence does not mean that block "
+                        f"solved. Counts in solve_report.sub[{name!r}].capped; raise "
+                        f"fieldsplit_{name}_ksp_max_it or improve its preconditioner "
+                        f"(#585, #625).", RuntimeWarning, stacklevel=3)
+
     def _warn_on_divergence(self, phase="solve"):
         """Check SNES convergence and warn on genuine divergence.
 
@@ -3965,6 +4004,7 @@ class SolverBaseClass(uw_object):
             ``DIVERGED_MAX_IT`` served the nrichardson warm-up removed in #791.)
         """
 
+        self._warn_on_capped_sub_solves()
         reason = self.snes.getConvergedReason()
 
         if reason >= 0:
