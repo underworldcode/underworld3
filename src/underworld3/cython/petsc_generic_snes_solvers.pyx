@@ -6986,13 +6986,10 @@ class SNES_Scalar(SolverBaseClass):
                                 NULL,
                                 )
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                0, 0, 0,
-                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                NULL,
-                                NULL,
-                                )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
         # Set constants on DS before copying to coarse levels
         self._set_constants_on_ds(ds)
@@ -8067,21 +8064,10 @@ class SNES_Vector(SolverBaseClass):
                                     NULL, NULL,
                                     )
 
-                if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
-                else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, NULL,
-                                    )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
 
         if verbose:
@@ -8810,21 +8796,10 @@ class SNES_MultiComponent(SolverBaseClass):
                                     NULL, NULL,
                                     )
 
-                if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
-                else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, NULL,
-                                    )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
