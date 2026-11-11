@@ -287,7 +287,7 @@ def metric_density_from_gradient(
     for the metric movers — the relative, fixed-node-budget
     analogue of :func:`underworld3.adaptivity.metric_from_gradient`
     (which maps ``|∇field|`` to an *absolute* target edge length
-    for the MMG re-mesher; the mover has a fixed node budget so it
+    for ``mesh.adapt`` and the mmg re-mesher; the mover has a fixed node budget so it
     redistributes *relatively* instead).
 
     .. math::

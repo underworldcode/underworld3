@@ -16,7 +16,7 @@ Optional Module Categories:
 Installation:
 - Geographic: `pixi run install-geo`
 - Visualization: `pixi install -e runtime` or `pixi install -e dev`
-- AMR: `pixi install -e amr` then `pixi run -e amr petsc-build`
+- AMR: `pixi install -e amr` then `pixi run -e amr petsc-local-build`
 """
 
 import pytest
@@ -114,7 +114,7 @@ requires_pyvista_rendering = pytest.mark.skipif(
 
 requires_amr = pytest.mark.skipif(
     not HAS_AMR,
-    reason="Requires AMR-enabled PETSc. Install with: pixi install -e amr && pixi run -e amr petsc-build"
+    reason="Requires AMR-enabled PETSc. Install with: pixi install -e amr && pixi run -e amr petsc-local-build"
 )
 
 
@@ -338,7 +338,7 @@ def test_optional_features_summary():
     print("\nTo install optional features:")
     print("  Geographic: pixi run install-geo")
     print("  Viz/Runtime: pixi install -e runtime")
-    print("  AMR: pixi install -e amr && pixi run -e amr petsc-build")
+    print("  AMR: pixi install -e amr && pixi run -e amr petsc-local-build")
     print("=" * 60)
 
 
