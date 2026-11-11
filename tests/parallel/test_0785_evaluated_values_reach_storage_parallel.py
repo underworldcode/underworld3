@@ -148,7 +148,7 @@ def test_deform_keeps_every_tensor_shape_in_its_components():
     assert all(e < DEFORM_ERROR_BOUND for e in errors.values()), errors
 
 
-def test_deform_with_units_keeps_a_constant_field(reference_scales):
+def test_deform_with_units_keeps_a_constant_field(reference_scales, monkeypatch):
     """Pins development's number, not a correct deform: a constant T of raw 0.5 K
     reads raw 0.5 after this call, as on development. With the transferred values
     reduced by the temperature scale it came out at 0.0005 (review round 3, H1).
@@ -157,10 +157,14 @@ def test_deform_with_units_keeps_a_constant_field(reference_scales):
     0.99 of ``mesh.X.coords`` in metres, written as raw coordinates, so the DM
     coordinates go to 9.9e11 (#979) and every new node lies outside the old mesh.
     The extrapolated 500 K is then clipped onto the non-dimensional bounds of its
-    neighbours, [0.5, 0.5], by the default ``REMESH_MONOTONE="clamp"`` (#989). With
-    the clamp off this test fails. It is here to catch a change in that number, and
-    fixing #979 or #989 is expected to change it.
+    neighbours, [0.5, 0.5], by the ``"clamp"`` limiter (#989). The remap's limiter
+    is off by default since #982, which stores the unclipped 500, so this test sets
+    the clamp explicitly to keep pinning the storage-layout path it was written for.
+    Fixing #979 is expected to change it.
     """
+    from underworld3.discretisation import remesh as remesh_module
+
+    monkeypatch.setattr(remesh_module, "REMESH_MONOTONE", "clamp")
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(uw.quantity(0, "km"), uw.quantity(0, "km")),
         maxCoords=(uw.quantity(1000, "km"), uw.quantity(1000, "km")),
