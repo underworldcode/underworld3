@@ -267,7 +267,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     # signed-measure primitive and d! volume factor.
     cells_all = _tri_cells(dm) if cdim == 2 else _tet_cells(dm)
     signed_vol = _signed_areas if cdim == 2 else _signed_volumes
-    # The cell list is None for two reasons, decided collectively (#1085),
+    # The cell list is None for two reasons, decided collectively (#1082),
     # because every step below the return is collective:
     # - no local cells (a small mesh, or an uneven partition): this rank
     #   takes part with an empty cell array, contributing nothing to the sums;
