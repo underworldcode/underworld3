@@ -956,9 +956,10 @@ def _global_pressure_pin(dm):
     partition (#348).
 
     The pin is a correct gauge only where constant pressure is an exact null mode
-    of the constrained operator. Where it is not (a split fault, an open boundary,
-    a pressure Dirichlet condition) the pinned row replaces a real equation and
-    the direct solve converges to a different problem (#899). COLLECTIVE."""
+    of the constrained operator. Where it is not (an open boundary, a given
+    normal that is not the wall's, a pressure Dirichlet condition) the pinned row
+    replaces a real equation and the direct solve converges to a different
+    problem (#348). COLLECTIVE."""
     from mpi4py import MPI
 
     lsec, gsec = dm.getLocalSection(), dm.getGlobalSection()
@@ -1587,10 +1588,6 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # in the rotated frame)
             interface.residual_add(solver, uvec, Fh)
         _zero_rows_local(Fh, normal_rows)
-        if lu_pin is not None:
-            # Same reason as normal_rows: the pinned row is not an equation the
-            # solve is trying to satisfy, so it is not evidence about convergence.
-            _zero_rows_local(Fh, [lu_pin])
         if use_pnull:
             sp = Fh.getSubVector(pres_is)
             n_p = sp.getSize()
@@ -1598,6 +1595,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
             pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
+        if lu_pin is not None:
+            # Same reason as normal_rows: the pinned row is not an equation the
+            # solve is trying to satisfy, so it is not evidence about convergence.
+            # AFTER the gauge projection: zeroed first, the pinned row's residual
+            # became a pressure mean that the projection spread over every other
+            # pressure row, which then solved a shifted problem. A pin beside a
+            # Dirichlet wall, where the lifted velocity has divergence, stalled
+            # the direct solve at 2e-5 and 4-6 % off in slip (#899).
+            _zero_rows_local(Fh, [lu_pin])
         if rot_modes:
             removed = 0.0
             for m in rot_modes:              # project out the rotation-gauge modes
