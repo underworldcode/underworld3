@@ -59,7 +59,7 @@ from typing import Optional, Callable, Union
 
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
-from underworld3.cython.generic_solvers import SNES_MultiComponent
+from underworld3.cython.generic_solvers import SNES_MultiComponent, _warn_from_caller
 from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities import memprobe
@@ -2888,15 +2888,20 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                    f"mesh hierarchy was available. Build the base mesh with "
                    f"refinement>=1, or adapt onto a child, to get FMG."
                    + cost)
-        warnings.warn(
-            f"Stokes: the velocity block fell back to '{installed}' — no mesh "
-            f"hierarchy was available, so the custom-P multigrid could not be "
-            f"built. FMG is 4x faster on this class of problem and does ~45x "
-            f"less velocity work (#625); '{installed}' degrades under "
-            f"refinement until it hits its iteration cap, which corrupts the "
-            f"Schur operator and stalls the pressure solve. Build the base mesh "
-            f"with refinement>=1 to get a hierarchy." + cost,
-            RuntimeWarning, stacklevel=3)
+        # attributed to the user's line: a fixed stacklevel landed on memprobe's
+        # wrapper, and the filter then showed it once per process; rank 0 only,
+        # as the solve's other warnings
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                _warn_from_caller(
+                    f"Stokes: the velocity block fell back to '{installed}' — no mesh "
+                    f"hierarchy was available, so the custom-P multigrid could not be "
+                    f"built. FMG is 4x faster on this class of problem and does ~45x "
+                    f"less velocity work (#625); '{installed}' degrades under "
+                    f"refinement until it hits its iteration cap, which corrupts the "
+                    f"Schur operator and stalls the pressure solve. Build the base mesh "
+                    f"with refinement>=1 to get a hierarchy." + cost,
+                    RuntimeWarning)
 
     # @property
     # def continuity_rhs(self):
