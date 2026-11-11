@@ -209,6 +209,20 @@ def jit_bundles(monkeypatch):
     return bundles
 
 
+def _reset_global_units_state():
+    """A fresh default model, and non-dimensional scaling off.
+
+    ``reset_default_model`` leaves the global scaling flag as it was (the flag is
+    global, not the model's), and ``set_reference_quantities`` switches it on. Left
+    on, it hands the next test a model with no reference quantities and scaling
+    still active (#1001).
+    """
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    uw.use_nondimensional_scaling(False)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def isolate_module_state():
     """Reset the global model BEFORE a module's own fixtures are built.
@@ -234,11 +248,9 @@ def isolate_module_state():
     Resetting at module scope closes that window for every module-scoped
     fixture in the suite, not just the one that exposed it.
     """
-    import underworld3 as uw
-
-    uw.reset_default_model()
+    _reset_global_units_state()
     yield
-    uw.reset_default_model()
+    _reset_global_units_state()
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -257,7 +269,7 @@ def isolate_test_state(request):
     test_file = request.node.fspath.basename
 
     # Reset model to prevent pollution from previous tests
-    uw.reset_default_model()
+    _reset_global_units_state()
 
     # Only keep strict mode ON for the strict enforcement tests
     if test_file == "test_0814_strict_units_enforcement.py":
