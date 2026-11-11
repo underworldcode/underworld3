@@ -8186,15 +8186,21 @@ class SNES_Vector(SolverBaseClass):
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         # Layer 1: the Picard warm-up for this solve, decided before _build (a warm-up
-        # under the consistent tangent needs the blended Jacobian compiled in).
-        self._plan_picard_warmup(picard, zero_init_guess,
-                                 own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+        # under the consistent tangent needs the blended Jacobian compiled in). The
+        # rotated loop stages an explicit picard itself, as for Stokes (#876).
+        self._plan_picard_warmup(
+            picard, zero_init_guess,
+            own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                          or getattr(self, "_fault_contact_faults", None)),
+            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+        picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
         self._build(verbose, debug, debug_name)
         if self._picard_blend and self.consistent_jacobian is True:
             self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
-        if self._solve_rotated_if_registered(zero_init_guess, verbose, 0, None):
+        # the rotated path (a sheet on a manifold) stages the Picard warm-up as
+        # Stokes' does (#876)
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, picard, None):
             return
-
 
         gvec = self.dm.getGlobalVec()
 

@@ -113,13 +113,30 @@ embedding space. Two normals are involved, and they are different on purpose:
 The rigid-rotation gauge offers the three Killing fields; with basal drag they are
 not null modes and are rejected by the operator test, as they should be.
 
+`sheet.normal_velocity = w` prescribes the sheet's velocity along its own normal: a
+number, or an expression of position (time enters through a constant the caller
+updates). It is the datum of the tangency constraint, $\mathbf u\cdot\hat{\mathbf n} = w$
+at every node, so the embedded velocity carries the normal motion and the in-plane
+strain rate picks up the curvature term $w\,\nabla_s\hat{\mathbf n}$, which is
+$(w/R)\,\mathbf P$ on a sphere: the breathing of a tidally flexed shell, for
+example. `None`, the default, keeps the sheet in its tangent plane. It is
+re-evaluated at every solve, and a flat sheet refuses it
+(`tests/test_1092_thin_sheet_prescribed_normal.py`).
+
 The stress history is carried on the grid (`stress_transport = "eulerian"`, the
-streamline-upwind transport the Eulerian solvers use) by default. On a manifold it
-is the only choice; the semi-Lagrangian trace-back is refused there. On a flat
-mesh it can be chosen, but next to a split-node fault its point evaluation reads
-across the slit: with a sliding Coulomb fault it produced a period-2-step
-oscillation of the near-tip slip rate and patchy stress along the trace, both of
-which the grid history removes, at a sixth of the Newton work.
+streamline-upwind transport the Eulerian solvers use) by default. On a manifold the
+grid flavours are the ones available: `"eulerian"`, and `"none"`, which leaves the
+history at its node for a tidal or seismic cycle that moves far less than a cell a
+step. The trace-back flavours are refused there, because they leave the faceted
+surface. On a flat mesh they can be chosen, but next to a split-node fault the
+point evaluation reads across the slit: with a sliding Coulomb fault it produced a
+period-2-step oscillation of the near-tip slip rate and patchy stress along the
+trace, both of which the grid history removes, at a sixth of the Newton work.
+
+A manifold sheet always solves on the rotated path. `sheet.solve(picard=N)` stages
+N Picard iterations before Newton there, as `Stokes.solve(picard=N)` does
+(`tests/test_1159_thin_sheet_solve_takes_picard.py`). Time reaches the sheet through
+`mesh.t`, the model's clock, as for every solver.
 
 ## Faults on a sphere
 

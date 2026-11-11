@@ -2268,11 +2268,25 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
         # anyone chooses — it crawls against the sub-solve cap on 3-D fault
         # meshes. Ruling 2026-10-17: flag the fallback every time it happens.
         if not getattr(solver, "_rotated_gamg_fallback_warned", False):
-            mpi.pprint("[rotated_bc] WARNING: no multigrid hierarchy on this mesh "
-                       "(no adapt tail, no set_custom_fmg registration); the "
-                       "velocity block falls back to GAMG. Build the mesh through "
-                       "adapt() so the tail rides through, or register a coarse "
-                       "tail with set_custom_fmg.")
+            # the advice fits the mesh (#887): a mesh built with refinement=N
+            # carries its coarse levels without this solver having registered
+            # them, and adapt() on a manifold does not keep its vertices on the
+            # surface, so it is no advice for a sheet
+            mesh = solver.mesh
+            if len(getattr(mesh, "dm_hierarchy", None) or ()) > 1:
+                advice = ("This mesh was refined and carries its coarse levels: "
+                          "register them with custom_mg.set_custom_fmg(solver, "
+                          "mesh.multigrid_levels[:-1]).")
+            elif mesh.dim < mesh.cdim:
+                advice = ("Build the manifold with refinement levels and register "
+                          "them with custom_mg.set_custom_fmg.")
+            else:
+                advice = ("Build the mesh with refinement levels or through "
+                          "adapt() so a coarse tail rides through, and register it "
+                          "with custom_mg.set_custom_fmg.")
+            mpi.pprint("[rotated_bc] WARNING: no multigrid hierarchy is registered "
+                       "for this solver (no set_custom_fmg registration, no adapt "
+                       "tail); the velocity block falls back to GAMG. " + advice)
             solver._rotated_gamg_fallback_warned = True
         return None
     walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
