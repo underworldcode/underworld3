@@ -4556,7 +4556,7 @@ class Mesh(Stateful, uw_object):
 
         Coordinates with units are converted by the model's length scale, in any
         length unit; a unit that is not a length is refused. A plain array is model
-        coordinates, as evaluate reads one. In a units model a plain array the size of
+        coordinates, as evaluate reads one, and so are dimensionless coordinates. In a units model a plain array the size of
         the physical domain is refused rather than read as model coordinates and
         scaled up.
         """
@@ -4565,6 +4565,13 @@ class Mesh(Stateful, uw_object):
         scale = (self.CoordinateSystem._length_scale
                  if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
         units = getattr(coords, "units", None)
+        if units is not None and not (1.0 * uw.units(str(units))).dimensionality:
+            # Dimensionless coordinates are model coordinates, as a plain array is,
+            # but say so, so the physical-size check below does not apply.
+            if not isinstance(coords, UnitAwareArray):        # a pint Quantity
+                return numpy.asarray(coords.to("dimensionless").magnitude, dtype=float)
+            model = coords.to("dimensionless")
+            return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
         if units is not None:
             if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
                 raise ValueError(f"mesh coordinates must be a length, not {units}")
