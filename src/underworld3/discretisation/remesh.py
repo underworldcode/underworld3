@@ -343,12 +343,18 @@ def remesh_with_field_transfer(
     # hooks fire. Drained into ctx.scratch after do_move returns.
     mesh._remesh_pending_scratch = {}
     try:
-        return _remesh_with_field_transfer_impl(
+        moved = _remesh_with_field_transfer_impl(
             mesh, do_move, dt=dt,
             extra_zero=extra_zero, verbose=verbose)
     finally:
         mesh._in_remesh_transfer = False
         mesh._remesh_pending_scratch = None
+    # Every mover commits here, mesh.deform among them, and a FAC patch built on
+    # the old geometry is stale (#1017). Not in _deform_mesh, which also runs for
+    # the trial moves inside ephemeral_coords.
+    if moved:
+        mesh._move_version = getattr(mesh, "_move_version", 0) + 1
+    return moved
 
 
 def _remesh_with_field_transfer_impl(

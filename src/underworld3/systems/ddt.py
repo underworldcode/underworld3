@@ -238,6 +238,12 @@ def _as_float(value):
     if isinstance(value, (int, float)):
         return float(value)
     if hasattr(value, "magnitude") or hasattr(value, "dimensionality"):
+        if hasattr(value, "dimensionality") and not value.dimensionality:
+            # a ratio such as (600 kyr) / (20 Myr) is dimensionless but not
+            # reduced: its magnitude is 30 in kyr/Myr, 0.03 once reduced
+            pint_value = getattr(value, "_pint_qty", value)
+            if hasattr(pint_value, "to"):
+                return float(pint_value.to("dimensionless").magnitude)
         nd = uw.non_dimensionalise(value)
         if hasattr(nd, "magnitude"):
             return float(nd.magnitude)

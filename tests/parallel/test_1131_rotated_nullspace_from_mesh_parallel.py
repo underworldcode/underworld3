@@ -22,6 +22,11 @@ wall; a rank-local verdict would keep the mode there and drop it elsewhere.
   partitioner change makes the power assert fail, the fixture has lost its power, not
   the library its fix: widen the patch's complement (raise the x > 0.9 cut).
 
+- Walls that mix a given and the facet-averaged normal (#968): an exact given normal
+  keeps the rotation removed, a tilted one rejects it, with the same verdict and the
+  same given-wall violation on every rank; the rotation is measured on the global
+  vector.
+
 The serial file, tests/test_1131_rotated_nullspace_from_mesh.py, carries the nodal
 measurements, which read local arrays.
 
@@ -155,3 +160,75 @@ def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
                                       info["rotation_gauge"]["orthonormal"]))
     assert set(declared) == {1}, (declared, moved)
     assert set(verdicts) == {(True, (True,), 1)}, (verdicts, moved)
+
+
+def _slid_mixed(name, upper_normal):
+    """The serial file's mixed case: every vertex slid along its circle (so the
+    facet-averaged walls are faceted unevenly), Lower on the facet-averaged normal and
+    Upper on ``upper_normal``."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+    X = np.array(mesh.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    theta = np.arctan2(X[:, 1], X[:, 0])
+    theta = theta + 0.05 * np.sin(3.0 * theta)
+    r = r + 0.02 * np.sin(np.pi * (r - 0.5) / 0.5) * np.cos(2.0 * theta)
+    mesh.deform(np.column_stack([r * np.cos(theta), r * np.sin(theta)]))
+    v = uw.discretisation.MeshVariable(f"V{name}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P{name}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y = mesh.X
+    rr = sympy.sqrt(x ** 2 + y ** 2)
+    th = sympy.atan2(y, x)
+    stokes.bodyforce = (sympy.cos(3 * th) * sympy.sin(sympy.pi * (rr - 0.5) / 0.5)
+                        * sympy.Matrix([x / rr, y / rr]).T)
+    stokes.add_rotated_freeslip_bc(0, "Lower")
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=upper_normal(x, y, rr))
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-6
+    return stokes
+
+
+def _rotation_content(stokes):
+    """|U . m| / (|U| |m|) for the rotation m, on the composite global vector: no
+    ghost copies, so the same on every rank."""
+    from underworld3.utilities import rotated_bc
+
+    U = stokes._rotated_freeslip_info["U"]
+    (m,) = rotated_bc._rigid_rotation_modes(stokes)
+    content = abs(U.dot(m)) / (U.norm() * m.norm())
+    stokes.dm.restoreGlobalVec(m)
+    return content
+
+
+def test_mixed_normals_remove_the_rotation_on_every_rank():
+    # #968: the exemption covers the facet-averaged wall, the given wall is tested
+    # against its own normal, and every rank reaches the same verdict
+    stokes = _slid_mixed("mx", lambda x, y, r: sympy.Matrix([[x / r, y / r]]))
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    mode = info["rotation_gauge"]["modes"][0]
+    verdicts = uw.mpi.comm.allgather((tuple(info["declared_modes_exempt"]),
+                                      info["rotation_gauge"]["orthonormal"],
+                                      mode["given_viol"]))
+    assert len(set(verdicts)) == 1 and verdicts[0][:2] == ((True,), 1), verdicts
+    assert verdicts[0][2] < 1.0e-12, verdicts
+    assert _rotation_content(stokes) < 1.0e-10
+    assert _normal_velocity(info) < 1.0e-12
+
+
+def test_a_tilted_given_normal_rejects_the_rotation_on_every_rank():
+    tilt = lambda x, y, r: (sympy.Matrix([[x / r + 0.1, y / r]])
+                            / sympy.sqrt((x / r + 0.1) ** 2 + (y / r) ** 2))
+    stokes = _slid_mixed("mt", tilt)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    info = stokes._rotated_freeslip_info
+    verdicts = uw.mpi.comm.allgather((info["rotation_gauge"]["orthonormal"],
+                                      info["rotation_gauge"]["modes"][0]["rejected_by"]))
+    assert set(verdicts) == {(0, "given_wall")}, verdicts
+    warned = any("not tangent to" in str(w.message) for w in record)
+    assert uw.mpi.comm.allreduce(int(warned), op=MPI.MAX) == 1
+    assert _normal_velocity(info) < 1.0e-12
