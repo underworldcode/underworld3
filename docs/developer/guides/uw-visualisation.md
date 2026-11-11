@@ -36,7 +36,7 @@ mesh = uw.discretisation.Mesh(f"{label}.mesh.00000.h5")   # or the live mesh
 T = uw.discretisation.MeshVariable("T_v2p1", mesh, 1, degree=3, continuous=True)
 T.read_timestep(label, "T_v2p1", 0, outputPath=D)          # or use the live var
 
-pv_T = vis.meshVariable_to_pv_mesh_object(T)    # Delaunay through T's OWN DOFs
+pv_T = vis.meshVariable_to_pv_mesh_object(T)    # mesh's own cells, through T's DOFs
 pv_T.point_data["T"] = np.asarray(T.data[:, 0]) # attach DOF values DIRECTLY (P3-faithful)
 edges = vis.mesh_to_pv_mesh(mesh).extract_all_edges()
 
@@ -58,9 +58,12 @@ pl.screenshot(out); pl.close()
 3. Default lighting darkens the colormap. **Always `lighting=False`** on every
    `add_mesh`.
 4. Re-evaluating via `scalar_fn_to_pv_points` / vertex-only sampling drops the
-   high-order DOFs → blocky. **Attach `T.data[:,0]` directly** to the DOF-cloud
-   mesh from `meshVariable_to_pv_mesh_object` (it is correct for annulus/box/disc
-   — do NOT avoid it). `clim` MUST be passed (default `clim=""` trips `np.any`).
+   high-order DOFs → blocky. **Attach `T.data[:,0]` directly** to the mesh from
+   `meshVariable_to_pv_mesh_object`. For a continuous field of any degree, on
+   triangles, quads, tets or hexes, it is the mesh's own cells, each subdivided
+   through T's nodes (k² or k³ sub-cells, none dropped; #1057). Only a
+   discontinuous field still falls back to a Delaunay of the nodes. `clim` MUST
+   be passed (default `clim=""` trips `np.any`).
 5. Resampling ANY field (even P1) onto a regular pixel grid via
    `uw.function.evaluate` **dapples at element boundaries** — grid points that
    straddle a facet get located into a neighbouring cell with slightly-off
