@@ -31,10 +31,10 @@ def _dm_coords(mesh):
     return np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
 
 
-@pytest.mark.parametrize("form", ["metres", "kilometres", "model"])
+@pytest.mark.parametrize("form", ["metres", "kilometres", "model", "dimensionless", "pint dimensionless"])
 def test_deform_keeps_the_mesh_in_its_frame(units_model, form):
     """Coordinates with units are converted, in whatever length unit; a plain array is
-    model coordinates, as evaluate reads one."""
+    model coordinates, as evaluate reads one, and so are dimensionless coordinates."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
     start = _dm_coords(mesh)
     assert np.linalg.norm(start, axis=1).max() == pytest.approx(1.0)
@@ -44,6 +44,10 @@ def test_deform_keeps_the_mesh_in_its_frame(units_model, form):
     scale = np.where(inside, 1.02, 1.0)[:, None]
     if form == "model":
         target = start * scale
+    elif form == "dimensionless":
+        target = uw.utilities.unit_aware_array.UnitAwareArray(start * scale, units="dimensionless")
+    elif form == "pint dimensionless":
+        target = (start * scale) * uw.units("dimensionless")
     else:
         target = mesh.X.coords * scale
         if form == "kilometres":
