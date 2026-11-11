@@ -161,8 +161,10 @@ resume_info = _latest_snapshot() if args.resume else None
 if resume_info is not None:
     resume_step, resume_label = resume_info
     print(f"  resuming from {resume_label}")
+    # qdegree must match the fresh-start mesh (3): Mesh(file) defaults to 2,
+    # and the solvers need 3 for the degree-3 temperature.
     mesh = uw.discretisation.Mesh(
-        os.path.join(OUT_DIR, f"{resume_label}.mesh.00000.h5"))
+        os.path.join(OUT_DIR, f"{resume_label}.mesh.00000.h5"), qdegree=3)
 elif args.from_perturbation:
     resume_step = 0
     resume_label = None
