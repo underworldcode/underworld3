@@ -14,7 +14,8 @@ the bug depends on. Both run as subprocesses of a serial pytest, through the
 MPI supervisor; this file is also the worker (``python -m mpi4py <this file>
 write|read <dir>``).
 
-The meshes: a unit box and an annulus at refinement 2, and the box moved
+The meshes: a unit simplex box, a quadrilateral box and an annulus at
+refinement 2, and the simplex box moved
 further than half its finest spacing before writing, so a reload that paired
 vertices by their saved positions instead of their reference ones would fail.
 Each carries a P2 field ``T = x``, written with both ``write_timestep`` and
@@ -32,13 +33,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-CASES = ("box", "moved_box", "annulus")
+CASES = ("box", "moved_box", "annulus", "quad")
 REFINEMENT = 2
 
 
 def _build(case):
     import underworld3 as uw
 
+    if case == "quad":
+        # Quadrilaterals renumber differently under refinement than triangles,
+        # so they expose the bug at write np 1, read np 2 (triangles need np 4).
+        return uw.meshing.StructuredQuadBox(elementRes=(4, 4), refinement=REFINEMENT)
     if case == "annulus":
         mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.25,
                                   refinement=REFINEMENT)

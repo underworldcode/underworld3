@@ -14,7 +14,11 @@ Checked here, in parallel:
   coordinates the fix stores) of an unmoved mesh still restores the hierarchy,
   matched by its saved coordinates;
 * such a file of a moved mesh, which cannot be matched, reloads without the
-  hierarchy, with a warning, and is still correct.
+  hierarchy, with a warning, and is still correct;
+* a file whose stored reference coordinates disagree over part of the domain
+  only, so that the match fails on some ranks and succeeds on others, reloads
+  flat on EVERY rank. Deciding the fallback rank by rank would send ranks down
+  different collective paths, and the reload would hang.
 
 The rank counts the bug depends on (written on two, read on one; written on
 one, read on two) are in ``tests/test_0690_refined_checkpoint_cross_np.py``.
@@ -62,14 +66,42 @@ def _write(out, name, moved):
     return area
 
 
-def _drop_reference_coordinates(meshfile):
-    """Make ``meshfile`` look like one written before #690 was fixed."""
+_REFERENCE = "topologies/uw_mesh/dms/uw_reference_coordinates"
+
+
+def _edit_reference_coordinates(meshfile, edit):
+    """Apply ``edit(h5file)`` on rank 0. Every rank learns whether the file
+    held reference coordinates, so a file without them fails the test on
+    every rank instead of aborting rank 0 alone."""
+    present = None
     if uw.mpi.rank == 0:
         import h5py
 
         with h5py.File(meshfile, "a") as fh:
-            del fh["topologies/uw_mesh/dms/uw_reference_coordinates"]
-    uw.mpi.comm.barrier()
+            present = _REFERENCE in fh
+            if present:
+                edit(fh)
+    assert uw.mpi.comm.bcast(present, root=0), f"{meshfile} has no reference coordinates"
+
+
+def _drop_reference_coordinates(meshfile):
+    """Make ``meshfile`` look like one written before #690 was fixed."""
+    def drop(fh):
+        del fh[_REFERENCE]
+
+    _edit_reference_coordinates(meshfile, drop)
+
+
+def _perturb_reference_coordinates(meshfile, xmax):
+    """Move the stored reference position of every vertex left of ``xmax``, so
+    that only the ranks holding that part of the mesh fail to match."""
+    def perturb(fh):
+        data = fh[f"{_REFERENCE}/vecs/uw_reference_coordinates/uw_reference_coordinates"]
+        ref = data[...].reshape(-1, 2)
+        ref[ref[:, 0] < xmax, 0] += 1.0e-3
+        data[...] = ref.ravel()
+
+    _edit_reference_coordinates(meshfile, perturb)
 
 
 def _reload(out, name):
@@ -123,3 +155,14 @@ def test_old_file_of_moved_mesh_reloads_flat(shared_dir):
     assert got == pytest.approx(area, rel=1e-12)
     assert err < 1e-12
     assert len(mesh.dm_hierarchy) == 1 and warned
+
+
+@pytest.mark.tier_b
+def test_match_failing_on_some_ranks_reloads_flat_on_all(shared_dir):
+    area = _write(shared_dir, "partial", moved=False)
+    _perturb_reference_coordinates(os.path.join(shared_dir, "partial.mesh.00000.h5"), xmax=0.3)
+    mesh, got, err, warned = _reload(shared_dir, "partial")
+    levels = uw.mpi.comm.allgather(len(mesh.dm_hierarchy))
+    assert levels == [1] * uw.mpi.size and warned
+    assert got == pytest.approx(area, rel=1e-12)
+    assert err < 1e-12

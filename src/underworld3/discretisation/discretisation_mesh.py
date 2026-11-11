@@ -1100,14 +1100,20 @@ class Mesh(Stateful, uw_object):
             _ref_local = self.dm.getCoordinatesLocal().array_r.reshape(-1, _cdim)
             if len(_ref_local):
                 _d, _idx = cKDTree(_ref_rows).query(_ref_local)
-                if float(_d.max()) > 0.0:
-                    raise RuntimeError(
-                        "FMG hierarchy restore: the coordinates of the rebuilt "
-                        "mesh changed between the reload match and the stamp."
-                    )
+                _moved = float(_d.max()) > 0.0
                 _new = _saved_rows[_idx]
             else:
+                _moved = False
                 _new = _ref_local.copy()
+            # Raised on every rank together: a rank-local raise would leave the
+            # others waiting in _deform_mesh's collectives.
+            from mpi4py import MPI as _MPI
+
+            if uw.mpi.comm.allreduce(_moved, op=_MPI.LOR):
+                raise RuntimeError(
+                    "FMG hierarchy restore: the coordinates of the rebuilt "
+                    "mesh changed between the reload match and the stamp."
+                )
             # Restoring saved deformed geometry; fields are reloaded
             # separately from the checkpoint, so this is a sanctioned
             # internal coordinate move (no live-state transfer needed).
