@@ -119,6 +119,9 @@ def test_deform_refuses_coordinates_it_cannot_place(units_model):
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
     with pytest.raises(ValueError, match="physical domain"):
         mesh.deform(np.array(mesh.X.coords))
+    with pytest.raises(ValueError, match="physical domain"):
+        mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(
+            np.array(mesh.X.coords), units="dimensionless"))
     with pytest.raises(ValueError, match="must be a length"):
         mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(
             _dm_coords(mesh), units="s"))
