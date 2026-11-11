@@ -8248,9 +8248,11 @@ class SNES_Vector(SolverBaseClass):
         -----
         This is a **collective operation** - all MPI ranks must call it.
 
-        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
-        into them) afresh, so a value set between solves applies to the next
-        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        On the standard path every solve reads ``petsc_options`` (and
+        ``tolerance``, which writes into them) afresh, so a value set between
+        solves applies to the next one; the rotated free-slip and fault-contact
+        loop returns before that and reads ``tolerance`` and ``snes_max_it``
+        itself. A setting made on ``self.snes`` directly through petsc4py, for a
         key the options also hold, is overwritten at the next solve: set it
         through ``petsc_options`` (#1078).
 

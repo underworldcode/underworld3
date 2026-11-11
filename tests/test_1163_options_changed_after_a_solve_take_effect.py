@@ -12,6 +12,8 @@ first solve at 1e-4 stopped at 1e-4. Stokes re-read them on every solve.
 - a cap of 0 Newton steps set after a solve stops the next one at its start, in
   each of the four solvers.
 """
+import contextlib
+
 import pytest
 import sympy
 
@@ -115,7 +117,10 @@ def test_an_iteration_cap_set_after_a_solve_stops_the_next(family):
     s.solve()
     assert s.snes.getIterationNumber() >= 1
     s.petsc_options["snes_max_it"] = 0
-    with pytest.warns(RuntimeWarning, match="diverged"):
+    # the diverged-solve warning is issued on rank 0 only (#1059)
+    warns = (pytest.warns(RuntimeWarning, match="diverged") if uw.mpi.rank == 0
+             else contextlib.nullcontext())
+    with warns:
         s.solve(zero_init_guess=True)
     # development: the scalar, vector and multi-component solvers took their
     # Newton steps and converged
