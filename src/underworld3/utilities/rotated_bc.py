@@ -1363,8 +1363,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     coefficient_states = None
     operator_sig = None
     if cache_allowed:
+        # The constants signature carries the JIT key: the kernels the cached
+        # enumeration was read from. The enumeration is reused only for the same
+        # kernels; a rewire that adds a coefficient variable re-enumerates, so
+        # the new variable is watched whether or not the rewire also tore the
+        # workspace down (#546, m3).
+        current_sig = _operator_constants_signature(solver)
+        cached_sig = cache.get("operator_sig") if cache is not None else None
+        same_kernels = (current_sig is not None and cached_sig is not None
+                        and cached_sig[0] == current_sig[0])
         if cache is not None and cache.get("geometry_sig") == geometry_sig \
-                and cache.get("coefficient_variables") is not None:
+                and same_kernels and cache.get("coefficient_variables") is not None:
             coefficient_variables = cache["coefficient_variables"]
         else:
             coefficient_variables = _operator_coefficient_variables(solver)
@@ -1373,7 +1382,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # The state counters alone are BLIND to rampable UWexpression
             # constants (#416: value changes bump nothing) — the constants
             # signature is the other half of the key.
-            operator_sig = _operator_constants_signature(solver)
+            operator_sig = current_sig
 
     op_ok = False
     if cache is not None:
