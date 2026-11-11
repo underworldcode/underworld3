@@ -991,8 +991,9 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
         # modes is this one
         if gauge["declared"] and getattr(solver, "_rotated_declared_modes_exempt", None) is None:
             solver._rotated_declared_modes_exempt = list(flags)
-            solver._rotated_declared_tested_walls = _declared_mode_given_walls(solver)
+            solver._rotated_declared_tested_walls = _given_normal_walls(solver)
         declared_dofs = _declared_mode_given_dofs(solver)
+        given_rejected = []
         for tg, declared in zip(_rigid_rotation_modes(solver), flags):
             gauge["offered"] += 1
             if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
@@ -1008,7 +1009,13 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
                     live.append(m)
                 else:
                     live.append(tg.copy())      # owned copy — pool vec goes back below
+            elif gauge["modes"][-1]["rejected_by"] == "given_wall":
+                given_rejected.append(gauge["modes"][-1]["given_viol"])
             dm.restoreGlobalVec(tg)
+        # the iterative route warned when it built its null space; the direct-LU
+        # route builds none, so this verdict is the only one it gets
+        if getattr(solver, "_rotated_use_lu", False):
+            _warn_given_wall_rejections(solver, given_rejected, len(flags))
         ortho = []
         for w in live:
             for q in ortho:
@@ -3085,18 +3092,10 @@ def _rotated_nullspace(solver, Q, normal_rows):
     declared_any = _rotations_declared(solver.mesh)
     solver._rotated_declared_modes_exempt = flags if declared_any else None
     solver._rotated_declared_tested_walls = (
-        _declared_mode_given_walls(solver) if declared_any else None)
+        _given_normal_walls(solver) if declared_any else None)
     if note is not None:
         _warn_declared_modes_refused(note)
-    if given_rejected:
-        # given_viol is reduced over the ranks, so every rank has the same list
-        _warn_declared_modes_refused(
-            f"the declared rotation modes are not removed: the rotated walls "
-            f"{solver._rotated_declared_tested_walls} take a given normal that a "
-            f"rotation about the mesh's centre is not tangent to (violation up to "
-            f"{max(given_rejected):.2g} against {_ROTATION_MODE_TOL:g}), so the answer "
-            f"keeps any rotation. Give those walls the normal of a surface of "
-            f"revolution about that centre, or the facet-averaged normal")
+    _warn_given_wall_rejections(solver, given_rejected, len(flags))
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -3575,6 +3574,14 @@ def _declared_mode_flags(solver):
     return [True] * n_modes, None
 
 
+def _given_normal_walls(solver):
+    """Every rotated wall that takes a given normal: the walls a declared mode is
+    tested on against that normal (all of them with the constraint rows when no wall
+    takes the facet-averaged normal). Reported as ``declared_modes_tested_walls``."""
+    specs = [_boundary_spec(spec) for spec in getattr(solver, "_rotated_freeslip_bcs", [])]
+    return [name for name, normal in specs if normal is not None]
+
+
 def _declared_mode_given_walls(solver):
     """The rotated walls that take a given normal, when others take the
     facet-averaged one: a declared mode is still tested on them against their own
@@ -3600,6 +3607,21 @@ def _declared_mode_given_dofs(solver):
     rows = np.concatenate([p[0] for p in parts]) if parts else np.empty((0, dim), np.int64)
     normals = np.concatenate([p[1] for p in parts]) if parts else np.empty((0, dim))
     return rows, normals
+
+
+def _warn_given_wall_rejections(solver, violations, offered):
+    """Say, once, that the given-wall test rejected ``len(violations)`` of the
+    ``offered`` declared modes (#968). ``violations`` is reduced over the ranks, so
+    every rank calls this alike."""
+    if not violations:
+        return
+    _warn_declared_modes_refused(
+        f"{len(violations)} of the {offered} declared rotation modes are not removed: "
+        f"the rotated walls {_declared_mode_given_walls(solver)} take a given normal "
+        f"that a rotation about the mesh's centre is not tangent to (violation up to "
+        f"{max(violations):.2g} against {_ROTATION_MODE_TOL:g}), so the answer keeps "
+        f"those rotations. Give those walls the normal of a surface of revolution "
+        f"about that centre, or the facet-averaged normal")
 
 
 def _warn_declared_modes_refused(note):
