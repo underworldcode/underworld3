@@ -12,7 +12,9 @@ Newton iterations, or failed, and an adjoint built on the tangent was wrong.
 - the Robin part of the assembled Jacobian equals the finite-difference one in
   the scalar, vector and multi-component solvers;
 - a linear vector or multi-component projection with a Robin condition is
-  solved by its first Newton step too.
+  solved by its first Newton step too;
+- a preconditioner matrix apart from the Jacobian, which would miss the
+  natural-BC terms, is refused with a message (#1070).
 """
 import numpy as np
 import pytest
@@ -129,3 +131,14 @@ def test_a_linear_vector_robin_problem_takes_one_newton_step(n_components):
     history = projection.solve_report.history
     assert projection.snes.getIterationNumber() <= 2, (projection.snes.getIterationNumber(), history)
     assert history[1] < 1.0e-6 * history[0], history
+
+
+@pytest.mark.parametrize("family", sorted(_FAMILIES))
+def test_a_separate_preconditioner_matrix_is_refused(family):
+    # the natural-BC terms go into the Jacobian only (above), so a preconditioner
+    # assembled apart from it would miss them; -snes_mf_operator makes one (#1070)
+    s = _FAMILIES[family](-1.0, f"{family}mf")
+    s.petsc_options["snes_mf_operator"] = None
+    # development: PETSc error 56 from the boundary assembly into the mffd operator
+    with pytest.raises(RuntimeError, match="#1070"):
+        s.solve()
