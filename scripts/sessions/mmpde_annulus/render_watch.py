@@ -34,9 +34,12 @@ for ax, s in zip(axes, show):
     # masked outside the annulus. Line width scales with speed.
     with h5py.File(f"{run}/step{s:04d}.mesh.V_v2p1.00000.h5") as h:
         vx = h["fields/coordinates"][...]; vv = h["fields/V_v2p1"][...]
-    vt = Triangulation(vx[:, 0], vx[:, 1])
-    cx = vx[vt.triangles].mean(axis=1); rr = np.hypot(cx[:, 0], cx[:, 1])
-    vt.set_mask((rr < 0.5) | (rr > 1.0))
+    # The velocity at the mesh vertices (the P2 nodes include them), on the
+    # mesh's own triangles: a Delaunay of the nodes is invalid on a graded mesh.
+    from scipy.spatial import cKDTree
+    _, at = cKDTree(vx).query(xy)
+    vt = tri
+    vv = vv[at]
     g = np.linspace(-1, 1, 160); GX, GY = np.meshgrid(g, g)
     U = LinearTriInterpolator(vt, vv[:, 0])(GX, GY); V = LinearTriInterpolator(vt, vv[:, 1])(GX, GY)
     sp = np.hypot(U, V); R = np.hypot(GX, GY)
