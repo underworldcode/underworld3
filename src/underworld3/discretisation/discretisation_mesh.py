@@ -4426,27 +4426,24 @@ class Mesh(Stateful, uw_object):
         # exists for adapt()'s refinement snapping.
         surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
                 if not getattr(s, "interior", False)}
-        # Which labels are usable is decided on all ranks together (#1082): the
-        # normals below are a collective projection, so every rank must make the
-        # same calls. A rank holding none of a label's facets gets an empty facet
-        # surface. That is enough when such a rank also holds none of the
-        # label's vertices (every cell on one rank), but not in general: a rank
-        # can own slip vertices of a label without any of its facets, and its
-        # restore then fails alone. Each rank also restores onto its own facets
-        # only, so facet slip is partition-dependent. Both are #1103.
+        # A facet surface is the label's boundary facets over ALL ranks (#1103):
+        # restored onto its own rank's facets only, a vertex that slid past
+        # their end was clamped there (3e-2 to 5e-2 off serial), and a rank
+        # owning slip vertices of a label without any of its facets raised
+        # alone. Gathering also makes the usable labels the same on every rank
+        # (#1082), which the collective normal projection below needs.
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
-            from mpi4py import MPI
-
             facets, _opp = _boundary_facets(self, cdim)
             for lab in unreg:
                 if facets is not None and facets.size:
                     local = ref[facets[local_masks[lab][facets].all(axis=1)]]
                 else:
                     local = numpy.zeros((0, cdim, cdim))
-                if uw.mpi.comm.allreduce(len(local) > 0, op=MPI.LOR):
+                gathered = numpy.concatenate(uw.mpi.comm.allgather(local))
+                if len(gathered):
                     surf[lab] = BoundingSurface(self, lab, "facet",
-                                                reference_facets=local)
+                                                reference_facets=gathered)
         usable = [lab for lab in slip_labels if lab in surf]
         masks = {lab: masks[lab] for lab in usable}
         count = numpy.zeros(n_verts, dtype=int)
