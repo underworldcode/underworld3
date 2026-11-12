@@ -9548,6 +9548,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def pressure_split(self, *, jumps, normals, tolerance=1e-10):
         r"""Lift prescribed pressure jumps on fitted triangle/tetrahedron facets.
 
+        .. note::
+           Experimental and opt-in. No convergence theorem is claimed. The
+           split is built once from the mesh geometry and must be built again
+           after the mesh geometry or topology changes.
+
         Parameters
         ----------
         jumps : mapping

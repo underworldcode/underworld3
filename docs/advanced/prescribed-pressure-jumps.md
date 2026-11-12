@@ -1,5 +1,13 @@
 # Prescribed pressure jumps
 
+```{note}
+Experimental and opt-in. `pressure_split` is exercised by exactness tests on
+fitted interfaces, in serial and in parallel, and carries no convergence theorem.
+The split is built once from the mesh geometry: build it again after any change
+of mesh geometry or topology; nothing checks this for you. Existing solves are
+unaffected unless the method is called.
+```
+
 `Stokes.pressure_split` separates total pressure into a continuous P1 unknown
 and a prescribed discontinuous field: `p = q + p_J`. It accepts scalar jump
 expressions, continuous scalar mesh fields, constants or coordinate callables.
@@ -62,14 +70,6 @@ ranks. Nonzero tip singularities require a different enrichment; unknown jumps
 require coupled interface equations. This API keeps velocity continuous and
 does not configure the split-node fault/slip machinery.
 
-## Relation to the circular benchmark
-
-`Stokes.cylindrical_pressure_lifting` remains the specialised exact-circle
-method. It subtracts curved segments from regular-load quadrature and stores
-moment-equivalent DG P2 forces. The general API instead uses the **fitted
-polygon/polyhedron geometry** and P1 jump interpolation. It does not silently
-apply exact-circle geometry corrections or replace existing benchmark results.
-
 ## Reference
 
 [Chang and Kwak (2009), *Extraction method for Stokes Flow with jumps in the
@@ -81,11 +81,10 @@ rate for this implementation.
 
 ## Verification
 
-`tests/test_1099_general_pressure_split.py` checks prescribed analytic/numerical
+`tests/test_1184_general_pressure_split.py` checks prescribed analytic/numerical
 data, compatible and incompatible finite tips/intersections, tetrahedral traces,
 independence of repeated extractions and manufactured Stokes solutions with
-essential and natural boundaries. Alongside the circular extraction tests,
-14 tests pass at 1, 2 and 8 ranks in the Mac Linux ARM64 int32 container.
+essential and natural boundaries.
 The fitted-square manufactured refinement test gives velocity order 3 and
 pressure order 2 at h=1/8, 1/16 and 1/32; this establishes the tested problem's
 convergence, not a rate for arbitrary interfaces.

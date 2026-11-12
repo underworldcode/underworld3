@@ -437,6 +437,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)
   batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
   batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)
+  batch 4 tests/test_118[45]*py  # prescribed pressure split on fitted facets (opt-in, from #1033)
   batch 4 tests/test_1161*py  # a diverged solve warns (#1059)
   batch 4 tests/test_1162*py  # a natural BC that reads the unknown enters the Jacobian once (#1065)
   batch 4 tests/test_1163*py  # options and a tolerance set after a solve take effect (#1078)
