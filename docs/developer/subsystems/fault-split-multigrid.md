@@ -269,9 +269,12 @@ placed or moved) makes a new mesh, whose as-built geometry is its own, and its
 hierarchy is built from that mesh as before. Only a level's own moves are undone.
 A fault cut into a mesh that had already moved lies on its trace in the moved
 geometry, on the new mesh and on the split level under it alike, so the new mesh
-is read where it is: 6 velocity iterations on the fixture of the test, 5 with the
-host at rest, and 9 or more when the new mesh is taken back through its host's
-move. The finest level of a refined base that moved before an adapt or a cut is
+is read where it is: 6 velocity iterations on the fixture of the test, whose host
+moved by 0.002 before the cut, and 5 with the host at rest. The split level under
+the new mesh is cut where the host's coarse level stands, which did not move. On
+that fixture a host that moved by 0.005 or more (0.4 of its finest cell size) is
+refused by the dependent-column check (#1101), with the transfers kept or built
+from the moved coordinates. The finest level of a refined base that moved before an adapt or a cut is
 likewise carried into the child's hierarchy as a new mesh on the moved
 coordinates, and the pair under it is rebuilt from them: with the top wall of a
 box raised by 5 % three times before the adapt, the solve on the child takes 4
