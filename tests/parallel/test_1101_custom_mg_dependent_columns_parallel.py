@@ -12,8 +12,10 @@ over the two rows met a zero pivot. ``fault_mg.restrict_unreached`` now keeps
 the largest-weight column of such a group and drops the others (the range of P
 is unchanged), folds each dropped unknown's row of the level below into its
 kept twin's, so the composite coarse functions are unchanged (a merge: they
-still reproduce constants through the shared row), warns, and refuses a
-support of s > 1 fine rows shared by more than s columns. A hierarchy with no such pair comes back untouched.
+still reproduce constants through the shared row), and warns. More columns
+than fine rows on one support (seen on a fault cut into a moved child, where
+the guard first refused a solve that had converged) are reduced the same way,
+to as many as they span. A hierarchy with no such pair comes back untouched.
 
 The configuration is built directly: a 1-D Laplacian, P a linear interpolation
 plus two extra columns with one entry each, both on fine row 1. Rank 0 owns
@@ -92,8 +94,9 @@ def _prolongation(extra_entries):
     entries = _linear(N_FINE)
     for k, (row, weight) in enumerate(extra_entries):
         if isinstance(row, tuple):
-            for r in row:
-                entries[r, N_LINEAR + k] = weight
+            weights = weight if isinstance(weight, tuple) else (weight,) * len(row)
+            for r, w in zip(row, weights):
+                entries[r, N_LINEAR + k] = w
         else:
             entries[row, N_LINEAR + k] = weight
     n = N_LINEAR + len(extra_entries)
@@ -232,14 +235,26 @@ def test_no_dependent_pair_leaves_the_transfer_untouched():
     assert messages == []
 
 
-def test_more_columns_than_shared_rows_is_refused_on_every_rank():
-    P = _prolongation([((1, 3), 1.0), ((1, 3), 0.5), ((1, 3), 0.25)])
-    raised = 0
-    try:
-        restrict_unreached([P], COMM)
-    except RuntimeError as err:
-        raised = int("#1101" in str(err))
-    assert COMM.tompi4py().allgather(raised) == [1] * SIZE
+def test_more_columns_than_shared_rows_are_reduced_exactly():
+    """Three columns on the same two fine rows span two dimensions (W1's case
+    on a cut of a moved child: a rotated transfer mixes a node's components).
+    The smallest is dropped as a combination of the other two, the level below
+    folded with the same coefficients: the composite transfer is unchanged,
+    the coarse operator is nonsingular, and nothing is refused."""
+    P1 = _prolongation([((1, 3), (1.0, 0.2)), ((1, 3), (0.3, 1.0)), ((1, 3), (0.5, 0.5))])
+    n1 = N_LINEAR + 3
+    rng = np.random.default_rng(1111)
+    entries = {(i, j): float(rng.uniform(0.1, 1.0))
+               for i in range(n1) for j in range(n1) if abs(i - j) <= 1}
+    P0 = _mat(n1, n1, _coarse_layout(3), _coarse_layout(3), entries)
+    out, messages = _restrict([P0, P1])
+    assert out[1].getSize()[1] == n1 - 1 and out[0].getSize()[0] == n1 - 1
+    np.testing.assert_allclose(_gathered(out[1].matMult(out[0])),
+                               _gathered(P1.matMult(P0)), rtol=0, atol=1e-13)
+    assert abs(_smallest_eigenvalue(_laplacian().ptap(P1))) < 1e-12
+    assert _smallest_eigenvalue(_laplacian().ptap(out[1])) > 1e-6
+    if RANK == 0:
+        assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0], messages
 
 
 def test_each_install_that_merges_is_on_the_solver_record():

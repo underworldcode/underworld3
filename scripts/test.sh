@@ -390,6 +390,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # So is the merge of coarse unknowns sharing one fine image (#1101).
   batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
+  # So is a fault cut into a moved adapt child under the #1101 guard (#1111).
+  batch 3 tests/parallel/test_1111_custom_mg_cut_of_a_moved_child_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
