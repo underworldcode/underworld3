@@ -4,7 +4,8 @@
 Experimental and opt-in. `pressure_split` is exercised by exactness tests on
 fitted interfaces, in serial and in parallel, and carries no convergence theorem.
 The split is built once from the mesh geometry: build it again after any change
-of mesh geometry or topology; nothing checks this for you. Existing solves are
+of mesh geometry or topology. A solve warns if the mesh geometry has changed
+since the split was built; it does not refuse. Existing solves are
 unaffected unless the method is called.
 ```
 

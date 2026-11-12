@@ -9551,7 +9551,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         .. note::
            Experimental and opt-in. No convergence theorem is claimed. The
            split is built once from the mesh geometry and must be built again
-           after the mesh geometry or topology changes.
+           after the mesh geometry or topology changes; a solve warns when the
+           geometry has changed since the split was built.
 
         Parameters
         ----------
@@ -10593,6 +10594,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 f"surface or traction boundary, in which case turn the nullspace flag off; "
                 f"a pressure Dirichlet BC for a closed box). Recorded in "
                 f"solve_report.config['gauge'].")
+        geometry_version = getattr(self.mesh, "_geometry_version", 0)
+        for interfaces, built_at in getattr(self, "_pressure_split_geometry", {}).items():
+            if built_at != geometry_version:
+                notes.append(
+                    f"[{self.name}] the pressure split on {', '.join(interfaces)} was built "
+                    f"before the mesh geometry last changed: its lift and regular force are "
+                    f"those of the earlier mesh. Call pressure_split again and use the new "
+                    f"fields.")
         if notes:
             cfg["_warnings"] = notes
         cfg["gauge"] = dict(

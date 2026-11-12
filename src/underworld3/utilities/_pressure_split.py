@@ -284,5 +284,10 @@ def _create_pressure_split(stokes, jumps, normals, tolerance):
     integral = float(comm.allreduce(integral, op=MPI.SUM))
     checks = dict(interface_facets=int(global_facets),
                   maximum_jump_residual=float(comm.allreduce(residual, op=MPI.MAX)))
+    # The lift and its force belong to the mesh geometry they were built from. The
+    # solver reads this record at each solve and warns once the mesh has moved.
+    if not hasattr(stokes, "_pressure_split_geometry"):
+        stokes._pressure_split_geometry = {}
+    stokes._pressure_split_geometry[tuple(sorted(jumps))] = getattr(mesh, "_geometry_version", 0)
     return _PressureSplit(lift.sym[0], lift, force, -lift.sym[0] * mesh.Gamma,
                           stokes.p.sym[0] + lift.sym[0], integral, checks)
