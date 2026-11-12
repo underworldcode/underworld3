@@ -35,6 +35,7 @@ from ._base import (
 
 from .barr_houseman_96 import FaultedMedium
 from .inclusion import EllipticalInclusion
+from .spherical import KramerSphericalStokes, SphericalStokes
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient
 from .transport import AdvectedFront, ErfcDiffusion, Poisson1D, RotatingGaussian, TwoLayerDarcy
@@ -64,6 +65,8 @@ __all__ = [
     "ErfcDiffusion",
     "FaultedMedium",
     "CylindricalStokes",
+    "KramerSphericalStokes",
+    "SphericalStokes",
     "GardnerSteady",
     "GardnerTransient",
     "Poisson1D",
@@ -93,6 +96,7 @@ __all__ = [
 # contract, and so a solution needing an optional dependency can be listed
 # without being importable.
 _SOLUTIONS = {
+    "KramerSphericalStokes": KramerSphericalStokes,
     "AdvectedFront": AdvectedFront,
     "CylindricalStokes": CylindricalStokes,
     "EllipticalInclusion": EllipticalInclusion,

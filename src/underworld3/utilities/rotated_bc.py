@@ -441,6 +441,24 @@ def _eval_datum(dspec, coords, solver):
     return np.asarray(uw.function.evaluate(dspec, np.ascontiguousarray(coords))).flatten()
 
 
+def _datum_batches(boundaries, datum_specs, datum_nodes, coordinates, dim):
+    """Schedule datum evaluation by registered boundary, including empty ranks.
+
+    FE datum evaluation updates a mesh local vector collectively. Scheduling
+    by locally owned nodes (or local expression identities) can give ranks
+    different call counts/orders and deadlock before the first Stokes solve.
+    Registration order is common to all ranks; coordinate arrays may be empty.
+    """
+    for spec in boundaries:
+        name, _ = _boundary_spec(spec)
+        dspec = datum_specs.get(name)
+        if dspec is None:
+            continue
+        items = [(row, q, sign) for row, q, boundary, sign in datum_nodes if boundary == name]
+        coords = np.asarray([coordinates[q] for _, q, _ in items], dtype=float).reshape(-1, dim)
+        yield dspec, coords, items
+
+
 def build_rotation(solver, boundaries, datum_specs=None):
     """Global sparse rotation Q on the composite saddle vector: identity except a
     per-node (normal,tangential) block at each velocity node of `boundaries`.
@@ -476,7 +494,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
             if normal is not None:
                 node_given.setdefault(q, []).append((name, nrm))
             if dspec is not None:
-                node_dspec.setdefault(q, dspec)
+                node_dspec.setdefault(q, name)
 
     # Split-fault contact pairs (fault_contact.add_frictionless_fault_bc):
     # their 2·dim mean/jump blocks widen the widest row of Q.
@@ -536,7 +554,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # condition removed) and its own normal there: a declared mode is tested against
     # these, not against the merged frame of a node where walls meet (#968)
     given_dofs = {}
-    datum_nodes = []                             # (grows[0], q, dspec) for simple nodes
+    datum_nodes = []                             # (global row, point, boundary name, normal sign)
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
@@ -700,7 +718,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
                             ne = _unit_normal(sheet_normal_fn, sheet_normal_const, xq)
                             sgn_e = 1.0 if float(np.dot(np.asarray(frame[2], dtype=float).ravel(), ne)) >= 0 else -1.0
                             # row gp[2] = s2 (v+ + v-) . e = s2 * 2 w * sgn_e
-                            datum_nodes.append((gp[2], q_plus, sheet_dspec, 2.0 * s2 * sgn_e))
+                            datum_nodes.append((gp[2], q_plus, SHEET_TANGENCY, 2.0 * s2 * sgn_e))
         except (RuntimeError, ValueError) as err:
             problem = str(err)
         fault_contact._collective_raise(problem)
@@ -708,19 +726,17 @@ def build_rotation(solver, boundaries, datum_specs=None):
     Q.assemble()
     Qt = Q.transpose(PETSc.Mat())
 
-    # Evaluate the prescribed normal datum at each simple constrained node, batched per
-    # distinct datum spec (usually one — the surface). Rotated row grows[0] == v_n.
+    # Every rank evaluates every registered datum, even with no owned nodes.
+    # FE expressions contain collectives; local-only batching can deadlock.
     datum_map = {}
-    if datum_nodes:
+    if datum_specs is not None:
         csec = dm.getCoordinateSection()
         cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
         v0, v1 = dm.getDepthStratum(0)
-        by_spec = {}
-        for grow0, q, dspec, sgn in datum_nodes:
-            by_spec.setdefault(id(dspec), (dspec, []))[1].append((grow0, q, sgn))
-        for dspec, items in by_spec.values():
-            coords = np.array([_point_coord(dm, dim, cvec, csec, v0, v1, q)
-                               for _, q, _ in items])
+        coordinates = {q: _point_coord(dm, dim, cvec, csec, v0, v1, q)
+                       for _, q, _, _ in datum_nodes}
+        for dspec, coords, items in _datum_batches(
+                boundaries, datum_specs, datum_nodes, coordinates, dim):
             vals = _eval_datum(dspec, coords, solver)
             for (grow0, _, sgn), val in zip(items, vals):
                 # A zero datum IS free-slip; leave those rows out so an all-zero datum
