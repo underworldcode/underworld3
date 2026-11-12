@@ -227,14 +227,16 @@ states that relation, so it is the same before and after the move.
 
 The hierarchy is built again at the first solve after a move, and
 `CustomMGHierarchy.build` reads a moved level on the geometry the level was made
-in. `fault_mg.as_built_nodes` takes each node's barycentric coordinates in one cell
-that lists it and places the node on the vertices that cell was made with
-(`Mesh._transfer_vertices`). A node on a corner or an edge midpoint of its cell is
-given the exact weights (0, 1/2 and 1), so at degree 1 and 2 the positions are the
-built ones bit for bit. The node-cloud builders need that. They are not continuous
-in the nodes they are given: a node on a face of the triangulation is read in
-either neighbour, and with the positions recovered only to round-off one weight of
-a pair of tetrahedral levels changed by $1.4\times10^{-4}$ on 2, 4 and 8 ranks.
+in. `fault_mg.as_built_nodes` reads the nodes on the vertices the mesh was made
+with (`Mesh._transfer_vertices`), through the interpolation that gives the mesh
+its nodes where it stands. The interpolation holds the place of every node in its
+cell and no coordinate, so it is the same operator on the same vertices as before
+the move and the positions are the built ones bit for bit, at any degree and for a
+discontinuous space as well. The node-cloud builders need that. They are not
+continuous in the nodes they are given: a node on a face of the triangulation is
+read in either neighbour, and with the positions recovered only to round-off one
+weight of a pair of tetrahedral levels changed by $1.4\times10^{-4}$ on 2, 4 and 8
+ranks.
 Those positions are the fine side of the pair on
 three routes: the node-cloud builders, the cell-located transfer between split
 levels, and the embedding of a native refine pair. The native pair identifies a
@@ -242,9 +244,13 @@ fine vertex with a coarse vertex or an edge midpoint by exact equality of
 coordinates, so it reads those vertices themselves; on the moved coordinates it
 found no match and the pair fell to the node-cloud builder. In 3-D the embedding
 carries the wrong entries of #449, and a moved pair now carries them as the pair
-at rest does. The map is local to a rank, and the parallel builders are handed
-the same positions. It needs affine cells: a quadrilateral or hexahedral level is
-read on its moved coordinates, and its transfers are rebuilt from them.
+at rest does. The parallel builders are handed the same positions. The recorded
+route between add-on levels on several ranks (`provenance_transfer_parallel`)
+locates nothing and takes each node back through its own cell, to round-off: with
+the nodes recovered that way no 2-D transfer changed by more than
+$8.5\times10^{-13}$ on 1 to 8 ranks. Only simplex levels are kept: a quadrilateral
+or hexahedral level is read on its moved coordinates, and its transfers are
+rebuilt from them.
 
 Built from the moved coordinates, a moved node was located among the unmoved
 coarse nodes and its weights followed the displacement. On the fixtures of
@@ -253,8 +259,9 @@ coarse nodes and its weights followed the displacement. On the fixtures of
 went from 5 velocity iterations to 13. With the level read where it was built the
 transfers after a move equal those before it entry for entry, and the same solve
 takes 6 iterations after each of three moves, as a solver built on the moved mesh
-does. On 2 to 5 ranks it takes 6 at rest and 7 after each move
-(`tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py`).
+does. On 2 to 5 ranks it took 6 at rest and 7 after each move.
+`tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py` holds those
+counts and is tier C until it has been run with the nodes recovered to the bit.
 
 The kept transfers do not lower the count on every move. Under a mover that
 shifts interior nodes by one to four cell widths while the coarse levels still
@@ -269,17 +276,16 @@ and 7, and `preconditioner="fmg"` on a deformed box stays at 2 against 3.
 
 A strong redistribution is the limit. On the box refined three times the mover
 carries nodes up to 3.8 cell widths at the strongest contrast, and 3.1 at the one
-below it. Through the node-cloud builder, which a native pair takes on more than
-one rank, the serial Stokes velocity count at the strongest contrast is 4 after
-each move with the transfers kept and 3 with them rebuilt; at the contrast below
-it is 3 either way. On 2 to 8 ranks the strongest contrast takes 5 to 6 iterations
-with the transfers kept and 3 to 4 with them rebuilt. The coarse levels still fill
-the domain in these cases, and the rebuilt transfer interpolates each node where
-it now stands. A run that redistributes this hard pays one or two iterations a
+below it. A native pair takes the node-cloud builder on more than one rank, and a
+serial run takes it with `UW_CUSTOM_MG_DISABLE_NESTED_NATIVE=1`. Measured that
+way, the serial Stokes velocity count at the strongest contrast was 4 after each
+move with the transfers kept and 3 with them rebuilt; at the contrast below it was
+3 either way. On 2 to 8 ranks the strongest contrast took 5 to 6 iterations with
+the transfers kept and 3 to 4 with them rebuilt. These are measurements and no
+test holds them. A run that redistributes this hard pays one or two iterations a
 solve for the kept transfers.
 
-A move still drops the structural patch (#1017): its coincidence test and the cut
-of a `fac_zone` into blocks read the current coordinates. The split-level fixture
+A move still drops the structural patch (#1017). The split-level fixture
 carries no patch on one rank. The placed fixture does, and its solve goes from 3
 iterations to 5 at the first move with the transfers kept. On 8 ranks the
 split-level fixture carried a patch at rest and solved in 3 iterations; the first
@@ -287,7 +293,8 @@ move dropped it and the solve took 15, with the transfers unchanged, and the sam
 with them rebuilt. The patch comes back when the hierarchy is made again from the
 moved fault: re-refine the base from it and register the new levels
 (`set_custom_fmg`). Registering the old coarse levels again does not bring it
-back. A `fac_zone` patch is kept across the move.
+back. On a level with a `fac_zone` registered the blocks of the zone are kept
+across the move, and only the structural rows of the split fault are dropped.
 
 This is a mode for movers. A change of topology (an adapt, a remesh, a fault
 placed or moved) makes a new mesh, whose as-built geometry is its own, and its

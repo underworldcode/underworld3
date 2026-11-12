@@ -159,8 +159,8 @@ def test_the_transfers_after_a_move_are_those_before_it(build, move):
     assert s.snes.getConvergedReason() > 0
     after = _transfers(s)
 
-    # bit for bit: the moved nodes go back on the built vertices by exact
-    # weights; rebuilt from the moved coordinates the weights changed by 0.65 to 1.1
+    # bit for bit: the moved level is read on the vertices it was built with;
+    # rebuilt from the moved coordinates the weights changed by 0.65 to 1.1
     assert len(after) == len(before)
     for level, (P0, P1) in enumerate(zip(before, after), start=1):
         assert P1.shape == P0.shape, level
@@ -201,9 +201,9 @@ def test_a_fault_cut_into_a_moved_mesh_is_read_where_it_is():
 
 
 def test_a_moved_quadrilateral_level_is_read_where_it_is():
-    """The map back to the built geometry is for affine cells. A quadrilateral
-    level has none, so its transfers are rebuilt from the moved coordinates: 2
-    iterations at rest and after each of two moves."""
+    """The kept transfer is for simplex levels. The transfers of a quadrilateral
+    level are rebuilt from the moved coordinates: 2 iterations at rest and
+    after each of two moves."""
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1), qdegree=2,
         refinement=2)
@@ -225,38 +225,25 @@ def test_a_moved_quadrilateral_level_is_read_where_it_is():
 
 
 @pytest.mark.parametrize("dim", [2, 3])
-@pytest.mark.parametrize("degree", [1, 2])
-def test_a_moved_level_gives_its_nodes_where_it_was_built(degree, dim):
+@pytest.mark.parametrize("continuous", [True, False])
+@pytest.mark.parametrize("degree", [1, 2, 3])
+def test_a_moved_level_gives_its_nodes_where_it_was_built(degree, continuous, dim):
     """Bit for bit. The node-cloud builder is not continuous in the nodes it is
     given: one on a face of its triangulation is read in either neighbour, and
     nodes 2e-16 from the built ones changed a weight of a 3-D transfer by
     1.4e-4 on 2, 4 and 8 ranks."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0,) * dim, maxCoords=(1,) * dim, cellSize=1 / 6 if dim == 2 else 1 / 3,
-        regular=False, qdegree=2, refinement=1)
+        regular=False, qdegree=3, refinement=1)
     # at rest the current coordinates are the as-built ones: nothing is mapped
-    assert fault_mg.as_built_nodes(mesh, degree, True) is None
-    built = np.asarray(mesh._get_coords_for_basis(degree, True)).copy()
+    assert fault_mg.as_built_nodes(mesh, degree, continuous) is None
+    built = np.asarray(mesh._get_coords_for_basis(degree, continuous)).copy()
 
-    c = np.asarray(mesh.X.coords).copy()
-    c[:, 0] += 0.02 * np.prod(np.sin(np.pi * c), axis=1)   # zero on the walls
-    mesh.deform(c)
-    moved = np.asarray(mesh._get_coords_for_basis(degree, True))
-    assert np.abs(moved - built).max() > 5.0e-3
-    as_built = fault_mg.as_built_nodes(mesh, degree, True)
-    assert np.array_equal(as_built, built), np.abs(as_built - built).max()
-
-
-def test_a_node_inside_its_cell_is_mapped_by_its_own_weights():
-    """A discontinuous space keeps its nodes inside the cells, off the corners
-    and edge midpoints: they are mapped by their own weights, to round-off."""
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 6, regular=False,
-        qdegree=2, refinement=1)
-    built = np.asarray(mesh._get_coords_for_basis(1, False)).copy()
     _deform(mesh)
-    as_built = fault_mg.as_built_nodes(mesh, 1, False)
-    assert 0 < np.abs(as_built - built).max() < 1.0e-12
+    moved = np.asarray(mesh._get_coords_for_basis(degree, continuous))
+    assert np.abs(moved - built).max() > 5.0e-3
+    as_built = fault_mg.as_built_nodes(mesh, degree, continuous)
+    assert np.array_equal(as_built, built), np.abs(as_built - built).max()
 
 
 def _adapt_child(relax):

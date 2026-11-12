@@ -3,16 +3,21 @@ several ranks.
 
 The serial half of the record is tests/test_1176_custom_mg_transfer_after_a_move.py.
 At more than one rank a native refine pair goes to the node-cloud builder and
-a split level to the partitioned cell-located transfer, so the routes here are
-not those of the serial file. A moved level is handed to each of them on the
-nodes it was built with, bit for bit, and the transfers after a move are those
-before it entry for entry.
+a split level to the partitioned cell-located transfer or to the recorded
+parent relation, so the routes here are not those of the serial file. The
+first two are handed a moved level on the nodes it was built with, bit for
+bit, and their transfers after a move are those before it entry for entry.
+The recorded route takes a node back through its own cell, to round-off.
 
 The node-cloud builder is not continuous in its nodes. With the built nodes
 recovered only to round-off (2e-16), one weight of the tetrahedral pair below
 changed by 1.4e-4 at 2 and 4 ranks and by 1.1e-4 at 8.
 
-The iteration counts were measured on 2, 3, 4, 5 and 8 ranks.
+The iteration counts were measured on one Linux host, with the nodes
+recovered to round-off, and are asserted at the rank counts they were
+measured on. Another rank count asserts the transfers only.
+
+Tier C: the file has not been run since the nodes come back to the bit.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py
 """
@@ -24,7 +29,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import custom_mg, fault_mg
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_c,
               pytest.mark.timeout(900)]
 
 TRACE = np.array([[0.3, 0.45], [0.7, 0.55]])
@@ -159,7 +164,8 @@ def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
         s.solve()
         assert s.snes.getConvergedReason() > 0
         counts.append(max(s._rotated_freeslip_info["vel_its_last"]))
-    assert _largest_change(before, _transfers(s)) == 0
+    # the finest pair may be a recorded one, whose nodes go back to round-off
+    assert _largest_change(before, _transfers(s)) < 1.0e-10
     if uw.mpi.size in SPLIT_COUNTS:
         moved, built_on_it = SPLIT_COUNTS[uw.mpi.size]
         assert counts == moved
@@ -168,10 +174,13 @@ def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
         assert max(built_after._rotated_freeslip_info["vel_its_last"]) == built_on_it
 
 
+# Iterations at rest and after each of two moves, by rank count. The pair
+# rebuilt from the moved coordinates takes as many; the transfers tell the two
+# apart.
+TET_COUNTS = {8: [3, 3, 3]}
+
+
 def test_a_moved_tetrahedral_level_keeps_its_transfers():
-    """3 iterations at rest and after each of two moves, which the pair
-    rebuilt from the moved coordinates takes as well; the transfers tell the
-    two apart."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=1 / 3, regular=False,
         qdegree=2, refinement=1)
@@ -193,4 +202,5 @@ def test_a_moved_tetrahedral_level_keeps_its_transfers():
         assert s.snes.getConvergedReason() > 0
         counts.append(s.snes.getLinearSolveIterations())
     assert _largest_change(before, _transfers(s)) == 0
-    assert counts == [3, 3, 3]
+    if uw.mpi.size in TET_COUNTS:
+        assert counts == TET_COUNTS[uw.mpi.size]

@@ -208,10 +208,11 @@ one campaign and is the error to recognise.
   carries nodes about four cell widths costs one or two iterations a solve (5
   to 6 against 3 to 4 on 2 to 8 ranks). A move still drops the structural
   patch; it comes back when the base is re-refined from the moved fault and
-  the new levels are registered. This holds for a mover only. A change of topology makes a new mesh and a new hierarchy, and a base
-  that moved before an adapt or a cut goes into the new hierarchy where it
-  stands. A `relax()` of a mesh that has not moved is part of making it. A
-  mover does not replace refinement that adds nodes. Mechanism and counts:
+  the new levels are registered. This holds for a mover only. A change of
+  topology makes a new mesh and a new hierarchy, and a base that moved before
+  an adapt or a cut goes into the new hierarchy where it stands. A `relax()`
+  of a mesh that has not moved is part of making it. A mover does not replace
+  refinement that adds nodes. Mechanism and counts:
   [fault-split-multigrid](../subsystems/fault-split-multigrid.md).
 - The first solve after a move reads the moved fields. The mesh-move transfer
   wrote them without marking the mesh's assembly vector stale, so a solver that

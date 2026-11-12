@@ -6634,7 +6634,7 @@ class Mesh(Stateful, uw_object):
         self._cell_node_array[key] = rows.reshape(cEnd - cStart, expected)
         return self._cell_node_array[key]
 
-    def _get_coords_for_basis(self, degree, continuous):
+    def _get_coords_for_basis(self, degree, continuous, vertices=None):
         """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
         ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
         (ghost nodes included).
@@ -6642,6 +6642,13 @@ class Mesh(Stateful, uw_object):
         The interpolation matrix comes from UW3's copy of PETSc's nested
         interpolator, which assembles also on a rank that holds cells but owns
         none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
+
+        ``vertices`` reads the nodes on other vertex coordinates than those the
+        mesh stands on: one row per local vertex in point order, as
+        ``_vertex_coordinates`` gives them, each rank's owned rows being the
+        ones read. The matrix holds the place of every node in its cell and no
+        coordinate, so vertices recorded earlier give the nodes of that time
+        bit for bit.
         """
         from underworld3.cython.petsc_discretisation import (
             petsc_dm_create_interpolation_within_plex,
@@ -6651,7 +6658,10 @@ class Mesh(Stateful, uw_object):
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
         matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
-        coordsOld = self.dm.getCoordinates()
+        if vertices is None:
+            coordsOld = self.dm.getCoordinates()
+        else:
+            coordsOld = self._coordinate_vector_of(vertices)
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
@@ -6659,6 +6669,8 @@ class Mesh(Stateful, uw_object):
 
         arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
+        if vertices is not None:
+            coordsOld.destroy()
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
         # Clean up the PETSc interpolation objects built above. Without this
@@ -6668,6 +6680,22 @@ class Mesh(Stateful, uw_object):
         dmnew.destroy()
 
         return arrcopy
+
+    def _coordinate_vector_of(self, vertices):
+        """A global coordinate vector holding ``vertices``, one row per local
+        vertex in point order (``_vertex_coordinates``). Each rank's owned rows
+        are the ones kept. The caller destroys it."""
+        from underworld3.utilities._plex_topology import section_offsets
+
+        dm = self.dm
+        vs, ve = dm.getDepthStratum(0)
+        offsets = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve))
+        local = dm.getCoordinatesLocal().duplicate()
+        local.array[offsets[:, None] + numpy.arange(self.cdim)] = vertices
+        held = dm.getCoordinates().duplicate()
+        dm.getCoordinateDM().localToGlobal(local, held)
+        local.destroy()
+        return held
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
