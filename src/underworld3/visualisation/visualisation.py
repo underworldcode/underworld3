@@ -497,8 +497,8 @@ def _lagrange_subcell_connectivity(meshVar):
     of a single edge, face or interior, which follow that entity's own
     orientation. Those are matched to the lattice positions of the same
     entity, mapped through the cell's corners, and the competing positions are
-    a lattice spacing apart, so a node pushed off the chord (a curved
-    boundary, a degree-2 coordinate mesh) is still matched to the right one.
+    a lattice spacing apart, so a node a little off its lattice position is
+    still matched to the right one.
     The match is refused, and ``None`` returned, if a node lies more than half
     a spacing from its lattice position.
     """

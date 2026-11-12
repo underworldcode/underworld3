@@ -59,7 +59,9 @@ def SphericalShell(
     cellSize : float, default=0.1
         Target mesh element size.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -131,6 +133,9 @@ def SphericalShell(
         )
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Lower = 11
         Upper = 12
@@ -325,7 +330,9 @@ def SphericalManifold(
     cellSize : float, default=0.1
         Target mesh element size (chord length).
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -377,6 +384,8 @@ def SphericalManifold(
         >>> theta = sphere.X.spherical.theta    # co-latitude
         >>> phi   = sphere.X.spherical.phi      # longitude
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Surface = 12  # the manifold itself (closed sphere has no boundary curve)
@@ -533,8 +542,10 @@ def SphericalShellInternalBoundary(
         The inner radius of the spherical shell. Default is 0.547.
     cellSize : float, optional
         The target size for the mesh elements. Default is 0.1.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -568,6 +579,8 @@ def SphericalShellInternalBoundary(
     ...     cellSize=0.05,
     ... )
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Centre = 1
@@ -864,8 +877,10 @@ def SegmentofSphere(
         The angular extent in latitude (degrees). Default is 90.0.
     cellSize : float, optional
         The target size for the mesh elements. Default is 0.1.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -895,6 +910,8 @@ def SegmentofSphere(
     ...     cellSize=0.05,
     ... )
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 11
@@ -1127,7 +1144,9 @@ def CubedSphere(
         Number of elements along each edge of each cube face. Total
         elements approximately ``6 * numElements^2`` per radial layer.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     simplex : bool, default=False
@@ -1181,6 +1200,8 @@ def CubedSphere(
     - ``unit_e_2``: longitude direction :math:`(\phi)`
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1
