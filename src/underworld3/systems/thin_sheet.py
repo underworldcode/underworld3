@@ -97,14 +97,35 @@ def _facet_normal_field(mesh):
     """
     field = getattr(mesh, "_sheet_facet_normal", None)
     if field is None:
+        # Recomputed from the geometry, never carried: a remesh transfer of
+        # the old normals would hand the new cells the old cells' planes.
         field = uw.discretisation.MeshVariable(
-            "sheet_facet_normal", mesh, mesh.cdim, degree=0, continuous=False)
-        c_start, c_end = mesh.dm.getHeightStratum(0)
-        normals = np.array([mesh.dm.computeCellGeometryFVM(c)[2] for c in range(c_start, c_end)])
-        normals /= np.linalg.norm(normals, axis=1)[:, None]
-        field.array[:, 0, :] = normals
+            "sheet_facet_normal", mesh, mesh.cdim, degree=0, continuous=False,
+            remesh_policy="reinit")
         mesh._sheet_facet_normal = field
+        field._sheet_geometry_version = None
+    _refresh_facet_normal(mesh)
     return field
+
+
+def _refresh_facet_normal(mesh):
+    """Refill the facet-normal field if the coordinates moved since it was
+    filled (``mesh._geometry_version``, bumped by every deform and adapt).
+    The projector reads the field's values, not a copy, so a refill is all a
+    deformed sheet needs (#879: the normals were filled once and went stale)."""
+    field = getattr(mesh, "_sheet_facet_normal", None)
+    if field is None:
+        return
+    version = getattr(mesh, "_geometry_version", 0)
+    if getattr(field, "_sheet_geometry_version", None) == version:
+        return
+    c_start, c_end = mesh.dm.getHeightStratum(0)
+    normals = np.array([mesh.dm.computeCellGeometryFVM(c)[2] for c in range(c_start, c_end)],
+                       dtype=float).reshape(-1, mesh.cdim)
+    normals /= np.maximum(np.linalg.norm(normals, axis=1), 1e-300)[:, None]
+    # written on every rank, an empty one included: the write may sync
+    field.array[:, 0, :] = normals
+    field._sheet_geometry_version = version
 
 
 def _tangent_projector(mesh):
@@ -228,6 +249,8 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         ("thickness", "sheet thickness L multiplying the in-plane stress"),
         ("bodyforce", "body force per unit volume; F0 carries -L f"),
         ("basal_drag", "drag coefficient c on the sheet velocity (eta_a / h_a)"),
+        ("basal_coupling", "rows added by add_basal_drag / add_basal_traction, "
+                           "entering F0 as residual terms"),
     )
 
     @timing.routine_timer_decorator
@@ -293,6 +316,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         verbose: bool = False,
         evalf: bool = False,
         divergence_retries: int = 0,
+        picard: int = 0,
     ):
         """Solve the sheet momentum balance; with a viscoelastic constitutive
         model, carry the stress history across the step first.
@@ -302,14 +326,22 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         timestep : float
             Required when the constitutive model carries a stress history: the
             elastic timestep of the Maxwell element.
-        zero_init_guess, verbose, divergence_retries
-            As for :meth:`SNES_Vector.solve`.
+        zero_init_guess, verbose, divergence_retries, picard
+            As for :meth:`SNES_Vector.solve`. A sheet on a manifold solves in the
+            rotated loop (``rotated_bc.solve_rotated_freeslip``), which takes no
+            automatic Picard step: ``picard=0`` is Newton from the start, and
+            ``picard=N`` gives at least N Picard iterations, staying on Picard
+            until the residual has fallen by ``solver.newton_switch_rtol``
+            (default 1e-2). On a flat mesh a cold nonlinear solve takes one
+            Picard step on its own, and ``picard=N`` gives N.
+            Time reaches the sheet through ``mesh.t``, the model's clock.
         evalf : bool, default False
             Numerical evaluation during the history carry.
         """
+        _refresh_facet_normal(self.mesh)
         if self.Unknowns.DFDt is None:
             super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
-                          divergence_retries=divergence_retries)
+                          divergence_retries=divergence_retries, picard=picard)
             self._refresh_pressure(verbose)
             return
         if timestep is None:
@@ -328,7 +360,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._build(verbose)
         self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
         super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
-                      divergence_retries=divergence_retries)
+                      divergence_retries=divergence_retries, picard=picard)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
         self._keep_history_tangent()
         self._refresh_pressure(verbose)
@@ -357,14 +389,43 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         1.9e-2 at 80) where the flat sheet carries the stress to 5e-4."""
         if self.mesh.dim == self.mesh.cdim:
             return
+        self._record_history_projection()
         for level in self.Unknowns.DFDt.psi_star:
             coords = level.coords
+            # TODO(BUG): the projection uses the sphere's radial normal, which is
+            # wrong once the manifold is deformed off the sphere (as is the
+            # tangency constraint, _sheet_normal); the cell's facet normal now
+            # follows a deform, but these node normals do not. See issue #879.
             rhat = coords / np.linalg.norm(coords, axis=1)[:, None]
             P = np.eye(self.mesh.cdim)[None] - rhat[:, :, None] * rhat[:, None, :]
             projected = P @ np.asarray(level.array) @ P
             # symmetric to round-off; a symmetric tensor variable stores one
             # value per off-diagonal pair and refuses two that differ
             level.array[...] = 0.5 * (projected + projected.transpose(0, 2, 1))
+
+    def _record_history_projection(self):
+        """Note the projection in the transcript, after the history shift it
+        follows. It rewrites every stored level, so without the record the
+        shift's adjoint verdict describes an operator the run did not apply,
+        and a walk through the history would leave the projection out (#879).
+        The walk does not differentiate it, which the record says. A no-op
+        outside ``model.step``; a failure to record never stops the solve."""
+        try:
+            model = uw.get_default_model()
+            part = f"{type(self).__name__}#{self.instance_number}"
+            model._record_step_event(
+                "history_projection", f"{type(self).__name__}({self.u.name})",
+                part=part,
+                levels=len(self.Unknowns.DFDt.psi_star),
+                adjoint={"supported": False,
+                         "reason": "the tangent-plane projection of the stress "
+                                   "history (P sigma* P) is applied after the "
+                                   "shift and is not differentiated by the "
+                                   "transcript walk"})
+        except Exception:
+            # Charter S4: sanctioned. The transcript records the run and never
+            # takes part in it; an unrecorded projection is a gap in the record.
+            pass
 
     @property
     def constitutive_model(self):
@@ -394,20 +455,24 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried (see
         :attr:`SNES_Stokes.stress_transport`). The default is the grid
-        (``"eulerian"``, the streamline-upwind transport). On a manifold it is
-        the only one: the semi-Lagrangian trace-back leaves the faceted surface.
-        On a flat mesh the others may be chosen, but next to a split-node fault
-        the trace-back reads across the slit."""
+        (``"eulerian"``, the streamline-upwind transport). On a manifold the
+        grid flavours are the ones available, ``"eulerian"`` and ``"none"`` (the
+        history stays at its node, for a tidal or seismic cycle that moves far
+        less than a cell a step): the others leave the faceted surface, the
+        trace-backs (``"semi_lagrangian"``, ``"integration_point"``) along a
+        characteristic and ``"forward"`` and ``"lagrangian"`` with their
+        points. On a flat mesh they may be chosen, but next to a split-node
+        fault a trace-back reads across the slit."""
         return super().stress_transport
 
     @stress_transport.setter
     def stress_transport(self, value):
-        if self.mesh.dim < self.mesh.cdim and str(value) != "eulerian":
+        if self.mesh.dim < self.mesh.cdim and str(value) not in ("eulerian", "none"):
             raise ValueError(
                 f"stress_transport={value!r} is not available on a manifold "
                 "mesh: the thin sheet carries its history on the grid "
-                "('eulerian'); the semi-Lagrangian trace-back leaves the "
-                "faceted surface.")
+                "('eulerian', or 'none' to leave it at its node); the other "
+                "flavours move their points off the faceted surface.")
         _StressHistoryMixin.stress_transport.fset(self, value)
 
     # ------------------------------------------------------------------
@@ -510,11 +575,21 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
             row = _nondimensional_row(conds, self.mesh.cdim)
         self._basal_terms.append(-row)
 
-    def _basal_residual(self):
-        total = self.basal_drag.sym * self.Unknowns.u.sym
+    @property
+    def basal_coupling(self):
+        r"""The rows :meth:`add_basal_drag` and :meth:`add_basal_traction` added,
+        summed: a ``(1, cdim)`` row entering ``F0`` (zero when none was added).
+        On ``Stokes`` the same calls are natural conditions on the base."""
+        total = sympy.zeros(1, self.mesh.cdim)
         for term in self._basal_terms:
             total = total + term
         return total
+
+    def _basal_residual(self):
+        # c_b and L enter as the expressions, not their values: describe() and
+        # the transcript then show the names, and a units model sends them
+        # through the unwrap path (#875)
+        return self.basal_drag * self.Unknowns.u.sym + self.basal_coupling
 
     @property
     def p(self):
@@ -599,7 +674,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         tangent applies it to the model's tangent flux (``flux_jacobian``), so
         the plane-stress closure stays in the tangent."""
         tau = sympy.Matrix(tau)
-        return self.thickness.sym * (tau + tau.trace() * self._P)
+        return self.thickness * (tau + tau.trace() * self._P)
 
     # ------------------------------------------------------------------
     # PETSc residual templates
@@ -607,7 +682,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
 
     F0 = Template(
         r"\mathbf{f}_0\left( \mathbf{u} \right)",
-        lambda self: -self.thickness.sym * self.bodyforce.sym + self._basal_residual(),
+        lambda self: -self.thickness * self.bodyforce.sym + self._basal_residual(),
         r"""Pointwise term: the basal coupling (drag
         :math:`c\,(\mathbf{u} - \mathbf{u}_\mathrm{ref})`, less any basal
         traction) less the depth-integrated body force :math:`L\mathbf{f}`.""",

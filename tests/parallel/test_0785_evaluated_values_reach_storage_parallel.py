@@ -149,17 +149,15 @@ def test_deform_keeps_every_tensor_shape_in_its_components():
 
 
 def test_deform_with_units_keeps_a_constant_field(reference_scales):
-    """Pins development's number, not a correct deform: a constant T of raw 0.5 K
-    reads raw 0.5 after this call, as on development. With the transferred values
-    reduced by the temperature scale it came out at 0.0005 (review round 3, H1).
+    """A constant T of raw 0.5 K reads raw 0.5 after a deform in a units model, with
+    no limiter. With the transferred values reduced by the temperature scale it came
+    out at 0.0005 (review round 3, H1).
 
-    The deform itself is wrong, by two filed defects that cancel here. The target is
-    0.99 of ``mesh.X.coords`` in metres, written as raw coordinates, so the DM
-    coordinates go to 9.9e11 (#979) and every new node lies outside the old mesh.
-    The extrapolated 500 K is then clipped onto the non-dimensional bounds of its
-    neighbours, [0.5, 0.5], by the default ``REMESH_MONOTONE="clamp"`` (#989). With
-    the clamp off this test fails. It is here to catch a change in that number, and
-    fixing #979 or #989 is expected to change it.
+    The target is 0.99 of ``mesh.X.coords`` with its units, so the move stays in the
+    model frame (#979, fixed in #1003) and every new node lies inside the old mesh.
+    Before #1003 this case passed a plain metre-sized array, which the remap only
+    survived through the clamp (#989). That call is now refused, and the second half
+    of this test pins the refusal.
     """
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(uw.quantity(0, "km"), uw.quantity(0, "km")),
@@ -168,12 +166,15 @@ def test_deform_with_units_keeps_a_constant_field(reference_scales):
     temperature = uw.discretisation.MeshVariable("T_c", mesh, 1, degree=1, units="K")
     temperature.data[:, 0] = 0.5
 
-    mesh.deform(0.99 * np.asarray(mesh.X.coords))
+    mesh.deform(0.99 * mesh.X.coords)
 
     data = np.asarray(temperature.data)
     lowest = uw.mpi.comm.allreduce(float(data.min(initial=np.inf)), op=MPI.MIN)
     highest = uw.mpi.comm.allreduce(float(data.max(initial=-np.inf)), op=MPI.MAX)
     assert np.isclose(lowest, 0.5, rtol=1e-12) and np.isclose(highest, 0.5, rtol=1e-12), (lowest, highest)
+
+    with pytest.raises(ValueError, match="size of the physical domain"):
+        mesh.deform(0.99 * np.asarray(mesh.X.coords))
 
 
 def test_the_refinement_transfers_keep_a_square_matrix_in_its_components():
