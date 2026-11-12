@@ -1397,6 +1397,17 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
                              for t in cell_verts[c - cS]])
     new.symmetrize()
     new.stratify()
+    if uw.mpi.size > 1:
+        # The vertex star-forest goes on before the interpolate, so that the
+        # faces and edges on a partition seam get one cone order on every
+        # rank that holds them. A repartition of the split mesh takes a
+        # shared face from one rank and the cells on it from another, and
+        # with two cone orders the cells it moves come out inverted. No
+        # replica is shared: the patch's star is on one rank.
+        from underworld3.utilities.place_surface import (
+            _attach_uninterp_vertex_sf)
+        _attach_uninterp_vertex_sf(new, dm, np.arange(nv, dtype=np.int64),
+                                   nc, nc + nv + k)
     new.interpolate()
 
     vS2, vE2 = new.getDepthStratum(0)

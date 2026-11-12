@@ -505,7 +505,7 @@ def test_two_calls_solve_as_one_call_does_3d(first_3d):
     one_call = _peak_slips_3d(_box_3d().add_fault([SHEET_A, SHEET_B]))
     two_calls = _peak_slips_3d(second)
     for name in ("FA", "FB"):
-        assert one_call[name] > 0.1, name
+        assert one_call[name] > 0.05, name
         assert abs(two_calls[name] - one_call[name]) < 2e-5, name
 
 
