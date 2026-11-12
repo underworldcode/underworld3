@@ -33,17 +33,46 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# case -> (dimension, cellSize, slip_surfaces, ranks)
+# case -> (dimension, cellSize, slip_surfaces, rank counts, partition)
 CASES = {
-    "pinned_2d": (2, 0.25, False, 2),
-    "slip_2d": (2, 0.25, True, 3),
-    "slip_corners_2d": (2, 1.0, True, 2),
-    "slip_3d": (3, 0.35, True, 2),
+    "pinned_2d": (2, 0.25, False, (2,), None),
+    "slip_2d": (2, 0.25, True, (2, 3, 4), None),
+    "slip_corners_2d": (2, 1.0, True, (2, 3, 4), None),
+    "slip_3d": (3, 0.35, True, (2, 3, 4), None),
+    # cells dealt to ranks at random, so seams cross the walls everywhere
+    "slip_2d_scattered": (2, 0.25, True, (3, 4), "scatter"),
 }
 ANNULUS_RANKS = (2, 3, 4, 5)
 
 
-def _move_annulus(out):
+def _scatter_cells(dmod, seed=1086):
+    """Install a shell partition dealing the cells to ranks at random on each
+    DM the mesh loader returns, before the Mesh constructor distributes it
+    (the loader holds every cell on rank 0)."""
+    from petsc4py import PETSc
+    import underworld3 as uw
+
+    original = dmod._from_plexh5
+
+    def load(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not isinstance(result, tuple):
+            return result
+        sf0, dm = result
+        cs, ce = dm.getHeightStratum(0)
+        owner = np.random.default_rng(seed).integers(0, uw.mpi.size, ce - cs)
+        sizes = np.bincount(owner, minlength=uw.mpi.size).astype(np.int32)
+        partitioner = dm.getPartitioner()
+        partitioner.setType(PETSc.Partitioner.Type.SHELL)
+        partitioner.setShellPartition(uw.mpi.size, sizes=sizes,
+                                      points=np.argsort(owner, kind="stable").astype(np.int32))
+        return sf0, dm
+
+    dmod._from_plexh5 = load
+    return original
+
+
+def _move_annulus(out, slip=False):
     """H1's cavity case (#1086): a refinement-2 annulus moved by node
     redistribution towards a dipping fault trace, metric amplitude 20. The
     metric is read exactly (``metric_eval="sympy"``): the default frozen read
@@ -66,6 +95,7 @@ def _move_annulus(out):
     d2 = (x - p0[0] - t * (p1[0] - p0[0])) ** 2 + (y - p0[1] - t * (p1[1] - p0[1])) ** 2
     before = np.asarray(mesh.X.coords).copy()
     uw.meshing.node_redistribution(mesh, 1 + 20.0 * sympy.exp(-d2 / 0.15**2),
+                                   slip_surfaces=slip,
                                    method_kwargs=dict(metric_eval="sympy"))
     _write(out, before, np.asarray(mesh.X.coords).copy())
 
@@ -87,11 +117,17 @@ def _move(case, out):
     import sympy
     import underworld3 as uw
 
-    if case == "cavity_annulus":
-        return _move_annulus(out)
-    dim, cell_size, slip, _ = CASES[case]
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
-                                             cellSize=cell_size)
+    if case.startswith("cavity_annulus"):
+        return _move_annulus(out, slip=case.endswith("_slip"))
+    dim, cell_size, slip, _, partition = CASES[case]
+    dmod = uw.discretisation.discretisation_mesh
+    original = _scatter_cells(dmod) if partition == "scatter" and uw.mpi.size > 1 else None
+    try:
+        mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
+                                                 cellSize=cell_size)
+    finally:
+        if original is not None:
+            dmod._from_plexh5 = original
     before = np.asarray(mesh.X.coords).copy()
     X = mesh.X
     centre = (0.3, 0.35, 0.4)[:dim]
@@ -138,14 +174,15 @@ needs_mpirun = pytest.mark.skipif(not Path(sys.executable).with_name("mpirun").e
 
 @pytest.mark.tier_b
 @needs_mpirun
-@pytest.mark.parametrize("case", list(CASES))
-def test_redistribution_matches_serial(case, tmp_path):
+@pytest.mark.parametrize("case,ranks", [(case, n) for case, spec in CASES.items()
+                                         for n in spec[3]])
+def test_redistribution_matches_serial(case, ranks, tmp_path):
     import underworld3 as uw
 
     if uw.mpi.size != 1:
         pytest.skip("Run in serial; it launches its own serial and parallel runs.")
     serial = _run(case, 1, tmp_path / "serial.json")
-    parallel = _run(case, CASES[case][3], tmp_path / "parallel.json")
+    parallel = _run(case, ranks, tmp_path / "parallel.json")
     _assert_matches(serial, parallel)
 
 
@@ -168,6 +205,32 @@ def test_cavity_annulus_matches_serial(ranks, cavity_serial, tmp_path):
     # seam effects it guards against were 7e-3 to 2.4e-2.
     _assert_matches(cavity_serial, _run("cavity_annulus", ranks, tmp_path / "parallel.json"),
                     inside_unit_box=False, atol=1e-6)
+
+
+
+@pytest.fixture(scope="module")
+def cavity_slip_serial(tmp_path_factory):
+    return _run("cavity_annulus_slip", 1, tmp_path_factory.mktemp("cavity_slip") / "serial.json")
+
+
+@pytest.mark.tier_b
+@needs_mpirun
+@pytest.mark.parametrize("ranks", ANNULUS_RANKS)
+def test_cavity_annulus_with_slip_matches_serial(ranks, cavity_slip_serial, tmp_path):
+    import underworld3 as uw
+
+    if uw.mpi.size != 1:
+        pytest.skip("Run in serial; it launches its own serial and parallel runs.")
+    # The same move, with the walls slipping on their registered radial
+    # surfaces. Measured 1.0e-6 to 7.7e-6 off serial at np 2-5 on a move of
+    # 0.148 (2026-11-12), against 3e-8 to 7e-8 with the walls pinned. That is
+    # NOT rounding: serial runs whose metric amplitude differs by 1e-14 differ
+    # by only 1.2e-7 to 1.4e-7 with slip (3.5e-7 pinned), so a small partition
+    # dependence remains in the slip path, unexplained. This bounds it; the
+    # seam effects fixed here were 1e-3 and more.
+    _assert_matches(cavity_slip_serial,
+                    _run("cavity_annulus_slip", ranks, tmp_path / "parallel.json"),
+                    inside_unit_box=False, atol=2e-5)
 
 
 if __name__ == "__main__":

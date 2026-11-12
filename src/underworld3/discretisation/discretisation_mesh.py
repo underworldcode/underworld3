@@ -4321,9 +4321,12 @@ class Mesh(Stateful, uw_object):
                 if not getattr(s, "interior", False)}
         # Which labels are usable is decided on all ranks together (#1082): the
         # normals below are a collective projection, so every rank must make the
-        # same calls. A rank holding none of a label's facets holds none of its
-        # vertices either, and gets an empty facet surface that is never asked
-        # to restore anything.
+        # same calls. A rank holding none of a label's facets gets an empty facet
+        # surface. That is enough when such a rank also holds none of the
+        # label's vertices (every cell on one rank), but not in general: a rank
+        # can own slip vertices of a label without any of its facets, and its
+        # restore then fails alone. Each rank also restores onto its own facets
+        # only, so facet slip is partition-dependent. Both are #1103.
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
             from mpi4py import MPI
