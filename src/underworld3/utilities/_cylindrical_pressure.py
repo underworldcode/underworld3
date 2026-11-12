@@ -23,6 +23,8 @@ import underworld3 as uw
 from mpi4py import MPI
 from petsc4py import PETSc
 
+from .fault_contact import _collective_raise
+
 
 class _PressureLift(NamedTuple):
     pressure_jump: object
@@ -176,9 +178,16 @@ def _create_circular_pressure_lift(
     vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
     vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
     outer = np.linalg.norm(vertices.mean(axis=1), axis=1) > interface_radius
-    moments, cap_area, chord_count, lift_integral = _load_moments(
-        vertices[outer], interface_radius, width, wavenumber, amplitude, quadrature_points
-    )
+    # The cut-cell quadrature sees this rank's cells only, and the sums below are
+    # collective: a refusal here must reach every rank, or the others wait for it.
+    problem = None
+    try:
+        moments, cap_area, chord_count, lift_integral = _load_moments(
+            vertices[outer], interface_radius, width, wavenumber, amplitude, quadrature_points
+        )
+    except (ValueError, ArithmeticError) as err:
+        problem = str(err)
+    _collective_raise(problem)
     edges = np.stack((vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]), axis=-1)
     area = np.abs(np.linalg.det(edges)) / 2
 
@@ -196,8 +205,8 @@ def _create_circular_pressure_lift(
     nodal[outer] = np.einsum("ij,njk->nik", np.linalg.inv(mass), moments / area[outer, None, None])
     reproduced = area[outer, None, None] * np.einsum("ij,njk->nik", mass, nodal[outer])
     moment_error = float(np.max(np.abs(reproduced - moments))) if len(moments) else 0.0
-    if moment_error > 1e-11:
-        raise ArithmeticError(f"DG P2 load-moment representation failed: {moment_error}")
+    _collective_raise(f"DG P2 load-moment representation failed: {moment_error}"
+                      if moment_error > 1e-11 else None)
 
     rows = mesh._cell_node_indices(2, False).reshape(-1, 6)
     coordinates = np.asarray(force_field.coords)[rows]
