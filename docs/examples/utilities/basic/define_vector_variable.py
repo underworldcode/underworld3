@@ -40,7 +40,17 @@ The parameter organization and section structure provide templates for generatin
 """
 
 # %%
-# TODO: Implement coordinate_system_setup for define_vector_variable
+import numpy as np
+import underworld3 as uw
+
+VECTOR_DIMENSION = 2
+
+mesh = uw.meshing.StructuredQuadBox(
+    elementRes=(8, 8),
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    qdegree=2,
+)
 
 # %% [markdown]
 """
@@ -64,7 +74,7 @@ if VECTOR_DIMENSION > 1:
 print(f"✓ Created {VECTOR_DIMENSION}D vector field")
 print(f"  Shape: {vector_field.array.shape}")
 print(f"  Components: {VECTOR_DIMENSION}")
-print(f"  Magnitude range: {np.linalg.norm(vector_field.array.reshape(-1, VECTOR_DIMENSION), axis=1).max():.3f}")
+print(f"  Magnitude range: {np.linalg.norm(np.column_stack([np.asarray(vector_field.array[:, 0, component]) for component in range(VECTOR_DIMENSION)]), axis=1).max():.3f}")
 
 # %% [markdown]
 """

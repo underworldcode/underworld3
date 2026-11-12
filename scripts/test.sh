@@ -216,6 +216,17 @@ batch() {
     if [ "$SHARD_COUNT" -gt 0 ] && [ "$owner" -ne "$SHARD" ]; then
         return 0
     fi
+    # A glob that matched nothing reaches here as its own pattern (no nullglob):
+    # a decade line with no files yet. Skip it rather than hand pytest a path that
+    # does not exist; any file the line names keeps it running.
+    local arg found=0
+    for arg in "$@"; do
+        case $arg in tests/*) [ -e "$arg" ] && found=1 ;; esac
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "batch $owner: no test files match: $*"
+        return 0
+    fi
     "${PYTEST[@]}" "$@" || status=1
 }
 
@@ -388,6 +399,10 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
   # So is a zone-keyed patch that a mover keeps, with the same solution (#1017).
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
+  # So is the boundary-slip classification of seam vertices (#1086).
+  batch 3 tests/parallel/test_1086_boundary_slip_classification_parallel.py
+  # So is the merge of coarse unknowns sharing one fine image (#1101).
+  batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
@@ -412,29 +427,26 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
 
   # Diffusion / Advection tests (test_110*: SUPG/SLCN/swarm adv-diff benchmarks)
   batch 3 tests/test_110*py
-  batch 4 tests/test_1110*py tests/test_1120*py  # Annulus + vector SL
-  batch 4 tests/test_1111*py tests/test_1113*py  # rotated FMG coarse solve (#901)
-  batch 4 tests/test_1115*py  # a failed rotated solve raises (#907)
-  batch 4 tests/test_1134*py  # an unsplit level keeps the FAC cover gate (#918)
-  batch 4 tests/test_1136*py  # the rotated loop honours snes_max_it (#920)
-  batch 3 tests/test_1141*py  # a constrained node adds nothing to the rotated sigma_nn (#936)
-  batch 3 tests/test_1131*py  # rotated free slip takes its rotation modes from the mesh (#906), 3-4 min
-  batch 3 tests/test_1142*py  # an exact rotation is projected out of the rotated velocity PC (#963)
-  batch 4 tests/test_1143*py  # the rotated loop honours snes_rtol and snes_atol (#924)
-  batch 4 tests/test_1145*py  # a Stokes adjoint keeps the velocity block's custom-P hierarchy (#1016)
-  batch 4 tests/test_1146*py  # a custom-P hierarchy re-solves after mesh.deform (#1015)
-  batch 4 tests/test_1148*py  # a new timestep keeps the SNES of a time-dependent solver (#1026)
-  batch 4 tests/test_1149*py  # a custom-P hierarchy's state does not outlive a change (#1019, #1017)
-  batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
-  batch 4 tests/test_1153*py  # timestep estimates read model units; setters keep or refuse (#891, #1031)
-  batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
-  batch 4 tests/test_1172*py  # a solve after a move of a refined mesh uses the moved geometry (#1037)
-  batch 4 tests/test_1173*py  # the add-on record of a moved mesh is the one it was built with (#1091)
-  batch 4 tests/test_1174*py  # a second add_fault keeps the faults already split into the mesh (#1099)
-  batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)
-  batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
-  batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)
-  batch 4 tests/test_1161*py  # a diverged solve warns (#1059)
+  # One line per decade from 1110 up: a new test in an existing decade needs no edit
+  # here, so PRs adding tests stop colliding on this block. A file that runs on
+  # another shard keeps its own line and is taken out of its decade's line with a
+  # whole-file --deselect (node id relative to tests/, as for test_0022 above). The
+  # files of a decade share one pytest process, as the tests below 1100 already do.
+  # A decade with no files yet is skipped by batch(); 118 and 119 are listed ahead of
+  # the PRs that bring them.
+  batch 4 tests/test_111*py
+  batch 4 tests/test_112*py
+  batch 4 tests/test_113*py --deselect=test_1131_rotated_nullspace_from_mesh.py
+  batch 3 tests/test_1131*py  # 3-4 min
+  batch 4 tests/test_114*py --deselect=test_1141_rotated_traction_constrained_node.py \
+    --deselect=test_1142_rotated_exact_mode_projected_pc.py
+  batch 3 tests/test_1141*py
+  batch 3 tests/test_1142*py
+  batch 4 tests/test_115*py
+  batch 4 tests/test_116*py
+  batch 4 tests/test_117*py
+  batch 4 tests/test_118*py
+  batch 4 tests/test_119*py
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
@@ -556,6 +568,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
       $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
+
+    # Three ranks exercise a process owning no prescribed-wall groups. The np 3
+    # pass below is opt-in (--full-parallel), so this one file runs at np 3 always.
+    # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some
