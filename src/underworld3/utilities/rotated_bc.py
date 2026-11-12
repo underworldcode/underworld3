@@ -449,8 +449,6 @@ def _datum_batches(boundaries, datum_specs, datum_nodes, coordinates, dim):
     different call counts/orders and deadlock before the first Stokes solve.
     Registration order is common to all ranks; coordinate arrays may be empty.
     """
-    if datum_specs is None:
-        return
     for spec in boundaries:
         name, _ = _boundary_spec(spec)
         dspec = datum_specs.get(name)
