@@ -3224,7 +3224,10 @@ class Mesh(Stateful, uw_object):
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
             fc = numpy.asarray(self._get_coords_for_basis(cv.degree, cv.continuous))
-            P = custom_mg.barycentric_prolongation(cc, fc)
+            # A field transfer needs every row right, not every coarse column
+            # reached: the orphan repair (a multigrid fix, #424) would overwrite
+            # rows with an injection from a far node.
+            P = custom_mg.barycentric_prolongation(cc, fc, repair_orphans=False)
             out = (P @ numpy.asarray(pv.data)).reshape(cv.data.shape)
 
         new = numpy.array(cv.data)
@@ -3269,7 +3272,12 @@ class Mesh(Stateful, uw_object):
                 # and silently reports the field at the DISPLACED position, an
                 # O(snap_frac x h) error that nothing downstream can see.
                 # Interpolate instead, which is what the parallel path above does.
-                P = custom_mg.barycentric_prolongation(fc, cc)
+                # The child's DOFs are the "coarse" cloud here and outnumber
+                # the parent's, so most of them are orphans; the repair (a
+                # multigrid fix, #424) overwrote a parent row with an
+                # injection from a nearby child node for each one, an O(h)
+                # error on every such row. A field transfer needs no repair.
+                P = custom_mg.barycentric_prolongation(fc, cc, repair_orphans=False)
                 out = (P @ numpy.asarray(cv.data)).reshape(pv.data.shape)
 
         new = numpy.array(pv.data)
