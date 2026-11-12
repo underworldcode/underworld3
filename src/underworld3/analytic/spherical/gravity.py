@@ -10,11 +10,10 @@ using the regular interior branch ``r**ell`` and decaying exterior branch
 
     Phi_lm(r_s) = 4*pi*G*sigma_lm*r_s/(2*ell+1).
 
-The normalized two-boundary operator factors out ``4*pi*G/g`` and therefore
-matches the coefficient convention used by the Zhong et al. (2008) response
-benchmark.  A positive outward internal-load coefficient is represented by a
-negative density-sheet coefficient and consequently enters the load vector
-with a negative sign.
+The normalized two-boundary geoid response of the Zhong et al. (2008)
+benchmark, which factors out ``4*pi*G/g``, is in
+``underworld3.postprocessing.geoid``; the kernels here keep ``G`` and both wall
+gravities.
 
 Reference and provenance
 ------------------------
@@ -29,17 +28,12 @@ UW3 extensions; the citation identifies the normalized response convention.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from numbers import Integral, Real
 
 import numpy as np
 
 
 __all__ = [
-    "GeoidResponse",
-    "SelfGravityResponse",
-    "spherical_shell_geoid_response",
-    "spherical_shell_self_gravity_response",
     "CONVENTIONS",
     "axisymmetric_harmonic_norm",
     "recover_axisymmetric_coefficient",
@@ -55,49 +49,6 @@ __all__ = [
     "spherical_shell_potential_operator",
     "spherical_physical_shell_response",
 ]
-
-
-@dataclass(frozen=True)
-class GeoidResponse:
-    r"""Normalized spherical geoid response without interface feedback.
-
-    Attributes
-    ----------
-    surface_geoid, cmb_geoid : float
-        Signed geoid coefficients at the outer surface and core-mantle boundary,
-        in the common input harmonic basis. The normalized kernel factors out
-        ``4*pi*G/g``; these coefficients are not automatically SI heights."""
-
-    surface_geoid: float
-    cmb_geoid: float
-
-
-@dataclass(frozen=True)
-class SelfGravityResponse:
-    r"""Normalized spherical topography and geoid after two-interface feedback.
-
-    Attributes
-    ----------
-    surface_topography, cmb_topography : float
-        Corrected nondimensional interface-displacement coefficients.
-    surface_geoid, cmb_geoid : float
-        Corrected normalized geoid coefficients in the input harmonic basis.
-    q_surface, q_cmb : float
-        Signed dimensionless feedback factors ``4*pi*G*planet_radius*Delta_rho/g``.
-    matrix_condition_number : float, default=1
-        Two-norm condition number of the two-by-two feedback system.
-    matrix_residual_norm : float, default=0
-        Euclidean norm of the corrected-topography system residual, not a spatial
-        field error or an accuracy acceptance test."""
-
-    surface_topography: float
-    cmb_topography: float
-    surface_geoid: float
-    cmb_geoid: float
-    q_surface: float
-    q_cmb: float
-    matrix_condition_number: float = 1.0
-    matrix_residual_norm: float = 0.0
 
 
 CONVENTIONS = {
@@ -1190,193 +1141,3 @@ def spherical_physical_shell_response(
                       matrix_condition_number=condition,
                       matrix_residual_norm=float(np.linalg.norm(system@corrected-rhs)))
     return result
-
-
-def _spherical_shell_geoid_operator(
-    radius_inner: float,
-    radius_outer: float,
-    harmonic_degree: int,
-    internal_load_radius: float | None,
-    internal_load_coefficient: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the canonical analytical sheet operator and fixed-load vector."""
-    return spherical_shell_potential_operator(
-        radius_inner=radius_inner,
-        radius_outer=radius_outer,
-        harmonic_degree=harmonic_degree,
-        internal_load_radius=internal_load_radius,
-        internal_load_coefficient=internal_load_coefficient,
-    )
-
-
-def spherical_shell_geoid_response(
-    *,
-    radius_inner: float,
-    radius_outer: float,
-    harmonic_degree: int,
-    surface_topography_coefficient: float,
-    cmb_topography_coefficient: float,
-    internal_load_radius: float | None = None,
-    internal_load_coefficient: float = 0.0,
-) -> GeoidResponse:
-    r"""Return normalized spherical-shell geoid coefficients without feedback.
-
-    Parameters
-    ----------
-    radius_inner, radius_outer : float
-        Positive nondimensional shell radii, ordered inner < outer. They must
-        use the same planetary reference-radius scaling as the source coefficients.
-    harmonic_degree : int
-        Nonnegative degree, including zero for these coefficient-only kernels.
-    surface_topography_coefficient, cmb_topography_coefficient : float
-        Finite signed nondimensional topography coefficients in a common harmonic
-        basis, ordered surface then core-mantle boundary.
-    internal_load_radius : float or None, default=None
-        Nondimensional sheet radius strictly inside the shell when provided.
-        Required for nonzero ``internal_load_coefficient``.
-    internal_load_coefficient : float, default=0
-        Finite normalized outward radial-load coefficient. It enters the fixed
-        potential load with a negative sheet-density sign.
-
-    Returns
-    -------
-    GeoidResponse
-        Surface/CMB geoid coefficients with ``4*pi*G/g`` factored out. No physical
-        units are converted and no Stokes or MPI operation is performed.
-
-    Raises
-    ------
-    TypeError
-        Degree is not an integer or radii/load data cannot be converted to numbers.
-    ValueError
-        Degree, radius ordering, finite coefficients or internal sheet radius is invalid.
-
-    Notes
-    -----
-    All source coefficients must share one harmonic normalization. The radial
-    kernel depends on degree rather than order, so consistently normalized
-    coefficients of any real harmonic order may be used. This normalized response
-    is distinct from the physical ``Phi/g`` sheet kernels."""
-
-    operator, load = _spherical_shell_geoid_operator(
-        radius_inner,
-        radius_outer,
-        harmonic_degree,
-        internal_load_radius,
-        internal_load_coefficient,
-    )
-    topography = np.array(
-        [surface_topography_coefficient, cmb_topography_coefficient],
-        dtype=float,
-    )
-    if not np.all(np.isfinite(topography)):
-        raise ValueError("The topography coefficients must be finite.")
-    geoid = operator @ topography + load
-    return GeoidResponse(float(geoid[0]), float(geoid[1]))
-
-
-def spherical_shell_self_gravity_response(
-    *,
-    radius_inner: float,
-    radius_outer: float,
-    harmonic_degree: int,
-    surface_topography_coefficient: float,
-    cmb_topography_coefficient: float,
-    surface_density_contrast: float,
-    cmb_density_contrast: float,
-    planet_radius: float,
-    gravity: float,
-    internal_load_radius: float | None = None,
-    internal_load_coefficient: float = 0.0,
-    gravitational_constant: float = 6.67430e-11,
-) -> SelfGravityResponse:
-    r"""Return normalized spherical response after two-interface self-gravity feedback.
-
-    Parameters
-    ----------
-    radius_inner, radius_outer : float
-        Positive nondimensional shell radii, ordered inner < outer. They must
-        use the same planetary reference-radius scaling as the source coefficients.
-    harmonic_degree : int
-        Nonnegative degree, including zero for these coefficient-only kernels.
-    surface_topography_coefficient, cmb_topography_coefficient : float
-        Finite signed nondimensional topography coefficients in a common harmonic
-        basis, ordered surface then core-mantle boundary.
-    internal_load_radius : float or None, default=None
-        Nondimensional sheet radius strictly inside the shell when provided.
-        Required for nonzero ``internal_load_coefficient``.
-    internal_load_coefficient : float, default=0
-        Finite normalized outward radial-load coefficient. It enters the fixed
-        potential load with a negative sheet-density sign.
-    surface_density_contrast, cmb_density_contrast : float
-        Finite signed density contrasts in kg/m^3, supplying the signs of the
-        surface/CMB diagonal feedback factors.
-    planet_radius : float
-        Finite positive reference planetary radius in metres.
-    gravity : float
-        Finite positive reference gravity in m/s^2.
-    gravitational_constant : float, default=6.67430e-11
-        Finite positive SI gravitational constant in m^3/(kg*s^2).
-
-    Returns
-    -------
-    SelfGravityResponse
-        Corrected nondimensional topography and normalized geoid coefficients,
-        feedback factors and matrix diagnostics. Physical constants set the
-        dimensionless feedback; returned coefficients remain normalized.
-
-    Raises
-    ------
-    TypeError
-        Degree has an invalid type or radius/load data cannot be converted to numbers.
-    ValueError
-        Geometry, coefficient, contrast or positive physical-constant requirements fail.
-    numpy.linalg.LinAlgError
-        The two-interface feedback matrix is singular.
-
-    Notes
-    -----
-    With the normalized kernel ``K`` and fixed load ``b``, solve
-    ``(I-diag(q)*K)*h_corrected=h+diag(q)*b``, where
-    ``q=4*pi*G*planet_radius*Delta_rho/gravity``. All coefficients must share
-    the input harmonic normalization. This pure coefficient operation changes no
-    velocity and performs no MPI communication."""
-
-    operator, load = _spherical_shell_geoid_operator(
-        radius_inner,
-        radius_outer,
-        harmonic_degree,
-        internal_load_radius,
-        internal_load_coefficient,
-    )
-    topography = np.array(
-        [surface_topography_coefficient, cmb_topography_coefficient],
-        dtype=float,
-    )
-    density_contrasts = np.array([surface_density_contrast, cmb_density_contrast], dtype=float)
-    physical_constants = np.array([planet_radius, gravity, gravitational_constant], dtype=float)
-    if not np.all(np.isfinite(topography)):
-        raise ValueError("The topography coefficients must be finite.")
-    if not np.all(np.isfinite(density_contrasts)):
-        raise ValueError("Density contrasts must be finite.")
-    if not np.all(np.isfinite(physical_constants)) or np.any(physical_constants <= 0.0):
-        raise ValueError("Physical constants must be finite and positive.")
-
-    gravity_scale = 4.0 * np.pi * gravitational_constant * planet_radius / gravity
-    q = gravity_scale * density_contrasts
-    q_matrix = np.diag(q)
-    system = np.eye(2) - q_matrix @ operator
-    right_hand_side = topography + q_matrix @ load
-    corrected_topography = np.linalg.solve(system, right_hand_side)
-    corrected_geoid = operator @ corrected_topography + load
-
-    return SelfGravityResponse(
-        surface_topography=float(corrected_topography[0]),
-        cmb_topography=float(corrected_topography[1]),
-        surface_geoid=float(corrected_geoid[0]),
-        cmb_geoid=float(corrected_geoid[1]),
-        q_surface=float(q[0]),
-        q_cmb=float(q[1]),
-        matrix_condition_number=float(np.linalg.cond(system)),
-        matrix_residual_norm=float(np.linalg.norm(system @ corrected_topography - right_hand_side)),
-    )
