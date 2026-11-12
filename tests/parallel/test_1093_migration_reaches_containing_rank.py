@@ -21,6 +21,14 @@ exactly:
   loop), through ``global_evaluate``: every one exact, none flagged
   extrapolated;
 * such points as a swarm: none lost, each on a rank whose domain holds it.
+
+The strays must exist, and whether a platform's partitioner leaves any is its
+own business (test_0858 failed its precondition on macOS that way), so the
+annulus is cut into vertical slabs by a shell partition, the cuts off centre:
+each midpoint between neighbouring domain centroids then misses its cut, and
+the strip between them holds points of one rank whose nearest centroid is the
+other's, on any platform. The #1093 point itself is asked on the platform's
+own partition, where it was found.
 """
 
 import numpy as np
@@ -34,15 +42,58 @@ pytestmark = [pytest.mark.level_2, pytest.mark.mpi(min_size=2), pytest.mark.time
 R_OUTER, R_INNER = 1 / 0.45, 0.55 / 0.45
 
 
-@pytest.fixture(scope="module")
-def annulus():
+def _slabs(dmod):
+    """Install a shell partition cutting the loaded DM (every cell on rank 0)
+    into vertical slabs, one per rank, at off-centre cuts, before the Mesh
+    constructor distributes it."""
+    from petsc4py import PETSc
+
+    original = dmod._from_plexh5
+
+    def load(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not isinstance(result, tuple):
+            return result
+        sf0, dm = result
+        cs, ce = dm.getHeightStratum(0)
+        x = np.array([dm.computeCellGeometryFVM(c)[1][0] for c in range(cs, ce)])
+        cuts = np.linspace(-R_OUTER, R_OUTER, uw.mpi.size + 1)[1:-1] + 0.3
+        owner = np.searchsorted(cuts, x).astype(np.int64)
+        partitioner = dm.getPartitioner()
+        partitioner.setType(PETSc.Partitioner.Type.SHELL)
+        partitioner.setShellPartition(
+            uw.mpi.size, sizes=np.bincount(owner, minlength=uw.mpi.size).astype(np.int32),
+            points=np.argsort(owner, kind="stable").astype(np.int32))
+        return sf0, dm
+
+    dmod._from_plexh5 = load
+    return original
+
+
+def _annulus(slabs):
     """The cavity annulus of #1086 (refinement 2), with f = 2x + 3y on P1."""
-    mesh = uw.meshing.Annulus(radiusOuter=R_OUTER, radiusInner=R_INNER, cellSize=0.5,
-                              refinement=2, qdegree=3)
-    f = uw.discretisation.MeshVariable("f1093", mesh, 1, degree=1)
+    dmod = uw.discretisation.discretisation_mesh
+    original = _slabs(dmod) if slabs else None
+    try:
+        mesh = uw.meshing.Annulus(radiusOuter=R_OUTER, radiusInner=R_INNER, cellSize=0.5,
+                                  refinement=2, qdegree=3)
+    finally:
+        if original is not None:
+            dmod._from_plexh5 = original
+    f = uw.discretisation.MeshVariable(f"f1093{'s' if slabs else ''}", mesh, 1, degree=1)
     X = np.asarray(f.coords)
     f.array[:, 0, 0] = 2 * X[:, 0] + 3 * X[:, 1]
     return mesh, f
+
+
+@pytest.fixture(scope="module")
+def annulus():
+    return _annulus(slabs=False)
+
+
+@pytest.fixture(scope="module")
+def slab_annulus():
+    return _annulus(slabs=True)
 
 
 def _strays(mesh, seed, n=4000):
@@ -80,15 +131,15 @@ def test_the_1093_point(annulus):
 
 
 @pytest.mark.tier_b
-def test_interior_strays_read_exactly_from_every_rank(annulus):
-    mesh, f = annulus
+def test_interior_strays_read_exactly_from_every_rank(slab_annulus):
+    mesh, f = slab_annulus
     err, outside = _max_error(f, _strays(mesh, 1093 + uw.mpi.rank))
     assert outside == 0 and err < 1e-12, (err, outside)
 
 
 @pytest.mark.tier_b
-def test_a_swarm_keeps_every_interior_stray(annulus):
-    mesh, _ = annulus
+def test_a_swarm_keeps_every_interior_stray(slab_annulus):
+    mesh, _ = slab_annulus
     points = _strays(mesh, 2093 + uw.mpi.rank)
     swarm = uw.swarm.Swarm(mesh)
     swarm.add_particles_with_global_coordinates(points, migrate=False)
