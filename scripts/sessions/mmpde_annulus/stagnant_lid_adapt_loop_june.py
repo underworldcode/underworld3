@@ -41,6 +41,11 @@ p.add_argument('--log-every', type=int, default=2)
 p.add_argument('--snapshot-every', type=int, default=20)
 p.add_argument('--out-tag', type=str, default=None)
 p.add_argument('--resume', action='store_true')
+# Restart on a FRESH refined mesh (with its multigrid hierarchy) from a checkpoint
+# that cannot be reloaded with one: <run dir>/stepNNNN. T and V are interpolated
+# from the checkpoint, the mesh is adapted to T, and the step count, time and
+# history carry on from the source run.
+p.add_argument('--remap-from', default=None)
 p.add_argument('--grad-smooth-h0', type=float, default=0.0,
                help='gradient_smoothing_length expressed as a '
                     'multiple of mean h0 (background cell size). '
@@ -165,8 +170,9 @@ if resume_info is not None:
     # and the solvers need 3 for the degree-3 temperature.
     mesh = uw.discretisation.Mesh(
         os.path.join(OUT_DIR, f"{resume_label}.mesh.00000.h5"), qdegree=3)
-elif args.from_perturbation:
-    resume_step = 0
+elif args.from_perturbation or args.remap_from:
+    resume_step = (int(os.path.basename(args.remap_from)[4:])
+                   if args.remap_from else 0)
     resume_label = None
     # Fresh Annulus matching the uniform-res16 setup. REFINE>0 builds a
     # boundary-snapped dm_hierarchy (coarse base = fine target coarsened by
@@ -204,6 +210,25 @@ if resume_label:
                         outputPath=OUT_DIR)
     except Exception:
         P.data[...] = 0.0
+elif args.remap_from:
+    _src_dir, _src_label = os.path.split(os.path.expanduser(args.remap_from))
+    _src_mesh = uw.discretisation.Mesh(
+        os.path.join(_src_dir, f"{_src_label}.mesh.00000.h5"), qdegree=3)
+    _T_src = uw.discretisation.MeshVariable("T_src", _src_mesh, 1, degree=3)
+    _V_src = uw.discretisation.MeshVariable(
+        "V_src", _src_mesh, _src_mesh.dim, degree=2)
+    _T_src.read_timestep(_src_label, "T_v2p1", 0, outputPath=_src_dir)
+    _V_src.read_timestep(_src_label, "V_v2p1", 0, outputPath=_src_dir)
+
+    def _remap_from_source():
+        T.data[...] = np.asarray(uw.function.global_evaluate(
+            _T_src.sym, T.coords)).reshape(-1, 1)
+        V.data[...] = np.asarray(uw.function.global_evaluate(
+            _V_src.sym, V.coords)).reshape(-1, mesh.dim)
+
+    _remap_from_source()
+    P.data[...] = 0.0
+    print(f"  remapped T, V from {args.remap_from} (step {resume_step})")
 elif args.from_perturbation:
     # T_cond + amp · sin(m·θ) · sin(π(r-r_i)/(r_o-r_i))
     r_inner, r_o = 0.5, 1.0
@@ -503,6 +528,15 @@ def _adapt_step():
     return True, misalign
 
 
+if args.remap_from:
+    # Adapt the fresh mesh to the checkpoint's T, re-reading T and V from the
+    # checkpoint after each move so the transfer error does not accumulate.
+    for _k in range(3):
+        _adapt_step()
+        _remap_from_source()
+        print(f"  remap adapt {_k + 1}/3 done", flush=True)
+
+
 # Initial Stokes solve
 print("  initial Stokes solve...", flush=True)
 t0 = time.time()
@@ -521,8 +555,9 @@ t_sim = 0.0
 # The assert below fails loudly at resume time instead, and this constant is the
 # single source of truth for the width.
 _HIST_NCOL = 16
-if resume_label:
-    hpath = os.path.join(OUT_DIR, "history.npz")
+if resume_label or args.remap_from:
+    hpath = os.path.join(os.path.dirname(os.path.expanduser(args.remap_from))
+                         if args.remap_from else OUT_DIR, "history.npz")
     if os.path.exists(hpath):
         # A run interrupted mid-write (an OOM / jetsam kill, Ctrl-C during the
         # np.savez) can leave a truncated/corrupt history.npz (BadZipFile / bad
@@ -563,11 +598,14 @@ if resume_label:
             t_sim = hist[-1][1]
             print(f"  resumed history: {len(hist)} entries, "
                   f"t={t_sim:.5f}")
+    if args.remap_from:
+        snapshot(resume_step)
 else:
     snapshot(0)
 
-START_STEP = resume_step + 1 if resume_label else 1
-END_STEP = (resume_step if resume_label else 0) + args.n_steps + 1
+_continuing = bool(resume_label or args.remap_from)
+START_STEP = resume_step + 1 if _continuing else 1
+END_STEP = (resume_step if _continuing else 0) + args.n_steps + 1
 
 print(f"  running steps {START_STEP}..{END_STEP - 1} "
       f"(snapshot every {args.snapshot_every}, "
