@@ -203,11 +203,14 @@ def test_a_three_level_hierarchy_solves_with_sor():
     assert out[0].getSize() == (n1 - 1, n1 - 1)
 
 
-def test_the_composite_coarse_functions_are_unchanged():
+@pytest.mark.parametrize("dropped_weight", [0.5, -0.5])
+def test_the_composite_coarse_functions_are_unchanged(dropped_weight):
     """The merge: the level below folds the dropped unknown's row into the kept
-    one's, so P1' P0' is P1 P0, and constants on the coarsest level still reach
-    the shared fine row at full weight (a plain drop loses the 0.5)."""
-    P1 = _dependent_pair()
+    one's, scaled by the signed weight ratio, so P1' P0' is P1 P0, and constants
+    on the coarsest level still reach the shared fine row at full weight (a
+    plain drop loses the 0.5). The opposite-sign twin (rotated transfers carry
+    signed entries) checks the ratio keeps its sign."""
+    P1 = _prolongation([(SHARED_ROW, dropped_weight), (SHARED_ROW, 1.0)])
     n1 = N_LINEAR + 2
     rng = np.random.default_rng(1101)
     entries = {(i, j): float(rng.uniform(0.1, 1.0))
