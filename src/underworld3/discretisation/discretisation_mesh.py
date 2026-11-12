@@ -4304,16 +4304,24 @@ class Mesh(Stateful, uw_object):
         # exists for adapt()'s refinement snapping.
         surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
                 if not getattr(s, "interior", False)}
+        # Which labels are usable is decided on all ranks together (#1082): the
+        # normals below are a collective projection, so every rank must make the
+        # same calls. A rank holding none of a label's facets holds none of its
+        # vertices either, and gets an empty facet surface that is never asked
+        # to restore anything.
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
+            from mpi4py import MPI
+
             facets, _opp = _boundary_facets(self, cdim)
-            if facets is not None and facets.size:
-                for lab in unreg:
-                    fac_in = masks[lab][facets].all(axis=1)
-                    if fac_in.any():
-                        surf[lab] = BoundingSurface(
-                            self, lab, "facet",
-                            reference_facets=ref[facets[fac_in]])
+            for lab in unreg:
+                if facets is not None and facets.size:
+                    local = ref[facets[masks[lab][facets].all(axis=1)]]
+                else:
+                    local = numpy.zeros((0, cdim, cdim))
+                if uw.mpi.comm.allreduce(len(local) > 0, op=MPI.LOR):
+                    surf[lab] = BoundingSurface(self, lab, "facet",
+                                                reference_facets=local)
         usable = [lab for lab in slip_labels if lab in surf]
         masks = {lab: masks[lab] for lab in usable}
         count = numpy.zeros(n_verts, dtype=int)
@@ -4332,8 +4340,6 @@ class Mesh(Stateful, uw_object):
         # owned, so this is a no-op.) is_pinned stays the full geometric
         # classification, which is rank-consistent for shared vertices.
         slip_b = numpy.nonzero(slip_mask & _owned_vertex_mask(dm))[0]
-        if slip_b.size == 0:
-            return is_pinned, (lambda Y: Y)
         old_slip = ref[slip_b]
         labels_b = vert_label[slip_b]
 
@@ -4350,10 +4356,10 @@ class Mesh(Stateful, uw_object):
         # reference position under the slide; the surface restore still applies.
         normals_b = numpy.zeros((slip_b.size, cdim))
         valid_b = numpy.zeros(slip_b.size, dtype=bool)
+        # Every rank calls normals() for every usable label, with no vertices if
+        # it has none: a facet surface's normals are a collective projection.
         for lab in usable:
             sel = labels_b == lab
-            if not sel.any():
-                continue
             nrm, val = surf[lab].normals(old_slip[sel])
             normals_b[sel] = nrm
             valid_b[sel] = val
@@ -8164,8 +8170,11 @@ class Mesh(Stateful, uw_object):
                 f"{self.cdim}): every node would have to be constrained "
                 "to the surface. Implemented today: 2D simplex (triangle) "
                 "and 3D simplex (tetrahedral) meshes, via the MMPDE mover.")
-        if not bool(self.dm.isSimplex()) or self.cdim not in (2, 3):
-            kind = "simplex" if bool(self.dm.isSimplex()) else "tensor-product (quad/hex)"
+        # self.isSimplex is agreed across ranks at construction. The DM's own
+        # isSimplex() is rank-local and False on a rank with no cells, which
+        # would raise there while the other ranks wait in the mover (#1082).
+        if not self.isSimplex or self.cdim not in (2, 3):
+            kind = "simplex" if self.isSimplex else "tensor-product (quad/hex)"
             raise NotImplementedError(
                 f"node redistribution is not implemented for {self.cdim}D "
                 f"{kind} meshes. Implemented today: 2D simplex (triangle) "
