@@ -2020,15 +2020,22 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
-        # TODO(BUG): on a manifold mesh (dim < cdim, e.g. SphericalManifold) the
-        # default (reconstructed-mesh, migration-SF) path below segfaults inside
-        # PETSc when called on the mesh object that wrote the file; the same
-        # call on a volume mesh round-trips exactly, and same_layout=True
-        # round-trips exactly on the manifold. The path's intended use — a mesh
-        # reconstructed from its checkpoint — is untested on a manifold: the h5
-        # mesh round-trip drops the coordinate dimension first (see the
-        # SphericalManifold factory). Found 2026-10-09 (thin-sheet work), not fixed.
-        # See issue #870.
+        # The default path maps the file's points onto this mesh's through the
+        # topology SF that loading the mesh's own file returned. A mesh built
+        # from a DMPlex object (SphericalManifold, a mesh handed a DM) has
+        # none, and the path failed inside sectionLoad (a TypeError on
+        # development; a segfault when found, #870). Refused here, with the two
+        # routes that do apply to it. (read_timestep, the coordinate remap, is
+        # not one on a manifold yet: it sizes coordinates by mesh.dim, #870.)
+        if not same_layout and self.mesh.sf is None:
+            raise RuntimeError(
+                f"read_checkpoint({filename!r}): mesh '{self.mesh.name}' was built "
+                f"from a DMPlex object, not loaded from a mesh file, so it has no "
+                f"topology SF mapping a checkpoint's points onto its own. Pass "
+                f"same_layout=True if this mesh, in this parallel layout, wrote the "
+                f"file; or rebuild the mesh from its checkpoint "
+                f"(uw.discretisation.Mesh('<name>.mesh.<index>.h5')) and read into "
+                f"a variable on that.")
         import h5py
 
         if uw.mpi.rank == 0:

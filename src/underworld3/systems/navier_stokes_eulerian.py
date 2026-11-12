@@ -237,17 +237,15 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # solve: the extrapolation, or the latest Picard iterate) and the
         # level n-1 the extrapolation needs beyond what the history holds.
         u = self.Unknowns.u
-        # TODO(BUG): this solver sizes its velocity-shaped fields and loops by
-        # mesh.dim (here, and in the SUPG terms and speed estimates below). On a
-        # surface mesh the velocity has mesh.cdim components; the same sizing was
-        # fixed in EulerianSUPG and the Eulerian AdvDiffusion (2026-10-09,
-        # thin-sheet work). Not fixed here: not used on a surface mesh yet.
-        # See issue #872.
+        # Velocity-shaped things are sized by the embedding dimension, the
+        # velocity's own component count: on a surface mesh (dim < cdim) the
+        # velocity is carried in the embedding space, as in EulerianSUPG and
+        # the Eulerian AdvDiffusion (#872). On a flat mesh cdim == dim.
         self._a_var = uw.discretisation.MeshVariable(
-            f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
+            f"a_NSSUPG_{tag}", self.mesh, self.mesh.cdim, degree=u.degree,
             continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
         self._u_prev = uw.discretisation.MeshVariable(
-            f"u_prev_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
+            f"u_prev_NSSUPG_{tag}", self.mesh, self.mesh.cdim, degree=u.degree,
             continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
         self._history_primed = False
 
@@ -419,7 +417,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         the remaining inconsistency for P2 velocity.
         """
         # The body-force setter may store a column; the residual is a row.
-        dim = self.mesh.dim
+        dim = self.mesh.cdim
         f = sympy.Matrix(self.bodyforce.sym).reshape(1, dim)
         R = self._rho * (self.DuDt.time_derivative() + self.DuDt.advection()) - f
         if with_pressure:
@@ -507,7 +505,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         the time scheme's viscous flux, DEVSS, the mechanical pressure and the
         SUPG term. ``F1`` applies it to the constitutive model's flux, the Newton
         tangent to the model's tangent flux (``flux_jacobian``)."""
-        dim = self.mesh.dim
+        dim = self.mesh.cdim
         mechanical_pressure = (
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
         return (self._viscous_flux(tau) + self._devss_flux()
@@ -560,7 +558,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             raise ValueError(f"basis must be 'accuracy' or 'resolution', not {basis!r}.")
         from mpi4py import MPI
         comm = uw.mpi.comm
-        speed = np.linalg.norm(np.asarray(self.u.array).reshape(-1, self.mesh.dim), axis=1)
+        speed = np.linalg.norm(np.asarray(self.u.array).reshape(-1, self.mesh.cdim), axis=1)
         hi = comm.allreduce(float(speed.max()) if speed.size else 0.0, op=MPI.MAX)
         rate = self._last_change_rate
         dt = fraction * hi / rate if rate > 0.0 else np.inf
@@ -658,7 +656,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
         # Realised rate of change of the velocity, for estimate_dt.
         change = np.linalg.norm(
-            (np.asarray(self.u.array[...]) - u_n).reshape(-1, self.mesh.dim), axis=1)
+            (np.asarray(self.u.array[...]) - u_n).reshape(-1, self.mesh.cdim), axis=1)
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = comm.allreduce(local, op=MPI.MAX) / dt
 

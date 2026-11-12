@@ -4,7 +4,7 @@
 #
 # Usage: ./test.sh [OPTIONS]
 #   --p N            Run parallel tests with N MPI ranks (default: skip parallel tests)
-#   --full-parallel  Add a second parallel pass at 4 ranks (see below; slow on CI)
+#   --full-parallel  Add parallel passes at 3 and 4 ranks (see below; slow on CI)
 #   --parallel-only  Run ONLY parallel tests (skip all serial tests)
 #   --shard K/N      Run only the batches assigned to shard K of N (see
 #                    "Shard assignment" below). Omit it and everything runs,
@@ -16,7 +16,7 @@
 # Examples:
 #   ./test.sh                     # All serial tests only
 #   ./test.sh --p 2               # All serial + parallel (2 ranks)
-#   ./test.sh --p 2 --full-parallel   # ... and again at 4 ranks
+#   ./test.sh --p 2 --full-parallel   # ... and again at 3 and 4 ranks
 #   ./test.sh --parallel-only --p 2   # Only parallel tests (debugging)
 #   ./test.sh --p 2 --shard 1/5   # One CI shard's worth (N must match --print-shards)
 #
@@ -30,10 +30,15 @@ status=0
 PARALLEL_RANKS=0
 PARALLEL_ONLY=0
 TIER_C_REPORT=0
-# Second parallel pass at four ranks. OFF by default: on a 2-core CI runner
-# np=4 is oversubscribed and the pass costs far more than the ~3 minutes it
-# takes on a workstation — enough to exceed the 120-minute job cap (#573).
+# Further parallel passes at three and four ranks. OFF by default: on a
+# 2-core CI runner np=3 and np=4 are oversubscribed and cost far more than on
+# a workstation — enough to exceed the 120-minute job cap (#573).
 FULL_PARALLEL=0
+# The rank counts of those passes. Three is there because two and four split
+# the usual test meshes evenly and symmetrically, and an odd count does not:
+# a DOF on a region's edge owned by a rank outside the region failed only at
+# np 3 and 5 (#1087).
+FULL_PARALLEL_RANKS=(3 4)
 # 0/0 means "no sharding": every batch runs. CI passes --shard K/N.
 SHARD=0
 SHARD_COUNT=0
@@ -383,6 +388,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
   # So is a zone-keyed patch that a mover keeps, with the same solution (#1017).
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
+  # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
+  # the same assertions hold on one rank, so the file also runs serially.
+  batch 3 tests/parallel/test_1175_shell_region_labels.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -465,29 +473,33 @@ PTEST_FILES=(
   tests/parallel/ptest_0857_gather_regions_parallel.py
   tests/parallel/ptest_0859_fault_network_parallel.py
   tests/parallel/ptest_0864_split_checkpoint_parallel.py
+  tests/parallel/ptest_1094_thin_sheet_parallel.py
   tests/parallel/ptest_jit_cache.py
 )
-# These fail at np 4 (#956), so the --full-parallel pass leaves them out.
-PTEST_NOT_AT_4=(
+# These fail at np 3 and np 4 (#956), so they run at np 2 only.
+PTEST_NP2_ONLY=(
   tests/parallel/ptest_0864_seam_ligament_parallel.py
   tests/parallel/ptest_0865_seam_split_parallel.py
 )
 if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 2 && command -v mpirun &> /dev/null; then
   echo "Parallel ptest_* files ($PARALLEL_RANKS ranks), on shard 2"
   PTEST_SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
-  if [ "$PARALLEL_RANKS" -eq 4 ]; then
-    PTEST_RUN=("${PTEST_FILES[@]}")
+  if [ "$PARALLEL_RANKS" -eq 2 ]; then
+    PTEST_RUN=("${PTEST_FILES[@]}" "${PTEST_NP2_ONLY[@]}")
   else
-    PTEST_RUN=("${PTEST_FILES[@]}" "${PTEST_NOT_AT_4[@]}")
+    PTEST_RUN=("${PTEST_FILES[@]}")
   fi
   for ((i = 0; i < ${#PTEST_RUN[@]}; i += ${PARALLEL_BATCH:-6})); do
     $PTEST_SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
       "${PTEST_RUN[@]:i:${PARALLEL_BATCH:-6}}" || status=1
   done
-  if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
-    for ((i = 0; i < ${#PTEST_FILES[@]}; i += ${PARALLEL_BATCH:-6})); do
-      $PTEST_SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
-        "${PTEST_FILES[@]:i:${PARALLEL_BATCH:-6}}" || status=1
+  if [ $FULL_PARALLEL -eq 1 ]; then
+    for ranks in "${FULL_PARALLEL_RANKS[@]}"; do
+      [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
+      for ((i = 0; i < ${#PTEST_FILES[@]}; i += ${PARALLEL_BATCH:-6})); do
+        $PTEST_SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
+          "${PTEST_FILES[@]:i:${PARALLEL_BATCH:-6}}" || status=1
+      done
     done
   fi
 fi
@@ -543,19 +555,23 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
-    # A SECOND pass at four ranks, because two is a special case: the failure
-    # this suite exists to catch is a collective entered by some ranks and not
-    # others, and with two ranks the mismatched pair often still meets. Both
-    # recent instances passed at np=2 and hung at np=4 (#609's conditional
-    # collective, and #611).
+    # Further passes at three and four ranks, because two is a special case:
+    # the failure this suite exists to catch is a collective entered by some
+    # ranks and not others, and with two ranks the mismatched pair often still
+    # meets. Both #609's conditional collective and #611 passed at np=2 and
+    # hung at np=4. Three adds an odd, uneven split: #1087 passed at np 2 and
+    # 4 and failed at np 3.
     #
-    # Opt-in via --full-parallel. A CI runner has two cores, so np=4 is
-    # oversubscribed there; this belongs in a nightly or a separate job (#573).
-    if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
-      echo "Testing the same set at 4 ranks (np=2 is a special case)..."
-      for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
-        $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
-          "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
+    # Opt-in via --full-parallel. A CI runner has two cores, so these are
+    # oversubscribed there; they belong in a nightly or a separate job (#573).
+    if [ $FULL_PARALLEL -eq 1 ]; then
+      for ranks in "${FULL_PARALLEL_RANKS[@]}"; do
+        [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
+        echo "Testing the same set at $ranks ranks..."
+        for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+          $SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
+            "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
+        done
       done
     fi
 
