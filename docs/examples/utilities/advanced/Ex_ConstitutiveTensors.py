@@ -552,7 +552,7 @@ poisson.add_dirichlet_bc( 0., "Top" )
 
 # %%
 poisson._setup_terms()
-poisson.snes.setTolerances(rtol=1.0e-6)
+poisson.tolerance = 1.0e-6
 poisson.snes.ksp.monitorCancel()
 
 # %%

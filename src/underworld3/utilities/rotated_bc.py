@@ -2396,6 +2396,10 @@ def _destroy_rotated_ksp_ctx(ctx):
     """Release a reusable rotated-KSP context and its owned PETSc objects."""
     if ctx is None:
         return
+    if ctx.get("schur_roundoff") is not None:
+        # it holds the velocity sub-KSP, and with it the multigrid, so it goes first
+        ctx["schur_roundoff"].destroy()
+        ctx["schur_roundoff"] = None
     if ctx.get("ksp") is not None:
         ctx["ksp"].destroy()
         ctx["ksp"] = None
@@ -2414,6 +2418,101 @@ def _destroy_rotated_ksp_ctx(ctx):
     if ctx.get("cns") is not None:
         ctx["cns"].destroy()
         ctx["cns"] = None
+
+
+# A Schur right-hand side within this many machine epsilons of the round-off of its own
+# terms carries nothing to solve for (#910). Measured as r0 / (eps ||A10| |x_u||) at
+# pressure iteration 0 (hyperion's review records and wombat, 833 decisions):
+#   - cold solves: 5.7e9 (test_1018's late Newton increments) to 2e15, about 6.7e14
+#     on the annulus; never fired (forcing 1e3 to 1e10, mu 1e-8 to 1e2);
+#   - genuine warm corrections: 1.8e8 at mu 1, down to 1.45e6 (test_1157 at mu 1e-4)
+#     and 2.27e6, where the warm pressure comes from a 1e-6 solve and its correction
+#     is itself near the outer tolerance;
+#   - every PC_FAILED (-11) on development: 2.4 to 301;
+#   - solves development ran to the 200 cap: 363 to 3e4, and 3.9e5 to 6.5e5
+#     (test_1018's workspace reuse, test_1158's second solve, a power-law warm
+#     re-solve at tolerance 1e-9). There the floor is the velocity sub-solve's
+#     error carried through A10 x_u, not eps, and stopping saves ~100x that solve.
+# The margins are narrow at both ends, and a wrong decision costs iterations, not
+# accuracy: the outer FGMRES converges to its tolerance either way (every misfire
+# measured matched the direct solve as closely). A genuine correction skipped costs an
+# outer iteration, whose Krylov vector can then run its own Schur solve to the cap
+# (mu 1e-6 at threshold 1e7; the power-law re-solve at 1e6: outer 3 to 4, velocity
+# iterations 1458 to 2246). A grind not stopped costs the cap or a -11. The ratio of
+# one solve moves with the partition near 1e6 (test_1158: 6.5e5 at np 1, 1.4e6 at
+# np 2), so its count there is not np-invariant; the decision is rank-uniform.
+_SCHUR_ROUNDOFF = 1.0e6 * np.finfo(float).eps
+
+
+class _SchurRoundoffTest:
+    """A convergence test, prepended on the pressure (Schur) sub-KSP, that stops it at
+    iteration 0 when its right-hand side is round-off (#910).
+
+    Under the full factorisation the Schur solve takes ``b_p - A10 x_u``, with
+    ``x_u = A00^-1 b_u`` solved first. A warm start whose pressure equations already
+    hold has ``b_p`` at round-off, and ``A10 x_u`` is the divergence of a
+    divergence-free increment: zero by the physics, so the right-hand side is the
+    rounding of a sum whose terms are ``|A10| |x_u|``. A relative tolerance on that
+    asked for a cut below what the arithmetic carries. The solve ran to its cap, a
+    velocity solve per iteration, or the noise grew past the divergence tolerance at
+    FGMRES's restart and the outer solve failed at iteration 0 (PC_FAILED).
+
+    The scale is the sub-solve's own: the outer FGMRES hands the fieldsplit unit
+    Krylov vectors, so nothing in the outer residual's units sets it. It is taken
+    when the Schur solve starts, from the velocity sub-KSP's solution (the
+    factorisation's ``x_u``; the Schur complement's inner solves have not run yet at
+    iteration 0). A right-hand side above the threshold is not touched (the measured
+    populations and margins are with ``_SCHUR_ROUNDOFF``), and after iteration 0 the
+    default test decides. Skipping a correction that is round-off
+    next to ``x_u`` cannot stall the outer solve: its next Krylov vector carries
+    whatever pressure residual is left, at unit scale. COLLECTIVE (two norms on every
+    rank, one decision from the global residual)."""
+
+    def __init__(self, Ahat, vel_is, pres_is, vel_ksp):
+        self.vel_is, self.pres_is = vel_is, pres_is
+        self.vel_ksp = vel_ksp
+        self.A10 = None
+        self.abs_A10 = None
+        self.abs_x = None
+        self.work = None
+        self.fired = 0
+        self.refresh(Ahat)
+
+    def refresh(self, Ahat):
+        """Read ``|A10|`` from the operator's current values."""
+        self.A10 = Ahat.createSubMatrix(self.pres_is, self.vel_is, submat=self.A10)
+        ip, jj, vv = self.A10.getValuesCSR()
+        if self.abs_A10 is None:
+            self.abs_A10 = self.A10.copy()
+        self.abs_A10.setValuesCSR(ip, jj, np.abs(vv))
+        self.abs_A10.assemble()
+
+    def __call__(self, ksp, its, rnorm):
+        if its != 0:
+            return PETSc.KSP.ConvergedReason.ITERATING
+        x = self.vel_ksp.getSolution()
+        if self.abs_x is None:
+            self.abs_x = x.duplicate()
+            self.work = self.abs_A10.createVecLeft()
+        x.copy(self.abs_x)
+        self.abs_x.abs()
+        self.abs_A10.mult(self.abs_x, self.work)
+        if rnorm <= _SCHUR_ROUNDOFF * self.work.norm():
+            self.fired += 1
+            return PETSc.KSP.ConvergedReason.CONVERGED_ATOL
+        return PETSc.KSP.ConvergedReason.ITERATING
+
+    def destroy(self):
+        for name in ("A10", "abs_A10", "abs_x", "work"):
+            obj = getattr(self, name)
+            if obj is not None:
+                obj.destroy()
+                setattr(self, name, None)
+        # a dropped reference is released late in parallel and would keep the
+        # velocity KSP and its multigrid alive past the context (test_1142)
+        if self.vel_ksp is not None:
+            self.vel_ksp.destroy()
+        self.vel_ksp = None
 
 
 # An admitted rotation is projected out of the velocity preconditioner (#963) when its
@@ -2844,6 +2943,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 S = pc.getFieldSplitSubKSP()[1].getOperators()[0]
                 cns = PETSc.NullSpace().create(constant=True, comm=dm.comm)
                 S.setNullSpace(cns)
+            # a Schur right-hand side at round-off stops at iteration 0 (#910)
+            _vel_sub, _pres_sub = pc.getFieldSplitSubKSP()
+            schur_roundoff = _SchurRoundoffTest(Ahat, vel_is, pres_is, _vel_sub)
+            _pres_sub.addConvergenceTest(schur_roundoff, prepend=True)
         finally:
             # all options consumed by setFromOptions/setUp — the KSP's own, and
             # the multigrid bundle and FAC keys under the velocity sub-PC's
@@ -2852,6 +2955,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # error path too.
             _drop_options_under(pfx)
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "schur_roundoff": schur_roundoff,
                "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,
                # which preconditioner this solve actually got — reported so a model
@@ -2893,6 +2997,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         # unchanged matrix: leave the KSP/PC/GAMG setup untouched entirely.
         if refresh_operator:
             ksp.setOperators(Ahat)
+            if ctx.get("schur_roundoff") is not None:
+                ctx["schur_roundoff"].refresh(Ahat)
 
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs
