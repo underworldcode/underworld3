@@ -110,7 +110,8 @@ class RemeshContext:
     """State passed to operator ``on_remesh`` hooks.
 
     Carries the geometric data an operator (typically a ``DuDt``) needs
-    to update its own history coherently — old/new coordinates, total
+    to update its own history coherently — old/new coordinates (model
+    coordinates, the DM's frame, also in a units model), total
     displacement across the mover sweep, ``dt``, and a scratch slot
     where an ALE-style operator stashes ``v_mesh`` for the next solve
     to consume. The framework has already handled the generic
@@ -367,7 +368,9 @@ def _remesh_with_field_transfer_impl(
     reinit_vars = buckets["reinit"]
     managed_vars = buckets["managed"]
 
-    old_X = np.asarray(mesh.X.coords).copy()
+    # In the frame _deform_mesh writes: mesh.X.coords is physical in a units model,
+    # and the DM holds model coordinates.
+    old_X = np.asarray(mesh._coords).reshape(-1, mesh.cdim).copy()
     old_data = _snapshot_var_data(remap_vars)
     # Snapshot managed vars too — needed when a hook opts out of ALE
     # for this adapt and falls back to REMAP (see RemeshContext docs).
@@ -377,7 +380,7 @@ def _remesh_with_field_transfer_impl(
     # is untouched by _deform_mesh, so REMAP snapshots stay valid.
     do_move()
 
-    new_X = np.asarray(mesh.X.coords).copy()
+    new_X = np.asarray(mesh._coords).reshape(-1, mesh.cdim).copy()
     # Decided over all ranks: a rank whose own nodes stayed put (pinned, empty,
     # or outside a local deformation) must still enter the collective transfer
     # below with the ranks whose nodes moved.
@@ -500,7 +503,7 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     new_dof_coords = {}
     for var in vars_:
         try:
-            new_dof_coords[var] = np.asarray(var.coords).copy()
+            new_dof_coords[var] = np.asarray(var.coords_nd).copy()
         except Exception:
             new_dof_coords[var] = None
 
@@ -534,9 +537,9 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
         # Laid out by _data_layout, which a flat reshape is not for a MATRIX or a
-        # symmetric tensor. The units are dropped as before: deform with units has
-        # its own faults, left for later (review of #909, round 3, H1 and P1).
-        resampled[var] = _evaluated_in_storage_layout(var, np.asarray(val))
+        # symmetric tensor. var.data holds non-dimensional values, and the helper
+        # reduces a dimensional evaluation to them.
+        resampled[var] = _evaluated_in_storage_layout(var, val)
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
