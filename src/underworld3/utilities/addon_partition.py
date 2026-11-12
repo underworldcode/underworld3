@@ -264,8 +264,7 @@ def inherit_provenance(child, host):
     below = getattr(host, "_addon_below", None)
     recorded = parent is not None and below is not None
     if not recorded:
-        if (getattr(host, "_as_built_vertices", None) is None
-                and getattr(host, "_addon_reference", None) is None):
+        if host._as_built_vertices is None and host._addon_reference is None:
             return
         # the level under the host: the last of the tail it owns, or of the
         # coarse levels it was refined from

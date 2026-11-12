@@ -63,22 +63,22 @@ def test_a_moved_base_is_partitioned_on_the_parents_it_was_refined_from():
                              tolerance=0.1)
     assert out._addon_partition["units_moved"] > 0 and out is not base
     below = out._addon_below
+    # the parents are those of the refinement: four children each
+    count = children_per_parent(below, out)
+    assert comm.allreduce(int((count != 4).sum())) == 0
+    # the fixture moves far enough to tell: where the cells are now, some are
+    # outside their parent
+    assert parents_contain_centroids(below, out) > 0
     # the geometry the base was made in rode the move vertex by vertex: every
     # vertex of the moved copy is its reference position, shifted
-    held = getattr(out, "_addon_reference", None)
+    held = out._addon_reference
     assert held is not None and held[0] is below
     reference = held[1]
     vxy, cv = _cell_vertex_table(out)
     assert _largest(vxy - (reference + _shift(reference))) < 1e-12
-    # the parents are those of the refinement: four children each, and each
-    # child inside its parent where it was made
-    count = children_per_parent(below, out)
-    assert comm.allreduce(int((count != 4).sum())) == 0
+    # each child lies inside its parent where it was made
     made_at = reference[cv].mean(axis=1)
     assert parents_contain_centroids(below, out, centroids=made_at) == 0
-    # the fixture moves far enough to tell: where the cells are now, some are
-    # outside their parent
-    assert parents_contain_centroids(below, out) > 0
 
 
 def test_a_fault_placed_on_a_moved_base_solves_with_the_nested_transfer():
@@ -103,8 +103,8 @@ def test_a_fault_placed_on_a_moved_base_solves_with_the_nested_transfer():
     hierarchy = stokes._custom_mg["hierarchy"]
     levels = hierarchy.level_meshes
     moved = [l for l in range(1, len(levels))
-             if getattr(levels[l], "_addon_reference", None) is not None
-             and levels[l]._addon_below is levels[l - 1]
+             if levels[l]._addon_reference is not None
+             and getattr(levels[l], "_addon_below", None) is levels[l - 1]
              and getattr(levels[l], "_mg_static", False)]
     assert len(moved) == 1, moved
     pair = moved[0]

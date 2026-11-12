@@ -72,10 +72,10 @@ def _cell_vertex_table(mesh):
     section and each cell's vertices from its closure, with no interpolation
     built. A periodic mesh carries its coordinates cell by cell, so there the
     P1 node table of the mesh is used, which handles them."""
+    from underworld3.discretisation.discretisation_mesh import _holds_cell_coordinates
     from underworld3.utilities._plex_topology import closure_points, section_offsets
     dm = mesh.dm
-    cell_coordinates = dm.getCellCoordinatesLocal()
-    if cell_coordinates is not None and cell_coordinates.handle:
+    if _holds_cell_coordinates(dm):
         return (np.asarray(mesh._get_coords_for_basis(1, True)),
                 np.asarray(mesh._cell_node_indices(1, True)))
     cdim = dm.getCoordinateDim()
@@ -106,13 +106,13 @@ def reference_vertices(mesh, below):
     under it, and valid against that level only. A mesh that keeps the moved
     one as its own level below is in that mesh's geometry already, and is
     asked about another level than the one its pair names."""
-    held = getattr(mesh, "_addon_reference", None)
+    held = mesh._addon_reference
     if held is not None and held[0] is below:
         return held[1]
     # TODO(BUG): a periodic mesh keeps no record (Mesh._deform_mesh takes none
     # where the coordinates are held cell by cell), so a moved periodic mesh
     # is still read on its moved coordinates. See issue #1091.
-    return getattr(mesh, "_as_built_vertices", None)
+    return mesh._as_built_vertices
 
 
 def _barycentric(P, V):

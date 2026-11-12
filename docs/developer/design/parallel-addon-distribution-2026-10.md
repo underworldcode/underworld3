@@ -204,7 +204,8 @@ The relation is now read in the geometry the mesh was made in:
   (`fault_mg.reference_vertices(mesh, below)`): a mesh that keeps the moved host
   as its own level below was made in the host's geometry, and asked about the
   host it answers with its own as-built vertices, or with none if it has not
-  moved.
+  moved. Where `Mesh.add_fault` replaces an add-on level by its split copy, the
+  reference passes to the copy, which stands where the level stood.
 - A host with no record (serial, `partition=False`, or a partition that had
   nothing to move) passes its geometry on in the same way. The cut child that
   takes its place over the level below is then partitioned on the right parents
@@ -229,8 +230,6 @@ Not covered:
   builders on the coordinates as they stand where a cut child took that level's
   place. The transfer of a cut child over a moved base therefore depends on
   whether the partition moved cells.
-- A level made from a recorded one and then moved on its own (an adapt child of
-  a cut child, relaxed afterwards) is located in that level where it stands.
 
 `tests/test_1173_addon_record_after_a_move.py` holds the parents, the transfer of
 a moved pair at degree 1 and 2, the cut child, and the parents of a cut child made

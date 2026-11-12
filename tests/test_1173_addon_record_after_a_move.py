@@ -131,7 +131,7 @@ def test_a_cut_made_on_a_moved_mesh_reaches_the_level_below_through_it():
     # A vertex the cut added or pulled onto the trace is no vertex of the moved
     # mesh. It is taken back through the cell it lies in, which undoes the move
     # to the accuracy of a straight-sided cell: 1e-4 here, where the move is
-    # 0.03. (The transfer keeps such a node's weights inside its parent, moved
+    # 0.04. (The transfer keeps such a node's weights inside its parent, moved
     # or not, so the position is checked and not the weights.)
     held_for, reference = child._addon_reference
     assert held_for is below
@@ -163,3 +163,56 @@ def test_a_cut_child_of_a_moved_mesh_is_partitioned_where_the_mesh_was_made(chil
     assert base is below and not addon
     parents = ap._base_parent_addresses(base, child, child.dm.getComm().tompi4py())
     assert (parents[:, 1] != parent_of_host[host]).sum() == 0
+
+
+def _located(points_of, in_mesh):
+    """The cell of ``in_mesh`` under each cell centroid of ``points_of``, both
+    where they stand."""
+    centroid, _v, _cv = ap._cell_centroids(points_of)
+    _c, vertices, cells = ap._cell_centroids(in_mesh)
+    return fault_mg.locate_in_cells_exhaustive(centroid, vertices, cells)[0]
+
+
+def test_a_mesh_that_keeps_the_moved_one_below_it_is_read_where_it_stands():
+    """A placed surface with a coarsening ratio near one keeps the moved mesh's
+    own finest level as its level below. That level is in the moved geometry,
+    so the child's parents on it are under its cells as they stand: the
+    positions taken back for the level under the moved mesh do not apply."""
+    mesh = _box()
+    _move(mesh)
+    surface = uw.meshing.Surface("Flt", mesh, np.array([[-0.2, 0.317], [1.2, 0.683]]))
+    child = mesh.add_conforming_surface(surface, mg_coarsening_ratio=1.0001)
+    base, _static, addon = ap._levels_of(child)
+    below = addon[-1] if addon else base
+    assert np.array_equal(fault_mg._cell_vertex_table(below)[0],
+                          fault_mg._cell_vertex_table(mesh)[0])
+    assert child._addon_reference is not None and child._addon_reference[0] is not below
+    assert (ap._parent_cells_local(below, child) != _located(child, below)).sum() == 0
+
+
+def test_a_split_level_takes_over_the_reference_of_the_level_it_replaces():
+    """``Mesh.add_fault`` replaces each add-on level under an adapt child by
+    its split copy. The child's reference was taken against the level
+    replaced and has to serve against the copy, or the next fault's partition
+    reads the child's parents where its cells have moved to."""
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 6, regular=True,
+        refinement=1, qdegree=2)
+    metric = uw.discretisation.MeshVariable("M", base, 1, degree=1)
+    near = np.abs(np.asarray(metric.coords)[:, 1] - 0.5) < 0.2
+    metric.array[:, 0, 0] = np.where(near, 48.0, 12.0) ** 2
+    host = base.adapt(metric, max_levels=2, engine="nvb")
+    level = host._custom_mg_coarse_meshes[-1]
+    assert not getattr(level, "_mg_static", False)
+    parent_of_host = ap._parent_cells_local(level, host)
+    X = np.asarray(host.X.coords).copy()
+    host.deform(X + 0.5 * _shift(X))
+    child = host.add_fault([("Flt", TRACE)])
+    below = ap._levels_of(child)[2][-1]
+    assert below is not level and child._addon_reference[0] is below
+    # the parents on the split copy, named by the cell of the unsplit level
+    # under each. 8 of the 2,506 are cut cells that straddle two parents; read
+    # where the cells stand, 1,411 differ.
+    parents = _located(below, level)[ap._parent_cells_local(below, child)]
+    wrong = (parents != parent_of_host[_located(child, host)]).sum()
+    assert len(parents) > 2000 and wrong <= 16

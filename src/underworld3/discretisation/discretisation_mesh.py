@@ -268,6 +268,12 @@ def _vertex_coordinates(dm):
     return array[offsets[:, None] + numpy.arange(cdim)].reshape(-1, cdim)
 
 
+def _holds_cell_coordinates(dm):
+    """Does ``dm`` hold its coordinates cell by cell, as a periodic mesh does?"""
+    cell_coordinates = dm.getCellCoordinatesLocal()
+    return cell_coordinates is not None and bool(cell_coordinates.handle)
+
+
 def _vertex_section_dm(dm, name):
     """Clone of ``dm`` whose local section holds ``cdim`` values on each vertex.
 
@@ -859,6 +865,9 @@ class Mesh(Stateful, uw_object):
         # move on: the geometry its cells' parents and its transfer to the
         # level below are read on (fault_mg.reference_vertices, #1091).
         self._as_built_vertices = None
+        # For a mesh made on a moved one: the pair (level, vertices), its
+        # vertices in the geometry of that level (addon_partition.inherit_provenance).
+        self._addon_reference = None
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
@@ -4842,11 +4851,9 @@ class Mesh(Stateful, uw_object):
         self._assert_coord_mutation_allowed()
 
         with self._mesh_update_lock:
-            if self._as_built_vertices is None:
-                # a periodic mesh holds its coordinates cell by cell: no record
-                cell_coordinates = self.dm.getCellCoordinatesLocal()
-                if not (cell_coordinates is not None and cell_coordinates.handle):
-                    self._as_built_vertices = _vertex_coordinates(self.dm)
+            # a periodic mesh holds its coordinates cell by cell: no record
+            if self._as_built_vertices is None and not _holds_cell_coordinates(self.dm):
+                self._as_built_vertices = _vertex_coordinates(self.dm)
             coord_vec = self.dm.getCoordinatesLocal()
             coords = coord_vec.array.reshape(-1, self.cdim)
             coords[...] = new_coords[...]
@@ -9159,6 +9166,10 @@ class Mesh(Stateful, uw_object):
                                           child._fault_specs,
                                           verbose=verbose)
                 for k, m in zip(idx, split):
+                    # the split level stands where the level it replaces stood
+                    held = child._addon_reference
+                    if held is not None and held[0] is tail[k]:
+                        child._addon_reference = (m, held[1])
                     tail[k] = m
             child._custom_mg_coarse_meshes = tail
         return child
