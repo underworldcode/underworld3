@@ -112,7 +112,7 @@ def test_a_field_whose_name_another_contains_is_not_refused():
     mesh, T, _, _ = _poisson("near", datum_field=False)
     # the field prints as f, the datum's variable as \bar{f}: a substring
     # match on the token would take one for the other
-    f = uw.discretisation.MeshVariable("f_near", mesh, 1, degree=2, varsymbol="f")
+    f = uw.discretisation.MeshVariable("f_plain_near", mesh, 1, degree=2, varsymbol="f")
     f.array[:, 0, 0] = 1 + np.asarray(f.coords)[:, 0] ** 2
     fbar = uw.discretisation.MeshVariable("fbar_near", mesh, 1, degree=2, varsymbol=r"\bar{f}")
     fbar.array[:, 0, 0] = 1.0
