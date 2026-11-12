@@ -1026,6 +1026,68 @@ def test_a_target_inside_the_mesh_leaves_the_domain_boundary_alone(kind):
         "mesh does not exercise the defect")
 
 
+@pytest.mark.parametrize("kind", ["box", "annulus"])
+def test_a_target_too_close_under_the_boundary_is_refused(kind):
+    """An interior corner is not dragged up against the boundary unannounced.
+
+    A target inside a boundary cell takes that cell's interior corner B. With
+    the target at a fraction f of the cell's height above the boundary edge
+    the cell is left with that much of its height, and at f = 0.02 its
+    quality is about 0.02: a sliver along the wall, where the fault tip is.
+
+    The target is 0.98 (0.6 W + 0.4 A) + 0.02 B in each cell with boundary
+    corners W, A and interior corner B. Asserted: the pull is refused, naming
+    ``min_quality``; with the floor off B goes onto the target, the boundary
+    is bitwise where it was, and the worst cell is below 0.05, which is what
+    the refusal reports. At f = 0.2 the default accepts the pull (the test
+    above).
+    """
+    from underworld3.utilities.line_cut import (_cell_quality, _cell_vertices,
+                                                _coords)
+
+    dm = _meshes_with_a_wall()[kind].dm
+    X = _coords(dm)
+    cells = _cell_vertices(dm)
+    wall = _domain_boundary_vertices(dm)
+    assert _cell_quality(X, cells).min() > 0.5
+
+    wall_cells = cells[wall[cells].sum(axis=1) == 2]
+    assert len(wall_cells) > 40
+    for corners in wall_cells:
+        W, A = corners[wall[corners]]
+        B = corners[~wall[corners]][0]
+        t = 0.98 * (0.6 * X[W] + 0.4 * X[A]) + 0.02 * X[B]
+
+        with pytest.raises(ValueError, match="min_quality=0.1"):
+            pull_vertex_onto(dm, t)
+
+        Xo = _coords(pull_vertex_onto(dm, t, min_quality=None))
+        assert np.linalg.norm(Xo[B] - t) < 1e-12
+        assert np.array_equal(Xo[wall], X[wall])
+        assert 0.0 < _cell_quality(Xo, cells).min() < 0.05
+
+
+def test_a_target_outside_the_mesh_takes_the_nearest_vertex_anywhere():
+    """The boundary rule is for targets INSIDE the mesh.
+
+    (0.52, 1.01) is above the top wall of the box. No cell holds it, so the
+    nearest vertex anywhere takes it, and that is the wall vertex (0.5, 1):
+    the box gains the triangle over the two wall edges at that vertex, 0.01
+    high on a base of 2/12.
+    """
+    from underworld3.utilities.line_cut import _coords
+
+    dm = _meshes_with_a_wall()["box"].dm
+    X = _coords(dm)
+    t = np.array([0.52, 1.01])
+    out = pull_vertex_onto(dm, t)
+    moved = np.flatnonzero((_coords(out) != X).any(axis=1))
+    assert len(moved) == 1
+    assert np.allclose(X[moved[0]], (0.5, 1.0), rtol=0.0, atol=1e-9)
+    assert np.array_equal(_coords(out)[moved[0]], t)
+    assert cell_areas(out).sum() == pytest.approx(1.0 + 0.01 / 12, rel=1e-9)
+
+
 def test_a_target_on_the_domain_boundary_slides_a_boundary_vertex():
     """A target ON a wall edge takes one of that edge's ends, along the wall.
 

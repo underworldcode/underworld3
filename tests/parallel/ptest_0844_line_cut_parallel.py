@@ -509,20 +509,30 @@ def _wall_vertex_coords(dm):
     return X[np.isin(X, (0.0, 1.0)).any(axis=1)]
 
 
+_REGULAR_BOX = dict(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
+                    regular=True, qdegree=2)
+
+
 def test_an_interior_target_leaves_the_wall_alone_on_every_rank():
     """Targets under the top wall take interior vertices at any partition.
 
-    Each target is (0.004, -0.015) from a top-wall vertex of the 1/12 box:
-    inside a boundary cell, and nearer to that wall vertex than to any other
-    vertex. Whether a vertex is on the domain boundary is a global fact, and a
+    Each target is (0.004, -0.025) from a top-wall vertex of the regular 1/12
+    box: inside a boundary cell, 0.3 of its height below the wall, and nearer
+    to that wall vertex (0.025) than to any other vertex (0.058 at least).
+    Whether a vertex is on the domain boundary is a global fact, and a
     partition seam through the boundary cell must not change the answer: the
     48 wall vertices are bitwise where they were, each target has a vertex on
     it, and the box keeps its area of 1.
+
+    The targets are two cells apart. The vertices of the regular box are the
+    lattice k/12 whichever way its squares are cut, so the interior corners
+    of the cell holding one target are at x = k/12 or (k+1)/12 and no two
+    targets can choose the same one (issue #559).
     """
     from underworld3.utilities.line_cut import pull_vertex_onto
 
-    base = uw.meshing.UnstructuredSimplexBox(cellSize=1 / 12, **_BOX)
-    targets = np.array([[k / 12 + 0.004, 1.0 - 0.015] for k in range(1, 11)])
+    base = uw.meshing.UnstructuredSimplexBox(**_REGULAR_BOX)
+    targets = np.array([[k / 12 + 0.004, 1.0 - 0.025] for k in (1, 3, 5, 7, 9)])
 
     wall_before = _wall_vertex_coords(base.dm)
     assert len(wall_before) == 48
@@ -540,6 +550,73 @@ def test_an_interior_target_leaves_the_wall_alone_on_every_rank():
     assert area == pytest.approx(1.0, rel=1e-13)
 
 
+def test_a_target_too_close_under_the_wall_is_refused_on_every_rank():
+    """The quality refusal is collective.
+
+    (5/12 + 0.004, 1 - 0.002) is inside a top-wall cell of the regular 1/12
+    box, 0.024 of its height below the wall. The interior corner that would
+    take it leaves that cell with a quality near 0.03, below the floor of 0.1.
+    The cells around that corner can lie on several ranks; every rank raises.
+    """
+    from underworld3.utilities.line_cut import pull_vertex_onto
+
+    base = uw.meshing.UnstructuredSimplexBox(**_REGULAR_BOX)
+    try:
+        pull_vertex_onto(base.dm, np.array([5 / 12 + 0.004, 1.0 - 0.002]))
+        outcome = "no refusal"
+    except ValueError as exc:
+        outcome = "refused" if "min_quality=0.1" in str(exc) else str(exc)
+
+    seen = uw.mpi.comm.allgather(outcome)
+    assert set(seen) == {"refused"}, (
+        f"np={uw.mpi.size}: ranks disagreed — {seen}")
+
+
+def test_a_seam_edge_between_two_boundary_vertices_is_not_the_boundary():
+    """An interior edge on a partition seam is not read as a boundary edge.
+
+    The regular 1/12 box has a corner cell (0, 0), (1/12, 0), (0, 1/12). Its
+    long edge is interior, with both ends on the boundary. The corner cell is
+    sent to a rank that does not hold the cell across that edge, so the seam
+    runs along it and each side holds one of its two cells: locally it looks
+    like a boundary edge. Its midpoint (1/24, 1/24) is inside the mesh and
+    the two corners that could take it are boundary vertices, so the pull is
+    refused on every rank, as it is in serial. Read as a boundary edge, one
+    of its ends would slide inward along it and the box would lose area.
+    """
+    from underworld3.utilities.fault_split import redistribute_by_assignment
+    from underworld3.utilities.line_cut import _cell_vertices, pull_vertex_onto
+
+    base = uw.meshing.UnstructuredSimplexBox(**_REGULAR_BOX)
+
+    def holder(dm, centroid):
+        """The rank holding the cell with this centroid."""
+        c = _coords(dm)[_cell_vertices(dm)].mean(axis=1)
+        mine = (np.linalg.norm(c - centroid, axis=1) < 1e-9)
+        return mine, max(uw.mpi.comm.allgather(uw.mpi.rank if mine.any() else -1))
+
+    corner, _rank = holder(base.dm, np.array([1 / 36, 1 / 36]))
+    _across, across_rank = holder(base.dm, np.array([1 / 18, 1 / 18]))
+    assert across_rank >= 0, "the cell across the long edge was not found"
+    assign = np.full(len(corner), uw.mpi.rank, dtype=np.int32)
+    assign[corner] = (across_rank + 1) % uw.mpi.size
+    dm = redistribute_by_assignment(base.dm, assign)[0]
+
+    _mine, corner_rank = holder(dm, np.array([1 / 36, 1 / 36]))
+    _mine, across_rank = holder(dm, np.array([1 / 18, 1 / 18]))
+    assert corner_rank != across_rank, "the seam does not run along the edge"
+
+    try:
+        pull_vertex_onto(dm, np.array([1 / 24, 1 / 24]))
+        outcome = "no refusal"
+    except ValueError as exc:
+        outcome = "refused" if "domain boundary" in str(exc) else str(exc)
+
+    seen = uw.mpi.comm.allgather(outcome)
+    assert set(seen) == {"refused"}, (
+        f"np={uw.mpi.size}: ranks disagreed — {seen}")
+
+
 def test_a_target_with_no_interior_corner_is_refused_on_every_rank():
     """The boxed-in refusal is collective.
 
@@ -549,9 +626,7 @@ def test_a_target_with_no_interior_corner_is_refused_on_every_rank():
     """
     from underworld3.utilities.line_cut import pull_vertex_onto
 
-    base = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
-        regular=True, qdegree=2)
+    base = uw.meshing.UnstructuredSimplexBox(**_REGULAR_BOX)
     try:
         pull_vertex_onto(base.dm, np.array([1 / 36, 1 / 36]))
         outcome = "no refusal"

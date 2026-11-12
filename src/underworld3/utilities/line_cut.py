@@ -957,7 +957,7 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     }
 
 
-def pull_vertex_onto(dm, targets):
+def pull_vertex_onto(dm, targets, min_quality=0.1):
     """Move the nearest mesh vertex onto each target point; return a new mesh.
 
     COLLECTIVE. This is how a fault TIP or a network JUNCTION is placed, and both
@@ -980,11 +980,26 @@ def pull_vertex_onto(dm, targets):
     targets : array_like
         An ``(N, cdim)`` array of points, or one point — three coordinates on
         a sphere surface mesh.
+    min_quality : float or None
+        Floor on the quality (1 equilateral, 0 flat) of the cells around an
+        interior vertex that is taken IN PLACE OF a nearer boundary vertex.
+        Such a pull is refused when it would invert a cell or leave one below
+        the floor (or below its present quality, when that is already lower).
+        The nearest corner itself is taken with no such test, as it always
+        was. ``None`` disables the test.
 
     Returns
     -------
     PETSc.DMPlex
         A copy with one vertex moved onto each target.
+
+    Raises
+    ------
+    ValueError
+        A target inside the mesh that no vertex can be put on: every corner
+        of the cell or edge holding it is on the domain boundary, or the
+        interior corner that would take it would ruin a cell (see
+        ``min_quality``). Raised on every rank.
 
     Notes
     -----
@@ -1001,15 +1016,36 @@ def pull_vertex_onto(dm, targets):
     choice to the containment relation the cut actually tests. A target outside
     the mesh falls back to the nearest vertex anywhere.
 
-    A vertex of the domain boundary moves only along the boundary. For a
-    target on a boundary edge the candidates are that edge's two ends; for a
-    target inside the mesh they are the INTERIOR corners of the face holding
-    it, however close a boundary corner is. Moving a boundary vertex inward
-    dents the domain, and turns a fault tip that is clear of the boundary into
-    a boundary vertex, which the split refuses. A target whose face has no
-    interior corner is refused with ``ValueError``. On a curved boundary the
-    boundary is the mesh's own chords: a point of the true curve that falls
-    inside a chord is an interior target.
+    A target INSIDE the mesh never takes a vertex of the domain boundary.
+    For a target on a boundary edge the candidates are that edge's two ends,
+    and the one taken slides along the edge; for a target inside the mesh
+    they are the INTERIOR corners of the face holding it, however close a
+    boundary corner is. Moving a boundary vertex inward dents the domain, and
+    turns a fault tip that is clear of the boundary into a boundary vertex,
+    which the split refuses. A target whose face has no interior corner is
+    refused with ``ValueError``.
+
+    An interior corner pulled close under the boundary leaves a thin cell
+    between itself and the boundary — as thin as the target is close; on a
+    1/12 box the quality is about 1.8 times the target's height above the
+    boundary edge as a fraction of the cell's. ``min_quality`` is the limit:
+    at the default 0.1 a target closer than about a twentieth of a cell
+    height is refused. On a curved boundary the boundary is the mesh's own chords,
+    so a point of the true curve that falls inside a chord (on a concave
+    wall) is an interior target a sagitta from the boundary, and is refused
+    on the same ground; put such a point on the chord.
+
+    Two cases still move a boundary vertex off the boundary. A target OUTSIDE
+    the mesh takes the nearest vertex anywhere, which is usually a boundary
+    vertex. And a vertex where the boundary turns (a box corner) slides along
+    one wall and off the other when it is the nearer end of the boundary edge
+    holding the target.
+
+    Two targets of one call can still choose the same vertex, and the later one
+    then takes it from the earlier, which is left with no vertex (issue #559).
+    The boundary rule makes this easier to reach beside a boundary: two targets
+    in neighbouring boundary cells that share their one interior corner collide
+    at one cell spacing. Keep targets further apart than the cells they sit in.
 
     The choice is made from the coordinates alone and reduced globally, so every
     rank moves the same vertex: a rank-local nearest-vertex search picks a
@@ -1044,56 +1080,99 @@ def pull_vertex_onto(dm, targets):
         held = len(face) > 0
         # A boundary vertex may take a target on the boundary, and no other:
         # moved inward it dents the domain. Every rank holding the target
-        # reads the same face, so they agree on whether a corner is left.
+        # reads the same face, so they agree on which corners are left.
         # TODO(BUG): a boundary vertex where the boundary turns (a box corner)
         # still slides along one wall and off the other when it is the nearer
         # end of the boundary edge holding the target. See issue #1089.
-        boxed_in = False
         if not held:
             candidates = np.arange(len(X))
         elif _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
             candidates = face
         else:
             candidates = face[~on_wall[face]]
-            boxed_in = len(candidates) == 0
-            if boxed_in:
-                candidates = face
-        d = np.linalg.norm(X[candidates] - t, axis=1)
-        # Reduced as (outside, distance, x, y) so both decisions ride one
-        # reduction: tuples compare lexicographically, so MIN prefers ANY rank
-        # that holds a containing cell over every rank that does not, then the
-        # closest corner, then the one lowest in coordinate order. The
-        # outside-flag has to lead: a rank with no part of the containing cell
-        # proposes its own nearest vertex, which can easily be closer than the
-        # right answer, and a reduction on distance alone would take it.
+        # Reduced as (flag, distance, x, y, note) so every decision rides one
+        # reduction: tuples compare lexicographically, so MIN takes the lowest
+        # flag, then the closest corner, then the one lowest in coordinate
+        # order. The flags, in the order they must win:
         #
-        # All ranks flagging 1 means the target lies outside the mesh, and the
-        # fallback is the nearest vertex anywhere — the behaviour before the
-        # containment rule, kept because a target off the mesh still has to
-        # land somewhere.
-        #
-        # A flag of -1 is the refusal: the target is held and every corner of
-        # its face is on the boundary. It leads the reduction so every rank
-        # raises together, and it carries the nearest of those corners for the
-        # message.
-        local = ((-1 if boxed_in else 0 if held else 1, float(d.min()),
-                  *X[candidates[int(d.argmin())]])
-                 if d.size else (1, np.inf, *([np.inf] * cdim)))
+        #    0  the target is held and a corner may take it. The note is 1
+        #       when that corner is interior and a boundary corner of the
+        #       face is strictly nearer: it stands in for the boundary corner.
+        #    1  the target is held and every corner of its face is on the
+        #       domain boundary: the refusal. It carries the nearest of them
+        #       for the message. It ranks after 0 so that a rank reading the
+        #       target inside a cell is believed over one reading it on that
+        #       cell's edge, the two differing only within the containment
+        #       tolerance.
+        #    2  this rank holds no cell containing the target. A rank with no
+        #       part of the containing cell proposes its own nearest vertex,
+        #       which can easily be closer than the right answer, so the flag
+        #       has to lead the distance. All ranks flagging 2 means the
+        #       target lies outside the mesh, and the fallback is the nearest
+        #       vertex anywhere — the behaviour before the containment rule,
+        #       kept because a target off the mesh still has to land
+        #       somewhere.
+        if candidates.size:
+            d = np.linalg.norm(X[candidates] - t, axis=1)
+            nearest = np.linalg.norm(X[face] - t, axis=1).min() if held else d.min()
+            local = (0 if held else 2, float(d.min()),
+                     *X[candidates[int(d.argmin())]],
+                     int(d.min() > nearest + 1e-12 * scale))
+        elif held:
+            d = np.linalg.norm(X[face] - t, axis=1)
+            local = (1, float(d.min()), *X[face[int(d.argmin())]], 0)
+        else:
+            local = (2, np.inf, *([np.inf] * cdim), 0)
         reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
-        if reduced[0] == -1:
+        flag, distance, stands_in = reduced[0], reduced[1], reduced[-1]
+        where = np.array(reduced[2:-1])
+        if flag == 1:
             raise ValueError(
                 f"pull_vertex_onto: the target {tuple(float(x) for x in t)} is "
-                "inside the mesh and every corner of the cell or edge holding it "
-                "is on the domain boundary (the nearest, "
-                f"{tuple(float(x) for x in reduced[2:])}, is {reduced[1]:.3e} "
-                "away). A boundary vertex moves only along the boundary, so no "
+                "inside the mesh and every corner of the cell or edge holding "
+                "it is on the domain boundary (the nearest, "
+                f"{tuple(float(x) for x in where)}, is {distance:.3e} away). A "
+                "target inside the mesh never takes a boundary vertex, so no "
                 "vertex can be put on this target. Move the target further "
                 "from the boundary, or refine the mesh there.")
 
         # Move it by POSITION, not by index: the chosen vertex may be a ghost
         # here and an owned point there, and both copies have to end up in the
         # same place without a star-forest exchange.
-        hit = np.flatnonzero(np.linalg.norm(X - np.array(reduced[2:]), axis=1) < 1e-12 * scale)
+        hit = np.flatnonzero(np.linalg.norm(X - where, axis=1) < 1e-12 * scale)
+        if stands_in and min_quality is not None:
+            # The interior corner comes from further away than the boundary
+            # corner it stands in for, and lands close under the boundary: it
+            # is taken only when the cells around it stay sound, on the mesh
+            # as the earlier targets of this call have left it. The cells
+            # around a vertex are spread across the ranks sharing it, so the
+            # count is reduced, on every rank: the note is the same on all.
+            before = _cell_quality(arr, cell_verts)
+            moved = arr.copy()
+            moved[hit] = t
+            # against the same cell before the move, whichever way it is wound
+            after = _cell_quality(moved, cell_verts) * np.where(before < 0.0, -1.0, 1.0)
+            ruined = (np.isin(cell_verts, hit).any(axis=1)
+                      & ((after <= 0.0)
+                         | (after < np.minimum(min_quality, np.abs(before)))))
+            n_ruined = uw.mpi.comm.allreduce(int(ruined.sum()), op=MPI.SUM)
+            worst = uw.mpi.comm.allreduce(
+                float(after[ruined].min()) if ruined.any() else np.inf,
+                op=MPI.MIN)
+            if n_ruined:
+                raise ValueError(
+                    f"pull_vertex_onto: the target {tuple(float(x) for x in t)} "
+                    "is inside the mesh and the nearest corner of its cell is "
+                    "a boundary vertex, which a target inside the mesh never "
+                    "takes. The interior corner at "
+                    f"{tuple(float(x) for x in where)}, {distance:.3e} away, "
+                    f"would leave {n_ruined} cell(s) below "
+                    f"min_quality={min_quality} (worst {worst:.3g}; negative is "
+                    "inverted). The target is too close to the domain boundary "
+                    "to carry a vertex of its own, or an earlier target of this "
+                    "call has already moved that corner. Put the target on the "
+                    "boundary, move it further from the boundary, or refine the "
+                    "mesh there.")
         arr[hit] = t
 
     out = dm.clone()
