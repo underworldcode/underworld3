@@ -2,7 +2,10 @@
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 from petsc4py import PETSc
+
+import underworld3 as uw
 
 from underworld3.utilities._fitted_regions import _label_fitted_shell_regions
 
@@ -102,3 +105,51 @@ def test_invalid_fitted_shell_partition_is_rejected_collectively(defect):
             _classify(dm)
     finally:
         dm.destroy()
+
+
+def _internal_facets_separating(mesh):
+    """(Internal facets with both cells on this rank, those with one Inner and one
+    Outer cell), summed over ranks."""
+    dm = mesh.dm
+    fs, fe = dm.getHeightStratum(1)
+    internal = dm.getLabel(mesh.boundaries.Internal.name)
+    inner, outer = (dm.getLabel(region.name) for region in (mesh.regions.Inner, mesh.regions.Outer))
+    facets = separating = 0
+    for face in range(fs, fe):
+        cells = dm.getSupport(face)
+        if internal.getValue(face) != mesh.boundaries.Internal.value or len(cells) != 2:
+            continue
+        facets += 1
+        sides = sorted((inner.getValue(int(c)) >= 0, outer.getValue(int(c)) >= 0) for c in cells)
+        separating += sides == [(False, True), (True, False)]
+    return uw.mpi.comm.allreduce(facets, op=MPI.SUM), uw.mpi.comm.allreduce(separating, op=MPI.SUM)
+
+
+def _owned_inner_cells(mesh):
+    dm = mesh.dm
+    cs, ce = dm.getHeightStratum(0)
+    owned = np.asarray(dm.getCellNumbering().getIndices()) >= 0
+    inner = dm.getLabel(mesh.regions.Inner.name)
+    local = sum(1 for c in range(cs, ce) if owned[c - cs] and inner.getValue(c) >= 0)
+    return uw.mpi.comm.allreduce(local, op=MPI.SUM)
+
+
+@pytest.mark.tier_b
+def test_refined_shell_keeps_each_cell_on_its_side_of_the_internal_surface():
+    """Refinement leaves new Internal vertices on the chords, inside the sphere.
+
+    A cell just outside the refined surface then has its centroid below
+    ``radiusInternal``, and a radius test labels it Inner: 1363 cells on this
+    mesh at two refinements. Two exact properties hold for correct labels.
+    Every Internal facet has an Inner cell on one side and an Outer cell on
+    the other, and each refinement splits a tetrahedron into eight on the
+    same side, so the Inner count is 64 times the unrefined one.
+    """
+    shell = dict(radiusOuter=1.0, radiusInternal=0.8, radiusInner=0.547, cellSize=0.3, qdegree=2)
+    coarse = uw.meshing.SphericalShellInternalBoundary(**shell)
+    refined = uw.meshing.SphericalShellInternalBoundary(refinement=2, **shell)
+
+    facets, separating = _internal_facets_separating(refined)
+    assert facets > 0
+    assert separating == facets
+    assert _owned_inner_cells(refined) == 64 * _owned_inner_cells(coarse)
