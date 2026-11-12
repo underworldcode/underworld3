@@ -4458,9 +4458,6 @@ class Swarm(Stateful, uw_object):
                 num_points_not_in_domain = np.count_nonzero(in_or_not == False)
                 not_my_points = np.where(in_or_not == False)[0]
 
-                unclaimed_points_last_iteration = global_unclaimed_points
-                claimed_points_last_iteration = global_claimed_points
-
                 uw.mpi.barrier()
 
                 global_unclaimed_points = int(
@@ -4478,11 +4475,14 @@ class Swarm(Stateful, uw_object):
                 if global_unclaimed_points == 0:
                     break
 
-                if (
-                    global_unclaimed_points == unclaimed_points_last_iteration
-                    and global_claimed_points == claimed_points_last_iteration
-                ):
-                    break
+                # No "no progress" exit here. Round `it` offers each unclaimed
+                # point to its (it+1)-th nearest domain, and a round can claim
+                # nothing only because that domain was the point's own rank: a
+                # point inside the mesh near a partition seam whose own rank's
+                # centroid is nearest, but whose cell is on the next rank. An
+                # exit then left it on a rank that does not contain it, where
+                # it was lost or extrapolated (#1093). The round cap bounds
+                # the cost for points outside every domain.
 
         # Missing points for deletion if required
         if delete_lost_points:
