@@ -180,12 +180,24 @@ transferred through it.
 
 The relation is now read in the geometry the mesh was made in:
 
-- A mesh keeps the vertex coordinates it was built with from its first move
-  (`mesh._as_built_vertices`, taken in `_deform_mesh` before the first
-  overwrite). A mesh reloaded from a checkpoint takes its saved coordinates
-  through the same routine, so its record is the grid the reload refined again,
-  which is the geometry of the coarse levels the reload rebuilt, whether or not
-  the saved mesh had moved. A change of topology drops the record.
+- A mesh keeps the vertex coordinates it was built with
+  (`mesh._as_built_vertices`, taken by `Mesh._record_as_built` when the mesh is
+  constructed and again wherever it is given another topology), and
+  `_deform_mesh` marks it moved (`mesh._moved_since_built`). The record is read
+  only once the mesh is marked. It has to exist before anything moves the mesh:
+  at more than one rank the MMPDE mover and the Laplacian smoother use the
+  coordinate vector of the DM for their halo exchange before they call
+  `_deform_mesh`, and a record read at that call is a grid already moved, in
+  whole (the smoother) or in part (MMPDE). The cost is one copy of the vertex
+  coordinates per mesh. The mark says that `_deform_mesh` has run, and a call
+  that restores the coordinates sets it too; the record then equals the
+  coordinates, and reading it costs a search and changes no answer. A mesh
+  reloaded with its refinement hierarchy is recorded before its saved
+  coordinates are stamped on, so its record is the grid the reload refined
+  again, which is the geometry of the coarse levels the reload rebuilt, whether
+  or not the saved mesh had moved. A mesh built over a DM that had already
+  moved (the partition's copy of a level, a cut) records the coordinates it was
+  given and reaches the level below through `_addon_reference`, below.
 - `_parent_cells_local` locates the centroids of those vertices.
 - `provenance_transfer_parallel` takes a node back before it weights it: its
   barycentric coordinates in its own cell, as the cell stands, applied to the

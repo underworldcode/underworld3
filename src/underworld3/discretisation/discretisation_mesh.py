@@ -260,11 +260,12 @@ _REFERENCE_COORDINATES = "uw_reference_coordinates"
 
 def _vertex_coordinates(dm):
     """Coordinates of ``dm``'s local vertices, one row per vertex in point order."""
+    from underworld3.utilities._plex_topology import section_offsets
+
     cdim = dm.getCoordinateDim()
     vs, ve = dm.getDepthStratum(0)
-    section = dm.getCoordinateSection()
     array = dm.getCoordinatesLocal().array_r
-    offsets = numpy.array([section.getOffset(v) for v in range(vs, ve)], dtype=numpy.int64)
+    offsets = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve))
     return array[offsets[:, None] + numpy.arange(cdim)].reshape(-1, cdim)
 
 
@@ -861,10 +862,15 @@ class Mesh(Stateful, uw_object):
         # it puts the coarse levels back with this mesh, and the patch built before
         # the move applies again.
         self._move_version = 0
-        # The vertex coordinates the mesh was made with, kept from its first
-        # move on: the geometry its cells' parents and its transfer to the
-        # level below are read on (fault_mg.reference_vertices, #1091).
+        # The vertex coordinates the mesh was made with, and whether
+        # _deform_mesh has run since: the geometry its cells' parents and its
+        # transfer to the level below are read on (fault_mg.reference_vertices,
+        # #1091). Taken by _record_as_built when the mesh is built. The flag
+        # is set by a call that restores or repeats the coordinates too (a
+        # reload's stamp, ephemeral_coords); the record then equals the
+        # coordinates and reading it costs a search and changes no answer.
         self._as_built_vertices = None
+        self._moved_since_built = False
         # For a mesh made on a moved one: the pair (level, vertices), its
         # vertices in the geometry of that level (addon_partition.inherit_provenance).
         self._addon_reference = None
@@ -1100,6 +1106,10 @@ class Mesh(Stateful, uw_object):
 
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild(verbose)
+
+        # before the stamp below, which is a move: a reloaded mesh was made
+        # where its hierarchy was rebuilt
+        self._record_as_built()
 
         # Apply a deferred FMG-hierarchy deformed-coordinate stamp (set in the
         # reload/splice branch above). The hierarchy + working dm were rebuilt
@@ -2891,9 +2901,6 @@ class Mesh(Stateful, uw_object):
         with self._mesh_update_lock:
             self.dm = new_subdm
             self.subpoint_is = new_subdm.getSubpointIS()
-            # another topology: what this mesh was made with is its new grid
-            self._as_built_vertices = None
-            self._addon_reference = None
 
             # Rebuild coordinates with the shared coordinate-update callback
             self._install_coords_array(verbose=False)
@@ -2901,6 +2908,8 @@ class Mesh(Stateful, uw_object):
             self._mesh_version += 1
             self._topology_version += 1
             self.nuke_coords_and_rebuild(verbose=False)
+            # another topology: what this mesh was made with is its new grid
+            self._record_as_built()
 
         # Rebuild vertex map (for restrict/prolongate)
         self._vertex_map = None
@@ -4819,6 +4828,27 @@ class Mesh(Stateful, uw_object):
         # than let a long run of moves accumulate them.
         PETSc.garbage_cleanup(self.dm.getComm())
 
+    def _record_as_built(self):
+        """Keep the vertex coordinates the mesh stands on as the ones it was made
+        with. Called once the coordinates of a new DM are in place, when the
+        mesh is built and wherever it is given another topology, and never by
+        a move.
+
+        The record has to exist before anything moves the mesh. A mover may
+        write into the coordinate vector of the DM before it calls
+        :meth:`_deform_mesh` (the halo exchanges of the MMPDE mover and of the
+        Laplacian smoother do, at more than one rank), so that call is too
+        late to read the built grid (#1091). The record costs one copy of the
+        vertex coordinates per mesh. A mesh built over a DM that had already
+        moved (the add-on partition's copy of a level, a cut) records the
+        coordinates it was given, and reaches the level below through
+        ``_addon_reference``. A periodic mesh holds its coordinates cell by
+        cell and keeps no record."""
+        self._as_built_vertices = (None if _holds_cell_coordinates(self.dm)
+                                   else _vertex_coordinates(self.dm))
+        self._moved_since_built = False
+        self._addon_reference = None
+
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
         """
@@ -4851,9 +4881,7 @@ class Mesh(Stateful, uw_object):
         self._assert_coord_mutation_allowed()
 
         with self._mesh_update_lock:
-            # a periodic mesh holds its coordinates cell by cell: no record
-            if self._as_built_vertices is None and not _holds_cell_coordinates(self.dm):
-                self._as_built_vertices = _vertex_coordinates(self.dm)
+            self._moved_since_built = True
             coord_vec = self.dm.getCoordinatesLocal()
             coords = coord_vec.array.reshape(-1, self.cdim)
             coords[...] = new_coords[...]
@@ -10499,9 +10527,6 @@ class Mesh(Stateful, uw_object):
             # Update the DM
             self.dm = new_dm
             self.dm.setName(f"uw_{self.name}")
-            # another topology: what this mesh was made with is its new grid
-            self._as_built_vertices = None
-            self._addon_reference = None
 
             # Update coordinates array with the shared coordinate-update
             # callback. The unified callback adds the teardown guard and the
@@ -10515,6 +10540,8 @@ class Mesh(Stateful, uw_object):
 
             # Rebuild coordinate navigation
             self.nuke_coords_and_rebuild(verbose=False)
+            # another topology: what this mesh was made with is its new grid
+            self._record_as_built()
 
         # Destroy ALL old vectors upfront before reinitializing any variable.
         # This is critical because _setup_ds() iterates mesh._vars to backup/restore

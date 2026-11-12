@@ -264,7 +264,7 @@ def inherit_provenance(child, host):
     below = getattr(host, "_addon_below", None)
     recorded = parent is not None and below is not None
     if not recorded:
-        if host._as_built_vertices is None and host._addon_reference is None:
+        if not host._moved_since_built and host._addon_reference is None:
             return
         # the level under the host: the last of the tail it owns, or of the
         # coarse levels it was refined from
@@ -834,6 +834,17 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         # made in along, for its parents and its transfer to be read on (#1091)
         below = base if l == 0 else levels[l - 1]
         reference = None if below is None else reference_vertices(lev, below)
+        vS, vE = lev.dm.getDepthStratum(0)
+        held = comm.allgather(None if reference is None else
+                              reference.shape == (vE - vS, lev.dm.getCoordinateDim()))
+        if len(set(held)) > 1 or False in held:
+            # The reference rides a collective call below, and is laid out
+            # there rank by rank: a rank without one, or with other rows than
+            # its vertices, would stop alone.
+            raise RuntimeError(
+                f"addon_partition internal: level {l} holds the geometry it "
+                f"was made in on some ranks and not on others, or with other "
+                f"rows than the level has vertices (per rank: {held}).")
         riding = (None if reference is None
                   else [_cell_vertex_table(lev)[0], reference])
         old_pairs = getattr(lev, "_fault_point_pairs", None)

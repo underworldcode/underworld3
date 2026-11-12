@@ -18,6 +18,8 @@ tests/parallel/test_1173_addon_record_after_a_move_parallel.py.
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from scipy.spatial import cKDTree
+import sympy
 from petsc4py import PETSc
 from scipy.spatial import cKDTree
 
@@ -91,6 +93,81 @@ def test_a_moved_mesh_keeps_the_parents_it_was_refined_from():
     _move(mesh)
     after = ap._parent_cells_local(mesh._coarse_level_meshes()[-2], mesh)
     assert (after != before).sum() == 0
+
+
+def test_the_record_is_the_built_grid_when_a_mover_writes_before_the_move():
+    """At more than one rank the MMPDE mover and the Laplacian smoother use the
+    coordinate vector of the DM for their halo exchange, before they call
+    ``_deform_mesh``. A record taken at that call was a grid already moved: at
+    np 2 the parents of a smoothed box (cell size 1/8, refined twice) were
+    located where its cells had moved to, 51 of 2,592 of them wrong, and the
+    transfer of a mesh moved by the MMPDE mover was weighted off the
+    refinement's. A serial mover makes no such write, so it is made here by
+    hand."""
+    mesh = _box()
+    below = mesh._coarse_level_meshes()[-2]
+    before = ap._parent_cells_local(below, mesh)
+    built = fault_mg._cell_vertex_table(mesh)[0].copy()
+    # unmoved, the coordinates are the geometry of the level below
+    assert fault_mg.reference_vertices(mesh, below) is None
+    X0 = np.asarray(mesh.X.coords).copy()
+    moved = X0 + _shift(X0)
+    mesh.dm.getCoordinatesLocal().array[:] = moved.ravel()
+    with mesh._coord_mutation():
+        mesh._deform_mesh(moved)
+    assert np.abs(fault_mg._cell_vertex_table(mesh)[0] - built).max() > 0.9 * H_FINE
+    assert np.abs(fault_mg.reference_vertices(mesh, below) - built).max() == 0.0
+    assert (ap._parent_cells_local(below, mesh) != before).sum() == 0
+
+
+def _redistribute(mesh):
+    x, y = mesh.X
+    uw.meshing.node_redistribution(
+        mesh, 1 + 6 * sympy.exp(-((x - 0.5) ** 2 + (y - 0.5) ** 2) / 0.15 ** 2))
+
+
+def _smooth(mesh):
+    uw.meshing.smooth_mesh_interior(mesh, n_iters=20, method="laplacian")
+
+
+# measured: the redistribution moves a vertex by up to 0.0569 (1.4 fine cells)
+# and leaves 676 of the 1,440 cells standing outside their parent; the smoother
+# 0.0172 and 17
+@pytest.mark.parametrize("mover, moved, outside",
+                         [(_redistribute, 0.05, 500), (_smooth, 0.015, 10)])
+def test_a_mover_leaves_the_record_on_the_built_grid(mover, moved, outside):
+    """The movers a campaign drives, where the other tests move by
+    ``mesh.deform``: the record and the mark under each. In serial neither
+    writes the coordinates before it hands the move over, so the early write
+    is the test above and the parallel file's."""
+    mesh = _box()
+    below = mesh._coarse_level_meshes()[-2]
+    before = ap._parent_cells_local(below, mesh)
+    built = fault_mg._cell_vertex_table(mesh)[0].copy()
+    mover(mesh)
+    assert np.abs(fault_mg._cell_vertex_table(mesh)[0] - built).max() > moved
+    assert (_located(mesh, below) != before).sum() >= outside
+    assert np.abs(fault_mg.reference_vertices(mesh, below) - built).max() == 0.0
+    assert (ap._parent_cells_local(below, mesh) != before).sum() == 0
+
+
+def test_a_reloaded_mesh_is_recorded_where_its_hierarchy_was_rebuilt(tmp_path):
+    """A reload refines the saved coarse grid again and stamps the saved
+    coordinates on the finest level. The record is taken between the two: it
+    is the grid of the rebuilt levels, and the stamp is a move."""
+    mesh = _box()
+    built = fault_mg._cell_vertex_table(mesh)[0].copy()
+    _move(mesh)
+    mesh.write(str(tmp_path / "moved.h5"))
+    back = uw.discretisation.Mesh(str(tmp_path / "moved.h5"))
+    below = back._coarse_level_meshes()[-2]
+    record = fault_mg.reference_vertices(back, below)
+    assert record is not None
+    # the reload numbers its vertices afresh: each recorded one is a built one
+    distance, _ = cKDTree(built).query(record)
+    assert distance.max() < 1e-12
+    assert np.abs(fault_mg._cell_vertex_table(back)[0] - record).max() > 0.9 * H_FINE
+    assert (np.bincount(ap._parent_cells_local(below, back)) != 4).sum() == 0
 
 
 @pytest.mark.parametrize("degree", [1, 2])

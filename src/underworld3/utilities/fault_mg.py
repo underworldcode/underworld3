@@ -99,7 +99,8 @@ def reference_vertices(mesh, below):
     below, and the weights of a node there, are still those of the geometry
     the mesh was made in, so they are read on that geometry and not on the
     moved one (#1091). Two records hold it. ``_as_built_vertices`` is the
-    coordinates the mesh had before its first move. ``_addon_reference`` is
+    coordinates the mesh was built with (``Mesh._record_as_built``), read
+    once the mesh has moved. ``_addon_reference`` is
     for a mesh made on one that had already moved (the add-on partition's
     moved copy, a cut, a placement, a split): the pair ``(level, vertices)``,
     its vertices taken back through that mesh to the geometry of the level
@@ -109,10 +110,10 @@ def reference_vertices(mesh, below):
     held = mesh._addon_reference
     if held is not None and held[0] is below:
         return held[1]
-    # TODO(BUG): a periodic mesh keeps no record (Mesh._deform_mesh takes none
-    # where the coordinates are held cell by cell), so a moved periodic mesh
-    # is still read on its moved coordinates. See issue #1091.
-    return mesh._as_built_vertices
+    # TODO(BUG): a periodic mesh keeps no record (Mesh._record_as_built takes
+    # none where the coordinates are held cell by cell), so a moved periodic
+    # mesh is still read on its moved coordinates. See issue #1091.
+    return mesh._as_built_vertices if mesh._moved_since_built else None
 
 
 def _barycentric(P, V):

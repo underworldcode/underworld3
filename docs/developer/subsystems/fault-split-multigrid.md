@@ -201,14 +201,14 @@ fetches each fine cell's parent through one star forest (its record carries
 no recorded cell is a collective refusal.
 
 The record is read in the geometry the mesh was made in. A move of the mesh
-(`mesh.deform`, the MMPDE mover) changes the finest level and none of the levels
-below, so the parents are located from the vertices the mesh was built with
-(`mesh._as_built_vertices`, kept from the first move), and the transfer takes each
-node back to those vertices before it weights it: the transfer of a moved pair is
-the one it had unmoved. A cut, placed or split mesh made on a moved one reaches the
-level below through its host's map (`mesh._addon_reference`, set by
-`inherit_provenance` with the level it is valid against). A periodic mesh keeps
-no such record (#1091).
+(`mesh.deform`, the MMPDE mover, the Laplacian smoother) changes the finest level
+and none of the levels below, so the parents are located from the vertices the
+mesh was built with (`mesh._as_built_vertices`, taken when the mesh is constructed
+and read once it has moved), and the transfer takes each node back to those
+vertices before it weights it: the transfer of a moved pair is the one it had
+unmoved. A cut, placed or split mesh made on a moved one reaches the level below
+through its host's map (`mesh._addon_reference`, set by `inherit_provenance` with
+the level it is valid against). A periodic mesh keeps no such record (#1091).
 
 A coincident pairing rides a redistribution as a pair of DM labels
 (`fault_split.stamp_point_pairs` / `collect_point_pairs`), and a per-cell field as
