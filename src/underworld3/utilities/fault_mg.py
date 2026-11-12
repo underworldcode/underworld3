@@ -928,9 +928,12 @@ def _dependent_columns(T):
 
     Columns supported on the same single fine row are proportional, so their
     Galerkin rows are, and the coarse operator is singular: SOR's inode blocks
-    then hit a zero pivot (#1101). This happens when the fine level has moved
-    under coarse levels that did not, leaving two coarse unknowns whose only
-    fine image is one shared fine node. In each such group the column of
+    then hit a zero pivot (#1101). It can happen whenever a coarse level and
+    the level above it are not nested (a placed, cut or add-on level over a
+    base it was not refined from; any pair whose transfer is built by locating
+    one level's nodes in the other): two coarse unknowns can then have one
+    shared fine node as their only image. A mesh move under coarse levels
+    that are not moved with it makes it more likely. In each such group the column of
     largest weight is kept (ties to the lowest global column, so every rank
     keeps the same one) and the others are dropped; the range of P is
     unchanged.
@@ -998,8 +1001,8 @@ def _dependent_columns(T):
             f"custom_mg: {len(refused)} group(s) of coarse unknowns share fewer "
             f"fine images than there are of them (e.g. columns {refused[0][1]} on "
             f"fine rows {refused[0][0]}): the Galerkin coarse operator would "
-            f"be singular. The fine level has moved too far from its coarse "
-            f"levels (#1101).")
+            f"be singular: the level pair is not nested, and its transfer cannot "
+            f"be repaired by merging (#1101).")
     found = [d for part in m4.allgather(list(zip(drop, keep, ratio))) for d in part]
     if not found:
         return (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
@@ -1029,11 +1032,12 @@ def _drop_dependent_columns(T, comm, level, repairs=None):
         import warnings
 
         warnings.warn(
-            f"custom_mg: coarse level {level}: {drop.size} coarse unknown(s) had "
-            f"the same single fine image as another and were merged into it "
-            f"(#1101). The fine level has moved far from coarse levels that did "
-            f"not move with it; those levels no longer match it. Only coarse "
-            f"unknowns with at most {_SMALL_SUPPORT} fine images are checked.",
+            f"custom_mg: coarse level {level} and the level above it are not "
+            f"nested, and {drop.size} coarse unknown(s) on level {level} had the "
+            f"same single fine image as another; each was merged into it, which "
+            f"keeps the coarse space and the Galerkin operator nonsingular "
+            f"(#1101). Only coarse unknowns with at most {_SMALL_SUPPORT} fine "
+            f"images are checked.",
             stacklevel=3)
     cols = np.arange(*T.getOwnershipRangeColumn())
     keep_mask = ~np.isin(cols, drop)
@@ -1092,8 +1096,7 @@ def record_repairs(solver, repairs):
         installed="the coarse levels with coarse unknowns that share one sole "
                   "fine image merged into one (#1101)",
         reason="unavailable",
-        detail=f"{levels} unknown(s) merged; the fine level has moved far from "
-               f"coarse levels that did not move with it. Needed on "
+        detail=f"{levels} unknown(s) merged; the level pair is not nested. Needed on "
                f"{solver._mg_dependent_column_installs} install(s) of this solver.")
 
 

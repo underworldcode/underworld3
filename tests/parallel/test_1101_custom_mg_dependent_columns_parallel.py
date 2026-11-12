@@ -1,16 +1,19 @@
-"""Coarse unknowns with the same single fine image are dropped at install (#1101).
+"""Coarse unknowns with the same single fine image are merged at install (#1101).
 
-When the fine level moves far from coarse levels that did not move with it, two
-coarse unknowns can be left whose prolongation columns each have one entry, on
-the same fine row. The columns are proportional, so their Galerkin rows are,
-and the coarse operator is singular. In test_1152 (a mover after #1024) this
+When a coarse level and the level above it are not nested (a placed, cut or
+add-on level over a base it was not refined from; any pair whose transfer is
+built by locating one level's nodes in the other), two coarse unknowns can be
+left whose prolongation columns each have one entry, on the same fine row.
+The columns are proportional, so their Galerkin rows are,
+and the coarse operator is singular. A mesh move under coarse levels that are
+not moved with it makes this more likely: in test_1152 (a mover after #1024) it
 happened on about half of the 1e-13 coordinate perturbations: SOR's inode block
 over the two rows met a zero pivot. ``fault_mg.restrict_unreached`` now keeps
 the largest-weight column of such a group and drops the others (the range of P
 is unchanged), folds each dropped unknown's row of the level below into its
 kept twin's, so the composite coarse functions are unchanged (a merge: they
-still reproduce constants through the shared row), warns, and refuses a support of s > 1 fine rows shared by more
-than s columns. A hierarchy with no such pair comes back untouched.
+still reproduce constants through the shared row), warns, and refuses a
+support of s > 1 fine rows shared by more than s columns. A hierarchy with no such pair comes back untouched.
 
 The configuration is built directly: a 1-D Laplacian, P a linear interpolation
 plus two extra columns with one entry each, both on fine row 1. Rank 0 owns
@@ -159,7 +162,7 @@ def test_the_smaller_column_is_dropped_and_the_operator_is_nonsingular():
     assert _smallest_eigenvalue(A.ptap(T)) > 1e-3
     if RANK == 0:
         assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0] \
-            and "merged" in messages[0], messages
+            and "merged" in messages[0] and "not nested" in messages[0], messages
     else:
         assert messages == []
 
