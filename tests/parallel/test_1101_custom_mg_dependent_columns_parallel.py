@@ -237,3 +237,22 @@ def test_more_columns_than_shared_rows_is_refused_on_every_rank():
     except RuntimeError as err:
         raised = int("#1101" in str(err))
     assert COMM.tompi4py().allgather(raised) == [1] * SIZE
+
+
+def test_each_install_that_merges_is_on_the_solver_record():
+    """The warning prints once per session; ``pc_fallbacks`` records every
+    install that needed the merge, with a running count."""
+    import underworld3 as uw
+    from underworld3.utilities.fault_mg import record_repairs
+
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.5)
+    poisson = uw.systems.Poisson(mesh)
+    record_repairs(poisson, [])
+    assert "custom_mg.dependent_columns" not in poisson.pc_fallbacks
+    for _ in range(3):
+        record_repairs(poisson, [(2, 2)])
+    record = poisson.pc_fallbacks["custom_mg.dependent_columns"]
+    assert record["reason"] == "unavailable"
+    assert "coarse level 2: 2 unknown(s) merged" in record["detail"]
+    assert "Needed on 3 install(s)" in record["detail"]

@@ -910,6 +910,17 @@ def _reached_columns(T, rel=None):
 _SMALL_SUPPORT = 4      # columns with at most this many fine images are checked
 
 
+def _route(m4, dest, *arrays):
+    """Send row ``k`` of each array to rank ``dest[k]``; returns the arrays
+    each rank received, concatenated (one alltoall)."""
+    size = m4.Get_size()
+    order = np.argsort(dest, kind="stable")
+    bounds = np.searchsorted(dest[order], np.arange(size + 1))
+    send = [[a[order[bounds[r]:bounds[r + 1]]] for a in arrays] for r in range(size)]
+    got = m4.alltoall(send)
+    return [np.concatenate([g[k] for g in got]) for k in range(len(arrays))]
+
+
 def _dependent_columns(T):
     """Coarse columns of ``T`` that another column makes redundant. Collective;
     returns the same ``(drop, keep, ratio)`` arrays on every rank: global
@@ -930,65 +941,75 @@ def _dependent_columns(T):
     refused (it has not been seen: in W1's scan every group was 2 columns on 1
     row). Columns on fewer rows than there are of them but with different
     supports, or with wider supports, are not detected.
+
+    Distributed: each entry goes to its column's owner, which finds the small
+    columns; each small column's support goes to the owner of its first row,
+    which groups them. Only the (rare) decisions are gathered to every rank.
     """
     comm = T.comm
     m4 = comm.tompi4py()
     indptr, indices, data = T.getValuesCSR()
     rstart = T.getOwnershipRange()[0]
-    rows = rstart + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+    rows = (rstart + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))).astype(np.int64)
     nz = data != 0.0
-    count_vec = T.createVecRight()
-    count_vec.set(0.0)
-    if nz.any():
-        count_vec.setValues(indices[nz].astype(PETSc.IntType), np.ones(int(nz.sum())),
-                            addv=PETSc.InsertMode.ADD_VALUES)
-    count_vec.assemblyBegin()
-    count_vec.assemblyEnd()
-    count = np.asarray(count_vec.array).round().astype(np.int64)
-    count_vec.destroy()
-    cstart = T.getOwnershipRangeColumn()[0]
-    small = cstart + np.flatnonzero((count >= 1) & (count <= _SMALL_SUPPORT))
-    small = np.concatenate(m4.allgather(small))
-    none = (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
-    if not small.size:
-        return none
-    # every rank's entries in those columns: (column, fine row, weight)
-    pick = nz & np.isin(indices, small)
-    mine = np.column_stack([indices[pick], rows[pick], data[pick]])
-    parts = [e for e in m4.allgather(mine) if len(e)]
-    entries = np.concatenate(parts) if parts else np.zeros((0, 3))
-    support = {}
-    for col, row, w in entries:
-        support.setdefault(int(col), []).append((int(row), float(w)))
-    groups = {}
-    for col, items in support.items():
-        groups.setdefault(tuple(sorted(r for r, _w in items)), []).append(col)
+    cols, rows, data = indices[nz].astype(np.int64), rows[nz], data[nz]
+
+    # 1. every entry to its column's owner: (column, row, weight)
+    col_ranges = np.asarray(T.getOwnershipRangesColumn(), dtype=np.int64)
+    dest = np.searchsorted(col_ranges, cols, side="right") - 1
+    cols, rows, data = _route(m4, dest, cols, rows, data)
+    order = np.lexsort((rows, cols))
+    cols, rows, data = cols[order], rows[order], data[order]
+    ucol, start, count = np.unique(cols, return_index=True, return_counts=True)
+    small = (count >= 1) & (count <= _SMALL_SUPPORT)
+    ucol, start, count = ucol[small], start[small], count[small]
+    # each small column's support, padded with -1, and its first weight
+    keys = np.full((ucol.size, _SMALL_SUPPORT), -1, dtype=np.int64)
+    for k in range(_SMALL_SUPPORT):
+        has = count > k
+        keys[has, k] = rows[start[has] + k]
+    weight = data[start]
+
+    # 2. every small column's support to the owner of its first row
+    row_ranges = np.asarray(T.getOwnershipRanges(), dtype=np.int64)
+    dest = np.searchsorted(row_ranges, keys[:, 0], side="right") - 1
+    keys, ucol, count, weight = _route(m4, dest, keys, ucol, count, weight)
+    keys = keys.reshape(-1, _SMALL_SUPPORT)
+
     drop, keep, ratio, refused = [], [], [], []
-    for rows_of, cols in sorted(groups.items()):
-        if len(rows_of) == 1 and len(cols) > 1:
-            weight = {col: support[col][0][1] for col in cols}
-            cols.sort(key=lambda col: (-abs(weight[col]), col))
-            for col in cols[1:]:
-                drop.append(col)
-                keep.append(cols[0])
-                ratio.append(weight[col] / weight[cols[0]])
-        elif len(rows_of) > 1 and len(cols) > len(rows_of):
-            refused.append((rows_of, sorted(cols)))
+    if keys.size:
+        _, group, members = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+        group = np.ravel(group)
+        for g in np.flatnonzero(members > 1):
+            sel = np.flatnonzero(group == g)
+            nrows = int(count[sel[0]])
+            if nrows == 1:
+                ranked = sel[np.lexsort((ucol[sel], -np.abs(weight[sel])))]
+                for k in ranked[1:]:
+                    drop.append(int(ucol[k]))
+                    keep.append(int(ucol[ranked[0]]))
+                    ratio.append(float(weight[k] / weight[ranked[0]]))
+            elif sel.size > nrows:
+                refused.append(([int(r) for r in keys[sel[0], :nrows]],
+                                sorted(int(c) for c in ucol[sel])))
+    refused = [r for part in m4.allgather(refused) for r in part]
     if refused:
         raise RuntimeError(
             f"custom_mg: {len(refused)} group(s) of coarse unknowns share fewer "
             f"fine images than there are of them (e.g. columns {refused[0][1]} on "
-            f"fine rows {list(refused[0][0])}): the Galerkin coarse operator would "
+            f"fine rows {refused[0][0]}): the Galerkin coarse operator would "
             f"be singular. The fine level has moved too far from its coarse "
             f"levels (#1101).")
-    if not drop:
-        return none
-    order = np.argsort(drop)
-    return (np.asarray(drop, dtype=np.int64)[order], np.asarray(keep, dtype=np.int64)[order],
-            np.asarray(ratio)[order])
+    found = [d for part in m4.allgather(list(zip(drop, keep, ratio))) for d in part]
+    if not found:
+        return (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
+    found.sort()
+    drop, keep, ratio = zip(*found)
+    return (np.asarray(drop, dtype=np.int64), np.asarray(keep, dtype=np.int64),
+            np.asarray(ratio))
 
 
-def _drop_dependent_columns(T, comm, level):
+def _drop_dependent_columns(T, comm, level, repairs=None):
     """Merge the :func:`_dependent_columns` of one level into the columns they
     are multiples of, and warn when it fires. Collective.
 
@@ -1002,6 +1023,8 @@ def _drop_dependent_columns(T, comm, level):
     drop, keep, ratio = _dependent_columns(T)
     if not drop.size:
         return T, None, None
+    if repairs is not None:
+        repairs.append((level, int(drop.size)))
     if comm.getRank() == 0:
         import warnings
 
@@ -1052,7 +1075,29 @@ def _fold_rows(T, fold, comm):
     return out
 
 
-def restrict_unreached(Ps, comm):
+def record_repairs(solver, repairs):
+    """Record the #1101 merges of one install in ``solver.pc_fallbacks`` (the
+    warning is printed once per Python session; the record is per install).
+    ``repairs`` is the ``(level, unknowns)`` list the transfer builders filled;
+    the same on every rank. The count of installs that needed it is kept on
+    the solver, so a run's report shows how often it fired."""
+    if not repairs:
+        return
+    solver._mg_dependent_column_installs = getattr(
+        solver, "_mg_dependent_column_installs", 0) + 1
+    levels = ", ".join(f"coarse level {l}: {n}" for l, n in sorted(repairs))
+    solver._record_pc_fallback(
+        "custom_mg.dependent_columns",
+        requested="the coarse levels as built",
+        installed="the coarse levels with coarse unknowns that share one sole "
+                  "fine image merged into one (#1101)",
+        reason="unavailable",
+        detail=f"{levels} unknown(s) merged; the fine level has moved far from "
+               f"coarse levels that did not move with it. Needed on "
+               f"{solver._mg_dependent_column_installs} install(s) of this solver.")
+
+
+def restrict_unreached(Ps, comm, repairs=None):
     """The prolongation list with every coarse unknown no fine unknown reaches
     dropped, fine to coarse, each level's rows restricted to the set the level
     above kept. The unrotated twin of :func:`rotated_split_transfers`, for the
@@ -1077,7 +1122,7 @@ def restrict_unreached(Ps, comm):
                 _owned_is(np.arange(*T.getOwnershipRange()), comm),
                 _owned_is(cols[reached], comm))
             kept[l] = cols[reached]
-        T, keep_mask, merged = _drop_dependent_columns(T, comm, l)
+        T, keep_mask, merged = _drop_dependent_columns(T, comm, l, repairs)
         if keep_mask is not None:
             fold[l] = _renumber_fold(merged, kept[l], comm)
             kept[l] = (kept[l] if kept[l] is not None else cols)[keep_mask]
@@ -1133,6 +1178,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
         rot[l] = level_rotation(levels[l], solver, hierarchy.field_id)
 
     kept = [None] * nlev              # owned kept global indices per coarse level
+    repairs = []                      # the #1101 merges, (level, unknowns)
     fold = [None] * nlev              # merges per coarse level, in its full numbering
     out = [None] * (nlev - 1)
     for l in range(nlev - 2, -1, -1):
@@ -1168,13 +1214,14 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
                 _owned_is(np.arange(*T.getOwnershipRange()), comm),
                 _owned_is(np.arange(*T.getOwnershipRangeColumn())[reached], comm))
         # and merge the unknowns that share a single fine image with another (#1101)
-        T, keep_mask, merged = _drop_dependent_columns(T, comm, l)
+        T, keep_mask, merged = _drop_dependent_columns(T, comm, l, repairs)
         if keep_mask is not None:
             fold[l] = _renumber_fold(merged, adm, comm)
             adm = adm[keep_mask]
         kept[l] = adm
         out[l] = T
     Qv.destroy()                    # only the products are kept
+    record_repairs(solver, repairs)
     hierarchy.level_kept = kept
     # The restriction renumbers every coarse level, so any FAC patch rows the
     # builder recorded for them (keyed to the unrestricted layouts) no longer
