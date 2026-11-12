@@ -243,31 +243,66 @@ def inherit_provenance(child, host):
     rank-local (the partition made the region interior), so every child
     centroid lies in a local host cell. Recording it here, rather than
     locating later, keeps the relation exact after the child's nodes move.
-    A no-op when ``host`` carries no record (serial, or never partitioned).
+    No parent is recorded when ``host`` carries no record (serial, or never
+    partitioned).
+
+    A host that has moved since it was made no longer sits in the geometry of
+    the level under it, and the child was made on the moved host. The child's
+    vertices are then taken back through the host's cells to where they sit in
+    that geometry (``_addon_reference``, read by
+    ``fault_mg.reference_vertices``): each is located in the host as it stands
+    and placed with the same barycentric coordinates in the cell as it was
+    made. A vertex outside every local host cell, as one put on a curved wall
+    is by a sagitta, is carried by the nearest cell's map. A host with no
+    record passes its geometry on in the same way, against the level under it
+    in its own hierarchy, so that a child that takes the host's place there
+    is located where the host was made when it is partitioned later (#1091).
     Collective."""
-    from underworld3.utilities.fault_mg import locate_in_cells_exhaustive
+    from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
+                                                reference_vertices)
     parent = getattr(host, "_addon_parent", None)
-    if parent is None or getattr(host, "_addon_below", None) is None:
+    below = getattr(host, "_addon_below", None)
+    recorded = parent is not None and below is not None
+    if not recorded:
+        if (getattr(host, "_as_built_vertices", None) is None
+                and getattr(host, "_addon_reference", None) is None):
+            return
+        # the level under the host: the last of the tail it owns, or of the
+        # coarse levels it was refined from
+        tail = getattr(host, "_custom_mg_coarse_meshes", None)
+        if tail is None:
+            tail = _levels_of(host)[1]
+        below = tail[-1] if tail else None
+    reference = None if below is None else reference_vertices(host, below)
+    if not recorded and reference is None:
         return
     comm = child.dm.getComm().tompi4py()
-    fcent, _v, cvf = _cell_centroids(child)
+    fcent, vxy_child, cvf = _cell_centroids(child)
     _c, vxy_h, cv_h = _cell_centroids(host)
-    cell = np.zeros(cvf.shape[0], dtype=np.int64)
-    n_bad = 0
-    if cvf.shape[0]:
-        if cv_h.shape[0] == 0:
-            n_bad = cvf.shape[0]
-        else:
-            cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
-            n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
-    n_bad = int(comm.allreduce(n_bad))
-    if n_bad:
-        raise RuntimeError(
-            f"addon_partition: {n_bad} cell(s) of a surgery's result lie in no "
-            f"local cell of the mesh it was made from; the surgery was not "
-            f"rank-local.")
-    child._addon_parent = np.asarray(parent, dtype=np.int64)[cell]
-    child._addon_below = host._addon_below
+    if recorded:
+        cell = np.zeros(cvf.shape[0], dtype=np.int64)
+        n_bad = 0
+        if cvf.shape[0]:
+            if cv_h.shape[0] == 0:
+                n_bad = cvf.shape[0]
+            else:
+                cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
+                n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+        n_bad = int(comm.allreduce(n_bad))
+        if n_bad:
+            raise RuntimeError(
+                f"addon_partition: {n_bad} cell(s) of a surgery's result lie "
+                f"in no local cell of the mesh it was made from; the surgery "
+                f"was not rank-local.")
+        child._addon_parent = np.asarray(parent, dtype=np.int64)[cell]
+        child._addon_below = below
+    child._addon_reference = None
+    if reference is not None:
+        taken_back = np.zeros_like(vxy_child)
+        if vxy_child.shape[0] and cv_h.shape[0]:
+            at_cell, at = locate_in_cells_exhaustive(vxy_child, vxy_h, cv_h)
+            taken_back = np.einsum("nv,nvd->nd", at, reference[cv_h[at_cell]])
+        child._addon_reference = (below, taken_back)
 
 
 # --------------------------------------------------------------------------- #
@@ -284,10 +319,19 @@ def _parent_cells_local(coarse, fine):
     cell ``k`` of ``fine``. Exact for nested refinement and for a grid that
     re-represents the coarse one; raises if any centroid falls outside every
     local coarse cell, which means the two levels are not co-partitioned —
-    the add-on has already been moved and must not be partitioned twice."""
-    from underworld3.utilities.fault_mg import locate_in_cells_exhaustive
+    the add-on has already been moved and must not be partitioned twice.
+
+    The centroid is the one ``fine`` has in the geometry of ``coarse``
+    (``fault_mg.reference_vertices``): a move changes the coordinates of
+    ``fine`` and not of ``coarse``, and the parent of a cell is the one it was
+    made in, not the one its moved centroid lies over (#1091)."""
+    from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
+                                                reference_vertices)
     comm = fine.dm.getComm().tompi4py()
     fcent, _vf, cvf = _cell_centroids(fine)
+    reference = reference_vertices(fine, coarse)
+    if reference is not None:
+        fcent = reference[cvf].mean(axis=1)
     _cc, vxy_c, cv_c = _cell_centroids(coarse)
     n_f, n_c = cvf.shape[0], cv_c.shape[0]
     cell = np.full(n_f, -1, dtype=np.int64)
@@ -586,6 +630,26 @@ def _moved_wrap(level, dm, fields, pairs):
     return moved
 
 
+def _carried_reference(moved, carried, comm):
+    """The reference vertices of the moved level, which rode the move
+    (``fault_mg.reference_vertices`` of the level it was). ``carried`` is the
+    level's coordinates and its reference, vertex by vertex, as
+    ``redistribute_by_assignment`` returned them. The coordinates rode only to
+    be compared with the ones the moved mesh holds, so a reference in another
+    vertex order cannot be taken silently. Collective."""
+    from underworld3.utilities.fault_mg import _cell_vertex_table
+    was, reference = carried
+    vxy, _cv = _cell_vertex_table(moved)
+    wrong = int(vxy.shape != was.shape)
+    if not wrong and vxy.size:
+        wrong = int(np.abs(vxy - was).max() > 1e-10 * (1.0 + np.abs(vxy).max()))
+    if comm.allreduce(wrong):
+        raise RuntimeError(
+            "addon_partition internal: the vertices of a moved level are not "
+            "in the order its reference coordinates travelled in.")
+    return reference
+
+
 # --------------------------------------------------------------------------- #
 #  The entry point
 # --------------------------------------------------------------------------- #
@@ -625,6 +689,8 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         itself when every region is already rank-interior and the load is
         within tolerance. Serial: ``mesh``.
     """
+    from underworld3.utilities.fault_mg import (_cell_vertex_table,
+                                                reference_vertices)
     from underworld3.utilities.fault_split import redistribute_by_assignment
     from underworld3.utilities.place_surface import _merge_regions, _region_cells
 
@@ -749,7 +815,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
             "fault regions cover it); run on fewer ranks or refine the base.")
 
     # apply the one assignment to every level, provenance riding along
-    moved = []
+    moved, references = [], []
     for l, lev in enumerate(levels):
         cS, cE = lev.dm.getHeightStratum(0)
         n = cE - cS
@@ -765,9 +831,16 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         self_rank = np.full(n, comm.rank, dtype=np.int64)
         self_local = np.arange(n, dtype=np.int64)
         fields = [parent_rank, parent_local, self_rank, self_local]
+        # a level that has moved since it was made takes the geometry it was
+        # made in along, for its parents and its transfer to be read on (#1091)
+        below = base if l == 0 else levels[l - 1]
+        reference = None if below is None else reference_vertices(lev, below)
+        riding = (None if reference is None
+                  else [_cell_vertex_table(lev)[0], reference])
         old_pairs = getattr(lev, "_fault_point_pairs", None)
-        dm, new_pairs, dropped, new_fields = redistribute_by_assignment(
-            lev.dm, a_level, pairs=old_pairs, fields=fields)
+        dm, new_pairs, dropped, new_fields, carried = redistribute_by_assignment(
+            lev.dm, a_level, pairs=old_pairs, fields=fields,
+            vertex_fields=riding)
         if dropped:
             raise RuntimeError(
                 f"addon_partition: {dropped} fault pair(s) split across ranks "
@@ -775,9 +848,13 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         # every unit has a cell on every level, so a moved unit moves every
         # level and the shell partition never hands the input back here
         moved.append(_moved_wrap(lev, dm, new_fields, new_pairs))
+        references.append(None if carried is None
+                          else _carried_reference(moved[-1], carried, comm))
     for l, lev in enumerate(moved):
         below = base if l == 0 else moved[l - 1]
         lev._addon_below = below
+        lev._addon_reference = (None if references[l] is None
+                                else (below, references[l]))
         if below is None:
             lev._addon_parent = None
         elif l == 0:

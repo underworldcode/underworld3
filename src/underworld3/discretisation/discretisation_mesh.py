@@ -855,6 +855,10 @@ class Mesh(Stateful, uw_object):
         # it puts the coarse levels back with this mesh, and the patch built before
         # the move applies again.
         self._move_version = 0
+        # The vertex coordinates the mesh was made with, kept from its first
+        # move on: the geometry its cells' parents and its transfer to the
+        # level below are read on (fault_mg.reference_vertices, #1091).
+        self._as_built_vertices = None
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
@@ -2878,6 +2882,9 @@ class Mesh(Stateful, uw_object):
         with self._mesh_update_lock:
             self.dm = new_subdm
             self.subpoint_is = new_subdm.getSubpointIS()
+            # another topology: what this mesh was made with is its new grid
+            self._as_built_vertices = None
+            self._addon_reference = None
 
             # Rebuild coordinates with the shared coordinate-update callback
             self._install_coords_array(verbose=False)
@@ -4835,6 +4842,11 @@ class Mesh(Stateful, uw_object):
         self._assert_coord_mutation_allowed()
 
         with self._mesh_update_lock:
+            if self._as_built_vertices is None:
+                # a periodic mesh holds its coordinates cell by cell: no record
+                cell_coordinates = self.dm.getCellCoordinatesLocal()
+                if not (cell_coordinates is not None and cell_coordinates.handle):
+                    self._as_built_vertices = _vertex_coordinates(self.dm)
             coord_vec = self.dm.getCoordinatesLocal()
             coords = coord_vec.array.reshape(-1, self.cdim)
             coords[...] = new_coords[...]
@@ -10476,6 +10488,9 @@ class Mesh(Stateful, uw_object):
             # Update the DM
             self.dm = new_dm
             self.dm.setName(f"uw_{self.name}")
+            # another topology: what this mesh was made with is its new grid
+            self._as_built_vertices = None
+            self._addon_reference = None
 
             # Update coordinates array with the shared coordinate-update
             # callback. The unified callback adds the teardown guard and the

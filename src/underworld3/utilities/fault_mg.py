@@ -89,6 +89,32 @@ def _cell_vertex_table(mesh):
     return vxy, cv
 
 
+def reference_vertices(mesh, below):
+    """Where the vertices of ``mesh`` sit in the geometry of ``below``, the
+    level under it: ``(n_v, cdim)`` in the rows of :func:`_cell_vertex_table`,
+    or ``None`` when the current coordinates are that geometry.
+
+    A move (``mesh.deform``, a mover) changes the coordinates of the mesh it
+    is applied to and of no level below it. The parent of a cell on the level
+    below, and the weights of a node there, are still those of the geometry
+    the mesh was made in, so they are read on that geometry and not on the
+    moved one (#1091). Two records hold it. ``_as_built_vertices`` is the
+    coordinates the mesh had before its first move. ``_addon_reference`` is
+    for a mesh made on one that had already moved (the add-on partition's
+    moved copy, a cut, a placement, a split): the pair ``(level, vertices)``,
+    its vertices taken back through that mesh to the geometry of the level
+    under it, and valid against that level only. A mesh that keeps the moved
+    one as its own level below is in that mesh's geometry already, and is
+    asked about another level than the one its pair names."""
+    held = getattr(mesh, "_addon_reference", None)
+    if held is not None and held[0] is below:
+        return held[1]
+    # TODO(BUG): a periodic mesh keeps no record (Mesh._deform_mesh takes none
+    # where the coordinates are held cell by cell), so a moved periodic mesh
+    # is still read on its moved coordinates. See issue #1091.
+    return getattr(mesh, "_as_built_vertices", None)
+
+
 def _barycentric(P, V):
     """Barycentric coordinates of points ``P (n, cdim)`` in the simplices
     ``V (n, dim + 1, cdim)``. For an embedded surface (``cdim > dim``) the point is
@@ -443,6 +469,12 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     copy; the moved units' parents come from their ranks. Nothing is
     all-gathered. ``coarse_layout`` / ``fine_layout`` are
     :class:`custom_mg.LevelLayout`.
+
+    A node is weighted in its parent where it sits in the geometry of
+    ``coarse``. That is its own position unless ``pre`` has moved since it was
+    made (:func:`reference_vertices`); then the node is taken back through its
+    cell of ``pre``, which is affine, so the pair has the transfer it had
+    before the move (#1091).
     """
     m4 = comm.tompi4py()
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
@@ -516,8 +548,13 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     nu = uniq.shape[0]
     cn_u = np.arange(nu * nb).reshape(nu, nb)
     cv_u = np.arange(nu * nv).reshape(nu, nv)
-    lam = _barycentric(Xf[mine], V_u[cv_u[inv]]) if mine.size else np.zeros((0, nv))
-    W = (_node_weights(Xf[mine], inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
+    Xw = Xf[mine]
+    reference = reference_vertices(pre, coarse)
+    if reference is not None and mine.size:
+        at = _barycentric(Xw, vxy_p[cv_p[pcell]])
+        Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
+    lam = _barycentric(Xw, V_u[cv_u[inv]]) if mine.size else np.zeros((0, nv))
+    W = (_node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
          if mine.size else np.zeros((0, nb)))
     gcols = cols_u[inv]                                        # (nm, nb, ncomp)
 
