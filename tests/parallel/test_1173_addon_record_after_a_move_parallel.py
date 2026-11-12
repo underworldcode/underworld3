@@ -26,7 +26,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
-from fault_fixtures import (TRACE, adapted_2d, children_per_parent,
+from fault_fixtures import (TRACE, children_per_parent,
                             parents_contain_centroids, shear_fault_solve)
 from underworld3.utilities import addon_partition as ap
 from underworld3.utilities.fault_mg import _cell_vertex_table, reference_vertices
@@ -167,25 +167,37 @@ def test_a_second_fault_on_a_moved_adapt_child_reads_the_split_level_where_it_wa
     its split copy. The child's reference was taken against the level
     replaced and has to serve against the copy: without it the partition for
     the next fault looks for each cell's parent under the cell as it stands,
-    refuses where that is on another rank and records a wrong parent where it
-    is not. The serial half is
+    refuses where that is on another rank (96 cells at np 2 on this fixture)
+    and records a wrong parent where it is not. The serial half is
     test_a_split_level_takes_over_the_reference_of_the_level_it_replaces."""
-    host = adapted_2d(2)
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 6, regular=True,
+        refinement=1, qdegree=2)
+    metric = uw.discretisation.MeshVariable("M", base, 1, degree=1)
+    near = np.abs(np.asarray(metric.coords)[:, 1] - 0.5) < 0.2
+    metric.array[:, 0, 0] = np.where(near, 48.0, 12.0) ** 2
+    # two add-on levels, the finest cells 1/48 across beside the faults
+    host = base.adapt(metric, max_levels=2, engine="nvb")
     X = np.asarray(host.X.coords).copy()
-    # a cell of the level under the finest, beside the trace
-    host.deform(X + _shift(X, 0.025))
-    split = host.add_fault([("Flt", TRACE)])
-    # a third of the box from the first trace, so the two stay two regions
-    second = np.array([[0.30, 0.12], [0.70, 0.12]])
-    out = ap.partition_addon(split, ap.mark_polylines([second]), layers=1,
-                             tolerance=0.1)
-    assert out._addon_partition["regions"] == 2 and out is not split
-    below = out._addon_below
-    assert getattr(below, "_fault_point_pairs", None)      # a split level
-    # where the cells stand, some are outside the parent recorded for them
-    assert parents_contain_centroids(below, out) > 0
-    held = out._addon_reference
-    assert held is not None and held[0] is below
-    vxy, cv = _cell_vertex_table(out)
-    made_at = held[1][cv].mean(axis=1)
-    assert parents_contain_centroids(below, out, centroids=made_at) == 0
+    host.deform(X + _shift(X, 1 / 48))
+    first = host.add_fault([("Flt", np.array([[0.30, 0.45], [0.70, 0.55]]))])
+    held = first._addon_reference
+    assert held is not None
+    assert any(held[0] is level for level in first._custom_mg_coarse_meshes)
+    second = first.add_fault([("F2", np.array([[0.30, 0.64], [0.70, 0.60]]))])
+    # every level that records its parents: each cell lies inside the parent
+    # recorded for it, in the geometry the level was made in
+    recorded = [level for level in [*second._custom_mg_coarse_meshes, second]
+                if getattr(level, "_addon_parent", None) is not None]
+    assert recorded
+    astray = 0
+    for level in recorded:
+        below = level._addon_below
+        reference = reference_vertices(level, below)
+        vxy, cv = _cell_vertex_table(level)
+        made_at = (vxy if reference is None else reference)[cv].mean(axis=1)
+        assert parents_contain_centroids(below, level, centroids=made_at) == 0
+        astray += parents_contain_centroids(below, level)
+    # the fixture moves far enough to tell: where the cells stand, some are
+    # outside the parent recorded for them
+    assert astray > 0
