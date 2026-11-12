@@ -388,6 +388,9 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
   # So is a zone-keyed patch that a mover keeps, with the same solution (#1017).
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
+  # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
+  # the same assertions hold on one rank, so the file also runs serially.
+  batch 3 tests/parallel/test_1175_shell_region_labels.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
