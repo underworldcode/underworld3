@@ -38,7 +38,8 @@ The meshing subsystem handles computational mesh generation and manipulation for
 Every mesh has straight-sided cells. The `degree` argument of `Mesh` and of
 each constructor in `uw.meshing` is the degree of the coordinate field, and
 only 1 is accepted: any other value raises a `ValueError` when the mesh is
-built, on every rank.
+built, on every rank. A plex handed to `Mesh` with a coordinate space of
+higher degree is refused in the same way.
 
 Particle location, cell sizes and centroids, boundary normals, mesh motion
 and the multigrid hierarchy all read the coordinates as the vertices of

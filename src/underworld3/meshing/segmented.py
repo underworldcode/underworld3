@@ -97,7 +97,7 @@ def SegmentedSphericalSurface2D(
     longitude wrap-around.
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     num_segments = numSegments
     meshRes = cellSize
@@ -330,7 +330,7 @@ def SegmentedSphericalShell(
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 20
@@ -790,7 +790,7 @@ def SegmentedSphericalBall(
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Upper = 30

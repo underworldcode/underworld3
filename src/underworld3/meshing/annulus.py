@@ -117,7 +117,7 @@ def QuarterAnnulus(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     # Convert unit-aware quantities to non-dimensional units
     # This enables: QuarterAnnulus(radiusOuter=uw.quantity(6370, "km"), ...)
@@ -392,7 +392,7 @@ def Annulus(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     # Convert unit-aware quantities to non-dimensional units
     # This enables: Annulus(radiusOuter=uw.quantity(6370, "km"), ...)
@@ -630,7 +630,7 @@ def SegmentofAnnulus(
     ... )
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
@@ -906,7 +906,7 @@ def AnnulusWithSpokes(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
@@ -1252,7 +1252,7 @@ def AnnulusInternalBoundary(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
@@ -1565,7 +1565,7 @@ def DiscInternalBoundaries(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     # Convert unit-aware quantities to non-dimensional units
     radiusUpper = uw.scaling.non_dimensionalise(radiusUpper)

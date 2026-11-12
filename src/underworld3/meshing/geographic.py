@@ -140,7 +140,7 @@ def RegionalSphericalBox(
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1
@@ -530,7 +530,7 @@ def RegionalGeographicBox(
     Right-handed coordinate system: WE x SN = down.
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
     from underworld3.units import (

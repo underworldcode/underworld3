@@ -800,7 +800,7 @@ class Mesh(Stateful, uw_object):
         *args,
         **kwargs,
     ):
-        Mesh._require_straight_sided_cells(degree)
+        Mesh._require_straight_sided_cells(degree, plex_or_meshfile)
 
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
@@ -1830,13 +1830,15 @@ class Mesh(Stateful, uw_object):
         patch_coordinate_units(self)
 
     @staticmethod
-    def _require_straight_sided_cells(degree):
-        """Raise unless ``degree``, a mesh's coordinate degree, is the integer 1.
+    def _require_straight_sided_cells(degree, plex=None):
+        """Raise unless ``degree``, a mesh's coordinate degree, is the integer 1,
+        and unless ``plex``, when one is given, carries coordinates of degree 1.
 
         Particle location, cell geometry, boundary normals and mesh motion all
         read the coordinates as straight-sided cells (#978). The constructors in
         ``uw.meshing`` call this before they generate anything, and
-        ``Mesh.__init__`` calls it first. ``degree`` is an argument every rank
+        ``Mesh.__init__`` calls it first. ``degree`` is an argument and the
+        coordinate space is a property of the plex, both of which every rank
         holds alike, so every rank refuses together.
         """
         if isinstance(degree, bool) or not isinstance(degree, numbers.Integral) or degree != 1:
@@ -1844,6 +1846,23 @@ class Mesh(Stateful, uw_object):
                 f"Mesh: degree={degree!r} is not supported; mesh coordinates are degree 1 "
                 "(straight-sided cells). For a higher-order field, give the MeshVariable "
                 "its own degree, e.g. MeshVariable('v', mesh, 2, degree=2).")
+
+        if not isinstance(plex, PETSc.DM):
+            return
+        coordinate_dm = plex.getCoordinateDM()
+        if coordinate_dm.getNumFields() == 0:
+            return
+        # a plex as generated or read has vertex coordinates and no finite
+        # element here; one given a coordinate space has, and it has a degree
+        space = coordinate_dm.getField(0)[0]
+        if not isinstance(space, PETSc.FE):
+            return
+        plex_degree = space.getBasisSpace().getDegree()[0]
+        if plex_degree != 1:
+            raise ValueError(
+                f"Mesh: the plex carries coordinates of degree {plex_degree}; mesh "
+                "coordinates are degree 1 (straight-sided cells). For a higher-order field, "
+                "give the MeshVariable its own degree, e.g. MeshVariable('v', mesh, 2, degree=2).")
 
     @property
     def degree(self) -> int:
@@ -3190,8 +3209,8 @@ class Mesh(Stateful, uw_object):
         # mesh coordinates to other mesh coordinates.
 
         # Dual-space options control node placement on simplices and must be set
-        # before createDefault(). Currently only P1 coordinate meshes are used,
-        # but these are needed for higher-order (curved) coordinate meshes.
+        # before createDefault(). Mesh coordinates are degree 1 (#978), with
+        # nodes at the vertices only.
         options = PETSc.Options()
         fe_prefix = f"meshproj_{self.mesh_instances}_"
         fe_keys = {f"{fe_prefix}petscspace_degree": self.degree,

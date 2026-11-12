@@ -6,14 +6,16 @@ coordinates as straight-sided cells, and a degree-2 mesh failed in each: the
 FVM cell sizes read edge nodes as corners (#908), ``boundary_normal`` raised,
 and ``deform`` broadcast vertex coordinates into the larger degree-2 coordinate
 vector. It never curved a boundary either: a degree-2 annulus put its wall edge
-nodes on the chords. So a mesh now refuses ``degree != 1``, each ``uw.meshing``
-constructor refuses before it generates anything, ``mesh.degree`` is read-only,
-and a variable keeps its own ``degree``.
+nodes on the chords. So a mesh now refuses ``degree != 1`` and a plex that
+carries higher-degree coordinates, each ``uw.meshing`` constructor refuses
+before it generates anything, ``mesh.degree`` is read-only, and a variable keeps
+its own ``degree``.
 
 The parallel half is ``tests/parallel/test_0782_mesh_degree_refused_on_every_rank.py``.
 """
 import inspect
 
+import gmsh
 import numpy as np
 import pytest
 
@@ -45,12 +47,16 @@ def test_the_constructors_under_test_are_the_ones_we_know():
 
 @pytest.mark.parametrize("name", _CONSTRUCTORS)
 def test_a_constructor_refuses_degree_2_before_it_generates_a_mesh(name, monkeypatch):
-    # development: every one of these built a degree-2 mesh. A constructor that
-    # reaches ``Mesh`` has already run gmsh, so reaching it fails the test.
-    def reached(*args, **kwargs):
+    # development: every one of these built a degree-2 mesh. Starting gmsh
+    # fails the test, and so does reaching ``Mesh`` with a mesh file from the cache.
+    def started_gmsh(*args, **kwargs):
+        raise AssertionError(f"{name} started gmsh")
+
+    def reached_mesh(*args, **kwargs):
         raise AssertionError(f"{name} went on to build a Mesh")
 
-    monkeypatch.setattr(uw.discretisation.Mesh, "__init__", reached)
+    monkeypatch.setattr(gmsh, "initialize", started_gmsh)
+    monkeypatch.setattr(uw.discretisation.Mesh, "__init__", reached_mesh)
     with pytest.raises(ValueError, match=r"mesh coordinates are degree 1.*MeshVariable"):
         getattr(uw.meshing, name)(degree=2)
 
@@ -63,6 +69,26 @@ def test_a_mesh_from_a_plex_refuses_any_degree_but_the_integer_one(degree):
     with pytest.raises(ValueError, match=r"mesh coordinates are degree 1.*MeshVariable") as refusal:
         uw.discretisation.Mesh(plex, degree=degree)
     assert f"degree={degree!r} " in str(refusal.value)
+
+
+@pytest.mark.parametrize("plex_degree", [2, 3])
+def test_a_plex_that_carries_higher_degree_coordinates_is_refused(plex_degree):
+    # development: degree 2 built a mesh whose X.coords held 25 nodes while its
+    # dm held 9
+    plex = uw.meshing.StructuredQuadBox(elementRes=(2, 2)).dm.clone()
+    plex.createCoordinateSpace(plex_degree, False, True)
+    with pytest.raises(
+            ValueError,
+            match=rf"coordinates of degree {plex_degree}; mesh coordinates are degree 1"):
+        uw.discretisation.Mesh(plex)
+
+
+def test_a_plex_that_carries_degree_1_coordinates_builds():
+    plex = uw.meshing.StructuredQuadBox(elementRes=(2, 2)).dm.clone()
+    plex.createCoordinateSpace(1, False, True)
+    mesh = uw.discretisation.Mesh(plex)
+    assert np.asarray(mesh.X.coords).shape == (9, 2)
+    assert mesh.dm.getCoordinatesLocal().getSize() == 9 * 2
 
 
 def test_the_degree_of_a_mesh_cannot_be_changed():

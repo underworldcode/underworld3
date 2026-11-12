@@ -134,7 +134,7 @@ def SphericalShell(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 11
@@ -385,7 +385,7 @@ def SphericalManifold(
         >>> phi   = sphere.X.spherical.phi      # longitude
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Surface = 12  # the manifold itself (closed sphere has no boundary curve)
@@ -580,7 +580,7 @@ def SphericalShellInternalBoundary(
     ... )
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Centre = 1
@@ -911,7 +911,7 @@ def SegmentofSphere(
     ... )
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 11
@@ -1201,7 +1201,7 @@ def CubedSphere(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1

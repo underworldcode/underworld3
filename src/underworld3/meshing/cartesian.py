@@ -154,7 +154,7 @@ def UnstructuredSimplexBox(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries_2D(Enum):
         Bottom = 11
@@ -488,7 +488,7 @@ def BoxInternalBoundary(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries_2D(Enum):
         Bottom = 11
@@ -1046,7 +1046,7 @@ def BoxInternalPatch(
     >>> child = uw.utilities.fault_split.split_fault(mesh, "FltA")
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -1383,7 +1383,7 @@ def StructuredQuadBox(
 
     """
 
-    Mesh._require_straight_sided_cells(degree)
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     if minCoords == None:
         minCoords = len(elementRes) * (0.0,)

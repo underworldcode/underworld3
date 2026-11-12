@@ -3,10 +3,8 @@ refused on every rank, and an error code on one rank raises on all (#908, #978).
 
 A degree-2 coordinate field made ``DMPlexComputeGeometryFVM`` fail on a rank's
 first face, while a rank with no cells has no faces and went on through the
-routine: MPI_ERR_BUFFER in the next ``DMClone`` and a hang, at np 3 on a 4 x 4
-grid with cells [16, 16, 0]. A mesh now refuses ``degree != 1`` before any
-collective, from an argument every rank holds alike, and a ``uw.meshing``
-constructor refuses before rank 0 starts gmsh.
+routine: MPI_ERR_BUFFER in the next ``DMClone`` and a hang. A mesh now refuses
+``degree != 1`` before any collective, from an argument every rank holds alike.
 
 Power: exactly one rank holds no cells at every np >= 2 (see
 ``empty_rank_fixtures``), and the cell-size test asserts that premise. The
@@ -82,8 +80,8 @@ def test_a_degree_2_mesh_is_refused_on_every_rank():
 
 
 def test_a_constructor_refuses_degree_2_on_every_rank():
-    """Rank 0 alone runs gmsh, so a refusal that came after it would leave the
-    other ranks ahead of rank 0."""
+    """Rank 0 alone generates the mesh, and the ranks still raise alike. That
+    the refusal comes before the generation is held by the serial file."""
     try:
         uw.meshing.UnstructuredSimplexBox(cellSize=0.5, degree=2)
         message = "built"
