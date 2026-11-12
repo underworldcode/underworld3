@@ -430,6 +430,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
   batch 4 tests/test_1172*py  # a solve after a move of a refined mesh uses the moved geometry (#1037)
   batch 4 tests/test_1173*py  # the add-on record of a moved mesh is the one it was built with (#1091)
+  batch 4 tests/test_1176*py  # a move that keeps the topology keeps the custom multigrid transfers
   batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)
   batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
   batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)

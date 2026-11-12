@@ -473,7 +473,8 @@ def _is_native_refine_pair(coarse_mesh, fine_mesh):
 
 
 def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
-                                    coarse_coords=None, fine_coords=None):
+                                    coarse_coords=None, fine_coords=None,
+                                    fine_vertices=None):
     """EXACT node-level prolongation for a native ``refine()`` pair, at ANY
     polynomial degree — the FE embedding of the coarse Lagrange space in the
     fine one. Returns a scipy CSR ``(n_fine_nodes, n_coarse_nodes)`` matrix,
@@ -503,6 +504,12 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
     (:func:`~underworld3.utilities.nvb.nested_cell_parents`). Structurally
     full rank: every coarse node is inherited into the fine level with weight
     1, so the zero-column failure (#424) cannot arise here.
+
+    A fine level that has moved since it was refined is still its parent's
+    child. ``fine_vertices`` and ``fine_coords`` are then its vertices and
+    nodes on the geometry it was made in (``Mesh._transfer_vertices``,
+    ``fault_mg.as_built_nodes``), and the embedding is the one the pair had
+    before the move.
     """
     import itertools
 
@@ -514,7 +521,7 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
     dim = cdm.getDimension()
     if cdm.getCoordinateDim() != dim:      # embedded surface: no affine pullback
         return None
-    vP = nested_prolongation_from_dms(cdm, fdm)
+    vP = nested_prolongation_from_dms(cdm, fdm, fine_vertices)
     if vP is None:
         return None
     parents = nested_cell_parents(cdm, fdm, vP)
@@ -2141,6 +2148,23 @@ class CustomMGHierarchy:
                 f"inconsistent component counts across levels: {ncomp}")
         nc = ncomp[0]
 
+        # A level that has moved since it was made (mesh.deform, a mover) is
+        # read where it was made. A move keeps the cells and every node's
+        # parent below, so the pair's transfer is the one the pair had before
+        # the move; built from the moved coordinates the transfer follows the
+        # displacement instead. An unmoved level is read on its own
+        # coordinates, and so is one made on a moved mesh (an adapt child, a
+        # cut, a placement): a change of topology makes a new mesh, whose
+        # as-built geometry is its own. Simplex levels only.
+        from underworld3.utilities import fault_mg
+        built_vertices, built_nodes = [None], [coords[0]]
+        for l in range(1, nlev):
+            level = self.level_meshes[l]
+            moved = fault_mg.as_built_nodes(level, degree, continuous)
+            built_nodes.append(coords[l] if moved is None else moved)
+            built_vertices.append(None if moved is None
+                                  else level._transfer_vertices)
+
         # Operator-faithful check: the finest reduced map must span exactly the
         # assembled operator's rows. Checkable directly for the monolithic
         # single-field operator (field_id is None — scalar / single-field vector,
@@ -2164,10 +2188,11 @@ class CustomMGHierarchy:
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
         comm = solver.dm.comm
-        from underworld3.utilities import fault_mg
         # TODO(MEASURE): the env flag is an A/B affordance for the #629 campaign;
         # remove when settled. A move since the patch was built kills it, or on a
-        # zone-keyed level only the rows the coincidence test found (#1017).
+        # zone-keyed level only the rows the coincidence test found (#1017). That
+        # test and the cut of a zone into blocks still read the current
+        # coordinates, so the ruling stands as it is.
         killed = self._fac_patch_killed(solver)
         fac_on = (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
                   and killed != "all")
@@ -2179,7 +2204,9 @@ class CustomMGHierarchy:
             # exact parent relation: each fine cell's parent is fetched from
             # its rank through a star forest, and nothing is located across
             # partitions. Split coarse levels are never recorded against, so
-            # their pairs keep the side-aware cell-located transfer.
+            # their pairs keep the side-aware cell-located transfer. The
+            # recorded route takes a moved level back to its reference geometry
+            # itself, so it is handed the current coordinates.
             pre = (fault_mg.provenance_source(self.level_meshes[l - 1],
                                               self.level_meshes[l])
                    if parallel else None)
@@ -2211,20 +2238,21 @@ class CustomMGHierarchy:
                 elif parallel:
                     P = fault_mg.cell_located_transfer_parallel(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
-                        continuous, coords[l - 1], coords[l], maps[l - 1],
-                        maps[l], nc, comm)
+                        continuous, coords[l - 1], built_nodes[l], maps[l - 1],
+                        maps[l], nc, comm, fine_vertices=built_vertices[l])
                     self.level_transfer_stats[l] = fault_mg.last_transfer_stats
                 else:
                     Pn = fault_mg.cell_located_prolongation(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
                         continuous, coarse_coords=coords[l - 1],
-                        fine_coords=coords[l])
+                        fine_coords=built_nodes[l],
+                        fine_vertices=built_vertices[l])
                     P = _to_petsc_aij(
                         _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc))
                 Ps.append(P)
                 continue
             if parallel:
-                args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
+                args = (coords[l - 1], built_nodes[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
                 if pre is not None:
                     P = provenance_transfer()
@@ -2352,7 +2380,8 @@ class CustomMGHierarchy:
                     Pn = nested_refine_pair_prolongation(
                         self.level_meshes[l - 1], self.level_meshes[l],
                         degree, continuous,
-                        coarse_coords=coords[l - 1], fine_coords=coords[l])
+                        coarse_coords=coords[l - 1], fine_coords=built_nodes[l],
+                        fine_vertices=built_vertices[l])
                 if Pn is None:
                     Pn = self._recorded_node_transfer(
                         l, nlev, degree, coords[l - 1].shape[0],
@@ -2360,8 +2389,8 @@ class CustomMGHierarchy:
                 if Pn is not None:
                     Pr = _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc)
                 else:
-                    Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
-                                           maps[l], nc, self.builder)
+                    Pr = _reduced_transfer(coords[l - 1], built_nodes[l],
+                                           maps[l - 1], maps[l], nc, self.builder)
                 # an orphan coarse DOF (no fine image) is dropped at install
                 # (restrict_unreached), never injected — see drop_orphans
                 if fac_on:
@@ -2675,6 +2704,9 @@ class _DMLevelView:
         self.cdim = fine_mesh.cdim
         self.isSimplex = fine_mesh.isSimplex
         self.qdegree = fine_mesh.qdegree
+        # the views wrap the levels under the finest, which no move reaches:
+        # the view answers fault_mg.as_built_nodes as an unmoved mesh does
+        self._moved_since_built = False
 
         # The gmsh-imported BASE level carries section-only coordinates (its
         # coordinate field is a PetscContainer, no PetscFE). PETSc's

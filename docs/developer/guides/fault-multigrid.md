@@ -198,6 +198,18 @@ one campaign and is the error to recognise.
   4 on hyperion's fixture, 14-28 with the patch killed; test_1152). On a split
   level the move still drops the structural rows outside the zone. A repartition
   or a topology change of the finest mesh kills the whole patch.
+- A move that keeps the topology keeps the transfers. The hierarchy is installed
+  again after `mesh.deform` or a mover, and a mesh that has moved since it was
+  made is read on the geometry it was built in, so its transfers are those it
+  had before the move (test_1176). Built from the moved coordinates they follow
+  the displacement: 13 velocity iterations on a faulted fixture against 6 with
+  the transfers kept and 5 at rest. It is not cheaper on every move: under an
+  interior mover the count changes by one either way. This holds for a mover
+  only. A change of topology makes a new mesh and a new hierarchy, and a base
+  that moved before an adapt or a cut goes into the new hierarchy where it
+  stands. A `relax()` of a mesh that has not moved is part of making it. A
+  mover does not replace refinement that adds nodes. Mechanism and counts:
+  [fault-split-multigrid](../subsystems/fault-split-multigrid.md).
 - The first solve after a move reads the moved fields. The mesh-move transfer
   wrote them without marking the mesh's assembly vector stale, so a solver that
   had solved before the move assembled with pre-move coefficients (test_1151).

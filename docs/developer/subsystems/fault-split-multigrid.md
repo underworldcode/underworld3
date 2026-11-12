@@ -218,6 +218,88 @@ a cell-wise section through `distributeField` on the migration star forest
 one rank and distributes it with the labels on; its fault stars are then made
 rank-interior by the older per-fault move, which remains for that path.
 
+## A moved level keeps its transfers
+
+A move of the mesh that keeps its topology (`mesh.deform`, the MMPDE mover, the
+Laplacian smoother) changes where the nodes of the finest level sit. It changes no
+cell, and no node's parent cell on the level below. The transfer between two levels
+states that relation, so it is the same before and after the move.
+
+The hierarchy is built again at the first solve after a move, and
+`CustomMGHierarchy.build` reads a moved level on the geometry the level was made
+in. `fault_mg.as_built_nodes` takes each node's barycentric coordinates in one cell
+that lists it and places the node on the vertices that cell was made with
+(`Mesh._transfer_vertices`). Those positions are the fine side of the pair on
+three routes: the node-cloud builders, the cell-located transfer between split
+levels, and the embedding of a native refine pair. The native pair identifies a
+fine vertex with a coarse vertex or an edge midpoint by exact equality of
+coordinates, so it reads those vertices themselves; on the moved coordinates it
+found no match and the pair fell to the node-cloud builder. In 3-D the embedding
+carries the wrong entries of #449, and a moved pair now carries them as the pair
+at rest does. The map is local to a rank, and the parallel builders are handed
+the same positions. It needs affine cells: a quadrilateral or hexahedral level is
+read on its moved coordinates, and its transfers are rebuilt from them.
+
+Built from the moved coordinates, a moved node was located among the unmoved
+coarse nodes and its weights followed the displacement. On the fixtures of
+`tests/test_1176_custom_mg_transfer_after_a_move.py` (serial, displacements of
+0.02 on a unit box) a weight changed by 0.65 to 1.1, and the faulted Stokes solve
+went from 5 velocity iterations to 13. With the level read where it was built the
+transfers after a move equal those before it to $10^{-13}$, and the same solve takes
+6 iterations after each of three moves, as a solver built on the moved mesh does.
+
+The kept transfers do not lower the count on every move. Under a mover that
+shifts interior nodes by one to four cell widths while the coarse levels still
+fill the domain, the count changes by one in either direction. With
+`node_redistribution` on a twice-refined box (P2 Poisson, three moves, serial) it
+went from 3 to 2 at one contrast of the metric and was unchanged at two others; on
+a box refined three times it went from 2 to 3 at the strongest contrast and was
+unchanged at the others; the Stokes velocity count was 3 either way. Where the
+boundary moves the transfers kept do better: with the top wall of a box
+raised by 5 % in each of three steps the velocity count stays at 3, against 5, 6
+and 7, and `preconditioner="fmg"` on a deformed box stays at 2 against 3.
+
+A move still drops the structural patch (#1017): its coincidence test and the cut
+of a `fac_zone` into blocks read the current coordinates. The split-level fixture
+carries no patch. The placed fixture does, and its solve goes from 3 iterations to
+5 at the first move with the transfers kept.
+
+This is a mode for movers. A change of topology (an adapt, a remesh, a fault
+placed or moved) makes a new mesh, whose as-built geometry is its own, and its
+hierarchy is built from that mesh as before. Only a level's own moves are undone.
+A fault cut into a mesh that had already moved lies on its trace in the moved
+geometry, on the new mesh and on the split level under it alike, so the new mesh
+is read where it is: 6 velocity iterations on the fixture of the test, 5 with the
+host at rest, and 9 or more when the new mesh is taken back through its host's
+move. The finest level of a refined base that moved before an adapt or a cut is
+likewise carried into the child's hierarchy as a new mesh on the moved
+coordinates, and the pair under it is rebuilt from them: with the top wall of a
+box raised by 5 % three times before the adapt, the solve on the child takes 4
+iterations against 2 with the box at rest, and 2 when the base itself is given as
+that level (`set_custom_fmg`).
+
+Whether a level has moved is read off its coordinates, which are compared with
+the ones the mesh was made with. Coordinates that were written and put back
+(`ephemeral_coords`, a snapshot restore, a deform back to rest) are not a move.
+Nor is a `relax()` of a mesh that stands where it was made, whether
+`adapt(relax=True)` calls it or the user does, once or several times. It repairs
+the shapes the refinement left and is part of making the mesh: the transfers that
+are built from coordinates are built on the relaxed ones (2 iterations on the P2
+Poisson fixture of the test, 3 when read on the coordinates from before the
+relax), and a later move is taken back to the relaxed coordinates. The parent of
+a cell on the level below is still read where the mesh was refined. A `relax()`
+of a mesh that has moved is one more move. So is the stamp of a reload: the
+levels are rebuilt by refinement and the finest is then given the saved
+coordinates, so a mesh saved after a move comes back as a moved level, and so
+does a mesh whose refinement put new boundary nodes on a curved wall. Either is
+read on its rebuilt refinement. A refined annulus takes 3 iterations as built and
+2 reloaded.
+
+A mover redistributes the nodes a mesh already has, which limits the refinement
+it can reach; it does not replace refinement that adds nodes. A periodic mesh
+keeps no as-built record (#1091), and its transfers are still built from the
+moved coordinates.
+
 ## Measured (box in simple shear, straight fault, 2026-10-13)
 
 Velocity iterations per solve, split levels (C) against the welded tail (A):
@@ -263,6 +345,10 @@ refinement against the welded tail, viscous fault, a moving fault, the transfer'
 awareness and quadratic exactness) and
 `tests/parallel/test_1089_fault_split_multigrid_parallel.py` (np = 2 and 4: split and
 welded tails converge with the serial slip; the thick twin extruded with its pairing).
+`tests/test_1176_custom_mg_transfer_after_a_move.py` (the transfers after
+`mesh.deform` and after a mover are those before it, on a placed level, a native
+refine pair and a split level; the iterations of the faulted solve after a move,
+and of a fault cut into a mesh that had moved).
 
 ## When a level takes the FAC patch
 
