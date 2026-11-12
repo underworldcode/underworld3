@@ -9545,6 +9545,62 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
+    def pressure_split(self, *, jumps, normals, tolerance=1e-10):
+        r"""Lift prescribed pressure jumps on fitted triangle/tetrahedron facets.
+
+        Parameters
+        ----------
+        jumps : mapping
+            Interface name to scalar :math:`[p]=p^+-p^-`. Each value is a
+            SymPy expression, continuous scalar MeshVariable on this mesh,
+            constant, or callable taking an ``(N, dim)`` coordinate array.
+            Values are sampled at interface vertices and interpolated P1.
+        normals : mapping
+            Matching names to vectors pointing from the minus to plus side.
+            Expressions, constant vectors and coordinate callables are accepted.
+            These select the side orientation; the extracted sheet is normal
+            to the fitted facets, with no tangential sheet-force extraction.
+        tolerance : float
+            Relative tolerance for jump compatibility around vertex-star cycles.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump`` (:math:`p_J`), ``pressure_jump_field`` (DG P1),
+            ``regular_force`` (DG P0), ``natural_datum``, ``physical_pressure``,
+            ``pressure_jump_integral`` and ``checks``.
+
+        Notes
+        -----
+        Call collectively, with the same interface names on every rank, before
+        solving. Continuous P1 pressure represents :math:`q` in :math:`p=q+p_J`.
+        Replace the prescribed normal sheet load :math:`[p]n\delta_\Gamma`
+        by ``split.regular_force.sym`` added to any regular body force. Do not
+        retain that sheet load. Add ``split.natural_datum`` to the original
+        UW3 exterior natural datum on natural components; prescribed velocity
+        needs no traction correction. Use ``split.physical_pressure`` for
+        total-pressure diagnostics and include its lift integral in the gauge.
+
+        Affine interface-fitted simplices and nondimensional data are required.
+        Closed, boundary-to-boundary, finite and intersecting interfaces use
+        the same nodal construction. Finite tips/rims and junction cycles must
+        have compatible jumps; incompatible data are rejected collectively.
+        Geometry cutting through cells and unknown flow-dependent jumps require
+        additional interface discretisation/coupling and are not inferred here.
+        This lifts a pressure discontinuity with continuous velocity, not slip.
+        The lift is defined up to a continuous P1 field absorbed by q; no
+        harmonic extension or convergence rate is assumed.
+
+        References
+        ----------
+        Chang and Kwak (2009), "Extraction method for Stokes Flow with jumps
+        in the pressure", https://arxiv.org/abs/0911.4769, Sections 2--3.
+        Their extraction principle motivates this API; its vertex-star DG P1
+        lift differs from their harmonic extension and CR discretisation.
+        """
+        from underworld3.utilities._pressure_split import _create_pressure_split
+        return _create_pressure_split(self, jumps, normals, tolerance)
+
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
