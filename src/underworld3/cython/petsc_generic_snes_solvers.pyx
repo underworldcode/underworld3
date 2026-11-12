@@ -4437,6 +4437,30 @@ class SolverBaseClass(uw_object):
                                        "target": target, "linear_floor": floor}
         return saved
 
+    def _refuse_a_separate_preconditioner_matrix(self):
+        """Raise if the SNES has a preconditioner matrix apart from its Jacobian
+        while natural BCs are registered (#1070).
+
+        The scalar, vector and multi-component solvers register a natural BC's
+        boundary Jacobian on the Jacobian only, because their Jacobian and
+        preconditioner are one matrix (#1065). A separate preconditioner matrix
+        would get no boundary term, and under ``-snes_mf_operator`` the boundary
+        assembly writes into the matrix-free operator and fails with PETSc error 56.
+        """
+        if not self.natural_bcs:
+            return
+        self.snes.setUp()
+        jacobian = self.snes.getJacobian()
+        J, P = jacobian[0], jacobian[1]
+        if J is None or P is None or J.handle == P.handle:
+            return
+        raise RuntimeError(
+            f"{type(self).__name__}: the SNES assembles its Jacobian and its "
+            f"preconditioner into two matrices (Jacobian type {J.getType()!r}, "
+            f"for example under -snes_mf_operator), but this solver puts the "
+            f"natural-BC terms into the Jacobian only, so the preconditioner would "
+            f"miss them (#1070). Remove the option or the separate matrix.")
+
     def _snes_solve_with_retries(self, gvec, divergence_retries=0, verbose=False):
         """Call self.snes.solve(None, gvec) with warm-start retries on divergence.
 
@@ -7177,13 +7201,10 @@ class SNES_Scalar(SolverBaseClass):
                                 NULL,
                                 )
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                0, 0, 0,
-                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                NULL,
-                                NULL,
-                                )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
         # Set constants on DS before copying to coarse levels
         self._set_constants_on_ds(ds)
@@ -7364,6 +7385,9 @@ class SNES_Scalar(SolverBaseClass):
         auto_inject_custom_mg(self, field_id=None)
 
         # solve
+        # one matrix for the Jacobian and the preconditioner, or the natural BCs
+        # reach only one of them (#1070)
+        self._refuse_a_separate_preconditioner_matrix()
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
@@ -8263,21 +8287,10 @@ class SNES_Vector(SolverBaseClass):
                                     NULL, NULL,
                                     )
 
-                if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
-                else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, NULL,
-                                    )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
 
         if verbose:
@@ -8439,6 +8452,9 @@ class SNES_Vector(SolverBaseClass):
         auto_inject_custom_mg(self, field_id=None)
 
         # solve
+        # one matrix for the Jacobian and the preconditioner, or the natural BCs
+        # reach only one of them (#1070)
+        self._refuse_a_separate_preconditioner_matrix()
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
@@ -9018,21 +9034,10 @@ class SNES_MultiComponent(SolverBaseClass):
                                     NULL, NULL,
                                     )
 
-                if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
-                else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, NULL,
-                                    )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
@@ -9132,6 +9137,9 @@ class SNES_MultiComponent(SolverBaseClass):
 
         self._update_constants(record=True)
 
+        # one matrix for the Jacobian and the preconditioner, or the natural BCs
+        # reach only one of them (#1070)
+        self._refuse_a_separate_preconditioner_matrix()
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()

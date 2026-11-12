@@ -434,6 +434,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
   batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)
   batch 4 tests/test_1161*py  # a diverged solve warns (#1059)
+  batch 4 tests/test_1162*py  # a natural BC that reads the unknown enters the Jacobian once (#1065)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
