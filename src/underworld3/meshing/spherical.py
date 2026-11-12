@@ -434,9 +434,11 @@ def SphericalManifold(
     # defaults coordDim = dim (= 2) and drops the z-coordinate, which
     # collapses the manifold to its xy-projection. We load the DM
     # directly here (rather than going through ``_from_gmsh``'s
-    # h5 round-trip, which currently loses the explicit coordinate
-    # dimension), then hand the DM to Mesh() which accepts either a
-    # filename or a DMPlex object.
+    # h5 round-trip, which lost the explicit coordinate dimension until
+    # #870; ``_from_plexh5`` now restores it), then hand the DM to Mesh()
+    # which accepts either a filename or a DMPlex object. A mesh built from
+    # a DM has no topology SF, so ``read_checkpoint`` on it needs
+    # ``same_layout=True``, or a mesh rebuilt from its checkpoint file.
     # The option is global: left in place it would load every LATER gmsh
     # mesh in this process with three coordinates (a 2-D box after a sphere
     # failed on a 3:2 vector-length mismatch), so it is cleared once consumed.

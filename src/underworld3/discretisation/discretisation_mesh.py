@@ -224,6 +224,17 @@ def _from_plexh5(
         try:
             sf0 = h5plex.topologyLoad(viewer)
             h5plex.coordinatesLoad(viewer, sf0)
+            # DMPlexCoordinatesLoad restores the coordinates with their stored
+            # block size but leaves the embedding dimension at the topological
+            # one, so a manifold (triangles in three-space) came back with
+            # cdim = 2 under three-component coordinates, and the coordinate
+            # space rebuild then failed on a 576 != 384 length mismatch (#870).
+            # Every rank must agree on cdim, so the block size is reduced.
+            from mpi4py import MPI as _MPI
+            loaded_cdim = comm.tompi4py().allreduce(
+                int(h5plex.getCoordinatesLocal().getBlockSize()), op=_MPI.MAX)
+            if loaded_cdim != h5plex.getCoordinateDim():
+                h5plex.setCoordinateDim(loaded_cdim)
             h5plex.labelsLoad(viewer, sf0)
             h5plex.markBoundaryFaces("All_Boundaries", 1001)
         finally:
@@ -10841,6 +10852,12 @@ def checkpoint_xdmf(
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
     topology_precision = cells.dtype.itemsize
+    # The cell's own dimension, which PETSc records on the cells dataset. The
+    # embedding dimension alone cannot tell a manifold's cells from a volume's:
+    # triangles in three-space have three corners, a quadrilateral surface in
+    # three-space four, like a tetrahedron (#869).
+    cell_dim = cells.attrs.get("cell_dim")
+    cell_dim = int(cell_dim) if cell_dim is not None else spaceDim
 
     if numCorners <= 1:
         h5.close()
@@ -10880,29 +10897,18 @@ def checkpoint_xdmf(
 
     geometry_information = units_information(geometry_units, "          ")
 
-    # We only use a subset of the possible cell types
-    if spaceDim == 2:
-        if numCorners == 3:
-            topology_type = "Triangle"
-        elif numCorners == 4:
-            topology_type = "Quadrilateral"
-        else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.", stacklevel=2)
-            topology_type = "Quadrilateral"
-        geomType = "XY"
-    else:
-        # TODO(BUG): a manifold mesh (triangles in three-space, e.g.
-        # SphericalManifold) lands here with numCorners == 3 and is written as
-        # Hexahedron; it should be Triangle with XYZ geometry. Found 2026-10-09
-        # (thin-sheet work), not fixed — out of that scope. See issue #869.
-        if numCorners == 4:
-            topology_type = "Tetrahedron"
-        elif numCorners == 8:
-            topology_type = "Hexahedron"
-        else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.", stacklevel=2)
-            topology_type = "Hexahedron"
-        geomType = "XYZ"
+    # We only use a subset of the possible cell types: chosen by the cell's
+    # own dimension and corner count, the geometry by the embedding dimension
+    cell_types = {(2, 3): "Triangle", (2, 4): "Quadrilateral",
+                  (3, 4): "Tetrahedron", (3, 8): "Hexahedron"}
+    topology_type = cell_types.get((cell_dim, numCorners))
+    if topology_type is None:
+        fallback = "Quadrilateral" if cell_dim == 2 else "Hexahedron"
+        warnings.warn(
+            f"Unexpected numCorners={numCorners} for {cell_dim}-D cells in "
+            f"{spaceDim}-D space; writing {fallback}.", stacklevel=2)
+        topology_type = fallback
+    geomType = "XY" if spaceDim == 2 else "XYZ"
 
     ## Create the header
 
