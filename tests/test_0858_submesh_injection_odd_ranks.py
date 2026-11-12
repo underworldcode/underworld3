@@ -6,10 +6,16 @@ around it all lie outside the region; that rank has no submesh DOF there.
 Each rank used to write its matched rows and sync, which keeps the owner's
 value, so those DOFs kept their old value: on ``AnnulusInternalBoundary``
 with ``extract_region("Inner")`` at np 3, two DOFs on r = 1 came back as 0
-(error 1.0). The partitions CI runs (np 2, np 4) happen to miss it, so this
-test launches np 3 and np 5 itself, in subprocesses through the MPI
-supervisor (this file is also the worker: ``python -m mpi4py <this file>
-<out.json>``).
+(error 1.0). This test launches np 3 and np 5 itself, in subprocesses through
+the MPI supervisor (this file is also the worker: ``python -m mpi4py <this
+file> <out.json>``).
+
+The partition is built, not left to the partitioner, whose choice differs
+between platforms (on macOS the default one left no such DOF, so the test
+could only fail its precondition): a shell partition puts the region's cells
+on rank 0 and deals the rest to ranks 1 to n-1 by angle. PETSc gives a point
+shared between ranks to the highest of them, so the region's edge at r = 1
+is owned by ranks with no child cell there, on any platform.
 
 A P2 vector field ``(r, -r)`` on the submesh is prolongated into a parent
 field of sevens, in ``replace`` and ``add`` mode. Every parent DOF in the
@@ -32,8 +38,8 @@ def _prolongate(out):
     import underworld3 as uw
     from mpi4py import MPI
 
-    full = uw.meshing.AnnulusInternalBoundary(radiusOuter=1.5, radiusInternal=1.0,
-                                              radiusInner=0.5, cellSize=1.0 / 8.0)
+    full = _region_on_rank_0(uw.meshing.AnnulusInternalBoundary(
+        radiusOuter=1.5, radiusInternal=1.0, radiusInner=0.5, cellSize=1.0 / 8.0))
     rock = full.extract_region("Inner")
     v_full = uw.discretisation.MeshVariable("Vf", full, full.dim, degree=2)
     v_rock = uw.discretisation.MeshVariable("Vr", rock, rock.dim, degree=2)
@@ -54,10 +60,46 @@ def _prolongate(out):
         expect = np.where(inside[:, None], start + np.column_stack([r, -r]), 7.0)
         err = float(np.abs(data - expect).max()) if len(data) else 0.0
         errors[mode] = uw.mpi.comm.allreduce(err, op=MPI.MAX)
+    start, end = rock.dm.getHeightStratum(0)
+    errors["child_cells"] = uw.mpi.comm.allgather(end - start)
     errors["orphans"] = uw.mpi.comm.allreduce(
         _orphans_module()._orphans(rock, v_rock, v_full, inside))
     if uw.mpi.rank == 0:
         Path(out).write_text(json.dumps(errors))
+
+
+def _region_on_rank_0(parent):
+    """``parent`` repartitioned: the cells inside r = 1 on rank 0, the others
+    on ranks 1 to n-1 by angle (a shell partition, so no partitioner choice
+    enters)."""
+    import underworld3 as uw
+
+    dm = parent.dm.clone()
+    dm.setCoordinatesLocal(parent.dm.getCoordinatesLocal())
+    start, end = dm.getHeightStratum(0)
+    dest = np.empty(end - start, dtype=np.int64)
+    for cell in range(start, end):
+        _, centre, _ = dm.computeCellGeometryFVM(cell)
+        if np.hypot(centre[0], centre[1]) < 1.0:
+            dest[cell - start] = 0
+        else:
+            turn = (np.arctan2(centre[1], centre[0]) / (2 * np.pi)) % 1.0
+            dest[cell - start] = 1 + min(int(turn * (uw.mpi.size - 1)), uw.mpi.size - 2)
+    partitioner = dm.getPartitioner()
+    partitioner.setType("shell")
+    from petsc4py import PETSc
+
+    partitioner.setShellPartition(
+        uw.mpi.size, np.bincount(dest, minlength=uw.mpi.size).astype(PETSc.IntType),
+        np.argsort(dest, kind="stable").astype(PETSc.IntType))
+    migration = dm.distribute()
+    mesh = uw.discretisation.Mesh(
+        dm, boundaries=parent.boundaries, qdegree=parent.qdegree,
+        coordinate_system_type=parent.CoordinateSystem.coordinate_type)
+    mesh.regions = parent.regions
+    if migration is not None:
+        migration.destroy()
+    return mesh
 
 
 def _orphans_module():
@@ -94,6 +136,8 @@ def test_prolongate_reaches_dofs_owned_outside_the_region(ranks, tmp_path):
                                 timeout=300)
     assert result.returncode == 0, log.read_text()[-4000:]
     errors = json.loads(out.read_text())
+    # the layout built above, and the case it exists for
+    assert errors["child_cells"][0] > 0 and not any(errors["child_cells"][1:]), errors
     assert errors["orphans"] > 0, errors
     assert errors["replace"] < 1e-12, errors
     assert errors["add"] < 1e-12, errors
