@@ -70,8 +70,10 @@ def test_wall_vertices_slip_and_only_corners_pin(dim, cell_size, scatter):
     walls = on_wall.sum(axis=1)
     owned = np.asarray(_owned_vertex_mask(mesh.dm), dtype=bool)
 
-    # the case under test: wall vertices this rank holds but does not own
-    if uw.mpi.size > 1:
+    # The case under test, wall vertices a rank holds but does not own, is
+    # asserted on the scattered layouts, which are the same on every platform
+    # (a seeded shell partition); the natural partition is the platform's.
+    if uw.mpi.size > 1 and scatter is not None:
         assert uw.mpi.comm.allreduce(int(((walls > 0) & ~owned).sum())) > 0
 
     is_pinned, project = mesh.boundary_slip(True, reference_coords=ref)
