@@ -93,10 +93,12 @@ def test_a_fault_placed_on_a_moved_base_solves_with_the_nested_transfer():
     assert info["converged"] and info["velocity_pc"] == "custom-FMG"
     # The counts guard the convergence of the solve and the slip its answer;
     # what the move does to the transfer is asserted on the weights below.
-    # Serial, moved or not: 19 pressure iterations at 3 velocity iterations an
-    # application, and a peak slip of 0.15947 on the moved base.
-    assert info["pres_its_last"][-1] <= 22 and info["vel_its_last"][-1] <= 5
-    assert abs(slip - 0.15947) < 5e-4
+    # Measured on the moved base: 19 pressure iterations in serial and at
+    # np 2, 20 at np 3, 4 and 5 (hyperion), at 3 velocity iterations an
+    # application everywhere, and a peak slip of 0.159472 at every rank count.
+    # The pressure bound leaves four iterations for another host's PETSc build.
+    assert info["pres_its_last"][-1] <= 24 and info["vel_its_last"][-1] <= 4
+    assert abs(slip - 0.159472) < 5e-5
     # the pair the partition moved apart: the base's finest level, moved, over
     # the level it was refined from. Its transfer is built from the record, and
     # it is the transfer of the refinement, whatever the move did to the nodes.
