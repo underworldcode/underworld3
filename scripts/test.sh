@@ -563,6 +563,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
+    # Three ranks exercise a process owning no prescribed-wall groups. The np 3
+    # pass below is opt-in (--full-parallel), so this one file runs at np 3 always.
+    # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1084_rotated_datum_collectives.py || status=1
+
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some
     # ranks and not others, and with two ranks the mismatched pair often still
