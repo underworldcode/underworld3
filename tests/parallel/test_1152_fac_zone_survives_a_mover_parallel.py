@@ -12,10 +12,9 @@ The accuracy check: after each of several MMPDE moves, the solve with the kept p
 matches a solve with the hierarchy registered again and the zone recomputed from the
 moved field, in velocity, pressure and fault slip, to the solver tolerance (solved at
 1e-8, so that convergence noise sits well inside the bounds), and takes no more than
-one velocity iteration more. Hyperion measured 2-3 velocity iterations at
-every move with the patch kept, the same as a fresh registration, and 14-28 with it
-killed, at np 1, 2 and 4. A kept patch that is stale (its rows away from the band)
-fails the iteration bound.
+one velocity iteration more. The counts measured, with the patch kept, registered
+fresh and absent, are beside the bound in the test. A kept patch that is stale (its
+rows away from the band) fails the iteration bound on the zone.
 
 The fixture is test_1139's: a transverse-isotropic weak band beside a placed fault,
 the band's cells as the zone.
@@ -28,6 +27,7 @@ import warnings
 import numpy as np
 import pytest
 import sympy
+from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.systems.solve_report import ksp_reason_string
@@ -104,6 +104,85 @@ def _told(s, split):
             "first_residual": report.fnorm0, "last_residual": report.fnorm}
 
 
+_PC_FAILED = {int(getattr(PETSc.PC.FailedReason, name)): name
+              for name in dir(PETSc.PC.FailedReason) if name.isupper()}
+
+
+def _pc_failed(pc):
+    return _PC_FAILED.get(int(pc.getFailedReason()), str(pc.getFailedReason()))
+
+
+def _ksp_lines(ksp, name, lines):
+    """One line for ``ksp`` and for each solver under it: how it ended, its iteration
+    count, why its preconditioner failed, and the norm of its operator (NaN where the
+    assembly left one). They tell a failed factorisation (``DIVERGED_PC_FAILED`` with
+    a zero pivot on one block and ``SUBPC_ERROR`` above it) from a NaN in the operator
+    (a NaN norm, ``DIVERGED_NANORINF``) from a sub-solve that diverged by itself (its
+    own reason, no failed preconditioner)."""
+    pc, A = ksp.getPC(), ksp.getOperators()[0]
+    lines.append((name, f"{ksp.getType()}/{pc.getType()} "
+                        f"reason={ksp_reason_string(ksp.getConvergedReason())} "
+                        f"its={ksp.getIterationNumber()} pc_failed={_pc_failed(pc)} "
+                        f"operator_norm={A.norm() if 'aij' in A.getType() else None}"))
+    _pc_lines(pc, name, lines)
+
+
+def _pc_lines(pc, name, lines):
+    kind = pc.getType()
+    try:
+        if kind == "fieldsplit":
+            for i, sub in enumerate(pc.getFieldSplitSubKSP()):
+                _ksp_lines(sub, f"{name}.split{i}", lines)
+        elif kind == "mg":
+            for level in range(pc.getMGLevels()):
+                _ksp_lines(pc.getMGSmoother(level), f"{name}.level{level}", lines)
+        elif kind == "composite":
+            # the FAC smoother: the level's SOR, then the ASM over the patch blocks
+            for i in (0, 1):
+                member = pc.getCompositePC(i)
+                lines.append((f"{name}.pc{i}",
+                              f"{member.getType()} pc_failed={_pc_failed(member)}"))
+                _pc_lines(member, f"{name}.pc{i}", lines)
+        elif kind == "asm":
+            # this rank's blocks; the ranks' lines are set side by side when printed
+            blocks = pc.getASMSubKSP()
+            lines.append((f"{name}.blocks", f"{len(blocks)} "
+                          f"reasons={sorted({ksp_reason_string(b.getConvergedReason()) for b in blocks})} "
+                          f"pc_failed={sorted({_pc_failed(b.getPC()) for b in blocks})}"))
+    except PETSc.Error as err:
+        # a preconditioner that never set up has no members to ask
+        lines.append((f"{name}.{kind}", f"not set up (PETSc error {err.ierr})"))
+
+
+def _print_record(tag, k, errors, told, solvers, split):
+    """The whole record of a failed move, one key a line, past pytest's capture: an
+    assertion message is cut at a few hundred characters, and the linear solvers'
+    reasons were the part cut from the first red run that carried one."""
+    def flat(value):
+        if isinstance(value, dict):
+            return ", ".join(f"{key}={item}" for key, item in value.items())
+        return str(value)
+
+    lines = [("errors", flat({key: float(value) for key, value in errors.items()}))]
+    lines += [(key, flat(value)) for key, value in told.items()]
+    for which, s in solvers.items():
+        if split:
+            cache = getattr(s, "_rotated_linear_cache", None)
+            ksp = cache["ctx"]["ksp"] if cache else None
+        else:
+            ksp = s.snes.getKSP()
+        if ksp is None:
+            lines.append((f"{which}.ksp", "no linear solver kept"))
+        else:
+            _ksp_lines(ksp, f"{which}.ksp", lines)
+    gathered = uw.mpi.comm.allgather(lines)
+    uw.pprint(f"test_1152[{tag}] move {k}: the record of a failed move", flush=True)
+    for i, (key, text) in enumerate(gathered[0]):
+        others = sorted({g[i][1] for g in gathered if i < len(g)} - {text})
+        uw.pprint(f"  {key}: {text}" + (f" | on other ranks: {others}" if others else ""),
+                  flush=True)
+
+
 def _norm(a):
     return np.sqrt(uw.mpi.comm.allreduce(float(np.sum(np.asarray(a) ** 2))))
 
@@ -159,11 +238,20 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
         with capsys.disabled():
             uw.pprint(f"test_1152[{'split' if split else 'zone'}] move {k}/{MOVES}",
                       flush=True)
-        # measured at np 1: 6 and 6 on the zone, 13 and 13 on the split level; a
-        # killed or stale zone patch took 12 and 15
         its_k = _velocity_iterations(kept, split)
         its_f = _velocity_iterations(fresh, split)
         told["velocity_its"] = (its_k, its_f)
+        if not (its_k <= its_f + 1 and errors["velocity"] < 100 * TOLERANCE
+                and all(errors[key] < 1000 * TOLERANCE for key in errors)):
+            with capsys.disabled():
+                _print_record("split" if split else "zone", k, errors, told,
+                              {"kept": kept, "fresh": fresh}, split)
+        # measured at np 1 on development f8c60140, kept and fresh at each move: 8 and
+        # 7, 8 and 7, 7 and 6 on the zone; 17 and 16, 17 and 17, 17 and 17 on the split
+        # level. Hyperion at np 2 and 4: 8 or 9 against 7 or 8 on the zone, 19 to 20 on
+        # the split level. With no patch registered, np 1: 13, 11, 10 on the zone and
+        # 19, 18, 17 on the split level, so the bound tells a lost patch on the zone at
+        # every move and on the split level at the first move only.
         assert its_k <= its_f + 1, (k, its_k, its_f, told)
         # to the solver tolerance: at 1e-8 kept and fresh agree to ~4e-9 (hyperion,
         # np 1, 2 and 4); a patch only preconditions, and the outer solve converges
