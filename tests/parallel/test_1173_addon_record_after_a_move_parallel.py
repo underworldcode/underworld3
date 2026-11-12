@@ -185,6 +185,9 @@ def test_a_second_fault_on_a_moved_adapt_child_reads_the_split_level_where_it_wa
     assert held is not None
     assert any(held[0] is level for level in first._custom_mg_coarse_meshes)
     second = first.add_fault([("F2", np.array([[0.30, 0.64], [0.70, 0.60]]))])
+    held = second._addon_reference
+    assert held is not None
+    assert any(held[0] is level for level in second._custom_mg_coarse_meshes)
     # every level that records its parents: each cell lies inside the parent
     # recorded for it, in the geometry the level was made in
     recorded = [level for level in [*second._custom_mg_coarse_meshes, second]
@@ -192,8 +195,13 @@ def test_a_second_fault_on_a_moved_adapt_child_reads_the_split_level_where_it_wa
     assert recorded
     astray = 0
     for level in recorded:
+        # The parents are addressed on the level as the partition left it
+        # (_addon_below). The reference of the finest names the split copy
+        # that took that level's place, and holds the same geometry.
         below = level._addon_below
-        reference = reference_vertices(level, below)
+        held = level._addon_reference
+        reference = (reference_vertices(level, below) if held is None
+                     else held[1])
         vxy, cv = _cell_vertex_table(level)
         made_at = (vxy if reference is None else reference)[cv].mean(axis=1)
         assert parents_contain_centroids(below, level, centroids=made_at) == 0
