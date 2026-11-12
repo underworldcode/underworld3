@@ -13,7 +13,8 @@ import underworld3 as uw
 from .graph import (_tri_cells, _tet_cells, _signed_areas, _signed_volumes,
                     _owned_cell_mask,
                     _owned_vertex_mask, _min_incident_edge_nd,
-                    _global_sum, _global_min, _global_max)
+                    _global_sum, _global_min, _global_max,
+                    _reduce_over_sharing_ranks)
 
 
 def _spd_sanitise(M):
@@ -649,18 +650,13 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             v = v + _beta_cg * _prev_dir
             _prev_dir = v.copy()
 
-        # Per-node step cap from the min incident edge over rank-local
-        # cells. NOTE (parallel): a partition-boundary owned vertex may not
-        # see every incident edge from rank-local cells, so its cap differs
-        # slightly from serial → an ~0.006%-level serial/parallel drift in
-        # the final mesh. The velocity ASSEMBLY itself is bit-identical
-        # serial vs parallel (localToGlobal(ADD_VALUES) is exact); only this
-        # cap is rank-dependent. The drift is below the move's own
-        # non-determinism, so we accept it rather than force a ghost-complete
-        # MIN reduction (PETSc localToGlobal has no portable MIN/MAX mode
-        # here — MAX_VALUES errors on this DM). Left as a known small
-        # non-reproducibility; revisit only if a bit-exact mesh is required.
-        h = _min_incident_edge_nd(cells_all, coords)
+        # Per-node step cap from the shortest incident edge. A vertex on a
+        # partition seam sees only its own rank's cells,
+        # so its shortest edge is taken over every rank that holds it (#1086):
+        # without that its cap, and so its first step, came out longer than in
+        # serial, and the mesh drifted from serial by up to 1e-2.
+        h = _reduce_over_sharing_ranks(
+            dm, _min_incident_edge_nd(cells_all, coords), MPI.MIN)
         mag = np.linalg.norm(v, axis=1)
         cap = step_frac * h
         sc = np.ones_like(mag)

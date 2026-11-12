@@ -4237,11 +4237,26 @@ class Mesh(Stateful, uw_object):
                       else _auto_pinned_labels(self))
         # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
         # down to its vertices, so face-only 3D labels classify correctly.
-        is_bnd = _pinned_mask(dm, all_labels)
+        # Which boundaries a vertex lies on is read from the labelled facets in
+        # its closure. A vertex on a partition seam sees only its own rank's
+        # facets: a box corner whose two edges are on different ranks counted
+        # one label on each, was classed as a slip vertex, and slid off the
+        # domain (#1086). Every mask is combined over the ranks holding the
+        # vertex, so each rank classifies it as serial does.
+        from mpi4py import MPI
+        from underworld3.meshing.smoothing.graph import _reduce_over_sharing_ranks
+
+        def shared_mask(local):
+            return _reduce_over_sharing_ranks(dm, local, MPI.BOR)
+
+        is_bnd = shared_mask(_pinned_mask(dm, all_labels))
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
-        # Per-label vertex masks (closure of each label's tagged facets).
-        masks = {lab: _pinned_mask(dm, (lab,)) for lab in slip_labels}
+        # Per-label vertex masks (closure of each label's tagged facets). The
+        # rank's own masks pick its reference facets below; the shared ones
+        # classify the vertices.
+        local_masks = {lab: _pinned_mask(dm, (lab,)) for lab in slip_labels}
+        masks = {lab: shared_mask(m) for lab, m in local_masks.items()}
 
         # Resolve a BoundingSurface for every slip label. Constructor-registered
         # labels (radial / plane) restore analytically; a slip label with NO
@@ -4272,7 +4287,7 @@ class Mesh(Stateful, uw_object):
             facets, _opp = _boundary_facets(self, cdim)
             for lab in unreg:
                 if facets is not None and facets.size:
-                    local = ref[facets[masks[lab][facets].all(axis=1)]]
+                    local = ref[facets[local_masks[lab][facets].all(axis=1)]]
                 else:
                     local = numpy.zeros((0, cdim, cdim))
                 if uw.mpi.comm.allreduce(len(local) > 0, op=MPI.LOR):
