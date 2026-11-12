@@ -76,6 +76,27 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
         raise ValueError(self._GUIDANCE)
 
 
+def _outside_every_domain(mesh, coords):
+    """True where a point is outside every rank's inflated domain box
+    (``Mesh._get_domain_boxes``), so in no rank's domain. Tested against the
+    union box first, so only points inside it pay the per-rank test."""
+    lo, hi = mesh._get_domain_boxes()
+    coords = np.asarray(coords, dtype=float).reshape(-1, mesh.cdim)
+    live = np.isfinite(lo).all(axis=1)
+    lo, hi = lo[live], hi[live]
+    outside = np.ones(len(coords), dtype=bool)
+    if not len(coords) or not len(lo):
+        return outside
+    near = np.flatnonzero(((coords >= lo.min(axis=0)) & (coords <= hi.max(axis=0))).all(axis=1))
+    for box_lo, box_hi in zip(lo, hi):
+        if not near.size:
+            break
+        inside = ((coords[near] >= box_lo) & (coords[near] <= box_hi)).all(axis=1)
+        outside[near[inside]] = False
+        near = near[~inside]
+    return outside
+
+
 def _coordinate_row_keys(coords):
     """One opaque key per coordinate row, for exact set membership.
 
@@ -4391,6 +4412,15 @@ class Swarm(Stateful, uw_object):
         # Migrate particles between processes (if there are more than one of them)
 
         if uw.mpi.size > 1:
+            # Points outside every domain's inflated box can be claimed by no
+            # rank. The first round sends them to their nearest domain (the
+            # domain kd-tree's nearest centroid, where they always went), and
+            # they stay there: only the points that may still be inside some
+            # domain are offered further. Without this, a migrate whose only
+            # unclaimed points are exterior (departure points, advection exits,
+            # clip_to_mesh=False swarms) ran every round and parked them on the
+            # farthest domain (#1093 review).
+            seeking = not_my_points
             for it in range(0, min(max_its, uw.mpi.size)):
 
                 # Send unclaimed points to next processor in line
@@ -4398,12 +4428,12 @@ class Swarm(Stateful, uw_object):
                 swarm_rank_array = self.dm.getField("DMSwarm_rank")
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
 
-                if not_my_points.shape[0] > 0:
+                if seeking.shape[0] > 0:
                     dist, rank = mesh_domain_kdtree.query(
-                        swarm_coord_array[not_my_points], k=it + 1, sqr_dists=False
+                        swarm_coord_array[seeking], k=it + 1, sqr_dists=False
                     )
 
-                    swarm_rank_array.reshape(-1)[not_my_points] = rank.reshape(
+                    swarm_rank_array.reshape(-1)[seeking] = rank.reshape(
                         -1, it + 1
                     )[:, it].flatten()
 
@@ -4452,27 +4482,14 @@ class Swarm(Stateful, uw_object):
                         [claimed_keys, keys_now[newly_claimed]]
                     )
 
-                self.dm.restoreField("DMSwarmPIC_coor")
-
-                num_points_in_domain = np.count_nonzero(in_or_not == True)
-                num_points_not_in_domain = np.count_nonzero(in_or_not == False)
                 not_my_points = np.where(in_or_not == False)[0]
+                exterior = _outside_every_domain(self.mesh, swarm_coord_array[not_my_points])
+                self.dm.restoreField("DMSwarmPIC_coor")
+                seeking = not_my_points[~exterior]
 
                 uw.mpi.barrier()
 
-                global_unclaimed_points = int(
-                    uw.utilities.gather_data(
-                        num_points_not_in_domain,
-                        bcast=True,
-                        dtype=int,
-                    ).sum()
-                )
-
-                global_claimed_points = int(
-                    uw.utilities.gather_data(num_points_in_domain, bcast=True, dtype=int).sum()
-                )
-
-                if global_unclaimed_points == 0:
+                if uw.mpi.comm.allreduce(int(seeking.size)) == 0:
                     break
 
                 # No "no progress" exit here. Round `it` offers each unclaimed
@@ -4481,8 +4498,9 @@ class Swarm(Stateful, uw_object):
                 # point inside the mesh near a partition seam whose own rank's
                 # centroid is nearest, but whose cell is on the next rank. An
                 # exit then left it on a rank that does not contain it, where
-                # it was lost or extrapolated (#1093). The round cap bounds
-                # the cost for points outside every domain.
+                # it was lost or extrapolated (#1093). Points outside every
+                # domain's box stopped seeking above; the round cap bounds the
+                # rest (outside the mesh but inside some box).
 
         # Missing points for deletion if required
         if delete_lost_points:

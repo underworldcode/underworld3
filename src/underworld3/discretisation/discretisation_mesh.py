@@ -7891,6 +7891,27 @@ class Mesh(Stateful, uw_object):
             self._domain_kdtree_version = self._mesh_version
         return self._domain_kdtree
 
+    @uw.collective_operation
+    def _get_domain_boxes(self):
+        """Every rank's vertex bounding box, inflated by the largest cell
+        radius: ``(lo, hi)``, each ``(size, cdim)``, the same on every rank. A
+        point outside all of them is in no rank's domain. A rank with no cells
+        has an empty box (``lo = +inf``). Cached like the domain kd-tree.
+        Collective on a rebuild."""
+        import underworld3 as uw
+
+        if getattr(self, "_domain_boxes_version", -1) != self._mesh_version:
+            coords = numpy.asarray(self.dm.getCoordinatesLocal().array).reshape(-1, self.cdim)
+            if coords.size:
+                lo, hi = coords.min(axis=0), coords.max(axis=0)
+            else:
+                lo, hi = numpy.full(self.cdim, numpy.inf), numpy.full(self.cdim, -numpy.inf)
+            pad = self.get_max_radius()
+            boxes = uw.mpi.comm.allgather((lo - pad, hi + pad))
+            self._domain_boxes = (numpy.array([b[0] for b in boxes]), numpy.array([b[1] for b in boxes]))
+            self._domain_boxes_version = self._mesh_version
+        return self._domain_boxes
+
     def get_min_radius_old(self) -> float:
         """
         This method returns the global minimum distance from any cell centroid to a face.

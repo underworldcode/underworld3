@@ -29,6 +29,12 @@ each midpoint between neighbouring domain centroids then misses its cut, and
 the strip between them holds points of one rank whose nearest centroid is the
 other's, on any platform. The #1093 point itself is asked on the platform's
 own partition, where it was found.
+
+A loop that gave up after two rounds would pass those: a stray's domain is its
+second-nearest. So the cells are also dealt to the ranks at random (a seeded
+shell partition), where a point's domain is often the third-nearest by
+centroid or further, and points like that are asked, many at once and one on
+its own (from np 3).
 """
 
 import numpy as np
@@ -40,6 +46,31 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.mpi(min_size=2), pytest.mark.timeout(120)]
 
 R_OUTER, R_INNER = 1 / 0.45, 0.55 / 0.45
+
+
+def _scatter(dmod):
+    """Install a shell partition dealing the loaded DM's cells to the ranks
+    at random (seeded, so the same on every platform)."""
+    from petsc4py import PETSc
+
+    original = dmod._from_plexh5
+
+    def load(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not isinstance(result, tuple):
+            return result
+        sf0, dm = result
+        cs, ce = dm.getHeightStratum(0)
+        owner = np.random.default_rng(1093).integers(0, uw.mpi.size, ce - cs)
+        partitioner = dm.getPartitioner()
+        partitioner.setType(PETSc.Partitioner.Type.SHELL)
+        partitioner.setShellPartition(
+            uw.mpi.size, sizes=np.bincount(owner, minlength=uw.mpi.size).astype(np.int32),
+            points=np.argsort(owner, kind="stable").astype(np.int32))
+        return sf0, dm
+
+    dmod._from_plexh5 = load
+    return original
 
 
 def _slabs(dmod):
@@ -70,17 +101,19 @@ def _slabs(dmod):
     return original
 
 
-def _annulus(slabs):
-    """The cavity annulus of #1086 (refinement 2), with f = 2x + 3y on P1."""
+def _annulus(layout):
+    """The cavity annulus of #1086 (refinement 2), with f = 2x + 3y on P1, on
+    the platform's partition (None), in slabs, or scattered."""
     dmod = uw.discretisation.discretisation_mesh
-    original = _slabs(dmod) if slabs else None
+    install = {"slabs": _slabs, "scatter": _scatter}.get(layout)
+    original = install(dmod) if install is not None and uw.mpi.size > 1 else None
     try:
         mesh = uw.meshing.Annulus(radiusOuter=R_OUTER, radiusInner=R_INNER, cellSize=0.5,
                                   refinement=2, qdegree=3)
     finally:
         if original is not None:
             dmod._from_plexh5 = original
-    f = uw.discretisation.MeshVariable(f"f1093{'s' if slabs else ''}", mesh, 1, degree=1)
+    f = uw.discretisation.MeshVariable(f"f1093{layout or ''}", mesh, 1, degree=1)
     X = np.asarray(f.coords)
     f.array[:, 0, 0] = 2 * X[:, 0] + 3 * X[:, 1]
     return mesh, f
@@ -88,12 +121,44 @@ def _annulus(slabs):
 
 @pytest.fixture(scope="module")
 def annulus():
-    return _annulus(slabs=False)
+    return _annulus(None)
 
 
 @pytest.fixture(scope="module")
 def slab_annulus():
-    return _annulus(slabs=True)
+    return _annulus("slabs")
+
+
+@pytest.fixture(scope="module")
+def scattered_annulus():
+    return _annulus("scatter")
+
+
+def _deep(mesh, seed, n=2000):
+    """Points well inside the annulus whose domain is the third-nearest by
+    centroid or further (a loop of two rounds misses them). Collective."""
+    rng = np.random.default_rng(seed)
+    r = rng.uniform(R_INNER + 0.02, R_OUTER - 0.02, n)
+    theta = rng.uniform(0, 2 * np.pi, n)
+    points = np.column_stack([r * np.cos(theta), r * np.sin(theta)])
+    # whose domain holds each point, from every rank's answer for every point
+    every = np.concatenate(uw.mpi.comm.allgather(points))
+    mine = np.asarray(mesh.points_in_domain(every), dtype=bool)
+    held = np.array(uw.mpi.comm.allgather(mine))               # (ranks, points)
+    owner = np.where(held.any(axis=0), held.argmax(axis=0), -1)
+    _, order = mesh._get_domain_kdtree().query(every, k=uw.mpi.size, sqr_dists=False)
+    order = np.asarray(order).reshape(len(every), -1)
+    depth = np.array([int(np.flatnonzero(order[i] == owner[i])[0]) if owner[i] >= 0 else -1
+                      for i in range(len(every))])
+    start = sum(uw.mpi.comm.allgather(n)[:uw.mpi.rank])
+    deep = depth[start:start + n] >= 2
+    assert uw.mpi.comm.allreduce(int(deep.sum())) > 0
+    return points[deep]
+
+
+def _needs_three_domains():
+    if uw.mpi.size < 3:
+        pytest.skip("a third-nearest domain needs three ranks")
 
 
 def _strays(mesh, seed, n=4000):
@@ -150,3 +215,38 @@ def test_a_swarm_keeps_every_interior_stray(slab_annulus):
     assert uw.mpi.comm.allreduce(len(held)) == total
     inside = mesh.points_in_domain(held)          # collective: every rank, even with none
     assert uw.mpi.comm.allreduce(int((~np.asarray(inside, dtype=bool)).sum())) == 0
+
+
+@pytest.mark.tier_b
+def test_points_in_a_third_nearest_domain_read_exactly(scattered_annulus):
+    _needs_three_domains()
+    mesh, f = scattered_annulus
+    err, outside = _max_error(f, _deep(mesh, 3093 + uw.mpi.rank))
+    assert outside == 0 and err < 1e-12, (err, outside)
+
+
+@pytest.mark.tier_b
+def test_a_swarm_keeps_points_in_a_third_nearest_domain(scattered_annulus):
+    _needs_three_domains()
+    mesh, _ = scattered_annulus
+    points = _deep(mesh, 4093 + uw.mpi.rank)
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_global_coordinates(points, migrate=False)
+    total = uw.mpi.comm.allreduce(len(points))
+    swarm.migrate(remove_sent_points=True, delete_lost_points=True)
+    held = np.asarray(swarm.dm.getField("DMSwarmPIC_coor")).reshape(-1, 2).copy()
+    swarm.dm.restoreField("DMSwarmPIC_coor")
+    assert uw.mpi.comm.allreduce(len(held)) == total
+    inside = mesh.points_in_domain(held)          # collective: every rank, even with none
+    assert uw.mpi.comm.allreduce(int((~np.asarray(inside, dtype=bool)).sum())) == 0
+
+
+@pytest.mark.tier_b
+def test_a_single_point_in_a_third_nearest_domain(scattered_annulus):
+    # one point, asked by one rank: no other point keeps the loop going
+    _needs_three_domains()
+    mesh, f = scattered_annulus
+    deep = np.concatenate(uw.mpi.comm.allgather(_deep(mesh, 5093 + uw.mpi.rank)))
+    asked = deep[:1] if uw.mpi.rank == uw.mpi.size - 1 else np.zeros((0, 2))
+    err, outside = _max_error(f, asked)
+    assert outside == 0 and err < 1e-12, (err, outside)
