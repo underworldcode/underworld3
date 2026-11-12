@@ -390,6 +390,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # So is the boundary-slip classification of seam vertices (#1086).
   batch 3 tests/parallel/test_1086_boundary_slip_classification_parallel.py
+  # So is the merge of coarse unknowns sharing one fine image (#1101).
+  batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
@@ -430,11 +432,16 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
   batch 4 tests/test_1153*py  # timestep estimates read model units; setters keep or refuse (#891, #1031)
   batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
+  batch 4 tests/test_1154*py  # a dropped solver is freed: the mesh's register holds solvers weakly (#1041)
+  batch 4 tests/test_1157*py  # a warm rotated re-solve stops its sub-solves at round-off (#910)
   batch 4 tests/test_1172*py  # a solve after a move of a refined mesh uses the moved geometry (#1037)
+  batch 4 tests/test_1173*py  # the add-on record of a moved mesh is the one it was built with (#1091)
   batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)
   batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
   batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)
   batch 4 tests/test_1161*py  # a diverged solve warns (#1059)
+  batch 4 tests/test_1162*py  # a natural BC that reads the unknown enters the Jacobian once (#1065)
+  batch 4 tests/test_1163*py  # options and a tolerance set after a solve take effect (#1078)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
@@ -556,6 +563,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
       $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
+
+    # Three ranks exercise a process owning no prescribed-wall groups. The np 3
+    # pass below is opt-in (--full-parallel), so this one file runs at np 3 always.
+    # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some

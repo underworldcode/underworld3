@@ -43,6 +43,7 @@ or, for a mesh that carries the geometry itself,
 """
 
 import warnings
+import weakref
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -477,7 +478,7 @@ class MaterialDistribution:
             MaterialDistribution._default_name_count += 1
             name = "material" if n == 0 else f"material_{n}"
         self._distribution_name = name
-        self._solvers = []
+        self._solvers = []               # weak references: a dropped solver goes (#1041)
         self._mixing_rules = {}
         self._read_properties = set()
         self._reported = set()           # check() speaks once per finding
@@ -667,18 +668,29 @@ class MaterialDistribution:
 
     # -- the handoff to a solver ------------------------------------------
 
+    def _live_solvers(self):
+        """The solvers these materials are pushed to that are still alive.
+
+        Held weakly: a distribution outlives the solvers that use it, and a
+        strong list kept every dropped solver, with its SNES, alive (#1041).
+        """
+        live = [ref() for ref in self._solvers]
+        self._solvers = [ref for ref, solver in zip(self._solvers, live)
+                         if solver is not None]
+        return [solver for solver in live if solver is not None]
+
     def _attach(self, solver):
         """Called by ``solver.materials = ...``."""
-        if not any(s is solver for s in self._solvers):
-            self._solvers.append(solver)
+        if not any(s is solver for s in self._live_solvers()):
+            self._solvers.append(weakref.ref(solver))
         self._push_to(solver)
 
     def _detach(self, solver):
         """Stop pushing to a solver that no longer wants these materials."""
-        self._solvers = [s for s in self._solvers if s is not solver]
+        self._solvers = [ref for ref in self._solvers if ref() is not solver]
 
     def _push_all(self):
-        for solver in self._solvers:
+        for solver in self._live_solvers():
             self._push_to(solver)
 
     def _push_to(self, solver):
@@ -695,7 +707,7 @@ class MaterialDistribution:
 
     def _recognised(self):
         names = set()
-        for solver in self._solvers:
+        for solver in self._live_solvers():
             constitutive_model = getattr(solver, "_constitutive_model", None)
             if constitutive_model is None:
                 continue
