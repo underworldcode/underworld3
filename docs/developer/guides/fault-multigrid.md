@@ -236,6 +236,9 @@ parts, in this order of size:
    faulted mesh are the base's own level objects on the base's partition, and
    the one pair that crosses partitions, the base's finest level against the
    faulted mesh, is transferred through the provenance the move records.
+   A base a mover has moved since it was built is partitioned on the positions
+   it was built with, so the placement does not refuse on it, and the transfer
+   of a pair the partition separates is the one of the refinement (#1091).
 2. **The band, its split pairs and the FAC patch are on one rank by
    construction.** That is what the default placement, `seams="gather"`, does:
    `partition_addon` gives the band's region to one rank and moves cells far

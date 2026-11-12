@@ -147,8 +147,21 @@ class BoundingSurface:
         ``_gamma_p1_at_vertices`` did in git history) and re-solve only for
         free surfaces. See docs/developer/design/boundary-slip-strategy.md.
         """
+        coords = np.ascontiguousarray(coords, dtype=float)
+        # A rigid surface knows its own normal. Up to sign, which a tangent slide
+        # does not see, and at the true surface rather than the faceted one. The
+        # projection below costs an evaluate per label per mover iteration.
+        if self.kind == "plane" and not self.is_free:
+            return (np.broadcast_to(self.normal, coords.shape).copy(),
+                    np.ones(coords.shape[0], dtype=bool))
+        if self.kind == "radial" and not self.is_free:
+            away = coords - self.centre
+            length = np.linalg.norm(away, axis=1)
+            valid = length > 0.0
+            away[valid] /= length[valid, None]
+            return away, valid
         from underworld3.meshing.smoothing import _slip_normals
-        return _slip_normals(self._mesh, np.ascontiguousarray(coords, dtype=float))
+        return _slip_normals(self._mesh, coords)
 
     # -- tangent slide -------------------------------------------------------
     def tangent_project(self, coords, reference):

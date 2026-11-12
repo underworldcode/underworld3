@@ -1765,8 +1765,9 @@ class SolverBaseClass(uw_object):
         * ``False``: every iteration already is a Picard step.
 
         ``staged_loop``: the solver's own loop stages Picard then Newton itself
-        (rotated free-slip); an explicit ``picard > 0`` under ``True`` then only
-        compiles the blended Jacobian for it to stage with.
+        (rotated free-slip, fault contact: ``rotated_bc.solve_rotated_freeslip``); an
+        explicit ``picard > 0`` under ``True`` then only compiles the blended Jacobian
+        for it to stage with.
         """
         picard = int(picard or 0)
         self._picard_stages = None
@@ -2631,12 +2632,21 @@ class SolverBaseClass(uw_object):
                 ghost = set(int(q) for q in graph[1])
         except Exception:
             ghost = set()
+        # A boundary can have no point on this rank. getStratumIS then hard-aborts
+        # for a value missing from the rank's own value set, and otherwise returns
+        # an IS wrapping a NULL handle (not None) whose first use segfaults; that
+        # took every datum sensitivity down at np >= 2. Ask the rank's values
+        # first, and test the IS itself.
+        values_is = label.getValueIS()
+        local_values = set(int(v) for v in values_is.getIndices()) if values_is else set()
         owner = {}
         for index, bc in enumerate(self.essential_bcs):
             if int(bc.f_id) != 0:
                 continue
+            if int(bc.boundary_label_val) not in local_values:
+                continue
             stratum = label.getStratumIS(int(bc.boundary_label_val))
-            if stratum is None:
+            if not stratum:
                 continue
             points = set()
             for q in stratum.getIndices():
@@ -2661,7 +2671,7 @@ class SolverBaseClass(uw_object):
         Zero, at no cost, when no datum reads ``wrt``."""
         import numpy as np
         import sympy
-        from underworld3.adjoint import _shared_scratch
+        from underworld3.adjoint import _shared_scratch, _value_at
         derivatives = {}
         for index, bc in enumerate(self.essential_bcs):
             d = diff_wrt_field(self._peel_except(sympy.Matrix(bc.fn), wrt), wrt)
@@ -2682,17 +2692,26 @@ class SolverBaseClass(uw_object):
             if misfit_dual is not None:
                 rows = rows + np.asarray(misfit_dual, dtype=float).reshape(-1, n)
             X = np.asarray(self.u.coords_nd)
-            total = 0.0
+            nodes = {}
             for (node, comp), index in self._essential_datum_owner().items():
-                d = derivatives.get(index)
-                if d is None or d[comp] == 0:
-                    continue
-                expr = sympy.sympify(d[comp])
-                if expr.is_Number:
-                    value = float(expr)
-                else:
-                    value = float(np.asarray(uw.function.evaluate(expr, X[node:node + 1])).ravel()[0])
-                total += float(rows[node, comp]) * value
+                nodes.setdefault((index, comp), []).append(node)
+            total = 0.0
+            # One evaluation per condition and component, on every rank and in the
+            # same order, whether or not this rank owns any of its nodes: a datum
+            # that reads a mesh variable is evaluated collectively, and one call
+            # per owned node hung once ranks owned different numbers of them.
+            for index in sorted(derivatives):
+                d = derivatives[index]
+                for comp in range(len(d)):
+                    if d[comp] == 0:
+                        continue
+                    here = np.array(nodes.get((index, comp), []), dtype=int)
+                    expr = sympy.sympify(d[comp])
+                    if expr.is_Number:
+                        values = np.full(len(here), float(expr))
+                    else:
+                        values = _value_at(expr, X[here].reshape(-1, X.shape[1])).ravel()
+                    total += float(np.dot(rows[here, comp], values)) if len(here) else 0.0
         finally:
             _shared_scratch.give(reaction)
         return float(uw.mpi.comm.allreduce(total, op=uw.MPI.SUM))
@@ -2885,31 +2904,11 @@ class SolverBaseClass(uw_object):
             return False
 
     @staticmethod
-    def _peel_except(expression, wrt, depth=8):
-        """Expand every named expression in ``expression`` except ``wrt``.
-
-        A parameter reaches the residual through the constitutive model's own
-        named symbol — ``Parameters.diffusivity = kappa`` puts ``\\upkappa`` in
-        ``F1`` with ``kappa`` as its value — so differentiating the residual
-        as written with respect to ``kappa`` gives zero. ``fn_unwrap`` will not
-        do either: it substitutes every constant's VALUE, and the derivative
-        of a number is zero too. This substitutes each named expression by its
-        definition, one level at a time, and stops at ``wrt`` so the chain
-        rule has something to hold on to.
-        """
-        # A named expression whose value is a bare number is left as it is:
-        # the JIT passes it as a run-time constant, so the kernel compiled
-        # for the integrand survives a change of its value. Substituting the
-        # number recompiled every sensitivity at every evaluation of an
-        # inversion (four compiles per evaluation on the fault example).
-        for _ in range(depth):
-            named = [e for e in uw.function.fn_extract_expressions(expression)
-                     if e is not wrt and e != wrt
-                     and not getattr(getattr(e, "sym", None), "is_Number", False)]
-            if not named:
-                break
-            expression = expression.subs({e: e.sym for e in named})
-        return expression
+    def _peel_except(expression, wrt, depth=64):
+        """Expand every named expression in ``expression`` except ``wrt``:
+        :func:`underworld3.adjoint._peel_except`."""
+        from underworld3.adjoint import _peel_except
+        return _peel_except(expression, wrt, depth)
 
     def sensitivity(self, mu, wrt, lam=None, misfit_dual=None):
         r"""``d J / d m`` for a scalar parameter ``wrt``, given the adjoint state.
@@ -2925,7 +2924,8 @@ class SolverBaseClass(uw_object):
         dual on every node, ``misfit_dual``, where the misfit reads the
         prescribed values.
         """
-        total = float(uw.maths.Integral(self.mesh, self.adjoint_integrand(mu, wrt)).evaluate())
+        from underworld3.adjoint import integral
+        total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
         # A parameter that enters through a natural condition — a prescribed
         # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
@@ -2941,7 +2941,7 @@ class SolverBaseClass(uw_object):
             values = list(d)
             comps = getattr(mu, "num_components", 1)
             integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += float(uw.maths.BdIntegral(self.mesh, integrand, bc.boundary).evaluate())
+            total += integral(self.mesh, integrand, bc.boundary)
         return total
 
     def _constraint_mechanisms(self):
@@ -3497,6 +3497,16 @@ class SolverBaseClass(uw_object):
             except (AttributeError, TypeError):
                 # Sanctioned: no alpha container (never built); the start value stands
                 pass
+        # A continuation solve resets alpha to 0 after it ends (a clean Picard
+        # tangent for the next step), so the live alpha read above is not where
+        # this solve finished. Its own record is, and the iterations by tangent
+        # are the breakdown the report otherwise loses: whether the frozen stage
+        # found the basin or ran out (#778). Reset per solve in
+        # _plan_picard_warmup, so a previous solve's stages are never reported.
+        stages = getattr(self, "_continuation_stages", None)
+        if stages and "tangent" in config:
+            config["tangent"]["alpha_end"] = float(stages["final_alpha"])
+            config["tangent"]["stages"] = dict(stages)
         _kcfg = config.get("ksp")
         # Only once a linear solve has run: before that the PC is not set up, and
         # PCFieldSplitGetSubKSP errors — printing to stderr even when caught (measured on
@@ -3954,6 +3964,83 @@ class SolverBaseClass(uw_object):
         -13: ("DIVERGED_OBJECTIVE_DOMAIN", "Objective function domain error"),
         -14: ("DIVERGED_OBJECTIVE_NANORINF", "Objective is Not-a-Number or infinite"),
     }
+
+    def _warn_on_capped_sub_solves(self):
+        """Warn when a fieldsplit sub-solve of this solve stopped at its iteration cap
+        (#585, #625).
+
+        PETSc does not count a sub-KSP that stops at its cap (``DIVERGED_ITS``) as a
+        failure, so the outer solve can converge while the block never solved: the
+        Schur operator is applied through the velocity solve, and a capped velocity
+        block hands the pressure Krylov an operator that moves between applications.
+        The count is in ``solve_report.sub[name].capped``; this says so at solve time,
+        one warning per capped block. The message names the block and its cap only,
+        and is attributed to the user's ``solve()`` line, so Python's warning filter
+        shows it once per block and call site in a time loop; the counts stay in the
+        report. Not during a bounded difficulty probe, whose caps are the point. Rank 0
+        warns, after the solve has recorded its status on every rank; nothing
+        collective. The native path only: the rotated loop reports its sub-solves in
+        its own diagnostics (#625)."""
+        report = getattr(self, "_solve_report", None)
+        if report is None or self._difficulty_probe:
+            return
+        for name, sub in (getattr(report, "sub", None) or {}).items():
+            if not getattr(sub, "capped", 0):
+                continue
+            cap = None
+            try:
+                for _sk in self.snes.getKSP().getPC().getFieldSplitSubKSP():
+                    if (_sk.getOptionsPrefix() or "").endswith(f"fieldsplit_{name}_"):
+                        cap = _sk.getTolerances()[3]
+            except Exception:
+                pass
+            block = self._sub_solve_block_label(name)
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    _warn_from_caller(
+                        f"{type(self).__name__}: the {block} sub-solve stopped at its "
+                        f"iteration cap{f' ({cap})' if cap is not None else ''} without "
+                        f"converging, so the solve's convergence does not mean that block "
+                        f"solved. Counts in solve_report.sub[{name!r}].capped. A higher "
+                        f"fieldsplit_{name}_ksp_max_it helps only a block that converges "
+                        f"slowly; one that stagnates needs a better preconditioner "
+                        f"(#585, #625).", RuntimeWarning)
+
+    def _warn_on_diverged_solve(self):
+        """Warn when the solve diverged (#1059). The printed notice of
+        ``_warn_on_divergence`` is easy to miss in a run's output, and a script carries
+        on with whatever the fields hold, which after a failure at iteration 0 is the
+        initial guess (u = 0 for a cold start). The message names the solver and the
+        reason only, so the warning filter shows it once per reason and call site.
+        Not for the stop a bounded difficulty probe asks for (DIVERGED_MAX_IT). Rank 0
+        warns; nothing collective."""
+        reason = self.snes.getConvergedReason()
+        if reason >= 0 or (self._difficulty_probe and reason == -5):
+            return
+        _entry = self._convergence_reasons.get(reason)
+        reason_str = _entry[0] if _entry is not None else f"UNKNOWN({reason})"
+        held = ("the initial guess" if self.snes.getIterationNumber() == 0
+                else "the last iterate")
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                _warn_from_caller(
+                    f"{type(self).__name__}: the solve diverged ({reason_str}) and its "
+                    f"fields hold {held}. solver.solve_report records the solve "
+                    f"(#1059).", RuntimeWarning)
+
+    def _sub_solve_block_label(self, name):
+        """The block a fieldsplit sub-solve ``name`` solves, in words. A solver that
+        splits by DM field index names its blocks "0", "1", ...; the label then lists
+        the fields grouped in it (a constrained solve's block 1 is the pressure and
+        its multipliers, solved as one Schur block)."""
+        if not str(name).isdigit():
+            return f"{name}"
+        try:
+            ids = [int(i) for i in str(self.petsc_options[f"pc_fieldsplit_{name}_fields"]).split(",")]
+            fields = [self.dm.getField(i)[0].getName() for i in ids]
+        except Exception:
+            return f"field-{name}"
+        return f"field-{name} ({' + '.join(fields)})"
 
     def _warn_on_divergence(self, phase="solve"):
         """Check SNES convergence and warn on genuine divergence.
@@ -7189,6 +7276,11 @@ class SNES_Scalar(SolverBaseClass):
 
         self._record_convergence_status()
 
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
+
         return
 
 
@@ -8186,15 +8278,22 @@ class SNES_Vector(SolverBaseClass):
         zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         # Layer 1: the Picard warm-up for this solve, decided before _build (a warm-up
-        # under the consistent tangent needs the blended Jacobian compiled in).
-        self._plan_picard_warmup(picard, zero_init_guess,
-                                 own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+        # under the consistent tangent needs the blended Jacobian compiled in). The
+        # rotated loop stages an explicit picard itself, as for Stokes (#876).
+        self._plan_picard_warmup(
+            picard, zero_init_guess,
+            own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                          or getattr(self, "_fault_contact_faults", None)),
+            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                             or getattr(self, "_fault_contact_faults", None)))
+        picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
         self._build(verbose, debug, debug_name)
         if self._picard_blend and self.consistent_jacobian is True:
             self._set_newton_alpha(1.0)            # Newton unless the warm-up says otherwise
-        if self._solve_rotated_if_registered(zero_init_guess, verbose, 0, None):
+        # the rotated path (a sheet on a manifold) stages the Picard warm-up as
+        # Stokes' does (#876)
+        if self._solve_rotated_if_registered(zero_init_guess, verbose, picard, None):
             return
-
 
         gvec = self.dm.getGlobalVec()
 
@@ -8259,6 +8358,11 @@ class SNES_Vector(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 
@@ -8937,6 +9041,11 @@ class SNES_MultiComponent(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 
@@ -12768,7 +12877,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             picard, zero_init_guess,
             own_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
                           or getattr(self, "_fault_contact_faults", None)),
-            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)))
+            staged_loop=bool(getattr(self, "_rotated_freeslip_bcs", None)
+                             or getattr(self, "_fault_contact_faults", None)))
         picard = max(int(picard or 0), 0)    # picard < 0 = "no warm-up" from here on
 
         self._build(verbose, debug, debug_name)
@@ -12933,6 +13043,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # last: under -W error they raise on rank 0 only, after every rank has
+        # recorded the solve
+        self._warn_on_diverged_solve()
+        self._warn_on_capped_sub_solves()
 
         return
 

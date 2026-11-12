@@ -677,12 +677,10 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         The gradient is the Clement recovery at the vertices (no point
         location, so it is safe on a mesh carrying many variables) and the
         velocity is evaluated at the same points: the coordinate DM's local
-        nodes, which is the layout the recovery returns, in model units. On a
-        mesh of degree 2 those include the edge midpoints, so ``mesh.X.coords``
-        (the vertices) was the wrong length (#978); in a model with reference
-        scales it was also dimensional, and the velocity was read millions of
-        lengths outside the mesh (#891). A velocity with units is
-        non-dimensionalised, as the gradient already is.
+        nodes, which is the layout the recovery returns, in model units. In a
+        model with reference scales ``mesh.X.coords`` is dimensional, and the
+        velocity was read millions of lengths outside the mesh (#891). A
+        velocity with units is non-dimensionalised, as the gradient already is.
         """
         from mpi4py import MPI
         from underworld3.function.gradient_evaluation import compute_clement_gradient_at_nodes

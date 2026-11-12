@@ -55,7 +55,9 @@ def SegmentedSphericalSurface2D(
     numSegments : int, default=6
         Number of longitudinal segments (orange-peel divisions).
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -94,6 +96,9 @@ def SegmentedSphericalSurface2D(
     latitude representation. Periodicity is set up to handle the :math:`\pm\pi`
     longitude wrap-around.
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     num_segments = numSegments
     meshRes = cellSize
 
@@ -268,7 +273,9 @@ def SegmentedSphericalShell(
     numSegments : int, default=6
         Number of longitudinal segments.
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -322,6 +329,9 @@ def SegmentedSphericalShell(
     - ``unit_e_1``: colatitude direction :math:`(\theta)`
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Lower = 20
         LowerPlus = 21
@@ -723,7 +733,9 @@ def SegmentedSphericalBall(
     numSegments : int, default=6
         Number of longitudinal segments.
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -777,6 +789,9 @@ def SegmentedSphericalBall(
     - ``unit_e_1``: colatitude direction :math:`(\theta)`
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Upper = 30
         UpperPlus = 31
