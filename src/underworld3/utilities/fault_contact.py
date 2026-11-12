@@ -95,7 +95,8 @@ def warn_unpaired_split_faults(solver):
     whatever its value: a traction stated on a side, zero included, is a
     choice. Called at the start of the momentum solves (Stokes, thin sheet),
     not of a projection, which has no crack to open. Said once per solver, and
-    again if the faults it names change.
+    again if the faults it names change. Rank 0 shows the warning and every
+    rank issues it, so a filter that raises it as an error stops every rank.
     """
     import os
     import sys
@@ -131,7 +132,7 @@ def warn_unpaired_split_faults(solver):
     said = tuple((name, tuple(free)) for name, free in free_sides.items())
     if getattr(solver, "_unpaired_faults_warned", ()) == said:
         return
-    if not free_sides or mpi.rank != 0:
+    if not free_sides:
         solver._unpaired_faults_warned = said
         return
     listed = "; ".join(f"{name!r} (nothing on {', '.join(map(repr, free))})"
@@ -145,13 +146,16 @@ def warn_unpaired_split_faults(solver):
     while frame.f_back is not None \
             and os.path.abspath(frame.f_code.co_filename).startswith(package):
         frame = frame.f_back
-    warnings.warn_explicit(
-        f"split fault(s) with no fault law in this solver and a side left "
-        f"free: {listed}. Nothing ties the two sides of such a fault, and the "
-        f"solve leaves it a traction-free crack that can open. Give the fault "
-        f"a law, solver.add_fault_bc(0, {first!r}) for a frictionless one, or "
-        f"set a condition on each side.",
-        UserWarning, frame.f_code.co_filename, frame.f_lineno)
+    # Issued on every rank and shown by rank 0: raised as an error on rank 0
+    # alone, the other ranks would go on into the solve and wait there.
+    with warnings.catch_warnings(record=mpi.rank != 0):
+        warnings.warn_explicit(
+            f"split fault(s) with no fault law in this solver and a side left "
+            f"free: {listed}. Nothing ties the two sides of such a fault, and "
+            f"the solve leaves it a traction-free crack that can open. Give "
+            f"the fault a law, solver.add_fault_bc(0, {first!r}) for a "
+            f"frictionless one, or set a condition on each side.",
+            UserWarning, frame.f_code.co_filename, frame.f_lineno)
     # recorded once the warning is out: raised as an error (-W error), it is
     # raised again by the next solve, not said once and then dropped
     solver._unpaired_faults_warned = said

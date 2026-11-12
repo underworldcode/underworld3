@@ -210,6 +210,22 @@ def test_a_warning_raised_as_an_error_is_raised_again():
                 warn_unpaired_split_faults(stokes)
 
 
+def test_a_warning_raised_as_an_error_stops_every_rank(monkeypatch):
+    """Only rank 0 shows the warning. Raised as an error it stops every rank:
+    a rank that went on into the solve would wait there for rank 0."""
+    first = _box().add_fault([("Flt", FLT)])
+    stokes = _sheared(first, [])
+    monkeypatch.setattr(uw.mpi, "rank", 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UserWarning, match="'Flt'"):
+            warn_unpaired_split_faults(stokes)
+    with warnings.catch_warnings(record=True) as shown:
+        warnings.simplefilter("always")
+        warn_unpaired_split_faults(stokes)
+    assert not shown
+
+
 def test_every_solver_is_told_under_the_default_filter():
     """Python shows a warning once per line by default. Two solvers made by
     one line are two models, and each is told (once)."""
@@ -430,9 +446,6 @@ CENTRE_A = np.array([0.5, 0.5, 0.30])
 SHEET_A = ("FA",) + _disc(CENTRE_A, NORMAL_A)
 SHEET_B = ("FB",) + _disc([0.5, 0.5, 0.70], [-0.2, 0.4, 0.9])
 SHEET_THROUGH_A = ("FC",) + _disc([0.5, 0.5, 0.36], [0.5, -0.3, 0.8])
-# peak slip with a frictionless law on both sheets, the two given in ONE call
-# (development f8c60140, serial)
-SLIP_ONE_CALL_3D = {"FA": 0.145180, "FB": 0.109596}
 # what the sheet placement says when its cavity meets a wall; the two sides of
 # a fault already split are walls to it
 WALLS = (r"'FC' could not be placed: .*domain wall.* already carries the split "
@@ -440,27 +453,24 @@ WALLS = (r"'FC' could not be placed: .*domain wall.* already carries the split "
          r"walls too: the wall it names may be one of them")
 
 
-@pytest.fixture(scope="module")
-def first_3d():
+def _box_3d():
     return uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0,) * 3, maxCoords=(1.0,) * 3, cellSize=0.12,
-        regular=False, qdegree=2, refinement=1).add_fault([SHEET_A])
+        regular=False, qdegree=2, refinement=1)
 
 
-def test_two_calls_solve_as_one_call_does_3d(first_3d):
-    """Before the fix the second call failed in the sheet clip, which read the
-    two sides of the first fault as domain boundary."""
-    second = first_3d.add_fault([SHEET_B])
-    assert sorted(second._fault_point_pairs) == ["FA", "FB"]
-    _assert_pairing_kept(second, first_3d, "FA")
-    # the mesh between the placement and the split holds the record as well
-    assert sorted(second.parent._fault_point_pairs) == ["FA"]
-    assert not second.parent.dm.hasLabel(_TRACK_LABEL)
+@pytest.fixture(scope="module")
+def first_3d():
+    return _box_3d().add_fault([SHEET_A])
 
-    stokes = uw.systems.Stokes(second)
+
+def _peak_slips_3d(mesh):
+    """Peak slip on each sheet, a frictionless law on both. The solve is
+    silent and neither fault opens."""
+    stokes = uw.systems.Stokes(mesh)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    drive = (-(second.X[0] - 0.5), second.X[1] - 0.5, 0.0)
+    drive = (-(mesh.X[0] - 0.5), mesh.X[1] - 0.5, 0.0)
     for wall in ("Bottom", "Top", "Right", "Left", "Front", "Back"):
         stokes.add_dirichlet_bc(drive, wall)
     stokes.petsc_use_pressure_nullspace = True
@@ -470,12 +480,33 @@ def test_two_calls_solve_as_one_call_does_3d(first_3d):
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         stokes.solve()
+    slips = {}
     for name in ("FA", "FB"):
         _x, jump, normal = fault_pair_jumps(stokes, name,
                                             stokes._rotated_freeslip_info)
         assert np.abs(np.einsum("ij,ij->i", jump, normal)).max() < 1e-12, name
-        slip = np.linalg.norm(jump, axis=1).max()
-        assert abs(slip - SLIP_ONE_CALL_3D[name]) < 2e-5, name
+        slips[name] = np.linalg.norm(jump, axis=1).max()
+    return slips
+
+
+def test_two_calls_solve_as_one_call_does_3d(first_3d):
+    """Before the fix the second call failed in the sheet clip, which read the
+    two sides of the first fault as domain boundary. The slips are compared
+    with those of the two sheets given in one call, solved here: the box's
+    mesh, and the slip with it, differs between hosts (0.1452 and 0.1482 on
+    FA)."""
+    second = first_3d.add_fault([SHEET_B])
+    assert sorted(second._fault_point_pairs) == ["FA", "FB"]
+    _assert_pairing_kept(second, first_3d, "FA")
+    # the mesh between the placement and the split holds the record as well
+    assert sorted(second.parent._fault_point_pairs) == ["FA"]
+    assert not second.parent.dm.hasLabel(_TRACK_LABEL)
+
+    one_call = _peak_slips_3d(_box_3d().add_fault([SHEET_A, SHEET_B]))
+    two_calls = _peak_slips_3d(second)
+    for name in ("FA", "FB"):
+        assert one_call[name] > 0.1, name
+        assert abs(two_calls[name] - one_call[name]) < 2e-5, name
 
 
 def test_a_sheet_through_the_first_is_refused_3d(first_3d):
