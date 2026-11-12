@@ -60,6 +60,7 @@ def test_network_end_to_end_transmits_slip():
     cm.yield_mode = "min"
     cm.Parameters.shear_viscosity_0 = 1.0
     cm.Parameters.yield_stress = net.damage_yield(v, dial=0.05)
+    cm.Parameters.yield_stress_min = -sympy.oo   # dial + rate term: positive by construction (#759)
     stokes.consistent_jacobian = True
     stokes.bodyforce = [0.0, 0.0]
     trend = float(np.degrees(np.arctan2(MAIN[1][1] - MAIN[0][1],

@@ -158,10 +158,9 @@ class TestEngineLessAdapt:
         assert ce - cs > be - bs
 
     def test_redistribute_then_adapt_composition(self, caplog):
-        """adapt() after redistribute_nodes refines the MOVED geometry and
-        must not touch the parent's static hierarchy: DMClone shares the
-        coordinates Vec by reference, so the moved-coordinate carry has to
-        install a duplicate (review finding, 2026-07 capstone close-out).
+        """adapt() after redistribute_nodes refines the MOVED geometry. The
+        move gives the parent's finest hierarchy level the moved coordinates
+        (#1037); its coarse levels keep the originals.
 
         The same mover run also guards #376: masked in-place updates
         (``data[mask] /= s``) must not fire the canonical PETSc-sync
@@ -177,6 +176,7 @@ class TestEngineLessAdapt:
             minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
             cellSize=0.4, refinement=1, qdegree=2)
         hier_before = mesh.dm_hierarchy[-1].getCoordinatesLocal().array.copy()
+        coarse_before = mesh.dm_hierarchy[0].getCoordinatesLocal().array.copy()
 
         x, y = mesh.X
         d = sympy.Abs((x - 0.35) * 0.866 + (y - 1.0) * 0.5)
@@ -203,9 +203,10 @@ class TestEngineLessAdapt:
         from scipy.spatial import cKDTree
         dist, _ = cKDTree(child_verts).query(base_verts)
         assert dist.max() < 1e-12
-        # ... and the parent's static hierarchy is untouched
-        hier_after = mesh.dm_hierarchy[-1].getCoordinatesLocal().array
-        assert np.array_equal(hier_after, hier_before)
+        # ... the parent's finest level carries the move, so solves on it see
+        # the moved geometry (#1037), and its coarse level keeps the original
+        assert np.array_equal(mesh.dm_hierarchy[-1].getCoordinatesLocal().array, moved)
+        assert np.array_equal(mesh.dm_hierarchy[0].getCoordinatesLocal().array, coarse_before)
 
     def test_engine_less_adapt_is_nvb(self):
         """The engine-less child matches an explicit engine='nvb' child

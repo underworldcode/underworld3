@@ -120,6 +120,20 @@ class _Temporary(sympy.Symbol):
         return self._ccodestr
 
 
+def _dummies(prefix, n):
+    """``n`` real dummies whose names sort in the order they are made, whatever the
+    process has done before.
+
+    SymPy names an unnamed Dummy ``Dummy_<count>``, ``<count>`` being how many dummies
+    the process has made, and orders dummies by that name as a string. Dummies that
+    straddle a power of ten then sort out of order ("Dummy_1000" before "Dummy_998"),
+    so ``cse`` over a body whose leaves they hide shares different subexpressions: the
+    same kernel, a different source and JIT key, depending on what ran before the build
+    (#917, test_0027). Fixed-width names sort as made. ``slot_derivative`` uses them too,
+    for uniformity: its dummies are substituted back before anything sorts them."""
+    return [sympy.Dummy(f"{prefix}{k:06d}", real=True) for k in range(n)]
+
+
 def _is_scalar(body):
     """Whether ``body`` can be one C temporary: a scalar value, not a condition, a
     matrix, an array or a vector."""
@@ -396,7 +410,8 @@ class KernelGraph:
         # is no longer equal to the base scalar it stood for
         opaque = body.atoms(AppliedUndef) | {
             s for s in body.free_symbols if self.is_leaf(s)}
-        hide = {s: sympy.Dummy(real=True) for s in sorted(opaque, key=self.order_key)}
+        ordered = sorted(opaque, key=self.order_key)
+        hide = dict(zip(ordered, _dummies("_uwh", len(ordered))))
         show = {d: s for s, d in hide.items()}
         repl, (reduced,) = sympy.cse([body.xreplace(hide)],
                                      symbols=sympy.numbered_symbols("_cse", real=True))
@@ -421,7 +436,7 @@ class KernelGraph:
         key = (cls, i)
         if key not in self._deriv:
             deps = cls._deps
-            dummies = [sympy.Dummy(real=True) for _ in deps]
+            dummies = _dummies("_uwd", len(deps))
             b = cls._body.xreplace(dict(zip(deps, dummies)))
             d = sympy.diff(b, dummies[i]).xreplace(dict(zip(dummies, deps)))
             self._deriv[key] = self.make_node(
@@ -444,9 +459,10 @@ def lower_callbacks(fns, mesh):
             fn = fn.doit()
         fn = graph.lower(fn)
         if isinstance(fn, sympy.vector.Vector):
-            fn = fn.to_matrix(mesh.N)[0:mesh.dim, 0]
+            # one component per EMBEDDING dimension (three on a surface mesh in 3-D)
+            fn = fn.to_matrix(mesh.N)[0:mesh.cdim, 0]
         elif isinstance(fn, sympy.vector.Dyadic):
-            fn = fn.to_matrix(mesh.N)[0:mesh.dim, 0:mesh.dim]
+            fn = fn.to_matrix(mesh.N)[0:mesh.cdim, 0:mesh.cdim]
         else:
             fn = sympy.Matrix([fn])
         out.append(fn)

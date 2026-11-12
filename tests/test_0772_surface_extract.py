@@ -95,17 +95,11 @@ def test_extract_surface_roundtrip_bit_exact(builder):
 # ---------------------------------------------------------------------------
 # on-surface symbolic evaluate
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder", [
-    _shell,
-    pytest.param(_annulus, marks=pytest.mark.xfail(
-        reason="Point-location evaluate on a 1-manifold surface (dim=1, "
-        "cdim=2) is not yet supported: the in-cell test's FE element-entity "
-        "handling for edge cells is incomplete. Full dim=1 manifold support "
-        "(point-location + FE solve) is a tracked follow-up; the free-surface "
-        "smoother uses restrict/prolongate + surface-graph adjacency, which "
-        "do not need 1D point-location.",
-        strict=False)),
-])
+# The 1-manifold case (an annulus boundary, dim=1, cdim=2) was an expected
+# failure while the mesh's element table had no line entry: point location
+# read 4 vertices per line cell. With the entry it evaluates exactly
+# (2026-10-18, serial and 2 and 3 ranks; tests/test_1100).
+@pytest.mark.parametrize("builder", [_shell, _annulus])
 def test_extract_surface_evaluate(builder):
     m = builder()
     surf = m.extract_surface("Upper")

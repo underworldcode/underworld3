@@ -16,6 +16,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -68,7 +69,9 @@ def RegionalSphericalBox(
     numElementsDepth : int, default=5
         Number of elements in the radial (depth) direction.
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     simplex : bool, default=False
@@ -79,6 +82,9 @@ def RegionalSphericalBox(
         Number of uniform refinement levels to apply.
     coarsening : int, optional
         Number of coarsening levels to apply.
+        PETSc coarsens through DMAdaptMetric, which needs a PETSc built with mmg
+        (an external opt-in, not in conda-forge's PETSc); ``refinement`` works on
+        any build.
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     verbose : bool, default=False
@@ -133,6 +139,8 @@ def RegionalSphericalBox(
     - ``unit_e_1``: colatitude direction :math:`(\theta)`
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1
@@ -326,7 +334,7 @@ def RegionalSphericalBox(
                 gmsh.model.mesh.set_recombine(3, volume)
 
         # Generate Mesh
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -457,9 +465,10 @@ def RegionalGeographicBox(
     numElements : tuple of int, optional
         Number of elements in (lon, lat, depth) directions.
         Default: (10, 10, 10)
-    degree : int, optional
-        Polynomial degree for finite elements (1=linear, 2=quadratic).
-        Default: 1
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         Quadrature degree for numerical integration.
         Default: 2
@@ -474,6 +483,9 @@ def RegionalGeographicBox(
         Default: None
     coarsening : int, optional
         Number of coarsening steps to apply.
+        PETSc coarsens through DMAdaptMetric, which needs a PETSc built with mmg
+        (an external opt-in, not in conda-forge's PETSc); ``refinement`` works on
+        any build.
         Default: None
     gmsh_verbosity : int, optional
         Gmsh output verbosity level (0=quiet, 5=very verbose).
@@ -517,6 +529,9 @@ def RegionalGeographicBox(
     ``mesh.geo`` provides geographic coordinates with ellipsoid geometry.
     Right-handed coordinate system: WE x SN = down.
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
     from underworld3.units import (
         require_units_if_active,

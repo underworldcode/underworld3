@@ -55,6 +55,14 @@ comm = _MPI.COMM_WORLD
 size = comm.size
 rank = comm.rank
 
+# The communicator of collective error verdicts, and of nothing else. A verdict
+# exchanged on ``comm`` can pair with a collective of the same kind that
+# another rank is still inside (a rank that raised before it, the others in
+# it): the two then trade unrelated data, and the ranks leave with different
+# results. On its own communicator a verdict meets only verdicts, and a rank
+# that never reaches it leaves the others waiting at a known place (#886).
+verdict_comm = comm.Dup()
+
 # State tracking for selective execution
 _in_selective_ranks = False
 _selective_executing_ranks = None
@@ -74,6 +82,26 @@ def barrier():
 
     """
     comm.Barrier()
+
+
+def _free_petsc_garbage(comm=None):
+    """Destroy the PETSc objects whose Python wrappers have been collected.
+
+    COLLECTIVE over ``comm`` (``COMM_WORLD`` when ``None``): every rank of
+    it must call it at the same point; a mesh on ``COMM_SELF`` passes that. In parallel
+    petsc4py does not destroy an object when Python collects its wrapper --
+    ranks collect in different orders and the destroy is collective -- but
+    puts it on a deferred list that only ``PETSc.garbage_cleanup`` empties.
+    Without a call, every DM, matrix and vector of a dropped mesh lives for
+    the rest of the process (measured: 52.7 MB per faulted-mesh rebuild at
+    np = 2 with every Python object freed). The local collection first puts
+    anything just dropped on the list.
+    """
+    import gc
+    from petsc4py import PETSc
+
+    gc.collect()
+    PETSc.garbage_cleanup(comm)
 
 
 def _selected_ranks(rank_selector, total_size):

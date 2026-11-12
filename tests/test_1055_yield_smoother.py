@@ -93,10 +93,12 @@ def test_powermean_smoother_undershoots_min():
 
     cm.yield_mode = "softmin"              # dev: soft-min family lives under "softmin"
     cm.yield_anchor = "onset"              # the law under test; not left to the default
-    cm.yield_softness = 0.0                # start from δ=0 so the powermean select bumps it
-    cm.yield_smoother = "powermean"        # bumps δ 0 → 1 (s=1, harmonic mean)
+    cm.yield_softness = 0.0
+    cm.yield_smoother = "powermean"
     assert cm.yield_smoother == "powermean"
-    assert cm.yield_softness == 1.0
+    # selecting the family leaves the stated δ alone (#782: it used to bump 0 -> 1,
+    # the harmonic mean, without a word)
+    assert cm.yield_softness == 0.0
 
     # Includes a geodynamic-range pair (1e25, 1e21) that overflows the naive
     # η^(−s) form above s≈40 but is finite in the harmonic-normalised form.
@@ -200,10 +202,12 @@ def test_dp_model_smoother_optin():
     cm.yield_smoother = "powermean"
     assert cm.yield_softness == 0.1
     cm.yield_smoother = "sqrt"
-    # only the singular δ = 0 is bumped, to the power mean's entry value
+    # a family switch never changes δ, not even the singular δ = 0 (#782); the
+    # power mean's entry value, the harmonic mean, is stated explicitly
     cm.yield_softness = 0.0
-    cm.yield_smoother = "powermean"           # bumps δ→1
-    assert cm.yield_softness == 1.0
+    cm.yield_smoother = "powermean"
+    assert cm.yield_softness == 0.0
+    cm.yield_softness = 1.0
     for eta_ve, eta_pl in [(1.0, 2.0), (5.0, 0.3), (1e25, 1e21)]:
         comb = cm._combine_yield(sympy.Float(eta_ve), sympy.Float(eta_pl))
         val = float(unwrap_expression(comb, mode="nondimensional"))
@@ -239,6 +243,7 @@ def test_dp_pressure_yield_consistent_jacobian_builds():
     sphi = float(np.sin(np.deg2rad(30.0)))
     cm.Parameters.shear_viscosity_0 = 1.0e3
     cm.Parameters.yield_stress = sympy.Max(1.0 + sphi * p.sym[0], sympy.sympify(0))
+    cm.Parameters.yield_stress_min = 0.05   # a tension cut-off needs a stated residual strength (#759)
     cm.Parameters.strainrate_inv_II_min = 1.0e-8
     s.consistent_jacobian = True
     # Build the pointwise residual + Jacobian; on the bug this recurses to RecursionError.

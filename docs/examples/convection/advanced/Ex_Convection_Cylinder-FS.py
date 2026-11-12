@@ -127,7 +127,6 @@ stokes.petsc_options["ksp_type"] = "fgmres"
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
 
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fcg"
 stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 stokes.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 7
@@ -318,8 +317,8 @@ for step in range(0, 51):
     stats_star = adv_diff.DuDt.psi_star[0].stats()
     
     uw.pprint("Timestep {}, dt {}".format(ts, delta_t))
-        print(stats)
-        print(stats_star)
+    uw.pprint(stats)
+    uw.pprint(stats_star)
 
     if step%5 == 0:
         plot_T_mesh(filename="{}_step_{}".format(os.path.join(output_dir, expt_name),ts))

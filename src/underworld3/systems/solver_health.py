@@ -159,6 +159,25 @@ class _InstrumentedKSP:
         # the per-application reason can be read before the next solve resets it.
         ksp.setPostSolve(self._after_application)
 
+    def detach(self):
+        """Take this entry's monitor, post-solve hook and deadline test off its KSP,
+        and let the KSP go.
+
+        Each is a bound method of this entry, and this entry holds the KSP: a cycle
+        through the PETSc object, which Python's collector cannot see. Dropping the
+        entry left it standing, so every discarded SNES kept its KSP tree resident
+        (+23 MB per solve when a Stokes ``bodyforce`` is reassigned, in serial too,
+        #1012). Not collective."""
+        ksp, self.ksp = self.ksp, None
+        if ksp is None or not ksp.handle:            # gone with its SNES already
+            return
+        ksp.cancelMonitor()
+        ksp.setPostSolve(None)
+        if self._test_installed:
+            from underworld3.utilities import ksp_convergence_tests
+            ksp_convergence_tests.unregister(ksp, "wall_clock_guard")
+            self._test_installed = False
+
     def reset(self):
         self.its = 0
         self.applications = 0
@@ -209,14 +228,21 @@ class _InstrumentedKSP:
         """Prepend the deadline test, once and for all.
 
         PETSc allows exactly one ``addConvergenceTest`` per KSP and offers no way to
-        take it off again, so the test is installed on first arming and left in place;
+        take it off again, so the test is registered (``utilities/ksp_convergence_tests``,
+        which it shares with the linear floor) on first arming and left in place;
         ``disarm()`` makes it inert instead of removing it. That is a true restore
         rather than an approximate one: with no budget set the test returns ``ITERATING``
         immediately and the KSP's native test decides exactly as it would have.
         """
         if self._test_installed:
             return
-        self.ksp.addConvergenceTest(self._test, prepend=True)
+        # petsc4py allows one Python test per KSP, which the convergence policy's
+        # linear floor also needs: both run in the one dispatcher, in front of PETSc's
+        from underworld3.utilities import ksp_convergence_tests
+        if not ksp_convergence_tests.register(self.ksp, "wall_clock_guard", self._test):
+            raise RuntimeError(
+                "the KSP already has a convergence test the library did not set, so "
+                "the wall-clock guard cannot run in front of it")
         self._test_installed = True
 
 
@@ -270,10 +296,17 @@ class SolverInstrumentation:
         ``getFieldSplitSubKSP``, so holding these entries keeps a destroyed solver's KSP,
         PC and whole multigrid hierarchy alive. A solver that rebuilds in a loop would
         then carry two hierarchies at once -- the leak BUGFIX(#157) was written to close.
-        Called from the solver when it tears its SNES down.
+        Called from the solver when it tears its SNES down. Each entry takes its
+        callbacks off its KSP first: they hold the entry, and the entry the KSP
+        (#1012).
         """
-        self._ksps.clear()
+        self._detach_all()
         self._outer_handle = None
+
+    def _detach_all(self):
+        for entry in self._ksps.values():
+            entry.detach()
+        self._ksps.clear()
 
     # ------------------------------------------------------------ attachment
 
@@ -298,7 +331,7 @@ class SolverInstrumentation:
             # A rebuilt solver (remesh, adapt, new discretisation) carries a new SNES,
             # and everything attached to the old one went with it. Start over rather
             # than accumulate blocks that can never report again.
-            self._ksps.clear()
+            self._detach_all()
         self._outer_handle = outer.handle
 
         for entry in self._ksps.values():

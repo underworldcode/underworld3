@@ -8,7 +8,7 @@ what limits it, and how to keep a run inside those limits.
 
 ```python
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.stress_transport = "integration_point"       # or "semi_lagrangian" (the default), "forward", "eulerian"
+stokes.stress_transport = "integration_point"       # or "semi_lagrangian" (the default), "forward", "eulerian", "lagrangian", "none"
 stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
     stokes.Unknowns, order=1, integrator="bdf", objective_rate="upper_convected")
 stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_p
@@ -17,7 +17,7 @@ stokes.constitutive_model.Parameters.solvent_viscosity = eta_s    # Oldroyd-B; o
 stokes.constitutive_model.Parameters.dt_elastic = dt
 ```
 
-## The five histories
+## The six histories
 
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
@@ -26,6 +26,7 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 | `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
+| `none` (grid, untransported) | continuous P1 | nothing: the history stays at its node | any step whose displacement is far below a cell (a tidal or seismic cycle: the box fault model moves 1e-3 of a cell a step) | it is not a transport at all, so it is wrong as soon as material moves by a cell; a traced-back history on a split-node fault reads the other side of the slit (measured: a quarter of the slip rate on the second step), which this flavour avoids by not tracing |
 
 The nodal and integration-point flavours store the stress after every solve by
 the same global L2 projection onto the continuous space. The integration-point

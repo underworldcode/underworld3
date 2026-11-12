@@ -17,7 +17,7 @@ on:
 
 jobs:
   deprecated-patterns:
-    name: Deprecated-pattern scan (Charter S3/S4/S7)
+    name: Style gates (deprecated patterns, examples parse)
     runs-on: ubuntu-latest
 
     steps:
@@ -43,6 +43,26 @@ jobs:
             echo "Fix the flagged code. The allowlist"
             echo "(scripts/deprecated_pattern_allowlist.txt) records pre-existing legacy"
             echo "hits only and may only SHRINK — only a maintainer adds entries."
+            exit 1
+          fi
+
+      - name: Set up the oldest supported Python for the parse gate
+        if: ${{ !cancelled() }}
+        uses: actions/setup-python@v5
+        with:
+          # requires-python >= 3.10: a newer parser accepts syntax 3.10 rejects
+          python-version: '3.10'
+
+      - name: Every script and notebook under docs/ parses (#944)
+        if: ${{ !cancelled() }}
+        run: |
+          # Compiles docs/**/*.py and each notebook code cell under docs/
+          # (IPython magics and shell escapes removed). Runs nothing, needs no
+          # build: it catches an example that no longer compiles.
+          if ! python scripts/check_examples_compile.py; then
+            echo ""
+            echo "FAILED: a script or notebook under docs/ no longer parses."
+            echo "  Run local: python scripts/check_examples_compile.py"
             exit 1
           fi
 
