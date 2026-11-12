@@ -19,10 +19,14 @@ np 2, 3, 4 and 5. Each case runs
 ``Mesh.redistribute_nodes`` serially and in parallel, in subprocesses
 through the MPI supervisor (this file is also the worker: ``python -m mpi4py
 <this file> <case> <out.json>``), and the parallel mesh must match the serial
-one vertex by vertex, matched by starting position, to rounding. Measured on
-2026-11-12: within 4e-12 on the boxes, and within 7e-8 on the annulus, whose
-longer redistribution accumulates more rounding (it was 7e-3 to 2.4e-2
-before the fix).
+one vertex by vertex, matched by starting position, to rounding. The box
+slip cases run at np 2, 3 and 4, and once more with the cells dealt to the
+ranks at random (np 3 and 4). Measured on 2026-11-12: within 4e-12 on the
+boxes at their original rank counts, and within the 1e-10 tolerance on all;
+within 7e-8 on the pinned annulus, whose longer redistribution accumulates
+more rounding (it was 7e-3 to 2.4e-2 before the fix). The annulus with
+slipping walls is bounded, not matched: see its test. Facet-surface slip
+(boundaries with no registered surface) is still partition-dependent: #1103.
 """
 
 import json
