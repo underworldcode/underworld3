@@ -123,7 +123,7 @@ def _ksp_lines(ksp, name, lines):
 
     Nothing here is collective: a rank whose preconditioner never set up takes fewer
     lines than the others, and a collective norm would then hang. A line carries this
-    rank's rows of the operator, and :func:`_print_record` adds the ranks up."""
+    rank's rows of the operator, and :func:`_record` adds the ranks up."""
     pc, A = ksp.getPC(), ksp.getOperators()[0]
     rows = None
     if "aij" in A.getType():
@@ -164,8 +164,8 @@ def _pc_lines(pc, name, lines):
         lines.append((f"{name}.{kind}", f"not set up (PETSc error {err.ierr})", None))
 
 
-def _print_record(tag, k, errors, told, solvers, split):
-    """The whole record of a failed move, one key a line, past pytest's capture: an
+def _record(tag, k, errors, told, solvers, split):
+    """The whole record of a failed move, one key a line, for the test to print: an
     assertion message is cut at a few hundred characters, and the linear solvers'
     reasons were the part cut from the first red run that carried one."""
     def flat(value):
@@ -189,7 +189,7 @@ def _print_record(tag, k, errors, told, solvers, split):
     gathered = [{key: (text, rows) for key, text, rows in g}
                 for g in uw.mpi.comm.allgather(lines)]
     keys = list(dict.fromkeys(key for g in gathered for key in g))
-    uw.pprint(f"test_1152[{tag}] move {k}: the record of a failed move", flush=True)
+    record = [f"test_1152[{tag}] move {k}: the record of a failed move"]
     for key in keys:
         held = [g[key] for g in gathered if key in g]
         text = held[0][0]
@@ -199,9 +199,10 @@ def _print_record(tag, k, errors, told, solvers, split):
                      f" not_finite={sum(r[1] for r in rows)}")
         others = sorted({t for t, _r in held} - {held[0][0]})
         absent = len(gathered) - len(held)
-        uw.pprint(f"  {key}: {text}"
-                  + (f" | on other ranks: {others}" if others else "")
-                  + (f" | absent on {absent} rank(s)" if absent else ""), flush=True)
+        record.append(f"  {key}: {text}"
+                      + (f" | on other ranks: {others}" if others else "")
+                      + (f" | absent on {absent} rank(s)" if absent else ""))
+    return record
 
 
 def _norm(a):
@@ -264,9 +265,16 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
         told["velocity_its"] = (its_k, its_f)
         if not (its_k <= its_f + 1 and errors["velocity"] < 100 * TOLERANCE
                 and all(errors[key] < 1000 * TOLERANCE for key in errors)):
+            record = _record("split" if split else "zone", k, errors, told,
+                             {"kept": kept, "fresh": fresh}, split)
+            # twice: past the capture for a run under mpirun, where the report of a
+            # failure may never be written, and into it for a run under pytest-xdist,
+            # whose workers' own output does not reach the log
             with capsys.disabled():
-                _print_record("split" if split else "zone", k, errors, told,
-                              {"kept": kept, "fresh": fresh}, split)
+                for line in record:
+                    uw.pprint(line, flush=True)
+            for line in record:
+                uw.pprint(line, flush=True)
         # measured at np 1 on development f8c60140, kept and fresh at each move: 8 and
         # 7, 8 and 7, 7 and 6 on the zone; 17 and 16, 17 and 17, 17 and 17 on the split
         # level. Hyperion at np 2 and 4: 8 or 9 against 7 or 8 on the zone, 19 to 20 on
