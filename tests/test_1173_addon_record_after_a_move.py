@@ -128,12 +128,18 @@ def test_a_cut_made_on_a_moved_mesh_reaches_the_level_below_through_it():
     # the cut adds a few nodes on the trace; the rest are the moved mesh's
     assert shared.sum() >= len(X0) - 5
     assert np.abs((P @ Xc)[shared] - X0[node[shared]]).max() < 1e-10
-    # a node the cut added or pulled onto the trace is no node of the moved
-    # mesh: it is weighted where the cell it lies in was before the move, which
-    # is the move undone to the accuracy of a straight-sided cell (PLACEHOLDER)
-    added = Xf[~shared]
-    assert len(added) > 20
-    assert np.abs((P @ Xc)[~shared] - _before_the_move(added)).max() < 1e-4
+    # A vertex the cut added or pulled onto the trace is no vertex of the moved
+    # mesh. It is taken back through the cell it lies in, which undoes the move
+    # to the accuracy of a straight-sided cell: 1e-4 here, where the move is
+    # 0.03. (The transfer keeps such a node's weights inside its parent, moved
+    # or not, so the position is checked and not the weights.)
+    held_for, reference = child._addon_reference
+    assert held_for is below
+    vertices, _cells = fault_mg._cell_vertex_table(child)
+    added = cKDTree(np.asarray(mesh.X.coords)).query(vertices)[0] > 1e-12
+    assert added.sum() > 20
+    assert np.abs(reference - _before_the_move(vertices))[added].max() < 2e-4
+    assert np.abs(reference - vertices)[added].max() > 0.02
 
 
 @pytest.mark.parametrize("child_moves", [False, True])
