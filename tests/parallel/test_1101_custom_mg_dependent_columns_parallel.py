@@ -257,6 +257,32 @@ def test_more_columns_than_shared_rows_are_reduced_exactly():
         assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0], messages
 
 
+@pytest.mark.parametrize("d", [1e-9, 1e-8, 1e-7])
+def test_no_more_columns_kept_than_rows_when_two_are_nearly_parallel(d):
+    """Three columns on two rows, the two largest nearly parallel: the residual
+    test alone would keep all three (rounding in the fit exceeds its
+    tolerance), leaving the operator exactly singular. At most as many are
+    kept as there are rows."""
+    P1 = _prolongation([((1, 3), (1.0, 0.5)), ((1, 3), (1.0, 0.5 + d)), ((1, 3), (0.3, -0.5))])
+    n1 = N_LINEAR + 3
+    P0 = _mat(n1, n1, _coarse_layout(3), _coarse_layout(3), {(i, i): 1.0 for i in range(n1)})
+    out, messages = _restrict([P0, P1])
+    assert out[1].getSize()[1] == n1 - 1 and out[0].getSize()[0] == n1 - 1
+    composite, original = _gathered(out[1].matMult(out[0])), _gathered(P1.matMult(P0))
+    np.testing.assert_allclose(composite, original, rtol=0, atol=1e-12)
+    if RANK == 0:
+        assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0], messages
+
+
+def test_nearly_but_not_dependent_columns_are_left_alone():
+    """Two columns on two rows, independent by 1e-6: not a dependent group
+    (the tolerance is relative 1e-10), so nothing is merged."""
+    P = _prolongation([((1, 3), (1.0, 0.5)), ((1, 3), (1.0, 0.5 + 1e-6))])
+    (T,), messages = _restrict([P])
+    assert T is P
+    assert messages == []
+
+
 def test_each_install_that_merges_is_on_the_solver_record():
     """The warning prints once per session; ``pc_fallbacks`` records every
     install that needed the merge, with a running count."""

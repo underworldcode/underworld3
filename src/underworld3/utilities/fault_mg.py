@@ -949,6 +949,9 @@ _SMALL_SUPPORT = 4      # columns with at most this many fine images are checked
 _DEPENDENT_REL = 1e-10  # a column within this relative residual of the span is dependent
 
 
+import scipy.linalg
+
+
 def _route(m4, dest, *arrays):
     """Send row ``k`` of each array to rank ``dest[k]``; returns the arrays
     each rank received, concatenated (one alltoall)."""
@@ -977,15 +980,22 @@ def _dependent_columns(T):
     two columns on one fine row, and (rotated transfers, which mix a node's
     components) three columns on one fine node's two component rows.
 
-    In each group the columns are taken largest norm first (ties to the lowest
-    global column); a column that the ones kept so far span (to a relative
-    residual of ``_DEPENDENT_REL``) is dropped and written as their
-    combination, ``ratio`` holding each coefficient. The range of P is
+    In each group (columns ordered largest norm first, ties to the lowest
+    global column) a pivoted QR keeps the most independent columns, as many as
+    the group's rank (a pivot's residual above ``_DEPENDENT_REL`` of its own
+    norm), never more than its rows; every other column is dropped and written
+    as their combination, ``ratio`` holding each coefficient. On one row the
+    largest column is kept. The range of P is
     unchanged, and :func:`_fold_rows` folds each dropped unknown's row of the
     level below into the kept ones with the same coefficients, so the
     composite transfer is unchanged. A group is decided on one rank, so every
-    rank applies the same decision. Not detected: dependent columns with
-    different or wider supports.
+    rank applies the same decision.
+
+    This removes the dependent groups with small support; it does not make
+    the Galerkin operator nonsingular in general. Dependent columns with
+    different or wider supports are not detected and can remain (on a fault
+    cut into a moved child: +-1-proportional pairs with 5 to 54 fine rows), and
+    the solve tolerates them as it did before the guard.
 
     Distributed: each entry goes to its column's owner, which finds the small
     columns; each small column's support goes to the owner of its first row,
@@ -1032,27 +1042,33 @@ def _dependent_columns(T):
             nrows = int(count[sel[0]])
             W = weight[sel, :nrows].T                    # nrows x columns
             norms = np.linalg.norm(W, axis=0)
-            order = np.lexsort((ucol[sel], -norms))
-            kept = []
-            for k in order:
-                w = W[:, k]
-                if kept and nrows == 1:
-                    # one row: the column is a multiple of the first kept one
+            order = np.lexsort((ucol[sel], -norms))      # largest first, then lowest column
+            if nrows == 1:
+                # one row: every column is a multiple of the first
+                for k in order[1:]:
                     drop.append(int(ucol[sel[k]]))
-                    keep.append(int(ucol[sel[kept[0]]]))
-                    ratio.append(float(w[0] / W[0, kept[0]]))
-                    continue
-                if kept:
-                    basis = W[:, kept]
-                    coef = np.linalg.lstsq(basis, w, rcond=None)[0]
-                    if np.linalg.norm(basis @ coef - w) <= _DEPENDENT_REL * norms[k]:
-                        for kk, c in zip(kept, coef):
-                            if c != 0.0:
-                                drop.append(int(ucol[sel[k]]))
-                                keep.append(int(ucol[sel[kk]]))
-                                ratio.append(float(c))
-                        continue
-                kept.append(k)
+                    keep.append(int(ucol[sel[order[0]]]))
+                    ratio.append(float(W[0, k] / W[0, order[0]]))
+                continue
+            # Pivoted QR picks the most independent columns, so a column that
+            # is dropped is written in a well-conditioned basis: greedy by
+            # norm could keep two nearly parallel columns and write the third
+            # with coefficients of 1/(their angle). Rank: the leading pivots
+            # whose residual is above _DEPENDENT_REL of their own norm; never
+            # more than the rows.
+            _q, R, piv = scipy.linalg.qr(W[:, order], mode="economic", pivoting=True)
+            rank = 0
+            while rank < min(R.shape) and \
+                    abs(R[rank, rank]) > _DEPENDENT_REL * norms[order[piv[rank]]]:
+                rank += 1
+            kept = order[piv[:rank]]
+            for k in order[piv[rank:]]:
+                coef = np.linalg.lstsq(W[:, kept], W[:, k], rcond=None)[0]
+                for kk, c in zip(kept, coef):
+                    if c != 0.0:
+                        drop.append(int(ucol[sel[k]]))
+                        keep.append(int(ucol[sel[kk]]))
+                        ratio.append(float(c))
     found = [d for part in m4.allgather(list(zip(drop, keep, ratio))) for d in part]
     if not found:
         return (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
@@ -1086,9 +1102,9 @@ def _drop_dependent_columns(T, comm, level, repairs=None):
             f"custom_mg: coarse level {level} and the level above it are not "
             f"nested, and {merged} coarse unknown(s) on level {level} were "
             f"combinations of others with the same fine images; each was merged "
-            f"into them, which keeps the coarse space and makes the Galerkin "
-            f"operator nonsingular (#1101). Only coarse unknowns with at most "
-            f"{_SMALL_SUPPORT} fine images are checked.",
+            f"into them, which keeps the coarse space (#1101). Only coarse "
+            f"unknowns with at most {_SMALL_SUPPORT} fine images are checked; "
+            f"dependent ones with wider support can remain.",
             stacklevel=3)
     cols = np.arange(*T.getOwnershipRangeColumn())
     keep_mask = ~np.isin(cols, drop)
