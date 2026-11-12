@@ -467,16 +467,35 @@ def _reference_coordinates(points, corners_x, simplex, dim):
     map is inverted in the least-squares sense."""
     import numpy as np
 
+    cdim = points.shape[-1]
+
+    def solve(jac, rhs):
+        # A square Jacobian is solved directly; a surface in 3D needs the
+        # least-squares inverse, through the normal equations.
+        if cdim == dim:
+            return np.linalg.solve(jac, rhs[..., None])[..., 0]
+        jt = np.swapaxes(jac, -1, -2)
+        return np.linalg.solve(jt @ jac, (jt @ rhs[..., None]))[..., 0]
+
     if simplex:
         x0 = corners_x[:, :1, :]
         edges = np.swapaxes(corners_x[:, 1:, :] - x0, 1, 2)          # (n, cdim, dim)
-        return np.einsum("ndx,nmx->nmd", np.linalg.pinv(edges), points - x0)
+        jac = np.broadcast_to(edges[:, None], points.shape[:2] + edges.shape[1:])
+        return solve(jac, points - x0)
+    # Newton on the multilinear map; a parallelogram or parallelepiped
+    # converges in one step, a distorted cell in a few.
     t = np.full(points.shape[:2] + (dim,), 0.5)
     for _ in range(12):
         w, dw = _multilinear_weights(t, dim)
         residual = points - np.einsum("nmc,ncx->nmx", w, corners_x)
         jac = np.einsum("nmca,ncx->nmxa", dw, corners_x)            # (n, m, cdim, dim)
-        t = t + np.einsum("nmax,nmx->nma", np.linalg.pinv(jac), residual)
+        step = solve(jac, residual)
+        t = t + step
+        # t is O(1) and the match needs it to about 1e-2; 1e-10 is converged,
+        # where a tighter test would iterate on rounding (the step stalls near
+        # 1e-14 / h on a small cell).
+        if not np.abs(step).max(initial=0.0) > 1.0e-10:
+            break
     return t
 
 
@@ -619,7 +638,7 @@ def _lagrange_subcell_connectivity(meshVar):
     dim, cdim, k = mesh.dim, mesh.cdim, meshVar.degree
     if not meshVar.continuous or k < 1:
         return None
-    simplex = bool(mesh.dm.isSimplex())
+    simplex = bool(mesh.isSimplex)            # agreed across ranks; the DM's is rank-local
     weights, masks, subcells = _reference_lattice(dim, k, simplex)
     n_corners = weights.shape[1]
     targets = _reference_node_targets(dim, k, simplex, masks, weights)
@@ -627,6 +646,9 @@ def _lagrange_subcell_connectivity(meshVar):
         return None
 
     X = np.asarray(meshVar.coords_nd, dtype=np.float64)
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    if cEnd == cStart:
+        return np.zeros((0, subcells.shape[1]), dtype=np.int64)   # a rank with no cells
     dm = mesh._basis_coordinate_dm(k, True)
     try:
         section = dm.getLocalSection()
@@ -681,7 +703,12 @@ def _lagrange_subcell_connectivity(meshVar):
         # the nodes on the reference cell: the same scale for every cell,
         # however stretched or curved.
         corner_x = X[nodes[:, corner_nodes]]                             # (nc, corners, cdim)
-        actual = _reference_coordinates(X[rows], corner_x, simplex, dim)  # (nc, m, dim)
+        try:
+            actual = _reference_coordinates(X[rows], corner_x, simplex, dim)  # (nc, m, dim)
+        except np.linalg.LinAlgError:
+            return None                   # a degenerate cell: the caller falls back
+        if not np.isfinite(actual).all():
+            return None                   # NaN never fails the distance test below
         target = targets[lattice]                                         # (m, dim)
         cost = ((target[None, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
         if m <= 4:
@@ -756,7 +783,7 @@ def meshVariable_to_native_pv_mesh(meshVar):
         (True, 3): pv.CellType.TETRA,
         (False, 2): pv.CellType.QUAD,
         (False, 3): pv.CellType.HEXAHEDRON,
-    }[(bool(mesh.dm.isSimplex()), dim)]
+    }[(bool(mesh.isSimplex), dim)]
 
     cdim = mesh.cdim
     coords = np.asarray(meshVar.coords, dtype=np.float64)
@@ -802,13 +829,17 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         native = meshVariable_to_native_pv_mesh(meshVar)
         if native is not None:
             return native
-        if meshVar.continuous:
+        # A continuous Lagrange variable is meant to draw natively; falling back
+        # is worth a warning. (A discontinuous one always takes Delaunay, by
+        # design.) The refusal is per rank, so the rank says so in parallel.
+        if meshVar.continuous and meshVar.degree >= 1:
             import warnings
 
+            where = f" on rank {uw.mpi.rank}" if uw.mpi.size > 1 else ""
             warnings.warn(
-                f"{getattr(meshVar, 'name', 'variable')}: the mesh's own cells could not "
-                "carry this variable's nodes, so it is drawn on a Delaunay triangulation "
-                "of them, which can leave gaps on a graded mesh.",
+                f"{getattr(meshVar, 'name', 'variable')}: the mesh's own cells{where} "
+                "could not carry this variable's nodes, so it is drawn on a Delaunay "
+                "triangulation of them, which can leave gaps on a graded mesh.",
                 stacklevel=2,
             )
 

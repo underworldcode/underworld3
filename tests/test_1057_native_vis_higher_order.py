@@ -70,7 +70,7 @@ def _boundary_count(grid, dim):
     return grid.extract_surface().n_cells
 
 
-def _check(mesh, degree, exact_volume=None):
+def _check(mesh, degree, exact_volume=None, affine=True):
     dim = mesh.dim
     name = f"T{degree}"
     T = uw.discretisation.MeshVariable(name, mesh, 1, degree=degree)
@@ -114,8 +114,10 @@ def _check(mesh, degree, exact_volume=None):
     parent = np.abs(np.asarray(base_sizes.cell_data["Area" if dim == 2 else "Volume"]))
     ratio = size.reshape(len(parent), degree**dim) / parent[:, None]
     np.testing.assert_allclose(ratio.sum(axis=1), 1.0, rtol=1e-9)
-    pattern = np.sort(ratio, axis=1)
-    np.testing.assert_allclose(pattern, np.broadcast_to(pattern[0], pattern.shape), rtol=1e-9)
+    if affine:
+        # Every cell an affine image of one reference: the same ratios.
+        pattern = np.sort(ratio, axis=1)
+        np.testing.assert_allclose(pattern, np.broadcast_to(pattern[0], pattern.shape), rtol=1e-9)
     if exact_volume is not None:
         assert size.sum() == pytest.approx(exact_volume, rel=1e-12)
     return grid
