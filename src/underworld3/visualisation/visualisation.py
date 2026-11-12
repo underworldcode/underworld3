@@ -442,6 +442,113 @@ def _reference_lattice(dim, degree, simplex):
     return weights, masks, subcells
 
 
+def _multilinear_weights(t, dim):
+    """Corner weights of the multilinear map at local coordinates ``t`` (in
+    [0, 1]^dim, ``(..., dim)``), and their derivatives, ``(..., corners)``
+    and ``(..., corners, dim)``, corners in PETSc's closure order."""
+    import numpy as np
+
+    corners = np.array(_TENSOR_CORNERS[dim])                       # (C, dim)
+    f = np.where(corners == 1, t[..., None, :], 1.0 - t[..., None, :])   # (..., C, dim)
+    df = np.where(corners == 1, 1.0, -1.0) * np.ones_like(f)
+    w = np.prod(f, axis=-1)
+    dw = np.empty(f.shape)
+    for a in range(dim):
+        others = np.prod(np.delete(f, a, axis=-1), axis=-1) if dim > 1 else 1.0
+        dw[..., a] = df[..., a] * others
+    return w, dw
+
+
+def _reference_coordinates(points, corners_x, simplex, dim):
+    """Local coordinates of ``points`` (``(n, m, cdim)``) in their cells, whose
+    corners are ``corners_x`` (``(n, C, cdim)``): barycentric coordinates
+    of corners 1..dim on a simplex, the multilinear map's ``t`` in [0, 1]^dim
+    on a quad or hexahedron (inverted by Newton). On a surface in 3D the
+    map is inverted in the least-squares sense."""
+    import numpy as np
+
+    if simplex:
+        x0 = corners_x[:, :1, :]
+        edges = np.swapaxes(corners_x[:, 1:, :] - x0, 1, 2)          # (n, cdim, dim)
+        return np.einsum("ndx,nmx->nmd", np.linalg.pinv(edges), points - x0)
+    t = np.full(points.shape[:2] + (dim,), 0.5)
+    for _ in range(12):
+        w, dw = _multilinear_weights(t, dim)
+        residual = points - np.einsum("nmc,ncx->nmx", w, corners_x)
+        jac = np.einsum("nmca,ncx->nmxa", dw, corners_x)            # (n, m, cdim, dim)
+        t = t + np.einsum("nmax,nmx->nma", np.linalg.pinv(jac), residual)
+    return t
+
+
+def _reference_node_targets(dim, degree, simplex, masks, weights):
+    """Where PETSc puts each lattice node of the reference cell, in the local
+    coordinates of :func:`_reference_coordinates`: an ``(n_lattice, dim)``
+    array, or None if PETSc's node layout does not match the lattice's.
+
+    PETSc's Lagrange nodes are not equispaced for degree 3 and up, so the
+    lattice's own positions are only approximately where the nodes are. The
+    nodes are read from the element's dual space, with the options that
+    ``Mesh._basis_coordinate_dm`` gives the variable's element, and each is
+    paired with the lattice node of the same entity it is nearest to.
+    """
+    import numpy as np
+    from petsc4py import PETSc
+    from scipy.optimize import linear_sum_assignment
+
+    key = (dim, degree, simplex)
+    cached = _REFERENCE_NODE_TARGETS.get(key)
+    if cached is not None or key in _REFERENCE_NODE_TARGETS:
+        return cached
+
+    prefix = "uw_vis_reference_nodes_"
+    options = PETSc.Options()
+    settings = {"petscspace_degree": degree,
+                "petscdualspace_lagrange_continuity": True,
+                "petscdualspace_lagrange_node_endpoints": False}
+    for name, value in settings.items():
+        options[prefix + name] = value
+    try:
+        fe = PETSc.FE().createDefault(dim, 1, simplex, degree, prefix, PETSc.COMM_SELF)
+    finally:
+        for name in settings:
+            options.delValue(prefix + name)
+    dual = fe.getDualSpace()
+    nodes = np.vstack([np.asarray(dual.getFunctional(i).getData()[0]).reshape(-1, dim)
+                       for i in range(dual.getDimension())])
+    ref_corners = dual.getDM().getCoordinatesLocal().array.reshape(-1, dim).copy()
+    fe.destroy()
+
+    if simplex:
+        bary = _reference_coordinates(nodes[None], ref_corners[None], True, dim)[0]
+        node_weights = np.column_stack([1.0 - bary.sum(axis=1), bary])
+        node_local = bary
+        lattice_local = weights[:, 1:]
+    else:
+        lo, hi = ref_corners.min(axis=0), ref_corners.max(axis=0)
+        if not np.array_equal((ref_corners - lo) / (hi - lo), np.array(_TENSOR_CORNERS[dim])):
+            raise RuntimeError("PETSc's reference corner order differs from _TENSOR_CORNERS")
+        node_local = (nodes - lo) / (hi - lo)
+        node_weights = _multilinear_weights(node_local, dim)[0]
+        lattice_local = weights @ np.array(_TENSOR_CORNERS[dim], dtype=float)
+    node_masks = ((node_weights > 1.0e-10) * (1 << np.arange(node_weights.shape[1]))).sum(axis=1)
+
+    targets = np.empty((len(masks), dim))
+    for slot in set(masks.tolist()):
+        lattice = np.flatnonzero(masks == slot)
+        candidates = np.flatnonzero(node_masks == slot)
+        if len(candidates) != len(lattice):
+            _REFERENCE_NODE_TARGETS[key] = None
+            return None
+        cost = ((lattice_local[lattice, None, :] - node_local[None, candidates, :]) ** 2).sum(-1)
+        rows, cols = linear_sum_assignment(cost)
+        targets[lattice[rows]] = node_local[candidates[cols]]
+    _REFERENCE_NODE_TARGETS[key] = targets
+    return targets
+
+
+_REFERENCE_NODE_TARGETS = {}
+
+
 def _orient_subcells(conn, X, dim, simplex):
     """Reorder each sub-cell so that its signed volume (area in 2D) is positive,
     which is VTK's convention."""
@@ -495,12 +602,13 @@ def _lagrange_subcell_connectivity(meshVar):
     is identified with an entity of the reference lattice by its set of
     corners. Position is used for one thing only: ordering the several nodes
     of a single edge, face or interior, which follow that entity's own
-    orientation. Those are matched to the lattice positions of the same
-    entity, mapped through the cell's corners, and the competing positions are
-    a lattice spacing apart, so a node pushed off the chord (a curved
-    boundary, a degree-2 coordinate mesh) is still matched to the right one.
-    The match is refused, and ``None`` returned, if a node lies more than half
-    a spacing from its lattice position.
+    orientation. Those nodes are mapped into the cell's local coordinates
+    and matched to where PETSc puts the same entity's nodes on the reference
+    cell (#1083), so the comparison has the same scale in every cell, however
+    stretched, and a node pushed off the chord (a curved boundary, a degree-2
+    coordinate mesh) is still matched to the right one. The match is
+    refused, and ``None`` returned, if a node lies more than half the
+    reference spacing from its target.
     """
     import itertools
     import numpy as np
@@ -514,6 +622,9 @@ def _lagrange_subcell_connectivity(meshVar):
     simplex = bool(mesh.dm.isSimplex())
     weights, masks, subcells = _reference_lattice(dim, k, simplex)
     n_corners = weights.shape[1]
+    targets = _reference_node_targets(dim, k, simplex, masks, weights)
+    if targets is None:
+        return None
 
     X = np.asarray(meshVar.coords_nd, dtype=np.float64)
     dm = mesh._basis_coordinate_dm(k, True)
@@ -566,10 +677,13 @@ def _lagrange_subcell_connectivity(meshVar):
         if m == 1:
             nodes[:, lattice[0]] = rows[:, 0]
             continue
+        # Compared in the cell's local coordinates, against where PETSc puts
+        # the nodes on the reference cell: the same scale for every cell,
+        # however stretched or curved.
         corner_x = X[nodes[:, corner_nodes]]                             # (nc, corners, cdim)
-        target = np.einsum("lc,ncx->nlx", weights[lattice], corner_x)    # (nc, m, cdim)
-        actual = X[rows]                                                 # (nc, m, cdim)
-        cost = ((target[:, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
+        actual = _reference_coordinates(X[rows], corner_x, simplex, dim)  # (nc, m, dim)
+        target = targets[lattice]                                         # (m, dim)
+        cost = ((target[None, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
         if m <= 4:
             perms = np.array(list(itertools.permutations(range(m))))
             total = cost[:, np.arange(m)[None, :], perms].sum(-1)       # (nc, nperm)
@@ -578,7 +692,7 @@ def _lagrange_subcell_connectivity(meshVar):
             choice = np.array([linear_sum_assignment(c)[1] for c in cost])
         matched = np.take_along_axis(cost, choice[:, :, None], axis=2)[..., 0]
         spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
-                                   ((target[:, :, None] - target[:, None]) ** 2).sum(-1)).min(axis=(1, 2)))
+                                   ((target[:, None] - target[None]) ** 2).sum(-1)).min())
         if (np.sqrt(matched.max(axis=1)) >= 0.5 * spacing).any():
             return None
         nodes[:, lattice] = np.take_along_axis(rows, choice, axis=1)
@@ -688,6 +802,15 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         native = meshVariable_to_native_pv_mesh(meshVar)
         if native is not None:
             return native
+        if meshVar.continuous:
+            import warnings
+
+            warnings.warn(
+                f"{getattr(meshVar, 'name', 'variable')}: the mesh's own cells could not "
+                "carry this variable's nodes, so it is drawn on a Delaunay triangulation "
+                "of them, which can leave gaps on a graded mesh.",
+                stacklevel=2,
+            )
 
     point_cloud = meshVariable_to_pv_cloud(meshVar)
 
