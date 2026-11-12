@@ -107,7 +107,7 @@ The penalty approach does allow the solution to deviate from the exact value of 
 
 #### Mesh Adaptation
 
-It is also possible to use the PETSc mesh adaption capabilities, to refine the resolution of a model where it is most needed and coarsen elsewhere. Dynamically-adapting meshes are possible but the interface is very low level at present, particularly in parallel.
+Underworld3 refines a mesh where a metric asks for resolution with `mesh.adapt(metric, max_levels=...)`, which returns a refined child mesh on any PETSc build, and moves the nodes toward a metric with `uw.meshing.node_redistribution` (see [Mesh Adaptation](../advanced/mesh-adaptation.md)). The example below goes further and regenerates the mesh with PETSc's remesher, `adaptivity.mesh_adapt_meshVar`, which refines and coarsens. That route is an external opt-in: it needs a PETSc built with mmg, which the standard (conda-forge) PETSc does not have.
 
 ```{raw} html
 <center>

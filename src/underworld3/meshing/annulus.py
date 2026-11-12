@@ -67,7 +67,9 @@ def QuarterAnnulus(
         If True and ``radiusInner=0``, mark the centre point as a
         boundary for applying point constraints.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -114,6 +116,9 @@ def QuarterAnnulus(
     - ``unit_e_1``: tangential direction :math:`(\theta)`
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     # Convert unit-aware quantities to non-dimensional units
     # This enables: QuarterAnnulus(radiusOuter=uw.quantity(6370, "km"), ...)
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
@@ -312,7 +317,9 @@ def Annulus(
         If True and ``radiusInner=0``, mark the centre point as a
         boundary for applying point constraints.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -384,6 +391,9 @@ def Annulus(
         )
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     # Convert unit-aware quantities to non-dimensional units
     # This enables: Annulus(radiusOuter=uw.quantity(6370, "km"), ...)
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
@@ -575,7 +585,7 @@ def SegmentofAnnulus(
 ):
     """
     Generates a segment of an annulus using Gmsh. This function creates a 2D mesh of an annular segment defined by outer and inner radii,
-    and the extent of the angle. The mesh can be customized with various parameters like cell size, element degree, and verbosity.
+    and the extent of the angle. The mesh can be customized with various parameters like cell size and verbosity.
 
     Parameters
     ----------
@@ -589,8 +599,10 @@ def SegmentofAnnulus(
         The target size for the mesh elements. Default is 0.1.
     centre : bool, optional
         If True, the segment will be centered at the origin. Default is False.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -617,6 +629,9 @@ def SegmentofAnnulus(
     ...     centre=True,
     ... )
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
     radiusInner = uw.scaling.non_dimensionalise(radiusInner)
@@ -842,7 +857,9 @@ def AnnulusWithSpokes(
         Number of radial spokes dividing the annulus. Creates ``spokes``
         equal angular sectors.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -888,6 +905,9 @@ def AnnulusWithSpokes(
     for applying no-slip conditions that include radial walls.
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
     radiusInner = uw.scaling.non_dimensionalise(radiusInner)
@@ -1184,7 +1204,9 @@ def AnnulusInternalBoundary(
     centre : bool, default=False
         Mark the centre point as a boundary (if radiusInner=0).
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -1229,6 +1251,9 @@ def AnnulusInternalBoundary(
     thermal boundary layer).
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)
     radiusInternal = uw.scaling.non_dimensionalise(radiusInternal)
@@ -1494,7 +1519,9 @@ def DiscInternalBoundaries(
     cellSize_Centre : float, optional
         Element size at the disc centre.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -1537,6 +1564,9 @@ def DiscInternalBoundaries(
     edges, allowing flux integration across each interface.
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     # Convert unit-aware quantities to non-dimensional units
     radiusUpper = uw.scaling.non_dimensionalise(radiusUpper)
     radiusInternal = uw.scaling.non_dimensionalise(radiusInternal)

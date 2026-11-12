@@ -373,6 +373,10 @@ def extract_expressions(fn):
     atoms = fn.atoms(sympy.Symbol)
 
     # exhaustion criterion
+    # TODO(BUG): this also stops when every atom is a named expression, so
+    # extract_expressions(a * b) is empty for UWexpressions a and b; and a bare
+    # expression is searched from its .sym, so it never reports itself. The
+    # adjoint peels read the tree directly for that reason (see adjoint._peel_except).
     if atoms == fn.atoms():
         return set()
 

@@ -381,6 +381,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1139_fac_zone_blocks_any_rank_count_parallel.py
   # So are the structural patch's blocks, one per fault apart (#895).
   batch 3 tests/parallel/test_1147_fac_structural_blocks_per_fault_parallel.py
+  # So is a zone-keyed patch that a mover keeps, with the same solution (#1017).
+  batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -414,7 +416,15 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1145*py  # a Stokes adjoint keeps the velocity block's custom-P hierarchy (#1016)
   batch 4 tests/test_1146*py  # a custom-P hierarchy re-solves after mesh.deform (#1015)
   batch 4 tests/test_1148*py  # a new timestep keeps the SNES of a time-dependent solver (#1026)
+  batch 4 tests/test_1149*py  # a custom-P hierarchy's state does not outlive a change (#1019, #1017)
   batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
+  batch 4 tests/test_1153*py  # timestep estimates read model units; setters keep or refuse (#891, #1031)
+  batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
+  batch 4 tests/test_1172*py  # a solve after a move of a refined mesh uses the moved geometry (#1037)
+  batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)
+  batch 4 tests/test_1159*py  # a manifold sheet takes solve(picard=N) and an untransported history (#876, #887)
+  batch 4 tests/test_1160*py  # a fieldsplit sub-solve at its iteration cap says so (#585, #625)
+  batch 4 tests/test_1161*py  # a diverged solve warns (#1059)
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
@@ -541,18 +551,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     #
     # Opt-in via --full-parallel. A CI runner has two cores, so np=4 is
     # oversubscribed there; this belongs in a nightly or a separate job (#573).
-    #
-    # The deselection is #611: that test passes at np=2 and hangs at np=4 on
-    # development. The node id has no `tests/` prefix because tests/pytest.ini
-    # puts rootdir at `tests/`, and a deselect that does not match is ignored in
-    # silence — confirm "1 deselected" in the output when changing it.
     if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
       echo "Testing the same set at 4 ranks (np=2 is a special case)..."
       for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
         $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
-          "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" \
-          --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
-          || status=1
+          "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
       done
     fi
 

@@ -293,6 +293,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         verbose: bool = False,
         evalf: bool = False,
         divergence_retries: int = 0,
+        picard: int = 0,
     ):
         """Solve the sheet momentum balance; with a viscoelastic constitutive
         model, carry the stress history across the step first.
@@ -302,14 +303,21 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         timestep : float
             Required when the constitutive model carries a stress history: the
             elastic timestep of the Maxwell element.
-        zero_init_guess, verbose, divergence_retries
-            As for :meth:`SNES_Vector.solve`.
+        zero_init_guess, verbose, divergence_retries, picard
+            As for :meth:`SNES_Vector.solve`. A sheet on a manifold solves in the
+            rotated loop (``rotated_bc.solve_rotated_freeslip``), which takes no
+            automatic Picard step: ``picard=0`` is Newton from the start, and
+            ``picard=N`` gives at least N Picard iterations, staying on Picard
+            until the residual has fallen by ``solver.newton_switch_rtol``
+            (default 1e-2). On a flat mesh a cold nonlinear solve takes one
+            Picard step on its own, and ``picard=N`` gives N.
+            Time reaches the sheet through ``mesh.t``, the model's clock.
         evalf : bool, default False
             Numerical evaluation during the history carry.
         """
         if self.Unknowns.DFDt is None:
             super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
-                          divergence_retries=divergence_retries)
+                          divergence_retries=divergence_retries, picard=picard)
             self._refresh_pressure(verbose)
             return
         if timestep is None:
@@ -328,7 +336,7 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         self._build(verbose)
         self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
         super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,
-                      divergence_retries=divergence_retries)
+                      divergence_retries=divergence_retries, picard=picard)
         self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
         self._keep_history_tangent()
         self._refresh_pressure(verbose)
@@ -394,20 +402,24 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried (see
         :attr:`SNES_Stokes.stress_transport`). The default is the grid
-        (``"eulerian"``, the streamline-upwind transport). On a manifold it is
-        the only one: the semi-Lagrangian trace-back leaves the faceted surface.
-        On a flat mesh the others may be chosen, but next to a split-node fault
-        the trace-back reads across the slit."""
+        (``"eulerian"``, the streamline-upwind transport). On a manifold the
+        grid flavours are the ones available, ``"eulerian"`` and ``"none"`` (the
+        history stays at its node, for a tidal or seismic cycle that moves far
+        less than a cell a step): the others leave the faceted surface, the
+        trace-backs (``"semi_lagrangian"``, ``"integration_point"``) along a
+        characteristic and ``"forward"`` and ``"lagrangian"`` with their
+        points. On a flat mesh they may be chosen, but next to a split-node
+        fault a trace-back reads across the slit."""
         return super().stress_transport
 
     @stress_transport.setter
     def stress_transport(self, value):
-        if self.mesh.dim < self.mesh.cdim and str(value) != "eulerian":
+        if self.mesh.dim < self.mesh.cdim and str(value) not in ("eulerian", "none"):
             raise ValueError(
                 f"stress_transport={value!r} is not available on a manifold "
                 "mesh: the thin sheet carries its history on the grid "
-                "('eulerian'); the semi-Lagrangian trace-back leaves the "
-                "faceted surface.")
+                "('eulerian', or 'none' to leave it at its node); the other "
+                "flavours move their points off the faceted surface.")
         _StressHistoryMixin.stress_transport.fset(self, value)
 
     # ------------------------------------------------------------------

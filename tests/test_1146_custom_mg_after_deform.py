@@ -13,10 +13,8 @@ The live check that decides a re-install now also requires the finest interpolat
 be the one the install set. The level count alone passed a PC reset in place, which
 keeps the levels and drops the transfers, and that solve stopped with PETSc error 63.
 
-What the re-solve does not get back is the FAC patch: the coarse levels given to
-``set_custom_fmg`` do not move with the fine mesh, so after a deform no fine node
-coincides with its coarse node, every row reads as patch, and the cover gate declines
-it. That is filed separately.
+What the re-solve does not get back is the FAC patch: a deform kills it, and says so
+(#1017, test_1149).
 """
 import numpy as np
 import pytest

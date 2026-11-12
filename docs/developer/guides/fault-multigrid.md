@@ -174,6 +174,33 @@ one campaign and is the error to recognise.
   database only at its first apply (#892). `test_1090_mg_live_configuration_parallel`
   now reads back every level's live smoother against what was configured. Any
   faulted rotated solve measured between those dates was measured on ILU blocks.
+- The FAC keys leave the options database once a solve has set the levels up
+  from them, on the standard paths as on the rotated one. Left there, a later
+  route that read the same prefix (GAMG on an adapt child, an install whose level
+  had no patch) built a composite with no members and stopped with PETSc error 73
+  (#1015, #1019).
+- A move of the mesh kills the patch (ruling, 2026-11-08, #1017): `mesh.deform`
+  and every mover that commits through `remesh_with_field_transfer` (the
+  smoothing and MMPDE movers), on the standard routes and under `add_fault_bc`.
+  The registered coarse levels do not move with the fine mesh, so the hierarchy
+  is installed again without the patch, `pc_fallbacks["custom_mg.fac_patch"]`
+  says so, and a warning says the fault is absent from the preconditioner. The
+  patch is rebuilt as one step of the fault-move cycle: move the fault, re-refine
+  the base from it, and register the new levels with the cut fault
+  (`set_custom_fmg`). Registering the old coarse levels again does not rebuild
+  it: the cover gate declines the patch. A trial move inside `ephemeral_coords`
+  is not a move, and nor is a snapshot restore, which puts the coarse levels back
+  with the fine mesh.
+- A `fac_zone` patch survives a move (2026-11-10). Its blocks are the masked
+  cells' rows, which a node move leaves in place, and it only preconditions: after
+  MMPDE moves the solution matches a fresh registration to the solver tolerance in
+  velocity, pressure and slip, at the same velocity iterations (2-3 at np 1, 2 and
+  4 on hyperion's fixture, 14-28 with the patch killed; test_1152). On a split
+  level the move still drops the structural rows outside the zone. A repartition
+  or a topology change of the finest mesh kills the whole patch.
+- The first solve after a move reads the moved fields. The mesh-move transfer
+  wrote them without marking the mesh's assembly vector stale, so a solver that
+  had solved before the move assembled with pre-move coefficients (test_1151).
 - The robust (GMRES) smoother under contrast: the fast Richardson variant
   degrades already at $10^{2}$.
 - Check the subdomain probe, not only the iteration count: a patch that
