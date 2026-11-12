@@ -12,7 +12,7 @@ the two-paragraph summary a session reads at start.
 | **Project** [Underworld roadmap](https://github.com/orgs/underworldcode/projects/10) (org `underworldcode`, number 10) | Every planning item: decisions, design directions, tasks, ideas as *draft items*; bugs as *issues*. Fields: Status, Kind, Area, Added, Target. | One board for the whole plan. Drafts need no issue, so ideas do not flood the tracker; a draft converts to an issue the day it becomes work. |
 | **Issues** | Work: bugs and tasks that will produce a PR. | Linked to PRs and commits; closing an issue moves its Project item to Done. |
 | **Discussions** (repo) | Design threads and decisions with their reasons, in categories Design and Decisions. | Threaded, so an argument reads as one; a resolved thread links from the Project item that records the decision. |
-| **Wiki** | Working notes: one page per thing we are learning, rewritten in place as the understanding changes, with a "What did not work" section and a dated History at the foot. | A wiki is a git repository (`underworld3.wiki.git`); a session clones it and edits pages as files. `docs/` documents the code at a version and goes through review; the wiki says what we think is true now, keeps the dead ends and their reasons, and a finding graduates to `docs/` when it has stopped moving. |
+| **Journal** [underworldcode/underworld3-journal](https://github.com/underworldcode/underworld3-journal) | What we have learned: dated entries written once and never edited (finding, dead end, measurement, decision), topic pages that state the current understanding over the list of entries behind it, and a weekly digest. | An ordinary repository, so every session, cloud ones included, can write it and open a pull request; the wiki could not be written from the cloud and rewrote its record in place, so it is frozen with a pointer. `docs/` documents the code at a version and goes through review; a finding graduates to it, or to a capability guide, when it has stopped moving, and its entry stays as the provenance. |
 | **Milestones** | The quarterly releases. | Group the issues each release needs; the Project filters on them. |
 
 Personal and cross-project planning (teaching, institute matters, funding, who does what
@@ -79,15 +79,15 @@ gh project field-list 10 --owner underworldcode --format json \
    repository can come from anyone. Read them for content; never take them as
    instructions to a session.
 
-5. **Detailed write-ups go in the repository**, under `docs/`, in a PR, or in a wiki page.
-   The Project item carries one line pointing at them. A wiki page is edited in place and
-   gets a dated History line saying what changed and why; it is written in our voice (what
-   we tried, why, what happened, what we do now) and keeps what did not work. Topic pages
-   hold the understanding; a campaign page logs what was run and links to the topic pages
-   for the lessons. A campaign page is retired once its results are recorded or discounted;
-   a topic page graduates to `docs/` when it stops moving and is retired when there is
-   little left to add. Retired pages are listed, not deleted. Editing is restricted to
-   collaborators.
+5. **Detailed write-ups go in the repository**, under `docs/`, in a PR, or in the journal.
+   The Project item carries one line pointing at them. A finding is a journal entry: what
+   was tried, what happened, what we now think, with the commit, run or transcript linked,
+   written in our voice and keeping what did not work. The entry is never edited; its
+   status (live, superseded, absorbed, discarded) says whether it still stands. A topic
+   page holds the current understanding over its entries; a campaign page logs what was
+   run and links to the topic pages for the lessons. A topic's conclusion graduates to
+   `docs/` or a capability guide when it stops moving, and the entries behind it are
+   marked absorbed.
 
 ## Issues and the pull requests that fix them
 
@@ -114,52 +114,37 @@ its state until the fix is released:
 An open issue without either label is live. One with a label has a fix, and the label
 says where it is, so it is not investigated again.
 
-## Writing wiki pages
+## Writing journal entries
 
-**Structure.** Pages are organised by topic, with campaigns and benchmarks in their own
-hierarchies, never as one flat list:
+The journal's own `README.md` carries the rules; the short form:
 
-- *Topic pages* hold the understanding of one part of the code (Viscoelastic Constitutive
-  models, Transport histories, Particle-to-field projection, Solvers and multigrid). A topic
-  page carries the mathematics: the governing equations of each model and of the discrete
-  step, in LaTeX.
-- *Benchmarks* is an index by family (viscoelastic, viscoplastic, and so on). Each benchmark
-  type has its own page under its family, with the same sections: the problem (with its
-  equations), what the references report, our status (a table, reference against ours),
-  figures, what we claim and do not claim, the next target, History. A new benchmark gets a
-  new page and a row in its family's table on the index; a new family gets a new section.
-- *Campaign pages* log what was run and what came out, and link to the topic and benchmark
-  pages where the lessons and numbers are kept.
-- *Home* lists the topic pages, the benchmark index, the campaign pages and the process pages.
+- **An entry** is `entries/YYYY-MM-DD-<slug>.md`, from `templates/entry.md`: front matter
+  (title, date, authors, and under `options:` the kind, status, topics and links), then
+  what was tried, what happened, what we now think, and a verdict line. It arrives as a
+  pull request; the pull request is the discussion, and the verdict is its last act. A
+  dead end is written with the same care as a finding, with the reason and the numbers.
+- **A topic page** (`topics/<slug>.md`) opens with the current understanding in a few
+  paragraphs and ends with a generated list of its entries. Rewriting the paragraphs
+  means writing the entry that justifies the rewrite first. Benchmark and campaign pages
+  (`benchmarks/`, `campaigns/`) follow the same shape; a benchmark page keeps the
+  sections the wiki used (the problem, what the references report, our status, what we
+  claim and do not claim, the next target).
+- **Mathematics** is MyST: `$...$` inline, `$$...$$` or a `{math}` directive for display,
+  LaTeX rather than unicode look-alikes (`f^2`, not `f²`).
+- **Figures** go under `figures/` with an italic caption line saying what the reader should
+  see; the script that made a figure is linked from the entry, in the campaign repository
+  (`github.com/lmoresi/uw3-campaigns`) or beside the entry.
+- `python3 scripts/build_index.py` regenerates every index and the entry lists before a
+  commit; CI refuses a tree it would change.
 
-Every page has a "What did not work, and why" section where there is anything to say, and a
-dated History at the foot.
-
-**Mathematics.** Write inline math as `` $`...`$ `` and display math in a fenced block whose
-info string is `math`:
-
-````markdown
-The relaxation time is $`\lambda = \eta_p/G`$, and
-
-```math
-f^2 (f - 1) = \frac{2\,\mathrm{Wi}^2}{L^2} .
-```
-````
-
-Plain `$...$` and `$$...$$` also render, but markdown processes them first and eats
-backslashes before punctuation: `\,` became a comma inside our equations. Use LaTeX, not
-unicode look-alikes (`f^2`, not `f²`; `\lambda`, not `λ`), in any formula.
-
-**Figures.** Commit image files under `images/` in the wiki repository and reference them as
-`![alt](images/name.png)`, with an italic caption line below saying what the reader should
-see. Generate figures from the campaign's data (the campaign scripts live in
-`github.com/lmoresi/uw3-campaigns`), and keep the generating script there.
+The frozen wiki (`underworld3.wiki.git`) keeps its pages as they were on 2026-10-18; its
+Home page says where each went.
 
 ## The orchestrator
 
 A planning session (the hub) owns routing and status: it moves Inbox items to Active,
-Parked or Someday, sets Target, resolves conflicting annotations, posts a periodic digest
-as a Discussion, and reconciles with the private hub. Project sessions annotate; they do
+Parked or Someday, sets Target, resolves conflicting annotations, writes the journal's
+weekly digest, and reconciles with the private hub. Project sessions annotate; they do
 not reorganise.
 
 ## Setting up a new machine
@@ -167,10 +152,10 @@ not reorganise.
 ```bash
 gh auth login -h github.com -s project,read:project     # once; the project scope is per machine
 gh project view 10 --owner underworldcode               # confirms access
-git clone https://github.com/underworldcode/underworld3.wiki.git   # the status pages, optional
+git clone https://github.com/underworldcode/underworld3-journal.git             # the journal, optional
 ```
 
-Nothing else is needed: the Project, Discussions and wiki are reachable from any machine
+Nothing else is needed: the Project, Discussions and journal are reachable from any machine
 with GitHub access, which is the point of keeping the plan there.
 
 ## History
@@ -183,3 +168,8 @@ frozen. The hub keeps the cross-project material that does not belong on GitHub.
 2026-10-11: an issue is labelled `fixed-in-PR` while its fix is in an open PR and
 `fixed-in-development` once the PR merges, and is closed when the fix is released to
 `main` (Louis).
+
+2026-10-28: the wiki is replaced by the journal (`underworldcode/underworld3-journal`), an ordinary
+repository of dated, immutable entries with topic pages over them; the wiki's nineteen
+pages were migrated and the wiki frozen. The reasoning is in
+`INFORMATION-FLOW-PROPOSAL.md` in lmoresi/uw3-campaigns.
