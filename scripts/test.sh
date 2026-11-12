@@ -569,6 +569,13 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
+    # Four ranks give a rank that shares an interface vertex and holds none of the
+    # interface's facets, which the pressure split must still be told about: with
+    # that exchange skipped these cases pass at one and two ranks and fail at four.
+    # The np 4 pass below is opt-in, so this one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/test_1184_general_pressure_split.py || status=1
+
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some
     # ranks and not others, and with two ranks the mismatched pair often still
