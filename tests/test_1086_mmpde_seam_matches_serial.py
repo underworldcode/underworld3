@@ -12,12 +12,17 @@ redistribution path were read from those cells alone:
   boundary on each, was classed as a slip vertex instead of pinned, and slid
   off the domain (by up to 0.37 with ``slip_surfaces=True``).
 
-Both are now combined over every rank holding the vertex. Each case runs
+Both are now combined over every rank holding the vertex. The cases are
+boxes in 2D and 3D, pinned and slipping, and H1's cavity annulus (a
+refinement-2 annulus moved towards a fault trace at metric amplitude 20) at
+np 2, 3, 4 and 5. Each case runs
 ``Mesh.redistribute_nodes`` serially and in parallel, in subprocesses
 through the MPI supervisor (this file is also the worker: ``python -m mpi4py
 <this file> <case> <out.json>``), and the parallel mesh must match the serial
 one vertex by vertex, matched by starting position, to rounding. Measured on
-2026-11-12: within 4e-12 in every case.
+2026-11-12: within 4e-12 on the boxes, and within 7e-8 on the annulus, whose
+longer redistribution accumulates more rounding (it was 7e-3 to 2.4e-2
+before the fix).
 """
 
 import json
@@ -35,12 +40,55 @@ CASES = {
     "slip_corners_2d": (2, 1.0, True, 2),
     "slip_3d": (3, 0.35, True, 2),
 }
+ANNULUS_RANKS = (2, 3, 4, 5)
+
+
+def _move_annulus(out):
+    """H1's cavity case (#1086): a refinement-2 annulus moved by node
+    redistribution towards a dipping fault trace, metric amplitude 20. The
+    metric is read exactly (``metric_eval="sympy"``): the default frozen read
+    goes through ``global_evaluate``, which is partition-dependent at seams
+    on its own (#1093)."""
+    import sympy
+    import underworld3 as uw
+
+    r_o, r_i, refinement = 1 / 0.45, 0.55 / 0.45, 2
+    mesh = uw.meshing.Annulus(radiusOuter=r_o, radiusInner=r_i, cellSize=0.5,
+                              refinement=refinement, qdegree=3)
+    h, dip = 0.5 / 2**refinement, np.radians(45.0)
+    length = 0.4 / np.sin(dip)
+    s = np.linspace(0, length, max(8, int(np.ceil(length / (h / 2)))) + 1)
+    trace = np.array([r_o - 0.3, 0.0]) + s[:, None] * np.array([-np.sin(dip), -np.cos(dip)])
+    x, y = mesh.X
+    p0, p1 = trace[0], trace[-1]
+    t = sympy.Max(0, sympy.Min(1, ((x - p0[0]) * (p1[0] - p0[0]) + (y - p0[1]) * (p1[1] - p0[1]))
+                               / float(((p1 - p0) ** 2).sum())))
+    d2 = (x - p0[0] - t * (p1[0] - p0[0])) ** 2 + (y - p0[1] - t * (p1[1] - p0[1])) ** 2
+    before = np.asarray(mesh.X.coords).copy()
+    uw.meshing.node_redistribution(mesh, 1 + 20.0 * sympy.exp(-d2 / 0.15**2),
+                                   method_kwargs=dict(metric_eval="sympy"))
+    _write(out, before, np.asarray(mesh.X.coords).copy())
+
+
+def _write(out, before, after):
+    import underworld3 as uw
+
+    before = uw.mpi.comm.gather(before, root=0)
+    after = uw.mpi.comm.gather(after, root=0)
+    if uw.mpi.rank == 0:
+        before, after = np.concatenate(before), np.concatenate(after)
+        # Shared vertices appear on more than one rank; keep each once.
+        _, first = np.unique(before, axis=0, return_index=True)
+        Path(out).write_text(json.dumps({"before": before[first].tolist(),
+                                         "after": after[first].tolist()}))
 
 
 def _move(case, out):
     import sympy
     import underworld3 as uw
 
+    if case == "cavity_annulus":
+        return _move_annulus(out)
     dim, cell_size, slip, _ = CASES[case]
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
                                              cellSize=cell_size)
@@ -52,15 +100,7 @@ def _move(case, out):
     mesh.redistribute_nodes(metric, pinned_labels=sides, slip_surfaces=slip,
                             method_kwargs=dict(n_outer=10 if dim == 2 else 5,
                                                metric_eval="sympy"))
-    after = np.asarray(mesh.X.coords).copy()
-    before = uw.mpi.comm.gather(before, root=0)
-    after = uw.mpi.comm.gather(after, root=0)
-    if uw.mpi.rank == 0:
-        before, after = np.concatenate(before), np.concatenate(after)
-        # Shared vertices appear on more than one rank; keep each once.
-        _, first = np.unique(before, axis=0, return_index=True)
-        Path(out).write_text(json.dumps({"before": before[first].tolist(),
-                                         "after": after[first].tolist()}))
+    _write(out, before, np.asarray(mesh.X.coords).copy())
 
 
 def _run(case, ranks, out):
@@ -80,9 +120,24 @@ def _run(case, ranks, out):
 pytestmark = [pytest.mark.level_2, pytest.mark.timeout(1200)]
 
 
+def _assert_matches(serial, parallel, inside_unit_box=True, atol=1e-10):
+    before = np.asarray(serial["before"])
+    order = [int(np.flatnonzero((before == v).all(axis=1))[0]) for v in parallel["before"]]
+    assert len(set(order)) == len(before)
+    after = np.asarray(serial["after"])[order]
+    assert np.abs(after - before[order]).max() > 0.01           # the mesh moved
+    moved = np.asarray(parallel["after"])
+    if inside_unit_box:
+        assert ((moved > -1e-12) & (moved < 1 + 1e-12)).all(), "a vertex left the box"
+    np.testing.assert_allclose(moved, after, rtol=0, atol=atol)
+
+
+needs_mpirun = pytest.mark.skipif(not Path(sys.executable).with_name("mpirun").exists(),
+                                  reason="needs mpirun beside the Python interpreter")
+
+
 @pytest.mark.tier_b
-@pytest.mark.skipif(not Path(sys.executable).with_name("mpirun").exists(),
-                    reason="needs mpirun beside the Python interpreter")
+@needs_mpirun
 @pytest.mark.parametrize("case", list(CASES))
 def test_redistribution_matches_serial(case, tmp_path):
     import underworld3 as uw
@@ -91,15 +146,28 @@ def test_redistribution_matches_serial(case, tmp_path):
         pytest.skip("Run in serial; it launches its own serial and parallel runs.")
     serial = _run(case, 1, tmp_path / "serial.json")
     parallel = _run(case, CASES[case][3], tmp_path / "parallel.json")
+    _assert_matches(serial, parallel)
 
-    before = np.asarray(serial["before"])
-    order = [int(np.flatnonzero((before == v).all(axis=1))[0]) for v in parallel["before"]]
-    assert len(set(order)) == len(before)
-    after = np.asarray(serial["after"])[order]
-    assert np.abs(after - before[order]).max() > 0.01           # the mesh moved
-    moved = np.asarray(parallel["after"])
-    assert ((moved > -1e-12) & (moved < 1 + 1e-12)).all(), "a vertex left the box"
-    np.testing.assert_allclose(moved, after, rtol=0, atol=1e-10)
+
+@pytest.fixture(scope="module")
+def cavity_serial(tmp_path_factory):
+    return _run("cavity_annulus", 1, tmp_path_factory.mktemp("cavity") / "serial.json")
+
+
+@pytest.mark.tier_b
+@needs_mpirun
+@pytest.mark.parametrize("ranks", ANNULUS_RANKS)
+def test_cavity_annulus_matches_serial(ranks, cavity_serial, tmp_path):
+    import underworld3 as uw
+
+    if uw.mpi.size != 1:
+        pytest.skip("Run in serial; it launches its own serial and parallel runs.")
+    # The full redistribution runs many outer iterations, and the reductions
+    # sum in a different order on each rank count, so rounding accumulates:
+    # measured 3e-8 to 7e-8 at np 2-5 on a move of 0.139 (2026-11-12). The
+    # seam effects it guards against were 7e-3 to 2.4e-2.
+    _assert_matches(cavity_serial, _run("cavity_annulus", ranks, tmp_path / "parallel.json"),
+                    inside_unit_box=False, atol=1e-6)
 
 
 if __name__ == "__main__":
