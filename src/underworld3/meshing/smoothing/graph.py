@@ -86,6 +86,37 @@ def _owned_vertex_mask(dm):
     return is_owned
 
 
+def _reduce_over_sharing_ranks(dm, values, op):
+    """Combine a per-vertex value over every rank that holds the vertex.
+
+    ``values`` is indexed by vertex (point minus the first vertex). A volume
+    mesh is distributed without overlap, so a vertex on a partition seam sees
+    only its own rank's cells, and anything derived from its incident edges
+    or facets is partial there (#1086). Each owner combines its leaves'
+    values with ``op`` (an ``mpi4py.MPI`` operation, e.g. ``MPI.MIN``)
+    through the point SF, then sends the result back, so every rank holding
+    the vertex ends with the same value. Collective; a no-op in serial.
+    """
+    values = np.asarray(values)
+    sf = dm.getPointSF()
+    if uw.mpi.size == 1 or sf is None:
+        return values.copy()
+    pStart, pEnd = dm.getChart()
+    vStart, vEnd = dm.getDepthStratum(0)
+    if np.issubdtype(values.dtype, np.floating):
+        unit, data = _MPI.DOUBLE, np.zeros(pEnd - pStart, dtype=np.float64)
+    else:
+        unit, data = _MPI.INT64_T, np.zeros(pEnd - pStart, dtype=np.int64)
+    data[vStart - pStart:vEnd - pStart] = values
+    root = data.copy()
+    sf.reduceBegin(unit, data, root, op)
+    sf.reduceEnd(unit, data, root, op)
+    out = root.copy()
+    sf.bcastBegin(unit, root, out, _MPI.REPLACE)
+    sf.bcastEnd(unit, root, out, _MPI.REPLACE)
+    return out[vStart - pStart:vEnd - pStart].astype(values.dtype)
+
+
 def _pinned_mask(dm, pinned_labels):
     """Local-chart boolean mask: True where the vertex belongs to (or
     is the endpoint of an edge in) any of ``pinned_labels``.

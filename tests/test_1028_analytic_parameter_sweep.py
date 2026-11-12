@@ -34,6 +34,12 @@ from underworld3.analytic import _validation
 # solution -> parameter sets to try IN ADDITION to the defaults. Every entry
 # moves at least one coefficient off unity or off its default position.
 SWEEP = {
+    "KramerSphericalStokes": [
+        {"density": "smooth", "viscosity": 3.0, "forcing": 0.7,
+         "m": 1, "normalization": "real_orthonormal"},
+        {"density": "smooth", "boundary": "zero", "ell": 3, "k": 3},
+        {"r_int": 1.9, "viscosity": 0.5},
+    ],
     "SolA": [{"eta": 3.0}, {"eta": 0.25}, {"eta": 3.0, "n": 2, "m": 1.5}],
     "SolB": [{"eta": 3.0}, {"eta": 0.25}, {"eta": 3.0, "n": 2, "m": 1.5}],
     "SolCx": [{"eta_A": 3.0, "eta_B": 0.1}, {"eta_A": 1.0e4, "eta_B": 1.0, "x_c": 0.3}],
@@ -182,8 +188,11 @@ FORCE_FREE = {"EllipticalInclusion", "FaultedMedium"}
 FORCED = [n for n in STOKES if n not in FORCE_FREE]
 
 
-@pytest.mark.parametrize("name", FORCED)
-def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name):
+@pytest.mark.parametrize("name,parameters", [
+    (name, {"density": "smooth"} if name == "KramerSphericalStokes" else {})
+    for name in FORCED
+])
+def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name, parameters):
     r"""The momentum gate must REJECT :math:`\nabla\cdot\sigma - \mathbf f = 0`.
 
     This is what pins the sign convention to UW3's own. The solver assembles
@@ -197,7 +206,9 @@ def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name
     than skipped silently.
     """
 
-    sol = _built(cache, meshes, name, {})
+    # Kramer's default delta sheet has no bulk force away from its interface.
+    # Its smooth-density family supplies a nonzero volume source for this gate.
+    sol = _built(cache, meshes, name, parameters)
     points = sol.sample_points(count=8)
 
     assert _validation.momentum_residual(sol, points) < 1.0e-8

@@ -307,7 +307,7 @@ if not os.path.isfile(idfile):
 
 setup(
     name="underworld3",
-    packages=find_packages(),
+    packages=find_packages(where="src"),
     # Version is derived from git tags via setuptools_scm (configured in pyproject.toml)
     package_data={
         "underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"],

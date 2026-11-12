@@ -40,7 +40,18 @@ The parameter organization and section structure provide templates for generatin
 """
 
 # %%
-# TODO: Implement basic_mesh for define_scalar_variable
+import underworld3 as uw
+
+FIELD_NAME = "temperature"
+VARIABLE_DEGREE = 2
+INITIAL_VALUE = 1.0
+
+mesh = uw.meshing.StructuredQuadBox(
+    elementRes=(8, 8),
+    minCoords=(0.0, 0.0),
+    maxCoords=(1.0, 1.0),
+    qdegree=2,
+)
 
 # %% [markdown]
 """

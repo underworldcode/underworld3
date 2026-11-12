@@ -1706,6 +1706,10 @@ class SolverBaseClass(uw_object):
         next solve runs as it would in a run started cold from the restored
         fields."""
         self._has_solution = bool(s.has_solution)
+        # The adjoint's verdict follows the restored state, not whatever ran
+        # before the restore: a snapshot without a solution admits no adjoint
+        # until a solve converges (TranscriptAdjoint replays, so it re-records).
+        self._last_solve_converged = bool(s.has_solution)
         self._reset_preconditioner()
         # the rotated free-slip path solves with its own cached operator and
         # preconditioner, and a hint that licenses a shortcut on the next solve
@@ -1770,6 +1774,11 @@ class SolverBaseClass(uw_object):
         for it to stage with.
         """
         picard = int(picard or 0)
+        # A solve is starting: until it records its own verdict, there is no
+        # converged state to take an adjoint about. Without this a solve that
+        # raises left the previous solve's True standing (measured: a gradient
+        # 15.5x off FD accepted). Every solver family calls this before _build.
+        self._last_solve_converged = False
         self._picard_stages = None
         self._picard_warmup_record = None
         self._pending_picard = 0
@@ -1973,6 +1982,10 @@ class SolverBaseClass(uw_object):
         if converged is None:
             converged = self.snes is not None and self.snes.getConvergedReason() > 0
         self._has_solution = bool(converged)
+        # The verdict of the last solve itself, kept apart from has_solution: a
+        # rebuild clears has_solution (the warm-start claim) but does not make
+        # the solve that ran converge or not. adjoint_solve reads this (#804).
+        self._last_solve_converged = bool(converged)
 
     class _Unknowns:
         """
@@ -2200,6 +2213,90 @@ class SolverBaseClass(uw_object):
         """
         return self._adjoint_support()
 
+    #: Relative tolerance of the adjoint's linear solve. ``None`` derives it from
+    #: the solver: ``0.1 * tolerance``, the margin the solvers' own ``tolerance``
+    #: setters give a linear solve (#769). It only ever TIGHTENS: the KSP runs at
+    #: ``min(its own rtol, this)``. The rotated route solves its own (direct)
+    #: adjoint and does not read it.
+    adjoint_ksp_rtol = None
+
+    def _refuse_adjoint_of_unconverged_solve(self):
+        """An adjoint about a state the forward solve never reached is not the
+        adjoint of anything: its multiplier is undefined off the constraint
+        manifold, and the number it gives is simply wrong (#804: 35% off, no
+        warning). Refused here, on the solver that did the solving, so every
+        route (``gradient``, a transcript walk, a direct call) is covered."""
+        if getattr(self, "_last_solve_converged", None) is False:
+            report = getattr(self, "_solve_report", None)
+            if report is not None and not getattr(report, "converged", True):
+                why = getattr(report, "reason_str", None) or "it did not converge"
+            else:
+                # the report is from an earlier solve: this one raised, or the
+                # solver was restored to a state without a solution
+                why = "no converged solve since it raised or the solver was restored"
+            raise RuntimeError(
+                f"adjoint_solve: the last solve of {type(self).__name__}({self.u.name}) "
+                f"did not converge ({why}). The adjoint is taken about the state "
+                f"the solve ended in, and that state is not a solution, so its "
+                f"adjoint is not the adjoint of the problem. Converge the forward "
+                f"solve first.")
+
+    @staticmethod
+    def _check_adjoint_target(target, forward, what):
+        """``target`` must be on the forward field's space: it receives that
+        space's coefficients. Checked before the transposed solve, so a wrong
+        space fails at once rather than as a bare broadcast error after the
+        solve has run (#781)."""
+        if target is None:
+            return
+
+        def space(v):
+            return (int(getattr(v, "degree", -1)), bool(getattr(v, "continuous", True)),
+                    int(getattr(v, "num_components", 1)))
+
+        if target.mesh is not forward.mesh or space(target) != space(forward):
+            raise ValueError(
+                f"adjoint_solve: target {what} variable '{target.name}' is on "
+                f"(degree, continuous, components) = {space(target)}, but the forward "
+                f"{what} field '{forward.name}' is on {space(forward)}"
+                + ("" if target.mesh is forward.mesh else ", and on another mesh")
+                + ". The adjoint target must mirror the forward space: build it from "
+                f"the forward variable's own degree and continuity, not the defaults.")
+
+    def _adjoint_linear_tolerance(self, ksp):
+        """Context for the adjoint's linear solve on the solver's own KSP.
+
+        A Newton solve's linear solves are deliberately inexact: with
+        Eisenstat-Walker on, the SNES re-picks the KSP's ``rtol`` before each
+        linear solve, from 0.3 on the first. That is right for a forward step,
+        whose Newton iteration corrects the error. The adjoint has no outer
+        iteration: its error goes straight into every sensitivity (measured,
+        #769: 10% short at rtol 0.3, and the KSP reports converged). So for the
+        transposed solve EW is switched off and the KSP is held to
+        :attr:`adjoint_ksp_rtol` (never looser than it already was); both are
+        put back after it."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def held():
+            snes = self.snes
+            use_ew = bool(snes.getUseEW())
+            rtol, atol, dtol, max_it = ksp.getTolerances()
+            want = self.adjoint_ksp_rtol
+            if want is None:
+                tol = getattr(self, "_tolerance", None)
+                want = 0.1 * float(tol) if tol else rtol
+            snes.setUseEW(False)
+            ksp.setTolerances(rtol=min(float(rtol), float(want)), atol=atol,
+                              divtol=dtol, max_it=max_it)
+            try:
+                yield
+            finally:
+                ksp.setTolerances(rtol=rtol, atol=atol, divtol=dtol, max_it=max_it)
+                snes.setUseEW(use_ew)
+
+        return held()
+
     def adjoint_solve(self, rhs, target=None):
         r"""Solve the adjoint of the LAST solve: :math:`K^T \mu = b`.
 
@@ -2246,7 +2343,13 @@ class SolverBaseClass(uw_object):
         ------
         RuntimeError
             If this solve refuses an adjoint (:meth:`adjoint_support` says
-            why), or no solve has run.
+            why), no solve has run, or the last solve did not converge.
+        ValueError
+            If ``target`` is not on the unknown's space.
+
+        The linear solve is held to :attr:`adjoint_ksp_rtol` with
+        Eisenstat-Walker off: the forward Newton's inexact linear tolerance
+        would go straight into the sensitivities (#769).
         """
         supported, why = self._adjoint_support()
         if not supported:
@@ -2256,6 +2359,8 @@ class SolverBaseClass(uw_object):
             raise RuntimeError(
                 "adjoint_solve: no forward solve to take the adjoint of. Call "
                 "solve() first; the adjoint is taken about the state it ended in.")
+        self._refuse_adjoint_of_unconverged_solve()
+        self._check_adjoint_target(target, self.u, "unknown")
         import numpy as np
 
         cdef DM dm
@@ -2300,16 +2405,25 @@ class SolverBaseClass(uw_object):
         x = gvec.duplicate()
         x.set(0.0)
 
-        if by_kernels:
-            # J IS K^T: assembled from the transposed kernels. Solve forwards.
-            ksp = self.snes.getKSP()
-            ksp.setOperators(J, P)
-            ksp.solve(b, x)
-            reason = int(ksp.getConvergedReason())
-            self._uninstall_adjoint_kernels(tangent)
-        else:
-            reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
-            self._restore_tangent(tangent)
+        ksp = self.snes.getKSP()
+        try:
+            if by_kernels:
+                # J IS K^T: assembled from the transposed kernels. Solve forwards.
+                ksp.setOperators(J, P)
+                with self._adjoint_linear_tolerance(ksp):
+                    ksp.solve(b, x)
+                reason = int(ksp.getConvergedReason())
+            else:
+                with self._adjoint_linear_tolerance(ksp):
+                    reason = _solve_transposed(ksp, J, P, b, x)
+        finally:
+            # In a finally, as on the Stokes route: a raise inside the adjoint
+            # KSP left the transposed kernels installed, and the next forward
+            # solve ran Newton on K^T (measured: 12 Newton its against 3).
+            if by_kernels:
+                self._uninstall_adjoint_kernels(tangent)
+            else:
+                self._restore_tangent(tangent)
 
         if target is not None:
             # Homogeneous constraints: the local vector is zeroed before the
@@ -3678,6 +3792,11 @@ class SolverBaseClass(uw_object):
         if self._instrumentation is None:
             from underworld3.systems.solver_health import SolverInstrumentation
             self._instrumentation = SolverInstrumentation()
+            # Its callbacks on the KSPs hold it, and it holds the KSPs: a cycle
+            # through PETSc that Python's collector cannot see. _reset breaks it
+            # when the SNES is torn down; a solver that is simply dropped needs
+            # it broken when it is collected, or its KSP tree stays (#1041).
+            weakref.finalize(self, self._instrumentation.release).atexit = False
         return self._instrumentation
 
     def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
@@ -4322,6 +4441,30 @@ class SolverBaseClass(uw_object):
         self._convergence_reference = {"F_x0": F_x0, "F_0": F_0, "F_ref": F_ref,
                                        "target": target, "linear_floor": floor}
         return saved
+
+    def _refuse_a_separate_preconditioner_matrix(self):
+        """Raise if the SNES has a preconditioner matrix apart from its Jacobian
+        while natural BCs are registered (#1070).
+
+        The scalar, vector and multi-component solvers register a natural BC's
+        boundary Jacobian on the Jacobian only, because their Jacobian and
+        preconditioner are one matrix (#1065). A separate preconditioner matrix
+        would get no boundary term, and under ``-snes_mf_operator`` the boundary
+        assembly writes into the matrix-free operator and fails with PETSc error 56.
+        """
+        if not self.natural_bcs:
+            return
+        self.snes.setUp()
+        jacobian = self.snes.getJacobian()
+        J, P = jacobian[0], jacobian[1]
+        if J is None or P is None or J.handle == P.handle:
+            return
+        raise RuntimeError(
+            f"{type(self).__name__}: the SNES assembles its Jacobian and its "
+            f"preconditioner into two matrices (Jacobian type {J.getType()!r}, "
+            f"for example under -snes_mf_operator), but this solver puts the "
+            f"natural-BC terms into the Jacobian only, so the preconditioner would "
+            f"miss them (#1070). Remove the option or the separate matrix.")
 
     def _snes_solve_with_retries(self, gvec, divergence_retries=0, verbose=False):
         """Call self.snes.solve(None, gvec) with warm-start retries on divergence.
@@ -7063,13 +7206,10 @@ class SNES_Scalar(SolverBaseClass):
                                 NULL,
                                 )
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                0, 0, 0,
-                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                NULL,
-                                NULL,
-                                )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
         # Set constants on DS before copying to coarse levels
         self._set_constants_on_ds(ds)
@@ -7179,6 +7319,12 @@ class SNES_Scalar(SolverBaseClass):
         This is a **collective operation** - all MPI ranks must call it.
         The solver automatically handles mesh variable synchronization.
 
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
+
         See Also
         --------
         snes : Access to underlying PETSc SNES object for advanced control.
@@ -7236,6 +7382,9 @@ class SNES_Scalar(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # Pure-Neumann scalar problems: attach a constant nullspace
         # to the (now set-up) Jacobian. No-op unless
@@ -7250,6 +7399,9 @@ class SNES_Scalar(SolverBaseClass):
         auto_inject_custom_mg(self, field_id=None)
 
         # solve
+        # one matrix for the Jacobian and the preconditioner, or the natural BCs
+        # reach only one of them (#1070)
+        self._refuse_a_separate_preconditioner_matrix()
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
@@ -8149,21 +8301,10 @@ class SNES_Vector(SolverBaseClass):
                                     NULL, NULL,
                                     )
 
-                if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
-                else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, NULL,
-                                    )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
 
         if verbose:
@@ -8259,6 +8400,14 @@ class SNES_Vector(SolverBaseClass):
         -----
         This is a **collective operation** - all MPI ranks must call it.
 
+        On the standard path every solve reads ``petsc_options`` (and
+        ``tolerance``, which writes into them) afresh, so a value set between
+        solves applies to the next one; the rotated free-slip and fault-contact
+        loop returns before that and reads ``tolerance`` and ``snes_max_it``
+        itself. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
+
         See Also
         --------
         u : The solution vector field variable.
@@ -8317,6 +8466,9 @@ class SNES_Vector(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
@@ -8325,6 +8477,9 @@ class SNES_Vector(SolverBaseClass):
         auto_inject_custom_mg(self, field_id=None)
 
         # solve
+        # one matrix for the Jacobian and the preconditioner, or the natural BCs
+        # reach only one of them (#1070)
+        self._refuse_a_separate_preconditioner_matrix()
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
@@ -8904,21 +9059,10 @@ class SNES_MultiComponent(SolverBaseClass):
                                     NULL, NULL,
                                     )
 
-                if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
-                else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, NULL,
-                                    )
+                # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
+                # preconditioner are one matrix here, and a boundary preconditioner
+                # registered beside the Jacobian is assembled into it too, so the term
+                # entered twice (#1065)
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
@@ -8980,6 +9124,14 @@ class SNES_MultiComponent(SolverBaseClass):
             ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
             ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
             Keyword only in practice: it follows every other argument.
+
+        Notes
+        -----
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
         """
 
 
@@ -9017,7 +9169,13 @@ class SNES_MultiComponent(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
+        # one matrix for the Jacobian and the preconditioner, or the natural BCs
+        # reach only one of them (#1070)
+        self._refuse_a_separate_preconditioner_matrix()
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
@@ -12681,6 +12839,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise RuntimeError(
                 "adjoint_solve: no forward solve to take the adjoint of. Call "
                 "solve() first; the adjoint is taken about the state it ended in.")
+        self._refuse_adjoint_of_unconverged_solve()
+        if target is not None:
+            u_adj, p_adj = target
+            self._check_adjoint_target(u_adj, self.u, "velocity")
+            self._check_adjoint_target(p_adj, self.p, "pressure")
 
         import numpy as np
 
@@ -12758,10 +12921,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 # J IS K^T: assembled from the transposed kernels. Solve forwards.
                 ksp = self.snes.getKSP()
                 ksp.setOperators(J, P)
-                ksp.solve(b, x)
+                with self._adjoint_linear_tolerance(ksp):
+                    ksp.solve(b, x)
                 reason = int(ksp.getConvergedReason())
             else:
-                reason = _solve_transposed(self.snes.getKSP(), J, P, b, x)
+                ksp = self.snes.getKSP()
+                with self._adjoint_linear_tolerance(ksp):
+                    reason = _solve_transposed(ksp, J, P, b, x)
         finally:
             # Teardown belongs in `finally`: the rotated path refuses by design —
             # a released rotation, a changed boundary set — and a refusal that

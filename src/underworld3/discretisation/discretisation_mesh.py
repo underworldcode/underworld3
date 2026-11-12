@@ -34,6 +34,32 @@ import underworld3.timing as timing
 from sympy.vector import CoordSys3D
 
 
+class _SolverRegister:
+    """The solvers built on a mesh, held weakly, in the order they were built.
+
+    A mesh move or DM change marks each live solver for rebuild, and a
+    snapshot captures its step state. A plain list kept every solver ever
+    built on the mesh alive for as long as the mesh, with its SNES and its
+    PETSc options (#1041). Like the model's own registries, it does not
+    extend a solver's lifetime: a snapshot or transcript that names a
+    dropped solver's state cannot be restored into it.
+    """
+
+    def __init__(self):
+        self._solvers = weakref.WeakValueDictionary()
+        self._count = 0
+
+    def append(self, solver):
+        self._solvers[self._count] = solver
+        self._count += 1
+
+    def __iter__(self):
+        return iter(self._solvers.values())
+
+    def __len__(self):
+        return len(self._solvers)
+
+
 @contextmanager
 def _temporary_petsc_option(key, value):
     opts = PETSc.Options()
@@ -271,12 +297,19 @@ _REFERENCE_COORDINATES = "uw_reference_coordinates"
 
 def _vertex_coordinates(dm):
     """Coordinates of ``dm``'s local vertices, one row per vertex in point order."""
+    from underworld3.utilities._plex_topology import section_offsets
+
     cdim = dm.getCoordinateDim()
     vs, ve = dm.getDepthStratum(0)
-    section = dm.getCoordinateSection()
     array = dm.getCoordinatesLocal().array_r
-    offsets = numpy.array([section.getOffset(v) for v in range(vs, ve)], dtype=numpy.int64)
+    offsets = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve))
     return array[offsets[:, None] + numpy.arange(cdim)].reshape(-1, cdim)
+
+
+def _holds_cell_coordinates(dm):
+    """Does ``dm`` hold its coordinates cell by cell, as a periodic mesh does?"""
+    cell_coordinates = dm.getCellCoordinatesLocal()
+    return cell_coordinates is not None and bool(cell_coordinates.handle)
 
 
 def _vertex_section_dm(dm, name):
@@ -867,6 +900,18 @@ class Mesh(Stateful, uw_object):
         # it puts the coarse levels back with this mesh, and the patch built before
         # the move applies again.
         self._move_version = 0
+        # The vertex coordinates the mesh was made with, and whether
+        # _deform_mesh has run since: the geometry its cells' parents and its
+        # transfer to the level below are read on (fault_mg.reference_vertices,
+        # #1091). Taken by _record_as_built when the mesh is built. The flag
+        # is set by a call that restores or repeats the coordinates too (a
+        # reload's stamp, ephemeral_coords); the record then equals the
+        # coordinates and reading it costs a search and changes no answer.
+        self._as_built_vertices = None
+        self._moved_since_built = False
+        # For a mesh made on a moved one: the pair (level, vertices), its
+        # vertices in the geometry of that level (addon_partition.inherit_provenance).
+        self._addon_reference = None
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
@@ -1012,10 +1057,10 @@ class Mesh(Stateful, uw_object):
         self._vars = {}
         self._block_vars = {}
 
-        # a list of equation systems that will
-        # need to be rebuilt if the mesh coordinates change
+        # the equation systems that need to be rebuilt if the mesh
+        # coordinates change; held weakly (#1041)
 
-        self._equation_systems_register = []
+        self._equation_systems_register = _SolverRegister()
 
         # Operator on_remesh(ctx) hooks (SemiLagrangian / Lagrangian DDt,
         # solver-coupled history transfers). Stored as weakrefs so a
@@ -1101,6 +1146,10 @@ class Mesh(Stateful, uw_object):
 
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild(verbose)
+
+        # before the stamp below, which is a move: a reloaded mesh was made
+        # where its hierarchy was rebuilt
+        self._record_as_built()
 
         # Apply a deferred FMG-hierarchy deformed-coordinate stamp (set in the
         # reload/splice branch above). The hierarchy + working dm were rebuilt
@@ -2906,6 +2955,8 @@ class Mesh(Stateful, uw_object):
             self._mesh_version += 1
             self._topology_version += 1
             self.nuke_coords_and_rebuild(verbose=False)
+            # another topology: what this mesh was made with is its new grid
+            self._record_as_built()
 
         # Rebuild vertex map (for restrict/prolongate)
         self._vertex_map = None
@@ -3199,7 +3250,10 @@ class Mesh(Stateful, uw_object):
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
             fc = numpy.asarray(self._get_coords_for_basis(cv.degree, cv.continuous))
-            P = custom_mg.barycentric_prolongation(cc, fc)
+            # A field transfer needs every row right, not every coarse column
+            # reached: the orphan repair (a multigrid fix, #424) would overwrite
+            # rows with an injection from a far node.
+            P = custom_mg.barycentric_prolongation(cc, fc, repair_orphans=False)
             out = (P @ numpy.asarray(pv.data)).reshape(cv.data.shape)
 
         new = numpy.array(cv.data)
@@ -3244,7 +3298,12 @@ class Mesh(Stateful, uw_object):
                 # and silently reports the field at the DISPLACED position, an
                 # O(snap_frac x h) error that nothing downstream can see.
                 # Interpolate instead, which is what the parallel path above does.
-                P = custom_mg.barycentric_prolongation(fc, cc)
+                # The child's DOFs are the "coarse" cloud here and outnumber
+                # the parent's, so most of them are orphans; the repair (a
+                # multigrid fix, #424) overwrote a parent row with an
+                # injection from a nearby child node for each one, an O(h)
+                # error on every such row. A field transfer needs no repair.
+                P = custom_mg.barycentric_prolongation(fc, cc, repair_orphans=False)
                 out = (P @ numpy.asarray(cv.data)).reshape(pv.data.shape)
 
         new = numpy.array(pv.data)
@@ -4388,11 +4447,26 @@ class Mesh(Stateful, uw_object):
                       else _auto_pinned_labels(self))
         # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
         # down to its vertices, so face-only 3D labels classify correctly.
-        is_bnd = _pinned_mask(dm, all_labels)
+        # Which boundaries a vertex lies on is read from the labelled facets in
+        # its closure. A vertex on a partition seam sees only its own rank's
+        # facets: a box corner whose two edges are on different ranks counted
+        # one label on each, was classed as a slip vertex, and slid off the
+        # domain (#1086). Every mask is combined over the ranks holding the
+        # vertex, so each rank classifies it as serial does.
+        from mpi4py import MPI
+        from underworld3.meshing.smoothing.graph import _reduce_over_sharing_ranks
+
+        def shared_mask(local):
+            return _reduce_over_sharing_ranks(dm, local, MPI.BOR)
+
+        is_bnd = shared_mask(_pinned_mask(dm, all_labels))
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
-        # Per-label vertex masks (closure of each label's tagged facets).
-        masks = {lab: _pinned_mask(dm, (lab,)) for lab in slip_labels}
+        # Per-label vertex masks (closure of each label's tagged facets). The
+        # rank's own masks pick its reference facets below; the shared ones
+        # classify the vertices.
+        local_masks = {lab: _pinned_mask(dm, (lab,)) for lab in slip_labels}
+        masks = {lab: shared_mask(m) for lab, m in local_masks.items()}
 
         # Resolve a BoundingSurface for every slip label. Constructor-registered
         # labels (radial / plane) restore analytically; a slip label with NO
@@ -4411,16 +4485,27 @@ class Mesh(Stateful, uw_object):
         # exists for adapt()'s refinement snapping.
         surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
                 if not getattr(s, "interior", False)}
+        # Which labels are usable is decided on all ranks together (#1082): the
+        # normals below are a collective projection, so every rank must make the
+        # same calls. A rank holding none of a label's facets gets an empty facet
+        # surface. That is enough when such a rank also holds none of the
+        # label's vertices (every cell on one rank), but not in general: a rank
+        # can own slip vertices of a label without any of its facets, and its
+        # restore then fails alone. Each rank also restores onto its own facets
+        # only, so facet slip is partition-dependent. Both are #1103.
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
+            from mpi4py import MPI
+
             facets, _opp = _boundary_facets(self, cdim)
-            if facets is not None and facets.size:
-                for lab in unreg:
-                    fac_in = masks[lab][facets].all(axis=1)
-                    if fac_in.any():
-                        surf[lab] = BoundingSurface(
-                            self, lab, "facet",
-                            reference_facets=ref[facets[fac_in]])
+            for lab in unreg:
+                if facets is not None and facets.size:
+                    local = ref[facets[local_masks[lab][facets].all(axis=1)]]
+                else:
+                    local = numpy.zeros((0, cdim, cdim))
+                if uw.mpi.comm.allreduce(len(local) > 0, op=MPI.LOR):
+                    surf[lab] = BoundingSurface(self, lab, "facet",
+                                                reference_facets=local)
         usable = [lab for lab in slip_labels if lab in surf]
         masks = {lab: masks[lab] for lab in usable}
         count = numpy.zeros(n_verts, dtype=int)
@@ -4439,8 +4524,6 @@ class Mesh(Stateful, uw_object):
         # owned, so this is a no-op.) is_pinned stays the full geometric
         # classification, which is rank-consistent for shared vertices.
         slip_b = numpy.nonzero(slip_mask & _owned_vertex_mask(dm))[0]
-        if slip_b.size == 0:
-            return is_pinned, (lambda Y: Y)
         old_slip = ref[slip_b]
         labels_b = vert_label[slip_b]
 
@@ -4457,10 +4540,10 @@ class Mesh(Stateful, uw_object):
         # reference position under the slide; the surface restore still applies.
         normals_b = numpy.zeros((slip_b.size, cdim))
         valid_b = numpy.zeros(slip_b.size, dtype=bool)
+        # Every rank calls normals() for every usable label, with no vertices if
+        # it has none: a facet surface's normals are a collective projection.
         for lab in usable:
             sel = labels_b == lab
-            if not sel.any():
-                continue
             nrm, val = surf[lab].normals(old_slip[sel])
             normals_b[sel] = nrm
             valid_b[sel] = val
@@ -4910,6 +4993,27 @@ class Mesh(Stateful, uw_object):
         # than let a long run of moves accumulate them.
         PETSc.garbage_cleanup(self.dm.getComm())
 
+    def _record_as_built(self):
+        """Keep the vertex coordinates the mesh stands on as the ones it was made
+        with. Called once the coordinates of a new DM are in place, when the
+        mesh is built and wherever it is given another topology, and never by
+        a move.
+
+        The record has to exist before anything moves the mesh. A mover may
+        write into the coordinate vector of the DM before it calls
+        :meth:`_deform_mesh` (the halo exchanges of the MMPDE mover and of the
+        Laplacian smoother do, at more than one rank), so that call is too
+        late to read the built grid (#1091). The record costs one copy of the
+        vertex coordinates per mesh. A mesh built over a DM that had already
+        moved (the add-on partition's copy of a level, a cut) records the
+        coordinates it was given, and reaches the level below through
+        ``_addon_reference``. A periodic mesh holds its coordinates cell by
+        cell and keeps no record."""
+        self._as_built_vertices = (None if _holds_cell_coordinates(self.dm)
+                                   else _vertex_coordinates(self.dm))
+        self._moved_since_built = False
+        self._addon_reference = None
+
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
         """
@@ -4942,6 +5046,7 @@ class Mesh(Stateful, uw_object):
         self._assert_coord_mutation_allowed()
 
         with self._mesh_update_lock:
+            self._moved_since_built = True
             coord_vec = self.dm.getCoordinatesLocal()
             coords = coord_vec.array.reshape(-1, self.cdim)
             coords[...] = new_coords[...]
@@ -8271,8 +8376,11 @@ class Mesh(Stateful, uw_object):
                 f"{self.cdim}): every node would have to be constrained "
                 "to the surface. Implemented today: 2D simplex (triangle) "
                 "and 3D simplex (tetrahedral) meshes, via the MMPDE mover.")
-        if not bool(self.dm.isSimplex()) or self.cdim not in (2, 3):
-            kind = "simplex" if bool(self.dm.isSimplex()) else "tensor-product (quad/hex)"
+        # self.isSimplex is agreed across ranks at construction. The DM's own
+        # isSimplex() is rank-local and False on a rank with no cells, which
+        # would raise there while the other ranks wait in the mover (#1082).
+        if not self.isSimplex or self.cdim not in (2, 3):
+            kind = "simplex" if self.isSimplex else "tensor-product (quad/hex)"
             raise NotImplementedError(
                 f"node redistribution is not implemented for {self.cdim}D "
                 f"{kind} meshes. Implemented today: 2D simplex (triangle) "
@@ -9254,6 +9362,10 @@ class Mesh(Stateful, uw_object):
                                           child._fault_specs,
                                           verbose=verbose)
                 for k, m in zip(idx, split):
+                    # the split level stands where the level it replaces stood
+                    held = child._addon_reference
+                    if held is not None and held[0] is tail[k]:
+                        child._addon_reference = (m, held[1])
                     tail[k] = m
             child._custom_mg_coarse_meshes = tail
         return child
@@ -10596,6 +10708,8 @@ class Mesh(Stateful, uw_object):
 
             # Rebuild coordinate navigation
             self.nuke_coords_and_rebuild(verbose=False)
+            # another topology: what this mesh was made with is its new grid
+            self._record_as_built()
 
         # Destroy ALL old vectors upfront before reinitializing any variable.
         # This is critical because _setup_ds() iterates mesh._vars to backup/restore
