@@ -224,6 +224,17 @@ def _from_plexh5(
         try:
             sf0 = h5plex.topologyLoad(viewer)
             h5plex.coordinatesLoad(viewer, sf0)
+            # DMPlexCoordinatesLoad restores the coordinates with their stored
+            # block size but leaves the embedding dimension at the topological
+            # one, so a manifold (triangles in three-space) came back with
+            # cdim = 2 under three-component coordinates, and the coordinate
+            # space rebuild then failed on a 576 != 384 length mismatch (#870).
+            # Every rank must agree on cdim, so the block size is reduced.
+            from mpi4py import MPI as _MPI
+            loaded_cdim = comm.tompi4py().allreduce(
+                int(h5plex.getCoordinatesLocal().getBlockSize()), op=_MPI.MAX)
+            if loaded_cdim != h5plex.getCoordinateDim():
+                h5plex.setCoordinateDim(loaded_cdim)
             h5plex.labelsLoad(viewer, sf0)
             h5plex.markBoundaryFaces("All_Boundaries", 1001)
         finally:
@@ -798,6 +809,7 @@ class Mesh(Stateful, uw_object):
         units=None,
         verbose=False,
         *args,
+        _preserve_partition=False,
         **kwargs,
     ):
         Mesh._require_straight_sided_cells(degree, plex_or_meshfile)
@@ -932,7 +944,9 @@ class Mesh(Stateful, uw_object):
             self._build_coarsened_hierarchy(coarsening)
 
         else:
-            if not self.dm.isDistributed():
+            # An extracted region can occupy one rank without needing a new
+            # partition. Redistributing it breaks its rank-local parent maps.
+            if not _preserve_partition and not self.dm.isDistributed():
                 self.sf1 = self.dm.distribute()
 
             # On manifold meshes (dim != cdim — e.g. SphericalManifold
@@ -2398,8 +2412,9 @@ class Mesh(Stateful, uw_object):
         Returns
         -------
         dict
-            The subset of ``candidates`` present on ``subdm`` with a
-            non-empty stratum, preserving candidate order.
+            Candidates with a non-empty stratum anywhere on the DM communicator,
+            preserving candidate order: the same on every rank, so solver
+            boundary registration is rank independent. Collective.
         """
         present = set()
         for i in range(subdm.getNumLabels()):
@@ -2426,6 +2441,12 @@ class Mesh(Stateful, uw_object):
             lsis = lab.getStratumIS(value)
             if lsis is not None and lsis.getSize() > 0:
                 present.add(name)
+        # A boundary may have no points on this rank while present on its peers.
+        # Its name must nevertheless be in every rank's enum: boundary-condition
+        # registration and solver setup look the same names up on all ranks.
+        # (The label itself already exists on every rank: a filtered DM carries
+        # the parent's label list, empty strata included.)
+        present = set().union(*subdm.comm.tompi4py().allgather(present))
         return {name: v for name, v in candidates.items() if name in present}
 
     def extract_region(self, label_name, label_value=None):
@@ -2507,6 +2528,7 @@ class Mesh(Stateful, uw_object):
             boundaries=sub_boundaries,
             coordinate_system_type=self.CoordinateSystemType,
             verbose=False,
+            _preserve_partition=True,
         )
 
         # Store lineage
@@ -2561,6 +2583,11 @@ class Mesh(Stateful, uw_object):
             Stratum value within the label. If ``None``, resolved from
             ``self.boundaries[label_name].value``.
 
+        Notes
+        -----
+        Collective on the parent communicator: every rank must call this method,
+        including ranks with no local marked faces.
+
         Returns
         -------
         Mesh
@@ -2594,32 +2621,25 @@ class Mesh(Stateful, uw_object):
                     f"Available: {[b.name for b in self.boundaries]}"
                 )
 
-        # --- loud-fail if the parent has no faces marked with this label ---
+        # Reject globally empty surfaces, not ranks outside the surface.
         # NB: never call getStratumIS(v) for a value not in the live value set
         # — that hard-aborts PETSc on some labels (cf. the "Centre" pseudo-
         # label). Probe getValueIS() first.
-        label = self.dm.getLabel(label_name)
-        if label is None:
-            raise ValueError(
-                f"Parent DM has no label '{label_name}'. "
-                f"Cannot extract a surface submesh from it."
-            )
-        vals_is = label.getValueIS()
+        # getLabel returns a null handle, not None, for a missing label, and
+        # getValueIS on it aborts PETSc: ask hasLabel first.
+        vals_is = (self.dm.getLabel(label_name).getValueIS()
+                   if self.dm.hasLabel(label_name) else None)
         live_values = (
             set(int(v) for v in vals_is.getIndices())
             if vals_is is not None else set()
         )
-        if int(label_value) not in live_values:
+        sis = (self.dm.getLabel(label_name).getStratumIS(label_value)
+               if int(label_value) in live_values else None)
+        local_faces = sis.getSize() if sis is not None else 0
+        if uw.mpi.comm.allreduce(local_faces) == 0:
             raise ValueError(
-                f"Label '{label_name}' has no stratum with value {label_value} "
-                f"on the parent (live values: {sorted(live_values)}). "
-                f"There is no surface to extract."
-            )
-        sis = label.getStratumIS(label_value)
-        if sis is None or sis.getSize() == 0:
-            raise ValueError(
-                f"Label '{label_name}' (value {label_value}) has an empty face "
-                f"stratum on the parent. There is no surface to extract."
+                f"Label '{label_name}' (value {label_value}) has a globally empty "
+                f"face stratum. There is no surface to extract."
             )
 
         # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
@@ -2663,6 +2683,7 @@ class Mesh(Stateful, uw_object):
             boundaries=sub_boundaries,
             coordinate_system_type=self.CoordinateSystemType,
             verbose=verbose,
+            _preserve_partition=True,
         )
 
         # Submesh lineage — same shape as extract_region
@@ -3000,6 +3021,80 @@ class Mesh(Stateful, uw_object):
 
         sub_var.pack_raw_data_to_petsc(new_data, sync=True)
 
+    def _reduce_injection(self, parent_var, sub_var, sub_rows, parent_rows):
+        """Combine every rank's copy of each injected value at its parent owner.
+
+        Returns ``(matched, injected)``: a mask over the parent variable's local
+        rows that received a submesh value on any rank, and the value for each
+        (the mean of the agreeing copies). Collective; raises on every rank if
+        shared copies disagree or are not finite. See :meth:`prolongate`.
+        """
+        from mpi4py import MPI
+
+        shape = numpy.asarray(parent_var.data).shape
+        indexset, field_dm = self.parent.dm.createSubDM(parent_var.field_id)
+        values = parent_var.vec.duplicate()
+        counts = parent_var.vec.duplicate()
+        global_values = parent_var._gvec.duplicate()
+        global_counts = parent_var._gvec.duplicate()
+        overlap = None
+        try:
+            values.set(0.0)
+            counts.set(0.0)
+            # Variable-to-variable injection copies the stored nondimensional values.
+            source = numpy.asarray(sub_var.data)[sub_rows]
+            values.array.reshape(shape)[parent_rows] = source
+            # Reconcile every coincident copy through the DOF overlap, including
+            # owners with no local child match. Neutral entries do not contribute.
+            minimum = numpy.full(values.getLocalSize(), numpy.inf)
+            maximum = numpy.full(values.getLocalSize(), -numpy.inf)
+            minimum.reshape(shape)[parent_rows] = source
+            maximum.reshape(shape)[parent_rows] = source
+            if uw.mpi.size > 1:
+                overlap = field_dm.getSectionSF()
+                owned_minimum = numpy.full(global_values.getLocalSize(), numpy.inf)
+                owned_maximum = numpy.full(global_values.getLocalSize(), -numpy.inf)
+                # Section-SF roots use the owned global-vector layout; leaves
+                # use the local vector, which also includes ghost entries.
+                for leaves, roots, operation in (
+                    (minimum, owned_minimum, MPI.MIN),
+                    (maximum, owned_maximum, MPI.MAX),
+                ):
+                    overlap.reduceBegin(MPI.DOUBLE, leaves, roots, operation)
+                    overlap.reduceEnd(MPI.DOUBLE, leaves, roots, operation)
+                minimum, maximum = owned_minimum, owned_maximum
+            present = minimum <= maximum
+            disagree = not numpy.all(numpy.isclose(
+                minimum[present], maximum[present], rtol=1e-12, atol=1e-14,
+            ))
+            invalid = disagree or not numpy.all(numpy.isfinite(source))
+            if uw.mpi.comm.allreduce(int(invalid)):
+                raise ValueError(
+                    "prolongate received inconsistent or nonfinite shared submesh values; "
+                    "synchronize the source field before injection"
+                )
+            counts.array.reshape(shape)[parent_rows] = 1.0
+            global_values.set(0.0)
+            global_counts.set(0.0)
+            field_dm.localToGlobal(values, global_values, addv=PETSc.InsertMode.ADD_VALUES)
+            field_dm.localToGlobal(counts, global_counts, addv=PETSc.InsertMode.ADD_VALUES)
+            field_dm.globalToLocal(global_values, values, addv=False)
+            field_dm.globalToLocal(global_counts, counts, addv=False)
+            multiplicity = counts.array.reshape(shape)
+            matched = multiplicity > 0
+            return matched, values.array.reshape(shape)[matched] / multiplicity[matched]
+        finally:
+            # The section SF is a reference the DM keeps; holding it here and not
+            # releasing it grew memory on every parallel prolongate (#858 review).
+            if overlap is not None:
+                overlap.destroy()
+            values.destroy()
+            counts.destroy()
+            global_values.destroy()
+            global_counts.destroy()
+            field_dm.destroy()
+            indexset.destroy()
+
     def prolongate(self, sub_var, parent_var, mode="replace"):
         """Copy data from a submesh variable to a parent-mesh variable.
 
@@ -3012,6 +3107,18 @@ class Mesh(Stateful, uw_object):
         mode : str
             ``"replace"`` overwrites parent values at submesh DOFs.
             ``"add"`` adds submesh values into parent.
+
+        Notes
+        -----
+        A parent DOF owner need not retain any extracted-region cells. Local
+        coordinate matches can therefore exist only on another rank's parent
+        ghosts. Reduce matching contributions and their multiplicities through
+        the parent field DM before writing owner values. Shared copies must
+        agree within ``1e-14 + 1e-12 * abs(value)``; inconsistent values raise
+        collectively before modifying the target. Averaging agreeing copies
+        preserves injection, including ``add`` semantics; unmatched
+        parent DOFs keep their original values. No global coordinate gather or
+        interpolation is used.
 
         Raises
         ------
@@ -3027,15 +3134,15 @@ class Mesh(Stateful, uw_object):
 
         sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
 
-        new_data = numpy.array(parent_var.data)
-
-        if mode == "replace":
-            new_data[parent_rows] = sub_var.data[sub_rows]
-        elif mode == "add":
-            new_data[parent_rows] += sub_var.data[sub_rows]
-        else:
+        if mode not in ("replace", "add"):
             raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
 
+        new_data = numpy.array(parent_var.data)
+        matched, injected = self._reduce_injection(parent_var, sub_var, sub_rows, parent_rows)
+        if mode == "replace":
+            new_data[matched] = injected
+        else:
+            new_data[matched] += injected
         parent_var.pack_raw_data_to_petsc(new_data, sync=True)
 
         parent_var._data_is_dirty = True
@@ -10868,6 +10975,12 @@ def checkpoint_xdmf(
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
     topology_precision = cells.dtype.itemsize
+    # The cell's own dimension, which PETSc records on the cells dataset. The
+    # embedding dimension alone cannot tell a manifold's cells from a volume's:
+    # triangles in three-space have three corners, a quadrilateral surface in
+    # three-space four, like a tetrahedron (#869).
+    cell_dim = cells.attrs.get("cell_dim")
+    cell_dim = int(cell_dim) if cell_dim is not None else spaceDim
 
     if numCorners <= 1:
         h5.close()
@@ -10907,29 +11020,18 @@ def checkpoint_xdmf(
 
     geometry_information = units_information(geometry_units, "          ")
 
-    # We only use a subset of the possible cell types
-    if spaceDim == 2:
-        if numCorners == 3:
-            topology_type = "Triangle"
-        elif numCorners == 4:
-            topology_type = "Quadrilateral"
-        else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.", stacklevel=2)
-            topology_type = "Quadrilateral"
-        geomType = "XY"
-    else:
-        # TODO(BUG): a manifold mesh (triangles in three-space, e.g.
-        # SphericalManifold) lands here with numCorners == 3 and is written as
-        # Hexahedron; it should be Triangle with XYZ geometry. Found 2026-10-09
-        # (thin-sheet work), not fixed — out of that scope. See issue #869.
-        if numCorners == 4:
-            topology_type = "Tetrahedron"
-        elif numCorners == 8:
-            topology_type = "Hexahedron"
-        else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.", stacklevel=2)
-            topology_type = "Hexahedron"
-        geomType = "XYZ"
+    # We only use a subset of the possible cell types: chosen by the cell's
+    # own dimension and corner count, the geometry by the embedding dimension
+    cell_types = {(2, 3): "Triangle", (2, 4): "Quadrilateral",
+                  (3, 4): "Tetrahedron", (3, 8): "Hexahedron"}
+    topology_type = cell_types.get((cell_dim, numCorners))
+    if topology_type is None:
+        fallback = "Quadrilateral" if cell_dim == 2 else "Hexahedron"
+        warnings.warn(
+            f"Unexpected numCorners={numCorners} for {cell_dim}-D cells in "
+            f"{spaceDim}-D space; writing {fallback}.", stacklevel=2)
+        topology_type = fallback
+    geomType = "XY" if spaceDim == 2 else "XYZ"
 
     ## Create the header
 
