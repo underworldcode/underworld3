@@ -51,6 +51,9 @@ import underworld3 as uw
 _INSIDE_TOL = 1e-8
 # Chunk size for the batched weight evaluation (bounds the (n, nb, nb) temporaries).
 _CHUNK = 1 << 16
+# Barycentric weights this close to a node lattice value are that value: the
+# solve misses it by round-off times the cell's condition number.
+_LATTICE_TOL = 1e-9
 # The last parallel transfer's hit-rate record (see cell_located_transfer_parallel);
 # CustomMGHierarchy.build copies it per level into ``level_transfer_stats``.
 last_transfer_stats = None
@@ -270,8 +273,27 @@ def as_built_nodes(mesh, degree, continuous):
     owner = _fine_cell_of_node(cn, X.shape[0])
     if mesh.dm.comm.tompi4py().allreduce(int((owner < 0).sum())):
         raise CollectiveBuildError("fault_mg: a node of a moved level belongs to no cell")
-    lam = _barycentric(X, vxy[cv[owner]])
+    lam = _on_the_node_lattice(_barycentric(X, vxy[cv[owner]]), degree)
     return np.einsum("nv,nvd->nd", lam, reference[cv[owner]])
+
+
+def _on_the_node_lattice(lam, degree):
+    """Barycentric weights ``lam (n, dim + 1)`` with those of a node at a corner
+    or on the degree lattice of its cell (an edge midpoint at degree 2) set to
+    the lattice values, which they miss by the round-off of the solve.
+
+    With the lattice weights a node of a moved level goes back on the built
+    vertices where it stood before the move: bit for bit at degree 1 and 2,
+    whose weights (0, 1/2, 1) are exact, and to the last digit above that. A
+    transfer built on it is then the one built at rest. The node-cloud builder
+    needs that: a node on a face of its triangulation is read in either
+    neighbour, so a change in the last digit can change the row. A node inside
+    its cell (a discontinuous space) keeps its own weights."""
+    if degree < 1:
+        return lam
+    exact = np.round(lam * degree) / degree
+    on_it = np.abs(lam - exact).max(axis=1) < _LATTICE_TOL
+    return np.where(on_it[:, None], exact, lam)
 
 
 # --------------------------------------------------------------------------- #
@@ -608,7 +630,7 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     Xw = Xf[mine]
     reference = reference_vertices(pre, coarse)
     if reference is not None and mine.size:
-        at = _barycentric(Xw, vxy_p[cv_p[pcell]])
+        at = _on_the_node_lattice(_barycentric(Xw, vxy_p[cv_p[pcell]]), degree)
         Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
     lam = _barycentric(Xw, V_u[cv_u[inv]]) if mine.size else np.zeros((0, nv))
     W = (_node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)

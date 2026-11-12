@@ -204,8 +204,11 @@ one campaign and is the error to recognise.
   had before the move (test_1176). Built from the moved coordinates they follow
   the displacement: 13 velocity iterations on a faulted fixture against 6 with
   the transfers kept and 5 at rest. It is not cheaper on every move: under an
-  interior mover the count changes by one either way. This holds for a mover
-  only. A change of topology makes a new mesh and a new hierarchy, and a base
+  interior mover the count changes by one either way, and a redistribution that
+  carries nodes about four cell widths costs one or two iterations a solve (5
+  to 6 against 3 to 4 on 2 to 8 ranks). A move still drops the structural
+  patch; it comes back when the base is re-refined from the moved fault and
+  the new levels are registered. This holds for a mover only. A change of topology makes a new mesh and a new hierarchy, and a base
   that moved before an adapt or a cut goes into the new hierarchy where it
   stands. A `relax()` of a mesh that has not moved is part of making it. A
   mover does not replace refinement that adds nodes. Mechanism and counts:
