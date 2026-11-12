@@ -34,6 +34,32 @@ import underworld3.timing as timing
 from sympy.vector import CoordSys3D
 
 
+class _SolverRegister:
+    """The solvers built on a mesh, held weakly, in the order they were built.
+
+    A mesh move or DM change marks each live solver for rebuild, and a
+    snapshot captures its step state. A plain list kept every solver ever
+    built on the mesh alive for as long as the mesh, with its SNES and its
+    PETSc options (#1041). Like the model's own registries, it does not
+    extend a solver's lifetime: a snapshot or transcript that names a
+    dropped solver's state cannot be restored into it.
+    """
+
+    def __init__(self):
+        self._solvers = weakref.WeakValueDictionary()
+        self._count = 0
+
+    def append(self, solver):
+        self._solvers[self._count] = solver
+        self._count += 1
+
+    def __iter__(self):
+        return iter(self._solvers.values())
+
+    def __len__(self):
+        return len(self._solvers)
+
+
 @contextmanager
 def _temporary_petsc_option(key, value):
     opts = PETSc.Options()
@@ -1031,10 +1057,10 @@ class Mesh(Stateful, uw_object):
         self._vars = {}
         self._block_vars = {}
 
-        # a list of equation systems that will
-        # need to be rebuilt if the mesh coordinates change
+        # the equation systems that need to be rebuilt if the mesh
+        # coordinates change; held weakly (#1041)
 
-        self._equation_systems_register = []
+        self._equation_systems_register = _SolverRegister()
 
         # Operator on_remesh(ctx) hooks (SemiLagrangian / Lagrangian DDt,
         # solver-coupled history transfers). Stored as weakrefs so a
