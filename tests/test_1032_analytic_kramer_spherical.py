@@ -84,3 +84,33 @@ def test_cartesian_harmonics(mesh,ell,m,component):
 @pytest.mark.parametrize('kwargs', [dict(ell=1),dict(m=3),dict(k=1,density='smooth'),dict(r_int=3),dict(viscosity=0),dict(m=0,component='sin')])
 def test_rejects_invalid_and_resonant(mesh,kwargs):
     with pytest.raises((ValueError,NotImplementedError)):SphericalStokes(mesh,**kwargs)
+
+
+def test_every_relative_import_in_the_analytic_package_resolves():
+    """A deferred import of a module that does not exist fails only when its
+    branch runs. Every ``from .name import`` in the package, at any depth of
+    nesting, must name a module that is there."""
+    import ast
+    import importlib.util
+    from pathlib import Path
+
+    import underworld3.analytic as package
+
+    root = Path(package.__file__).parent
+    missing = []
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root).with_suffix("")
+        owner = ["underworld3", "analytic", *relative.parts[:-1]]
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.ImportFrom) or node.level == 0 or node.module is None:
+                continue
+            base = owner[:len(owner) - (node.level - 1)]
+            name = ".".join([*base, node.module])
+            try:
+                found = importlib.util.find_spec(name) is not None
+            except ModuleNotFoundError:
+                # find_spec imports the parent package, which is itself missing
+                found = False
+            if not found:
+                missing.append(f"{path.relative_to(root)}: {name}")
+    assert missing == []
