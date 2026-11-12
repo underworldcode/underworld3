@@ -94,16 +94,12 @@ class Integral:
         super().__init__()
 
     @timing.routine_timer_decorator
-    def evaluate(self, verbose=False):
-        """
-        Evaluate the integral and return the result with units (if applicable).
+    def _integrate(self, verbose=False):
+        """The integral, as PETSc computed it: in the model's own frame, with no units.
 
-        Returns
-        -------
-        float or UWQuantity
-            The integral value. If the integrand has units AND the mesh coordinates
-            have units, returns a UWQuantity with proper dimensional analysis
-            (integrand_units * volume_units). Otherwise returns a plain float.
+        :meth:`evaluate` labels and re-scales this number. A caller working in
+        the solver's frame (the adjoint, whose state and duals live there)
+        needs the number itself.
         """
         if len(self.mesh.vars)==0:
             raise RuntimeError("The mesh requires at least a single variable for integration to function correctly.\n"
@@ -158,6 +154,20 @@ class Integral:
         # We're making an assumption here that PetscScalar is same as double.
         # Need to check where this may not be the case.
         cdef double vald = <double> val_array[0]
+        return vald
+
+    def evaluate(self, verbose=False):
+        """
+        Evaluate the integral and return the result with units (if applicable).
+
+        Returns
+        -------
+        float or UWQuantity
+            The integral value. If the integrand has units AND the mesh coordinates
+            have units, returns a UWQuantity with proper dimensional analysis
+            (integrand_units * volume_units). Otherwise returns a plain float.
+        """
+        vald = self._integrate(verbose)
 
         # Unit propagation: compute result units from integrand and mesh volume
         # Result units = integrand_units * (coordinate_units)^dim
@@ -427,17 +437,12 @@ class BdIntegral:
         super().__init__()
 
     @timing.routine_timer_decorator
-    def evaluate(self, verbose=False):
-        """
-        Evaluate the boundary integral and return the result.
+    def _integrate(self, verbose=False):
+        """The boundary integral, as PETSc computed it: in the model's own frame, with no units.
 
-        Returns
-        -------
-        float or UWQuantity
-            The boundary integral value. If the integrand has units AND the
-            mesh coordinates have units, returns a UWQuantity with proper
-            dimensional analysis (integrand_units * coord_units^(dim-1)).
-            Otherwise returns a plain float.
+        :meth:`evaluate` labels and re-scales this number. A caller working in
+        the solver's frame (the adjoint, whose state and duals live there)
+        needs the number itself.
         """
         if len(self.mesh.vars) == 0:
             raise RuntimeError(
@@ -512,6 +517,21 @@ class BdIntegral:
         mesh.dm.restoreGlobalVec(a_global)
 
         cdef double vald = <double> result
+        return vald
+
+    def evaluate(self, verbose=False):
+        """
+        Evaluate the boundary integral and return the result.
+
+        Returns
+        -------
+        float or UWQuantity
+            The boundary integral value. If the integrand has units AND the
+            mesh coordinates have units, returns a UWQuantity with proper
+            dimensional analysis (integrand_units * coord_units^(dim-1)).
+            Otherwise returns a plain float.
+        """
+        vald = self._integrate(verbose)
 
         # Unit propagation: result_units = integrand_units * coord_units^(dim-1)
         # Boundary integral is over a codimension-1 manifold.

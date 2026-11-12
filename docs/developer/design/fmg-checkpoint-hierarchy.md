@@ -69,50 +69,72 @@ the 0-field coarse levels and fails (`requested fields 1 > DM fields 0`). The
 linked hierarchy lives in `dm_hierarchy`; the solver clones it
 (`clone_dm_hierarchy`) for its own multigrid setup.
 
-## Parallel: co-location via the Simple partitioner
+## Parallel: distribute the coarsest, then refine
 
-Works in serial **and** parallel through the same reload path. The hazard in
-parallel is that the coarse sidecars and the fine reload on **independent
-partitions**; linking incompatibly-partitioned levels sends the interpolator into
-a cross-rank point-location spin (observed before the fix: np=2, rank 0 at 99% CPU
-indefinitely, rank 1 idle).
+The reload rebuilds the hierarchy the way a fresh `refinement` mesh is built:
+the coarsest level from the sidecar is distributed, and every finer level is
+made from it by a local `refine()`. `refine()` never moves points across ranks,
+so each coarse cell and all of its children are on one rank, and the nested
+interpolation is rank-local at any np. (Distributing independently loaded levels
+misaligns them, and the interpolator spins in cross-rank point location.)
 
-The fix needs no custom partition math. The fine carries the **canonical
-refinement numbering** — coarse cell `c`'s children are fine cells
-`c·numSubcells + r`, laid out contiguously right after `c`. So if the fine *and*
-every coarse level are distributed with PETSc's **Simple** partitioner (equal
-contiguous splits of `[0, Ncells)`), the fine split at `k·Nf/p` lines up with the
-coarse split at `k·Nc/p` (since `Nf = numSubcells·Nc`): **each rank's coarse cells
-and their fine children land on the same rank.** The multigrid interpolation is
-then rank-local — no cross-partition communication, no hang — and the levels are a
-genuine per-rank refinement, so the exact **nested** interpolator applies (the fine
-levels are flagged via `DMPlexSetRegularRefinement`).
+## Matching the rebuilt fine mesh to the file (#690)
 
-Trade-off: hierarchy meshes reload with a Simple (contiguous) partition rather than
-the default graph partition. For refinement meshes the canonical ordering is
-reasonably coherent, and field reload is coordinate-matched (partition-agnostic),
-so correctness is unaffected; partition-quality tuning can come later. Plain
-(non-hierarchy) meshes are untouched — they keep the default partitioner.
+The rebuilt fine level is the saved fine mesh, numbered and distributed
+differently, and at its *reference* geometry: refinement of the coarsest level,
+with no refinement callback and no mesh motion. Two things must be carried from
+the file onto it: the saved coordinates, and the SF from the file's points to
+the mesh's points, through which `read_checkpoint` reloads fields by section.
+
+Until #690 was fixed the saved coordinates were paired with a serial refinement
+of the sidecar **by array index**. That holds only when the file was written in
+serial: a mesh written on two or more ranks reloaded, on every rank count, with
+cells joined to the wrong vertices (the integral of 1 came back negative). The
+mesh SF was also left as the file-to-loaded SF composed with the SF of the
+*coarse* distribute, so section field reloads failed on more ranks than wrote.
+
+The reload now matches points (`_match_file_points`):
+
+- **Vertices by reference position.** `Mesh.write` stores each fine vertex's
+  reference coordinates in the mesh file, as a vertex vector
+  `uw_reference_coordinates` (`Mesh._view_reference_coordinates`). They are
+  computed by refining the coarsest level exactly as the reload does, so the
+  match is exact however far the saved mesh has moved. A file written before
+  this has no such vector; its saved coordinates stand in, which matches any
+  mesh that has not moved by a large fraction of a cell.
+- **Every other point by its closure vertices**, keyed by their file ids. This
+  is also the check: a wrong vertex match leaves cells with no partner.
+- The matched file ids give the new mesh SF directly, and the saved coordinates
+  are stamped on at the end of `__init__`.
+
+If any point is unmatched (an old file of a moved mesh), the reload warns and
+falls back to reloading the fine mesh **without** its hierarchy, the same path
+as an unrefined mesh, which is always correct. Solvers then use their default
+preconditioner instead of FMG. A corrupt mesh is never returned.
+
+The vertex and closure tables are gathered on every rank, as the earlier
+coordinate broadcast was; a distributed match would be needed for very large
+meshes.
 
 ## Implementation
 
 All in `src/underworld3/discretisation/discretisation_mesh.py`:
 
-- `_hierarchy_sidecar_name()` — sidecar path convention.
-- `Mesh.write()` — writes `metadata/hierarchy_coarse_levels` and one sidecar
-  holding the coarsest level (collective).
-- `Mesh.__init__` `.h5` branch — loads the coarsest sidecar and rebuilds the
-  intermediate coarse levels by `refine()` (serial and parallel), stashing the
-  list on `self._sidecar_coarse_levels`.
-- `Mesh.__init__` hierarchy section — distributes fine + coarse with the Simple
-  partitioner (co-location), splices them under the working dm, flags the fine
-  levels as regular refinements, re-establishes the link-free clone.
-- `petsc_dm_{set,get}_regular_refinement` in `cython/petsc_discretisation.pyx` —
-  wraps `DMPlexSetRegularRefinement` (not exposed by petsc4py) so reloaded levels
-  take the exact nested interpolation path.
+- `_hierarchy_sidecar_name()`: the sidecar path convention.
+- `Mesh.write()`: writes `metadata/hierarchy_coarse_levels`, the reference
+  coordinates (`_view_reference_coordinates`) and one sidecar holding the
+  coarsest level (collective).
+- `Mesh._load_dm_from_file()` (`.h5` branch): loads the fine mesh with its SF
+  and the coarsest sidecar.
+- `Mesh._splice_hierarchy_from_sidecar()`: distributes the coarsest, refines it,
+  matches the rebuilt fine to the file (`_load_reference_coordinates`,
+  `_match_file_points`), and sets the link-free working `dm` and the mesh SF; or
+  returns False for the flat fallback.
 
 No new user-facing surface: the same `Mesh(file)` reload transparently restores the
 hierarchy when the checkpoint has one, and behaves exactly as before when it does
 not.
 
-Tests: `tests/test_0004_checkpoint_fmg_hierarchy.py`.
+Tests: `tests/test_0004_checkpoint_fmg_hierarchy.py`,
+`tests/test_0690_refined_checkpoint_cross_np.py` (written on one rank count,
+read on another) and `tests/parallel/test_0690_refined_checkpoint_reload_parallel.py`.

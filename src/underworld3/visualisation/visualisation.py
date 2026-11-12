@@ -374,27 +374,253 @@ def meshVariable_to_pv_cloud(meshVar):
     return point_cloud
 
 
-def meshVariable_to_native_pv_mesh(meshVar):
-    """The mesh's OWN cells, renumbered so point ``i`` is the variable's DOF ``i``.
+# Closure-vertex order of a PETSc tensor cell -> its corner on the unit square /
+# cube. The quad's closure goes round the cell; the hexahedron's bottom face is
+# wound the other way from VTK's (see mesh_to_pv_mesh, which reorders it).
+_TENSOR_CORNERS = {
+    2: ((0, 0), (1, 0), (1, 1), (0, 1)),
+    3: ((0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)),
+}
+# A VTK quad / hexahedron's corners, as offsets on the lattice.
+_VTK_TENSOR_CELL = {
+    2: ((0, 0), (1, 0), (1, 1), (0, 1)),
+    3: ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)),
+}
 
-    Returns ``None`` when the variable's degrees of freedom are not the mesh
-    vertices — a higher-order or discontinuous field — in which case there is no
-    native triangulation carrying it and the caller must fall back.
+
+def _reference_lattice(dim, degree, simplex):
+    """The degree-``degree`` node lattice of the reference cell, and its sub-cells.
+
+    Returns ``(weights, masks, subcells)``:
+
+    - ``weights``, ``(n_nodes, n_corners)``: each node's position as a
+      combination of the cell's corners (barycentric on a simplex, multilinear
+      on a quad or hexahedron), the corners in PETSc's closure-vertex order;
+    - ``masks``, ``(n_nodes,)``: the corners with nonzero weight, as a bitmask.
+      That set names the vertex, edge, face or cell interior the node lies on;
+    - ``subcells``, ``(degree**dim, nv)``: node indices of the sub-cells, which
+      tile the cell. On a simplex they are the Freudenthal (Kuhn) subdivision of
+      the lattice; on a tensor cell, the lattice's own small quads or hexahedra,
+      in VTK corner order. The orientation is not fixed here.
+    """
+    import itertools
+    import numpy as np
+
+    k = degree
+    if simplex:
+        # Lattice points as barycentric integer tuples b (sum k). In cumulative
+        # coordinates u_j = b_d + ... + b_{d-j+1}, the simplex is
+        # 0 <= u_1 <= ... <= u_d <= k, which Freudenthal's triangulation of the
+        # unit cubes tiles with k**d simplices.
+        nodes = [b for b in itertools.product(range(k + 1), repeat=dim + 1) if sum(b) == k]
+        index = {tuple(np.cumsum(b[::-1])[: dim]): i for i, b in enumerate(nodes)}
+        subcells = []
+        for base in itertools.product(range(k), repeat=dim):
+            for perm in itertools.permutations(range(dim)):
+                u = list(base)
+                verts = [tuple(u)]
+                for axis in perm:
+                    u[axis] += 1
+                    verts.append(tuple(u))
+                if all(v in index for v in verts):
+                    subcells.append([index[v] for v in verts])
+        weights = np.array(nodes, dtype=float) / k
+    else:
+        corners = np.array(_TENSOR_CORNERS[dim])
+        nodes = list(itertools.product(range(k + 1), repeat=dim))
+        index = {n: i for i, n in enumerate(nodes)}
+        t = np.array(nodes, dtype=float) / k
+        weights = np.prod(np.where(corners[None, :, :] == 1, t[:, None, :], 1.0 - t[:, None, :]),
+                          axis=2)
+        subcells = [[index[tuple(np.add(base, o))] for o in _VTK_TENSOR_CELL[dim]]
+                    for base in itertools.product(range(k), repeat=dim)]
+    masks = ((weights > 0) * (1 << np.arange(weights.shape[1]))).sum(axis=1)
+    subcells = np.array(subcells, dtype=np.int64)
+    assert len(subcells) == k**dim
+    return weights, masks, subcells
+
+
+def _orient_subcells(conn, X, dim, simplex):
+    """Reorder each sub-cell so that its signed volume (area in 2D) is positive,
+    which is VTK's convention."""
+    import numpy as np
+
+    x = X[conn][..., :dim]                         # (n, nv, dim)
+    if simplex:
+        jac = x[:, 1:, :] - x[:, :1, :]
+        neg = np.linalg.det(jac) < 0
+        conn[neg, 0], conn[neg, 1] = conn[neg, 1].copy(), conn[neg, 0].copy()
+    elif dim == 2:
+        e1, e3 = x[:, 1] - x[:, 0], x[:, 3] - x[:, 0]
+        neg = e1[:, 0] * e3[:, 1] - e1[:, 1] * e3[:, 0] < 0
+        conn[neg] = conn[neg][:, [0, 3, 2, 1]]
+    else:
+        jac = np.stack([x[:, 1] - x[:, 0], x[:, 3] - x[:, 0], x[:, 4] - x[:, 0]], axis=1)
+        neg = np.linalg.det(jac) < 0
+        conn[neg] = conn[neg][:, [0, 3, 2, 1, 4, 7, 6, 5]]
+    return conn
+
+
+def _orient_subcells_on_surface(conn, X, parent_x, simplex):
+    """Reorder each sub-cell of a 2D surface in 3D so that its normal points
+    the same way as its parent cell's. ``parent_x`` holds each parent cell's
+    corners, ``(n_cells, n_corners, 3)``, and the sub-cells of a cell are
+    consecutive in ``conn``."""
+    import numpy as np
+
+    # A triangle's normal from corners 0, 1, 2; a quad's from 0, 1 and 3.
+    third = 2 if simplex else 3
+    parent_n = np.cross(parent_x[:, 1] - parent_x[:, 0], parent_x[:, third] - parent_x[:, 0])
+    parent_n = np.repeat(parent_n, len(conn) // len(parent_x), axis=0)
+    x = X[conn]
+    sub_n = np.cross(x[:, 1] - x[:, 0], x[:, third] - x[:, 0])
+    flip = (sub_n * parent_n).sum(axis=1) < 0
+    if simplex:
+        conn[flip, 0], conn[flip, 1] = conn[flip, 1].copy(), conn[flip, 0].copy()
+    else:
+        conn[flip] = conn[flip][:, [0, 3, 2, 1]]
+    return conn
+
+
+def _lagrange_subcell_connectivity(meshVar):
+    """Sub-cells of the mesh's own cells through a continuous Lagrange
+    variable's nodes: an ``(n, nv)`` table of the variable's DOF rows, or
+    ``None`` if the variable's layout is not one this handles.
+
+    Which node is which comes from the topology (#1057). The DOFs that sit on
+    each vertex, edge, face and cell interior are read from the variable's own
+    section, through the DMPlex closure of each cell, and each closure entity
+    is identified with an entity of the reference lattice by its set of
+    corners. Position is used for one thing only: ordering the several nodes
+    of a single edge, face or interior, which follow that entity's own
+    orientation. Those are matched to the lattice positions of the same
+    entity, mapped through the cell's corners, and the competing positions are
+    a lattice spacing apart, so a node a little off its lattice position is
+    still matched to the right one.
+    The match is refused, and ``None`` returned, if a node lies more than half
+    a spacing from its lattice position.
+    """
+    import itertools
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+    from underworld3.utilities._plex_topology import closure_points, section_offsets
+
+    mesh = meshVar.mesh
+    dim, cdim, k = mesh.dim, mesh.cdim, meshVar.degree
+    if not meshVar.continuous or k < 1:
+        return None
+    simplex = bool(mesh.dm.isSimplex())
+    weights, masks, subcells = _reference_lattice(dim, k, simplex)
+    n_corners = weights.shape[1]
+
+    X = np.asarray(meshVar.coords_nd, dtype=np.float64)
+    dm = mesh._basis_coordinate_dm(k, True)
+    try:
+        section = dm.getLocalSection()
+        cells = np.arange(*dm.getHeightStratum(0))
+        nc = len(cells)
+        corners = closure_points(dm, cells, 0)
+        if corners.shape != (nc, n_corners) or (corners < 0).any():
+            return None                   # mixed or unexpected cell types
+
+        # Every closure entity of every cell: its corner set, first DOF row, DOF count.
+        ent_mask, ent_row, ent_count = [], [], []
+        for depth in range(dim + 1):
+            pts = cells[:, None] if depth == dim else closure_points(dm, cells, depth)
+            if (pts < 0).any():
+                return None
+            if depth == 0:
+                verts = pts[:, :, None]
+            else:
+                verts = closure_points(dm, pts.ravel(), 0).reshape(nc, pts.shape[1], -1)
+            hit = (verts[..., None] == corners[:, None, None, :]).any(axis=2)
+            ent_mask.append((hit * (1 << np.arange(n_corners))).sum(axis=-1))
+            flat = pts.ravel()
+            ent_row.append((section_offsets(section, flat) // cdim).reshape(pts.shape))
+            uniq, inv = np.unique(flat, return_inverse=True)
+            dof = np.array([section.getDof(int(p)) for p in uniq], dtype=np.int64) // cdim
+            ent_count.append(dof[inv].reshape(pts.shape))
+        ent_mask = np.concatenate(ent_mask, axis=1)
+        ent_row = np.concatenate(ent_row, axis=1)
+        ent_count = np.concatenate(ent_count, axis=1)
+    finally:
+        dm.destroy()
+
+    nodes = np.full((nc, len(masks)), -1, dtype=np.int64)
+    corner_nodes = [int(np.flatnonzero(masks == 1 << c)[0]) for c in range(n_corners)]
+    # Vertices first: their positions place every other lattice node.
+    slots = sorted(set(masks.tolist()), key=lambda s: bin(s).count("1"))
+    for slot in slots:
+        lattice = np.flatnonzero(masks == slot)
+        m = len(lattice)
+        found = ent_mask == slot
+        if not found.any(axis=1).all():
+            return None
+        j = found.argmax(axis=1)
+        r = np.arange(nc)
+        if (ent_count[r, j] != m).any():
+            return None                   # not the Lagrange layout this assumes
+        rows = ent_row[r, j][:, None] + np.arange(m)
+        if m == 1:
+            nodes[:, lattice[0]] = rows[:, 0]
+            continue
+        corner_x = X[nodes[:, corner_nodes]]                             # (nc, corners, cdim)
+        target = np.einsum("lc,ncx->nlx", weights[lattice], corner_x)    # (nc, m, cdim)
+        actual = X[rows]                                                 # (nc, m, cdim)
+        cost = ((target[:, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
+        if m <= 4:
+            perms = np.array(list(itertools.permutations(range(m))))
+            total = cost[:, np.arange(m)[None, :], perms].sum(-1)       # (nc, nperm)
+            choice = perms[total.argmin(axis=1)]
+        else:
+            choice = np.array([linear_sum_assignment(c)[1] for c in cost])
+        matched = np.take_along_axis(cost, choice[:, :, None], axis=2)[..., 0]
+        spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
+                                   ((target[:, :, None] - target[:, None]) ** 2).sum(-1)).min(axis=(1, 2)))
+        if (np.sqrt(matched.max(axis=1)) >= 0.5 * spacing).any():
+            return None
+        nodes[:, lattice] = np.take_along_axis(rows, choice, axis=1)
+
+    if (nodes < 0).any():
+        return None
+    conn = nodes[:, subcells].reshape(-1, subcells.shape[1])
+    if cdim != dim:
+        # A surface in 3D has no signed area; each sub-cell faces the way its
+        # parent cell does instead.
+        parent_x = X[nodes[:, corner_nodes]]
+        return _orient_subcells_on_surface(conn, X, parent_x, simplex)
+    return _orient_subcells(conn, X, dim, simplex)
+
+
+def meshVariable_to_native_pv_mesh(meshVar):
+    """The mesh's OWN cells, subdivided through the variable's nodes, with
+    point ``i`` the variable's DOF ``i``.
+
+    A continuous Lagrange variable of degree ``k`` is drawn on each cell's
+    reference lattice: ``k**2`` sub-triangles or sub-quads per cell in 2D,
+    ``k**3`` sub-tetrahedra or sub-hexahedra in 3D, every one of them through
+    the variable's own nodes. Every degree of freedom is used, and no cell is
+    dropped. The DOF-to-cell map is topological: see
+    :func:`_lagrange_subcell_connectivity`. At ``k = 1`` this is the mesh's
+    own triangulation.
+
+    Returns ``None`` for a layout this does not handle (a discontinuous or
+    degree-0 variable, a mixed-cell mesh), and the caller falls back.
 
     Why this exists
     ---------------
-    A **continuous P1** field has exactly one degree of freedom per vertex, so
-    the triangulation that carries it already exists in the DM. Re-deriving it
-    with ``delaunay_2d`` is not merely redundant, it is lossy on a graded mesh:
-    Delaunay is a property of the point set alone, so it neither knows nor
-    respects which triangles the mesh actually has, and the ``alpha`` filter —
-    one length for the whole domain — **deletes** cells whose circumradius
-    exceeds it. On an adapted mesh those are precisely the coarse cells. Measured
-    on a fault mesh graded 8:1, 361 of 11610 cells were dropped, and they render
-    as blank holes in the middle of the field.
+    Re-deriving a triangulation of the nodes with ``delaunay_2d`` is lossy on
+    a graded mesh: Delaunay is a property of the point set alone, so it
+    neither knows nor respects which cells the mesh actually has, and the
+    ``alpha`` filter (one length for the whole domain) **deletes** cells whose
+    circumradius exceeds it. On an adapted mesh those are precisely the coarse
+    cells. Measured on a fault mesh graded 8:1, 361 of 11610 cells were
+    dropped, and they render as blank holes in the middle of the field.
 
-    The points are returned in the VARIABLE's DOF order rather than the DM's
-    vertex order, so the documented pattern
+    The points are returned in the VARIABLE's DOF order, so the documented
+    pattern
 
     >>> pvm = vis.meshVariable_to_pv_mesh_object(T)
     >>> pvm.point_data["T"] = np.asarray(T.data[:, 0])
@@ -404,42 +630,27 @@ def meshVariable_to_native_pv_mesh(meshVar):
     """
     import numpy as np
     import pyvista as pv
-    from scipy.spatial import cKDTree
+
+    conn = _lagrange_subcell_connectivity(meshVar)
+    if conn is None:
+        return None
 
     mesh = meshVar.mesh
     dim = mesh.dim
-    pvm = mesh_to_pv_mesh(mesh)
+    celltype = {
+        (True, 2): pv.CellType.TRIANGLE,
+        (True, 3): pv.CellType.TETRA,
+        (False, 2): pv.CellType.QUAD,
+        (False, 3): pv.CellType.HEXAHEDRON,
+    }[(bool(mesh.dm.isSimplex()), dim)]
 
+    cdim = mesh.cdim
     coords = np.asarray(meshVar.coords, dtype=np.float64)
-    if coords.shape[0] != pvm.n_points:
-        return None                      # not one DOF per vertex
-
-    pts = np.asarray(pvm.points, dtype=np.float64)[:, :dim]
-    dist, dof_of_point = cKDTree(coords[:, :dim]).query(pts)
-    extent = float(np.ptp(pts)) or 1.0
-    if dist.max() > 1.0e-8 * extent:
-        return None                      # coincident in count but not in place
-
-    # Renumber the connectivity into DOF order, and hand back the variable's own
-    # coordinates as the points so the two are aligned by construction.
-    try:
-        conn = np.asarray(pvm.cell_connectivity)
-        offsets = np.asarray(pvm.offset)
-    except AttributeError:               # older pyvista
-        return None
-    sizes = np.diff(offsets)
-    if not len(sizes) or (sizes != sizes[0]).any():
-        return None                      # mixed cell types: not worth the risk
-    cells = np.column_stack(
-        [np.full(len(sizes), sizes[0]),
-         dof_of_point[conn].reshape(len(sizes), sizes[0])]).ravel()
-
     points = np.zeros((coords.shape[0], 3))
-    points[:, :dim] = coords[:, :dim]
-    native = pv.UnstructuredGrid(cells, np.asarray(pvm.celltypes), points)
-    for attr in ("_units", "_coord_array"):
-        if hasattr(pvm, attr):
-            setattr(native, attr, getattr(pvm, attr))
+    points[:, :cdim] = coords[:, :cdim]
+    cells = np.column_stack([np.full(len(conn), conn.shape[1]), conn]).ravel()
+    native = pv.UnstructuredGrid(cells, np.full(len(conn), celltype, dtype=np.uint8), points)
+    native._units = mesh.units if mesh.units is not None else uw.units.dimensionless
     native._coord_array = meshVar.coords
     return native
 
@@ -447,13 +658,13 @@ def meshVariable_to_native_pv_mesh(meshVar):
 def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     """Convert a mesh variable to a PyVista mesh carrying its nodal points.
 
-    Uses the mesh's **own** triangulation when the variable's degrees of freedom
-    are the mesh vertices (a continuous P1 field) — see
+    Uses the mesh's **own** cells, subdivided through the variable's nodes, for a
+    continuous variable of any degree: see
     :func:`meshVariable_to_native_pv_mesh`, which also explains why the Delaunay
     route silently drops coarse cells on an adapted mesh.
 
-    Otherwise the points are Delaunay-triangulated, which is what higher-order
-    and discontinuous variables need: the base mesh does not carry their DOFs.
+    Otherwise (a discontinuous variable, or a layout the native path refuses)
+    the points are Delaunay-triangulated.
 
     Parameters
     ----------

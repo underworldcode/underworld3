@@ -59,7 +59,9 @@ def SphericalShell(
     cellSize : float, default=0.1
         Target mesh element size.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -131,6 +133,9 @@ def SphericalShell(
         )
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Lower = 11
         Upper = 12
@@ -325,7 +330,9 @@ def SphericalManifold(
     cellSize : float, default=0.1
         Target mesh element size (chord length).
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -378,6 +385,8 @@ def SphericalManifold(
         >>> phi   = sphere.X.spherical.phi      # longitude
     """
 
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Surface = 12  # the manifold itself (closed sphere has no boundary curve)
 
@@ -425,9 +434,11 @@ def SphericalManifold(
     # defaults coordDim = dim (= 2) and drops the z-coordinate, which
     # collapses the manifold to its xy-projection. We load the DM
     # directly here (rather than going through ``_from_gmsh``'s
-    # h5 round-trip, which currently loses the explicit coordinate
-    # dimension), then hand the DM to Mesh() which accepts either a
-    # filename or a DMPlex object.
+    # h5 round-trip, which lost the explicit coordinate dimension until
+    # #870; ``_from_plexh5`` now restores it), then hand the DM to Mesh()
+    # which accepts either a filename or a DMPlex object. A mesh built from
+    # a DM has no topology SF, so ``read_checkpoint`` on it needs
+    # ``same_layout=True``, or a mesh rebuilt from its checkpoint file.
     # The option is global: left in place it would load every LATER gmsh
     # mesh in this process with three coordinates (a 2-D box after a sphere
     # failed on a 3:2 vector-length mismatch), so it is cleared once consumed.
@@ -533,8 +544,10 @@ def SphericalShellInternalBoundary(
         The inner radius of the spherical shell. Default is 0.547.
     cellSize : float, optional
         The target size for the mesh elements. Default is 0.1.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -569,19 +582,17 @@ def SphericalShellInternalBoundary(
     ... )
     """
 
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Centre = 1
         Lower = 11
         Internal = 12
         Upper = 13
 
-    # This generator builds a SINGLE shell volume [radiusInner, radiusOuter] with
-    # the radiusInternal sphere *embedded* as a conformal internal surface (the
-    # `Internal` boundary). Because it is one OCC volume, gmsh cannot emit Inner/
-    # Outer region physical groups — so the Inner/Outer cell regions used by
-    # mesh.extract_region() are created AFTER import by classifying each cell by
-    # its centroid radius relative to radiusInternal (exact: the embedded surface
-    # is conformal, so no cell straddles it). See PR #242.
+    # Gmsh embeds the Internal surface in one OCC volume, so it supplies no
+    # Inner/Outer volume groups. Their labels are reconstructed from fitted
+    # mesh connectivity below, with Internal facets acting as barriers.
     class regions(Enum):
         Inner = 101
         Outer = 102
@@ -789,27 +800,19 @@ def SphericalShellInternalBoundary(
 
     new_mesh.regions = regions
 
-    # Materialise the Inner/Outer cell regions on the DM (single-volume embed
-    # design — see note above — so gmsh emitted no region groups). Classify each
-    # LOCAL cell by centroid radius vs radiusInternal: the embedded internal
-    # surface is conformal, so every cell lies wholly inside or outside it, and
-    # the test is geometric/rank-local (partition-independent — no SF needed).
-    # extract_region("Inner"/"Outer") filters the DM on these labels.
-    _region_dm = new_mesh.dm
-    _cStart, _cEnd = _region_dm.getHeightStratum(0)
-    for _rname in (regions.Inner.name, regions.Outer.name):
-        if _region_dm.hasLabel(_rname):
-            _region_dm.removeLabel(_rname)
-        _region_dm.createLabel(_rname)
-    _inner_label = _region_dm.getLabel(regions.Inner.name)
-    _outer_label = _region_dm.getLabel(regions.Outer.name)
-    for _c in range(_cStart, _cEnd):
-        _centroid = _region_dm.computeCellGeometryFVM(_c)[1]
-        _rc = float(np.linalg.norm(_centroid))
-        if _rc < radiusInternal:
-            _inner_label.setValue(_c, regions.Inner.value)
-        else:
-            _outer_label.setValue(_c, regions.Outer.value)
+    # A tetrahedron outside the chordal interface can have every vertex on
+    # the sphere and a centroid below radiusInternal. Label the actual fitted
+    # sides by topology, not by a smooth-sphere radius test.
+    from underworld3.utilities._fitted_regions import _label_fitted_shell_regions
+
+    _label_fitted_shell_regions(
+        new_mesh.dm,
+        (boundaries.Lower.name, boundaries.Lower.value),
+        (boundaries.Upper.name, boundaries.Upper.value),
+        (boundaries.Internal.name, boundaries.Internal.value),
+        (regions.Inner.name, regions.Inner.value),
+        (regions.Outer.name, regions.Outer.value),
+    )
 
     # Full spherical shell with internal boundary: 3 rigid rotation modes
     x, y, z = new_mesh.X
@@ -864,8 +867,10 @@ def SegmentofSphere(
         The angular extent in latitude (degrees). Default is 90.0.
     cellSize : float, optional
         The target size for the mesh elements. Default is 0.1.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -895,6 +900,8 @@ def SegmentofSphere(
     ...     cellSize=0.05,
     ... )
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 11
@@ -1127,7 +1134,9 @@ def CubedSphere(
         Number of elements along each edge of each cube face. Total
         elements approximately ``6 * numElements^2`` per radial layer.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     simplex : bool, default=False
@@ -1181,6 +1190,8 @@ def CubedSphere(
     - ``unit_e_2``: longitude direction :math:`(\phi)`
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1

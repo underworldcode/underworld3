@@ -655,7 +655,9 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             raise ValueError(f"basis must be 'accuracy' or 'resolution', not {basis!r}.")
 
         comm = uw.mpi.comm
-        values = np.asarray(self.u.array).reshape(-1)
+        # model units, like the gradient and the change rate it is divided by:
+        # ``u.array`` is dimensional on a variable with units (#891)
+        values = np.asarray(self.u.data).reshape(-1)
         lo = comm.allreduce(float(values.min()) if values.size else np.inf, op=MPI.MIN)
         hi = comm.allreduce(float(values.max()) if values.size else -np.inf, op=MPI.MAX)
         field_range = hi - lo
@@ -674,17 +676,23 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
 
         The gradient is the Clement recovery at the vertices (no point
         location, so it is safe on a mesh carrying many variables) and the
-        velocity is evaluated at the same points.
+        velocity is evaluated at the same points: the coordinate DM's local
+        nodes, which is the layout the recovery returns, in model units. In a
+        model with reference scales ``mesh.X.coords`` is dimensional, and the
+        velocity was read millions of lengths outside the mesh (#891). A
+        velocity with units is non-dimensionalised, as the gradient already is.
         """
         from mpi4py import MPI
         from underworld3.function.gradient_evaluation import compute_clement_gradient_at_nodes
 
-        coords = np.asarray(self.mesh.X.coords)
+        coords = self.mesh.dm.getCoordinatesLocal().array.reshape(-1, self.mesh.cdim)
         n = coords.shape[0]
         if n:
             grad = np.asarray(compute_clement_gradient_at_nodes(self.u), dtype=float).reshape(n, -1)
             vel = uw.function.evaluate(self.V_fn, coords)
-            vel = np.asarray(getattr(vel, "magnitude", vel), dtype=float).reshape(n, -1)
+            if getattr(vel, "units", None) is not None:
+                vel = uw.non_dimensionalise(vel)
+            vel = np.asarray(vel, dtype=float).reshape(n, -1)
             local = float(np.abs((vel[:, :grad.shape[1]] * grad).sum(axis=1)).max())
         else:
             local = 0.0

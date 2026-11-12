@@ -2,6 +2,7 @@ from typing import Optional, Tuple, Union
 from enum import Enum
 from contextlib import contextmanager
 
+import numbers
 import os
 import weakref
 import threading
@@ -249,6 +250,17 @@ def _from_plexh5(
         try:
             sf0 = h5plex.topologyLoad(viewer)
             h5plex.coordinatesLoad(viewer, sf0)
+            # DMPlexCoordinatesLoad restores the coordinates with their stored
+            # block size but leaves the embedding dimension at the topological
+            # one, so a manifold (triangles in three-space) came back with
+            # cdim = 2 under three-component coordinates, and the coordinate
+            # space rebuild then failed on a 576 != 384 length mismatch (#870).
+            # Every rank must agree on cdim, so the block size is reduced.
+            from mpi4py import MPI as _MPI
+            loaded_cdim = comm.tompi4py().allreduce(
+                int(h5plex.getCoordinatesLocal().getBlockSize()), op=_MPI.MAX)
+            if loaded_cdim != h5plex.getCoordinateDim():
+                h5plex.setCoordinateDim(loaded_cdim)
             h5plex.labelsLoad(viewer, sf0)
             h5plex.markBoundaryFaces("All_Boundaries", 1001)
         finally:
@@ -273,6 +285,230 @@ def _hierarchy_sidecar_name(mesh_filename):
     """
     base, ext = os.path.splitext(mesh_filename)
     return f"{base}.hierarchy.L0{ext}"
+
+
+# Name of the per-vertex reference-coordinate vector that ``Mesh.write`` stores
+# in a refined mesh's checkpoint (#690). The reference position of a fine vertex
+# is where refining the coarsest level puts it, before any refinement callback
+# or mesh motion. That is what a reload rebuilds, so it pairs the file's
+# vertices with the rebuilt ones exactly, however far the saved mesh has moved.
+_REFERENCE_COORDINATES = "uw_reference_coordinates"
+
+
+def _vertex_coordinates(dm):
+    """Coordinates of ``dm``'s local vertices, one row per vertex in point order."""
+    from underworld3.utilities._plex_topology import section_offsets
+
+    cdim = dm.getCoordinateDim()
+    vs, ve = dm.getDepthStratum(0)
+    array = dm.getCoordinatesLocal().array_r
+    offsets = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve))
+    return array[offsets[:, None] + numpy.arange(cdim)].reshape(-1, cdim)
+
+
+def _holds_cell_coordinates(dm):
+    """Does ``dm`` hold its coordinates cell by cell, as a periodic mesh does?"""
+    cell_coordinates = dm.getCellCoordinatesLocal()
+    return cell_coordinates is not None and bool(cell_coordinates.handle)
+
+
+def _vertex_section_dm(dm, name):
+    """Clone of ``dm`` whose local section holds ``cdim`` values on each vertex.
+
+    Its local vector is laid out one row per vertex, in point order."""
+    cdim = dm.getCoordinateDim()
+    sdm = dm.clone()
+    sdm.setName(name)
+    section = PETSc.Section().create(comm=dm.getComm())
+    section.setNumFields(1)
+    section.setFieldComponents(0, cdim)
+    section.setChart(*dm.getChart())
+    for v in range(*dm.getDepthStratum(0)):
+        section.setDof(v, cdim)
+        section.setFieldDof(v, 0, cdim)
+    section.setUp()
+    sdm.setLocalSection(section)
+    section.destroy()
+    return sdm
+
+
+def _load_reference_coordinates(filename, dm, sf):
+    """Per-vertex reference coordinates saved with a refined mesh, or None.
+
+    ``dm`` and ``sf`` are the DM loaded from ``filename`` and the SF from the
+    file's points to it. Returns one row per local vertex of ``dm``, in point
+    order. A file written before #690 was fixed has no such vector. Collective.
+    """
+    import h5py
+
+    present = None
+    if uw.mpi.rank == 0:
+        with h5py.File(filename, "r") as fh:
+            present = f"topologies/{dm.getName()}/dms/{_REFERENCE_COORDINATES}" in fh
+    if not uw.mpi.comm.bcast(present, root=0):
+        return None
+
+    cdim = dm.getCoordinateDim()
+    sdm = dm.clone()
+    sdm.setName(_REFERENCE_COORDINATES)
+    with _short_io_path(filename) as io_filename:
+        viewer = PETSc.ViewerHDF5().create(io_filename, "r", comm=dm.getComm())
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        try:
+            lvec = underworld3.cython.petsc_discretisation.petsc_dmplex_load_local_vector(
+                dm, viewer, sdm, sf, _REFERENCE_COORDINATES
+            )
+        finally:
+            viewer.popFormat()
+            viewer.destroy()
+    section = sdm.getLocalSection()
+    vs, ve = dm.getDepthStratum(0)
+    offsets = numpy.array([section.getOffset(v) for v in range(vs, ve)], dtype=numpy.int64)
+    reference = lvec.array_r[offsets[:, None] + numpy.arange(cdim)].reshape(-1, cdim).copy()
+    lvec.destroy()
+    sdm.destroy()
+    return reference
+
+
+def _rows_as_keys(rows):
+    """View each row of an integer array as one opaque, sortable key."""
+    rows = numpy.ascontiguousarray(rows, dtype=numpy.int64)
+    return rows.view(numpy.dtype((numpy.void, 8 * rows.shape[1]))).ravel()
+
+
+def _closure_vertex_rows(dm, vertex_ids):
+    """Group ``dm``'s non-vertex points by (depth, closure size).
+
+    Each point is keyed by the sorted ids (``vertex_ids``, indexed by vertex
+    point minus the first vertex) of the vertices in its closure. In a
+    conforming mesh these name an edge, face or cell uniquely. Returns
+    ``{(depth, n): (points, rows)}``.
+    """
+    vs, ve = dm.getDepthStratum(0)
+    groups = {}
+    for depth in range(1, dm.getDepth() + 1):
+        for p in range(*dm.getDepthStratum(depth)):
+            closure = dm.getTransitiveClosure(p)[0]
+            verts = closure[(closure >= vs) & (closure < ve)]
+            groups.setdefault((depth, len(verts)), []).append(
+                (p, numpy.sort(vertex_ids[verts - vs]))
+            )
+    return {
+        key: (
+            numpy.array([p for p, _ in entries], dtype=numpy.int64),
+            numpy.array([row for _, row in entries], dtype=numpy.int64),
+        )
+        for key, entries in groups.items()
+    }
+
+
+def _match_file_points(loaded, sf0, rebuilt, reference):
+    """Map every point of ``rebuilt`` to its point in a mesh file (#690).
+
+    ``loaded`` is the fine DM read from the file, and ``sf0`` the SF from the
+    file's points to it. ``rebuilt`` is the fine level the reload rebuilt by
+    refining the coarse sidecar: the same mesh, numbered and distributed
+    differently. ``reference`` holds the reference coordinates of ``loaded``'s
+    vertices (one row per vertex), or None for a file written before they
+    were saved; the saved coordinates then stand in for them.
+
+    Vertices are matched by reference position; every other point by the file
+    ids of its closure vertices. Returns ``(sf, saved)``: an SF from the file's
+    points to ``rebuilt``'s points (the contract of the SF a plain reload
+    composes), and the saved coordinates of ``rebuilt``'s vertices. Returns
+    None on every rank if any point could not be matched. Collective.
+    """
+    from mpi4py import MPI
+    from scipy.spatial import cKDTree
+
+    comm = uw.mpi.comm
+    exact = comm.allreduce(reference is not None, op=MPI.LAND)
+
+    # File id of each loaded point: its root in sf0, numbered globally.
+    nroots, ilocal, iremote = sf0.getGraph()
+    root_offsets = numpy.concatenate(
+        [[0], numpy.cumsum(comm.allgather(nroots))]
+    ).astype(numpy.int64)
+    iremote = numpy.asarray(iremote, dtype=numpy.int64).reshape(-1, 2)
+    ps, pe = loaded.getChart()
+    loaded_ids = numpy.full(pe - ps, -1, dtype=numpy.int64)
+    if ilocal is None or len(ilocal) == 0:
+        leaves = numpy.arange(len(iremote))
+    else:
+        leaves = numpy.asarray(ilocal)
+    loaded_ids[leaves - ps] = root_offsets[iremote[:, 0]] + iremote[:, 1]
+
+    vs, ve = loaded.getDepthStratum(0)
+    saved = _vertex_coordinates(loaded)
+    if reference is None:
+        reference = saved
+    vertex_ids = loaded_ids[vs - ps : ve - ps]
+
+    # Every rank holds the whole vertex table, as the sidecar reload already
+    # broadcast whole coordinate arrays. Shared vertices appear more than once.
+    all_ids = numpy.concatenate(comm.allgather(vertex_ids))
+    all_ref = numpy.concatenate(comm.allgather(reference))
+    all_saved = numpy.concatenate(comm.allgather(saved))
+    all_ids, first = numpy.unique(all_ids, return_index=True)
+    all_ref, all_saved = all_ref[first], all_saved[first]
+
+    # The rebuilt vertices sit at their reference positions (refinement of
+    # the coarsest level, with no callback, not yet stamped).
+    rvs, rve = rebuilt.getDepthStratum(0)
+    rebuilt_ref = _vertex_coordinates(rebuilt)
+    ok = bool(numpy.all(vertex_ids >= 0)) and len(all_ref) > 0
+    if ok and len(rebuilt_ref):
+        distance, nearest = cKDTree(all_ref).query(rebuilt_ref)
+        if exact:
+            extent = max(float(numpy.ptp(all_ref, axis=0).max()), 1.0)
+            ok = float(distance.max()) <= 1.0e-8 * extent
+        rebuilt_vertex_ids = all_ids[nearest]
+        ok = ok and len(numpy.unique(rebuilt_vertex_ids)) == len(rebuilt_vertex_ids)
+    else:
+        nearest = numpy.zeros(len(rebuilt_ref), dtype=numpy.int64)
+        rebuilt_vertex_ids = numpy.full(len(rebuilt_ref), -1, dtype=numpy.int64)
+
+    # Every other point: by the file ids of its closure vertices.
+    rps, rpe = rebuilt.getChart()
+    rebuilt_ids = numpy.full(rpe - rps, -1, dtype=numpy.int64)
+    rebuilt_ids[rvs - rps : rve - rps] = rebuilt_vertex_ids
+    loaded_groups = _closure_vertex_rows(loaded, vertex_ids)
+    rebuilt_groups = _closure_vertex_rows(rebuilt, rebuilt_vertex_ids)
+    all_groups = comm.allgather(
+        {k: (rows, loaded_ids[points - ps]) for k, (points, rows) in loaded_groups.items()}
+    )
+    for key, (points, rows) in rebuilt_groups.items():
+        if not ok:
+            break
+        parts = [g[key] for g in all_groups if key in g]
+        if not parts:
+            ok = False
+            break
+        table = _rows_as_keys(numpy.concatenate([r for r, _ in parts]))
+        table_ids = numpy.concatenate([i for _, i in parts])
+        order = numpy.argsort(table)
+        table, table_ids = table[order], table_ids[order]
+        wanted = _rows_as_keys(rows)
+        where = numpy.minimum(numpy.searchsorted(table, wanted), len(table) - 1)
+        if not numpy.all(table[where] == wanted):
+            ok = False
+            break
+        rebuilt_ids[points - rps] = table_ids[where]
+    ok = ok and bool(numpy.all(rebuilt_ids >= 0))
+
+    if not comm.allreduce(ok, op=MPI.LAND):
+        return None
+
+    owner = numpy.searchsorted(root_offsets, rebuilt_ids, side="right") - 1
+    remote = numpy.stack([owner, rebuilt_ids - root_offsets[owner]], axis=1)
+    sf = PETSc.SF().create(comm=rebuilt.getComm())
+    sf.setGraph(
+        nroots,
+        numpy.arange(rps, rpe, dtype=PETSc.IntType),
+        remote.astype(PETSc.IntType).ravel(),
+    )
+    sf.setUp()
+    return sf, all_saved[nearest]
 
 
 def _require_metric_remesher(what, cause=None):
@@ -545,8 +781,10 @@ class Mesh(Stateful, uw_object):
     ----------
     plex_or_meshfile : PETSc.DMPlex or str
         Either a PETSc DMPlex object or path to a mesh file (gmsh, exodus).
-    degree : int, optional
-        Polynomial degree for the coordinate field (default 1).
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     simplex : bool, optional
         True for simplicial elements (triangles/tets), False for quads/hexes.
     coordinate_system_type : CoordinateSystemType, optional
@@ -604,8 +842,11 @@ class Mesh(Stateful, uw_object):
         units=None,
         verbose=False,
         *args,
+        _preserve_partition=False,
         **kwargs,
     ):
+        Mesh._require_straight_sided_cells(degree, plex_or_meshfile)
+
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
@@ -659,6 +900,18 @@ class Mesh(Stateful, uw_object):
         # it puts the coarse levels back with this mesh, and the patch built before
         # the move applies again.
         self._move_version = 0
+        # The vertex coordinates the mesh was made with, and whether
+        # _deform_mesh has run since: the geometry its cells' parents and its
+        # transfer to the level below are read on (fault_mg.reference_vertices,
+        # #1091). Taken by _record_as_built when the mesh is built. The flag
+        # is set by a call that restores or repeats the coordinates too (a
+        # reload's stamp, ephemeral_coords); the record then equals the
+        # coordinates and reading it costs a search and changes no answer.
+        self._as_built_vertices = None
+        self._moved_since_built = False
+        # For a mesh made on a moved one: the pair (level, vertices), its
+        # vertices in the geometry of that level (addon_partition.inherit_provenance).
+        self._addon_reference = None
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
@@ -723,8 +976,11 @@ class Mesh(Stateful, uw_object):
         # which means the navigation indices use self.dm directly.
         self._nav_dm = None
 
-        if getattr(self, "_sidecar_coarsest", None) is not None:
-            self._splice_hierarchy_from_sidecar()
+        if (
+            getattr(self, "_sidecar_coarsest", None) is not None
+            and self._splice_hierarchy_from_sidecar()
+        ):
+            pass  # hierarchy restored; otherwise reload the fine mesh flat below
 
         elif not refinement is None and refinement > 0:
             self._build_refined_hierarchy(refinement, refinement_callback)
@@ -733,7 +989,9 @@ class Mesh(Stateful, uw_object):
             self._build_coarsened_hierarchy(coarsening)
 
         else:
-            if not self.dm.isDistributed():
+            # An extracted region can occupy one rank without needing a new
+            # partition. Redistributing it breaks its rank-local parent maps.
+            if not _preserve_partition and not self.dm.isDistributed():
                 self.sf1 = self.dm.distribute()
 
             # On manifold meshes (dim != cdim — e.g. SphericalManifold
@@ -838,7 +1096,6 @@ class Mesh(Stateful, uw_object):
         # is a SymPy Matrix velocity field in mesh coordinates.
         self._nullspace_rotations = None
 
-        self.degree = degree
         self.qdegree = qdegree
 
         # Populate the element information for this mesh. This is intended to be
@@ -890,36 +1147,45 @@ class Mesh(Stateful, uw_object):
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild(verbose)
 
+        # before the stamp below, which is a move: a reloaded mesh was made
+        # where its hierarchy was rebuilt
+        self._record_as_built()
+
         # Apply a deferred FMG-hierarchy deformed-coordinate stamp (set in the
         # reload/splice branch above). The hierarchy + working dm were rebuilt
-        # with reference coordinates; now the mesh is fully constructed we map
-        # each local vertex to its canonical twin by an EXACT reference-coordinate
-        # lookup and apply the saved deformed coordinates through _deform_mesh().
+        # with reference coordinates; the splice matched each local vertex to its
+        # point in the file (#690) and stashed (reference, saved) rows for this
+        # rank's vertices. Each row of the local coordinate array is found by
+        # its (unchanged) reference position, and the saved coordinates are
+        # applied through _deform_mesh().
         _pending = getattr(self, "_pending_hierarchy_stamp", None)
         if _pending is not None:
             self._pending_hierarchy_stamp = None
-            if os.environ.get("UW_NOSTAMP") != "1":
-                from underworld3 import kdtree as _kdtree
+            from scipy.spatial import cKDTree
 
-                _ref_canon, _def_canon, _cdim = _pending
-                _ref_local = numpy.ascontiguousarray(
-                    self.dm.getCoordinatesLocal().array.reshape(-1, _cdim)
+            _ref_rows, _saved_rows, _cdim = _pending
+            _ref_local = self.dm.getCoordinatesLocal().array_r.reshape(-1, _cdim)
+            if len(_ref_local):
+                _d, _idx = cKDTree(_ref_rows).query(_ref_local)
+                _moved = float(_d.max()) > 0.0
+                _new = _saved_rows[_idx]
+            else:
+                _moved = False
+                _new = _ref_local.copy()
+            # Raised on every rank together: a rank-local raise would leave the
+            # others waiting in _deform_mesh's collectives.
+            from mpi4py import MPI as _MPI
+
+            if uw.mpi.comm.allreduce(_moved, op=_MPI.LOR):
+                raise RuntimeError(
+                    "FMG hierarchy restore: the coordinates of the rebuilt "
+                    "mesh changed between the reload match and the stamp."
                 )
-                _tree = _kdtree.KDTree(numpy.ascontiguousarray(_ref_canon))
-                _tree.build_index()
-                _idx, _d2, _found = _tree.find_closest_point(_ref_local)
-                if _d2.size and float(numpy.sqrt(_d2.max())) > 1.0e-8:
-                    raise RuntimeError(
-                        "FMG hierarchy restore: deformed-coordinate stamp is not "
-                        f"exact (max lookup distance "
-                        f"{float(numpy.sqrt(_d2.max())):.2e}); the reloaded "
-                        "reference geometry does not match the saved fine."
-                    )
-                # Restoring saved deformed geometry; fields are reloaded
-                # separately from the checkpoint, so this is a sanctioned
-                # internal coordinate move (no live-state transfer needed).
-                with self._coord_mutation():
-                    self._deform_mesh(_def_canon[_idx].reshape(-1, _cdim))
+            # Restoring saved deformed geometry; fields are reloaded
+            # separately from the checkpoint, so this is a sanctioned
+            # internal coordinate move (no live-state transfer needed).
+            with self._coord_mutation():
+                self._deform_mesh(_new.reshape(-1, _cdim))
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -1285,47 +1551,28 @@ class Mesh(Stateful, uw_object):
         levels misaligns at uneven np and aborts inside
         DMPlexComputeInterpolatorNested.)
 
-        The refine-built fine carries *reference* coordinates, so the saved
-        (deformed) fine coordinates are stamped onto it afterwards. The
-        reference geometry rebuilt here (refine-of-coarsest) is bit-identical
-        to the one at save time, so every distributed fine vertex maps to
-        exactly one canonical vertex by an *exact* nearest-reference lookup,
-        and the deformed value is read straight from the saved fine's
-        canonical-ordered coordinates. (See the checkpoint-hierarchy design
-        note.)
+        The rebuilt fine level is the saved fine mesh, numbered and
+        distributed differently, and at its *reference* coordinates. Each of
+        its points is matched to its point in the file (#690):
+        vertices by reference position, using the reference coordinates the
+        file stores (or, for an older file, the saved coordinates as a
+        stand-in), and every other point by its closure vertices. The match
+        gives the SF from the file's points to the rebuilt DM, which
+        checkpointed fields are reloaded through, and the saved coordinates,
+        which are stamped on at the end of ``__init__``.
+
+        Returns False, collectively and with the mesh untouched, when the
+        match does not close (an older file of a mesh that has moved far
+        from its reference geometry); the caller then reloads the fine mesh
+        without the hierarchy, which is always correct.
         """
         n_coarse = self._sidecar_n_coarse
         cdim = self._sidecar_coarsest.getCoordinateDim()
+        coarsest = self._sidecar_coarsest
+        self._sidecar_coarsest = None
 
-        # --- canonical (reference, deformed) coordinate pair, on rank 0 ---
-        # BOTH arrays are built rank-locally on COMM_SELF so they share ONE
-        # canonical ordering (serial .h5 load order == serial refine order,
-        # verified). That shared ordering is what makes deformed_canon[k] and
-        # reference_canon[k] the *same physical vertex* — the stamp pairs them
-        # by that index. (Reading the deformed coords from the COMM_WORLD
-        # undistributed load instead can use a different vertex ordering and
-        # silently scrambles the stamp.) COMM_SELF work is rank-local, so it
-        # cannot perturb the collective distribute of self._sidecar_coarsest.
-        if uw.mpi.rank == 0:
-            _df = _from_plexh5(self._sidecar_meshfile, PETSc.COMM_SELF)
-            deformed_canon = (
-                _df.getCoordinatesLocal().array.reshape(-1, cdim).copy()
-            )
-            _cs = _from_plexh5(
-                _hierarchy_sidecar_name(self._sidecar_meshfile),
-                PETSc.COMM_SELF,
-            )
-            for _ in range(n_coarse):
-                _cs.setRefinementUniform()
-                _cs = _cs.refine()
-            reference_canon = (
-                _cs.getCoordinatesLocal().array.reshape(-1, cdim).copy()
-            )
-        else:
-            deformed_canon = None
-            reference_canon = None
-        deformed_canon = uw.mpi.comm.bcast(deformed_canon, root=0)
-        reference_canon = uw.mpi.comm.bcast(reference_canon, root=0)
+        loaded, sf0 = self.dm, self.sf0
+        reference = _load_reference_coordinates(self._sidecar_meshfile, loaded, sf0)
 
         # --- aligned hierarchy: distribute the coarsest, then local refine,
         #     EXACTLY as _build_refined_hierarchy does (proven to
@@ -1334,15 +1581,31 @@ class Mesh(Stateful, uw_object):
         #     plain refine() loop. refine() flags the regular refinement
         #     itself — setting it by hand on a non-uniformly-refined DM
         #     instead corrupts the nested interpolator and the solve diverges.
-        self._sidecar_coarsest.setRefinementUniform()
-        if not self._sidecar_coarsest.isDistributed():
-            self.sf1 = self._sidecar_coarsest.distribute()
-        self.dm_hierarchy = [self._sidecar_coarsest]
+        coarsest.setRefinementUniform()
+        if not coarsest.isDistributed():
+            coarsest.distribute()
+        hierarchy = [coarsest]
         for i in range(n_coarse):
-            dm_refined = self.dm_hierarchy[i].refine()
-            dm_refined.setCoarseDM(self.dm_hierarchy[i])
-            self.dm_hierarchy.append(dm_refined)
+            dm_refined = hierarchy[i].refine()
+            dm_refined.setCoarseDM(hierarchy[i])
+            hierarchy.append(dm_refined)
 
+        matched = _match_file_points(loaded, sf0, hierarchy[-1], reference)
+        if matched is None:
+            if uw.mpi.rank == 0:
+                import warnings
+
+                warnings.warn(
+                    f"{self._sidecar_meshfile}: the saved fine mesh could not be "
+                    "matched to its refined coarse sidecar (a checkpoint written "
+                    "before #690 was fixed, of a mesh that has moved). Reloading it "
+                    "without its multigrid hierarchy; solvers will not have FMG.",
+                    stacklevel=3,
+                )
+            return False
+        sf, saved = matched
+
+        self.dm_hierarchy = hierarchy
         self.dm_h = self.dm_hierarchy[-1]
         self.dm_h.setName("uw_hierarchical_dm")
 
@@ -1352,6 +1615,10 @@ class Mesh(Stateful, uw_object):
         # 0-field coarse levels and fails.
         self.dm = self.dm_h.clone()
 
+        # The matched SF replaces sf0 (which maps the file to the loaded DM,
+        # now discarded); there is no later distribute to compose with.
+        self.sf0, self.sf1 = sf, None
+
         # Defer the deformed-coordinate stamp: the hierarchy and working dm
         # are built with REFERENCE coordinates here, and the saved deformed
         # coordinates are applied through the normal _deform_mesh() path at
@@ -1359,9 +1626,9 @@ class Mesh(Stateful, uw_object):
         # exist). A raw setCoordinatesLocal() at this point — before the
         # coordinate cache/callbacks are set up — leaves the mesh in an
         # inconsistent state and the geometric multigrid solve diverges. Stash
-        # the canonical (reference, deformed) pair for the deferred apply.
-        self._pending_hierarchy_stamp = (reference_canon, deformed_canon, cdim)
-        self._sidecar_coarsest = None
+        # the (reference, saved) pair of this rank's vertices for the apply.
+        self._pending_hierarchy_stamp = (_vertex_coordinates(self.dm), saved, cdim)
+        return True
 
     def _build_refined_hierarchy(self, refinement, refinement_callback):
         """Distribute the DM and build a uniformly refined FMG hierarchy.
@@ -1624,6 +1891,46 @@ class Mesh(Stateful, uw_object):
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
 
         patch_coordinate_units(self)
+
+    @staticmethod
+    def _require_straight_sided_cells(degree, plex=None):
+        """Raise unless ``degree``, a mesh's coordinate degree, is the integer 1,
+        and unless ``plex``, when one is given, carries coordinates of degree 1.
+
+        Particle location, cell geometry, boundary normals and mesh motion all
+        read the coordinates as straight-sided cells (#978). The constructors in
+        ``uw.meshing`` call this before they generate anything, and
+        ``Mesh.__init__`` calls it first. ``degree`` is an argument and the
+        coordinate space is a property of the plex, both of which every rank
+        holds alike, so every rank refuses together.
+        """
+        if isinstance(degree, bool) or not isinstance(degree, numbers.Integral) or degree != 1:
+            raise ValueError(
+                f"Mesh: degree={degree!r} is not supported; mesh coordinates are degree 1 "
+                "(straight-sided cells). For a higher-order field, give the MeshVariable "
+                "its own degree, e.g. MeshVariable('v', mesh, 2, degree=2).")
+
+        if not isinstance(plex, PETSc.DM):
+            return
+        coordinate_dm = plex.getCoordinateDM()
+        if coordinate_dm.getNumFields() == 0:
+            return
+        # a plex as generated or read has vertex coordinates and no finite
+        # element here; one given a coordinate space has, and it has a degree
+        space = coordinate_dm.getField(0)[0]
+        if not isinstance(space, PETSc.FE):
+            return
+        plex_degree = space.getBasisSpace().getDegree()[0]
+        if plex_degree != 1:
+            raise ValueError(
+                f"Mesh: the plex carries coordinates of degree {plex_degree}; mesh "
+                "coordinates are degree 1 (straight-sided cells). For a higher-order field, "
+                "give the MeshVariable its own degree, e.g. MeshVariable('v', mesh, 2, degree=2).")
+
+    @property
+    def degree(self) -> int:
+        """Degree of the mesh coordinates: always 1, and read-only (#978)."""
+        return 1
 
     @property
     def dim(self) -> int:
@@ -2154,8 +2461,9 @@ class Mesh(Stateful, uw_object):
         Returns
         -------
         dict
-            The subset of ``candidates`` present on ``subdm`` with a
-            non-empty stratum, preserving candidate order.
+            Candidates with a non-empty stratum anywhere on the DM communicator,
+            preserving candidate order: the same on every rank, so solver
+            boundary registration is rank independent. Collective.
         """
         present = set()
         for i in range(subdm.getNumLabels()):
@@ -2182,6 +2490,12 @@ class Mesh(Stateful, uw_object):
             lsis = lab.getStratumIS(value)
             if lsis is not None and lsis.getSize() > 0:
                 present.add(name)
+        # A boundary may have no points on this rank while present on its peers.
+        # Its name must nevertheless be in every rank's enum: boundary-condition
+        # registration and solver setup look the same names up on all ranks.
+        # (The label itself already exists on every rank: a filtered DM carries
+        # the parent's label list, empty strata included.)
+        present = set().union(*subdm.comm.tompi4py().allgather(present))
         return {name: v for name, v in candidates.items() if name in present}
 
     def extract_region(self, label_name, label_value=None):
@@ -2263,6 +2577,7 @@ class Mesh(Stateful, uw_object):
             boundaries=sub_boundaries,
             coordinate_system_type=self.CoordinateSystemType,
             verbose=False,
+            _preserve_partition=True,
         )
 
         # Store lineage
@@ -2317,6 +2632,11 @@ class Mesh(Stateful, uw_object):
             Stratum value within the label. If ``None``, resolved from
             ``self.boundaries[label_name].value``.
 
+        Notes
+        -----
+        Collective on the parent communicator: every rank must call this method,
+        including ranks with no local marked faces.
+
         Returns
         -------
         Mesh
@@ -2350,32 +2670,25 @@ class Mesh(Stateful, uw_object):
                     f"Available: {[b.name for b in self.boundaries]}"
                 )
 
-        # --- loud-fail if the parent has no faces marked with this label ---
+        # Reject globally empty surfaces, not ranks outside the surface.
         # NB: never call getStratumIS(v) for a value not in the live value set
         # — that hard-aborts PETSc on some labels (cf. the "Centre" pseudo-
         # label). Probe getValueIS() first.
-        label = self.dm.getLabel(label_name)
-        if label is None:
-            raise ValueError(
-                f"Parent DM has no label '{label_name}'. "
-                f"Cannot extract a surface submesh from it."
-            )
-        vals_is = label.getValueIS()
+        # getLabel returns a null handle, not None, for a missing label, and
+        # getValueIS on it aborts PETSc: ask hasLabel first.
+        vals_is = (self.dm.getLabel(label_name).getValueIS()
+                   if self.dm.hasLabel(label_name) else None)
         live_values = (
             set(int(v) for v in vals_is.getIndices())
             if vals_is is not None else set()
         )
-        if int(label_value) not in live_values:
+        sis = (self.dm.getLabel(label_name).getStratumIS(label_value)
+               if int(label_value) in live_values else None)
+        local_faces = sis.getSize() if sis is not None else 0
+        if uw.mpi.comm.allreduce(local_faces) == 0:
             raise ValueError(
-                f"Label '{label_name}' has no stratum with value {label_value} "
-                f"on the parent (live values: {sorted(live_values)}). "
-                f"There is no surface to extract."
-            )
-        sis = label.getStratumIS(label_value)
-        if sis is None or sis.getSize() == 0:
-            raise ValueError(
-                f"Label '{label_name}' (value {label_value}) has an empty face "
-                f"stratum on the parent. There is no surface to extract."
+                f"Label '{label_name}' (value {label_value}) has a globally empty "
+                f"face stratum. There is no surface to extract."
             )
 
         # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
@@ -2419,6 +2732,7 @@ class Mesh(Stateful, uw_object):
             boundaries=sub_boundaries,
             coordinate_system_type=self.CoordinateSystemType,
             verbose=verbose,
+            _preserve_partition=True,
         )
 
         # Submesh lineage — same shape as extract_region
@@ -2494,8 +2808,10 @@ class Mesh(Stateful, uw_object):
 
         sub_rows, parent_rows = self._build_vertex_map()
 
-        new_sub_coords = numpy.array(self.X.coords)
-        new_sub_coords[sub_rows] = self.parent.X.coords[parent_rows]
+        # Model coordinates, the frame _deform_mesh writes.
+        new_sub_coords = numpy.array(self._coords).reshape(-1, self.cdim)
+        parent_coords = numpy.asarray(self.parent._coords).reshape(-1, self.parent.cdim)
+        new_sub_coords[sub_rows] = parent_coords[parent_rows]
 
         # Submesh follows its parent's geometry; this is a sanctioned
         # internal coordinate move (the parent owns the transfer).
@@ -2639,6 +2955,8 @@ class Mesh(Stateful, uw_object):
             self._mesh_version += 1
             self._topology_version += 1
             self.nuke_coords_and_rebuild(verbose=False)
+            # another topology: what this mesh was made with is its new grid
+            self._record_as_built()
 
         # Rebuild vertex map (for restrict/prolongate)
         self._vertex_map = None
@@ -2754,6 +3072,80 @@ class Mesh(Stateful, uw_object):
 
         sub_var.pack_raw_data_to_petsc(new_data, sync=True)
 
+    def _reduce_injection(self, parent_var, sub_var, sub_rows, parent_rows):
+        """Combine every rank's copy of each injected value at its parent owner.
+
+        Returns ``(matched, injected)``: a mask over the parent variable's local
+        rows that received a submesh value on any rank, and the value for each
+        (the mean of the agreeing copies). Collective; raises on every rank if
+        shared copies disagree or are not finite. See :meth:`prolongate`.
+        """
+        from mpi4py import MPI
+
+        shape = numpy.asarray(parent_var.data).shape
+        indexset, field_dm = self.parent.dm.createSubDM(parent_var.field_id)
+        values = parent_var.vec.duplicate()
+        counts = parent_var.vec.duplicate()
+        global_values = parent_var._gvec.duplicate()
+        global_counts = parent_var._gvec.duplicate()
+        overlap = None
+        try:
+            values.set(0.0)
+            counts.set(0.0)
+            # Variable-to-variable injection copies the stored nondimensional values.
+            source = numpy.asarray(sub_var.data)[sub_rows]
+            values.array.reshape(shape)[parent_rows] = source
+            # Reconcile every coincident copy through the DOF overlap, including
+            # owners with no local child match. Neutral entries do not contribute.
+            minimum = numpy.full(values.getLocalSize(), numpy.inf)
+            maximum = numpy.full(values.getLocalSize(), -numpy.inf)
+            minimum.reshape(shape)[parent_rows] = source
+            maximum.reshape(shape)[parent_rows] = source
+            if uw.mpi.size > 1:
+                overlap = field_dm.getSectionSF()
+                owned_minimum = numpy.full(global_values.getLocalSize(), numpy.inf)
+                owned_maximum = numpy.full(global_values.getLocalSize(), -numpy.inf)
+                # Section-SF roots use the owned global-vector layout; leaves
+                # use the local vector, which also includes ghost entries.
+                for leaves, roots, operation in (
+                    (minimum, owned_minimum, MPI.MIN),
+                    (maximum, owned_maximum, MPI.MAX),
+                ):
+                    overlap.reduceBegin(MPI.DOUBLE, leaves, roots, operation)
+                    overlap.reduceEnd(MPI.DOUBLE, leaves, roots, operation)
+                minimum, maximum = owned_minimum, owned_maximum
+            present = minimum <= maximum
+            disagree = not numpy.all(numpy.isclose(
+                minimum[present], maximum[present], rtol=1e-12, atol=1e-14,
+            ))
+            invalid = disagree or not numpy.all(numpy.isfinite(source))
+            if uw.mpi.comm.allreduce(int(invalid)):
+                raise ValueError(
+                    "prolongate received inconsistent or nonfinite shared submesh values; "
+                    "synchronize the source field before injection"
+                )
+            counts.array.reshape(shape)[parent_rows] = 1.0
+            global_values.set(0.0)
+            global_counts.set(0.0)
+            field_dm.localToGlobal(values, global_values, addv=PETSc.InsertMode.ADD_VALUES)
+            field_dm.localToGlobal(counts, global_counts, addv=PETSc.InsertMode.ADD_VALUES)
+            field_dm.globalToLocal(global_values, values, addv=False)
+            field_dm.globalToLocal(global_counts, counts, addv=False)
+            multiplicity = counts.array.reshape(shape)
+            matched = multiplicity > 0
+            return matched, values.array.reshape(shape)[matched] / multiplicity[matched]
+        finally:
+            # The section SF is a reference the DM keeps; holding it here and not
+            # releasing it grew memory on every parallel prolongate (#858 review).
+            if overlap is not None:
+                overlap.destroy()
+            values.destroy()
+            counts.destroy()
+            global_values.destroy()
+            global_counts.destroy()
+            field_dm.destroy()
+            indexset.destroy()
+
     def prolongate(self, sub_var, parent_var, mode="replace"):
         """Copy data from a submesh variable to a parent-mesh variable.
 
@@ -2766,6 +3158,18 @@ class Mesh(Stateful, uw_object):
         mode : str
             ``"replace"`` overwrites parent values at submesh DOFs.
             ``"add"`` adds submesh values into parent.
+
+        Notes
+        -----
+        A parent DOF owner need not retain any extracted-region cells. Local
+        coordinate matches can therefore exist only on another rank's parent
+        ghosts. Reduce matching contributions and their multiplicities through
+        the parent field DM before writing owner values. Shared copies must
+        agree within ``1e-14 + 1e-12 * abs(value)``; inconsistent values raise
+        collectively before modifying the target. Averaging agreeing copies
+        preserves injection, including ``add`` semantics; unmatched
+        parent DOFs keep their original values. No global coordinate gather or
+        interpolation is used.
 
         Raises
         ------
@@ -2781,15 +3185,15 @@ class Mesh(Stateful, uw_object):
 
         sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
 
-        new_data = numpy.array(parent_var.data)
-
-        if mode == "replace":
-            new_data[parent_rows] = sub_var.data[sub_rows]
-        elif mode == "add":
-            new_data[parent_rows] += sub_var.data[sub_rows]
-        else:
+        if mode not in ("replace", "add"):
             raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
 
+        new_data = numpy.array(parent_var.data)
+        matched, injected = self._reduce_injection(parent_var, sub_var, sub_rows, parent_rows)
+        if mode == "replace":
+            new_data[matched] = injected
+        else:
+            new_data[matched] += injected
         parent_var.pack_raw_data_to_petsc(new_data, sync=True)
 
         parent_var._data_is_dirty = True
@@ -2837,10 +3241,11 @@ class Mesh(Stateful, uw_object):
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
-            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
-            # a symmetric tensor.
+            # Evaluated at the non-dimensional coordinates the DM holds, and laid out
+            # by _data_layout, which a flat reshape is not for a MATRIX or a
+            # symmetric tensor.
             out = _evaluated_in_storage_layout(
-                cv, numpy.asarray(uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))))
+                cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2868,10 +3273,11 @@ class Mesh(Stateful, uw_object):
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
-            # Laid out by _data_layout, which a flat reshape is not for a MATRIX or
-            # a symmetric tensor.
+            # Evaluated at the non-dimensional coordinates the DM holds, and laid out
+            # by _data_layout, which a flat reshape is not for a MATRIX or a
+            # symmetric tensor.
             out = _evaluated_in_storage_layout(
-                pv, numpy.asarray(uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))))
+                pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -2961,8 +3367,8 @@ class Mesh(Stateful, uw_object):
         # mesh coordinates to other mesh coordinates.
 
         # Dual-space options control node placement on simplices and must be set
-        # before createDefault(). Currently only P1 coordinate meshes are used,
-        # but these are needed for higher-order (curved) coordinate meshes.
+        # before createDefault(). Mesh coordinates are degree 1 (#978), with
+        # nodes at the vertices only.
         options = PETSc.Options()
         fe_prefix = f"meshproj_{self.mesh_instances}_"
         fe_keys = {f"{fe_prefix}petscspace_degree": self.degree,
@@ -4337,7 +4743,7 @@ class Mesh(Stateful, uw_object):
         intermediate meshes are genuinely ephemeral — only the final
         committed move (via :meth:`deform`) updates fields + history.
         """
-        saved = numpy.asarray(self.X.coords).copy()
+        saved = numpy.asarray(self._coords).reshape(-1, self.cdim).copy()
         self._coord_mutation_depth += 1
         try:
             yield
@@ -4346,6 +4752,50 @@ class Mesh(Stateful, uw_object):
                 self._deform_mesh(saved)
             finally:
                 self._coord_mutation_depth -= 1
+
+    def _model_coordinates_from(self, coords):
+        """``coords`` as model coordinates, the frame the DM holds and _deform_mesh writes.
+
+        Coordinates with units are converted by the model's length scale, in any
+        length unit; a unit that is not a length is refused. A plain array is model
+        coordinates, as evaluate reads one, and so are dimensionless coordinates. They
+        are read in this model's frame: values scaled by another model cannot be told
+        apart. In a units model a plain array the size of
+        the physical domain is refused rather than read as model coordinates and
+        scaled up.
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        scale = (self.CoordinateSystem._length_scale
+                 if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
+        units = getattr(coords, "units", None)
+        if units is not None and not (1.0 * uw.units(str(units))).dimensionality:
+            # Dimensionless coordinates are model coordinates, as a plain array is,
+            # and take the same physical-size check below.
+            coords = coords.to("dimensionless")
+            coords = numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
+            units = None
+        if units is not None:
+            if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
+                raise ValueError(f"mesh coordinates must be a length, not {units}")
+            if not isinstance(coords, UnitAwareArray):        # a pint Quantity
+                coords = UnitAwareArray(numpy.asarray(coords.magnitude), units=str(units))
+            model = uw.non_dimensionalise(coords)
+            return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
+        model = numpy.asarray(coords, dtype=float)
+        # Collective: a rank with no vertices still enters both reductions.
+        if scale != 1.0:
+            current = numpy.asarray(self._coords).reshape(-1, self.cdim)
+            extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
+                                           op=uw.MPI.MAX)
+            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()) if model.size else 0.0,
+                                         op=uw.MPI.MAX)
+            if (extent > 0.0 and size > 0.0
+                    and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
+                raise ValueError(
+                    "mesh.deform was given a plain array the size of the physical domain. "
+                    "Pass coordinates with units, such as mesh.X.coords, or model coordinates.")
+        return model
 
     def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
         """Move the mesh to ``new_coords``, transferring all fields + history.
@@ -4360,7 +4810,9 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         new_coords : ndarray
-            Target vertex coordinates (shape of ``mesh.X.coords``).
+            Target vertex coordinates, in the shape of ``mesh.X.coords``. Coordinates
+            with units, such as ``mesh.X.coords`` itself in a model with reference
+            quantities, are converted; a plain array is read as model coordinates.
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
@@ -4376,7 +4828,7 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.discretisation.remesh import remesh_with_field_transfer
 
-        _nc = numpy.asarray(new_coords)
+        _nc = self._model_coordinates_from(new_coords)
 
         # The geometry is about to move, so any ANALYTIC return_coords_to_bounds closure
         # (captured with the original radii/extent) no longer describes the boundary:
@@ -4463,6 +4915,73 @@ class Mesh(Stateful, uw_object):
                 pass
         return result
 
+    def _sync_hierarchy_finest_coordinates(self):
+        """Give the finest hierarchy level the coordinates ``self.dm`` now has.
+
+        For a mesh built with ``refinement`` (or coarsening) ``self.dm`` is a
+        clone of ``dm_hierarchy[-1]``, so the two share point numbering but
+        not, after a move, coordinates. Solvers build on a clone of the
+        hierarchy, so without this they assemble on the pre-move geometry
+        while integrals and evaluation use the moved one (#1037).
+
+        The coarse levels keep their geometry. For PETSc's geometric
+        multigrid that costs nothing: the nested interpolation is topological
+        and the coarse operators are Galerkin products. Custom-P transfers are
+        built from coordinates, so after a large move the unmoved coarse
+        levels cost it iterations, though not accuracy.
+
+        The level gets a copy of the global coordinates; its local vector is
+        regenerated from them. Its coordinate field (cell geometry, quadrature
+        Jacobians) is then rebuilt the way ``nuke_coords_and_rebuild`` rebuilds
+        ``self.dm``'s, since a solver's clone of the level inherits it.
+        """
+        hierarchy = getattr(self, "dm_hierarchy", None)
+        if not hierarchy or hierarchy[-1] is self.dm:
+            return
+        finest = hierarchy[-1]
+        g = self.dm.getCoordinates().duplicate()
+        self.dm.getCoordinates().copy(g)
+        finest.setCoordinates(g)
+        if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
+            finest.projectCoordinates(self.petsc_fe)
+        elif hasattr(finest, "createCoordinateSpace"):
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            from underworld3.cython.petsc_maths import dm_force_coordinate_field
+            petsc_dm_create_coordinate_space_within_plex(finest, self.degree)
+            dm_force_coordinate_field(finest)
+        elif PETSc.Sys.getVersion() >= (3, 24, 0):
+            finest.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
+        else:
+            finest.setCoordinateDisc(disc=self.petsc_fe, project=False)
+        # The rebuild releases the level's old coordinate DM, section and
+        # vectors to petsc4py's deferred-destroy list, six entries a move.
+        # Every rank is here (the move is collective), so free them now rather
+        # than let a long run of moves accumulate them.
+        PETSc.garbage_cleanup(self.dm.getComm())
+
+    def _record_as_built(self):
+        """Keep the vertex coordinates the mesh stands on as the ones it was made
+        with. Called once the coordinates of a new DM are in place, when the
+        mesh is built and wherever it is given another topology, and never by
+        a move.
+
+        The record has to exist before anything moves the mesh. A mover may
+        write into the coordinate vector of the DM before it calls
+        :meth:`_deform_mesh` (the halo exchanges of the MMPDE mover and of the
+        Laplacian smoother do, at more than one rank), so that call is too
+        late to read the built grid (#1091). The record costs one copy of the
+        vertex coordinates per mesh. A mesh built over a DM that had already
+        moved (the add-on partition's copy of a level, a cut) records the
+        coordinates it was given, and reaches the level below through
+        ``_addon_reference``. A periodic mesh holds its coordinates cell by
+        cell and keeps no record."""
+        self._as_built_vertices = (None if _holds_cell_coordinates(self.dm)
+                                   else _vertex_coordinates(self.dm))
+        self._moved_since_built = False
+        self._addon_reference = None
+
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
         """
@@ -4495,12 +5014,14 @@ class Mesh(Stateful, uw_object):
         self._assert_coord_mutation_allowed()
 
         with self._mesh_update_lock:
+            self._moved_since_built = True
             coord_vec = self.dm.getCoordinatesLocal()
             coords = coord_vec.array.reshape(-1, self.cdim)
             coords[...] = new_coords[...]
 
             self.dm.setCoordinatesLocal(coord_vec)
             self.nuke_coords_and_rebuild(active_vars=active_vars)
+            self._sync_hierarchy_finest_coordinates()
 
             # Rebuild the _coords array view.  nuke_coords_and_rebuild may
             # replace the coordinate vector internally (createCoordinateSpace),
@@ -5708,6 +6229,57 @@ class Mesh(Stateful, uw_object):
             self._stale_lvec = True
 
     @timing.routine_timer_decorator
+    def _view_reference_coordinates(self, viewer):
+        """Write each fine vertex's reference coordinates beside the mesh (#690).
+
+        The reference position is where refining the coarsest hierarchy level
+        (as saved in the sidecar) puts the vertex, with no refinement callback
+        and no mesh motion: exactly the geometry a reload rebuilds. Stored as
+        a vertex vector on ``self.dm``, so a reload on any number of ranks
+        reads it in the file's own vertex order and pairs the saved mesh with
+        the rebuilt one exactly. Skipped (on every rank) if ``self.dm`` is no
+        longer the refinement of the coarsest level. Collective.
+        """
+        # The coarsest level is already flagged for uniform refinement (by
+        # _build_refined_hierarchy or the reload splice); refine() leaves it as is.
+        reference = self.dm_hierarchy[0]
+        for _ in range(len(self.dm_hierarchy) - 1):
+            refined = reference.refine()
+            if reference is not self.dm_hierarchy[0]:
+                reference.destroy()
+            reference = refined
+
+        same = reference.getChart() == self.dm.getChart() and all(
+            reference.getDepthStratum(d) == self.dm.getDepthStratum(d)
+            for d in range(self.dm.getDepth() + 1)
+        )
+        from mpi4py import MPI
+
+        if not uw.mpi.comm.allreduce(same, op=MPI.LAND):
+            reference.destroy()
+            return
+
+        sdm = _vertex_section_dm(self.dm, _REFERENCE_COORDINATES)
+        lvec = sdm.createLocalVec()
+        lvec.array[...] = _vertex_coordinates(reference).ravel()
+        gvec = sdm.createGlobalVec()
+        sdm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.INSERT_VALUES)
+        gvec.setName(_REFERENCE_COORDINATES)
+        # Stored under the DM name the reload gives the loaded mesh
+        # (_from_plexh5), which is where _load_reference_coordinates looks.
+        old_name = self.dm.getName()
+        self.dm.setName("uw_mesh")
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        try:
+            self.dm.sectionView(viewer, sdm)
+            self.dm.globalVectorView(viewer, sdm, gvec)
+        finally:
+            viewer.popFormat()
+            if old_name is not None:
+                self.dm.setName(old_name)
+            for obj in (gvec, lvec, sdm, reference):
+                obj.destroy()
+
     def write(
         self,
         filename: str,
@@ -5753,6 +6325,8 @@ class Mesh(Stateful, uw_object):
                     )
                     viewer.pushFormat(viewer_format)
                 viewer(self.dm)
+                if petsc_format is not False and len(self.dm_hierarchy) > 1:
+                    self._view_reference_coordinates(viewer)
             finally:
                 if petsc_format is not None:
                     viewer.popFormat()
@@ -7324,17 +7898,10 @@ class Mesh(Stateful, uw_object):
         one finite positive value per local cell and is bit-identical across
         rank counts in every case. (The note also named ``DMPlexGetMinRadius``,
         which is a different call and is not used here.)
-
-        The FVM routine needs affine coordinates. On a coordinate field of higher
-        degree it reads the edge midpoints as corners and then fails, so there the
-        volume comes from integrating the coordinate map's Jacobian (#908).
         """
         from underworld3.cython import petsc_discretisation
 
-        if self.degree == 1:
-            radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
-        else:
-            radii = petsc_discretisation.petsc_fem_get_local_cell_sizes(self)
+        radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
 
         # The FVM centroids are discarded: `_get_coords_for_basis(0, False)` is
         # the degree-0 coordinate array the rest of the mesh indexes by cell,
@@ -7622,6 +8189,16 @@ class Mesh(Stateful, uw_object):
             verbose=False,
         )
 
+    def _cached_finest_wrap_is_stale(self, wrap):
+        """Whether the cached wrap of the finest level predates a move. Collective."""
+        stale = not numpy.array_equal(
+            wrap.dm.getCoordinatesLocal().array,
+            self.dm_hierarchy[-1].getCoordinatesLocal().array)
+        if uw.mpi.size > 1:
+            from mpi4py import MPI
+            stale = uw.mpi.comm.allreduce(stale, op=MPI.LOR)
+        return stale
+
     def _coarse_level_meshes(self):
         """The static coarse-mesh tail (one Mesh per base hierarchy level,
         coarsest..base-finest), built once and cached — they never change
@@ -7635,6 +8212,14 @@ class Mesh(Stateful, uw_object):
         The token is a plain sentinel object: identity ties the family together
         without a reference cycle back to this mesh."""
         cached = getattr(self, "_coarse_level_meshes_cache", None)
+        if cached is not None and self._cached_finest_wrap_is_stale(cached[-1]):
+            # A move since the cache was built gave dm_hierarchy[-1] new
+            # coordinates (#1037). Re-wrap it in the same slot, so an adapt's
+            # multigrid tail starts from the geometry the child is refined from.
+            fresh = self._wrap_coarse_level(self.dm_hierarchy[-1])
+            fresh._refine_slot = cached[-1]._refine_slot
+            fresh._mg_static = True
+            cached[-1] = fresh
         if cached is None:
             cached = [self._wrap_coarse_level(d) for d in self.dm_hierarchy]
             token = object()
@@ -8742,6 +9327,10 @@ class Mesh(Stateful, uw_object):
                                           child._fault_specs,
                                           verbose=verbose)
                 for k, m in zip(idx, split):
+                    # the split level stands where the level it replaces stood
+                    held = child._addon_reference
+                    if held is not None and held[0] is tail[k]:
+                        child._addon_reference = (m, held[1])
                     tail[k] = m
             child._custom_mg_coarse_meshes = tail
         return child
@@ -9237,35 +9826,11 @@ class Mesh(Stateful, uw_object):
                     "sagitta ~ cell size). Refine the base mesh or adapt "
                     "without registered bounding surfaces.")
 
-        # Refine from the mesh's CURRENT geometry. Node redistribution
-        # (redistribute_nodes) moves mesh.dm's coordinates while the static
-        # base hierarchy keeps the originals — without this carry, an adapt
-        # after a redistribution would silently refine the unmoved mesh.
-        # When moved, the base-finest MG tail level is swapped for the moved
-        # copy below; the coarser tail levels keep their original geometry
-        # (the coordinate-based custom-P transfers accept non-nested pairs).
+        # Refine from the mesh's current geometry. A move keeps the finest
+        # hierarchy level in step with mesh.dm (#1037), so it is the geometry
+        # the child is refined from, and the cached multigrid tail is re-wrapped
+        # to match (_coarse_level_meshes).
         base_finest = self.dm_hierarchy[-1]
-        _cur_coords = self.dm.getCoordinatesLocal().array
-        _moved = not numpy.array_equal(
-            _cur_coords, base_finest.getCoordinatesLocal().array)
-        if uw.mpi.size > 1:
-            from mpi4py import MPI
-            _moved = uw.mpi.comm.allreduce(_moved, op=MPI.LOR)
-        if _moved:
-            base_finest = base_finest.clone()
-            # DMClone shares the coordinates Vec by reference — writing
-            # through getCoordinatesLocal().array here would silently move
-            # the "static" hierarchy level (self.dm_hierarchy[-1]) under
-            # the parent mesh. Install a duplicate instead; the clone gets
-            # the moved geometry, the hierarchy keeps the original.
-            _v = base_finest.getCoordinatesLocal().duplicate()
-            _v.array[:] = _cur_coords
-            base_finest.setCoordinatesLocal(_v)
-            if engine == "nvb" and self.dim == 3 and _nvbx is not None:
-                # the refinement-state seed was written on the unmoved base
-                # (in the guard above); re-seed on the moved geometry
-                from underworld3.utilities.nvb import write_tagged_state_label
-                write_tagged_state_label(base_finest)
 
         markers_per_level = []
         # relax=True is the RECOMMENDED default: relax once, at the end.
@@ -9734,13 +10299,6 @@ class Mesh(Stateful, uw_object):
         own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
         coarse_tail = (list(own_tail) + [self]) if own_tail is not None \
             else self._coarse_level_meshes()
-        if _moved:
-            # the finest base level of the MG tail must carry the SAME moved
-            # geometry the child was refined from; coarser levels keep their
-            # original coordinates (custom-P transfers accept non-nested pairs)
-            _moved_wrap = self._wrap_coarse_level(base_finest)
-            _moved_wrap._mg_static = True
-            coarse_tail = coarse_tail[:-1] + [_moved_wrap]
         child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 
@@ -10115,6 +10673,8 @@ class Mesh(Stateful, uw_object):
 
             # Rebuild coordinate navigation
             self.nuke_coords_and_rebuild(verbose=False)
+            # another topology: what this mesh was made with is its new grid
+            self._record_as_built()
 
         # Destroy ALL old vectors upfront before reinitializing any variable.
         # This is critical because _setup_ds() iterates mesh._vars to backup/restore
@@ -10467,6 +11027,12 @@ def checkpoint_xdmf(
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
     topology_precision = cells.dtype.itemsize
+    # The cell's own dimension, which PETSc records on the cells dataset. The
+    # embedding dimension alone cannot tell a manifold's cells from a volume's:
+    # triangles in three-space have three corners, a quadrilateral surface in
+    # three-space four, like a tetrahedron (#869).
+    cell_dim = cells.attrs.get("cell_dim")
+    cell_dim = int(cell_dim) if cell_dim is not None else spaceDim
 
     if numCorners <= 1:
         h5.close()
@@ -10506,29 +11072,18 @@ def checkpoint_xdmf(
 
     geometry_information = units_information(geometry_units, "          ")
 
-    # We only use a subset of the possible cell types
-    if spaceDim == 2:
-        if numCorners == 3:
-            topology_type = "Triangle"
-        elif numCorners == 4:
-            topology_type = "Quadrilateral"
-        else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.", stacklevel=2)
-            topology_type = "Quadrilateral"
-        geomType = "XY"
-    else:
-        # TODO(BUG): a manifold mesh (triangles in three-space, e.g.
-        # SphericalManifold) lands here with numCorners == 3 and is written as
-        # Hexahedron; it should be Triangle with XYZ geometry. Found 2026-10-09
-        # (thin-sheet work), not fixed — out of that scope. See issue #869.
-        if numCorners == 4:
-            topology_type = "Tetrahedron"
-        elif numCorners == 8:
-            topology_type = "Hexahedron"
-        else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.", stacklevel=2)
-            topology_type = "Hexahedron"
-        geomType = "XYZ"
+    # We only use a subset of the possible cell types: chosen by the cell's
+    # own dimension and corner count, the geometry by the embedding dimension
+    cell_types = {(2, 3): "Triangle", (2, 4): "Quadrilateral",
+                  (3, 4): "Tetrahedron", (3, 8): "Hexahedron"}
+    topology_type = cell_types.get((cell_dim, numCorners))
+    if topology_type is None:
+        fallback = "Quadrilateral" if cell_dim == 2 else "Hexahedron"
+        warnings.warn(
+            f"Unexpected numCorners={numCorners} for {cell_dim}-D cells in "
+            f"{spaceDim}-D space; writing {fallback}.", stacklevel=2)
+        topology_type = fallback
+    geomType = "XY" if spaceDim == 2 else "XYZ"
 
     ## Create the header
 
