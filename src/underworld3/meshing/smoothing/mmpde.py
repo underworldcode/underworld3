@@ -13,7 +13,8 @@ import underworld3 as uw
 from .graph import (_tri_cells, _tet_cells, _signed_areas, _signed_volumes,
                     _owned_cell_mask,
                     _owned_vertex_mask, _min_incident_edge_nd,
-                    _global_sum, _global_min, _global_max, _global_mean)
+                    _global_sum, _global_min, _global_max,
+                    _reduce_over_sharing_ranks)
 
 
 def _spd_sanitise(M):
@@ -222,9 +223,11 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             f"_mmpde_mover metric must be {cdim}x{cdim} (or a scalar "
             f"density), got {Msym.shape}")
 
-    def _eval_M_analytic(pts):
+    def _eval_M_analytic(pts, evaluate=uw.function.evaluate):
         """Exact Eulerian metric via sympy evaluate → (n, cdim, cdim).
-        Correct but slow (sympy symbolic processing dominates the cost)."""
+        Correct but slow (sympy symbolic processing dominates the cost).
+        ``evaluate`` is ``uw.function.global_evaluate`` where ``pts`` need
+        not lie in this rank's cells; it is collective then."""
         n = pts.shape[0]
         out = np.empty((n, cdim, cdim))
         for a in range(cdim):
@@ -232,7 +235,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
                 e = Msym[a, b]
                 if getattr(e, "free_symbols", None):
                     out[:, a, b] = np.asarray(
-                        uw.function.evaluate(e, pts)).reshape(-1)
+                        evaluate(e, pts)).reshape(-1)
                 else:
                     out[:, a, b] = float(e)
         return out
@@ -267,12 +270,18 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     # signed-measure primitive and d! volume factor.
     cells_all = _tri_cells(dm) if cdim == 2 else _tet_cells(dm)
     signed_vol = _signed_areas if cdim == 2 else _signed_volumes
-    if cells_all is None:
-        # TODO(BUG): rank-LOCAL early return — under MPI a rank with zero
-        # local cells (or a non-simplex local patch) returns here while the
-        # other ranks enter the collective energy/line-search reductions
-        # below, hanging the job. Pre-existing 2D posture, inherited by 3D
-        # (2026-07 review note); the fix is a collective emptiness check.
+    # The cell list is None for two reasons, decided collectively (#1082),
+    # because every step below the return is collective:
+    # - no local cells (a small mesh, or an uneven partition): this rank
+    #   takes part with an empty cell array, contributing nothing to the sums;
+    # - cells that are not all simplices: the mover does not apply, and every
+    #   rank returns together.
+    cStart, cEnd = dm.getHeightStratum(0)
+    if cells_all is None and cEnd == cStart:
+        cells_all = np.zeros((0, cdim + 1), dtype=np.int64)
+    from mpi4py import MPI
+
+    if uw.mpi.comm.allreduce(cells_all is None, op=MPI.LOR):
         return []
     fact = float(math.factorial(cdim))         # d! → |K| = |detE|/d!
     owned_cell = _owned_cell_mask(dm)
@@ -337,8 +346,14 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             boundaries=mesh.boundaries)
         _frozen_M = uw.discretisation.MeshVariable(
             "M_frozen", _frozen_mesh, vtype=uw.VarType.TENSOR, degree=1)
+        # Mesh() repartitions the frozen copy when PETSc reports it as not
+        # distributed (every cell on one rank), so its nodes need not lie in
+        # this rank's cells of the live mesh: read the metric where they lie
+        # (#1082). global_evaluate is collective; every rank reaches it.
         _frozen_M.array[...] = _eval_M_analytic(
-            np.asarray(_frozen_M.coords_nd)).reshape(_frozen_M.array.shape)
+            np.asarray(_frozen_M.coords_nd),
+            evaluate=(uw.function.global_evaluate if parallel else uw.function.evaluate),
+        ).reshape(_frozen_M.array.shape)
 
         # A moved centroid can leave this rank's frozen patch, where the rank-local
         # evaluate extrapolates: global_evaluate answers from the owning rank. Every
@@ -461,8 +476,14 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     # outer_tol=1e-7 never fired — dx~1e-6 ≫ 1e-7 yet ≪ h0~0.08 — so every
     # adapt ran to the n_outer cap.)
     _ecols = np.linalg.norm(Eh, axis=1)            # (n_own, cdim) edge lengths
-    h0_scale = float(np.mean(_ecols)) if _ecols.size else 1.0
-    h0_scale = _global_mean(h0_scale)
+    # The mean over every owned edge of the mesh, the same at any rank count.
+    # (A mean of per-rank means let a rank with no cells vote 1.0, #1082.)
+    if parallel:
+        _esum = uw.mpi.comm.allreduce(float(_ecols.sum()))
+        _ecount = uw.mpi.comm.allreduce(int(_ecols.size))
+        h0_scale = _esum / _ecount if _ecount else 1.0
+    else:
+        h0_scale = float(np.mean(_ecols)) if _ecols.size else 1.0
 
     def _halo_sync(X):
         """Make ghost vertices exact copies of their owners."""
@@ -629,18 +650,13 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             v = v + _beta_cg * _prev_dir
             _prev_dir = v.copy()
 
-        # Per-node step cap from the min incident edge over rank-local
-        # cells. NOTE (parallel): a partition-boundary owned vertex may not
-        # see every incident edge from rank-local cells, so its cap differs
-        # slightly from serial → an ~0.006%-level serial/parallel drift in
-        # the final mesh. The velocity ASSEMBLY itself is bit-identical
-        # serial vs parallel (localToGlobal(ADD_VALUES) is exact); only this
-        # cap is rank-dependent. The drift is below the move's own
-        # non-determinism, so we accept it rather than force a ghost-complete
-        # MIN reduction (PETSc localToGlobal has no portable MIN/MAX mode
-        # here — MAX_VALUES errors on this DM). Left as a known small
-        # non-reproducibility; revisit only if a bit-exact mesh is required.
-        h = _min_incident_edge_nd(cells_all, coords)
+        # Per-node step cap from the shortest incident edge. A vertex on a
+        # partition seam sees only its own rank's cells,
+        # so its shortest edge is taken over every rank that holds it (#1086):
+        # without that its cap, and so its first step, came out longer than in
+        # serial, and the mesh drifted from serial by up to 1e-2.
+        h = _reduce_over_sharing_ranks(
+            dm, _min_incident_edge_nd(cells_all, coords), MPI.MIN)
         mag = np.linalg.norm(v, axis=1)
         cap = step_frac * h
         sc = np.ones_like(mag)
