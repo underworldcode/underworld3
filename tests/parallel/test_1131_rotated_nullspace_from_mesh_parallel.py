@@ -14,7 +14,9 @@ wall; a rank-local verdict would keep the mode there and drop it elsewhere.
   mode, rank 0 warns, and the constraint test then rejects it on every rank.
 - An add_fault child keeps the declaration and the exemption on every rank. At np > 1
   the add-on partition can move the level the fault is cut on into a new mesh, which
-  must inherit the declaration too: without that, a conforming sheet on a shell gave
+  must inherit the declaration too. The fault crosses an interior vertex incident to
+  owned cells on multiple ranks, so migration is mandatory without a rank-count
+  calibration. Without inheritance, a conforming sheet on a shell gave
   v_rms 1.79e-3 at np 1 and 3.45e-3 at np 4 (hyperion, on b7030602).
 - The fixture has its power: at each rank count it was measured at, some rank holds no
   deformed wall vertex. Measured on Linux (hyperion, 2026-11-06), the ranks untouched
@@ -37,6 +39,8 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3.utilities import addon_partition
+from underworld3.utilities.fault_mg import _cell_vertex_table
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(300)]
@@ -122,13 +126,29 @@ def test_a_wall_deformed_on_some_ranks_drops_the_mode_on_every_rank():
                                        "lost its power at this rank count", out)
 
 
-# the rank counts at which the add-on partition was measured to move the level the
-# fault is cut on (hyperion, 2026-11-06: not at np 2 or 6)
-MOVES_AT = (3, 4, 5, 8)
+def _fault_across_partition_seam(mesh):
+    """A short interior fault whose marked cell star has multiple owners."""
+    coords, cells = _cell_vertex_table(mesh)
+    c_start, c_end = mesh.dm.getHeightStratum(0)
+    _, leaves, _ = mesh.dm.getPointSF().getGraph()
+    owned = np.ones(c_end - c_start, dtype=bool)
+    if leaves is not None:
+        owned = ~np.isin(np.arange(c_start, c_end), leaves)
+    points = coords[np.unique(cells[owned])]
+    radii = np.linalg.norm(points, axis=1)
+    points = points[(radii > 0.6) & (radii < 0.9)]
+    owners = {}
+    for rank, rank_points in enumerate(uw.mpi.comm.allgather(points.tolist())):
+        for point in rank_points:
+            owners.setdefault(tuple(point), set()).add(rank)
+    shared = [point for point, ranks in owners.items() if len(ranks) > 1]
+    assert shared, "the fixture needs an interior vertex incident to cells on multiple ranks"
+    centre = np.asarray(min(shared))
+    tangent = np.array([-centre[1], centre[0]]) / np.linalg.norm(centre)
+    return centre + np.array([[-0.02], [0.02]]) * tangent
 
 
 def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
-    from underworld3.utilities import addon_partition
     calls = []
     wrap = addon_partition._moved_wrap
 
@@ -139,13 +159,14 @@ def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
     monkeypatch.setattr(addon_partition, "_moved_wrap", spy)
     base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, refinement=1,
                               qdegree=2)
-    child = base.add_fault([("Flt", np.array([[0.62, 0.10], [0.85, 0.30]]))])
+    # Marking a shared vertex's owned cell star forces the add-on to migrate,
+    # independently of a fixed fault's placement relative to the partition.
+    child = base.add_fault([("Flt", _fault_across_partition_seam(base))])
     moved = bool(uw.mpi.comm.allreduce(len(calls), op=MPI.MAX))
-    if uw.mpi.size in MOVES_AT:
-        assert moved, ("the partition no longer moves this level at this rank count: the "
-                       "case has lost its power, not the library its fix")
+    assert moved, "the seam-crossing fault must exercise the moved-level wrapper"
     declared = uw.mpi.comm.allgather(None if child._nullspace_rotations is None
                                      else len(child._nullspace_rotations))
+    assert set(declared) == {1}, (declared, moved)
     v = uw.discretisation.MeshVariable("Vf", child, 2, degree=2)
     p = uw.discretisation.MeshVariable("Pf", child, 1, degree=1)
     stokes = uw.systems.Stokes(child, velocityField=v, pressureField=p)
@@ -163,5 +184,4 @@ def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
     info = stokes._rotated_freeslip_info
     verdicts = uw.mpi.comm.allgather((info["converged"], tuple(info["declared_modes_exempt"] or ()),
                                       info["rotation_gauge"]["orthonormal"]))
-    assert set(declared) == {1}, (declared, moved)
     assert set(verdicts) == {(True, (True,), 0)}, (verdicts, moved)
