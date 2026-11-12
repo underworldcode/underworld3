@@ -30,6 +30,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from underworld3.systems.solve_report import ksp_reason_string
 from underworld3.utilities.custom_mg import set_custom_fmg
 from underworld3.utilities.fault_contact import fault_slip
 from underworld3.utilities.place_surface import place_fault_ribbon_2d
@@ -92,6 +93,17 @@ def _velocity_iterations(s, split):
     return s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getIterationNumber()
 
 
+def _told(s, split):
+    """How a solve ended and where it started from, for a failed assertion's message."""
+    if split:
+        ksp_reason = s._rotated_freeslip_info["ksp_reason"]
+    else:
+        ksp_reason = s.snes.getKSP().getConvergedReason()
+    report = s.solve_report
+    return {"reason": report.reason_str, "ksp_reason": ksp_reason_string(ksp_reason),
+            "first_residual": report.fnorm0, "last_residual": report.fnorm}
+
+
 def _norm(a):
     return np.sqrt(uw.mpi.comm.allreduce(float(np.sum(np.asarray(a) ** 2))))
 
@@ -103,7 +115,9 @@ def _gauged(a):
 
 def _moves(split):
     """Solve after each of MOVES MMPDE moves with the patch kept and with a fresh
-    registration; yield (kept, fresh, errors, warnings) per move."""
+    registration; yield (kept, fresh, errors, warnings, told) per move. ``told`` is
+    what a red run needs to explain itself: how each solve ended, the residual it
+    started from, and the worst cell the move left."""
     mesh, levels, zone = _fixture(split)
     kept, vk, pk = _stokes(mesh, zone, split, "k")
     set_custom_fmg(kept, levels, field_id=0,
@@ -119,9 +133,11 @@ def _moves(split):
             warnings.simplefilter("always")
             kept.solve(zero_init_guess=True)
         said = [str(w.message) for w in caught if "FAC patch" in str(w.message)]
+        told = {"q_min": mesh.quality()["q_min"], "kept": _told(kept, split)}
         set_custom_fmg(fresh, levels, field_id=0,
                        fac_zone=np.asarray(zone.array[:, 0, 0] > 0.5))
         fresh.solve(zero_init_guess=True)
+        told["fresh"] = _told(fresh, split)
         errors = {
             "velocity": _norm(np.asarray(vk.array) - np.asarray(vf.array)) / _norm(vf.array),
             "pressure": (_norm(_gauged(pk.array) - _gauged(pf.array))
@@ -131,12 +147,12 @@ def _moves(split):
             _s, slip_k, _l = fault_slip(kept, "Fault", kept._rotated_freeslip_info)
             _s, slip_f, _l = fault_slip(fresh, "Fault", fresh._rotated_freeslip_info)
             errors["slip"] = _norm(slip_k - slip_f) / _norm(slip_f)
-        yield k, kept, fresh, errors, said
+        yield k, kept, fresh, errors, said, told
 
 
 @pytest.mark.parametrize("split", [False, True], ids=["zone", "zone_on_a_split_level"])
 def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
-    for k, kept, fresh, errors, said in _moves(split):
+    for k, kept, fresh, errors, said, told in _moves(split):
         # one line per move, past pytest's capture: on a loaded host a move takes over a
         # minute at np 2 (hyperion at load 60: 157 s and 254 s for the two cases, 3-4
         # times CI), and the MPI supervisor kills a job silent for 300 s
@@ -147,14 +163,15 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
         # killed or stale zone patch took 12 and 15
         its_k = _velocity_iterations(kept, split)
         its_f = _velocity_iterations(fresh, split)
-        assert its_k <= its_f + 1, (k, its_k, its_f)
+        told["velocity_its"] = (its_k, its_f)
+        assert its_k <= its_f + 1, (k, its_k, its_f, told)
         # to the solver tolerance: at 1e-8 kept and fresh agree to ~4e-9 (hyperion,
         # np 1, 2 and 4); a patch only preconditions, and the outer solve converges
         # on the true residual, so a stale one costs iterations and not accuracy
-        assert errors["velocity"] < 100 * TOLERANCE, (k, errors)
-        assert errors["pressure"] < 1000 * TOLERANCE, (k, errors)
+        assert errors["velocity"] < 100 * TOLERANCE, (k, errors, told)
+        assert errors["pressure"] < 1000 * TOLERANCE, (k, errors, told)
         if split:
-            assert errors["slip"] < 1000 * TOLERANCE, (k, errors)
+            assert errors["slip"] < 1000 * TOLERANCE, (k, errors, told)
         record = kept.pc_fallbacks.get("custom_mg.fac_patch")
         if not split:
             # nothing was dropped: no warning, no record
