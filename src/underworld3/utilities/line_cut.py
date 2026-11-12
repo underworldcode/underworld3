@@ -498,6 +498,24 @@ def _minimal_face_vertices(X, cell_verts, point):
     return cell_verts[c][on]
 
 
+def _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
+    """Whether a mesh face, given by its vertices, lies on the domain boundary.
+
+    A vertex is on the boundary when ``on_wall`` says so. An edge is on it
+    when it has one cell and is not ``shared``: an edge of a partition seam
+    also has one cell locally, and an interior edge can join two boundary
+    vertices across a corner of the domain. A cell never is.
+    """
+    if len(face) == 1:
+        return bool(on_wall[face[0]])
+    if len(face) != 2 or not on_wall[face].all():
+        return False
+    vS, _vE = dm.getDepthStratum(0)
+    pStart, _pEnd = dm.getChart()
+    edge = int(dm.getJoin([int(v) + vS for v in face])[0])
+    return len(dm.getSupport(edge)) == 1 and not shared[edge - pStart]
+
+
 def _cell_quality(X, cell_verts):
     """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted.
 
@@ -983,6 +1001,16 @@ def pull_vertex_onto(dm, targets):
     choice to the containment relation the cut actually tests. A target outside
     the mesh falls back to the nearest vertex anywhere.
 
+    A vertex of the domain boundary moves only along the boundary. For a
+    target on a boundary edge the candidates are that edge's two ends; for a
+    target inside the mesh they are the INTERIOR corners of the face holding
+    it, however close a boundary corner is. Moving a boundary vertex inward
+    dents the domain, and turns a fault tip that is clear of the boundary into
+    a boundary vertex, which the split refuses. A target whose face has no
+    interior corner is refused with ``ValueError``. On a curved boundary the
+    boundary is the mesh's own chords: a point of the true curve that falls
+    inside a chord is an interior target.
+
     The choice is made from the coordinates alone and reduced globally, so every
     rank moves the same vertex: a rank-local nearest-vertex search picks a
     different one on each rank, which is how the mesh stops being
@@ -990,10 +1018,16 @@ def pull_vertex_onto(dm, targets):
     two distinct vertices at bit-identical distance would be arbitrary, and that
     is measure-zero rather than handled.
     """
+    # place_surface imports this module, so its boundary mask is imported here
+    from underworld3.utilities.place_surface import _true_wall_vertex_mask
+    from underworld3.utilities.reconnect import _shared_points
+
     X = _coords(dm)
     arr = X.copy()
     scale = _global_extent(dm)
     cell_verts = _cell_vertices(dm)
+    on_wall = _true_wall_vertex_mask(dm, len(X))
+    shared = _shared_points(dm)
 
     cdim = X.shape[1]
     for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :cdim]:
@@ -1008,7 +1042,22 @@ def pull_vertex_onto(dm, targets):
         # of the two cells sharing that edge won by 0.4% at 9.963e-03.
         face = _minimal_face_vertices(X, cell_verts, t)
         held = len(face) > 0
-        candidates = face if held else np.arange(len(X))
+        # A boundary vertex may take a target on the boundary, and no other:
+        # moved inward it dents the domain. Every rank holding the target
+        # reads the same face, so they agree on whether a corner is left.
+        # TODO(BUG): a boundary vertex where the boundary turns (a box corner)
+        # still slides along one wall and off the other when it is the nearer
+        # end of the boundary edge holding the target. See issue #1089.
+        boxed_in = False
+        if not held:
+            candidates = np.arange(len(X))
+        elif _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
+            candidates = face
+        else:
+            candidates = face[~on_wall[face]]
+            boxed_in = len(candidates) == 0
+            if boxed_in:
+                candidates = face
         d = np.linalg.norm(X[candidates] - t, axis=1)
         # Reduced as (outside, distance, x, y) so both decisions ride one
         # reduction: tuples compare lexicographically, so MIN prefers ANY rank
@@ -1022,10 +1071,24 @@ def pull_vertex_onto(dm, targets):
         # fallback is the nearest vertex anywhere — the behaviour before the
         # containment rule, kept because a target off the mesh still has to
         # land somewhere.
-        local = ((0 if held else 1, float(d.min()),
+        #
+        # A flag of -1 is the refusal: the target is held and every corner of
+        # its face is on the boundary. It leads the reduction so every rank
+        # raises together, and it carries the nearest of those corners for the
+        # message.
+        local = ((-1 if boxed_in else 0 if held else 1, float(d.min()),
                   *X[candidates[int(d.argmin())]])
                  if d.size else (1, np.inf, *([np.inf] * cdim)))
         reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
+        if reduced[0] == -1:
+            raise ValueError(
+                f"pull_vertex_onto: the target {tuple(float(x) for x in t)} is "
+                "inside the mesh and every corner of the cell or edge holding it "
+                "is on the domain boundary (the nearest, "
+                f"{tuple(float(x) for x in reduced[2:])}, is {reduced[1]:.3e} "
+                "away). A boundary vertex moves only along the boundary, so no "
+                "vertex can be put on this target. Move the target further "
+                "from the boundary, or refine the mesh there.")
 
         # Move it by POSITION, not by index: the chosen vertex may be a ghost
         # here and an owned point there, and both copies have to end up in the

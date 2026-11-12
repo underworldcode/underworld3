@@ -950,3 +950,163 @@ def test_the_pulled_vertex_covers_every_cell_holding_the_target():
     assert exposed > 0, (
         "no midpoint had its nearest vertex off the edge, so this mesh does "
         "not exercise the defect and the test proves nothing")
+
+
+def _domain_boundary_vertices(dm):
+    """Mask of the vertices on the domain boundary (serial: one-sided edges)."""
+    vS, vE = dm.getDepthStratum(0)
+    on = np.zeros(vE - vS, dtype=bool)
+    for e in range(*dm.getDepthStratum(1)):
+        if len(dm.getSupport(e)) == 1:
+            for v in dm.getCone(e):
+                on[int(v) - vS] = True
+    return on
+
+
+def _meshes_with_a_wall():
+    box = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
+        regular=False, qdegree=2)
+    annulus = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+                                 cellSize=0.1, qdegree=2)
+    return {"box": box, "annulus": annulus}
+
+
+@pytest.mark.parametrize("kind", ["box", "annulus"])
+def test_a_target_inside_the_mesh_leaves_the_domain_boundary_alone(kind):
+    """A target INSIDE a boundary cell takes the cell's interior corner.
+
+    `pull_vertex_onto` took the nearest corner of the cell holding the target,
+    whichever it was. For a target under a wall vertex that corner is the wall
+    vertex, which was then moved off the wall: the domain lost the area
+    between the wall and the target, and a fault tip placed this way became a
+    boundary vertex, so the split refused a fault that does not touch the
+    boundary.
+
+    The target is 0.6 W + 0.2 A + 0.2 B in a cell with wall corners W, A and
+    interior corner B: inside the cell, 0.2 of its height from the wall. The
+    negative control counts the cells in which W is the nearest corner, the
+    configuration that fails.
+
+    Asserted: the interior corner B is on the target, every boundary vertex is
+    bitwise where it was, and the mesh area is unchanged (for the box, 1).
+    """
+    from underworld3.utilities.line_cut import (_cell_vertices, _coords,
+                                                _set_coordinates)
+
+    dm = _meshes_with_a_wall()[kind].dm
+    X = _coords(dm)
+    cells = _cell_vertices(dm)
+    wall = _domain_boundary_vertices(dm)
+    area = cell_areas(dm).sum()
+    if kind == "box":
+        assert area == pytest.approx(1.0, rel=1e-13)
+
+    exposed = 0
+    for corners in cells[wall[cells].sum(axis=1) == 2]:
+        W, A = corners[wall[corners]]
+        B = corners[~wall[corners]][0]
+        t = 0.6 * X[W] + 0.2 * X[A] + 0.2 * X[B]
+        if np.linalg.norm(X[corners] - t, axis=1).argmin() == list(corners).index(W):
+            exposed += 1
+
+        Xo = _coords(pull_vertex_onto(dm, t))
+        assert np.array_equal(Xo[wall], X[wall]), (
+            f"a domain-boundary vertex moved for the interior target {t}")
+        assert np.linalg.norm(Xo[B] - t) < 1e-12, (
+            f"the interior corner of the cell holding {t} is not on it")
+        moved = np.flatnonzero((Xo != X).any(axis=1))
+        assert list(moved) == [B]
+        out = dm.clone()
+        _set_coordinates(out, np.arange(len(Xo)), Xo)
+        assert cell_areas(out).sum() == pytest.approx(area, rel=1e-13)
+
+    assert exposed > 10, (
+        "the wall corner was the nearest corner in too few cells, so this "
+        "mesh does not exercise the defect")
+
+
+def test_a_target_on_the_domain_boundary_slides_a_boundary_vertex():
+    """A target ON a wall edge takes one of that edge's ends, along the wall.
+
+    The boundary rule must not stop a point of the wall being placed: here the
+    target is 0.3 of the way along each wall edge of the box, the nearer end
+    moves onto it, nothing else moves, and the box keeps its area of 1.
+
+    The end that moves is never a corner of the box. A corner is on two walls
+    and sliding it along one takes it off the other; that is not what this
+    test is about, and `pull_vertex_onto` carries a TODO for it.
+    """
+    from underworld3.utilities.line_cut import (_coords, _edge_vertices,
+                                                _set_coordinates)
+
+    dm = _meshes_with_a_wall()["box"].dm
+    X = _coords(dm)
+    ends = _edge_vertices(dm)
+    eS = dm.getDepthStratum(1)[0]
+    wall_edges = [e - eS for e in range(*dm.getDepthStratum(1))
+                  if len(dm.getSupport(e)) == 1]
+    assert len(wall_edges) == 48
+
+    def is_box_corner(v):
+        return bool(np.isin(X[v], (0.0, 1.0)).all())
+
+    for a, b in ends[wall_edges]:
+        if is_box_corner(a):
+            a, b = b, a
+        t = 0.7 * X[a] + 0.3 * X[b]
+        Xo = _coords(pull_vertex_onto(dm, t))
+        assert np.linalg.norm(Xo[a] - t) < 1e-12
+        assert list(np.flatnonzero((Xo != X).any(axis=1))) == [a]
+        out = dm.clone()
+        _set_coordinates(out, np.arange(len(Xo)), Xo)
+        assert cell_areas(out).sum() == pytest.approx(1.0, rel=1e-13)
+
+
+def _strip_with_every_vertex_on_the_boundary():
+    """The rectangle [0, 2] x [0, 1] as four triangles, no interior vertex.
+
+    Vertices (1, 0) and (1, 1) sit mid-wall, so they can slide along it; the
+    edge from (1, 0) to (0, 1) is interior with both ends on the boundary.
+    """
+    from petsc4py import PETSc
+
+    cells = np.array([[0, 1, 5], [1, 4, 5], [1, 2, 4], [2, 3, 4]], dtype=np.int32)
+    vertices = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0],
+                         [2.0, 1.0], [1.0, 1.0], [0.0, 1.0]])
+    return PETSc.DMPlex().createFromCellList(2, cells, vertices,
+                                             comm=PETSc.COMM_SELF)
+
+
+@pytest.mark.parametrize("target, where", [
+    ((0.4, 0.3), "inside a cell"),
+    ((0.5, 0.5), "on an interior edge"),
+])
+def test_a_target_with_no_interior_corner_to_take_is_refused(target, where):
+    """No corner of the face holding the target is interior: refuse, and say so.
+
+    Every vertex of the strip is on the boundary. A target inside a cell, or
+    on an interior edge whose ends are both on the boundary, could only be
+    reached by moving a boundary vertex off the boundary, which is the defect.
+    The refusal names the boundary rather than leaving a later step to fail
+    on the dented wall.
+    """
+    dm = _strip_with_every_vertex_on_the_boundary()
+    with pytest.raises(ValueError, match="domain boundary"):
+        pull_vertex_onto(dm, np.array(target))
+
+
+def test_a_boundary_target_is_placed_where_every_vertex_is_on_the_boundary():
+    """The refusal is for interior targets only: a wall point is still placed.
+
+    (0.7, 0) is on the bottom wall of the strip; the mid-wall vertex (1, 0)
+    slides onto it and the strip keeps its area of 2.
+    """
+    from underworld3.utilities.line_cut import _coords
+
+    dm = _strip_with_every_vertex_on_the_boundary()
+    out = pull_vertex_onto(dm, np.array([0.7, 0.0]))
+    moved = np.flatnonzero((_coords(out) != _coords(dm)).any(axis=1))
+    assert [tuple(x) for x in _coords(dm)[moved]] == [(1.0, 0.0)]
+    assert [tuple(x) for x in _coords(out)[moved]] == [(0.7, 0.0)]
+    assert cell_areas(out).sum() == pytest.approx(2.0, rel=1e-13)

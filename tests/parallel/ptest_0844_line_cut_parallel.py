@@ -497,3 +497,67 @@ def test_a_fault_network_cuts_at_a_shared_junction_in_parallel(kind):
     on_junction = uw.mpi.comm.allreduce(
         int((np.linalg.norm(X[:, :2] - JUNCTION, axis=1) < 1e-12).sum()))
     assert on_junction > 0, "the junction is not a mesh vertex on any rank"
+
+
+# ---------------------------------------------------------------------------
+# A pulled vertex and the domain boundary, across a partition.
+# ---------------------------------------------------------------------------
+
+def _wall_vertex_coords(dm):
+    """Owned-once coordinates of the unit box's wall vertices, sorted."""
+    X = _owned_vertex_coords(dm)
+    return X[np.isin(X, (0.0, 1.0)).any(axis=1)]
+
+
+def test_an_interior_target_leaves_the_wall_alone_on_every_rank():
+    """Targets under the top wall take interior vertices at any partition.
+
+    Each target is (0.004, -0.015) from a top-wall vertex of the 1/12 box:
+    inside a boundary cell, and nearer to that wall vertex than to any other
+    vertex. Whether a vertex is on the domain boundary is a global fact, and a
+    partition seam through the boundary cell must not change the answer: the
+    48 wall vertices are bitwise where they were, each target has a vertex on
+    it, and the box keeps its area of 1.
+    """
+    from underworld3.utilities.line_cut import pull_vertex_onto
+
+    base = uw.meshing.UnstructuredSimplexBox(cellSize=1 / 12, **_BOX)
+    targets = np.array([[k / 12 + 0.004, 1.0 - 0.015] for k in range(1, 11)])
+
+    wall_before = _wall_vertex_coords(base.dm)
+    assert len(wall_before) == 48
+
+    dm = pull_vertex_onto(base.dm, targets)
+
+    assert np.array_equal(_wall_vertex_coords(dm), wall_before), (
+        f"np={uw.mpi.size}: a wall vertex moved for an interior target")
+    X = _coords(dm)
+    for t in targets:
+        on = uw.mpi.comm.allreduce(
+            int((np.linalg.norm(X - t, axis=1) < 1e-12).sum()))
+        assert on > 0, f"np={uw.mpi.size}: no vertex on the target {t}"
+    area = uw.mpi.comm.allreduce(float(cell_areas(dm).sum()))
+    assert area == pytest.approx(1.0, rel=1e-13)
+
+
+def test_a_target_with_no_interior_corner_is_refused_on_every_rank():
+    """The boxed-in refusal is collective.
+
+    The regular 1/12 box has a corner cell whose three corners are all on the
+    boundary, centred on (1/36, 1/36). One rank holds it; every rank must
+    raise, or the ones that do not walk on into the next collective and hang.
+    """
+    from underworld3.utilities.line_cut import pull_vertex_onto
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
+        regular=True, qdegree=2)
+    try:
+        pull_vertex_onto(base.dm, np.array([1 / 36, 1 / 36]))
+        outcome = "no refusal"
+    except ValueError as exc:
+        outcome = "refused" if "domain boundary" in str(exc) else str(exc)
+
+    seen = uw.mpi.comm.allgather(outcome)
+    assert set(seen) == {"refused"}, (
+        f"np={uw.mpi.size}: ranks disagreed — {seen}")

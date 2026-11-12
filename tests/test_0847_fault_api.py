@@ -244,3 +244,42 @@ def test_analytic_normal_smooths_a_sampled_curve():
         stokes.add_fault_bc(0, boundary="Arc", normal=sympy.Matrix(
             [[sympy.Symbol("q_foreign"), 1]]))
     assert "Arc" in stokes._fault_normal_overrides
+
+
+def test_a_fault_tip_under_a_wall_vertex_is_placed_and_the_wall_keeps_its_shape():
+    """A tip inside a boundary cell, nearest to its wall corner, is a tip.
+
+    The tip is 0.2 of the cell height below the top wall, so the fault does
+    not touch the boundary. Placing it moved the wall corner onto it, and the
+    split then refused the fault as touching the domain boundary. The fault is
+    placed, it splits, and the box keeps its area of 1 and its straight top.
+    """
+    from underworld3.utilities.line_cut import (_cell_vertices, _coords,
+                                                cell_areas)
+
+    base = _box(cell_size=1 / 12)
+    X = _coords(base.dm)
+    vS = base.dm.getDepthStratum(0)[0]
+    top = None
+    for e in range(*base.dm.getDepthStratum(1)):
+        a, b = (int(v) - vS for v in base.dm.getCone(e))
+        if (len(base.dm.getSupport(e)) == 1 and X[a, 1] == 1.0 and X[b, 1] == 1.0
+                and 0.3 < X[a, 0] < 0.7):
+            top = (a, b)
+            break
+    assert top is not None
+    W, A = top
+    cell = next(c for c in _cell_vertices(base.dm) if W in c and A in c)
+    B = next(int(v) for v in cell if v not in (W, A))
+    tip = 0.6 * X[W] + 0.2 * X[A] + 0.2 * X[B]
+    assert np.linalg.norm(X[cell] - tip, axis=1).argmin() == list(cell).index(W), (
+        "the wall corner is not the nearest corner, so the case is not exercised")
+
+    split = base.add_fault(("Flt", np.vstack([tip, [0.5, 0.6]])))
+
+    assert "FltPlus" in [b.name for b in split.boundaries]
+    Xs = _coords(split.dm)
+    assert np.linalg.norm(Xs - tip, axis=1).min() < 1e-12
+    assert cell_areas(split.dm).sum() == pytest.approx(1.0, rel=1e-13)
+    assert Xs[:, 1].max() == 1.0
+    assert (Xs == X[W]).all(axis=1).any(), "the wall corner moved"

@@ -178,6 +178,14 @@ worst angle (8.79° against 5.29°). It costs mesh displacement rather than
 geometric accuracy — the same trade as `snap_frac` — and the tip is where the
 stress concentrates.
 
+A vertex of the domain boundary moves only along the boundary. A target on a
+boundary edge takes one of that edge's ends; a target inside the mesh takes an
+interior corner of the cell holding it, however close a boundary corner is, so
+a tip just under a wall stays a tip and the wall keeps its shape. If the cell
+holding an interior target has no interior corner, `pull_vertex_onto` raises
+`ValueError` on every rank. On a curved boundary the boundary is the mesh's own
+chords.
+
 Y (branching), T (abutting) and X (crossing) networks all work, in serial and at
 np=2/3/4. The union-of-cells zone **bulges** where branches meet, because the fan
 of cells around the shared vertex is picked up by each branch. That is accepted:
