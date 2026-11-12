@@ -182,8 +182,8 @@ def test_discontinuous_variable_falls_back():
 @pytest.mark.tier_b
 @pytest.mark.parametrize("degree", [2, 3])
 def test_map_is_topological_off_the_chord(degree):
-    # Nodes pushed off their straight-cell positions (as on a curved boundary or
-    # a degree-2 coordinate mesh) by a tenth of the lattice spacing, far beyond
+    # Nodes pushed off their straight-cell positions (as on a curved boundary)
+    # by a tenth of the lattice spacing, far beyond
     # the 1e-4 of a curved annulus boundary, give the same connectivity.
     from types import SimpleNamespace
     from underworld3.visualisation.visualisation import _lagrange_subcell_connectivity

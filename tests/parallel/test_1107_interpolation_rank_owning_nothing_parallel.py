@@ -25,10 +25,9 @@ copy's node placement. The tests check each case is set up, then
 that the node coordinates (degree 1 to 3, the third with two nodes on each
 edge) and the projection between degrees come back right on every rank,
 through UW3's copy of the interpolator
-(``petsc_dm_create_interpolation_within_plex``). A degree-2 mesh on the
-partition pins the coordinate space PETSc projects in ``Mesh`` setup, and a
-custom-P FMG solve whose coarse level is the grid, under its refinement, pins
-the case inside a real multigrid build.
+(``petsc_dm_create_interpolation_within_plex``). A custom-P FMG solve whose
+coarse level is the grid, under its refinement, pins the case inside a real
+multigrid build.
 
 Before the fix the ranks failed or hung inside PETSc. The thread timeout below
 stops a rank waiting in Python; a rank held inside a PETSc collective keeps the
@@ -214,31 +213,6 @@ def test_projection_between_degrees_on_every_rank(mesh):
     n1 = mesh._get_coords_for_basis(1, True)
     ok = (np.allclose(up[:, 0], n2[:, 0] + 2.0 * n2[:, 1], atol=1e-12)
           and np.allclose(down[:, 0], n1[:, 0] ** 2, atol=1e-12))
-    assert _all(ok)
-
-
-@pytest.mark.parametrize("where", ["interior", "boundary"])
-def test_a_degree_two_mesh_builds_on_every_rank(where):
-    """``Mesh(degree=2)`` gives the plex a degree-2 coordinate space, carried
-    across from the vertex coordinates: the vertices stay on the grid and every
-    edge's coordinate is its midpoint."""
-    mesh = uw.discretisation.Mesh(_owned_nothing_dm(where), degree=2, qdegree=3)
-    assert _rank_zero_owns_nothing(mesh, where)                 # the case under test
-    dm = mesh.dm
-    sec = dm.getCoordinateSection()
-    x = dm.getCoordinatesLocal().array
-
-    def at(p):
-        return x[sec.getOffset(p):sec.getOffset(p) + 2]
-
-    ok = True
-    vS, vE = dm.getDepthStratum(0)
-    for v in range(vS, vE):
-        ok &= sec.getDof(v) == 2 and np.allclose(at(v) * N, np.round(at(v) * N), atol=1e-12)
-    eS, eE = dm.getDepthStratum(1)
-    for e in range(eS, eE):
-        a, b = dm.getCone(e)
-        ok &= sec.getDof(e) == 2 and np.allclose(at(e), 0.5 * (at(a) + at(b)), atol=1e-12)
     assert _all(ok)
 
 

@@ -2,6 +2,7 @@ from typing import Optional, Tuple, Union
 from enum import Enum
 from contextlib import contextmanager
 
+import numbers
 import os
 import weakref
 import threading
@@ -736,8 +737,10 @@ class Mesh(Stateful, uw_object):
     ----------
     plex_or_meshfile : PETSc.DMPlex or str
         Either a PETSc DMPlex object or path to a mesh file (gmsh, exodus).
-    degree : int, optional
-        Polynomial degree for the coordinate field (default 1).
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     simplex : bool, optional
         True for simplicial elements (triangles/tets), False for quads/hexes.
     coordinate_system_type : CoordinateSystemType, optional
@@ -797,6 +800,8 @@ class Mesh(Stateful, uw_object):
         *args,
         **kwargs,
     ):
+        Mesh._require_straight_sided_cells(degree, plex_or_meshfile)
+
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
@@ -1032,7 +1037,6 @@ class Mesh(Stateful, uw_object):
         # is a SymPy Matrix velocity field in mesh coordinates.
         self._nullspace_rotations = None
 
-        self.degree = degree
         self.qdegree = qdegree
 
         # Populate the element information for this mesh. This is intended to be
@@ -1824,6 +1828,46 @@ class Mesh(Stateful, uw_object):
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
 
         patch_coordinate_units(self)
+
+    @staticmethod
+    def _require_straight_sided_cells(degree, plex=None):
+        """Raise unless ``degree``, a mesh's coordinate degree, is the integer 1,
+        and unless ``plex``, when one is given, carries coordinates of degree 1.
+
+        Particle location, cell geometry, boundary normals and mesh motion all
+        read the coordinates as straight-sided cells (#978). The constructors in
+        ``uw.meshing`` call this before they generate anything, and
+        ``Mesh.__init__`` calls it first. ``degree`` is an argument and the
+        coordinate space is a property of the plex, both of which every rank
+        holds alike, so every rank refuses together.
+        """
+        if isinstance(degree, bool) or not isinstance(degree, numbers.Integral) or degree != 1:
+            raise ValueError(
+                f"Mesh: degree={degree!r} is not supported; mesh coordinates are degree 1 "
+                "(straight-sided cells). For a higher-order field, give the MeshVariable "
+                "its own degree, e.g. MeshVariable('v', mesh, 2, degree=2).")
+
+        if not isinstance(plex, PETSc.DM):
+            return
+        coordinate_dm = plex.getCoordinateDM()
+        if coordinate_dm.getNumFields() == 0:
+            return
+        # a plex as generated or read has vertex coordinates and no finite
+        # element here; one given a coordinate space has, and it has a degree
+        space = coordinate_dm.getField(0)[0]
+        if not isinstance(space, PETSc.FE):
+            return
+        plex_degree = space.getBasisSpace().getDegree()[0]
+        if plex_degree != 1:
+            raise ValueError(
+                f"Mesh: the plex carries coordinates of degree {plex_degree}; mesh "
+                "coordinates are degree 1 (straight-sided cells). For a higher-order field, "
+                "give the MeshVariable its own degree, e.g. MeshVariable('v', mesh, 2, degree=2).")
+
+    @property
+    def degree(self) -> int:
+        """Degree of the mesh coordinates: always 1, and read-only (#978)."""
+        return 1
 
     @property
     def dim(self) -> int:
@@ -3165,8 +3209,8 @@ class Mesh(Stateful, uw_object):
         # mesh coordinates to other mesh coordinates.
 
         # Dual-space options control node placement on simplices and must be set
-        # before createDefault(). Currently only P1 coordinate meshes are used,
-        # but these are needed for higher-order (curved) coordinate meshes.
+        # before createDefault(). Mesh coordinates are degree 1 (#978), with
+        # nodes at the vertices only.
         options = PETSc.Options()
         fe_prefix = f"meshproj_{self.mesh_instances}_"
         fe_keys = {f"{fe_prefix}petscspace_degree": self.degree,
@@ -4713,25 +4757,6 @@ class Mesh(Stateful, uw_object):
                 pass
         return result
 
-    def _finest_level_takes_moved_coordinates(self):
-        """Whether a move can give ``dm_hierarchy[-1]`` the moved coordinates.
-
-        False only when the finest level's coordinate layout differs from
-        ``self.dm``'s (a refined mesh with degree-2 coordinates, which is not
-        supported). Collective: every rank must reach the same answer before
-        the move starts, or a rank that holds no cells would go on into
-        ``createCoordinateSpace`` alone.
-        """
-        hierarchy = getattr(self, "dm_hierarchy", None)
-        if not hierarchy or hierarchy[-1] is self.dm:
-            return True
-        same = (hierarchy[-1].getCoordinatesLocal().getSize()
-                == self.dm.getCoordinatesLocal().getSize())
-        if uw.mpi.size > 1:
-            from mpi4py import MPI
-            same = uw.mpi.comm.allreduce(same, op=MPI.LAND)
-        return same
-
     def _sync_hierarchy_finest_coordinates(self):
         """Give the finest hierarchy level the coordinates ``self.dm`` now has.
 
@@ -4808,12 +4833,6 @@ class Mesh(Stateful, uw_object):
         """
 
         self._assert_coord_mutation_allowed()
-
-        if not self._finest_level_takes_moved_coordinates():
-            raise RuntimeError(
-                "Mesh: a refined mesh whose coordinates are degree 2 cannot be moved: "
-                "its finest hierarchy level holds degree-1 coordinates, so a solve "
-                "after the move would run on the pre-move geometry (#1037).")
 
         with self._mesh_update_lock:
             coord_vec = self.dm.getCoordinatesLocal()
@@ -7699,17 +7718,10 @@ class Mesh(Stateful, uw_object):
         one finite positive value per local cell and is bit-identical across
         rank counts in every case. (The note also named ``DMPlexGetMinRadius``,
         which is a different call and is not used here.)
-
-        The FVM routine needs affine coordinates. On a coordinate field of higher
-        degree it reads the edge midpoints as corners and then fails, so there the
-        volume comes from integrating the coordinate map's Jacobian (#908).
         """
         from underworld3.cython import petsc_discretisation
 
-        if self.degree == 1:
-            radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
-        else:
-            radii = petsc_discretisation.petsc_fem_get_local_cell_sizes(self)
+        radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
 
         # The FVM centroids are discarded: `_get_coords_for_basis(0, False)` is
         # the degree-0 coordinate array the rest of the mesh indexes by cell,

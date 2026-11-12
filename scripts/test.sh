@@ -418,7 +418,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_1148*py  # a new timestep keeps the SNES of a time-dependent solver (#1026)
   batch 4 tests/test_1149*py  # a custom-P hierarchy's state does not outlive a change (#1019, #1017)
   batch 4 tests/test_1150*py  # every example script and notebook parses (#944)
-  batch 4 tests/test_1153*py  # timestep estimates read model units; setters keep or refuse (#891, #978, #1031)
+  batch 4 tests/test_1153*py  # timestep estimates read model units; setters keep or refuse (#891, #1031)
   batch 4 tests/test_1151*py  # the first solve after a mesh move reads the moved fields
   batch 4 tests/test_1172*py  # a solve after a move of a refined mesh uses the moved geometry (#1037)
   batch 4 tests/test_1158*py  # the rotated workspace watches the coefficients of its kernels (#546)

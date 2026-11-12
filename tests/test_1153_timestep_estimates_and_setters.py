@@ -9,9 +9,6 @@ they are given (bundle B of the issue sweep).
   With units on the variables it also took the field range and the velocity
   dimensional. A units model and its dimensionless twin now give the same
   estimates, with and without units on the variables.
-- **#978.** On a mesh of degree 2 the accuracy estimate evaluated the velocity at
-  the vertices while the gradient recovery returns the coordinate DM's nodes,
-  midpoints included, and raised ``ValueError``.
 - **#1031.** The timestep setters (``TransientDarcy`` and ``Richards``,
   ``NavierStokesSLCN``, the semi-Lagrangian and Eulerian solvers, ``Diffusion``)
   share ``_nondimensionalise_timestep``. ``TransientDarcy`` unwrapped a
@@ -76,9 +73,9 @@ def test_a_units_model_and_its_twin_estimate_the_same_step(variable_units):
     assert with_units == pytest.approx(dimensionless, rel=1.0e-9)
 
 
-def test_the_accuracy_estimate_works_on_a_degree_2_mesh():
+def test_the_accuracy_estimate_has_its_closed_form_step():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
-                                             cellSize=0.125, degree=2, qdegree=3)
+                                             cellSize=0.125, qdegree=3)
     v = uw.discretisation.MeshVariable("V1153d", mesh, 2, degree=2)
     T = uw.discretisation.MeshVariable("T1153d", mesh, 1, degree=2)
     v.data[:, 0] = 1.0
@@ -86,11 +83,11 @@ def test_the_accuracy_estimate_works_on_a_degree_2_mesh():
     adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=v.sym)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = 1.0
-    # development: ValueError, 714 gradient values into the 98 vertices
     dt = adv.estimate_dt()
-    # u.grad(T) peaks at pi on [0, 1]; the range is 1: dt = 0.02 / pi within the
-    # recovery's O(h) error
-    assert 0.5 * 0.02 / np.pi < dt < 2.0 * 0.02 / np.pi
+    # u.grad(T) peaks at pi on [0, 1] and the range is 1, so dt = 0.02 / pi; the
+    # recovered gradient is 1.6 % low at this cell size
+    assert dt == pytest.approx(0.02 / np.pi, rel=0.03)
+    assert adv.dt_accuracy == pytest.approx(dt, rel=1.0e-12)
 
 
 def _darcy():
