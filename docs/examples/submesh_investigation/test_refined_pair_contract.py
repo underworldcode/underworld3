@@ -49,7 +49,6 @@ def main():
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),
         cellSize=0.2,
-        degree=2,
         qdegree=4,
         refinement=2,
     )

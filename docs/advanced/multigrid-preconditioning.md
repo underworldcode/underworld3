@@ -97,7 +97,7 @@ This is the key reason to prefer FMG when you adapt:
 
 Multigrid is cheap because each level costs a fraction of the one above it, and
 the bottom of the hierarchy is solved **exactly** at negligible cost. The word
-doing the work in that sentence is *negligible*. A direct (or SVD) coarse solve
+doing the work in that sentence is *negligible*. A direct coarse solve
 is only free if the coarsest level is genuinely tiny; nothing in the method makes
 it so, and nothing warns you when it is not.
 
@@ -106,8 +106,9 @@ it so, and nothing warns you when it is not.
 The bundle sets a redundant direct solve:
 
 ```python
-mg_coarse_pc_type            = "redundant"
-mg_coarse_redundant_pc_type  = "lu"
+mg_coarse_pc_type                         = "redundant"
+mg_coarse_redundant_pc_type               = "lu"
+mg_coarse_redundant_pc_factor_shift_type  = "nonzero"
 ```
 
 `redundant` copies the whole coarse system to **every rank** and factors it
@@ -118,19 +119,33 @@ solving the same thing everywhere. It is also np-safe, which a bare `lu` is not
 `DIVERGED_LINEAR_SOLVE` after zero iterations. In serial, `redundant` + `lu` is
 identical to `lu`.
 
+The shift acts only when the LU meets a pivot below PETSc's zero-pivot
+tolerance (2.2e-14 times the sum of the magnitudes of the off-diagonal entries in
+that row); it then
+refactors with a small shift added to the diagonal. A coarse level whose pivots
+stay above that tolerance factors exactly as it would without it: native and
+standard custom-P FMG give bitwise-identical answers at the same iterations with
+and without it (measured on test_1021's fixtures). A singular level factors instead of failing.
+PETSc's manual recommends a nonzero factor shift for a singular system (*Solving
+Singular Systems*). The same shift is set on every route, rotated free-slip
+included.
+
 This is not an Underworld idiosyncrasy, and it is worth being clear about that
 before blaming the choice for a memory problem. **PETSc makes the same choice on
-its own.** With nothing set under `mg_coarse_*`, `PCSetUp_MG` selects
+its own.** With nothing set under `mg_coarse_*`, `PCMGSetLevels_MG` selects
 `PCREDUNDANT` when the communicator has more than one rank and `PCLU` when it
 does not — its own source comment reads "coarse solve is (redundant) LU by
-default" (`src/ksp/pc/impls/mg/mg.c`). Confirmed by inspection at `np` = 1, 2
-and 4 on PETSc 3.25.
+default" (`src/ksp/pc/impls/mg/mg.c`) — and gives it a factor shift of its own,
+`MAT_SHIFT_INBLOCKS`. Confirmed by inspection at `np` = 1, 2 and 4 on PETSc 3.25.
 
 Underworld sets it explicitly rather than inheriting it, so a bundle applied
-after another cannot pick up a sibling's leftover options (#468) — but the value
-is the one PETSc would have picked anyway. Deleting these keys and letting PETSc
-decide would change nothing here; the leverage is in the hierarchy, not the
-bottom solve.
+after another cannot pick up a sibling's leftover options (#468) — but the solver
+is the one PETSc would have picked anyway. The shift type differs: PETSc's
+default shifts in blocks, the bundle uses `NONZERO`, and it sets it at every rank
+count (in serial, replacing PETSc's `PCLU` with `redundant` drops PETSc's own
+shift). On a coarse level whose pivots stay clear of zero, deleting these keys
+and letting PETSc decide would change nothing; the leverage is in the hierarchy,
+not the bottom solve.
 
 ### The failure mode: replicated memory
 
@@ -204,34 +219,63 @@ treat five figures as a bug in the hierarchy rather than a tuning question. If
 you are near the line, estimate it rather than guessing: the factor grows faster
 than the DOF count, and you pay it on every rank at once.
 
-### When the coarse operator has a null space: SVD
+### A null space is fixed on the fine level, not by the coarse solve
 
-One case does require a different bottom solve, and the solver handles it for
-you. A **rotated** velocity block whose domain leaves rigid rotations free — a
-closed circle (one mode), a spherical shell (three) — hands those modes to the
-Galerkin-coarsened coarse operator, because the rotations survive the
-constraint. `redundant`/LU hits a zero pivot on a singular coarse operator and
-fails with `SUBPC_ERROR` (outer reason `-11`), so the rotated path selects SVD
-instead.
+Some problems leave a direction free: the pressure constant, or the rigid
+rotations a closed circle (one) or a spherical shell (three) leaves under
+free slip. That gauge is fixed on the **fine** operator, by the null space
+attached there; the rotated route admits a rotation only if it satisfies the
+constraint and, once the operator is assembled, the operator to a relative
+1e-8. The coarse solve sits inside the preconditioner. A direction it handles
+badly costs iterations; the converged answer is set by the fine operator, to
+the solver's tolerance.
 
-It is deliberately **not** a blanket choice for every rotated problem. It keys
-on the count of *verified rotation* modes, because a rotated problem with
-Dirichlet walls, or a split-fault contact box, has none — and there an SVD is
-pure cost. A 3-D P2 coarse level is a **dense** factorization: measured, it
-accounted for most of ~0.8 s per V-cycle application at healthy iteration counts
-(#622).
+The Galerkin coarse operator is exactly singular only if the fine operator has
+an exact null vector **and** the transfer carries it exactly. On every hierarchy
+measured it is near-singular instead: lambda_min/lambda_max is 2.0e-5 to
+2.4e-8 on an annulus and 2.8e-4 on a spherical shell. The shifted LU above
+solves those levels at the same answer and iteration counts as the dense solve
+it replaced, and a level that is singular, such as the fine mesh used as its
+own coarse level, factors through the shift (#901). So no route configures its
+coarse solve differently, and nothing needs setting for a null space beyond the
+null space itself.
 
 ```{warning}
-There is no `petsc_options` override for the coarse solve **on the rotated
-path**. That route writes its multigrid bundle under the velocity sub-PC's own
-prefix, applies it, and deletes the keys again; anything you set through
-`solver.petsc_options[...]` lives under the solver's SNES prefix and never
-reaches it. The override below works on the standard path only.
+On the **rotated** path the coarse solve cannot be changed through
+`petsc_options`. That route writes its multigrid bundle under the velocity
+sub-PC's own prefix, applies it, and deletes the keys again; anything you set
+through `solver.petsc_options[...]` lives under the solver's SNES prefix and
+never reaches it. The override below works on the standard path only.
 ```
 
-Because SVD is dense, it is affordable only on a genuinely small coarse level —
-which makes the sizing guidance above a hard requirement on this path rather
-than a preference.
+### A bottom level too large to gather: GAMG as the coarse solve
+
+Sometimes the coarsest mesh that can be built is too large for every rank to
+factor a gathered copy, for instance a geometry that a coarser gmsh base cannot
+represent. For that one case, a custom-P hierarchy can solve its coarse level
+with GAMG instead:
+
+```python
+custom_mg.set_custom_fmg(stokes, coarse_meshes, field_id=0, coarse_solve="gamg")
+```
+
+The coarse level then runs FGMRES to a relative tolerance of 1e-2, with GAMG on
+the Galerkin coarse operator and a redundant LU at GAMG's own, much smaller,
+base. The coarse solve stays distributed. On the rotated saddle route and the
+standard Stokes route, GAMG is given the rigid-body modes as its near-null
+space: the translations and rotations, carried into the wall frame on the
+rotated route. The rotated thin-sheet route and single-field solvers leave GAMG
+its own. GAMG is given the verified rotations, where they exist, as an exact
+null space.
+
+The answer is unchanged, and so are the outer iterations. The cost is not. It
+was measured at np 4 on 600-cell bottom levels: a spherical shell (2900 coarse
+rows) and an annulus (2400). The coarse work is 4 times a gathered LU's on the
+shell and 1.7 times on the annulus. That comes from GAMG's own 14.6 and 3.9
+cycles per coarse solve; its base costs at most 6% of it (#901). (At a coarse
+tolerance of 1e-6 the shell takes 38 cycles and 10 times the work.) So it is
+never chosen automatically. Ask for it only when the gathered factorisation no longer
+fits, and prefer a coarser bottom level wherever the geometry allows one.
 
 ### Overriding the coarse solve yourself
 
@@ -241,16 +285,26 @@ solve:
 
 ```python
 stokes.preconditioner = "auto"
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_redundant_pc_factor_shift_type"] = "none"
 ```
+
+This restores plain LU. Do not read a clean factorisation without the shift as
+proof that the coarse level is nonsingular: plain LU stops at a zero pivot
+(`DIVERGED_PC_FAILED`) only when round-off leaves that pivot below PETSc's
+zero-pivot tolerance. On the one singular coarse level measured, the fine mesh
+used as its own coarse level, it did not stop, and the solve converged 5e-7 from
+the shifted answer (test_1111). Any other PETSc coarse solver can be set the
+same way, an SVD included, but nothing in Underworld sets one and none is
+needed.
 
 ```{note}
 `PCTELESCOPE` — the usual PETSc answer to "replicating onto every rank is too
 many copies", which gathers the coarse system onto a sub-communicator instead —
 **is not available here**. It has no DMPlex support, and every Underworld mesh
 is a DMPlex, so requesting it aborts the solve with `Support for DMPLEX is
-currently not available` (PETSc error 56). There is no bottom-solve escape hatch
-from an over-large coarse level: the hierarchy is the lever.
+currently not available` (PETSc error 56). For an over-large coarse level the
+hierarchy is the lever, and on a custom-P hierarchy `coarse_solve="gamg"`
+(above) is the escape hatch.
 ```
 
 ## Benchmark: FMG vs GAMG on a deforming adaptive mesh

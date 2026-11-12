@@ -366,3 +366,245 @@ PetscErrorCode UW_DMCreateBdIntegralSandbox(DM src, DM *sandbox)
     *sandbox = sdm;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+// Interpolation between two DMs on ONE plex (a coordinate DM and a basis DM
+// cloned from it, a variable's sub-DM and a scratch clone of the mesh): the
+// matrix DMCreateInterpolation builds through DMPlexComputeInterpolatorNested
+// (isRefined = PETSC_FALSE), copied from PETSc v3.25.0 with one change (#902),
+// under PETSc's licence:
+//
+//   Copyright (c) 1991-2025, UChicago Argonne, LLC and the PETSc Developers and
+//   Contributors
+//   All rights reserved.
+//
+//   Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+//   * Redistributions of source code must retain the above copyright notice,
+//     this list of conditions and the following disclaimer.
+//   * Redistributions in binary form must reproduce the above copyright notice,
+//     this list of conditions and the following disclaimer in the documentation
+//     and/or other materials provided with the distribution.
+//
+//   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+//   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+//   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+//   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+//   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+//   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+//   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+//   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+//   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+//   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+//   POSSIBILITY OF SUCH DAMAGE.
+//
+// The change: PETSc runs its preallocation loop only on a rank with local
+// rows or columns (`if (locRows || locCols)`, since b4ec2976050, v3.24.0) but
+// its fill loop on every rank that holds cells. A shared point belongs to the
+// highest rank holding it, so a rank whose cells lie inside higher ranks'
+// regions owns no rows and no columns; its cells' entries then reach owners
+// that never preallocated them ("New nonzero caused a malloc" in
+// MatAssemblyEnd) and the ranks that did not raise wait in the assembly's
+// collective. Here both loops run over the same cells. Finite-element fields
+// only, which are the only ones UW3 interpolates this way, and one plex only:
+// PETSc dispatches here on the two DMs sharing their plex, and a pair on two
+// plexes is refused on every rank. Drop this for DMCreateInterpolation once
+// PETSc runs the two loops alike.
+PetscErrorCode UW_DMCreateInterpolationWithinPlex(DM dmc, DM dmf, Mat *In)
+{
+    PetscSection fsection, fglobalSection, csection, cglobalSection;
+    PetscScalar *elemMat, *vals;
+    PetscFE     *fe;
+    PetscInt     dim, Nf, f, fieldI, fieldJ, offsetI, offsetJ, cStart, cEnd, c;
+    PetscInt     cTotDim = 0, rTotDim = 0, m, n, locRows, locCols;
+    MatType      mtype;
+    PetscBool    ismatis;
+    Mat          preallocator;
+
+    PetscFunctionBeginUser;
+    {
+        // clones share their plex, cone array included; the verdict is
+        // agreed, since a rank holding no points cannot tell two plexes apart
+        PetscInt *conesC, *conesF, other;
+
+        PetscCall(DMPlexGetCones(dmc, &conesC));
+        PetscCall(DMPlexGetCones(dmf, &conesF));
+        other = conesC != conesF;
+        PetscCallMPI(MPI_Allreduce(MPI_IN_PLACE, &other, 1, MPIU_INT, MPI_MAX, PetscObjectComm((PetscObject)dmc)));
+        PetscCheck(!other, PetscObjectComm((PetscObject)dmc), PETSC_ERR_ARG_INCOMP,
+                   "UW_DMCreateInterpolationWithinPlex: the two DMs are not on one plex");
+    }
+    PetscCall(DMGetGlobalSection(dmf, &fglobalSection));
+    PetscCall(PetscSectionGetConstrainedStorageSize(fglobalSection, &m));
+    PetscCall(DMGetGlobalSection(dmc, &cglobalSection));
+    PetscCall(PetscSectionGetConstrainedStorageSize(cglobalSection, &n));
+    PetscCall(DMGetMatType(dmc, &mtype));
+    PetscCall(PetscStrcmp(mtype, MATIS, &ismatis));
+    PetscCall(MatCreate(PetscObjectComm((PetscObject)dmc), In));
+    PetscCall(MatSetSizes(*In, m, n, PETSC_DETERMINE, PETSC_DETERMINE));
+    PetscCall(MatSetType(*In, ismatis ? MATAIJ : mtype));
+
+    PetscCall(DMGetDimension(dmf, &dim));
+    PetscCall(DMGetLocalSection(dmf, &fsection));
+    PetscCall(DMGetLocalSection(dmc, &csection));
+    PetscCall(PetscSectionGetNumFields(fsection, &Nf));
+    PetscCall(DMPlexGetSimplexOrBoxCells(dmc, 0, &cStart, &cEnd));
+    PetscCall(PetscCalloc1(Nf, &fe));
+    for (f = 0; f < Nf; ++f) {
+        PetscObject  obj, objc;
+        PetscClassId id, idc;
+        PetscInt     rNb, cNb;
+
+        PetscCall(DMGetField(dmf, f, NULL, &obj));
+        PetscCall(PetscObjectGetClassId(obj, &id));
+        PetscCall(DMGetField(dmc, f, NULL, &objc));
+        PetscCall(PetscObjectGetClassId(objc, &idc));
+        PetscCheck(id == PETSCFE_CLASSID && idc == PETSCFE_CLASSID, PetscObjectComm((PetscObject)dmc),
+                   PETSC_ERR_SUP, "UW_DMCreateInterpolationWithinPlex: field %" PetscInt_FMT " is not a PetscFE", f);
+        fe[f] = (PetscFE)obj;
+        PetscCall(PetscFEGetDimension(fe[f], &rNb));
+        PetscCall(PetscFEGetDimension((PetscFE)objc, &cNb));
+        rTotDim += rNb;
+        cTotDim += cNb;
+    }
+    PetscCall(PetscCalloc1(rTotDim * cTotDim, &elemMat));
+    for (fieldI = 0, offsetI = 0; fieldI < Nf; ++fieldI) {
+        PetscDualSpace   Qref;
+        PetscQuadrature  quad;
+        const PetscReal *qpoints, *qweights;
+        PetscReal       *points;
+        PetscInt         npoints = 0, Nc, Np, fpdim, i, k, p, d;
+
+        // the fine field's dual basis: every functional's quadrature points
+        PetscCall(PetscFEGetDualSpace(fe[fieldI], &Qref));
+        PetscCall(PetscFEGetNumComponents(fe[fieldI], &Nc));
+        PetscCall(PetscDualSpaceGetDimension(Qref, &fpdim));
+        for (i = 0; i < fpdim; ++i) {
+            PetscCall(PetscDualSpaceGetFunctional(Qref, i, &quad));
+            PetscCall(PetscQuadratureGetData(quad, NULL, NULL, &Np, NULL, NULL));
+            npoints += Np;
+        }
+        PetscCall(PetscMalloc1(npoints * dim, &points));
+        for (i = 0, k = 0; i < fpdim; ++i) {
+            PetscCall(PetscDualSpaceGetFunctional(Qref, i, &quad));
+            PetscCall(PetscQuadratureGetData(quad, NULL, NULL, &Np, &qpoints, NULL));
+            for (p = 0; p < Np; ++p, ++k)
+                for (d = 0; d < dim; ++d) points[k * dim + d] = qpoints[p * dim + d];
+        }
+        for (fieldJ = 0, offsetJ = 0; fieldJ < Nf; ++fieldJ) {
+            PetscObject     obj;
+            PetscFE         fec;
+            PetscTabulation T = NULL;
+            PetscInt        NcJ, cpdim, j, qNc;
+
+            PetscCall(DMGetField(dmc, fieldJ, NULL, &obj));
+            fec = (PetscFE)obj;
+            PetscCall(PetscFEGetNumComponents(fec, &NcJ));
+            PetscCall(PetscFEGetDimension(fec, &cpdim));
+            // fields only interpolate themselves: the coarse basis evaluated at
+            // the fine functionals' points, weighted by the functionals
+            if (fieldI == fieldJ) {
+                PetscCheck(Nc == NcJ, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Number of components in fine space field %" PetscInt_FMT " does not match coarse field %" PetscInt_FMT, Nc, NcJ);
+                PetscCall(PetscFECreateTabulation(fec, 1, npoints, points, 0, &T));
+                for (i = 0, k = 0; i < fpdim; ++i) {
+                    PetscCall(PetscDualSpaceGetFunctional(Qref, i, &quad));
+                    PetscCall(PetscQuadratureGetData(quad, NULL, &qNc, &Np, NULL, &qweights));
+                    PetscCheck(qNc == NcJ, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Number of components in quadrature %" PetscInt_FMT " does not match coarse field %" PetscInt_FMT, qNc, NcJ);
+                    for (p = 0; p < Np; ++p, ++k)
+                        for (j = 0; j < cpdim; ++j)
+                            for (c = 0; c < Nc; ++c) elemMat[(offsetI + i) * cTotDim + offsetJ + j] += T->T[0][k * cpdim * NcJ + j * Nc + c] * qweights[p * qNc + c];
+                }
+                PetscCall(PetscTabulationDestroy(&T));
+            }
+            offsetJ += cpdim;
+        }
+        offsetI += fpdim;
+        PetscCall(PetscFree(points));
+    }
+
+    // Preallocate from every cell this rank holds, as the fill below does,
+    // whether or not the rank owns any rows or columns (the one change).
+    PetscCall(MatGetLocalSize(*In, &locRows, &locCols));
+    PetscCall(MatCreate(PetscObjectComm((PetscObject)*In), &preallocator));
+    PetscCall(MatSetType(preallocator, MATPREALLOCATOR));
+    PetscCall(MatSetSizes(preallocator, locRows, locCols, PETSC_DETERMINE, PETSC_DETERMINE));
+    PetscCall(MatSetUp(preallocator));
+    PetscCall(PetscCalloc1(rTotDim * cTotDim, &vals));
+    for (c = cStart; c < cEnd; ++c)
+        PetscCall(DMPlexMatSetClosureGeneral(dmf, fsection, fglobalSection, PETSC_FALSE, dmc, csection, cglobalSection, PETSC_FALSE, preallocator, c, vals, INSERT_VALUES));
+    PetscCall(PetscFree(vals));
+    PetscCall(MatAssemblyBegin(preallocator, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(preallocator, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatPreallocatorPreallocate(preallocator, PETSC_TRUE, *In));
+    PetscCall(MatDestroy(&preallocator));
+
+    PetscCall(MatZeroEntries(*In));
+    for (c = cStart; c < cEnd; ++c)
+        PetscCall(DMPlexMatSetClosureGeneral(dmf, fsection, fglobalSection, PETSC_FALSE, dmc, csection, cglobalSection, PETSC_FALSE, *In, c, elemMat, INSERT_VALUES));
+    PetscCall(PetscFree(fe));
+    PetscCall(PetscFree(elemMat));
+    PetscCall(MatAssemblyBegin(*In, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(*In, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatViewFromOptions(*In, NULL, "-interp_mat_view"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// The coordinate space of a plex at `degree`, as
+// DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_TRUE) builds it,
+// with the coordinates carried across by UW_DMCreateInterpolationWithinPlex.
+// PETSc's projection (DMSetCoordinateDisc) interpolates through
+// DMCreateInterpolation between the old and the new coordinate DM, two DMs on
+// this plex, so a degree >= 2 space could not be built on a rank that holds
+// cells but owns none of their nodes (#902). As in PETSc: the same space is a
+// copy; coordinates injected into a higher coordinate dimension are not
+// projected; a cell type PETSc builds no Lagrange space for (tensor prisms)
+// keeps its coordinates. Isoperiodic coordinates keep PETSc's own projection,
+// which is local there, without the matrix; maxCell/L periodicity projects
+// the non-localized coordinates through the matrix, as here.
+PetscErrorCode UW_DMPlexCreateCoordinateSpaceWithinPlex(DM dm, PetscInt degree)
+{
+    PetscInt         nfaceSF = 0;
+    DM               cdmOld, cdmNew;
+    Vec              xOld, xNew, x;
+    PetscFE          discOld, disc;
+    PetscDualSpace   dsOld, ds;
+    PetscBool        same;
+
+    PetscFunctionBeginUser;
+    PetscCall(DMPlexGetIsoperiodicFaceSF(dm, &nfaceSF, NULL));
+    if (nfaceSF) {
+        PetscCall(DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_TRUE));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+    PetscCall(DMGetCoordinateDM(dm, &cdmOld));
+    PetscCall(PetscObjectReference((PetscObject)cdmOld));
+    PetscCall(DMGetCoordinates(dm, &xOld));
+    PetscCall(PetscObjectReference((PetscObject)xOld));
+    // installs the new coordinate DM and leaves the coordinates to us
+    PetscCall(DMPlexCreateCoordinateSpace(dm, degree, PETSC_FALSE, PETSC_FALSE));
+    PetscCall(DMGetCoordinates(dm, &x));
+    PetscCall(DMGetCoordinateDM(dm, &cdmNew));
+    // no new coordinate DM: PETSc installed no space for this cell type
+    if (x == xOld && cdmNew != cdmOld) {
+        PetscCall(DMGetField(cdmOld, 0, NULL, (PetscObject *)&discOld));
+        PetscCall(DMGetField(cdmNew, 0, NULL, (PetscObject *)&disc));
+        PetscCall(PetscFEGetDualSpace(discOld, &dsOld));
+        PetscCall(PetscFEGetDualSpace(disc, &ds));
+        PetscCall(PetscDualSpaceEqual(dsOld, ds, &same));
+        PetscCall(DMCreateGlobalVector(cdmNew, &xNew));
+        if (same) {
+            PetscCall(VecCopy(xOld, xNew));
+        } else {
+            Mat In;
+
+            PetscCall(UW_DMCreateInterpolationWithinPlex(cdmOld, cdmNew, &In));
+            PetscCall(MatMult(In, xOld, xNew));
+            PetscCall(MatDestroy(&In));
+        }
+        PetscCall(DMSetCoordinates(dm, xNew));
+        PetscCall(VecDestroy(&xNew));
+    }
+    PetscCall(VecDestroy(&xOld));
+    PetscCall(DMDestroy(&cdmOld));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}

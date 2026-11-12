@@ -93,6 +93,18 @@ def _get_default_backend():
     return _get_pint_helper()
 
 
+def _owning_meshvar(symbol):
+    """The mesh variable whose function ``symbol`` is, or None.
+
+    Every mesh-variable function class, and each of its derivative classes, holds
+    a weakref to its variable in ``func.meshvar``.
+    """
+    ref = getattr(getattr(symbol, "func", None), "meshvar", None)
+    if ref is None:
+        return None
+    return ref() if callable(ref) else ref
+
+
 def _extract_units_info(obj):
     """
     Extract units information from various object types.
@@ -129,12 +141,9 @@ def _extract_units_info(obj):
                     # Get units from the underlying MeshVariable via meshvar weakref
                     # UW3 derivative functions (UnderworldAppliedFunctionDeriv) store a
                     # weakref to the parent MeshVariable in func.meshvar
-                    if hasattr(sympy_expr, 'func') and hasattr(sympy_expr.func, 'meshvar'):
-                        meshvar_ref = sympy_expr.func.meshvar
-                        # Dereference weakref if needed
-                        meshvar = meshvar_ref() if callable(meshvar_ref) else meshvar_ref
-                        if meshvar is not None and hasattr(meshvar, 'units'):
-                            var_units = meshvar.units
+                    meshvar = _owning_meshvar(sympy_expr)
+                    if meshvar is not None and hasattr(meshvar, 'units'):
+                        var_units = meshvar.units
 
                     # Fallback: try _extract_units_info on the func (for non-UW3 derivatives)
                     if var_units is None and hasattr(sympy_expr, 'func'):
@@ -257,12 +266,9 @@ def _extract_units_info(obj):
                     # Get units from the underlying MeshVariable via meshvar weakref
                     # UW3 derivative functions (UnderworldAppliedFunctionDeriv) store a
                     # weakref to the parent MeshVariable in func.meshvar
-                    if hasattr(obj, 'func') and hasattr(obj.func, 'meshvar'):
-                        meshvar_ref = obj.func.meshvar
-                        # Dereference weakref if needed
-                        meshvar = meshvar_ref() if callable(meshvar_ref) else meshvar_ref
-                        if meshvar is not None and hasattr(meshvar, 'units'):
-                            var_units = meshvar.units
+                    meshvar = _owning_meshvar(obj)
+                    if meshvar is not None and hasattr(meshvar, 'units'):
+                        var_units = meshvar.units
 
                     # Fallback: try _extract_units_info on the func (for non-UW3 derivatives)
                     if var_units is None and hasattr(obj, 'func'):
@@ -371,22 +377,21 @@ def _extract_units_from_sympy_expression(expr):
             if hasattr(symbol, "name") and symbol.name in ["N.x", "N.y", "N.z"]:
                 continue
 
-            # Find which variable this symbol belongs to
-            for var_name, variable in model._variables.items():
-                if hasattr(variable, "sym") and hasattr(variable, "has_units"):
-                    # Check if this symbol matches any component of the variable
-                    if hasattr(variable, "num_components"):
-                        var_symbols = [variable.sym[i] for i in range(variable.num_components)]
-                        # Also check if symbol's function class matches variable function class
-                        # This handles component access like v[0] which creates a derived symbol
-                        symbol_matches = symbol in var_symbols
-                        if not symbol_matches and hasattr(symbol, 'func') and hasattr(variable.sym[0], 'func'):
-                            # Check if the function classes match (e.g., both are instances of same UW function)
-                            symbol_matches = type(symbol.func) == type(variable.sym[0].func)
-
-                        if symbol_matches and variable.has_units:
-                            unit_info_list.append((variable.units, _get_pint_helper()))
-                            break  # Found the variable, no need to continue
+            # The variable this symbol belongs to: its own (a component or a
+            # derivative of one carries a weakref to it), else a registered
+            # variable with this exact symbol. Never a variable that merely has
+            # the same kind of function: every mesh-variable function shares one
+            # Python type, so that matched the first variable with units on the
+            # model, whatever it was (#843).
+            owner = _owning_meshvar(symbol)
+            if owner is None:
+                for variable in list(model._variables.values()):
+                    if hasattr(variable, "sym") and hasattr(variable, "num_components"):
+                        if symbol in [variable.sym[i] for i in range(variable.num_components)]:
+                            owner = variable
+                            break
+            if owner is not None and getattr(owner, "has_units", False):
+                unit_info_list.append((owner.units, _get_pint_helper()))
 
         if not unit_info_list:
             return None

@@ -526,7 +526,6 @@ stokes.petsc_options["ksp_type"] = "fgmres"
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
 stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
 
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
 stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
 stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
@@ -717,7 +716,7 @@ if analytical:
     p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
 
     uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
-    print('Relative error in pressure in the L2 norm: ', p_err_l2)
+    uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # %% [markdown]
 """

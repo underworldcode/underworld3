@@ -10,6 +10,30 @@ import underworld3.timing as timing
 
 include "petsc_extras.pxi"
 
+def _check_error_code_collectively(ierr, routine):
+    """Raise on every rank if ``routine`` failed on any of them, naming the first
+    rank that did. COLLECTIVE on the world: every rank must reach it.
+
+    A separate communicator keeps this exchange from pairing with a PETSc message.
+    It does not prevent a hang: if a routine fails on some ranks and the others wait
+    in its closing collective, neither group arrives here.
+    """
+    from underworld3.utilities.fault_contact import _collective_raise
+
+    _collective_raise(
+        None if ierr == 0
+        else f"{routine} failed on rank {uw.mpi.rank} with error code {int(ierr)}")
+
+
+cdef _compute_geometry_fvm(mesh, Vec cellgeom, Vec facegeom):
+    """``DMPlexComputeGeometryFVM``, which needs affine (degree-1) coordinates,
+    checked on every rank. A mesh refuses any other degree when it is built (#978).
+    """
+    cdef DM dm = mesh.dm
+    cdef PetscErrorCode ierr = DMPlexComputeGeometryFVM(dm.dm, &cellgeom.vec, &facegeom.vec)
+    _check_error_code_collectively(ierr, "DMPlexComputeGeometryFVM")
+
+
 ## This is currently wrapped in petsc4py but returns zero
 
 def petsc_fvm_get_min_radius(mesh) -> float:
@@ -23,11 +47,10 @@ def petsc_fvm_get_min_radius(mesh) -> float:
 
         cdef Vec cellgeom = Vec()
         cdef Vec facegeom = Vec()
-        cdef DM dm = mesh.dm
 
-        DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
+        _compute_geometry_fvm(mesh, cellgeom, facegeom)
 
-        min_radius = dm.getMinRadius()
+        min_radius = mesh.dm.getMinRadius()
         cellgeom.destroy()
         facegeom.destroy()
 
@@ -35,8 +58,8 @@ def petsc_fvm_get_min_radius(mesh) -> float:
 
 def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         """
-        This method returns the minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine.
+        Each local cell's ``volume**(1/dim)`` and its centroid, from
+        ``DMPlexComputeGeometryFVM``. Degree 1 only.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
@@ -44,9 +67,8 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
 
         cdef Vec cellgeom = Vec()
         cdef Vec facegeom = Vec()
-        cdef DM dm = mesh.dm
 
-        DMPlexComputeGeometryFVM(dm.dm,&cellgeom.vec,&facegeom.vec)
+        _compute_geometry_fvm(mesh, cellgeom, facegeom)
 
         # cell_geom is an array of 3D cell centroids plus the cell volume
 
@@ -181,6 +203,41 @@ def petsc_dm_set_regular_refinement(dm, regular=True):
         return
 
 
+def petsc_dm_create_interpolation_within_plex(dmc, dmf):
+        """The interpolation matrix from the field of ``dmc`` to the field of
+        ``dmf``, two DMs on ONE plex (clones or sub-DMs of one mesh DM).
+
+        It is the matrix ``dmc.createInterpolation(dmf)`` returns, assembled
+        also on a rank that holds cells but owns none of their degrees of
+        freedom, where PETSc's own preallocation skips the rank and the
+        assembly fails on some ranks and hangs the others (#902; see
+        ``UW_DMCreateInterpolationWithinPlex`` in ``petsc_compat.h``).
+        Collective.
+        """
+        cdef DM c_dmc = dmc
+        cdef DM c_dmf = dmf
+        cdef Mat interp = PETSc.Mat()
+        CHKERRQ( UW_DMCreateInterpolationWithinPlex(c_dmc.dm, c_dmf.dm, &interp.mat) )
+        return interp
+
+
+def petsc_dm_create_coordinate_space_within_plex(dm, degree):
+        """Give ``dm`` a Lagrange coordinate space of ``degree``, its coordinates
+        carried across from the current space.
+
+        It is ``dm.createCoordinateSpace(degree, False, True)``, with the
+        coordinates interpolated by UW3's copy of PETSc's interpolator, so a
+        degree >= 2 space is also built on a rank that holds cells but owns
+        none of their nodes (#902; see
+        ``UW_DMPlexCreateCoordinateSpaceWithinPlex`` in ``petsc_compat.h``).
+        Isoperiodic coordinates are the exception: PETSc projects them
+        locally, with no matrix, and they keep its route. Collective.
+        """
+        cdef DM c_dm = dm
+        cdef PetscInt c_degree = degree
+        CHKERRQ( UW_DMPlexCreateCoordinateSpaceWithinPlex(c_dm.dm, c_degree) )
+
+
 
 # This is not cython, does it need to be here or in discretisation.py ?
 
@@ -201,8 +258,10 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         label = dm.getLabel(label_name)
         if not label:
+                # no points: callers index coordinates with the result, and [0]
+                # would move vertex 0 (#903)
                 uw.pprint(f"Label {label_name} is not present on the dm")
-                return np.array([0])
+                return np.array([], dtype=np.int64)
 
         pointIS = dm.getStratumIS("depth",0)
         edgeIS = dm.getStratumIS("depth",1)

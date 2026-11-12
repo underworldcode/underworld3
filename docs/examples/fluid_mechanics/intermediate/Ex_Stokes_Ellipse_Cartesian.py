@@ -240,8 +240,6 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 stokes.penalty = 1.0
 stokes.saddle_preconditioner = sympy.simplify(1 / (stokes.constitutive_model.viscosity + stokes.penalty))
 
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
-
 # Free-slip BCs using mesh-provided normals
 Gamma = elliptical_mesh.Gamma
 stokes.add_natural_bc(10000 * Gamma.dot(v_soln.sym) * Gamma, "Outer")

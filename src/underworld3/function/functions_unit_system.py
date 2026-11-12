@@ -698,10 +698,6 @@ def _apply_monotone_limit(
     # full parallel correctness the bound should include halo / global DOF
     # neighbours -- see the nav-only overlap-clone machinery
     # (project_parallel_point_eval_decision) as the hook if hardened.
-    # TODO(units): nbr bounds come from `var.data` (always non-dimensional)
-    # while `value` is dimensional in a units-active run -- a pre-existing
-    # latent mismatch (scaling is inactive in the validated baseline so it
-    # never bites). Do not "fix" without re-validating the trajectory.
     nnn = mesh.dim + 1
     # A rank owning no cells owns no source DOFs: there is no neighbourhood
     # to bound against, and the stencil gather would index an empty array
@@ -719,10 +715,23 @@ def _apply_monotone_limit(
     # the original shape afterwards.
     psi_data_flat = psi_data.reshape(psi_data.shape[0], -1)
     nbr_vals = psi_data_flat[idxs]
-    nbr_min = nbr_vals.min(axis=1)
-    nbr_max = nbr_vals.max(axis=1)
+    # The stored columns follow _data_layout and `value` runs by row, so each bound
+    # is put in the place of the entry it bounds: a MATRIX stores by column, and a
+    # symmetric tensor stores one column for two entries.
+    rows, columns = var.sym.shape
+    stored_column = [var._data_layout(i, j) for i in range(rows) for j in range(columns)]
+    nbr_min = nbr_vals.min(axis=1)[:, stored_column]
+    nbr_max = nbr_vals.max(axis=1)[:, stored_column]
 
-    veep_np = np.asarray(value)
+    # The bounds come from var.data, which is non-dimensional, and ``value`` carries
+    # units in a units model: compare them in one frame, then give the result
+    # ``value``'s units back.
+    value_units = getattr(value, "units", None)
+    to_model = 1.0
+    if value_units is not None:
+        one = uw.non_dimensionalise(UnitAwareArray(np.array([1.0]), units=value_units))
+        to_model = float(np.asarray(getattr(one, "magnitude", one)).reshape(-1)[0])
+    veep_np = np.asarray(getattr(value, "magnitude", value)) * to_model
     orig_shape = veep_np.shape
     veep_flat = veep_np.reshape(nbr_min.shape)
 
@@ -749,8 +758,8 @@ def _apply_monotone_limit(
             value_rbf_oob = global_evaluate(
                 expr, oob_coords, coord_sys=coord_sys,
                 other_arguments=other_arguments, evalf=True)
-            vrbf_flat = np.asarray(value_rbf_oob).reshape(
-                (-1,) + veep_flat.shape[1:])
+            vrbf_flat = (np.asarray(getattr(value_rbf_oob, "magnitude", value_rbf_oob))
+                         * to_model).reshape((-1,) + veep_flat.shape[1:])
             # Only overwrite entries individually out of bounds
             # (multi-component case).
             sub_oob = out_of_bounds[oob_mask]
@@ -759,11 +768,8 @@ def _apply_monotone_limit(
             veep_lim[oob_mask] = veep_sub
 
     limited = veep_lim.reshape(orig_shape)
-
-    # Re-wrap units after the numpy ops, mirroring the source field.
-    var_units = getattr(var, "units", None)
-    if var_units is not None and not isinstance(limited, UnitAwareArray):
-        limited = UnitAwareArray(limited, units=var_units)
+    if value_units is not None:
+        limited = UnitAwareArray(limited / to_model, units=value_units)
     return limited
 
 

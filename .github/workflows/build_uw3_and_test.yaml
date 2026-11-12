@@ -7,6 +7,10 @@ name: test_uw3
 # 60+ minutes on conda-forge solves and timing the runner out before tests
 # could start. The pixi.lock matches what local development uses, so CI now
 # runs against the same dependency state developers see.
+#
+# The serial batches run SHARDED across parallel jobs (#730). Wall-clock no
+# longer tracks total test time: it tracks the slowest shard. See
+# scripts/test.sh for the shard assignment and the measurements behind it.
 
 on:
   push:
@@ -43,19 +47,51 @@ env:
   WORKERS: 4
 
 jobs:
-  test:
+  # How many shards to run is NOT stated here. scripts/test.sh assigns each
+  # batch to a shard by hand, from measurements, and --print-shards reads the
+  # count back out of those assignments. The matrix is built from that, so the
+  # number has exactly one definition.
+  #
+  # A second copy would be a silent-coverage bug, not a nuisance: a matrix of
+  # [1,2,3] against an assignment using 4 runs green while shard 4's batches —
+  # the largest group, 194 files — never run. That is #721, files going dark
+  # with nothing to say so.
+  plan:
     runs-on: ubuntu-latest
-    # Raised past 60 minutes on a 2026-08-15 measurement (serial phase ~55 min).
-    # xdist has since cut that: the five successful runs before 2026-09-12 spent
-    # 34, 35, 43, 44 and 48 minutes in "Run tests", well inside this budget. The
-    # headroom is why the previously-deferred bands could simply be switched on
-    # (#721 follow-up) rather than traded against something else.
-    #
-    # Sharding the batches across parallel jobs remains the durable fix if this
-    # tightens again; it was referenced here as "the CI-runtime issue" but never
-    # actually filed, so the numbers above are recorded in the issue that this
-    # change opens.
-    timeout-minutes: 120
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.shards.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the shard count out of the batch assignment
+        id: shards
+        run: |
+          list=$(./scripts/test.sh --print-shards)
+          echo "shards: $list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  shards:
+    needs: plan
+    strategy:
+      # Every shard reports. Without this, the first shard to fail cancels the
+      # others and the log shows one failure where there may be four — which is
+      # the opposite of what a sharded run is for.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+
+    # strategy.job-total is the matrix length, so the shard count is never
+    # written down a second time here either.
+    name: shard ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+
+    # Per SHARD, not per suite. The unsharded job ran 96 minutes against a
+    # 120-minute cap and #689 was cancelled at 2h00m52s with zero failures, so
+    # the cap was deciding outcomes. The slowest shard is ~33 min of tests plus
+    # ~5 min of install and build; 60 leaves room for a slow runner while still
+    # being a real signal when a shard doubles. A hung batch costs shard 4 about 5
+    # minutes more, and its stacks must still be uploaded: hence 70 (#954).
+    timeout-minutes: 70
 
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +111,13 @@ jobs:
         # `pixi run -e dev build` invokes the build task from pixi.toml,
         # which is `pip install . --no-build-isolation` (non-editable —
         # editable installs are project policy violation, see CLAUDE.md).
+        #
+        # Each shard pays this (~2.5 min) rather than downloading a shared
+        # build artefact. That is deliberate: the shards run concurrently, so
+        # the repeated build costs wall-clock ONCE, and the repo is public, so
+        # the extra runner minutes are free. Sharing the artefact would add a
+        # pack/upload/download round trip and a second definition of what
+        # "built" means, to save nothing on the clock.
         run: pixi run -e dev build
 
       # Import smoke test: a hard crash during `import underworld3` (segfault
@@ -88,14 +131,85 @@ jobs:
       - name: Import smoke test (faulthandler)
         run: pixi run -e dev python -u -X faulthandler -c "import faulthandler; faulthandler.enable(); import underworld3; print('import OK', underworld3.__version__)"
 
-      - name: Run tests
-        run: pixi run -e dev ./scripts/test.sh --p 2
+      # For the MPI supervisor's native stacks, which tell a rank in an MPI wait
+      # from a rank in a long solve. Not worth failing a shard over: without gdb
+      # the supervisor reports Python stacks alone.
+      - name: Install gdb for hang diagnosis
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdb
+          echo "ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope)"
 
-      # The tier C characterisations are a REPORT, not a gate, so they run on a
-      # push to development rather than on every pull request. They include the
-      # slow level_3 cases and add ~42 min, which a PR should not pay to learn
-      # something that cannot block it. Failures here are expected to be read
-      # and answered, not reverted.
+      # Which host this is, and what it does with it. BLAS picks its kernels from the
+      # CPU, and one solve stops finishing under some kernels only (#963).
+      - name: Report the CPU and the BLAS kernel
+        continue-on-error: true
+        run: |
+          lscpu | grep -E "Model name|^CPU\(s\)|Flags" | cut -c1-400
+          env | grep -E "^(OMP|OPENBLAS)_" || true
+          OPENBLAS_VERBOSE=2 pixi run -e dev python -c "import numpy; numpy.ones((9, 9)).dot(numpy.ones((9, 9))); numpy.show_config()" 2>&1 | grep -iE "core:|openblas|openmp|name:" | head -12
+
+      - name: Run tests
+        run: pixi run -e dev ./scripts/test.sh --p 2 --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+      # The supervisor's stacks are in /tmp, gone with the runner. A hang that
+      # reproduces only here cannot be diagnosed from anywhere else.
+      - name: Keep the hang stacks
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-stacks-shard-${{ matrix.shard }}
+          path: /tmp/uw-stacks-*
+          if-no-files-found: ignore
+          retention-days: 5
+          overwrite: true
+
+  # One check that says whether the suite passed, so a reader (and anything
+  # querying statusCheckRollup for "test") gets a single answer rather than
+  # having to AND four shard results together. It is named `test` because that
+  # is what the check was called before sharding.
+  test:
+    name: test
+    needs: shards
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report the shard results
+        run: |
+          echo "shards: ${{ needs.shards.result }}"
+          if [ "${{ needs.shards.result }}" != "success" ]; then
+            echo "At least one shard did not pass — open the shard jobs above."
+            exit 1
+          fi
+
+  # The tier C characterisations are a REPORT, not a gate, so they run on a
+  # push to development rather than on every pull request. They include the
+  # slow level_3 cases and add ~42 min, which a PR should not pay to learn
+  # something that cannot block it. Failures here are expected to be read
+  # and answered, not reverted.
+  #
+  # Its own job, not a step on the sharded one: as a step it would run once per
+  # shard and cost its ~42 minutes four times over for one report.
+  tier-c:
+    name: Tier C characterisations (report only)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pixi from lockfile
+        uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: dev
+          frozen: true
+          cache: true
+
+      - name: Build UW3
+        run: pixi run -e dev build
+
       - name: Tier C characterisations (report only)
-        if: github.event_name == 'push'
         run: pixi run -e dev ./scripts/test.sh --tier-c-report

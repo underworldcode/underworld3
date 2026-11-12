@@ -29,6 +29,7 @@ def _box(tag, eta_reg):
     cm = s.constitutive_model
     cm.Parameters.shear_viscosity_0 = 1.0
     cm.Parameters.yield_stress = 0.3 + 0.3 * sympy.sqrt(p.sym[0] ** 2 + 1.0e-2)
+    cm.Parameters.yield_stress_min = -sympy.oo   # positive by construction: no floor needed (#759)
     if eta_reg is not None:          # None = never stated; 0.0 = stated as zero
         cm.Parameters.plastic_rate_strengthening = eta_reg
     s.add_essential_bc((1.0, 0.0), "Top")

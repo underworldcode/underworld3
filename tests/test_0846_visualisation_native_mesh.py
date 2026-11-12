@@ -97,12 +97,14 @@ def test_values_line_up_with_the_points():
                                                                      abs=1e-12)
 
 
-@pytest.mark.parametrize("degree,continuous", [(2, True), (0, False)])
+@pytest.mark.parametrize("degree,continuous", [(0, False), (1, False)])
 def test_other_spaces_still_take_the_delaunay_route(degree, continuous):
-    """Higher-order and discontinuous fields have no native triangulation.
+    """Discontinuous fields have no native triangulation.
 
-    Their DOFs are not the vertices, so the mesh's cells cannot carry them and
-    the helper must decline rather than return something the wrong shape.
+    Their DOFs belong to single cells, not to the mesh's shared vertices and
+    edges, so the helper must decline rather than return something the wrong
+    shape. (Continuous fields of any degree are drawn natively since #1057;
+    see ``tests/test_1057_native_vis_higher_order.py``.)
     """
     mesh = _graded_mesh()
     var = uw.discretisation.MeshVariable(f"v4_{degree}", mesh, 1, degree=degree,

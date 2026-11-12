@@ -15,7 +15,7 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
-def _solve_freeslip_box(method, res=8):
+def _solve_freeslip_box(method, res=8, reasons=None):
     """Solve buoyancy-driven flow in a unit box with free-slip top/bottom.
 
     Parameters
@@ -24,6 +24,8 @@ def _solve_freeslip_box(method, res=8):
         "essential", "penalty", or "nitsche"
     res : int
         Element resolution per side.
+    reasons : dict, optional
+        If given, the SNES converged reason is stored in it under ``method``.
 
     Returns
     -------
@@ -76,6 +78,8 @@ def _solve_freeslip_box(method, res=8):
     stokes.petsc_options["ksp_type"] = "fgmres"
 
     stokes.solve()
+    if reasons is not None:
+        reasons[method] = stokes.snes.getConvergedReason()
 
     return v.data.copy(), p.data.copy(), v.coords.copy()
 
@@ -86,13 +90,29 @@ class TestNitscheFreeslip:
     @pytest.fixture(scope="class")
     def solutions(self):
         """Run all three methods once and cache results."""
-        essential = _solve_freeslip_box("essential")
-        penalty = _solve_freeslip_box("penalty")
-        nitsche = _solve_freeslip_box("nitsche")
-        return {"essential": essential, "penalty": penalty, "nitsche": nitsche}
+        reasons = {}
+        essential = _solve_freeslip_box("essential", reasons=reasons)
+        penalty = _solve_freeslip_box("penalty", reasons=reasons)
+        nitsche = _solve_freeslip_box("nitsche", reasons=reasons)
+        return {"essential": essential, "penalty": penalty, "nitsche": nitsche,
+                "reasons": reasons}
 
+    def test_the_reference_solves_converge(self, solutions):
+        """The essential and penalty solutions the comparisons rest on converged."""
+        reasons = solutions["reasons"]
+        assert reasons["essential"] > 0, reasons
+        assert reasons["penalty"] > 0, reasons
+
+    @pytest.mark.xfail(reason="the Nitsche Stokes solve stops short of its tolerance (#1072)",
+                       strict=True)
     def test_nitsche_converges(self, solutions):
-        """Nitsche solution should exist (solver converged)."""
+        """The Nitsche solve reaches its tolerance. It does not yet: on one host it
+        ends DIVERGED_LINE_SEARCH after 3 Newton steps, on another its pressure
+        sub-solve stops at its cap (#1072)."""
+        assert solutions["reasons"]["nitsche"] > 0, solutions["reasons"]
+
+    def test_nitsche_solution_is_finite(self, solutions):
+        """The Nitsche solve leaves a finite velocity field."""
         v, p, coords = solutions["nitsche"]
         assert v.shape[0] > 0
         assert not np.any(np.isnan(v))
@@ -163,13 +183,21 @@ class TestNitscheFreeslip:
         the penalty coefficient or the method had moved. The measured leaks are
         printed instead: read them, do not gate on them.
         """
+        from mpi4py import MPI
+
         leaks = {}
         for method in ("essential", "penalty", "nitsche"):
             v, _, coords = solutions[method]
             on_top = np.abs(coords[:, 1] - 1.0) < 1e-10
-            if not np.any(on_top):
-                pytest.skip("no nodes on the top wall in this partition")
-            leaks[method] = np.max(np.abs(v[on_top, 1])) / np.max(np.abs(v))
+            # over every rank's nodes, so each rank asserts the same numbers (a rank
+            # holding no top-wall node used to skip on its own)
+            n_top = uw.mpi.comm.allreduce(int(np.count_nonzero(on_top)), op=MPI.SUM)
+            assert n_top > 0, "the mesh has no node on the top wall"
+            top = uw.mpi.comm.allreduce(
+                float(np.max(np.abs(v[on_top, 1]))) if np.any(on_top) else 0.0, op=MPI.MAX)
+            scale = uw.mpi.comm.allreduce(
+                float(np.max(np.abs(v))) if v.size else 0.0, op=MPI.MAX)
+            leaks[method] = top / scale
 
         print("Relative |v_y| on top: "
               + ", ".join(f"{k}={v:.3e}" for k, v in leaks.items()))

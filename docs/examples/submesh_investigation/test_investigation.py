@@ -58,7 +58,6 @@ stokes_s.tolerance = stokes_tol
 stokes_s.petsc_options["snes_type"] = "newtonls"
 stokes_s.petsc_options["ksp_type"] = "fgmres"
 stokes_s.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-stokes_s.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
 print("\nSolving submesh (penalty=1e4)...", flush=True)
 stokes_s.solve(verbose=False)

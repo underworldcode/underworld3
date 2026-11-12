@@ -172,8 +172,8 @@ def test_mesh_variable_kdtree_caching():
     assert uw.kdtree.total_constructed() - before_total == 1
     assert kd1 is kd2
 
-    # Mesh deformation/version change invalidates
-    mesh._mesh_version += 1
+    # A coordinate change invalidates
+    mesh._geometry_version += 1
     kd3 = v._get_kdtree()
     assert uw.kdtree.total_constructed() - before_total == 2
     assert kd3 is not kd1
