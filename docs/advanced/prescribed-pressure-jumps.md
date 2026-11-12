@@ -1,5 +1,14 @@
 # Prescribed pressure jumps
 
+```{note}
+Experimental and opt-in. `pressure_split`, `cylindrical_pressure_lifting` and the
+lagged circular-wall methods described in the boundary-condition rulings are new,
+are exercised by exactness and component tests, and carry no stability or
+convergence theorem. Convergence studies against analytic annulus solutions are
+still to be recorded in this repository. Existing solves are unaffected unless
+these methods are called.
+```
+
 `Stokes.pressure_split` separates total pressure into a continuous P1 unknown
 and a prescribed discontinuous field: `p = q + p_J`. It accepts scalar jump
 expressions, continuous scalar mesh fields, constants or coordinate callables.

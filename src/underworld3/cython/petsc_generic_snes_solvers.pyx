@@ -9390,6 +9390,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def pressure_split(self, *, jumps, normals, tolerance=1e-10):
         r"""Lift prescribed pressure jumps on fitted triangle/tetrahedron facets.
 
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
         Parameters
         ----------
         jumps : mapping
@@ -9447,6 +9452,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                      wavenumber, amplitude, quadrature_points):
         r"""Construct an exact-circle pressure lift and moment-equivalent force.
 
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
         Parameters
         ----------
         interface_radius, outer_radius : float
@@ -9496,6 +9506,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def add_cylindrical_wall_transfer(self, *, boundary, radius, sign,
                                       viscosity, pressure_jump, quadrature):
         r"""Register lagged free-slip transfer to a physical circular wall.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
 
         Parameters
         ----------
@@ -9547,6 +9562,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def solve_cylindrical_wall_updates(self, *, walls, updates):
         """Solve with lagged free-slip conditions on both physical circles.
 
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
         Parameters
         ----------
         walls : mapping
@@ -9572,6 +9592,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def add_cylindrical_zero_slip_transfer(self, *, boundary, radius, sign,
                                            quadrature):
         r"""Register a full-vector zero-slip datum shifted to a physical circle.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
 
         Parameters
         ----------
@@ -9613,6 +9638,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     def solve_cylindrical_zero_slip_updates(self, *, walls, updates):
         """Solve with jointly flux-compatible shifted zero-slip data.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
 
         Parameters
         ----------
