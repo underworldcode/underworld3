@@ -101,7 +101,7 @@ later partition takes it as its base and does not move it again. Concretely:
    with all its descendants on the finer add-on levels (the finest mesh itself when
    there is no add-on level below it). Every add-on cell has one parent on the level
    below, found by centroid containment while the levels are co-partitioned (exact
-   for a bisection hierarchy). Every cell of a unit goes to the same rank, so every
+   for a bisection hierarchy), in the geometry the level was made in. Every cell of a unit goes to the same rank, so every
    add-on pair stays co-partitioned exactly, and the base-to-add-on pair is
    co-partitioned except where a unit moved.
 2. **Fault regions.** The cells the surgery will touch — the star of the vertices
@@ -161,6 +161,94 @@ growth layers, the rule the partition uses for sheets. With one, the carve's gro
 rounds reached a shared point on a partitioned adapt child and the placement
 refused (`test_1097::test_direct_place_sheet_on_a_partitioned_adapt_child`, shown
 failing before).
+
+## A base that has moved (November 2026, #1091)
+
+The record relates the finest level to the level below it. A move of the mesh
+(`mesh.deform`, the smoothing and MMPDE movers) writes the finest level's
+coordinates and leaves every level below where it was built, so after a move the
+two no longer share a geometry. The partition found each parent at the cell's
+moved centroid. On an annulus refined four times the MMPDE mover took 10,342 of
+40,448 cells into the cell of another parent; the partition refused wherever that
+cell was on another rank ("N fine cell(s) have no local parent cell on the level
+below") and recorded the wrong parent where it was local. The provenance transfer
+then weighted a moved node in a parent that was never moved. The record has two
+readers, the unit grouping and that transfer, and the transfer feeds the multigrid
+preconditioner only (the interpolation, the Galerkin coarse operators and the FAC
+patch rows): a wrong record costs iterations or convergence, and no field is
+transferred through it.
+
+The relation is now read in the geometry the mesh was made in:
+
+- A mesh keeps the vertex coordinates it was built with
+  (`mesh._as_built_vertices`, taken by `Mesh._record_as_built` when the mesh is
+  constructed and again wherever it is given another topology), and
+  `_deform_mesh` marks it moved (`mesh._moved_since_built`). The record is read
+  only once the mesh is marked. It has to exist before anything moves the mesh:
+  at more than one rank the MMPDE mover and the Laplacian smoother use the
+  coordinate vector of the DM for their halo exchange before they call
+  `_deform_mesh`, and a record read at that call is a grid already moved, in
+  whole (the smoother) or in part (MMPDE). The cost is one copy of the vertex
+  coordinates per mesh. The mark says that `_deform_mesh` has run, and a call
+  that restores the coordinates sets it too; the record then equals the
+  coordinates, and reading it costs a search and changes no answer. A mesh
+  reloaded with its refinement hierarchy is recorded before its saved
+  coordinates are stamped on, so its record is the grid the reload refined
+  again, which is the geometry of the coarse levels the reload rebuilt, whether
+  or not the saved mesh had moved. A mesh built over a DM that had already
+  moved (the partition's copy of a level, a cut) records the coordinates it was
+  given and reaches the level below through `_addon_reference`, below.
+- `_parent_cells_local` locates the centroids of those vertices.
+- `provenance_transfer_parallel` takes a node back before it weights it: its
+  barycentric coordinates in its own cell, as the cell stands, applied to the
+  cell's as-built vertices. The transfer of a moved pair is the transfer the pair
+  had unmoved, so a moved regular refinement keeps the nested weights.
+- A level the partition moves carries the reference with it, vertex by vertex,
+  beside its current coordinates (`redistribute_by_assignment(vertex_fields=...)`,
+  a vertex-wise section through `distributeField`). The carried current
+  coordinates are compared with the moved level's own, so a change in the order
+  the vertices arrive in is a collective error, not a wrong reference.
+- A mesh made on a moved one (the cut, the placement, the split) has no geometry
+  of its own to go back to. `inherit_provenance` gives each of its vertices the
+  position its host's map sends it to (`mesh._addon_reference`, held with the
+  level it is valid against). That reference is in the geometry of the level
+  under the host, and is read for that level only
+  (`fault_mg.reference_vertices(mesh, below)`): a mesh that keeps the moved host
+  as its own level below was made in the host's geometry, and asked about the
+  host it answers with its own as-built vertices, or with none if it has not
+  moved. Where `Mesh.add_fault` replaces an add-on level by its split copy, the
+  reference passes to the copy, which stands where the level stood.
+- A host with no record (serial, `partition=False`, or a partition that had
+  nothing to move) passes its geometry on in the same way. The cut child that
+  takes its place over the level below is then partitioned on the right parents
+  when a second fault is added.
+
+The relation could also be read from the numbering of a regular refinement (child
+`k` of parent `k // 2^dim`), with no coordinates at all. That serves the first
+item for a regularly refined base and nothing else: the cells of a cut, a
+placement or a split and the children of `adapt` have no such numbering, and the
+transfer needs the as-built positions whatever names the parent. With those
+positions kept, locating on them gives the parents too, without relying on the
+order PETSc numbers its children in.
+
+Not covered:
+
+- A periodic mesh keeps no as-built record (its coordinates are cell-wise), so a
+  moved periodic base is located where it stands, as before.
+- The provenance transfer exists only for a pair the partition separated. In
+  serial, and at a rank count where the partition has nothing to move, the pair
+  is built as before: the nested prolongation of the refinement where the level
+  below the placed mesh is the base's own finest level, and the geometric
+  builders on the coordinates as they stand where a cut child took that level's
+  place. The transfer of a cut child over a moved base therefore depends on
+  whether the partition moved cells.
+
+`tests/test_1173_addon_record_after_a_move.py` holds the parents, the transfer of
+a moved pair at degree 1 and 2, the cut child, and the parents of a cut child made
+with no record, in serial;
+`tests/parallel/test_1173_addon_record_after_a_move_parallel.py` holds the
+partition, the reference riding the move and the placed, split and solved ribbon
+on a moved base.
 
 ## Cost: the per-point loops compiled (18 October)
 

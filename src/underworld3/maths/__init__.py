@@ -57,3 +57,5 @@ from .vector_calculus import (
 from underworld3.cython.petsc_maths import Integral
 from underworld3.cython.petsc_maths import CellWiseIntegral
 from underworld3.cython.petsc_maths import BdIntegral
+
+from . import spherical_harmonics
