@@ -1112,41 +1112,75 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
         #       vertex anywhere — the behaviour before the containment rule,
         #       kept because a target off the mesh still has to land
         #       somewhere.
-        if candidates.size:
-            d = np.linalg.norm(X[candidates] - t, axis=1)
-            nearest = np.linalg.norm(X[face] - t, axis=1).min() if held else d.min()
-            local = (0 if held else 2, float(d.min()),
-                     *X[candidates[int(d.argmin())]],
-                     int(d.min() > nearest + 1e-12 * scale))
-        elif held:
-            d = np.linalg.norm(X[face] - t, axis=1)
-            local = (1, float(d.min()), *X[face[int(d.argmin())]], 0)
-        else:
-            local = (2, np.inf, *([np.inf] * cdim), 0)
-        reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
-        flag, distance, stands_in = reduced[0], reduced[1], reduced[-1]
-        where = np.array(reduced[2:-1])
-        if flag == 1:
-            raise ValueError(
-                f"pull_vertex_onto: the target {tuple(float(x) for x in t)} is "
-                "inside the mesh and every corner of the cell or edge holding "
-                "it is on the domain boundary (the nearest, "
-                f"{tuple(float(x) for x in where)}, is {distance:.3e} away). A "
-                "target inside the mesh never takes a boundary vertex, so no "
-                "vertex can be put on this target. Move the target further "
-                "from the boundary, or refine the mesh there.")
+        #
+        # An interior corner that stands in for a boundary corner is taken
+        # only when the cells around it stay sound (min_quality). One that
+        # fails is set aside, on every rank, and the next nearest interior
+        # corner of the face is proposed: the target can lie close to an edge
+        # of its own cell and well clear of the boundary, where one corner
+        # flattens a cell and another does not.
+        refused = []
+        while True:
+            for corner, _n, _worst in refused:
+                candidates = candidates[
+                    np.linalg.norm(X[candidates] - corner, axis=1)
+                    >= 1e-12 * scale]
+            if candidates.size:
+                d = np.linalg.norm(X[candidates] - t, axis=1)
+                nearest = np.linalg.norm(X[face] - t, axis=1).min() if held else d.min()
+                local = (0 if held else 2, float(d.min()),
+                         *X[candidates[int(d.argmin())]],
+                         int(d.min() > nearest + 1e-12 * scale))
+            elif held:
+                d = np.linalg.norm(X[face] - t, axis=1)
+                local = (1, float(d.min()), *X[face[int(d.argmin())]], 0)
+            else:
+                local = (2, np.inf, *([np.inf] * cdim), 0)
+            reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
+            flag, distance, stands_in = reduced[0], reduced[1], reduced[-1]
+            where = np.array(reduced[2:-1])
+            if refused and flag != 0:
+                # every interior corner of the face has been set aside
+                corner, n_ruined, worst = refused[0]
+                raise ValueError(
+                    f"pull_vertex_onto: the target {tuple(float(x) for x in t)} "
+                    "is inside the mesh and the nearest corner of its cell is "
+                    "a boundary vertex, which a target inside the mesh never "
+                    f"takes. None of the {len(refused)} interior corner(s) of "
+                    "the cell can take it: the nearest, at "
+                    f"{tuple(float(x) for x in corner)}, would leave "
+                    f"{n_ruined} cell(s) below min_quality={min_quality} "
+                    f"(worst {worst:.3g}; negative is inverted). The target "
+                    "is too close to the domain boundary, or to an edge of "
+                    "its cell that runs to the boundary, to carry a vertex of "
+                    "its own, or an earlier target of this call has already "
+                    "moved a corner. Put the target on the boundary, move it "
+                    "further from the boundary, or refine the mesh there. A "
+                    "fault that has to end this close under the boundary "
+                    "need not be split there: a welded fault zone with a "
+                    "transverse-isotropic rheology carries it.")
+            if flag == 1:
+                raise ValueError(
+                    f"pull_vertex_onto: the target {tuple(float(x) for x in t)} is "
+                    "inside the mesh and every corner of the cell or edge holding "
+                    "it is on the domain boundary (the nearest, "
+                    f"{tuple(float(x) for x in where)}, is {distance:.3e} away). A "
+                    "target inside the mesh never takes a boundary vertex, so no "
+                    "vertex can be put on this target. Move the target further "
+                    "from the boundary, or refine the mesh there.")
 
-        # Move it by POSITION, not by index: the chosen vertex may be a ghost
-        # here and an owned point there, and both copies have to end up in the
-        # same place without a star-forest exchange.
-        hit = np.flatnonzero(np.linalg.norm(X - where, axis=1) < 1e-12 * scale)
-        if stands_in and min_quality is not None:
+            # Move it by POSITION, not by index: the chosen vertex may be a
+            # ghost here and an owned point there, and both copies have to end
+            # up in the same place without a star-forest exchange.
+            hit = np.flatnonzero(np.linalg.norm(X - where, axis=1) < 1e-12 * scale)
+            if not (flag == 0 and stands_in and min_quality is not None):
+                break
             # The interior corner comes from further away than the boundary
-            # corner it stands in for, and lands close under the boundary: it
-            # is taken only when the cells around it stay sound, on the mesh
-            # as the earlier targets of this call have left it. The cells
-            # around a vertex are spread across the ranks sharing it, so the
-            # count is reduced, on every rank: the note is the same on all.
+            # corner it stands in for, and can land close under the boundary:
+            # the test is made on the mesh as the earlier targets of this call
+            # have left it. The cells around a vertex are spread across the
+            # ranks sharing it, so the count is reduced, on every rank: the
+            # note is the same on all.
             before = _cell_quality(arr, cell_verts)
             moved = arr.copy()
             moved[hit] = t
@@ -1156,23 +1190,12 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
                       & ((after <= 0.0)
                          | (after < np.minimum(min_quality, np.abs(before)))))
             n_ruined = uw.mpi.comm.allreduce(int(ruined.sum()), op=MPI.SUM)
+            if not n_ruined:
+                break
             worst = uw.mpi.comm.allreduce(
                 float(after[ruined].min()) if ruined.any() else np.inf,
                 op=MPI.MIN)
-            if n_ruined:
-                raise ValueError(
-                    f"pull_vertex_onto: the target {tuple(float(x) for x in t)} "
-                    "is inside the mesh and the nearest corner of its cell is "
-                    "a boundary vertex, which a target inside the mesh never "
-                    "takes. The interior corner at "
-                    f"{tuple(float(x) for x in where)}, {distance:.3e} away, "
-                    f"would leave {n_ruined} cell(s) below "
-                    f"min_quality={min_quality} (worst {worst:.3g}; negative is "
-                    "inverted). The target is too close to the domain boundary "
-                    "to carry a vertex of its own, or an earlier target of this "
-                    "call has already moved that corner. Put the target on the "
-                    "boundary, move it further from the boundary, or refine the "
-                    "mesh there.")
+            refused.append((where, n_ruined, worst))
         arr[hit] = t
 
     out = dm.clone()
