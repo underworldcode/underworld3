@@ -7314,6 +7314,12 @@ class SNES_Scalar(SolverBaseClass):
         This is a **collective operation** - all MPI ranks must call it.
         The solver automatically handles mesh variable synchronization.
 
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
+
         See Also
         --------
         snes : Access to underlying PETSc SNES object for advanced control.
@@ -7371,6 +7377,9 @@ class SNES_Scalar(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # Pure-Neumann scalar problems: attach a constant nullspace
         # to the (now set-up) Jacobian. No-op unless
@@ -8386,6 +8395,14 @@ class SNES_Vector(SolverBaseClass):
         -----
         This is a **collective operation** - all MPI ranks must call it.
 
+        On the standard path every solve reads ``petsc_options`` (and
+        ``tolerance``, which writes into them) afresh, so a value set between
+        solves applies to the next one; the rotated free-slip and fault-contact
+        loop returns before that and reads ``tolerance`` and ``snes_max_it``
+        itself. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
+
         See Also
         --------
         u : The solution vector field variable.
@@ -8444,6 +8461,9 @@ class SNES_Vector(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
@@ -9099,6 +9119,14 @@ class SNES_MultiComponent(SolverBaseClass):
             ``consistent_jacobian=True``. A cold start of a nonlinear flux takes
             ONE automatically; ``picard=N`` asks for N, ``picard=-1`` for none.
             Keyword only in practice: it follows every other argument.
+
+        Notes
+        -----
+        Every solve reads ``petsc_options`` (and ``tolerance``, which writes
+        into them) afresh, so a value set between solves applies to the next
+        one. A setting made on ``self.snes`` directly through petsc4py, for a
+        key the options also hold, is overwritten at the next solve: set it
+        through ``petsc_options`` (#1078).
         """
 
 
@@ -9136,6 +9164,9 @@ class SNES_MultiComponent(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         self._update_constants(record=True)
+        # read the options now, not only at the first build: a tolerance or an option
+        # set after a solve applies to the next one, as on Stokes (#1078)
+        self.snes.setFromOptions()
 
         # one matrix for the Jacobian and the preconditioner, or the natural BCs
         # reach only one of them (#1070)
