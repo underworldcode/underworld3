@@ -945,17 +945,165 @@ def _reached_columns(T, rel=None):
     return n2 > rel * big
 
 
+_SMALL_SUPPORT = 4      # columns with at most this many fine images are checked
+
+
+def _dependent_columns(T):
+    """Coarse columns of ``T`` that another column makes redundant. Collective;
+    returns the same ``(drop, keep, ratio)`` arrays on every rank: global
+    column ``drop[i]`` of ``T`` is ``ratio[i]`` times column ``keep[i]``.
+
+    Columns supported on the same single fine row are proportional, so their
+    Galerkin rows are, and the coarse operator is singular: SOR's inode blocks
+    then hit a zero pivot (#1101). This happens when the fine level has moved
+    under coarse levels that did not, leaving two coarse unknowns whose only
+    fine image is one shared fine node. In each such group the column of
+    largest weight is kept (ties to the lowest global column, so every rank
+    keeps the same one) and the others are dropped; the range of P is
+    unchanged.
+
+    Limits: only columns with at most ``_SMALL_SUPPORT`` fine images are
+    examined. Among those, k columns on one shared row are repaired; a support
+    of s > 1 rows shared by more than s columns is also rank-deficient and is
+    refused (it has not been seen: in W1's scan every group was 2 columns on 1
+    row). Columns on fewer rows than there are of them but with different
+    supports, or with wider supports, are not detected.
+    """
+    comm = T.comm
+    m4 = comm.tompi4py()
+    indptr, indices, data = T.getValuesCSR()
+    rstart = T.getOwnershipRange()[0]
+    rows = rstart + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+    nz = data != 0.0
+    count_vec = T.createVecRight()
+    count_vec.set(0.0)
+    if nz.any():
+        count_vec.setValues(indices[nz].astype(PETSc.IntType), np.ones(int(nz.sum())),
+                            addv=PETSc.InsertMode.ADD_VALUES)
+    count_vec.assemblyBegin()
+    count_vec.assemblyEnd()
+    count = np.asarray(count_vec.array).round().astype(np.int64)
+    count_vec.destroy()
+    cstart = T.getOwnershipRangeColumn()[0]
+    small = cstart + np.flatnonzero((count >= 1) & (count <= _SMALL_SUPPORT))
+    small = np.concatenate(m4.allgather(small))
+    none = (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
+    if not small.size:
+        return none
+    # every rank's entries in those columns: (column, fine row, weight)
+    pick = nz & np.isin(indices, small)
+    mine = np.column_stack([indices[pick], rows[pick], data[pick]])
+    parts = [e for e in m4.allgather(mine) if len(e)]
+    entries = np.concatenate(parts) if parts else np.zeros((0, 3))
+    support = {}
+    for col, row, w in entries:
+        support.setdefault(int(col), []).append((int(row), float(w)))
+    groups = {}
+    for col, items in support.items():
+        groups.setdefault(tuple(sorted(r for r, _w in items)), []).append(col)
+    drop, keep, ratio, refused = [], [], [], []
+    for rows_of, cols in sorted(groups.items()):
+        if len(rows_of) == 1 and len(cols) > 1:
+            weight = {col: support[col][0][1] for col in cols}
+            cols.sort(key=lambda col: (-abs(weight[col]), col))
+            for col in cols[1:]:
+                drop.append(col)
+                keep.append(cols[0])
+                ratio.append(weight[col] / weight[cols[0]])
+        elif len(rows_of) > 1 and len(cols) > len(rows_of):
+            refused.append((rows_of, sorted(cols)))
+    if refused:
+        raise RuntimeError(
+            f"custom_mg: {len(refused)} group(s) of coarse unknowns share fewer "
+            f"fine images than there are of them (e.g. columns {refused[0][1]} on "
+            f"fine rows {list(refused[0][0])}): the Galerkin coarse operator would "
+            f"be singular. The fine level has moved too far from its coarse "
+            f"levels (#1101).")
+    if not drop:
+        return none
+    order = np.argsort(drop)
+    return (np.asarray(drop, dtype=np.int64)[order], np.asarray(keep, dtype=np.int64)[order],
+            np.asarray(ratio)[order])
+
+
+def _drop_dependent_columns(T, comm, level):
+    """Merge the :func:`_dependent_columns` of one level into the columns they
+    are multiples of, and warn when it fires. Collective.
+
+    The dropped columns leave ``T``; the level below must fold each dropped
+    unknown's row into its kept twin's (:func:`_fold_rows`), so the composite
+    coarse functions, and the constants they reproduce through the shared fine
+    row, are unchanged. Returns ``(T, keep_mask, fold)``: ``keep_mask`` over
+    ``T``'s owned columns and ``fold`` the ``(drop, keep, ratio)`` arrays in
+    ``T``'s global column numbering, both None when nothing is dropped (``T``
+    untouched, so a hierarchy that needs no repair is unchanged)."""
+    drop, keep, ratio = _dependent_columns(T)
+    if not drop.size:
+        return T, None, None
+    if comm.getRank() == 0:
+        import warnings
+
+        warnings.warn(
+            f"custom_mg: coarse level {level}: {drop.size} coarse unknown(s) had "
+            f"the same single fine image as another and were merged into it "
+            f"(#1101). The fine level has moved far from coarse levels that did "
+            f"not move with it; those levels no longer match it. Only coarse "
+            f"unknowns with at most {_SMALL_SUPPORT} fine images are checked.",
+            stacklevel=3)
+    cols = np.arange(*T.getOwnershipRangeColumn())
+    keep_mask = ~np.isin(cols, drop)
+    T = T.createSubMatrix(_owned_is(np.arange(*T.getOwnershipRange()), comm),
+                          _owned_is(cols[keep_mask], comm))
+    return T, keep_mask, (drop, keep, ratio)
+
+
+def _renumber_fold(fold, owned, comm):
+    """``fold`` with its indices mapped through ``owned`` (each rank's owned
+    original indices, in order: the renumbered column ``g`` is the ``g``-th
+    entry of their concatenation over ranks)."""
+    if fold is None or owned is None:
+        return fold
+    full = np.concatenate(comm.tompi4py().allgather(np.asarray(owned, dtype=np.int64)))
+    drop, keep, ratio = fold
+    return full[drop], full[keep], ratio
+
+
+def _fold_rows(T, fold, comm):
+    """``F T`` with ``F`` the identity plus ``ratio`` at ``(keep, drop)``: each
+    dropped unknown's row of ``T`` added, scaled, to its kept twin's. ``fold``
+    is in ``T``'s global row numbering. Collective."""
+    if fold is None:
+        return T
+    drop, keep, ratio = fold
+    rstart, rend = T.getOwnershipRange()
+    F = PETSc.Mat().createAIJ((T.getSizes()[0], T.getSizes()[0]), comm=comm)
+    F.setPreallocationNNZ(1 + len(drop))
+    F.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    for i in range(rstart, rend):
+        F.setValue(i, i, 1.0, addv=PETSc.InsertMode.ADD_VALUES)
+    for d, k, r in zip(drop, keep, ratio):
+        if rstart <= k < rend:
+            F.setValue(int(k), int(d), float(r), addv=PETSc.InsertMode.ADD_VALUES)
+    F.assemble()
+    out = F.matMult(T)
+    F.destroy()
+    return out
+
+
 def restrict_unreached(Ps, comm):
     """The prolongation list with every coarse unknown no fine unknown reaches
     dropped, fine to coarse, each level's rows restricted to the set the level
     above kept. The unrotated twin of :func:`rotated_split_transfers`, for the
     standard (non-rotated) install of a hierarchy with split levels. "Reaches"
-    is relative (``UNREACHED_REL``), so a vanishing column counts as none."""
+    is relative (``UNREACHED_REL``), so a vanishing column counts as none.
+    Coarse unknowns left with the same single fine image as another are merged
+    into it (#1101, :func:`_drop_dependent_columns`)."""
     nlev = len(Ps) + 1
     kept = [None] * nlev
+    fold = [None] * nlev            # level l's merges, in its original numbering
     out = [None] * (nlev - 1)
     for l in range(nlev - 2, -1, -1):
-        T = Ps[l]
+        T = _fold_rows(Ps[l], fold[l + 1], comm)
         if kept[l + 1] is not None:
             T = T.createSubMatrix(
                 _owned_is(kept[l + 1], comm),
@@ -967,6 +1115,10 @@ def restrict_unreached(Ps, comm):
                 _owned_is(np.arange(*T.getOwnershipRange()), comm),
                 _owned_is(cols[reached], comm))
             kept[l] = cols[reached]
+        T, keep_mask, merged = _drop_dependent_columns(T, comm, l)
+        if keep_mask is not None:
+            fold[l] = _renumber_fold(merged, kept[l], comm)
+            kept[l] = (kept[l] if kept[l] is not None else cols)[keep_mask]
         out[l] = T
     return out
 
@@ -1019,6 +1171,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
         rot[l] = level_rotation(levels[l], solver, hierarchy.field_id)
 
     kept = [None] * nlev              # owned kept global indices per coarse level
+    fold = [None] * nlev              # merges per coarse level, in its full numbering
     out = [None] * (nlev - 1)
     for l in range(nlev - 2, -1, -1):
         T = Ps[l]
@@ -1032,6 +1185,8 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
             T.zeroRows(fine_normal, diag=0.0)
             row_is = None
         else:
+            # the unknowns merged at level l + 1 (#1101) fold their rows in
+            T = _fold_rows(T, fold[l + 1], comm)
             row_is = _owned_is(kept[l + 1], comm)
         # admissible columns at level l: owned, minus the opening rows
         cs, ce = T.getOwnershipRangeColumn()
@@ -1050,6 +1205,11 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
             T = T.createSubMatrix(
                 _owned_is(np.arange(*T.getOwnershipRange()), comm),
                 _owned_is(np.arange(*T.getOwnershipRangeColumn())[reached], comm))
+        # and merge the unknowns that share a single fine image with another (#1101)
+        T, keep_mask, merged = _drop_dependent_columns(T, comm, l)
+        if keep_mask is not None:
+            fold[l] = _renumber_fold(merged, adm, comm)
+            adm = adm[keep_mask]
         kept[l] = adm
         out[l] = T
     Qv.destroy()                    # only the products are kept
