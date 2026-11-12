@@ -393,23 +393,18 @@ def _boundary_reads_of(solver, variables):
 
 
 def _refuse_boundary_fields(solver, reads, where, why):
-    names = ", ".join(f"'{v.name}' ({kind} condition)" for v, kind in reads)
+    names = ", ".join(f"'{v.name}' (in a {kind} condition)" for v, kind in reads)
     raise NotImplementedError(
-        f"{where}: {names} of {type(solver).__name__}({solver.u.name}) {why}. "
-        f"The derivative through a boundary condition is not assembled on the "
-        f"field route yet; without it the dual would be exactly zero, which "
-        f"reads as 'no influence' (#787). A scalar parameter in a condition is "
-        f"supported (sensitivity).")
+        f"{where}: {type(solver).__name__}({solver.u.name}) reads {names}, {why}. "
+        f"The field route does not assemble the derivative through a boundary "
+        f"condition yet, so the gradient would be missing that part (exactly "
+        f"zero for a field read nowhere else), and a missing part reads as "
+        f"less influence than there is (#787).")
 
 
-def _depends_on_controls(solver, parameters, fields, tokens):
-    """Whether a solve's output can carry a control's influence: it reads a
-    parameter, a requested field (its own unknown included, as an initial
-    condition), or any other variable through which the chain continues."""
-    if any(f is solver.u for f in fields):
-        return True
-    if _reads_of(solver, solver.u, tokens):
-        return True
+def _forms_of(solver):
+    """Every symbolic form a solve applies: its residual templates and the
+    data and fluxes of its boundary conditions."""
     forms = [solver.F0.sym, solver.F1.sym]
     if getattr(solver, "PF0", None) is not None:
         forms.append(solver.PF0.sym)
@@ -417,11 +412,56 @@ def _depends_on_controls(solver, parameters, fields, tokens):
     for bc in (getattr(solver, "natural_bcs", None) or []):
         forms += [fn for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None))
                   if fn is not None]
-    for p in parameters:
-        for form in forms:
-            if not sympy.Matrix(_peel_except(sympy.Matrix(form), p)).diff(p).is_zero_matrix:
-                return True
+    return forms
+
+
+def _reads_parameter(solver, parameters):
+    """Whether any form of ``solver`` depends on one of ``parameters``, each
+    element peeled on its own (a bare named expression as the element)."""
+    for form in _forms_of(solver):
+        for element in sympy.Matrix(form):
+            for p in parameters:
+                if sympy.diff(_peel_except(sympy.sympify(element), p), p) != 0:
+                    return True
     return False
+
+
+def _control_reach(solvers, parameters, fields, tokens):
+    """``{id(solver): bool}``: whether a control can reach each solve's output
+    in the recorded run. Directly, when it reads a parameter or a requested
+    field in its residual or in a boundary condition (its own unknown
+    included, as an initial condition); or through the output of another solve
+    that a control reaches, read in either place. A fixed coefficient field
+    that no solve produces carries no control.
+
+    The walk uses it for a solve whose output a downstream boundary condition
+    reads: that part of the dual is not assembled (#787), so it refuses
+    exactly when a control could have flowed that way."""
+    producers = {}
+    for solver in solvers:
+        for v in (getattr(solver, "u", None), getattr(solver, "p", None)):
+            if v is not None:
+                producers[v.name] = solver
+    outputs = [v for s in solvers for v in (getattr(s, "u", None), getattr(s, "p", None))
+               if v is not None]
+    reach, inputs = {}, {}
+    for solver in solvers:
+        own = [solver.u, getattr(solver, "p", None)]
+        others = [v for v in outputs if all(v is not o for o in own)]
+        read = [var for var, _, _ in _reads_of(solver, solver.u, tokens)]
+        read += [var for var, _ in _boundary_reads_of(solver, list(fields) + others)]
+        reach[id(solver)] = (
+            any(f is solver.u for f in fields)
+            or any(any(v is f for f in fields) for v in read)
+            or _reads_parameter(solver, parameters))
+        inputs[id(solver)] = {id(producers[v.name]) for v in read if v.name in producers}
+    changed = True
+    while changed:
+        changed = False
+        for key, upstream in inputs.items():
+            if not reach[key] and any(reach.get(u, False) for u in upstream):
+                reach[key] = changed = True
+    return reach
 
 
 def field_duals(solver, mu, variables, scratch=None):
@@ -512,7 +552,7 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     if u in duals:
         reads = _boundary_reads_of(solver, [f for f in fields if f is not u])
         if reads:
-            _refuse_boundary_fields(solver, reads, "gradient", "enter a boundary condition")
+            _refuse_boundary_fields(solver, reads, "gradient", "which was asked for")
         rhs = duals.pop(u)
         # dJ/du on every node, the constrained ones included: the rows the
         # solve leaves out are the misfit reading the prescribed data, and
@@ -681,6 +721,13 @@ class TranscriptAdjoint:
                         if v is not None and all(v is not o for o in others):
                             others.append(v)
         pending = {}
+        walked = []
+        for step in self.steps:
+            for e in step.events:
+                obj = model.part_object(e["part"]) if e["kind"] == "solve" else None
+                if obj is not None and all(obj is not w for w in walked):
+                    walked.append(obj)
+        reach = _control_reach(walked, parameters, fields, self._tokens())
         for k in range(len(self.steps) - 1, -1, -1):
             step = self.steps[k]
             solves = [e for e in step.events if e["kind"] == "solve"]
@@ -697,12 +744,12 @@ class TranscriptAdjoint:
                 # if this solve passes a control's influence on.
                 outputs = [v for v in (u, getattr(solver, "p", None)) if v is not None]
                 read = [v for v in outputs if v.name in pending]
-                if read and _depends_on_controls(solver, parameters, fields, self._tokens()):
+                if read and reach[id(solver)]:
                     reader, kind = pending[read[0].name]
                     _refuse_boundary_fields(
                         reader, [(read[0], kind)], "TranscriptAdjoint.gradient",
-                        f"reads the output of {type(solver).__name__}({u.name}), "
-                        f"which depends on the controls")
+                        f"the output of {type(solver).__name__}({u.name}), which a "
+                        f"control reaches")
                 rhs = acc.get(u.name)
                 # Decided on every rank together: the gate guards a collective
                 # solve, and a misfit supported on one rank's cells deadlocked
@@ -719,7 +766,7 @@ class TranscriptAdjoint:
                 asked = [(v, k) for v, k in reads if any(v is f for f in fields)]
                 if asked:
                     _refuse_boundary_fields(solver, asked, "TranscriptAdjoint.gradient",
-                                            "enter a boundary condition")
+                                            "which was asked for")
                 for v, kind in reads:
                     pending.setdefault(v.name, (solver, kind))
                 inputs = self._linearise_at(step, solves, j)

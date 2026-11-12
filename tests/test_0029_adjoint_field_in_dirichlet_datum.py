@@ -109,7 +109,11 @@ def test_a_field_behind_a_nested_expression_in_the_datum_still_refuses():
 def test_a_field_whose_name_another_contains_is_not_refused():
     """``\\bar{f}`` in the datum is another variable: the field ``f`` the
     residual reads still gets its dual, and it agrees with FD."""
-    mesh, T, f, _ = _poisson("near", datum_field=False)
+    mesh, T, _, _ = _poisson("near", datum_field=False)
+    # the field prints as f, the datum's variable as \bar{f}: a substring
+    # match on the token would take one for the other
+    f = uw.discretisation.MeshVariable("f_near", mesh, 1, degree=2, varsymbol="f")
+    f.array[:, 0, 0] = 1 + np.asarray(f.coords)[:, 0] ** 2
     fbar = uw.discretisation.MeshVariable("fbar_near", mesh, 1, degree=2, varsymbol=r"\bar{f}")
     fbar.array[:, 0, 0] = 1.0
     poisson = _poisson_on(mesh, T, f.sym[0], sympy.Matrix([fbar.sym[0]]))
@@ -135,7 +139,7 @@ def test_a_field_in_a_natural_condition_refuses():
     poisson = _poisson_on(mesh, T, 1.0, 0.0)
     poisson.add_natural_bc(sympy.Matrix([f.sym[0]]), "Left")
     poisson.solve(zero_init_guess=True)
-    with pytest.raises(NotImplementedError, match=r"'f_neumann' \(natural"):
+    with pytest.raises(NotImplementedError, match=r"'f_neumann' \(in a natural"):
         poisson.gradient(T.sym[0] ** 2 / 2, fields=[f])
 
 
@@ -179,5 +183,101 @@ def test_the_walk_takes_a_parameter_gradient_through_a_datum_on_an_uncontrolled_
 def test_the_walk_refuses_a_datum_on_an_output_that_depends_on_the_control():
     model, p, misfit, run = _chain("ctl", p_in_upstream=True)
     final, _ = run(1.0)
-    with pytest.raises(NotImplementedError, match=r"'g_ctl'.*depends on the controls"):
+    with pytest.raises(NotImplementedError, match=r"'g_ctl'.*a control reaches"):
         uw.adjoint.TranscriptAdjoint(model, final).gradient(misfit, parameters=[p])
+
+
+def _walk(tag, wire, ctrl="p"):
+    """Solves Z, A, B in one recorded step: z, g and T, each a Poisson problem
+    on its own field with T = 0 on Bottom. ``wire(Z, A, B, z, g, f, p)`` connects
+    them. Returns (gradient by the walk, central FD) or raises the refusal."""
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
+                                             cellSize=1 / 6, qdegree=3)
+    z, g, T, f = (uw.discretisation.MeshVariable(f"{n}_{tag}", mesh, 1, degree=2)
+                  for n in ("z", "g", "T", "f"))
+    f.array[:, 0, 0] = 1 + np.asarray(f.coords)[:, 0] ** 2
+    p = uw.expression(rf"p_{{{tag}}}", 1.0, "control")
+
+    def poisson(v):
+        solver = uw.systems.Poisson(mesh, u_Field=v)
+        solver.constitutive_model = uw.constitutive_models.DiffusionModel
+        solver.constitutive_model.Parameters.diffusivity = 1.0
+        solver.f = 1.0
+        solver.add_dirichlet_bc(0.0, "Bottom")
+        solver.petsc_options.delValue("ksp_monitor")
+        solver.tolerance = 1e-10
+        return solver
+
+    Z, A, B = (poisson(v) for v in (z, g, T))
+    wire(Z, A, B, z, g, f, p, mesh)
+    misfit = T.sym[0] ** 2 / 2
+
+    def run():
+        model.clear_transcript()
+        model.record_every = 1
+        with model.step(0.1):
+            for s in (Z, A, B):
+                s.solve(zero_init_guess=True)
+        return model.save_state(), float(uw.maths.Integral(mesh, misfit).evaluate())
+
+    final, _ = run()
+    kw = dict(parameters=[p]) if ctrl == "p" else dict(fields=[f])
+    out = uw.adjoint.TranscriptAdjoint(model, final).gradient(misfit, **kw)
+    h = 1e-4
+    p.sym = 1 + h
+    Jp = run()[1]
+    p.sym = 1 - h
+    Jm = run()[1]
+    return out["parameters"][p], (Jp - Jm) / (2 * h)
+
+
+@pytest.mark.tier_b      # three recorded solves and a walk
+def test_a_control_upstream_of_a_datum_chain_refuses():
+    """p in Z's source; A's datum is g = z; B's datum is T = g. The control
+    reaches B only through two data, so the walk must refuse (it returned
+    2.9e-2 against FD 1.3e-1 when only A's own residual was inspected)."""
+    def wire(Z, A, B, z, g, f, p, mesh):
+        Z.f = p
+        A.add_dirichlet_bc(sympy.Matrix([z.sym[0]]), "Top")
+        B.add_dirichlet_bc(sympy.Matrix([g.sym[0]]), "Top")
+    with pytest.raises(NotImplementedError, match=r"a control reaches"):
+        _walk("zab", wire)
+
+
+@pytest.mark.tier_b
+def test_a_parameter_behind_a_named_expression_in_an_upstream_datum_refuses():
+    """p wrapped in a bare named expression in A's datum: dJ/dp was 0 against
+    FD 0.71 when the wrapper hid it."""
+    def wire(Z, A, B, z, g, f, p, mesh):
+        A.add_dirichlet_bc(sympy.Matrix([uw.expression(r"q_{wrap}", 1 + p, "wraps p")]), "Top")
+        B.add_dirichlet_bc(sympy.Matrix([g.sym[0]]), "Top")
+    with pytest.raises(NotImplementedError, match=r"a control reaches"):
+        _walk("wrap", wire)
+
+
+@pytest.mark.tier_b
+def test_an_upstream_reading_only_a_fixed_coefficient_field_is_not_refused():
+    """A's diffusivity is a fixed field and p is only in B: the control never
+    reaches A, so the gradient through B's datum on g is complete, and agrees
+    with FD (the earlier check refused it)."""
+    def wire(Z, A, B, z, g, f, p, mesh):
+        kappa = uw.discretisation.MeshVariable("kappa_fixed", mesh, 1, degree=2)
+        kappa.array[:, 0, 0] = 1 + 0.5 * np.asarray(kappa.coords)[:, 1]
+        A.constitutive_model.Parameters.diffusivity = kappa.sym[0]
+        B.f = p
+        B.add_dirichlet_bc(sympy.Matrix([g.sym[0]]), "Top")
+    adjoint, fd = _walk("kappa", wire)
+    assert adjoint == pytest.approx(fd, rel=1e-5)
+
+
+@pytest.mark.tier_b
+def test_a_control_field_only_in_an_upstream_datum_refuses():
+    """The control field f is only in A's datum, and B's datum reads g: its
+    dual was 0 against FD 0.46 when A's own conditions were not inspected."""
+    def wire(Z, A, B, z, g, f, p, mesh):
+        A.add_dirichlet_bc(sympy.Matrix([f.sym[0]]), "Top")
+        B.add_dirichlet_bc(sympy.Matrix([g.sym[0]]), "Top")
+    with pytest.raises(NotImplementedError, match=r"a control reaches"):
+        _walk("fA", wire, ctrl="f")
