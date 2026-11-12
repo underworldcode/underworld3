@@ -70,6 +70,10 @@ def test_rebuilding_a_faulted_mesh_does_not_grow_memory():
     centres = 0.35 + 0.3 * np.arange(WARMUP + MEASURED + 1) / (WARMUP + MEASURED)
     for k in range(WARMUP):
         _rebuild_and_drop(base, k, centres[k])
+    # a mesh first, as before the last reading: its construction frees what the
+    # last warm-up rebuild dropped, so both readings see the same state
+    uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                      cellSize=0.5)
     start = _resident_mb()
     for k in range(WARMUP, WARMUP + MEASURED):
         _rebuild_and_drop(base, k, centres[k])

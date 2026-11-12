@@ -99,10 +99,12 @@ def base_3d():
         cellSize=0.2, regular=False, qdegree=2, refinement=1)
 
 
-def parents_contain_centroids(below, lev):
+def parents_contain_centroids(below, lev, centroids=None):
     """Fetch each cell's parent on ``below`` by the CURRENT address that ``lev``
     records (``lev._addon_parent``), and test that the cell's centroid lies inside
-    it. Returns the global count of cells NOT inside their parent."""
+    it. Returns the global count of cells NOT inside their parent. ``centroids``
+    replaces the centroids of ``lev`` as it stands: those of the geometry it was
+    made in, for a level that has moved since (#1091)."""
     from mpi4py import MPI
     from petsc4py import PETSc
 
@@ -123,6 +125,25 @@ def parents_contain_centroids(below, lev):
     sf.bcastEnd(unit, verts, got, MPI.REPLACE)
     unit.Free()
     sf.destroy()
-    fcent, _v, _c = ap._cell_centroids(lev)
+    fcent = ap._cell_centroids(lev)[0] if centroids is None else centroids
     lam = _barycentric(fcent, got.reshape(par.shape[0], cv_b.shape[1], -1))
     return uw.mpi.comm.allreduce(int((lam.min(axis=1) < -1e-9).sum()))
+
+
+def children_per_parent(below, lev):
+    """The number of cells of ``lev`` that record each local cell of ``below``
+    as their parent, summed over the ranks through the recorded addresses."""
+    from mpi4py import MPI
+    from petsc4py import PETSc
+
+    par = lev._addon_parent
+    cS, cE = below.dm.getHeightStratum(0)
+    sf = PETSc.SF().create(comm=PETSc.COMM_WORLD)
+    sf.setGraph(cE - cS, None, np.ascontiguousarray(par, dtype=np.int32))
+    sf.setUp()
+    count = np.zeros(cE - cS, dtype=np.int64)
+    one = np.ones(par.shape[0], dtype=np.int64)
+    sf.reduceBegin(MPI.INT64_T, one, count, MPI.SUM)
+    sf.reduceEnd(MPI.INT64_T, one, count, MPI.SUM)
+    sf.destroy()
+    return count
