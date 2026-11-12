@@ -227,3 +227,46 @@ def test_tetrahedral_prescribed_jump():
     split = _stokes(mesh).pressure_split(jumps={"Internal": 2}, normals={"Internal": (0, 0, 1)})
     assert split.checks["interface_facets"] > 0
     _check_lift(mesh, split, {"Internal": (lambda points: 2, 2)})
+
+
+@pytest.mark.tier_b
+def test_a_solve_warns_when_the_mesh_has_moved_since_the_split_was_built():
+    """The lift and its force are built once, from the mesh geometry at the time.
+
+    A constant jump of 7/10 across a fitted interface in a closed box has the
+    exact answer u = 0. The first solve is silent about the split. After the
+    interior nodes move, the stored lift no longer belongs to the mesh, and the
+    next solve says so, naming the interface.
+    """
+    import warnings
+
+    mesh = _cross_mesh()
+    stokes = _stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+    split = stokes.pressure_split(jumps={"Horizontal": sp.Rational(7, 10)},
+                                  normals={"Horizontal": sp.Matrix([[0, 1]])})
+    stokes.bodyforce = split.regular_force.sym
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        stokes.add_essential_bc((0.0, 0.0), wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-9
+
+    def split_warnings(caught):
+        return [str(w.message) for w in caught if "pressure split" in str(w.message)]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        stokes.solve()
+    assert split_warnings(caught) == []
+    speed = uw.mpi.comm.allreduce(float(np.max(np.abs(stokes.u.array), initial=0.0)), op=MPI.MAX)
+    assert speed < 1.0e-9
+
+    X = np.array(mesh.X.coords)
+    bump = 1.0e-3 * np.sin(np.pi * X[:, 0]) * np.sin(np.pi * X[:, 1])
+    mesh.deform(X + np.column_stack((bump, np.zeros_like(bump))))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        stokes.solve()
+    messages = split_warnings(caught)
+    assert len(messages) == 1 and "Horizontal" in messages[0]
