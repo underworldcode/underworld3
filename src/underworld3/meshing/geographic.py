@@ -69,7 +69,9 @@ def RegionalSphericalBox(
     numElementsDepth : int, default=5
         Number of elements in the radial (depth) direction.
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     simplex : bool, default=False
@@ -137,6 +139,8 @@ def RegionalSphericalBox(
     - ``unit_e_1``: colatitude direction :math:`(\theta)`
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
+
+    Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1
@@ -461,9 +465,10 @@ def RegionalGeographicBox(
     numElements : tuple of int, optional
         Number of elements in (lon, lat, depth) directions.
         Default: (10, 10, 10)
-    degree : int, optional
-        Polynomial degree for finite elements (1=linear, 2=quadratic).
-        Default: 1
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         Quadrature degree for numerical integration.
         Default: 2
@@ -524,6 +529,9 @@ def RegionalGeographicBox(
     ``mesh.geo`` provides geographic coordinates with ellipsoid geometry.
     Right-handed coordinate system: WE x SN = down.
     """
+
+    Mesh._require_straight_sided_cells(degree)
+
     from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
     from underworld3.units import (
         require_units_if_active,

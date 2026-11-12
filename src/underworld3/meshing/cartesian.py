@@ -64,11 +64,12 @@ def UnstructuredSimplexBox(
         Target mesh element size. Controls mesh density; smaller
         values produce finer meshes with more elements.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
-        Use ``degree=1`` for linear elements, ``degree=2`` for quadratic.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration. Should typically
-        be at least ``2 * degree`` for accuracy.
+        be at least twice the degree of the highest-order variable.
     regular : bool, default=False
         If True, use transfinite meshing for a more structured layout.
         Currently only works for 2D meshes.
@@ -134,7 +135,6 @@ def UnstructuredSimplexBox(
     ...     minCoords=(0.0, 0.0, 0.0),
     ...     maxCoords=(2.0, 1.0, 1.0),
     ...     cellSize=0.05,
-    ...     degree=2
     ... )
 
     Access boundary labels for boundary conditions:
@@ -153,6 +153,8 @@ def UnstructuredSimplexBox(
     but currently only works for 2D meshes.
 
     """
+
+    Mesh._require_straight_sided_cells(degree)
 
     class boundaries_2D(Enum):
         Bottom = 11
@@ -411,7 +413,9 @@ def BoxInternalBoundary(
         If False, create a structured quadrilateral/hexahedral mesh.
         If True, create an unstructured triangular/tetrahedral mesh.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -483,6 +487,8 @@ def BoxInternalBoundary(
     - Applying different material properties in each layer
 
     """
+
+    Mesh._require_straight_sided_cells(degree)
 
     class boundaries_2D(Enum):
         Bottom = 11
@@ -1025,6 +1031,10 @@ def BoxInternalPatch(
         Distance from the patch at which the size reaches ``cellSize``
         (default ``8 * patch_cellSize``). Only used with
         ``patch_cellSize``.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
 
     Example
     -------
@@ -1035,6 +1045,8 @@ def BoxInternalPatch(
     ...                                    patch_name="FltA")
     >>> child = uw.utilities.fault_split.split_fault(mesh, "FltA")
     """
+
+    Mesh._require_straight_sided_cells(degree)
 
     class boundaries_3D(Enum):
         Bottom = 11
@@ -1295,9 +1307,9 @@ def StructuredQuadBox(
         Maximum corner coordinates. Defaults to ``(1.0, 1.0)`` for 2D
         or ``(1.0, 1.0, 1.0)`` for 3D. Supports UWQuantity objects.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
-        Use ``degree=1`` for bilinear/trilinear elements,
-        ``degree=2`` for biquadratic/triquadratic.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -1370,6 +1382,9 @@ def StructuredQuadBox(
     2-tuple creates a 2D mesh, 3-tuple creates a 3D mesh.
 
     """
+
+    Mesh._require_straight_sided_cells(degree)
+
     if minCoords == None:
         minCoords = len(elementRes) * (0.0,)
     if maxCoords == None:

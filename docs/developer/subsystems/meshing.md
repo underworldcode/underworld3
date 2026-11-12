@@ -33,6 +33,34 @@ The meshing subsystem handles computational mesh generation and manipulation for
 - QuadBox / HexBox            # Structured meshes
 ```
 
+## Mesh coordinates are degree 1
+
+Every mesh has straight-sided cells. The `degree` argument of `Mesh` and of
+each constructor in `uw.meshing` is the degree of the coordinate field, and
+only 1 is accepted: any other value raises a `ValueError` when the mesh is
+built, on every rank.
+
+Particle location, cell sizes and centroids, boundary normals, mesh motion
+and the multigrid hierarchy all read the coordinates as the vertices of
+affine cells. A degree-2 coordinate space did not curve the mesh either: the
+edge nodes sat on the straight chords, so the outer wall of an annulus at
+`cellSize=0.2` had edge nodes at $r = 0.995$ between vertices at $r = 1$.
+Curved cells would be a campaign across all of those subsystems, particles
+first. Each `uw.meshing` constructor refuses before it generates anything,
+and `mesh.degree` is read-only.
+
+The order of a field is set on the variable, not on the mesh:
+
+```python
+mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
+```
+
+`tests/test_0782_mesh_coordinates_are_degree_one.py` holds the refusal for
+every `uw.meshing` constructor that takes a `degree`, and
+`tests/parallel/test_0782_mesh_degree_refused_on_every_rank.py` holds it on
+every rank (#978).
+
 ## Empty MPI Partitions
 
 Use `mesh.isSimplex` for the mesh-wide cell family. PETSc's
