@@ -53,20 +53,14 @@ __all__ = [
 ]
 
 
-# Monotone-limiting mode for the REMAP transfer, read ONCE at import time
-# from the ``REMESH_MONOTONE`` environment variable. On a freshly-adapted
-# mesh the NEW boundary DOFs sit a sagitta OUTSIDE the OLD boundary cell
-# (arc vs chord), so the old P2/P3 field, FE-evaluated there, overshoots
-# wildly — in parallel the migrate lands those points in a containing cell
-# on another rank and the overshoot is delivered as a "valid" (un-flagged)
-# value. That is the parallel free-slip v.n "leak": a corrupt boundary T/V
-# remap, NOT a BC bug. The default ``"clamp"`` bounds each resampled value
-# to its k-NN source-nodal range; it is bit-identical to plain FE in smooth
-# regions and parallel-safe (rank-local) — the same limiter as the
-# SemiLagrangian trace-back fix. Set REMESH_MONOTONE to "off" (or "0",
-# "none", "false", "") to disable, or to any other mode accepted by
-# ``uw.function.global_evaluate(..., monotone=...)`` (e.g. "pick").
-REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "clamp")
+# Optional limiter on the REMAP transfer, read once at import time from the
+# ``REMESH_MONOTONE`` environment variable, for diagnostics. Off by default. A target
+# outside the old mesh, such as a wall node that slid along a convex boundary, takes
+# the location fallback in ``global_evaluate`` instead of the FE basis. "clamp" bounds
+# each value to its nearest source DOFs on this rank, so on a smooth field it adds
+# error and makes the result depend on the partition. Any mode
+# ``global_evaluate(..., monotone=...)`` accepts.
+REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "off")
 if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):
     REMESH_MONOTONE = False
 
@@ -116,7 +110,8 @@ class RemeshContext:
     """State passed to operator ``on_remesh`` hooks.
 
     Carries the geometric data an operator (typically a ``DuDt``) needs
-    to update its own history coherently — old/new coordinates, total
+    to update its own history coherently — old/new coordinates (model
+    coordinates, the DM's frame, also in a units model), total
     displacement across the mover sweep, ``dt``, and a scratch slot
     where an ALE-style operator stashes ``v_mesh`` for the next solve
     to consume. The framework has already handled the generic
@@ -314,11 +309,13 @@ def remesh_with_field_transfer(
     7. Marks REINIT vars stale (Phase 1: not strictly required because
        the only REINIT-stamped vars today are recomputed on first
        access; placeholder for future eager invalidation).
+    8. Marks the mesh vector stale, so kernels and integrals read the
+       values just written.
 
     Returns ``True`` if the mesh actually moved (``do_move`` reported
     geometry change); ``False`` if it short-circuited (caller can skip
     transfer too). Detection: compares ``mesh.X.coords`` before and
-    after ``do_move``.
+    after ``do_move``, and any rank that moved counts for all.
 
     Parallel: ``global_evaluate`` resolves off-rank target points
     correctly, so the transfer is partition-agnostic — the rank that
@@ -347,12 +344,18 @@ def remesh_with_field_transfer(
     # hooks fire. Drained into ctx.scratch after do_move returns.
     mesh._remesh_pending_scratch = {}
     try:
-        return _remesh_with_field_transfer_impl(
+        moved = _remesh_with_field_transfer_impl(
             mesh, do_move, dt=dt,
             extra_zero=extra_zero, verbose=verbose)
     finally:
         mesh._in_remesh_transfer = False
         mesh._remesh_pending_scratch = None
+    # Every mover commits here, mesh.deform among them, and a FAC patch built on
+    # the old geometry is stale (#1017). Not in _deform_mesh, which also runs for
+    # the trial moves inside ephemeral_coords.
+    if moved:
+        mesh._move_version = getattr(mesh, "_move_version", 0) + 1
+    return moved
 
 
 def _remesh_with_field_transfer_impl(
@@ -365,7 +368,9 @@ def _remesh_with_field_transfer_impl(
     reinit_vars = buckets["reinit"]
     managed_vars = buckets["managed"]
 
-    old_X = np.asarray(mesh.X.coords).copy()
+    # In the frame _deform_mesh writes: mesh.X.coords is physical in a units model,
+    # and the DM holds model coordinates.
+    old_X = np.asarray(mesh._coords).reshape(-1, mesh.cdim).copy()
     old_data = _snapshot_var_data(remap_vars)
     # Snapshot managed vars too — needed when a hook opts out of ALE
     # for this adapt and falls back to REMAP (see RemeshContext docs).
@@ -375,8 +380,12 @@ def _remesh_with_field_transfer_impl(
     # is untouched by _deform_mesh, so REMAP snapshots stay valid.
     do_move()
 
-    new_X = np.asarray(mesh.X.coords).copy()
-    if np.array_equal(new_X, old_X):
+    new_X = np.asarray(mesh._coords).reshape(-1, mesh.cdim).copy()
+    # Decided over all ranks: a rank whose own nodes stayed put (pinned, empty,
+    # or outside a local deformation) must still enter the collective transfer
+    # below with the ranks whose nodes moved.
+    moved = uw.mpi.comm.allreduce(not np.array_equal(new_X, old_X), op=uw.MPI.LOR)
+    if not moved:
         # Mover short-circuited (skip threshold, no metric change, ...).
         # No transfer to do, no hooks to fire — caller treats this as a
         # no-op adapt.
@@ -425,6 +434,14 @@ def _remesh_with_field_transfer_impl(
     if extra_zero:
         for var in extra_zero:
             _write_var_data(var, 0.0)
+
+    # _write_var_data writes through a plain view of var.data, which does not
+    # mark the mesh vector stale, and the remap's own evaluations have just
+    # refreshed that vector from the values before the write. Kernels and
+    # integrals read the mesh vector, so without this they see the old field
+    # on the moved nodes. Every rank reaches this line (the move test above is
+    # collective), which update_lvec needs because it is collective.
+    mesh._stale_lvec = True
 
     return True
 
@@ -479,12 +496,14 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """
     if not vars_:
         return
+    from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
+
     # Capture target DOF coords on the NEW mesh first (we are sitting
     # on new_X right now). var.coords reads from the live mesh state.
     new_dof_coords = {}
     for var in vars_:
         try:
-            new_dof_coords[var] = np.asarray(var.coords).copy()
+            new_dof_coords[var] = np.asarray(var.coords_nd).copy()
         except Exception:
             new_dof_coords[var] = None
 
@@ -498,12 +517,12 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     resampled = {}
     for var in vars_:
         target = new_dof_coords.get(var, None)
-        if target is None or target.size == 0:
+        # A rank with no DOFs of this variable still enters the collective below.
+        if target is None:
             continue
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
-            # REMESH_MONOTONE (module constant, see its comment) bounds the
-            # boundary-overshoot failure mode of the plain FE evaluation.
+            # REMESH_MONOTONE (module constant, see its comment) is off by default.
             try:
                 val = uw.function.global_evaluate(
                     var.sym, target, monotone=REMESH_MONOTONE)
@@ -517,8 +536,10 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
                     f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
-        resampled[var] = np.asarray(val).reshape(
-            np.asarray(var.data).shape)
+        # Laid out by _data_layout, which a flat reshape is not for a MATRIX or a
+        # symmetric tensor. var.data holds non-dimensional values, and the helper
+        # reduces a dimensional evaluation to them.
+        resampled[var] = _evaluated_in_storage_layout(var, val)
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():

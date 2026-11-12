@@ -17,6 +17,7 @@ and records what was retired.
 ```python
 stokes.constitutive_model = cm           # ViscoPlastic / ViscoElasticPlastic / TI-VEP
 cm.Parameters.yield_stress = tau_y       # finite -> plasticity active
+cm.Parameters.yield_stress_min = tau_r   # residual strength: REQUIRED if tau_y reads a field (-sympy.oo if positive by construction)
 stokes.consistent_jacobian = True        # Newton tangent (non-elastic DP; see table)
 stokes.solve()                           # cold: ONE Picard step automatically, then Newton
 stokes.solve(picard=3)                   # the recipe: a few Picard steps, then Newton
@@ -235,6 +236,11 @@ could.
   plastic branch wherever `m * eta_reg >= shear_viscosity_min`; the floor remains a
   safeguard for the creep branch. `yield_stress_min` (the POSITIVE residual strength in
   tension) is a statement of the yield law and stays.
+- **`yield_stress_min` must be stated when the yield stress reads a field** (a
+  Drucker-Prager `C + sin(phi) p`, a cohesion weakening with damage). At the zero
+  default a yield stress cut off in tension gives `eta_pl = 0`, a singular operator
+  (`DIVERGED_LINEAR_SOLVE`, #759); the model refuses it. State the residual strength
+  in stress units, or `-sympy.oo` for a yield stress positive by construction.
 
 - **`shear_viscosity_min`** (default `-oo` = off) is applied through
   `uw.maths.smooth_max`, but the default rounding scale is zero under
@@ -258,6 +264,7 @@ could.
 |---------|-------|-----|
 | `DIVERGED_LINEAR_SOLVE`, 0 iters, VEP | consistent Newton over the elastic block → indefinite | Picard (`consistent_jacobian=False`) |
 | `DIVERGED_LINEAR_SOLVE` at nl=0 with a viscosity floor set | δ→0 leaves the floor's `Max` corner exact | set `viscosity_min_rounding` |
+| `ValueError: the yield stress depends on a field ... residual strength` | a field-dependent yield stress with the zero default floor (#759) | set `yield_stress_min` to the residual strength, or `-sympy.oo` if the yield stress cannot reach zero |
 | Newton stalls with no divergence reason | admissible uselessness — steps accepted, residual flat | revert to best iterate, Picard block (`solve(picard=N)` or `"continuation"`); consider grid sequencing |
 | Converges but σ sits **below** τ_y | a fixed δ>0 soft-min under the default `"onset"` anchor is a WEAKER law (4.5 % at the yield point at δ = 0.1) | that is the modelling choice you made — a smaller δ, or `yield_mode="min"` for the exact surface (`yield_anchor="yield"` reaches τ_y but stiffens every unyielded cell and softens above yield) |
 | Linear (~20-iter) convergence | Picard tangent when you wanted Newton | `consistent_jacobian=True` on a non-elastic model (see "Confirm" above) |

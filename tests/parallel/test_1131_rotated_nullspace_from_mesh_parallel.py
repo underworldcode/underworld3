@@ -1,0 +1,234 @@
+"""A declared rotation mode gets one verdict on every rank (#906).
+
+Rotated free slip exempts a mode the mesh declares from the constraint test only while
+every rotated wall's vertices are equidistant from the rotation's centre. Each rank
+holds part of each wall, so the nearest and furthest distances are reduced over all
+ranks before the verdict. The deformed fixture moves the outer wall's vertices off
+their circle only near (1, 0), so at np >= 2 a rank can hold an untouched part of the
+wall; a rank-local verdict would keep the mode there and drop it elsewhere.
+
+- An annulus as built keeps its declared mode on every rank, and v.n is zero on every
+  constrained row.
+- With 1e-6 of radial deformation near (1, 0) on its outer wall, every rank drops the
+  mode, rank 0 warns, and the constraint test then rejects it on every rank.
+- An add_fault child keeps the declaration and the exemption on every rank. At np > 1
+  the add-on partition can move the level the fault is cut on into a new mesh, which
+  must inherit the declaration too: without that, a conforming sheet on a shell gave
+  v_rms 1.79e-3 at np 1 and 3.45e-3 at np 4 (hyperion, on b7030602).
+- The fixture has its power: at each rank count it was measured at, some rank holds no
+  deformed wall vertex. Measured on Linux (hyperion, 2026-11-06), the ranks untouched
+  were 1, 2, 2, 3, 4, 6 at np 2, 3, 4, 5, 6, 8. With the reduction made rank-local, the
+  ranks disagree and the solve hangs into the supervisor at np 2, 3, 4 and 8. If a
+  partitioner change makes the power assert fail, the fixture has lost its power, not
+  the library its fix: widen the patch's complement (raise the x > 0.9 cut).
+
+- Walls that mix a given and the facet-averaged normal (#968): an exact given normal
+  keeps the rotation removed, a tilted one rejects it, with the same verdict and the
+  same given-wall violation on every rank; the rotation is measured on the global
+  vector.
+
+The serial file, tests/test_1131_rotated_nullspace_from_mesh.py, carries the nodal
+measurements, which read local arrays.
+
+    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1131_rotated_nullspace_from_mesh_parallel.py
+"""
+import warnings
+
+import numpy as np
+import pytest
+import sympy
+from mpi4py import MPI
+from petsc4py import PETSc
+
+import underworld3 as uw
+
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
+              pytest.mark.timeout(300)]
+
+# the rank counts at which some rank was measured to hold no deformed wall vertex
+HOLDS_AT = (2, 3, 4, 5, 6, 8)
+
+
+def _annulus(deform):
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, qdegree=3)
+    touched = 0
+    if deform:
+        X = np.array(mesh.X.coords)
+        r = np.linalg.norm(X, axis=1)
+        patch = np.isclose(r, 1.0, atol=1.0e-9) & (X[:, 0] > 0.9)
+        X[patch] *= 1.0 + 1.0e-6
+        touched = int(np.count_nonzero(patch))
+        mesh.deform(X)
+    v = uw.discretisation.MeshVariable(f"V{int(deform)}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P{int(deform)}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    th = sympy.atan2(y, x)
+    stokes.bodyforce = (sympy.cos(3 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
+                        * sympy.Matrix([x / r, y / r]).T)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-6
+    return stokes, touched
+
+
+def _normal_velocity(info):
+    """The largest |v.n| on the constrained rows, over max |U|, over all ranks."""
+    Q, U, rows = info["Q"], info["U"], info["normal_rows"]
+    Uhat = U.duplicate()
+    Q.mult(U, Uhat)
+    rs, re = Uhat.getOwnershipRange()
+    local = [g - rs for g in rows if rs <= g < re]
+    vn = float(np.abs(Uhat.getArray()[local]).max()) if local else 0.0
+    Uhat.destroy()
+    return uw.mpi.comm.allreduce(vn, op=MPI.MAX) / U.norm(PETSc.NormType.NORM_INFINITY)
+
+
+def _solve(deform):
+    stokes, touched = _annulus(deform)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    info = stokes._rotated_freeslip_info
+    warned = any("is not a sphere about the rotation centre" in str(w.message) for w in record)
+    verdicts = uw.mpi.comm.allgather((tuple(info["declared_modes_exempt"]),
+                                      info["rotation_gauge"]["orthonormal"]))
+    return dict(warned=bool(uw.mpi.comm.allreduce(int(warned), op=MPI.MAX)),
+                verdicts=verdicts, vn=_normal_velocity(info),
+                untouched=uw.mpi.comm.allreduce(int(touched == 0)))
+
+
+def test_the_annulus_as_built_keeps_its_mode_on_every_rank():
+    out = _solve(deform=False)
+    assert not out["warned"] and set(out["verdicts"]) == {((True,), 1)}, out
+    assert out["vn"] < 1.0e-12, out
+
+
+def test_a_wall_deformed_on_some_ranks_drops_the_mode_on_every_rank():
+    out = _solve(deform=True)
+    assert out["warned"] and set(out["verdicts"]) == {((False,), 0)}, out
+    assert out["vn"] < 1.0e-12, out
+    if uw.mpi.size in HOLDS_AT:
+        assert out["untouched"] >= 1, ("no rank misses the deformation: the fixture has "
+                                       "lost its power at this rank count", out)
+
+
+# the rank counts at which the add-on partition was measured to move the level the
+# fault is cut on (hyperion, 2026-11-06: not at np 2 or 6)
+MOVES_AT = (3, 4, 5, 8)
+
+
+def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
+    from underworld3.utilities import addon_partition
+    calls = []
+    wrap = addon_partition._moved_wrap
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return wrap(*args, **kwargs)
+
+    monkeypatch.setattr(addon_partition, "_moved_wrap", spy)
+    base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1, refinement=1,
+                              qdegree=2)
+    child = base.add_fault([("Flt", np.array([[0.62, 0.10], [0.85, 0.30]]))])
+    moved = bool(uw.mpi.comm.allreduce(len(calls), op=MPI.MAX))
+    if uw.mpi.size in MOVES_AT:
+        assert moved, ("the partition no longer moves this level at this rank count: the "
+                       "case has lost its power, not the library its fix")
+    declared = uw.mpi.comm.allgather(None if child._nullspace_rotations is None
+                                     else len(child._nullspace_rotations))
+    v = uw.discretisation.MeshVariable("Vf", child, 2, degree=2)
+    p = uw.discretisation.MeshVariable("Pf", child, 1, degree=1)
+    stokes = uw.systems.Stokes(child, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y = child.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    stokes.bodyforce = (sympy.cos(3 * sympy.atan2(y, x)) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
+                        * sympy.Matrix([x / r, y / r]).T)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-6
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    verdicts = uw.mpi.comm.allgather((info["converged"], tuple(info["declared_modes_exempt"] or ()),
+                                      info["rotation_gauge"]["orthonormal"]))
+    assert set(declared) == {1}, (declared, moved)
+    assert set(verdicts) == {(True, (True,), 1)}, (verdicts, moved)
+
+
+def _slid_mixed(name, upper_normal):
+    """The serial file's mixed case: every vertex slid along its circle (so the
+    facet-averaged walls are faceted unevenly), Lower on the facet-averaged normal and
+    Upper on ``upper_normal``."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+    X = np.array(mesh.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    theta = np.arctan2(X[:, 1], X[:, 0])
+    theta = theta + 0.05 * np.sin(3.0 * theta)
+    r = r + 0.02 * np.sin(np.pi * (r - 0.5) / 0.5) * np.cos(2.0 * theta)
+    mesh.deform(np.column_stack([r * np.cos(theta), r * np.sin(theta)]))
+    v = uw.discretisation.MeshVariable(f"V{name}", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable(f"P{name}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y = mesh.X
+    rr = sympy.sqrt(x ** 2 + y ** 2)
+    th = sympy.atan2(y, x)
+    stokes.bodyforce = (sympy.cos(3 * th) * sympy.sin(sympy.pi * (rr - 0.5) / 0.5)
+                        * sympy.Matrix([x / rr, y / rr]).T)
+    stokes.add_rotated_freeslip_bc(0, "Lower")
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=upper_normal(x, y, rr))
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1.0e-6
+    return stokes
+
+
+def _rotation_content(stokes):
+    """|U . m| / (|U| |m|) for the rotation m, on the composite global vector: no
+    ghost copies, so the same on every rank."""
+    from underworld3.utilities import rotated_bc
+
+    U = stokes._rotated_freeslip_info["U"]
+    (m,) = rotated_bc._rigid_rotation_modes(stokes)
+    content = abs(U.dot(m)) / (U.norm() * m.norm())
+    stokes.dm.restoreGlobalVec(m)
+    return content
+
+
+def test_mixed_normals_remove_the_rotation_on_every_rank():
+    # #968: the exemption covers the facet-averaged wall, the given wall is tested
+    # against its own normal, and every rank reaches the same verdict
+    stokes = _slid_mixed("mx", lambda x, y, r: sympy.Matrix([[x / r, y / r]]))
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    mode = info["rotation_gauge"]["modes"][0]
+    verdicts = uw.mpi.comm.allgather((tuple(info["declared_modes_exempt"]),
+                                      info["rotation_gauge"]["orthonormal"],
+                                      mode["given_viol"]))
+    assert len(set(verdicts)) == 1 and verdicts[0][:2] == ((True,), 1), verdicts
+    assert verdicts[0][2] < 1.0e-12, verdicts
+    assert _rotation_content(stokes) < 1.0e-10
+    assert _normal_velocity(info) < 1.0e-12
+
+
+def test_a_tilted_given_normal_rejects_the_rotation_on_every_rank():
+    tilt = lambda x, y, r: (sympy.Matrix([[x / r + 0.1, y / r]])
+                            / sympy.sqrt((x / r + 0.1) ** 2 + (y / r) ** 2))
+    stokes = _slid_mixed("mt", tilt)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        stokes.solve()
+    info = stokes._rotated_freeslip_info
+    verdicts = uw.mpi.comm.allgather((info["rotation_gauge"]["orthonormal"],
+                                      info["rotation_gauge"]["modes"][0]["rejected_by"]))
+    assert set(verdicts) == {(0, "given_wall")}, verdicts
+    warned = any("not tangent to" in str(w.message) for w in record)
+    assert uw.mpi.comm.allreduce(int(warned), op=MPI.MAX) == 1
+    assert _normal_velocity(info) < 1.0e-12

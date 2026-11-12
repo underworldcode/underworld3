@@ -220,7 +220,12 @@ prerequisite for any of the above — GAMG holds comfortably at current scale.
   (#497, fixed): essential DOFs are absent from the global vector. The tell
   is the divergence theorem failing on a field diagnostic.
 - Never inject interface entries into the `ptap`-refreshed rotated operator —
-  add them to a copy; re-attach the null space on each rebuilt copy.
+  add them to a copy. Make the copy once and refresh it in place (`MatCopy` and
+  `MatAXPY` with `SUBSET_NONZERO_PATTERN`): a new Mat at every Newton iterate
+  leaves the velocity multigrid smoothing with the first iterate's operator,
+  because PCMG keeps its finest smoother's operator unless it is the PC's own
+  (#894). The direct-LU path is the exception: its pressure pin (`zeroRows`)
+  removes the pinned row's entries, so it takes a fresh copy each iterate.
 - The pairing comes from the clone map only; coordinate matching is
   impossible-by-construction at zero distance. Protect the property that the
   two trace spaces are identical with exactly paired DOFs — losing it means

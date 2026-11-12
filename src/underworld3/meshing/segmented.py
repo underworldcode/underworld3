@@ -17,6 +17,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -54,7 +55,9 @@ def SegmentedSphericalSurface2D(
     numSegments : int, default=6
         Number of longitudinal segments (orange-peel divisions).
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -93,6 +96,9 @@ def SegmentedSphericalSurface2D(
     latitude representation. Periodicity is set up to handle the :math:`\pm\pi`
     longitude wrap-around.
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     num_segments = numSegments
     meshRes = cellSize
 
@@ -267,7 +273,9 @@ def SegmentedSphericalShell(
     numSegments : int, default=6
         Number of longitudinal segments.
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -321,6 +329,9 @@ def SegmentedSphericalShell(
     - ``unit_e_1``: colatitude direction :math:`(\theta)`
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Lower = 20
         LowerPlus = 21
@@ -535,12 +546,14 @@ def SegmentedSphericalShell(
         gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
         gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
-        gmsh.model.addPhysicalGroup(3, wedges, 30)
-        gmsh.model.setPhysicalName(3, 30, "Elements")
+        # 99999 as the other generators: a volume tagged with a boundary's value
+        # (Upper, 30) puts interior points in that boundary's label (#946)
+        gmsh.model.addPhysicalGroup(3, wedges, 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         gmsh.model.remove_entities([(0, centre)])
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
 
         write_gmsh(uw_filename)
         gmsh.finalize()
@@ -720,7 +733,9 @@ def SegmentedSphericalBall(
     numSegments : int, default=6
         Number of longitudinal segments.
     degree : int, default=1
-        Polynomial degree of finite elements.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -774,6 +789,9 @@ def SegmentedSphericalBall(
     - ``unit_e_1``: colatitude direction :math:`(\theta)`
     - ``unit_e_2``: longitude direction :math:`(\phi)`
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Upper = 30
         UpperPlus = 31
@@ -958,12 +976,14 @@ def SegmentedSphericalBall(
         gmsh.model.addPhysicalGroup(2, wedge_slices, boundaries.Slices.value)
         gmsh.model.setPhysicalName(2, boundaries.Slices.value, boundaries.Slices.name)
 
-        gmsh.model.addPhysicalGroup(3, wedges, 30)
-        gmsh.model.setPhysicalName(3, 30, "Elements")
+        # 99999 as the other generators: a volume tagged with a boundary's value
+        # (Upper, 30) puts interior points in that boundary's label (#946)
+        gmsh.model.addPhysicalGroup(3, wedges, 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         # gmsh.model.remove_entities([(0, centre)])
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
 
         write_gmsh(uw_filename)
         gmsh.finalize()

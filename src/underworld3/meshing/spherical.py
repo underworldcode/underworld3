@@ -17,6 +17,7 @@ import math
 
 import underworld3 as uw
 from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
+from underworld3.meshing._sphere_surface import _generate_volume_on_convex_spheres
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -58,7 +59,9 @@ def SphericalShell(
     cellSize : float, default=0.1
         Target mesh element size.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -130,6 +133,9 @@ def SphericalShell(
         )
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Lower = 11
         Upper = 12
@@ -211,7 +217,7 @@ def SphericalShell(
 
         gmsh.model.occ.synchronize()
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -324,7 +330,9 @@ def SphericalManifold(
     cellSize : float, default=0.1
         Target mesh element size (chord length).
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
@@ -377,6 +385,8 @@ def SphericalManifold(
         >>> phi   = sphere.X.spherical.phi      # longitude
     """
 
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
+
     class boundaries(Enum):
         Surface = 12  # the manifold itself (closed sphere has no boundary curve)
 
@@ -427,10 +437,16 @@ def SphericalManifold(
     # h5 round-trip, which currently loses the explicit coordinate
     # dimension), then hand the DM to Mesh() which accepts either a
     # filename or a DMPlex object.
+    # The option is global: left in place it would load every LATER gmsh
+    # mesh in this process with three coordinates (a 2-D box after a sphere
+    # failed on a 3:2 vector-length mismatch), so it is cleared once consumed.
     PETSc.Options().setValue("dm_plex_gmsh_spacedim", 3)
-    surface_dm = PETSc.DMPlex().createFromFile(
-        uw_filename, interpolate=True, comm=PETSc.COMM_WORLD,
-    )
+    try:
+        surface_dm = PETSc.DMPlex().createFromFile(
+            uw_filename, interpolate=True, comm=PETSc.COMM_WORLD,
+        )
+    finally:
+        PETSc.Options().delValue("dm_plex_gmsh_spacedim")
     surface_dm.setName("uw_mesh")
     surface_dm.markBoundaryFaces("All_Boundaries", 1001)
     assert surface_dm.getCoordinateDim() == 3, (
@@ -526,8 +542,10 @@ def SphericalShellInternalBoundary(
         The inner radius of the spherical shell. Default is 0.547.
     cellSize : float, optional
         The target size for the mesh elements. Default is 0.1.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -561,6 +579,8 @@ def SphericalShellInternalBoundary(
     ...     cellSize=0.05,
     ... )
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Centre = 1
@@ -633,6 +653,10 @@ def SphericalShellInternalBoundary(
             bb = gmsh.model.get_bounding_box(dimtag[0], dimtag[1])
             return np.sqrt(bb[3]**2 + bb[4]**2 + bb[5]**2) / np.sqrt(3.0)
 
+        # TODO(BUG): the radii are told apart to within half a cell size, so a cell
+        # size of twice the gap between two radii or more matches both (radii 0.75
+        # and 1.0 at cell size 0.5 raise below). The tolerance belongs to the radii,
+        # not the cell size.
         volumes = gmsh.model.getEntities(3)
         shell_vols = [
             vol
@@ -702,7 +726,7 @@ def SphericalShellInternalBoundary(
 
         gmsh.model.addPhysicalGroup(shell_vol[0], [shell_vol[1]], 99999, "Elements")
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -720,6 +744,8 @@ def SphericalShellInternalBoundary(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
+    # TODO(BUG): the Internal surface is not snapped back onto radiusInternal, so
+    # after refinement it stays faceted while its normal is the analytic radial one.
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -851,8 +877,10 @@ def SegmentofSphere(
         The angular extent in latitude (degrees). Default is 90.0.
     cellSize : float, optional
         The target size for the mesh elements. Default is 0.1.
-    degree : int, optional
-        The polynomial degree of the finite elements. Default is 1.
+    degree : int, default=1
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, optional
         The quadrature degree for integration. Default is 2.
     filename : str, optional
@@ -882,6 +910,8 @@ def SegmentofSphere(
     ...     cellSize=0.05,
     ... )
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 11
@@ -1015,7 +1045,7 @@ def SegmentofSphere(
 
         gmsh.model.occ.synchronize()
 
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres(centre=centroid)
         write_gmsh(uw_filename)
         gmsh.finalize()
 
@@ -1025,6 +1055,9 @@ def SegmentofSphere(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
+    # TODO(BUG): the callback snaps the walls onto spheres about the origin, not
+    # about ``centroid``; with a centroid off the origin, refinement moves the wall
+    # vertices off their sphere (and the hierarchy holds some back, #946).
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -1111,7 +1144,9 @@ def CubedSphere(
         Number of elements along each edge of each cube face. Total
         elements approximately ``6 * numElements^2`` per radial layer.
     degree : int, default=1
-        Polynomial degree of finite element basis functions.
+        Degree of the mesh coordinates. Only 1, straight-sided cells, is
+        supported, and any other value raises (#978). A variable's own
+        ``degree`` sets the order of its field.
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     simplex : bool, default=False
@@ -1165,6 +1200,8 @@ def CubedSphere(
     - ``unit_e_2``: longitude direction :math:`(\phi)`
 
     """
+
+    uw.discretisation.Mesh._require_straight_sided_cells(degree)
 
     class boundaries(Enum):
         Lower = 1
@@ -1272,6 +1309,9 @@ def CubedSphere(
         for _, line in gmsh.model.get_entities(1):
             gmsh.model.mesh.setTransfiniteCurve(line, numNodes=numElements + 1)
 
+        # TODO(BUG): a crease on a curve between two wall patches is not reached by
+        # the surface-by-surface flips below, so refinement holds back vertices off the
+        # wall (simplex, numElements=3: 3 at refinement 1, 47 at refinement 2; #949).
         for _, surface in gmsh.model.get_entities(2):
             gmsh.model.mesh.setTransfiniteSurface(surface)
             if not simplex:
@@ -1284,7 +1324,7 @@ def CubedSphere(
                 gmsh.model.mesh.set_recombine(3, volume)
 
         # Generate Mesh
-        gmsh.model.mesh.generate(3)
+        _generate_volume_on_convex_spheres()
         write_gmsh(uw_filename)
         gmsh.finalize()
 

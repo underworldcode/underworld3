@@ -1,5 +1,11 @@
 # Fault-patch multigrid: the measured skeleton (2026-08, #629)
 
+**Status:** implemented on `development` (#629: `set_custom_fmg(..., fac_zone=...)`,
+`FaultNetwork.build(width=...)`, `place_thin_volume(mesher="ladder")`). The user-facing
+rulings are in [`guides/fault-multigrid.md`](../guides/fault-multigrid.md); the
+split-level hierarchy that extends this design merged to `development` on 2026-10-31
+(#889, #890) and is recorded in the journal.
+
 The solver architecture for fault-system Stokes problems, settled by
 measurement on a 2-D analysis rig and ready to carry into 3-D. One
 sentence: **ordinary balanced multigrid solves the smooth problem —
@@ -196,6 +202,8 @@ no-interior-vertex refusal — a half-cell nick).
    option.** On the near-singular split-contact patch the LU is what
    buys contrast constancy. On an unsplit painted band the two are
    indistinguishable at rig scale.
+   *Superseded 2026-09-03 (891c9bb0, #670): LU with the nonzero shift is
+   the default block solve, and ILU there is a regression (#892).*
 4. **Patch keying.** Split meshes: coincident fine pairs — the split's
    plus/minus nodes at bit-identical coordinates. (Not transfer identity
    rows onto coarse nodes: a cut inserts *new* vertices at edge
@@ -269,10 +277,19 @@ to permit it.)
    update the star forest consistently (the known np>=3 line-cut issue;
    the independent-pass design is the template). Along-strike block
    cuts at seams are measured free (the k-ladder).
+   > [2026-11-03] Not for a zone-keyed patch: cut at rank boundaries (a TI
+   > band beside a split fault), its blocks took the velocity solve from 4
+   > iterations serially to 118 at np 2 and past 200 at np 4. The structural
+   > patch alone, cut the same way, took 67 iterations serially and 445 at
+   > np 16 (row 5, n_rungs 320). Both are now built from every rank's rows
+   > (#925, `test_1139`).
 2. **PCASM is rank-local.** Blocks become per-rank lists with local
    indices; faultless ranks carry `nsd = 0`, and every IS-building path
    must survive empty sets (the empty-stratum `getIndices()` SEGV
    family, #589).
+   > [2026-11-03] The finest level's blocks, a keyed zone's or the structural
+   > patch's, are per-rank lists of GLOBAL rows: each block goes whole to the
+   > rank owning most of its rows and may hold other ranks' rows (#925).
 3. **Pair detection must go collective or be replaced by zone keying.**
    Rank-local coordinate matching misses pairs that straddle a boundary
    and can false-match ghosts; the zone mask is rank-local by nature and

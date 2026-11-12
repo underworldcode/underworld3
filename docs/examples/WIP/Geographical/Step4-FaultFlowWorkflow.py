@@ -271,7 +271,6 @@ stokes.petsc_options["ksp_monitor"] = None
 
 stokes.petsc_options["snes_type"] = "newtonls"
 stokes.petsc_options["ksp_type"] = "fgmres"
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
 
 # %% [markdown]

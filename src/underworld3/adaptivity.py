@@ -31,7 +31,7 @@ Notes
 -----
 **Metric Tensor Mathematics**
 
-For isotropic mesh adaptation, MMG/PETSc uses a metric tensor:
+For isotropic mesh adaptation, the metric routes take a metric tensor:
 
 .. math::
 
@@ -53,8 +53,10 @@ adaptive meshing interpolates only one boundary label at a time. The
 stacking approach combines multiple gmsh-generated boundary labels into
 a single composite label for adaptation, then unstacks them afterward.
 
-This module requires PETSc to be compiled with adaptive mesh support
-(pragmatic, mmg, or parmmg).
+The metric builders work on any PETSc. Only :func:`mesh_adapt_meshVar`, which
+remeshes through DMAdaptMetric, needs a PETSc built with a metric remesher (mmg,
+and parmmg for parallel 3-D): an external opt-in that conda-forge's PETSc does not
+have. ``mesh.adapt`` and node redistribution change resolution on any build.
 
 See Also
 --------
@@ -93,7 +95,7 @@ def create_metric(
     r"""Create adaptation metric from target edge lengths.
 
     This is the core utility that converts target edge lengths (h-field) to
-    the metric tensor format required by MMG/PETSc mesh adaptation.
+    the metric tensor format ``mesh.adapt`` and ``mesh.remesh`` take.
 
     Parameters
     ----------
@@ -108,13 +110,13 @@ def create_metric(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.remesh().
+        Scalar MeshVariable containing metric values ready for mesh.adapt().
 
     Notes
     -----
     **Metric Tensor Mathematics**
 
-    For isotropic mesh adaptation, MMG/PETSc uses a metric tensor:
+    For isotropic mesh adaptation, the metric routes take a metric tensor:
 
     .. math::
 
@@ -132,7 +134,7 @@ def create_metric(
     >>> # Create metric from h-field computed elsewhere
     >>> h_field = compute_error_based_h(solution)  # User function
     >>> metric = uw.adaptivity.create_metric(mesh, h_field)
-    >>> mesh.remesh(metric)
+    >>> child = mesh.adapt(metric, max_levels=2)
 
     See Also
     --------
@@ -197,7 +199,7 @@ def metric_from_gradient(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.remesh().
+        Scalar MeshVariable containing metric values ready for mesh.adapt().
 
     Notes
     -----
@@ -243,14 +245,14 @@ def metric_from_gradient(
     >>> metric = uw.adaptivity.metric_from_gradient(
     ...     T, h_min=0.005, h_max=0.05, profile="smoothstep"
     ... )
-    >>> mesh.remesh(metric)
+    >>> child = mesh.adapt(metric, max_levels=2)
 
     >>> # Refine based on strain rate
     >>> # First compute strain rate magnitude as scalar field
     >>> SR = uw.discretisation.MeshVariable("SR", mesh, 1)
     >>> # ... populate SR with strain rate second invariant ...
     >>> metric = uw.adaptivity.metric_from_gradient(SR, h_min=0.01, h_max=0.1)
-    >>> mesh.remesh(metric)
+    >>> child = mesh.adapt(metric, max_levels=2)
 
     See Also
     --------
@@ -359,7 +361,7 @@ def metric_from_field(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.remesh().
+        Scalar MeshVariable containing metric values ready for mesh.adapt().
 
     Notes
     -----
@@ -380,7 +382,7 @@ def metric_from_field(
     >>> # Refine based on error estimate
     >>> error = compute_error_estimate(solution)  # User function
     >>> metric = uw.adaptivity.metric_from_field(error, h_min=0.005, h_max=0.05)
-    >>> mesh.remesh(metric)
+    >>> child = mesh.adapt(metric, max_levels=2)
 
     >>> # Refine at phase boundaries (phi transitions from 0 to 1)
     >>> # Want fine mesh where phi is near 0.5
@@ -596,6 +598,15 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
 
 
 def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
+    """Remesh ``mesh`` through PETSc's DMAdaptMetric from the isotropic metric in
+    ``meshVarH``; return the new DM's mesh.
+
+    An external opt-in: it needs a PETSc built with mmg (serial, 2-D and 3-D) or
+    parmmg (parallel, 3-D only), which conda-forge's PETSc does not have, and it
+    raises and says so without one. ``mesh.adapt`` and
+    :func:`underworld3.meshing.node_redistribution` work on any build.
+    """
+    from underworld3.discretisation.discretisation_mesh import _require_metric_remesher
     # Create / use a field on the old mesh to hold the metric
     # Perhaps that should be a user-definition
 
@@ -610,7 +621,11 @@ def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=Fa
         print(f"{uw.mpi.rank} dm adaptation ... begin", flush=True)
 
     _dm_stack_bcs(mesh.dm, boundaries, "CombinedBoundaries")
-    dm_a = mesh.dm.adaptMetric(metric_vec, bdLabel="CombinedBoundaries")
+    try:
+        dm_a = mesh.dm.adaptMetric(metric_vec, bdLabel="CombinedBoundaries")
+    except PETSc.Error as err:
+        _require_metric_remesher("adaptivity.mesh_adapt_meshVar", err)
+        raise
 
     icoord_vec = dm_a.getCoordinates()
 
