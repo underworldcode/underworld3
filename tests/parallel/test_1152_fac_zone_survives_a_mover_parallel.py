@@ -115,15 +115,24 @@ def _pc_failed(pc):
 def _ksp_lines(ksp, name, lines):
     """One line for ``ksp`` and for each solver under it: how it ended, its iteration
     count, why its preconditioner failed, and the norm of its operator (NaN where the
-    assembly left one). They tell a failed factorisation (``DIVERGED_PC_FAILED`` with
-    a zero pivot on one block and ``SUBPC_ERROR`` above it) from a NaN in the operator
-    (a NaN norm, ``DIVERGED_NANORINF``) from a sub-solve that diverged by itself (its
-    own reason, no failed preconditioner)."""
+    assembly left one) with its count of entries that are not finite. They tell a
+    failed factorisation (``DIVERGED_PC_FAILED`` with a zero pivot on one block and
+    ``SUBPC_ERROR`` above it) from a NaN in the operator (a NaN norm,
+    ``DIVERGED_NANORINF``) from a sub-solve that diverged by itself (its own reason,
+    no failed preconditioner).
+
+    Nothing here is collective: a rank whose preconditioner never set up takes fewer
+    lines than the others, and a collective norm would then hang. A line carries this
+    rank's rows of the operator, and :func:`_print_record` adds the ranks up."""
     pc, A = ksp.getPC(), ksp.getOperators()[0]
+    rows = None
+    if "aij" in A.getType():
+        values = A.getValuesCSR()[2]
+        rows = (float(np.sum(values ** 2)), int(np.sum(~np.isfinite(values))))
     lines.append((name, f"{ksp.getType()}/{pc.getType()} "
                         f"reason={ksp_reason_string(ksp.getConvergedReason())} "
-                        f"its={ksp.getIterationNumber()} pc_failed={_pc_failed(pc)} "
-                        f"operator_norm={A.norm() if 'aij' in A.getType() else None}"))
+                        f"its={ksp.getIterationNumber()} pc_failed={_pc_failed(pc)}",
+                  rows))
     _pc_lines(pc, name, lines)
 
 
@@ -141,17 +150,18 @@ def _pc_lines(pc, name, lines):
             for i in (0, 1):
                 member = pc.getCompositePC(i)
                 lines.append((f"{name}.pc{i}",
-                              f"{member.getType()} pc_failed={_pc_failed(member)}"))
+                              f"{member.getType()} pc_failed={_pc_failed(member)}", None))
                 _pc_lines(member, f"{name}.pc{i}", lines)
         elif kind == "asm":
             # this rank's blocks; the ranks' lines are set side by side when printed
             blocks = pc.getASMSubKSP()
             lines.append((f"{name}.blocks", f"{len(blocks)} "
                           f"reasons={sorted({ksp_reason_string(b.getConvergedReason()) for b in blocks})} "
-                          f"pc_failed={sorted({_pc_failed(b.getPC()) for b in blocks})}"))
+                          f"pc_failed={sorted({_pc_failed(b.getPC()) for b in blocks})}",
+                          None))
     except PETSc.Error as err:
         # a preconditioner that never set up has no members to ask
-        lines.append((f"{name}.{kind}", f"not set up (PETSc error {err.ierr})"))
+        lines.append((f"{name}.{kind}", f"not set up (PETSc error {err.ierr})", None))
 
 
 def _print_record(tag, k, errors, told, solvers, split):
@@ -163,8 +173,8 @@ def _print_record(tag, k, errors, told, solvers, split):
             return ", ".join(f"{key}={item}" for key, item in value.items())
         return str(value)
 
-    lines = [("errors", flat({key: float(value) for key, value in errors.items()}))]
-    lines += [(key, flat(value)) for key, value in told.items()]
+    lines = [("errors", flat({key: float(value) for key, value in errors.items()}), None)]
+    lines += [(key, flat(value), None) for key, value in told.items()]
     for which, s in solvers.items():
         if split:
             cache = getattr(s, "_rotated_linear_cache", None)
@@ -172,15 +182,26 @@ def _print_record(tag, k, errors, told, solvers, split):
         else:
             ksp = s.snes.getKSP()
         if ksp is None:
-            lines.append((f"{which}.ksp", "no linear solver kept"))
+            lines.append((f"{which}.ksp", "no linear solver kept", None))
         else:
             _ksp_lines(ksp, f"{which}.ksp", lines)
-    gathered = uw.mpi.comm.allgather(lines)
+    # the ranks' lines are matched by key: a rank may hold fewer
+    gathered = [{key: (text, rows) for key, text, rows in g}
+                for g in uw.mpi.comm.allgather(lines)]
+    keys = list(dict.fromkeys(key for g in gathered for key in g))
     uw.pprint(f"test_1152[{tag}] move {k}: the record of a failed move", flush=True)
-    for i, (key, text) in enumerate(gathered[0]):
-        others = sorted({g[i][1] for g in gathered if i < len(g)} - {text})
-        uw.pprint(f"  {key}: {text}" + (f" | on other ranks: {others}" if others else ""),
-                  flush=True)
+    for key in keys:
+        held = [g[key] for g in gathered if key in g]
+        text = held[0][0]
+        rows = [r for _t, r in held if r is not None]
+        if rows:
+            text += (f" operator_norm={np.sqrt(sum(r[0] for r in rows))}"
+                     f" not_finite={sum(r[1] for r in rows)}")
+        others = sorted({t for t, _r in held} - {held[0][0]})
+        absent = len(gathered) - len(held)
+        uw.pprint(f"  {key}: {text}"
+                  + (f" | on other ranks: {others}" if others else "")
+                  + (f" | absent on {absent} rank(s)" if absent else ""), flush=True)
 
 
 def _norm(a):
