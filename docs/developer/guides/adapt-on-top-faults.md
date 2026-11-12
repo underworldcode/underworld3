@@ -253,7 +253,10 @@ spaces contain the discontinuity and the velocity iterations FALL with refinemen
 (6, 5, 4 at k = 2, 3, 4 against 13, 18, 23 with the welded levels; slip identical).
 This works in serial and in parallel (the pairing rides every redistribution as
 labels) and for the extruded thick twin. `split_levels=False` keeps the welded
-tail. Governing doc:
+tail. A later `add_fault` on the result adds a fault and keeps the earlier ones, on
+the mesh and on those levels. Each split fault needs a law in the solver
+(`add_fault_bc`) or a condition on each side: a solve that finds neither warns and
+leaves the fault a traction-free crack. Governing doc:
 [`subsystems/fault-split-multigrid.md`](../subsystems/fault-split-multigrid.md).
 
 ---

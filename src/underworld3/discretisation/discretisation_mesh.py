@@ -8947,20 +8947,31 @@ class Mesh(Stateful, uw_object):
         lines = [numpy.array([segs[0][0]] + [b for _a, b in segs])
                  for segs in _fault_collect_polylines(surface)]
 
-        cut_dm, info = _cut(self.dm, lines, snap_frac=snap_frac,
+        # the faults already split into this mesh keep their record through
+        # the cut, or the cut is refused (fault_split.add_fault, #1099)
+        from underworld3.utilities.fault_split import (
+            _carried_fault_records, _hand_on_fault_records,
+            _track_fault_records)
+        dm, tracked = _track_fault_records(self)
+        cut_dm, info = _cut(dm, lines, snap_frac=snap_frac,
                             label=name, label_value=value,
                             snap_quality=snap_quality, snap_dist=snap_dist)
         if repair:
             cut_dm, info = self._repair_cut(cut_dm, lines, info, repair_reach,
                                             verbose)
+        earlier = (None if tracked is None
+                   else _carried_fault_records(cut_dm, tracked, [name]))
         if verbose:
             uw.pprint(f"[surface {name!r}] split {info['n_split']} edges, "
                       f"{info['n_on_surface']} vertices on the surface; "
                       f"{info['n_cut_edges']} surface facets, "
                       f"min angle {info['min_angle']:.2f} deg")
 
-        return self._adopt_cut_child(cut_dm, boundaries, info,
-                                     mg_coarsening_ratio, verbose)
+        child = self._adopt_cut_child(cut_dm, boundaries, info,
+                                      mg_coarsening_ratio, verbose)
+        if earlier is not None:
+            _hand_on_fault_records(child, self, *earlier)
+        return child
 
     def add_conforming_sheet(self, points, triangles, name, *,
                              clearance=0.6, setback=0.0, size=None,
@@ -9042,12 +9053,23 @@ class Mesh(Stateful, uw_object):
                 self, mark_sheets([(points, triangles)], clearance), layers=2,
                 verbose=verbose)
         boundaries = host._boundaries_with(name)
+        # the faults already split into this mesh keep their record through
+        # the placement, or it is refused (fault_split.add_fault, #1099)
+        from underworld3.utilities.fault_split import (
+            _carried_fault_records, _hand_on_fault_records,
+            _track_fault_records)
+        dm, tracked = _track_fault_records(host)
         cut_dm, info = place_sheet(
-            host.dm, points, triangles, label=name,
+            dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
-            verbose=verbose, setback=setback, size=size)
+            verbose=verbose, setback=setback, size=size,
+            split_faults_are_interior=tracked is not None)
+        earlier = (None if tracked is None
+                   else _carried_fault_records(cut_dm, tracked, [name]))
         child = host._adopt_cut_child(cut_dm, boundaries, info,
                                       mg_coarsening_ratio, verbose)
+        if earlier is not None:
+            _hand_on_fault_records(child, host, *earlier)
         # a placed sheet is a fault surface to be: every later partition
         # keeps it whole (addon_partition.embedded_surface_names)
         child._embedded_surfaces = (
@@ -9095,6 +9117,14 @@ class Mesh(Stateful, uw_object):
         add-on is partitioned once for the faults before the cut
         (``utilities.addon_partition``), so nothing moves afterwards.
 
+        A mesh that already carries split faults keeps them: the result
+        holds the earlier faults with their pairing beside the new ones,
+        and its add-on levels are cut for the new faults only. A new fault
+        must keep clear of the earlier ones. One that crosses or touches an
+        earlier fault is refused, and a 3-D sheet needs the clearance from
+        an earlier fault that it needs from a domain wall. A solve warns
+        about a split fault it gives no law and leaves free on a side.
+
         ``cut=False`` labels the mesh edges already on each polyline (the
         embedded spines of a placed band); ``across_seams=True`` then
         splits a spine THROUGH the partition seams it crosses (the band
@@ -9122,6 +9152,7 @@ class Mesh(Stateful, uw_object):
         ``docs/developer/design/FAULT_MULTIGRID_HIERARCHIES.md``.
         """
         from underworld3.utilities.fault_split import add_fault
+        earlier = {spec[1] for spec in getattr(self, "_fault_specs", None) or []}
         child = add_fault(self, faults, verbose=verbose, cut=cut,
                           exclude=exclude, blind=blind,
                           across_seams=across_seams, **place_kwargs)
@@ -9143,8 +9174,11 @@ class Mesh(Stateful, uw_object):
             tail = list(tail)
             idx = addon_level_indices(tail)
             if idx:
+                # only the faults this call added: a level already carries the
+                # earlier ones, and keeps them through the replay (#1099)
                 split = split_tail_levels([tail[k] for k in idx],
-                                          child._fault_specs,
+                                          [spec for spec in child._fault_specs
+                                           if spec[1] not in earlier],
                                           verbose=verbose)
                 for k, m in zip(idx, split):
                     tail[k] = m

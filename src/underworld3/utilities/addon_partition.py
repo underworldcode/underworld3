@@ -748,6 +748,22 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
             "addon_partition: the whole add-on would sit on one rank (its "
             "fault regions cover it); run on fewer ranks or refine the base.")
 
+    # A fault split through a partition seam (fault_split, across_seams)
+    # keeps a normal per seam node, by point number. The move renumbers the
+    # points and carries the pairing only: refuse, collectively, rather than
+    # hand on normals that name other points. A second add_fault reaches here
+    # with the earlier faults' record (#1099).
+    through_seams = sorted(set().union(*comm.allgather(
+        {name for lev in levels
+         for name, by_point in (getattr(lev, "_fault_seam_normals", None)
+                                or {}).items() if by_point})))
+    if through_seams:
+        raise RuntimeError(
+            f"addon_partition: the fault(s) {through_seams} were split "
+            f"through the partition seams (across_seams=True), and their seam "
+            f"normals cannot follow the repartition another fault needs. Give "
+            f"the whole network to one add_fault call.")
+
     # apply the one assignment to every level, provenance riding along
     moved = []
     for l, lev in enumerate(levels):

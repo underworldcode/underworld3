@@ -1731,7 +1731,11 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
         mesh = partition_addon(mesh, mark_polylines([poly for _n, poly in segments]),
                                layers=1, verbose=verbose)
 
-    dm = mesh.dm
+    # The faults already split into the mesh are recorded by point number, and
+    # the cut renumbers: their points are marked here and read back after it
+    # (#1099: without this the child listed the new faults only, and an earlier
+    # fault was left split with nothing tying its sides).
+    dm, tracked = _track_fault_records(mesh)
     if cut:
         for name, poly in segments:
             # EVERY control point gets a vertex, not just the tips: an
@@ -1748,6 +1752,10 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
         dm = _label_embedded_edges(dm, segments, values, exclude=exclude,
                                    verbose=verbose, blind=blind,
                                    across_seams=across_seams)
+    earlier_pairs, earlier_normals = {}, {}
+    if tracked is not None:
+        earlier_pairs, earlier_normals = _carried_fault_records(
+            dm, tracked, [name for name, _poly in segments])
 
     # The split needs every chain rank-interior. The add-on partition above
     # made it so (and made it so on every add-on level), so a chain touching
@@ -1777,6 +1785,7 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     cut.regions = mesh.regions
     cut._parent_mesh_version = mesh._mesh_version
     cut._inherit_rotation_modes(mesh)
+    _hand_on_fault_records(cut, mesh, earlier_pairs, earlier_normals)
     mesh._registered_children.add(cut)
     from underworld3.utilities.addon_partition import inherit_provenance
     inherit_provenance(cut, mesh)
@@ -1808,17 +1817,23 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     # (add_fault_bc(..., normal="trace")) and for rendering overlays;
     # Surface OBJECTS ride along too, so normal="surface" spells the
     # same thing in 2-D as it does for a 3-D FaultSurface
-    out._fault_traces = {name: np.array(poly, dtype=float)
-                         for name, poly in segments}
-    # the recipe, for replaying the same faults on the add-on multigrid
-    # levels (utilities.fault_mg.split_tail_levels)
-    out._fault_specs = [("line", name, np.array(poly, dtype=float))
-                        for name, poly in segments]
+    # Each record is added to what the mesh already held for its earlier
+    # faults (split_fault handed that on), never assigned over it.
+    out._fault_traces = {**(getattr(out, "_fault_traces", None) or {}),
+                         **{name: np.array(poly, dtype=float)
+                            for name, poly in segments}}
+    # the recipe, for replaying the faults on the add-on multigrid levels
+    # (utilities.fault_mg.split_tail_levels): every fault in the mesh, in the
+    # order added; Mesh.add_fault replays the ones this call added
+    out._fault_specs = (list(getattr(out, "_fault_specs", None) or [])
+                        + [("line", name, np.array(poly, dtype=float))
+                           for name, poly in segments])
     surfaces = {entry.name: entry for entry in faults
                 if hasattr(entry, "control_points")
                 and hasattr(entry, "name")}
     if surfaces:
-        out._fault_surfaces = surfaces
+        out._fault_surfaces = {**(getattr(out, "_fault_surfaces", None) or {}),
+                               **surfaces}
     return out
 
 
@@ -1862,9 +1877,30 @@ def _add_fault_sheets(mesh, faults, verbose=False, partition=True,
     cut = mesh
     for name, points, triangles in sheets:
         boundaries = cut._boundaries_with(name)
-        cut_dm, info = place_sheet(cut.dm, points, triangles, label=name,
-                                   label_value=boundaries[name].value,
-                                   verbose=verbose, **place_kwargs)
+        # the faults already split into the mesh: marked, and read back once
+        # the sheet is placed (see add_fault)
+        placing_dm, tracked = _track_fault_records(cut)
+        try:
+            cut_dm, info = place_sheet(placing_dm, points, triangles, label=name,
+                                       label_value=boundaries[name].value,
+                                       verbose=verbose,
+                                       split_faults_are_interior=tracked is not None,
+                                       **place_kwargs)
+        except RuntimeError as err:
+            if tracked is None or "wall" not in str(err):
+                raise
+            # the two sides of a fault already split are walls to the
+            # placement, so the wall of its refusal may be one of them; which
+            # it was the placement does not say, and neither does this
+            raise RuntimeError(
+                f"add_fault: {name!r} could not be placed: {err}. This mesh "
+                f"already carries the split fault(s) "
+                f"{sorted(tracked['pairs'])}, and the placement treats their "
+                f"two sides as walls too: the wall it names may be one of "
+                f"them. A new sheet must keep as clear of an earlier fault as "
+                f"of a domain wall.") from err
+        earlier = (None if tracked is None
+                   else _carried_fault_records(cut_dm, tracked, [name]))
         child = Mesh(cut_dm, simplex=cut.dm.isSimplex(),
                      coordinate_system_type=cut.CoordinateSystem.coordinate_type,
                      qdegree=cut.qdegree, boundaries=boundaries, verbose=False)
@@ -1890,13 +1926,19 @@ def _add_fault_sheets(mesh, faults, verbose=False, partition=True,
             child._custom_mg_builder = getattr(cut, "_custom_mg_builder",
                                                "barycentric")
             child._custom_mg_fac_zone = None
+        if earlier is not None:
+            _hand_on_fault_records(child, cut, *earlier)
         cut._registered_children.add(child)
         cut = child
     out = split_faults(cut, [name for name, _p, _t in sheets], verbose=verbose)
-    out._fault_specs = [("sheet", name, points, triangles, dict(place_kwargs))
-                        for name, points, triangles in sheets]
-    out._fault_surfaces = {entry.name: entry for entry in faults
-                           if hasattr(entry, "name") and hasattr(entry, "triangles")}
+    out._fault_specs = (list(getattr(out, "_fault_specs", None) or [])
+                        + [("sheet", name, points, triangles, dict(place_kwargs))
+                           for name, points, triangles in sheets])
+    surfaces = {entry.name: entry for entry in faults
+                if hasattr(entry, "name") and hasattr(entry, "triangles")}
+    if surfaces:
+        out._fault_surfaces = {**(getattr(out, "_fault_surfaces", None) or {}),
+                               **surfaces}
     return out
 
 
@@ -2080,6 +2122,151 @@ def collect_point_pairs(dm, names, remove=True):
                 if dm.hasLabel(lab):
                     dm.removeLabel(lab)
     return out, n_dropped
+
+
+_TRACK_LABEL = "_uw_fault_record_points"
+
+
+def _track_fault_records(mesh):
+    """Mark the points the faults already split into ``mesh`` are recorded by,
+    on a CLONE of its DM, so the record can be read back after a cut or a
+    placement has renumbered the chart: ``(dm, state)``, or ``(mesh.dm, None)``
+    for a mesh with no split fault. One label, one value per point (labels pass
+    through the cut's transform and the placement's rebuild); the values are
+    globally unique, each rank's offset by the ranks before it as in
+    :func:`stamp_point_pairs`, so a point that changed rank in between reads
+    as lost on the rank that marked it and is never taken for another rank's.
+    The points are those of ``_fault_point_pairs`` and
+    ``_fault_seam_normals``, and every vertex of a fault's chain as well: a
+    tip is in no pair, and a move of it is a change to the fault all the same.
+    See :func:`_carried_fault_records`. COLLECTIVE."""
+    pairs = getattr(mesh, "_fault_point_pairs", None) or {}
+    normals = getattr(mesh, "_fault_seam_normals", None) or {}
+    if not uw.mpi.comm.allreduce(bool(pairs or normals), op=MPI.LOR):
+        return mesh.dm, None
+    dm = mesh.dm.clone()
+    points = set()
+    for by_point in pairs.values():
+        for q_minus, q_plus in by_point.items():
+            points.update((int(q_minus), int(q_plus)))
+    for by_point in normals.values():
+        points.update(int(q) for q in by_point)
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    members = {b.name: int(b.value) for b in mesh.boundaries}
+    for name in pairs:
+        for side in (name, f"{name}Plus", f"{name}Minus"):
+            if side not in members or not dm.hasLabel(side) \
+                    or dm.getLabel(side).getStratumSize(members[side]) == 0:
+                continue
+            for f in dm.getLabel(side).getStratumIS(members[side]).getIndices():
+                if fS <= int(f) < fE:
+                    points.update(int(q) for q in dm.getTransitiveClosure(int(f))[0]
+                                  if vS <= q < vE)
+    points = np.array(sorted(points), dtype=np.int64)
+    offset = int(sum(uw.mpi.comm.allgather(len(points))[:uw.mpi.rank]))
+    if dm.hasLabel(_TRACK_LABEL):
+        dm.removeLabel(_TRACK_LABEL)
+    dm.createLabel(_TRACK_LABEL)
+    label = dm.getLabel(_TRACK_LABEL)
+    pS, pE = dm.getChart()
+    for k, q in enumerate(points):
+        # A recorded point this rank does not hold is left unmarked, and is
+        # read back as lost: the second call is refused, not handed a record
+        # that names the wrong point. The numbers are this mesh's own: the
+        # add-on partition restamps the pairing through its move, and refuses
+        # a mesh whose seam normals it cannot carry
+        # (addon_partition.partition_addon).
+        if pS <= q < pE:
+            label.setValue(int(q), offset + k + 1)
+    is_vertex = (points >= vS) & (points < vE)
+    return dm, {"points": points, "is_vertex": is_vertex, "offset": offset,
+                "xyz": _vertex_coordinates(dm, points[is_vertex]),
+                "pairs": pairs, "normals": normals}
+
+
+def _vertex_coordinates(dm, vertices):
+    cdim = dm.getCoordinateDim()
+    section = dm.getCoordinateSection()
+    xyz = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    rows = np.array([section.getOffset(int(v)) // cdim for v in vertices],
+                    dtype=np.int64)
+    return xyz[rows].copy()
+
+
+def _carried_fault_records(dm, state, adding):
+    """Read back what :func:`_track_fault_records` marked, on the DM the cut or
+    the placement returned: ``(pairs, seam normals)`` in its numbering. The mark
+    is removed.
+
+    The record is carried only if the earlier faults came through untouched:
+    every marked point is still one point of the same kind, and every marked
+    vertex is where it was. A marked edge the new trace crossed is bisected (its
+    mark is then on three points), a point inside a placement's cavity is gone,
+    and a chain vertex pulled onto the new fault's control point has moved; in
+    each case one side of the earlier fault no longer matches the other and the
+    pairing cannot be kept. That is refused. COLLECTIVE."""
+    from underworld3.utilities.line_cut import _global_extent
+
+    points, is_vertex = state["points"], state["is_vertex"]
+    new = np.full(len(points), -1, dtype=np.int64)
+    if dm.hasLabel(_TRACK_LABEL):
+        label = dm.getLabel(_TRACK_LABEL)
+        for k in range(len(points)):
+            value = state["offset"] + k + 1
+            if label.getStratumSize(value) == 1:
+                new[k] = int(label.getStratumIS(value).getIndices()[0])
+        dm.removeLabel(_TRACK_LABEL)
+    vS, vE = dm.getDepthStratum(0)
+    kept = (new >= 0) & (((new >= vS) & (new < vE)) == is_vertex)
+    scale = _global_extent(dm)
+    n_moved = 0
+    if is_vertex.any():
+        still = kept[is_vertex]
+        now = _vertex_coordinates(dm, new[is_vertex][still])
+        n_moved = int((np.linalg.norm(now - state["xyz"][still], axis=1)
+                       > 1e-9 * scale).sum())
+    n_lost = uw.mpi.comm.allreduce(int((~kept).sum()), op=MPI.SUM)
+    n_moved = uw.mpi.comm.allreduce(n_moved, op=MPI.SUM)
+    if n_lost or n_moved:
+        raise RuntimeError(
+            f"adding {sorted(adding)} would change the fault(s) already "
+            f"split into this mesh, {sorted(state['pairs'])}: {n_lost} "
+            f"recorded point(s) were refined or removed and {n_moved} node(s) "
+            f"moved. The new fault or surface crosses or touches an earlier "
+            f"fault, or ends so close to it that the earlier fault's nodes "
+            f"had to move. Keep it clear of the faults already in the mesh."
+            + (" In parallel a recorded point that changed rank on the way "
+               "counts as removed; the whole network in one add_fault call "
+               "avoids that." if uw.mpi.size > 1 else ""))
+    index = {int(q): int(n) for q, n in zip(points, new)}
+    pairs = {name: {index[int(q_minus)]: index[int(q_plus)]
+                    for q_minus, q_plus in by_point.items()}
+             for name, by_point in state["pairs"].items()}
+    normals = {name: {index[int(q)]: n for q, n in by_point.items()}
+               for name, by_point in state["normals"].items()}
+    return pairs, normals
+
+
+def _hand_on_fault_records(child, mesh, pairs, normals):
+    """Give ``child``, a mesh cut or placed from ``mesh``, the record of the
+    faults ``mesh`` already carries: the pairing and seam normals as
+    :func:`_carried_fault_records` renumbered them, and the geometry
+    (``split_fault`` hands these on from there)."""
+    if pairs:
+        child._fault_point_pairs = pairs
+    if normals:
+        child._fault_seam_normals = normals
+    if getattr(mesh, "_fault_traces", None):
+        child._fault_traces = dict(mesh._fault_traces)
+    if getattr(mesh, "_fault_surfaces", None):
+        child._fault_surfaces = dict(mesh._fault_surfaces)
+    if getattr(mesh, "_fault_specs", None):
+        child._fault_specs = list(mesh._fault_specs)
+    if getattr(mesh, "_embedded_surfaces", None):
+        child._embedded_surfaces = (
+            set(getattr(child, "_embedded_surfaces", ()) or ())
+            | set(mesh._embedded_surfaces))
 
 
 def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
