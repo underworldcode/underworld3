@@ -76,12 +76,13 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
         raise ValueError(self._GUIDANCE)
 
 
-def _outside_every_domain(mesh, coords):
+def _outside_every_domain(boxes, coords):
     """True where a point is outside every rank's inflated domain box
-    (``Mesh._get_domain_boxes``), so in no rank's domain. Tested against the
-    union box first, so only points inside it pay the per-rank test."""
-    lo, hi = mesh._get_domain_boxes()
-    coords = np.asarray(coords, dtype=float).reshape(-1, mesh.cdim)
+    (``boxes`` from ``Mesh._get_domain_boxes``), so in no rank's domain.
+    Tested against the union box first, so only points inside it pay the
+    per-rank test. Rank-local."""
+    lo, hi = boxes
+    coords = np.asarray(coords, dtype=float).reshape(-1, lo.shape[1])
     live = np.isfinite(lo).all(axis=1)
     lo, hi = lo[live], hi[live]
     outside = np.ones(len(coords), dtype=bool)
@@ -4421,6 +4422,7 @@ class Swarm(Stateful, uw_object):
             # clip_to_mesh=False swarms) ran every round and parked them on the
             # farthest domain (#1093 review).
             seeking = not_my_points
+            boxes = self.mesh._get_domain_boxes()          # collective, every rank
             for it in range(0, min(max_its, uw.mpi.size)):
 
                 # Send unclaimed points to next processor in line
@@ -4483,7 +4485,7 @@ class Swarm(Stateful, uw_object):
                     )
 
                 not_my_points = np.where(in_or_not == False)[0]
-                exterior = _outside_every_domain(self.mesh, swarm_coord_array[not_my_points])
+                exterior = _outside_every_domain(boxes, swarm_coord_array[not_my_points])
                 self.dm.restoreField("DMSwarmPIC_coor")
                 seeking = not_my_points[~exterior]
 
