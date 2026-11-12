@@ -2981,16 +2981,42 @@ class Mesh(Stateful, uw_object):
         if sub_var.mesh is not self:
             raise ValueError("sub_var must be on this mesh")
 
-        sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
-
-        new_data = numpy.array(parent_var.data)
-
-        if mode == "replace":
-            new_data[parent_rows] = sub_var.data[sub_rows]
-        elif mode == "add":
-            new_data[parent_rows] += sub_var.data[sub_rows]
-        else:
+        if mode not in ("replace", "add"):
             raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
+
+        sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
+        old = numpy.array(parent_var.data)
+
+        # The map is rank-local, but a parent DOF on the region's edge can be
+        # owned by a rank whose cells around it all lie outside the region:
+        # that rank has no submesh DOF to match, and a plain write-and-sync
+        # kept its stale value (#1087). So every rank that matched the DOF
+        # adds its value and a count of one into the parent's global vector,
+        # and the owner takes their mean (they agree) where the count is set.
+        values = numpy.zeros_like(old)
+        counts = numpy.zeros_like(old)
+        values[parent_rows] = sub_var.data[sub_rows]
+        counts[parent_rows] = 1.0
+        indexset, subdm = self.parent.dm.createSubDM(parent_var.field_id)
+        try:
+            combined = []
+            for local in (values, counts):
+                lvec = subdm.createLocalVector()
+                gvec = subdm.createGlobalVector()
+                lvec.array[:] = local.ravel()
+                gvec.zeroEntries()
+                subdm.localToGlobal(lvec, gvec, addv=True)
+                subdm.globalToLocal(gvec, lvec, addv=False)
+                combined.append(numpy.array(lvec.array).reshape(old.shape))
+                lvec.destroy()
+                gvec.destroy()
+        finally:
+            indexset.destroy()
+            subdm.destroy()
+        total, n = combined
+        matched = n > 0
+        mean = numpy.where(matched, total / numpy.maximum(n, 1.0), 0.0)
+        new_data = numpy.where(matched, mean, old) if mode == "replace" else old + mean
 
         parent_var.pack_raw_data_to_petsc(new_data, sync=True)
 
