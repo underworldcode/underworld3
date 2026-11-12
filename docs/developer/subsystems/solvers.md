@@ -535,6 +535,13 @@ chooses between them. This is the layering:
 | `MGSettings` | the **option values** an intent resolves to | `utilities/multigrid_options.py` |
 | `solver.petsc_options` | the **escape hatch** — any key you set here outranks both, and is read again at every solve (#1078) | public, unchanged |
 
+A key that PETSc reads only when the SNES is first set up takes effect only if it
+is given before the first solve; set later it does nothing. The operator type is
+one of these: `snes_mf_operator` given before the first solve makes a matrix-free
+operator beside the assembled preconditioner matrix (which a solver with natural
+BCs refuses, #1070), and given after it leaves the solver on the assembled
+Jacobian it already has.
+
 `"robust"` (gmres/4) survives an operator a stationary smoother stalls on: the
 Spiegelman notch contraction above, and 11 → 5 velocity iterations on the
 transversely isotropic rotated annulus.
