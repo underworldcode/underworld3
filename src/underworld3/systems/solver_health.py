@@ -296,11 +296,18 @@ class SolverInstrumentation:
         ``getFieldSplitSubKSP``, so holding these entries keeps a destroyed solver's KSP,
         PC and whole multigrid hierarchy alive. A solver that rebuilds in a loop would
         then carry two hierarchies at once -- the leak BUGFIX(#157) was written to close.
-        Called from the solver when it tears its SNES down. Each entry takes its
+        Called from the solver when it tears its SNES down, and when the solver is
+        collected (#1041), which can be at interpreter exit. Each entry takes its
         callbacks off its KSP first: they hold the entry, and the entry the KSP
-        (#1012).
+        (#1012). After PETSc is finalised nothing is touched; the references are
+        only dropped.
         """
-        self._detach_all()
+        if PETSc.Sys.isFinalized():
+            for entry in self._ksps.values():
+                entry.ksp = None
+            self._ksps.clear()
+        else:
+            self._detach_all()
         self._outer_handle = None
 
     def _detach_all(self):
