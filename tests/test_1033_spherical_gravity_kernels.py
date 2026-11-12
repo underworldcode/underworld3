@@ -92,3 +92,50 @@ def test_finite_dirichlet_kernels_vanish_at_the_exterior_radius(degree):
     )
     scale = 4 * np.pi * 0.37 * 1.3 * outer**2
     np.testing.assert_allclose([sheet, volume], 0, atol=32 * np.finfo(float).eps * scale)
+
+
+def _two_interface_potential(inner, outer, degree, constant, masses, sheet_radius, sheet_density):
+    """Thin-sheet potential at (outer, inner) from interface masses (outer, inner)
+    and an internal sheet: 4 pi G a sigma / (2l+1) times (a/r)^(l+1) outside the
+    sheet of radius a, (r/a)^l inside."""
+    scale = 4 * np.pi * constant / (2 * degree + 1)
+    ratio = inner / outer
+    at_outer = (outer * masses[0] + inner * ratio**(degree + 1) * masses[1]
+                + sheet_radius * (sheet_radius / outer)**(degree + 1) * sheet_density)
+    at_inner = (outer * ratio**degree * masses[0] + inner * masses[1]
+                + sheet_radius * (inner / sheet_radius)**degree * sheet_density)
+    return scale * np.array([at_outer, at_inner])
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("degree", [2, 5])
+@pytest.mark.parametrize("self_gravity", [False, True])
+def test_physical_shell_response_is_the_thin_sheet_superposition(degree, self_gravity):
+    """Potential, geoid and the self-gravity fixed point, against the closed form.
+    The two walls carry different gravities, so a geoid divided by the wrong one fails."""
+    inner, outer, sheet_radius, constant = 1.22, 2.22, 1.72, 0.37
+    contrasts, wall_gravity = np.array([1.3, -2.1]), np.array([0.9, 1.7])
+    topography, sheet_density = np.array([0.011, -0.007]), 0.23
+    response = gravity.spherical_physical_shell_response(
+        radius_inner=inner, radius_outer=outer, harmonic_degree=degree,
+        outer_topography=topography[0], inner_topography=topography[1],
+        outer_density_contrast=contrasts[0], inner_density_contrast=contrasts[1],
+        outer_gravity=wall_gravity[0], inner_gravity=wall_gravity[1],
+        gravitational_constant=constant, internal_load_radius=sheet_radius,
+        internal_surface_density=sheet_density, include_self_gravity=self_gravity)
+    potential = _two_interface_potential(inner, outer, degree, constant,
+                                         contrasts * topography, sheet_radius, sheet_density)
+    np.testing.assert_allclose([response["outer_potential"], response["inner_potential"]],
+                               potential, rtol=1e-13)
+    np.testing.assert_allclose([response["outer_geoid"], response["inner_geoid"]],
+                               potential / wall_gravity, rtol=1e-13)
+    if self_gravity:
+        # h = h_dynamic + Phi(h)/g at both walls, with Phi from the closed form
+        corrected = np.array([response["outer_topography_self_gravity"],
+                              response["inner_topography_self_gravity"]])
+        closed = _two_interface_potential(inner, outer, degree, constant,
+                                          contrasts * corrected, sheet_radius, sheet_density)
+        np.testing.assert_allclose(corrected, topography + closed / wall_gravity, rtol=1e-12)
+        np.testing.assert_allclose([response["outer_geoid_self_gravity"],
+                                    response["inner_geoid_self_gravity"]],
+                                   closed / wall_gravity, rtol=1e-12)

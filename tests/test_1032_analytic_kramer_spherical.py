@@ -114,3 +114,34 @@ def test_every_relative_import_in_the_analytic_package_resolves():
             if not found:
                 missing.append(f"{path.relative_to(root)}: {name}")
     assert missing == []
+
+
+@pytest.mark.parametrize('density', ['delta', 'smooth'])
+def test_geoid_response_topography_is_the_wall_normal_stress_over_the_buoyancy(mesh, density):
+    """h_outer = -sigma_rr/(drho g) and h_inner = +sigma_rr/(drho g), both radially
+    outward, with sigma_rr read from the Cartesian stress field at a wall point and
+    divided by the harmonic there."""
+    sol = SphericalStokes(mesh, ell=3, m=2, component='sin', normalization='real_orthonormal',
+                          density=density, k=4, viscosity=2.3, forcing=.61)
+    direction = np.array([[.36, .48, .8]])
+    harmonic = real_harmonic_values(direction, degree=3, order=2, component='sin',
+                                    normalization='real_orthonormal')
+    contrasts, wall_gravity = (1.3, -2.1), (.9, 1.7)
+    response = sol.geoid_response(
+        outer_density_contrast=contrasts[0], inner_density_contrast=contrasts[1],
+        outer_reference_gravity=wall_gravity[0], inner_reference_gravity=wall_gravity[1],
+        gravitational_constant=.37, source_density_coefficient=.61)
+    for name, radius, sign, contrast, g in (('outer', sol.r_outer, -1, contrasts[0], wall_gravity[0]),
+                                            ('inner', sol.r_inner, 1, contrasts[1], wall_gravity[1])):
+        stress = sol.evaluate('stress', radius*direction)[0]
+        normal_stress = direction[0] @ stress @ direction[0] / harmonic[0]
+        np.testing.assert_allclose(response[f'{name}_topography'],
+                                   sign*normal_stress/(contrast*g), rtol=1e-11)
+
+
+def test_geoid_response_refuses_zero_slip_walls(mesh):
+    sol = SphericalStokes(mesh, boundary='zero')
+    with pytest.raises(ValueError):
+        sol.geoid_response(outer_density_contrast=1., inner_density_contrast=1.,
+                           outer_reference_gravity=1., inner_reference_gravity=1.,
+                           gravitational_constant=1., source_density_coefficient=1.)
