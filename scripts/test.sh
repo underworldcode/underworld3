@@ -544,7 +544,8 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     done
 
     # Three ranks exercise a process owning no prescribed-wall groups.
-    $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+    # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
     # A SECOND pass at four ranks, because two is a special case: the failure

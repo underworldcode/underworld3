@@ -54,11 +54,13 @@ def test_build_rotation_evaluates_fe_data_on_every_rank_in_registration_order(mo
 
     Ranks owning nodes of one wall only used to evaluate one field while their
     peers evaluated two, and the solve hung before its first Stokes iteration
-    (three ranks, this mesh). The data prescribe the uniform flow v = (0, 1/10)
-    on the unit box, whose energy is exactly 1/100.
+    (three ranks, this mesh). The box is tall so that at three ranks one of them
+    owns no wall node at all: that rank must still enter both evaluations. The
+    data prescribe the uniform flow v = (0, 1/10) on the 1 x 4 box, whose energy
+    is exactly 4/100.
     """
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 16, qdegree=3)
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 4.0), cellSize=1 / 12, qdegree=3)
     v = uw.discretisation.MeshVariable("DatumRotV", mesh, 2, degree=2, continuous=True)
     p = uw.discretisation.MeshVariable("DatumRotP", mesh, 1, degree=1, continuous=True)
     top = uw.discretisation.MeshVariable("DatumRotTop", mesh, 1, degree=2, continuous=True)
@@ -90,4 +92,4 @@ def test_build_rotation_evaluates_fe_data_on_every_rank_in_registration_order(mo
     for rank_schedule in uw.mpi.comm.allgather(schedule):
         assert rank_schedule == expected
     energy = float(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate())
-    assert energy == pytest.approx(0.01, rel=1.0e-8)
+    assert energy == pytest.approx(0.04, rel=1.0e-8)
