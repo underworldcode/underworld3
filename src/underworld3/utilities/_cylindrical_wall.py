@@ -293,8 +293,6 @@ def _solve_with_wall_updates(stokes, walls, updates):
         info = stokes._rotated_freeslip_info
         step = dict(iteration=iteration, converged=bool(info["converged"]),
             ksp_reason=int(info["ksp_reason"]), ksp_iterations=list(info["ksp_its"]),
-            linear_solver={key: info[key] for key in (
-                "velocity_ksp_type", "pressure_ksp_type", "ksp_max_it")},
             nonlinear_iterations=int(info["nonlinear_iterations"]), residual_norm=float(info["rnorm"]),
             velocity_change_maximum=uw.mpi.comm.allreduce(
                 float(np.max(np.abs(stokes.u.array-previous), initial=0.0)), op=MPI.MAX),

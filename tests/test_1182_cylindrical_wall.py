@@ -91,8 +91,6 @@ def test_wall_iteration_preserves_exact_quiescent_solution(slip):
         add_wall = stokes.add_cylindrical_wall_transfer
         options = dict(viscosity=1, pressure_jump=sp.S.Zero)
         solve = stokes.solve_cylindrical_wall_updates
-        for key in ("rotated_fieldsplit_velocity_ksp_type", "rotated_fieldsplit_pressure_ksp_type"):
-            stokes.petsc_options[key] = "preonly"
     else:
         add_wall = stokes.add_cylindrical_zero_slip_transfer
         options = {}
@@ -103,9 +101,6 @@ def test_wall_iteration_preserves_exact_quiescent_solution(slip):
     assert len(history) == 3
     for step in history:
         assert step["converged"]
-        if slip == "free":
-            assert set(step["linear_solver"]) == {
-                "velocity_ksp_type", "pressure_ksp_type", "ksp_max_it"}
         assert step["velocity_change_maximum"] < 1e-12
         for residuals in step["boundary_velocity"].values():
             key = "true_circle_normal_velocity_rms" if slip == "free" else "true_circle_velocity_rms"
