@@ -49,6 +49,8 @@ The parameter organization and section structure provide templates for generatin
 
 # %%
 # Minimal Underworld3 setup
+MESH_SIZE = 8
+DOMAIN_BOUNDS = (0.0, 0.0, 1.0, 1.0)
 import underworld3 as uw
 import numpy as np
 
