@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import enum
 import os
+import sys
 import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
@@ -355,6 +356,10 @@ def remesh_with_field_transfer(
     # the trial moves inside ephemeral_coords.
     if moved:
         mesh._move_version = getattr(mesh, "_move_version", 0) + 1
+    failed = getattr(mesh, "_remesh_failed_transfer", None)
+    mesh._remesh_failed_transfer = None
+    if failed:
+        raise _remap_failure(failed)
     return moved
 
 
@@ -392,7 +397,8 @@ def _remesh_with_field_transfer_impl(
         return False
 
     # The one-shot REMAP dance for the generic per-variable pass.
-    remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose)
+    failed = remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose,
+                           raise_on_failure=False)
 
     # Operator hooks (Phase 2 ALE etc.). Currently fired even when
     # remap_vars is empty so a CARRY-only DDt still gets its v_mesh.
@@ -443,6 +449,10 @@ def _remesh_with_field_transfer_impl(
     # collective), which update_lvec needs because it is collective.
     mesh._stale_lvec = True
 
+    # A failed transfer is reported by the caller, once the move is otherwise
+    # complete, its version counted included (#960).
+    mesh._remesh_failed_transfer = failed
+
     return True
 
 
@@ -473,7 +483,7 @@ def _iter_active_hooks(mesh):
         yield cb
 
 
-def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
+def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False, raise_on_failure=True):
     """One-shot REMAP dance for a set of variables.
 
     Used by the generic per-variable pass in
@@ -493,9 +503,15 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
 
     The set may be empty (no-op). Operations are MPI-collective; every
     rank must call with the same set.
+
+    A variable whose transfer fails on any rank keeps its pre-move values on
+    every rank, and the others are still transferred. Then, with
+    ``raise_on_failure`` (the default), a ``RuntimeError`` naming the failed
+    variables is raised on every rank alike. Without it, their names are
+    returned, so a caller can finish its own steps first and raise then.
     """
     if not vars_:
-        return
+        return []
     from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
 
     # Capture target DOF coords on the NEW mesh first (we are sitting
@@ -529,6 +545,7 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         _write_var_data(var, data)
 
     resampled = {}
+    failed = []
     for var in vars_:
         if var in skipped:
             continue
@@ -536,29 +553,55 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         target = new_dof_coords[var]
         # global_evaluate resolves off-rank targets via swarm migration.
         # REMESH_MONOTONE (module constant, see its comment) is off by default.
-        # Any other exception propagates. It used to be caught here and the
-        # variable skipped on the rank that raised, while the other ranks were
-        # inside this evaluation's collectives: the ranks then evaluated
-        # different variables against each other and hung (#960). A rank-local
-        # raise inside global_evaluate still leaves the other ranks waiting in
-        # it; agreeing on a failure there is global_evaluate's to do.
+        error = None
         try:
-            val = uw.function.global_evaluate(
-                var.sym, target, monotone=REMESH_MONOTONE)
-        except (ValueError, NotImplementedError):
-            # monotone needs a single-MeshVariable expr; composite /
-            # unsupported vars fall back to plain FE (still transferred).
-            # The refusal depends on the expression alone, so every rank
-            # takes this branch alike.
-            val = uw.function.global_evaluate(var.sym, target)
-        # Laid out by _data_layout, which a flat reshape is not for a MATRIX or a
-        # symmetric tensor. var.data holds non-dimensional values, and the helper
-        # reduces a dimensional evaluation to them.
-        resampled[var] = _evaluated_in_storage_layout(var, val)
+            try:
+                val = uw.function.global_evaluate(
+                    var.sym, target, monotone=REMESH_MONOTONE)
+            except (ValueError, NotImplementedError):
+                # monotone needs a single-MeshVariable expr; composite /
+                # unsupported vars fall back to plain FE (still transferred).
+                # The refusal depends on the expression alone, so every rank
+                # takes this branch alike.
+                val = uw.function.global_evaluate(var.sym, target)
+            # Laid out by _data_layout, which a flat reshape is not for a MATRIX
+            # or a symmetric tensor. var.data holds non-dimensional values, and
+            # the helper reduces a dimensional evaluation to them.
+            val = _evaluated_in_storage_layout(var, val)
+        except Exception as exc:
+            error = exc
+            print(f"[rank {uw.mpi.rank}] remap_var_set: {getattr(var, 'name', var)!r} "
+                  f"failed on this rank: {exc!r}", file=sys.stderr, flush=True)
+        # The ranks agree on the outcome before the next variable (#960). It used
+        # to be skipped on the rank that raised only, so the next variable's
+        # collectives were matched against this one's and the ranks hung. A
+        # failure after the evaluation's collectives (a rank-local limiter, as in
+        # #994) now fails the variable on every rank. A raise BEFORE them, on one
+        # rank, still leaves the other ranks waiting inside global_evaluate;
+        # agreeing on that is global_evaluate's to do.
+        bad = np.array([error is not None], dtype=np.int32)
+        uw.mpi.comm.Allreduce(uw.MPI.IN_PLACE, bad, op=uw.MPI.MAX)
+        if bad[0]:
+            failed.append(getattr(var, "name", var))
+        else:
+            resampled[var] = val
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
         _write_var_data(var, val)
+
+    # The move and the other variables are complete on every rank; the failed
+    # variables kept their old values. Raised on every rank alike.
+    if failed and raise_on_failure:
+        raise _remap_failure(failed)
+    return failed
+
+
+def _remap_failure(failed):
+    return RuntimeError(
+        f"remap_var_set: the field transfer failed for {failed} on at least one "
+        f"rank (see that rank's message above); those variables keep their "
+        f"values from before the move, on every rank (#960).")
 
 
 

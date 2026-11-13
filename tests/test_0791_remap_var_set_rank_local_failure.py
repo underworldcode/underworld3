@@ -12,8 +12,12 @@ matched against rank 0's T, and the job silent until the supervisor stopped it.
 - If a variable's new coordinates cannot be read on one rank, the variable is
   skipped on every rank: every rank returns, the variable keeps its values, and
   the other variable is still transferred.
-- If the evaluation raises on one rank, the error is no longer swallowed into a
-  skip on that rank: its traceback reaches the output, and the ranks never
+- If the evaluation fails on one rank after its collectives (a rank-local
+  limiter can, #994), the variable fails on every rank: it keeps its values,
+  the move and the other variables complete, and every rank raises the same
+  error.
+- If the evaluation raises on one rank before its collectives, the error is no
+  longer swallowed into a skip on that rank: its traceback reaches the output, and the ranks never
   evaluate different variables against each other. A rank-local raise inside
   ``global_evaluate`` still leaves the other ranks waiting in it, so the job
   ends only by the supervisor's silence limit; agreeing on such a failure is
@@ -81,16 +85,36 @@ def _worker(case):
             return original(*args, **kwargs)
 
         uw.function.global_evaluate = global_evaluate
+    elif case == "after":
+        # rank 1 fails AFTER the evaluation's collectives (as a rank-local
+        # limiter can, #994): every rank took part, then rank 1 raises
+        original = uw.function.global_evaluate
+        fired = []
 
-    mesh.deform(c)
+        def global_evaluate(*args, **kwargs):
+            value = original(*args, **kwargs)
+            if not fired and uw.mpi.rank == 1 and sys._getframe(1).f_code.co_name == "remap_var_set":
+                fired.append(1)
+                raise RuntimeError("forced failure on rank 1 after the evaluation")
+            return value
+
+        uw.function.global_evaluate = global_evaluate
+
+    try:
+        mesh.deform(c)
+        raised = False
+    except RuntimeError as error:
+        raised = "#960" in str(error)
 
     s_err = float(np.abs(np.asarray(S.data)[:, 0]
                          - (2.0 * np.asarray(S.coords_nd)[:, 0] - np.asarray(S.coords_nd)[:, 1])).max(initial=0.0))
     t_kept = bool(np.array_equal(np.asarray(T.data), t_before))
-    results = uw.mpi.comm.gather((s_err, t_kept), root=0)
+    moved = bool(np.abs(np.asarray(mesh.X.coords) - c).max(initial=0.0) < 1e-12)
+    results = uw.mpi.comm.gather((s_err, t_kept, raised, moved), root=0)
     if uw.mpi.rank == 0:
         print(f"REMAP DONE s_err {max(r[0] for r in results):.3e} "
-              f"t_kept {[r[1] for r in results]}", flush=True)
+              f"t_kept {[r[1] for r in results]} raised {[r[2] for r in results]} "
+              f"at_new_coords {[r[3] for r in results]}", flush=True)
 
 
 def _run(case, tmp_path):
@@ -125,8 +149,23 @@ def test_unreadable_coordinates_on_one_rank_skip_the_variable_on_every_rank(tmp_
     line = next(ln for ln in log.splitlines() if "REMAP DONE" in ln)
     # T is skipped on BOTH ranks and keeps its values; S is still transferred.
     assert "t_kept [True, True]" in line, line
+    assert "raised [False, False]" in line, line
     s_err = float(line.split("s_err ")[1].split()[0])
     assert s_err < 1.0e-4, line           # a linear P1 field (1e-5 face slab: #1115)
+
+
+def test_a_failure_after_the_evaluation_on_one_rank_fails_the_variable_on_every_rank(tmp_path):
+    _serial_only()
+    code, log = _run("after", tmp_path)
+    assert code == 0, log[-4000:]
+    line = next(ln for ln in log.splitlines() if "REMAP DONE" in ln)
+    # every rank raises the same error, after the move is complete on every
+    # rank; T keeps its values on both ranks, S is transferred
+    assert "raised [True, True]" in line, line
+    assert "at_new_coords [True, True]" in line, line
+    assert "t_kept [True, True]" in line, line
+    s_err = float(line.split("s_err ")[1].split()[0])
+    assert s_err < 1.0e-4, line
 
 
 def test_a_raise_in_the_evaluation_on_one_rank_is_not_swallowed(tmp_path):
