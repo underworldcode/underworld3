@@ -4581,10 +4581,10 @@ class Mesh(Stateful, uw_object):
            from here on, and ``adapt`` no longer snaps new vertices onto it.
            The label has no circle, sphere or plane any more, so its
            tangent-slide normals come from the mesh (a collective projection
-           of the boundary normal, about 0.02 s a call on a 2-D annulus of
-           cell size 0.1, where the analytic normal cost 3e-5 s), and a mover
-           run differs from one made with the analytic normal at the 1e-5
-           level in the vertex positions. A later call asking for the label
+           of the boundary normal: building the projector takes about 0.03 s
+           on a 2-D annulus of cell size 0.1, against 0.001 s with the
+           analytic normal), and a mover run differs from one made with the
+           analytic normal at the 1e-5 level in the vertex positions. A later call asking for the label
            to be restored restores nothing, and warns.
         """
         from underworld3.meshing.smoothing import (
