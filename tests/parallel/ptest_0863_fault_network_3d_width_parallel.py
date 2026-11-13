@@ -116,6 +116,11 @@ def test_network_3d_width_weak_plane_solve_np2():
             f"{name}: parallel peak {peak:.4f} vs serial {expected}")
 
 
+# Slow, not stuck: alone at np 4 this test takes about 330 s on a loaded
+# 96-thread workstation (development 01dec8d2), most of it in the rotated
+# solve. Run after the two solves above under a 600 s silence window, it
+# was stopped by the supervisor while its native frames were still moving
+# (#956). Give a supervisor at least 900 s of silence for this file.
 def test_two_faults_apart_are_placed_by_their_own_ranks():
     """Two faults a domain apart in one network are two regions of the
     placement gather and two groups of the split's redistribution
