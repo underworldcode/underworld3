@@ -3621,6 +3621,7 @@ class SolverBaseClass(uw_object):
         if stages and "tangent" in config:
             config["tangent"]["alpha_end"] = float(stages["final_alpha"])
             config["tangent"]["stages"] = dict(stages)
+        self._note_hierarchy_build(config)
         _kcfg = config.get("ksp")
         # Only once a linear solve has run: before that the PC is not set up, and
         # PCFieldSplitGetSubKSP errors — printing to stderr even when caught (measured on
@@ -3662,6 +3663,18 @@ class SolverBaseClass(uw_object):
         self._solve_history.append(report)
         self._record_solve_outcome(report)
         return report
+
+    def _note_hierarchy_build(self, config):
+        """Add to a report's ``config`` what the custom multigrid hierarchy's
+        install did to its coarse levels: coarse unknowns sharing their fine
+        images with others, merged exactly where a coarse level is not nested
+        in the level above (#1101). A note of the build, not a preconditioner
+        fallback: the hierarchy requested is the one installed."""
+        merged = getattr(self, "_mg_merged_coarse_unknowns", None)
+        if merged and merged["levels"]:
+            config["multigrid_hierarchy"] = {
+                "merged_coarse_unknowns": dict(merged["levels"]),
+                "installs_with_merges": merged["installs_with_merges"]}
 
     def _capture_rotated_report(self, info):
         """Record a SolveReport for a rotated-free-slip solve, which runs its own
@@ -3707,6 +3720,7 @@ class SolverBaseClass(uw_object):
         except Exception:
             # Sanctioned: formulation facts are a record; none is recorded on failure
             pass
+        self._note_hierarchy_build(config)
         self._emit_solve_notes(config.pop("_warnings", ()))
         report = SolveReport(
             reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
