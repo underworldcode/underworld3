@@ -17,7 +17,6 @@ import sys
 
 import pytest
 
-pytestmark = [pytest.mark.level_1]
 
 _SHELL_ADAPT = r"""
 import numpy as np, underworld3 as uw
@@ -31,6 +30,7 @@ print("ADAPTED", count(base), count(child))
 """
 
 
+@pytest.mark.level_1
 @pytest.mark.tier_b
 @pytest.mark.parametrize("capacity, burst, rounds", [(4, 7, 300), (1, 1, 64), (1024, 1500, 8)])
 def test_the_point_queue_returns_every_value_once_and_in_order(capacity, burst, rounds):
@@ -41,6 +41,7 @@ def test_the_point_queue_returns_every_value_once_and_in_order(capacity, burst, 
     assert mismatches == 0
 
 
+@pytest.mark.level_2
 @pytest.mark.tier_b
 @pytest.mark.parametrize("levels", [2, 3])
 def test_a_spherical_shell_adapt_whose_closure_outgrows_the_queue_completes(levels):
