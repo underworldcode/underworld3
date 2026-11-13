@@ -22,6 +22,7 @@ pytestmark = [pytest.mark.level_1]
 import numpy as np
 import sympy
 import underworld3 as uw
+from mpi4py import MPI
 
 RES = 16
 
@@ -61,7 +62,9 @@ def test_rotated_lid_holds_its_corners():
     """u.n = 0 on the whole lid, corners included, to round-off."""
     u, coords = _solve("rotated")
     top = np.abs(coords[:, 1] - 1.0) < 1.0e-9
-    leak = np.abs(u[top, 1]).max() / np.abs(u).max()
+    # over every rank: a rank may hold no lid node, or no node at all
+    largest = lambda values: uw.mpi.comm.allreduce(float(np.max(np.abs(values), initial=0.0)), op=MPI.MAX)
+    leak = largest(u[top, 1]) / largest(u)
     # It was 1.6e-1, at the two corner nodes and nowhere else.
     assert leak < 1.0e-12, f"the lid leaks at u.n = {leak:.2e} of |u|max"
 
