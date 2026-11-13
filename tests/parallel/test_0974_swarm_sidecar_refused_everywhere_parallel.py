@@ -21,7 +21,10 @@ import pytest
 import underworld3 as uw
 from underworld3.checkpoint import disk_snapshot
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_1, pytest.mark.timeout(300)]
+# method="thread": a signal-method timeout cannot interrupt a rank blocked in
+# a collective, which is the failure this file guards against
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_1,
+              pytest.mark.timeout(300, method="thread")]
 
 
 def _model():
@@ -44,7 +47,7 @@ def _shared_path(tmp_path):
                              root=0)
 
 
-def _drop_a_row_of_this_ranks_sidecar(path):
+def _damage_this_ranks_sidecar(path, damage):
     with h5py.File(path, "r") as f:
         group = f["swarms"]
         name = list(group.keys())[0]
@@ -52,13 +55,27 @@ def _drop_a_row_of_this_ranks_sidecar(path):
     sidecar = os.path.join(disk_snapshot._bulk_dir_for(path),
                            pattern.format(rank=uw.mpi.rank, size=uw.mpi.size))
     with h5py.File(sidecar, "r+") as f:
-        data = f["variables"]["s"][...]
-        del f["variables"]["s"]
-        f["variables"].create_dataset("s", data=data[:-1])
+        if damage == "a_row_dropped":
+            data = f["variables"]["s"][...]
+            del f["variables"]["s"]
+            f["variables"].create_dataset("s", data=data[:-1])
+        elif damage == "scalar_coordinates":
+            del f["coordinates"]
+            f.create_dataset("coordinates", data=1.0)
+        elif damage == "a_variable_made_a_group":
+            del f["variables"]["s"]
+            f["variables"].create_group("s")
+        elif damage == "a_variable_missing":
+            del f["variables"]["s"]
+
+# what every rank's error must say for each damage
+EXPECTED = {"a_row_dropped": "shape mismatch", "scalar_coordinates": "coordinates",
+            "a_variable_made_a_group": "not a dataset", "a_variable_missing": "lacks"}
 
 
 @pytest.mark.tier_b
-def test_a_bad_sidecar_on_one_rank_is_refused_on_every_rank(tmp_path):
+@pytest.mark.parametrize("damage", list(EXPECTED))
+def test_a_bad_sidecar_on_one_rank_is_refused_on_every_rank(tmp_path, damage):
     model, T, swarm, s = _model()
     path = _shared_path(tmp_path)
     model.save_state(file=path)
@@ -69,7 +86,7 @@ def test_a_bad_sidecar_on_one_rank_is_refused_on_every_rank(tmp_path):
     s.array[...] = 5.0
     particles = swarm.dm.getLocalSize()
     if uw.mpi.rank == uw.mpi.size - 1:
-        _drop_a_row_of_this_ranks_sidecar(path)
+        _damage_this_ranks_sidecar(path, damage)
     uw.mpi.barrier()
 
     message = None
@@ -78,7 +95,7 @@ def test_a_bad_sidecar_on_one_rank_is_refused_on_every_rank(tmp_path):
     except ValueError as err:
         message = str(err)
     messages = uw.mpi.comm.allgather(message)
-    assert all(m is not None and "shape mismatch" in m for m in messages), messages
+    assert all(m is not None and EXPECTED[damage] in m for m in messages), messages
     assert len(set(messages)) == 1, messages
 
     untouched = (np.allclose(np.asarray(T.array), 2.0)

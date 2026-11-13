@@ -721,9 +721,14 @@ def _checked_swarm_sidecars(sw_group, model, path, bulk_dir):
         if swarm is None:
             return (f"snapshot at {path} contains swarm {swarm_safe!r} "
                     f"that is not registered on this model"), {}
-        pattern = str(sw_group[swarm_safe].attrs["sidecar_pattern"])
-        sidecar = os.path.join(bulk_dir, pattern.format(rank=int(uw.mpi.rank),
-                                                         size=int(uw.mpi.size)))
+        try:
+            pattern = str(sw_group[swarm_safe].attrs["sidecar_pattern"])
+            sidecar = os.path.join(bulk_dir, pattern.format(rank=int(uw.mpi.rank),
+                                                             size=int(uw.mpi.size)))
+        except Exception as err:   # sanctioned: reported into the collective verdict
+            return (f"rank {uw.mpi.rank}: swarm {swarm_safe!r} has no readable "
+                    f"sidecar pattern ({type(err).__name__}: {err}). Nothing was "
+                    f"loaded"), {}
         problem, payload = _read_swarm_sidecar_checked(swarm, sidecar)
         if problem is not None:
             return f"rank {uw.mpi.rank}: {problem}. Nothing was loaded", {}
@@ -734,21 +739,33 @@ def _checked_swarm_sidecars(sw_group, model, path, bulk_dir):
 def _read_swarm_sidecar_checked(swarm, sidecar_path: str):
     """One swarm's sidecar for this rank, read and checked against the target
     swarm before anything is changed: ``(problem, payload)``, ``payload``
-    ``(saved_coords, {variable: data})``. Rank-local."""
+    ``(saved_coords, {variable: data})``. Rank-local, and it cannot raise:
+    whatever goes wrong reading or checking this rank's sidecar is reported
+    as this rank's problem, into the agreement that follows (#974). A raise
+    here would leave the other ranks waiting in it."""
+    try:
+        return _read_and_check_swarm_sidecar(swarm, sidecar_path)
+    except Exception as err:   # sanctioned: reported into the collective verdict
+        return (f"sidecar at {sidecar_path} could not be read: "
+                f"{type(err).__name__}: {err}"), None
+
+
+def _read_and_check_swarm_sidecar(swarm, sidecar_path: str):
     import h5py
 
-    try:
-        with h5py.File(sidecar_path, "r") as f:
-            saved_coords = np.asarray(f["coordinates"][...])
-            captured_mesh_name = str(f.attrs.get("mesh_name", ""))
-            captured_rank = int(f.attrs.get("mpi_rank", 0))
-            captured_size = int(f.attrs.get("mpi_size_at_write", 1))
-            var_data: dict[str, np.ndarray] = {}
-            if "variables" in f:
-                for name in f["variables"].keys():
-                    var_data[name] = np.asarray(f["variables"][name][...])
-    except (OSError, KeyError) as err:
-        return f"sidecar at {sidecar_path} could not be read: {err}", None
+    with h5py.File(sidecar_path, "r") as f:
+        saved_coords = np.asarray(f["coordinates"][...])
+        captured_mesh_name = str(f.attrs.get("mesh_name", ""))
+        captured_rank = int(f.attrs.get("mpi_rank", 0))
+        captured_size = int(f.attrs.get("mpi_size_at_write", 1))
+        var_data: dict[str, np.ndarray] = {}
+        if "variables" in f:
+            for name in f["variables"].keys():
+                node = f["variables"][name]
+                if not isinstance(node, h5py.Dataset):
+                    return (f"sidecar at {sidecar_path}: variable {name!r} is not "
+                            f"a dataset"), None
+                var_data[name] = np.asarray(node[...])
 
     if captured_size != uw.mpi.size:
         return (f"sidecar at {sidecar_path}: was written on "
@@ -762,17 +779,33 @@ def _read_swarm_sidecar_checked(swarm, sidecar_path: str):
     if captured_mesh_name and captured_mesh_name != swarm.mesh.name:
         return (f"sidecar at {sidecar_path}: parent mesh was "
                 f"{captured_mesh_name!r}, target swarm is on {swarm.mesh.name!r}"), None
+    if saved_coords.ndim != 2 or saved_coords.shape[1] != swarm.dim:
+        return (f"sidecar at {sidecar_path}: coordinates have shape "
+                f"{saved_coords.shape}; this swarm's particles have {swarm.dim} "
+                f"coordinates"), None
+
+    # The same variable set both ways: the writer saves every variable but
+    # PETSc's own (DMSwarm*), so each of those must be in the sidecar.
+    current_vars = {v.clean_name: v for v in swarm._vars.values()
+                    if not v.name.startswith("DMSwarm")}
+    missing = sorted(set(current_vars) - set(var_data))
+    if missing:
+        return (f"sidecar at {sidecar_path} lacks swarm variable "
+                f"{missing[0]!r}; restore requires the same variable set"), None
 
     # The shape each variable will have once the saved particles are re-added:
     # the saved count, by the variable's own component shape.
     n_saved = int(saved_coords.shape[0])
-    current_vars = {v.clean_name: v for v in swarm._vars.values()}
     for var_name, saved in var_data.items():
         var = current_vars.get(var_name)
         if var is None:
             return (f"sidecar variable {var_name!r} is not present on the "
                     f"target swarm; restore requires the same variable set"), None
-        expected = (n_saved,) + tuple(np.asarray(var.data).shape[1:])
+        current = np.asarray(var.data)
+        if not np.can_cast(saved.dtype, current.dtype, casting="same_kind"):
+            return (f"swarm variable {var_name!r}: sidecar dtype {saved.dtype} "
+                    f"cannot be written into {current.dtype}"), None
+        expected = (n_saved,) + tuple(current.shape[1:])
         if tuple(saved.shape) != expected:
             return (f"swarm variable {var_name!r} shape mismatch on restore: "
                     f"sidecar {saved.shape} vs current {expected}"), None
