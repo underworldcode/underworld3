@@ -411,6 +411,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is the line cut on a mesh wound clockwise throughout (#874).
+  batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
   batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
